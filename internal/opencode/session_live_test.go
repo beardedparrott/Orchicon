@@ -26,11 +26,11 @@ type liveCallbacks struct {
 	got    bool
 }
 
-func (c *liveCallbacks) OnStarted(context.Context, string)                       {}
-func (c *liveCallbacks) OnHealth(context.Context, string, string)                {}
-func (c *liveCallbacks) OnStall(context.Context, string, string, bool)           {}
-func (c *liveCallbacks) OnRecovered(context.Context, string, string)             {}
-func (c *liveCallbacks) OnText(context.Context, string, string)                  {}
+func (c *liveCallbacks) OnStarted(context.Context, string)                          {}
+func (c *liveCallbacks) OnHealth(context.Context, string, string)                   {}
+func (c *liveCallbacks) OnStall(context.Context, string, string, bool)              {}
+func (c *liveCallbacks) OnRecovered(context.Context, string, string)                {}
+func (c *liveCallbacks) OnText(context.Context, string, string)                     {}
 func (c *liveCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {}
 func (c *liveCallbacks) OnArtifact(context.Context, string, string, string, string) {}
 func (c *liveCallbacks) OnResult(_ context.Context, _ string, ok bool, output, errMsg string) {
@@ -41,6 +41,8 @@ func (c *liveCallbacks) OnResult(_ context.Context, _ string, ok bool, output, e
 	c.errMsg = errMsg
 	c.got = true
 }
+
+func (c *liveCallbacks) OnWrittenFiles(context.Context, string, []string) {}
 
 func (c *liveCallbacks) result() (bool, string, string, bool) {
 	c.mu.Lock()
@@ -79,10 +81,10 @@ func TestSessionRunLive(t *testing.T) {
 	callbacks := &liveCallbacks{}
 	execRow := db.ExecutionRow{ID: "exec-live-test", TenantID: "tnt_dev", ProjectID: "proj-test", TaskID: "task-test"}
 	manifest := scheduler.ExecutionManifest{
-		Goal:        "Reply with exactly one word: PONG",
+		Goal:         "Reply with exactly one word: PONG",
 		SystemPrompt: "You are a terse test bot.",
-		ModelRef:    "opencode/deepseek-v4-flash-free",
-		ProjectDir:  proj,
+		ModelRef:     "opencode/deepseek-v4-flash-free",
+		ProjectDir:   proj,
 	}
 
 	a := New(log)

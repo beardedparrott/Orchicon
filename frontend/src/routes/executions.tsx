@@ -4,6 +4,7 @@ import { z } from "zod";
 import { Trash2, SearchX } from "lucide-react";
 
 import { useBatchDeleteExecutions, useListExecutions } from "@/api/executions";
+import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -13,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { isTerminalExecutionStatus } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 const executionsSearchSchema = z.object({
@@ -228,6 +230,14 @@ function ExecutionsPage() {
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+                      <PrLinkChip
+                        run={{
+                          prUrl: e.prUrl || undefined,
+                          prState: e.prState || undefined,
+                          worktreeBranch: e.worktreeBranch || undefined,
+                          completed: isTerminalExecutionStatus(e.status),
+                        }}
+                      />
                       <HealthBadge health={e.healthState} status={e.status} />
                       {Number(e.tokenUsage) > 0 && (
                         <span className="font-mono tabular-nums">

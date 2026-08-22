@@ -47,10 +47,10 @@ type Daemon struct {
 	// (cmd/orchicon/runtime.go copySelf), so dev hygiene that deletes the
 	// original (`make clean`) can never orphan the mount — the copy is what
 	// gets mounted.
-	ExePath      string
-	CPUs         string
-	Memory       string
-	TmpfsSize    string
+	ExePath   string
+	CPUs      string
+	Memory    string
+	TmpfsSize string
 	// MaxAge / SweepInterval are retained for config compatibility; the
 	// warm pool's idle-reap now owns container cleanup (the pool is reset
 	// wholesale at daemon start, which covers the plane-down leak case).
@@ -63,6 +63,17 @@ type Daemon struct {
 	// race `docker run` on the same name (the pool names are unique, but
 	// serializing the docker create path keeps docker itself calm).
 	createMu sync.Mutex
+	// Test seams: unexported func fields that override the production
+	// implementations. Nil (the default) = production behavior.
+	dockerFn  func(args ...string) (string, error)                          // overrides docker()
+	createFn  func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
+	ghTokenFn func() string                                                 // overrides the ghToken resolver (default hostGHToken)
+	// ghToken cache: daemon-resident, TTL-bounded (ORCHICON_RUNTIME_GH_TOKEN_FP_TTL,
+	// default 60s) so the pool key and the created container's GH_TOKEN come
+	// from the SAME resolution without spawning `gh auth token` per checkout.
+	ghTokenMu   sync.Mutex
+	ghTokenVal  string
+	ghTokenTime time.Time
 }
 
 // MountSpec is a validated bind mount request from the control plane.
@@ -110,6 +121,12 @@ type CreateResponse struct {
 	ServePort     int    `json:"serve_port,omitempty"`
 	ServePassword string `json:"serve_password,omitempty"`
 	ServeURL      string `json:"serve_url,omitempty"`
+	// PlaneURL is the sandbox plane's /healthz base URL
+	// (http://<container-ip>:8080), set when the container's image boots
+	// the in-container Orchicon control plane (dev images: postgres +
+	// nats-server present). Empty on base/gui images — the run-start gate
+	// probes the plane only when this is set.
+	PlaneURL string `json:"plane_url,omitempty"`
 }
 
 // ListResponse is returned by GET /v1/runtimes.
@@ -306,6 +323,9 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 // state. Container creation is serialized with createMu so concurrent
 // checkouts/resets cannot race `docker run` on the same name.
 func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
+	if d.createFn != nil {
+		return d.createFn(name, req)
+	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	// A stopped/crashed container with this name blocks recreation
@@ -394,7 +414,10 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		// so `gh` reports "not authenticated". Resolve the host's effective
 		// token and pass it as GH_TOKEN so PR/merge workers can actually
 		// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
-		if tok := hostGHToken(); tok != "" {
+		// d.ghToken() is TTL-cached and shared with the pool key fingerprint
+		// so the container's env and the pool key always agree on the token
+		// (no wasteful fresh-create from a mid-checkout rotation race).
+		if tok := d.ghToken(); tok != "" {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
 	}
@@ -458,13 +481,20 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 				// was removed, so the adapter surfaces this as
 				// failed_to_start → workflow recovery. The container stays
 				// up so the watchdog / a later retry can converge it.
-				port, pw, serr := d.startServe(name, req)
+				port, pw, planeEnabled, serr := d.startServe(name, req)
 				if serr != nil {
 					return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
 				}
+				cip := d.containerIP(name)
 				resp.ServePort = port
 				resp.ServePassword = pw
-				resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
+				resp.ServeURL = fmt.Sprintf("http://%s:%d", cip, port)
+				if planeEnabled && cip != "" {
+					// The supervisor booted the sandbox plane (dev image); the
+					// run-start gate verifies its /healthz on the bridge IP
+					// before any execution dispatches.
+					resp.PlaneURL = fmt.Sprintf("http://%s:%d", cip, sandboxPlanePort)
+				}
 			}
 			return resp, nil
 		}
@@ -488,11 +518,53 @@ func hostGHToken() string {
 	return strings.TrimSpace(string(out))
 }
 
+// ghToken returns the host's effective GH token, cached for
+// ORCHICON_RUNTIME_GH_TOKEN_FP_TTL (default 60s). The cache is
+// daemon-resident, so the pool key (hostInputsFingerprint) and every
+// container's GH_TOKEN always come from the SAME resolution, without spawning
+// `gh auth token` (up to an 8s keyring-bound subprocess) per checkout. A
+// daemon restart resets the pool wholesale, so a stale in-memory token can
+// never hand out a stale container. Best-effort: "" when gh is absent,
+// unauthenticated, or the keyring is locked.
+func (d *Daemon) ghToken() string {
+	d.ghTokenMu.Lock()
+	defer d.ghTokenMu.Unlock()
+	ttl := 60 * time.Second
+	if v := d.envDuration("ORCHICON_RUNTIME_GH_TOKEN_FP_TTL"); v > 0 {
+		ttl = v
+	}
+	if d.ghTokenTime.IsZero() || time.Since(d.ghTokenTime) > ttl {
+		resolve := d.ghTokenFn
+		if resolve == nil {
+			resolve = hostGHToken
+		}
+		d.ghTokenVal = resolve()
+		d.ghTokenTime = time.Now()
+	}
+	return d.ghTokenVal
+}
+
+// hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
+// read-once HOST inputs baked into every runtime container at create time:
+// opencode config, provider auth, the adapter install, and the resolved GH
+// token (see hostfp.go). The warm pool folds it into the environment key, so
+// ANY change to a read-once host input forces the next checkout to create a
+// fresh container instead of reusing a warm one serving the stale value.
+// Returns "" when HostHome is unset or nothing applies — the pool key then
+// reduces to image+mounts (today's behavior).
+func (d *Daemon) hostInputsFingerprint() string {
+	if d.HostHome == "" {
+		return ""
+	}
+	return hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
+}
+
 // startServe asks the in-container supervisor to bring up `opencode
 // serve` (idempotent — the supervisor owns the password and reports it
 // back), then resolves the published host loopback port. Returns the
-// host port + the container's serve password.
-func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error) {
+// host port + the container's serve password, plus whether the image
+// boots the sandbox plane (the daemon publishes its /healthz URL).
+func (d *Daemon) startServe(name string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd:  "serve",
 		Argv: []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"},
@@ -503,19 +575,20 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 		ProjectDir: req.ProjectDir,
 	})
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
 	out, perr := cmd.Output()
 	if perr != nil {
-		return 0, "", fmt.Errorf("serve handshake: %v", perr)
+		return 0, "", false, fmt.Errorf("serve handshake: %v", perr)
 	}
 	// The supervisor answers {event:"serve", port:4096, password:...} when
 	// ready.
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	port := 0
 	password := ""
+	planeEnabled := false
 	for sc.Scan() {
 		var ev AgentEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
@@ -524,21 +597,22 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 		if ev.Event == "serve" {
 			port = ev.Port
 			password = ev.Password
+			planeEnabled = ev.PlaneEnabled
 			break
 		}
 		if ev.Event == "error" {
-			return 0, "", fmt.Errorf("serve handshake error: %s", ev.Error)
+			return 0, "", false, fmt.Errorf("serve handshake error: %s", ev.Error)
 		}
 	}
 	if port == 0 || password == "" {
-		return 0, "", fmt.Errorf("serve handshake: incomplete serve event (port=%d)", port)
+		return 0, "", false, fmt.Errorf("serve handshake: incomplete serve event (port=%d)", port)
 	}
 
 	// Resolve the container's bridge IP — the plane reaches the serve
 	// DIRECTLY at http://<container-ip>:<port> (no docker-proxy).
 	cip := d.containerIP(name)
 	if cip == "" {
-		return 0, "", fmt.Errorf("resolve container IP for %s", name)
+		return 0, "", false, fmt.Errorf("resolve container IP for %s", name)
 	}
 
 	// The serve's cold start answers /global/health before it can handle
@@ -549,11 +623,11 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 		if serveUsableAt(fmt.Sprintf("http://%s:%d", cip, port), password) {
 			// Give the accept path a beat after the first success.
 			time.Sleep(500 * time.Millisecond)
-			return port, password, nil
+			return port, password, planeEnabled, nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return 0, "", fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
+	return 0, "", false, fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
 }
 
 // serveUsableAt is the L1 serve-readiness probe (the workflow run-start
@@ -676,6 +750,9 @@ func (d *Daemon) pingRuntime(name string) bool {
 
 // validateExec enforces the daemon's argv allowlist.
 func (d *Daemon) docker(args ...string) (string, error) {
+	if d.dockerFn != nil {
+		return d.dockerFn(args...)
+	}
 	cmd := exec.Command(d.DockerBin, args...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

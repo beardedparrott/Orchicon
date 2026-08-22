@@ -14,8 +14,48 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
-import { DependencyGraph, DependencyType, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
+import { DependencyGraph, DependencyType, RecurringSchedule, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
 import { ContextFiles } from "./project_pb.js";
+
+/**
+ * SequenceAction enumerates the manual sequence control gestures.
+ *
+ * @generated from enum orchicon.api.v1.SequenceAction
+ */
+export enum SequenceAction {
+  /**
+   * @generated from enum value: SEQUENCE_ACTION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * re-fire the chain from child #1 (destructive)
+   *
+   * @generated from enum value: SEQUENCE_ACTION_START = 1;
+   */
+  START = 1,
+
+  /**
+   * continue from the first non-succeeded child
+   *
+   * @generated from enum value: SEQUENCE_ACTION_RESUME = 2;
+   */
+  RESUME = 2,
+
+  /**
+   * park the chain (parent → pending, schedule cleared)
+   *
+   * @generated from enum value: SEQUENCE_ACTION_STOP = 3;
+   */
+  STOP = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(SequenceAction)
+proto3.util.setEnumType(SequenceAction, "orchicon.api.v1.SequenceAction", [
+  { no: 0, name: "SEQUENCE_ACTION_UNSPECIFIED" },
+  { no: 1, name: "SEQUENCE_ACTION_START" },
+  { no: 2, name: "SEQUENCE_ACTION_RESUME" },
+  { no: 3, name: "SEQUENCE_ACTION_STOP" },
+]);
 
 /**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
@@ -122,6 +162,24 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   contextFiles: string[] = [];
 
+  /**
+   * recurring_schedule sets a recurrence pattern; the item's status is
+   * automatically flipped to RECURRING on create.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 17;
+   */
+  recurringSchedule?: RecurringSchedule;
+
+  /**
+   * depends_on are the IDs of the work items this item depends on. Each ID
+   * creates a DEPENDS_ON-type edge (from = this item, to = the listed ID).
+   * Absent/empty = no edges. Validated: same project, target exists, no
+   * self-dependency, no cycle.
+   *
+   * @generated from field: repeated string depends_on = 18;
+   */
+  dependsOn: string[] = [];
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -146,6 +204,8 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -335,6 +395,17 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
    */
   pageSize = 0;
 
+  /**
+   * include_archived: when false (default), the query returns ONLY active
+   * items (archived_at IS NULL) — every normal view uses this default. When
+   * true, the query returns ONLY archived items (archived_at IS NOT NULL) —
+   * the dedicated archive view sets it. Additive/regression-free: current
+   * data has no archived rows, so the default path is byte-for-byte unchanged.
+   *
+   * @generated from field: bool include_archived = 10;
+   */
+  includeArchived = false;
+
   constructor(data?: PartialMessage<ListWorkItemsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -352,6 +423,7 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 7, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 10, name: "include_archived", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {
@@ -537,6 +609,25 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   acceptanceReview?: string;
 
+  /**
+   * recurring_schedule sets or clears the recurrence definition. Setting it
+   * flips status to RECURRING; clearing it (empty message) resets to
+   * non-recurring and clears next_run_at.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 24;
+   */
+  recurringSchedule?: RecurringSchedule;
+
+  /**
+   * depends_on replaces the item's outgoing DEPENDS_ON edges (set-replace):
+   * an empty ids list clears all edges, an absent field leaves them
+   * unchanged. Validated: same project, target exists, no self-dependency,
+   * no cycle. Edges are independent of parent_id/sort_order.
+   *
+   * @generated from field: optional orchicon.api.v1.DependencyIds depends_on = 25;
+   */
+  dependsOn?: DependencyIds;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -564,6 +655,8 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 21, name: "kind", kind: "enum", T: proto3.getEnumType(WorkItemKind), opt: true },
     { no: 22, name: "context_files", kind: "message", T: ContextFiles, opt: true },
     { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 24, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 25, name: "depends_on", kind: "message", T: DependencyIds, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
@@ -580,6 +673,47 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
 
   static equals(a: UpdateWorkItemRequest | PlainMessage<UpdateWorkItemRequest> | undefined, b: UpdateWorkItemRequest | PlainMessage<UpdateWorkItemRequest> | undefined): boolean {
     return proto3.util.equals(UpdateWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * DependencyIds is a set of dependency target work item IDs. Used for
+ * UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
+ * "clear all" (empty ids) are distinguishable.
+ *
+ * @generated from message orchicon.api.v1.DependencyIds
+ */
+export class DependencyIds extends Message<DependencyIds> {
+  /**
+   * @generated from field: repeated string ids = 1;
+   */
+  ids: string[] = [];
+
+  constructor(data?: PartialMessage<DependencyIds>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DependencyIds";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DependencyIds {
+    return new DependencyIds().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DependencyIds {
+    return new DependencyIds().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DependencyIds {
+    return new DependencyIds().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DependencyIds | PlainMessage<DependencyIds> | undefined, b: DependencyIds | PlainMessage<DependencyIds> | undefined): boolean {
+    return proto3.util.equals(DependencyIds, a, b);
   }
 }
 
@@ -1267,6 +1401,249 @@ export class ReorderWorkItemsResponse extends Message<ReorderWorkItemsResponse> 
 
   static equals(a: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined, b: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined): boolean {
     return proto3.util.equals(ReorderWorkItemsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ControlSequenceRequest
+ */
+export class ControlSequenceRequest extends Message<ControlSequenceRequest> {
+  /**
+   * the sequence parent work item id
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.SequenceAction action = 2;
+   */
+  action = SequenceAction.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<ControlSequenceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ControlSequenceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "action", kind: "enum", T: proto3.getEnumType(SequenceAction) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ControlSequenceRequest | PlainMessage<ControlSequenceRequest> | undefined, b: ControlSequenceRequest | PlainMessage<ControlSequenceRequest> | undefined): boolean {
+    return proto3.util.equals(ControlSequenceRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ControlSequenceResponse
+ */
+export class ControlSequenceResponse extends Message<ControlSequenceResponse> {
+  /**
+   * the parent after the action, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<ControlSequenceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ControlSequenceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined, b: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined): boolean {
+    return proto3.util.equals(ControlSequenceResponse, a, b);
+  }
+}
+
+/**
+ * ArchiveWorkItemRequest archives a terminal work item. The request is
+ * idempotency-free; the work item's current version is read server-side
+ * (the ArchiveWorkItem RPC re-fetches and bumps it like ArchiveProject),
+ * so no client version is required.
+ *
+ * @generated from message orchicon.api.v1.ArchiveWorkItemRequest
+ */
+export class ArchiveWorkItemRequest extends Message<ArchiveWorkItemRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<ArchiveWorkItemRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ArchiveWorkItemRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ArchiveWorkItemRequest | PlainMessage<ArchiveWorkItemRequest> | undefined, b: ArchiveWorkItemRequest | PlainMessage<ArchiveWorkItemRequest> | undefined): boolean {
+    return proto3.util.equals(ArchiveWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ArchiveWorkItemResponse
+ */
+export class ArchiveWorkItemResponse extends Message<ArchiveWorkItemResponse> {
+  /**
+   * the archived item, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<ArchiveWorkItemResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ArchiveWorkItemResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ArchiveWorkItemResponse | PlainMessage<ArchiveWorkItemResponse> | undefined, b: ArchiveWorkItemResponse | PlainMessage<ArchiveWorkItemResponse> | undefined): boolean {
+    return proto3.util.equals(ArchiveWorkItemResponse, a, b);
+  }
+}
+
+/**
+ * RestoreWorkItemRequest returns an archived work item to the active views.
+ *
+ * @generated from message orchicon.api.v1.RestoreWorkItemRequest
+ */
+export class RestoreWorkItemRequest extends Message<RestoreWorkItemRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<RestoreWorkItemRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreWorkItemRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreWorkItemRequest | PlainMessage<RestoreWorkItemRequest> | undefined, b: RestoreWorkItemRequest | PlainMessage<RestoreWorkItemRequest> | undefined): boolean {
+    return proto3.util.equals(RestoreWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RestoreWorkItemResponse
+ */
+export class RestoreWorkItemResponse extends Message<RestoreWorkItemResponse> {
+  /**
+   * the restored item, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<RestoreWorkItemResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreWorkItemResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined, b: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined): boolean {
+    return proto3.util.equals(RestoreWorkItemResponse, a, b);
   }
 }
 

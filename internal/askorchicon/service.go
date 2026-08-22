@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -23,9 +27,9 @@ import (
 type Service struct {
 	pool         *db.Pool
 	log          *slog.Logger
-	blobStore     blobstore.Store
-	modelDisc     *aigateway.ModelDiscoverer
-	toolRegistry  *ToolRegistry
+	blobStore    blobstore.Store
+	modelDisc    *aigateway.ModelDiscoverer
+	toolRegistry *ToolRegistry
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
@@ -57,7 +61,43 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()
+	s.startSweeper()
 	return s
+}
+
+// startSweeper launches the background turn-registry sweeper (ADR-ASK-3): it
+// ticks every interval, evicts entries older than the TTL (cancelling the
+// collector with errTurnExpired), and for each evicted conversation aborts
+// the serve session — belt-and-suspenders on top of the stall monitor. This
+// is the "every turn has a hard backstop" guarantee: a collector that can
+// never finalize is reaped in bounded time instead of blocking the
+// conversation forever (the reported server-restart-required behaviour).
+func (s *Service) startSweeper() {
+	go func() {
+		ticker := time.NewTicker(askSweepInterval())
+		defer ticker.Stop()
+		for range ticker.C {
+			for _, ev := range s.turns.sweep(time.Now(), askTurnMaxAge()) {
+				s.log.Warn("conversation turn expired — aborting serve session", "conversation", ev.convID)
+				if s.pool == nil {
+					continue
+				}
+				ctx := context.Background()
+				ttx, err := s.pool.BeginTenantTx(ctx, ev.tenant)
+				if err != nil {
+					continue
+				}
+				conv, err := db.GetConversation(ctx, ttx.Tx, ev.tenant, ev.convID)
+				ttx.Rollback(ctx)
+				if err != nil || conv.SessionID == "" {
+					continue
+				}
+				if client := s.hostServeClient(); client != nil {
+					_ = client.Abort(ctx, conv.SessionID)
+				}
+			}
+		}
+	}()
 }
 
 // SetSendExecutionMessage wires the live-session message router (the
@@ -133,7 +173,8 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview))
+		turnInFlight, pendingID := s.turnStatus(r.ID)
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, turnInFlight, pendingID))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -163,8 +204,9 @@ func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	turnInFlight, pendingID := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.GetConversationResponse{
-		Conversation: conversationRowToProto(row, count, preview),
+		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
 	}), nil
 }
 
@@ -214,6 +256,10 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.created", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -225,7 +271,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 	return connect.NewResponse(&apiv1.CreateConversationResponse{
-		Conversation: conversationRowToProto(row, 0, preview),
+		Conversation: conversationRowToProto(row, 0, preview, false, ""),
 	}), nil
 }
 
@@ -252,6 +298,10 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if err := db.DeleteConversation(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.deleted", "conversation", req.Msg.Id,
+		nil, nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.deleted: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -270,8 +320,8 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	// immediately and never persists into the deleted conversation (the
 	// collector's persist path also re-checks the conversation and would
 	// skip the write — this just makes it prompt and clean).
-	if _, ok := s.turns.cancel(req.Msg.Id); ok {
-		s.turns.remove(req.Msg.Id)
+	if token, ok := s.turns.cancel(req.Msg.Id, errUserStop); ok {
+		s.turns.remove(req.Msg.Id, token)
 	}
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
@@ -296,13 +346,18 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.title_updated", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"title": req.Msg.Title})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.title_updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	turnInFlight, pendingID := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
-		Conversation: conversationRowToProto(row, count, preview),
+		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
 	}), nil
 }
 
@@ -335,13 +390,18 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.mode_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"mode": mode})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.mode_changed: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	turnInFlight, pendingID := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
-		Conversation: conversationRowToProto(row, count, preview),
+		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
 	}), nil
 }
 
@@ -420,6 +480,10 @@ func (s *Service) UpdateAgentConfig(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "agent_config.updated", "settings", tenantID,
+		nil, audit.Snapshot(map[string]any{"updated_at": row.UpdatedAt})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit agent_config.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -474,6 +538,22 @@ func (s *Service) GetModelCapabilities(ctx context.Context, req *connect.Request
 
 // --- helpers ---
 
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)
 	if id == "" {
@@ -482,20 +562,36 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string) *apiv1.Conversation {
+func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, turnInFlight bool, pendingAssistantMsgID string) *apiv1.Conversation {
 	p := &apiv1.Conversation{
-		Id:                 r.ID,
-		TenantId:           r.TenantID,
-		Title:              r.Title,
-		ModelRef:           r.ModelRef,
-		SessionId:          r.SessionID,
-		Mode:               conversationModeToProto(r.Mode),
-		MessageCount:       int32(messageCount),
-		LastMessagePreview: lastPreview,
-		CreatedAt:          timestamppb.New(r.CreatedAt),
-		UpdatedAt:          timestamppb.New(r.UpdatedAt),
+		Id:                        r.ID,
+		TenantId:                  r.TenantID,
+		Title:                     r.Title,
+		ModelRef:                  r.ModelRef,
+		SessionId:                 r.SessionID,
+		Mode:                      conversationModeToProto(r.Mode),
+		MessageCount:              int32(messageCount),
+		LastMessagePreview:        lastPreview,
+		TurnInFlight:              turnInFlight,
+		PendingAssistantMessageId: pendingAssistantMsgID,
+		CreatedAt:                 timestamppb.New(r.CreatedAt),
+		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	return p
+}
+
+// turnStatus reports whether a reply turn is currently in flight for a
+// conversation and, if so, the acked assistant message id under which its
+// reply will be persisted. Read from the in-memory turn registry — the same
+// authoritative source as the one-turn gate. This is how a refreshed frontend
+// learns "a turn is running here" and re-attaches the Stop button + the
+// completion poll.
+func (s *Service) turnStatus(convID string) (bool, string) {
+	entry, ok := s.turns.get(convID)
+	if !ok {
+		return false, ""
+	}
+	return true, entry.assistantMsgID
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'

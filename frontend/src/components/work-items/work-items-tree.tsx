@@ -44,17 +44,20 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, GripVertical, SearchX } from "lucide-react";
+import { ChevronRight, GitBranch, GripVertical, SearchX } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { KindBadge, PositionBadge, StatusPill } from "@/components/work-items/work-item-badges";
+import { KindBadge, PositionBadge, RecurringBadge, StatusPill } from "@/components/work-items/work-item-badges";
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
-import { BlockedChip } from "@/components/work-items/work-item-card";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
+import { BlockedChip, PrLinkChip } from "@/components/work-items/work-item-card";
+import { showRecurringBadge } from "@/components/work-items/work-item-meta";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import type { PrRun } from "@/lib/pr";
 
 export interface WorkItemsTreeProps {
   /** matches + ancestors (the rendered tree rows) */
@@ -80,6 +83,8 @@ export interface WorkItemsTreeProps {
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
+  /** per-work-item run footer data (branch/worktree/PR per active run) */
+  runsByItem?: Map<string, PrRun[]>;
 }
 
 export function WorkItemsTree({
@@ -99,6 +104,7 @@ export function WorkItemsTree({
   isLoading,
   error,
   hasQuery,
+  runsByItem,
 }: WorkItemsTreeProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   // A drag ends with the browser dispatching a click on the element under
@@ -268,6 +274,7 @@ export function WorkItemsTree({
                 onToggleCollapse={onToggleCollapse}
                 activeId={activeId}
                 dragDisabled={filterActive}
+                runsByItem={runsByItem}
               />
             ))}
           </SortableContext>
@@ -294,6 +301,7 @@ function TreeNode({
   onToggleCollapse,
   activeId,
   dragDisabled,
+  runsByItem,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -311,6 +319,7 @@ function TreeNode({
   onToggleCollapse: (id: string) => void;
   activeId: string | null;
   dragDisabled: boolean;
+  runsByItem?: Map<string, PrRun[]>;
 }) {
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
@@ -356,6 +365,7 @@ function TreeNode({
         }
         isActive={activeId === item.id}
         dragDisabled={filterActive}
+        runs={runsByItem?.get(item.id)}
       />
       {expanded && (
         <SortableContext
@@ -381,6 +391,7 @@ function TreeNode({
               onToggleCollapse={onToggleCollapse}
               activeId={activeId}
               dragDisabled={dragDisabled}
+              runsByItem={runsByItem}
             />
           ))}
         </SortableContext>
@@ -409,6 +420,7 @@ function SortableTreeRow({
   onToggleExpand,
   isActive,
   dragDisabled,
+  runs,
 }: {
   item: WorkItem;
   depth: number;
@@ -428,6 +440,8 @@ function SortableTreeRow({
   onToggleExpand: () => void;
   isActive: boolean;
   dragDisabled: boolean;
+  /** run footer data (branch/worktree/PR per active run) */
+  runs?: PrRun[];
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({
@@ -536,12 +550,31 @@ function SortableTreeRow({
             className="hidden sm:inline-flex"
           />
         ) : null}
+        {showRecurringBadge(item) && <RecurringBadge className="hidden sm:inline-flex" />}
+        {runs && runs.length > 0 && (
+          <span className="hidden items-center gap-1.5 md:inline-flex" title={runs[0].worktreeBranch || "PR"}>
+            {runs[0].worktreeBranch && (
+              <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
+                <GitBranch className="h-3 w-3 shrink-0" aria-hidden />
+                <span className="max-w-[8rem] truncate">{runs[0].worktreeBranch}</span>
+              </span>
+            )}
+            <PrLinkChip run={runs[0]} />
+            {runs.length > 1 && (
+              <span className="rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-semibold text-accent-foreground">
+                +{runs.length - 1}
+              </span>
+            )}
+          </span>
+        )}
         <BlockedChip
+          item={item}
           blockedBy={blockState.blockedBy}
           id={item.id}
           depsCount={depsCountOf(item.id, blockState)}
         />
         <StatusPill status={item.status} className="hidden sm:inline-flex" />
+        <SequenceControls item={item} hasChildren={hasChildren} />
       </span>
     </div>
   );

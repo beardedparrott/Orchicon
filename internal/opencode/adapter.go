@@ -130,6 +130,17 @@ func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
 
+// executionDir resolves the worker's working directory: the run's provisioned
+// worktree path when set, else the project dir. The worktree lives under the
+// project dir (.orchicon-worktrees/<runID>), so it is covered by the
+// project-dir mount and passes the project-dir containment checks.
+func executionDir(m scheduler.ExecutionManifest) string {
+	if m.WorktreePath != "" {
+		return m.WorktreePath
+	}
+	return m.ProjectDir
+}
+
 // sessionClientFor resolves the SessionClient for an execution: the
 // per-container serve for workflow-run executions (ensuring the container
 // exists + is serving), or the host serve for the in-process population.
@@ -141,7 +152,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -159,7 +170,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
 		}
-		return NewSessionClient(baseURL, resp.ServePassword, manifest.ProjectDir)
+		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
 	}
 	if a.host != nil {
 		return a.host.Client()
@@ -168,21 +179,39 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 }
 
 // RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
-// container's serve: the permission rules only, with the operator's MCP
-// servers omitted — a SERVE eagerly connects to every configured MCP
-// server at startup, and the operator's entries (an `orchicon` MCP that
-// docker execs, a local Playwright MCP) cannot run inside the sandbox,
-// which would hang the serve (the one-shot run path tolerates MCP
-// failures and keeps them). Worker system prompts ride the per-message
-// `system` field instead.
-func RuntimeServeConfig() string {
-	return BuildConfigContent(ConfigOptions{
+// container's serve given its runtime image tag: the permission rules only,
+// with the operator's MCP servers omitted — a SERVE eagerly connects to
+// every configured MCP server at startup, and the operator's entries (an
+// `orchicon` MCP that docker execs, a local Playwright MCP) cannot run
+// inside the sandbox, which would hang the serve (the one-shot run path
+// tolerates MCP failures and keeps them). Worker system prompts ride the
+// per-message `system` field instead.
+//
+// For DEV images (which boot the sandbox plane — Postgres + NATS +
+// `orchicon serve` in-container), the serve ALSO registers the built-in
+// Orchicon MCP against the sandbox DB: the `orchicon mcp` sidecar is
+// pointed at the container-local Postgres via the entry's environment map
+// (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
+// against their own sandbox — never the host plane's DB. Base/gui images
+// get no MCP (no sandbox plane), behavior identical to today.
+func RuntimeServeConfig(imageTag string) string {
+	opts := ConfigOptions{
 		AgentName:   workerAgent,
 		AgentPrompt: "",
 		ModelRef:    "",
-		OrchiconMCP: false,
 		SkipUserMCP: true,
-	})
+	}
+	if runtime.IsDevImageTag(imageTag) {
+		opts.TenantID = serveTenantID()
+		opts.OrchiconMCP = true
+		opts.MCPEnv = map[string]string{"ORCHICON_POSTGRES_DSN": runtime.SandboxPostgresDSN}
+		// The MCP sidecar spawns inside the runtime container. Force the
+		// command to the daemon's bind-mount (guaranteed present in every
+		// runtime container) — the plane's own executable path, which
+		// builds this config, is not necessarily present there.
+		opts.MCPBinaryPath = runtimeContainerBinaryPath
+	}
+	return BuildConfigContent(opts)
 }
 
 // startViaSession runs an execution through a persistent opencode session
@@ -257,6 +286,12 @@ func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
+
+// runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
+// own executable in every runtime container (internal/runtime/daemon.go).
+// The sandbox Orchicon MCP sidecar spawns there, never at the plane's
+// (host) executable path.
+const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
@@ -357,7 +392,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Best-effort: drop the safety lint script into .orchicon/ so review
 	// and QA workers can run it (their bash tool is scoped to the project
 	// directory). See internal/opencode/lint.go.
-	writeSafetyLint(manifest.ProjectDir)
+	writeSafetyLint(executionDir(manifest))
 
 	// Session transport is the ONLY execution transport. Drive the
 	// execution through a persistent opencode session on a serve instance
@@ -412,6 +447,15 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
+
+	// writtenFiles accumulates the paths opencode reported as file
+	// modifications (file_diff events). Unlike diff markers parsed out of
+	// the worker's text output, this is the telemetry the runtime itself
+	// emits for every file the session writes or edits — including files
+	// the model saves without echoing a diff (e.g. .orchicon/ review
+	// notes written via the Write tool). Surfaced to the next worker so
+	// it can read what the previous step actually produced.
+	writtenFiles []string
 
 	// truncatedFinish marks a FINAL step_finish that indicates the model
 	// turn was interrupted rather than completed: reason "unknown" with
@@ -615,6 +659,27 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
+	case evtFileDiff:
+		// A file_diff event carries the path of a file the session wrote
+		// or edited (part["path"]). Capture it so the worker's written
+		// files — including ones written via the Write tool without a
+		// diff echoed in the output text — can be passed to the next
+		// worker as explicit context to read. Dedup: a file edited many
+		// times in one run is listed once.
+		if stats != nil {
+			if p, ok := part["path"].(string); ok && p != "" {
+				for _, existing := range stats.writtenFiles {
+					if existing == p {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					stats.writtenFiles = append(stats.writtenFiles, p)
+					a.log.Debug("opencode file modified", "execution", execID, "path", p)
+				}
+			}
+		}
 	case evtHealth:
 		if state, ok := evt["state"].(string); ok {
 			callbacks.OnHealth(ctx, execID, state)
@@ -774,7 +839,9 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 
 // extractErrorMessage pulls the human-readable message out of an opencode
 // error event. The shape is
-//   {"type":"error","error":{"name":"...","data":{"message":"..."}}}
+//
+//	{"type":"error","error":{"name":"...","data":{"message":"..."}}}
+//
 // The `data.message` field can be a JSON-stringified payload (e.g. when
 // the upstream provider returned a structured error), so we try to
 // unquote it for readability. Falls back to whatever it can find.
@@ -913,13 +980,14 @@ const textStreamingChunkDelay = 60 * time.Millisecond
 // Keep them as named constants so the dispatch table in parseEvent
 // reads like the schema.
 const (
-	evtStepStart    = "step_start"
-	evtStepFinish   = "step_finish"
-	evtText         = "text"
-	evtToolUse      = "tool_use"  // v1.x: input + output in one event
-	evtReasoning    = "reasoning" // v1.x: only when --thinking is enabled
-	evtError        = "error"
-	evtHealth       = "health"
+	evtStepStart  = "step_start"
+	evtStepFinish = "step_finish"
+	evtText       = "text"
+	evtToolUse    = "tool_use"  // v1.x: input + output in one event
+	evtReasoning  = "reasoning" // v1.x: only when --thinking is enabled
+	evtFileDiff   = "file_diff"
+	evtError      = "error"
+	evtHealth     = "health"
 )
 
 // sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer

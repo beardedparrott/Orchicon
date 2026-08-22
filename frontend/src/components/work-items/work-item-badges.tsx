@@ -146,3 +146,64 @@ export function PositionBadge({
     </span>
   );
 }
+
+/** Compact "recurring" badge — a fuchsia marker for work items that carry a
+ *  recurring schedule, so they read distinct from the gray sequential badge
+ *  and the status pills. Rendered next to the sequential-order badge on
+ *  recurring sequence parents/children and on ordinary recurring cards.
+ *  Shares the fuchsia hue of the RECURRING status pill (work-item-meta.ts)
+ *  so the badge and the pill read as one recurring concept. */
+export function RecurringBadge({
+  label = "recurring",
+  className,
+}: {
+  label?: string;
+  className?: string;
+}) {
+  const isDark = useDarkPalette();
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+        isDark ? "bg-fuchsia-500/15 text-fuchsia-300" : "bg-fuchsia-500/15 text-fuchsia-800",
+        className,
+      )}
+    >
+      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-fuchsia-500" />
+      {label}
+    </span>
+  );
+}
+
+/** Workflow run status badge — the numeric WorkflowRunStatus as a colored
+ *  pill. Shared by the workflow editor, the run view, and the Schedules
+ *  History view (the numeric run status is what a run-driven History shows,
+ *  distinct from the work item's own StatusPill). */
+export function RunStatusBadge({ status }: { status: number }) {
+  const labels: Record<number, string> = {
+    1: "pending",
+    2: "running",
+    3: "completed",
+    4: "failed",
+    5: "aborted",
+    6: "paused",
+  };
+  const styles: Record<number, string> = {
+    1: "bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+    2: "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
+    3: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200",
+    4: "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200",
+    5: "bg-gray-300 text-gray-700 dark:bg-gray-700 dark:text-gray-200",
+    6: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
+  };
+  return (
+    <span
+      className={cn(
+        "rounded-full px-2 py-0.5 text-[10px] font-medium",
+        styles[status] ?? "bg-muted text-muted-foreground",
+      )}
+    >
+      {labels[status] ?? "unknown"}
+    </span>
+  );
+}

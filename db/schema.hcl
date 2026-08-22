@@ -167,6 +167,27 @@ table "projects" {
     null = false
     default = "[]"
   }
+  column "max_concurrent_runs" {
+    type = integer
+    null = false
+    default = 0
+    comment = "Per-project cap on concurrently running executions (0 = no additional restriction)"
+  }
+  column "git_work_tree" {
+    type = boolean
+    null = false
+    default = false
+    comment = "Cached git work-tree detection (false = non-repo in-place fallback)"
+  }
+  column "git_detected_at" {
+    type = timestamptz
+    null = true
+  }
+  column "repo_slug" {
+    type = text
+    null = true
+    comment = "Cached git origin owner/repo of project_dir; used for deterministic per-branch PR links"
+  }
   column "version" {
     type = integer
     null = false
@@ -533,6 +554,16 @@ table "work_items" {
     null = false
     default = 0
   }
+  column "archived_at" {
+    type = timestamptz
+    null = true
+    comment = "Set when the work item is archived (NULL = active). Drives the default archived-at-IS-NULL filter on every active work-item read."
+  }
+  column "archived_from_status" {
+    type = text
+    null = true
+    comment = "The terminal status the item had when archived; RestoreWorkItem returns the item to this status. NULL = never archived."
+  }
   column "sort_order" {
     type = double
     null = true
@@ -579,6 +610,9 @@ table "work_items" {
   }
   index "work_items_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
+  }
+  index "idx_work_items_archived_at" {
+    columns = [column.archived_at]
   }
 }
 
@@ -810,6 +844,28 @@ table "worker_executions" {
   column "recovery_id" {
     type = text
     null = true
+  }
+  column "worktree_status" {
+    type = text
+    null = true
+  }
+  column "worktree_path" {
+    type = text
+    null = true
+  }
+  column "worktree_branch" {
+    type = text
+    null = true
+  }
+  column "pr_url" {
+    type = text
+    null = true
+    comment = "PR URL for the run's branch, mirrored from the parent workflow run at dispatch"
+  }
+  column "pr_state" {
+    type = text
+    null = true
+    comment = "PR state (open/merged/draft/none), mirrored from the parent workflow run at dispatch"
   }
   column "workflow_run_id" {
     type = text
@@ -1084,6 +1140,21 @@ table "workflow_runs" {
     default = "{}"
   }
   column "runtime_image" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "worktree_status" {
+    type = text
+    null = false
+    default = "pending"
+  }
+  column "worktree_path" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "worktree_branch" {
     type = text
     null = false
     default = ""

@@ -1,6 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2 } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -19,7 +19,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "backups" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -37,6 +37,7 @@ function SettingsPage() {
         {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
+          ["session", "Session", Clock],
           ["backups", "Backups", Database],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
@@ -58,6 +59,7 @@ function SettingsPage() {
 
       {tab === "appearance" && <AppearanceTab />}
       {tab === "defaults" && <DefaultsTab />}
+      {tab === "session" && <SessionTab />}
       {tab === "backups" && <BackupsTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
@@ -466,6 +468,9 @@ function DefaultsTab() {
   const [draftTextLoop, setDraftTextLoop] = useState("");
   const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [draftNudgeMax, setDraftNudgeMax] = useState("");
+  const [draftNudgeReplyWindow, setDraftNudgeReplyWindow] = useState("");
+  const [draftNudgeCooldown, setDraftNudgeCooldown] = useState("");
   const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
@@ -477,6 +482,7 @@ function DefaultsTab() {
   const [draftLogRollInterval, setDraftLogRollInterval] = useState("");
   const [draftLogRetention, setDraftLogRetention] = useState("");
   const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
+  const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -488,6 +494,9 @@ function DefaultsTab() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+      setDraftNudgeMax(String(settings.stallNudgeMax ?? ""));
+      setDraftNudgeReplyWindow(String(settings.stallNudgeReplyWindowSeconds ?? ""));
+      setDraftNudgeCooldown(String(settings.stallNudgeCooldownSeconds ?? ""));
       const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
       setDraftBudgetTokens(budget.tokens);
       setDraftBudgetCost(budget.costUsd);
@@ -500,6 +509,7 @@ function DefaultsTab() {
       setDraftLogRollInterval(settings.logRollIntervalHours ? String(settings.logRollIntervalHours) : "");
       setDraftLogRetention(settings.logRetentionDays ? String(settings.logRetentionDays) : "");
       setDraftLogMaxFiles(settings.logMaxFiles ? String(settings.logMaxFiles) : "");
+      setDraftMaxConcurrentRuns(String(settings.maxConcurrentRuns ?? ""));
     }
   }, [settings]);
 
@@ -514,6 +524,9 @@ function DefaultsTab() {
         stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        stallNudgeMax: parseInt(draftNudgeMax) || 0,
+        stallNudgeReplyWindowSeconds: parseInt(draftNudgeReplyWindow) || 0,
+        stallNudgeCooldownSeconds: parseInt(draftNudgeCooldown) || 0,
         defaultBudgetOverrides: buildBudgetDefaults(
           draftBudgetTokens,
           draftBudgetCost,
@@ -527,6 +540,7 @@ function DefaultsTab() {
         logRollIntervalHours: parseInt(draftLogRollInterval) || 0,
         logRetentionDays: parseInt(draftLogRetention) || 0,
         logMaxFiles: parseInt(draftLogMaxFiles) || 0,
+        maxConcurrentRuns: parseInt(draftMaxConcurrentRuns) || 0,
       } as any);
     } finally {
       setSaving(false);
@@ -616,6 +630,27 @@ function DefaultsTab() {
                 onChange={setDraftRepetitionWindow}
                 placeholder="300"
               />
+              <StallField
+                label="Nudge max"
+                description="Max nudges to a live session before an advisory stall escalates to a kill + recovery"
+                value={draftNudgeMax}
+                onChange={setDraftNudgeMax}
+                placeholder="2"
+              />
+              <StallField
+                label="Nudge reply window (seconds)"
+                description="How long a nudge waits for the worker to break the pattern before the next trip escalates"
+                value={draftNudgeReplyWindow}
+                onChange={setDraftNudgeReplyWindow}
+                placeholder="300"
+              />
+              <StallField
+                label="Nudge cooldown (seconds)"
+                description="Minimum gap between nudges"
+                value={draftNudgeCooldown}
+                onChange={setDraftNudgeCooldown}
+                placeholder="60"
+              />
             </div>
           </CardContent>
         </Card>
@@ -703,6 +738,32 @@ function DefaultsTab() {
       {!isLoading && (
         <Card>
           <CardHeader>
+            <CardTitle>Dispatch concurrency</CardTitle>
+            <CardDescription>
+              Tenant-wide cap on how many worker executions may run
+              concurrently. Enforced at dispatch time: projects at their cap
+              hold ready items until a running execution frees a slot. A
+              project can override this per-project (Project &rarr;
+              Concurrency guard); the effective limit for a project is{" "}
+              <code>min(tenant, project)</code>, where 0 on either side means
+              no additional restriction.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <StallField
+              label="Max concurrent runs (tenant)"
+              description="0 = no tenant-wide cap. Non-repo projects (in-place execution) serialize by default unless they explicitly opt in."
+              value={draftMaxConcurrentRuns}
+              onChange={setDraftMaxConcurrentRuns}
+              placeholder="0"
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
             <CardTitle>Log management</CardTitle>
             <CardDescription>
               Rotating on-disk serve logs. The serve process rotates the active
@@ -776,77 +837,275 @@ function DefaultsTab() {
 
 function UserGuideTab() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <BookOpen className="h-5 w-5" />
-          Orchicon User Guide
-        </CardTitle>
-        <CardDescription>
-          Quick-reference guide to the control plane. See DOCUMENTATION.md for
-          the full reference.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6 text-sm leading-relaxed">
-        <div>
-          <h3 className="font-medium mb-1">Projects</h3>
-          <p className="text-muted-foreground">
-            Top-level organizational unit. Each project has a directory, goals,
-            and context files that workers use as reference.
-          </p>
+    <div className="space-y-8 text-sm leading-relaxed">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5" />
+            Orchicon User Guide
+          </CardTitle>
+          <CardDescription>
+            How Orchicon works and how to use it, end to end. The in-app
+            reference stays high level; DOCUMENTATION.md has the full detail.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div>
+            <h3 className="font-medium mb-1">The big idea</h3>
+            <p className="text-muted-foreground">
+              Orchicon separates <strong>orchestration</strong> from{" "}
+              <strong>execution</strong>. You configure the plan (projects,
+              workers, work items, workflows, schedules, policies); the control
+              plane dispatches autonomous AI workers to execute it and watches
+              for failures, stalls, and cost. Everything you configure lives in
+              this UI and can also be driven conversationally through{" "}
+              <strong>Ask Orchicon</strong>.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Typical flow</h3>
+            <ol className="list-decimal pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong>Create a project</strong> — the top-level container with
+                a directory, goals, and context files that workers read.
+              </li>
+              <li>
+                <strong>Define a worker</strong> — a reusable persona (Role,
+                Skills, Behavior, AGENTS.md, model, budget). Draft it, then{" "}
+                <strong>publish</strong>; published versions are immutable and
+                dispatchable.
+              </li>
+              <li>
+                <strong>Create a work item</strong> — Epic → Feature → Task →
+                Subtask, optionally with dependency edges and acceptance
+                criteria. Assign it a worker.
+              </li>
+              <li>
+                <strong>Build a workflow</strong> — a DAG of steps (task,
+                human/AI approval, loop decision, sub-work-item) that turns the
+                work item into autonomous work. Many steps can run in parallel.
+              </li>
+              <li>
+                <strong>Run it</strong> — start it now, schedule a one-time
+                start, make it recurring, or chain multiple work items into a
+                sequence that runs one after another.
+              </li>
+              <li>
+                <strong>Watch & verify</strong> — executions stream their
+                output; the run view shows step state, PRs for git-backed work,
+                the acceptance review on completion, and any recovery episodes.
+              </li>
+            </ol>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Scheduling & sequences</h3>
+            <p className="text-muted-foreground">
+              A work item can be <strong>scheduled</strong> (one-time start),
+              <strong> recurring</strong> (minute/hourly/daily/weekly/monthly
+              cadence — it re-arms instead of going terminal between
+              occurrences), or, when it has children, become a{" "}
+              <strong>sequence</strong> that runs its children one after another
+              (an epic whose features run in chain order, depth-first). Sequence
+              order is derived from your drag order on the board/tree.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Dependencies & blocked work</h3>
+            <p className="text-muted-foreground">
+              Work items can depend on each other (<code>depends_on</code> /
+              <code>blocks</code>, forming a DAG with cycle protection). An item
+              waiting on an upstream success shows a distinct{" "}
+              <strong>blocked</strong> status with the blocking items named — it
+              clears automatically once the dependency is met.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">When something fails</h3>
+            <p className="text-muted-foreground">
+              Failures recover automatically by default: capture → summarize →
+              preserve → review → plan → resume, with L1→L2→L3 escalation on
+              repeated failures. A stalled worker is <strong>nudged first</strong>{" "}
+              (an in-session message); only total silence or an unbroken loop
+              escalates to an abort. For git-backed runs, a failed run reuses
+              its branch so a retry carries over partial work.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Governance & visibility</h3>
+            <p className="text-muted-foreground">
+              Policies (Rego/OPA) gate admission, dispatch, budget, approval,
+              and recovery. Roles carry entitlements and bind to identities
+              (Admin → Roles / Manage Identity Roles; the{" "}
+              <code>admin</code> role is immutable). Every mutation writes a
+              row to the audit trail (Admin → Audit). Telemetry & Cost shows
+              traces, logs, metrics, and spend per project/task/execution/model/
+              workflow.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <SlidersHorizontal className="h-5 w-5" />
+            Settings explained
+          </CardTitle>
+          <CardDescription>
+            What each tab on this Settings page controls.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div>
+            <h3 className="font-medium mb-1">Appearance</h3>
+            <p className="text-muted-foreground">
+              Pick light or dark mode and a theme for each. Cosmetic only —
+              nothing here changes platform behavior.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Defaults</h3>
+            <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong>Default models</strong> — used when a worker/feature
+                doesn't pin a model. If both are empty, dispatch fails; you
+                generally want a worker model and an Ask Orchicon model set.
+              </li>
+              <li>
+                <strong>Recovery stall parameters</strong> — per-execution stall
+                thresholds: no progress (fatal silence), no file diff, text
+                loop, and tool-call repetition (count within a window; only
+                erroring calls count). Nudge max / reply window / cooldown
+                control how a stalled but responsive worker is probed before
+                escalation. Zero = use the built-in/env default.
+              </li>
+              <li>
+                <strong>Execution budget defaults</strong> — ceilings (tokens,
+                cost, wall clock, tool calls) applied when a worker/plan doesn't
+                override them. Protect against runaway spend.
+              </li>
+              <li>
+                <strong>Execution liveness reaper</strong> — fails executions
+                whose runtime process vanished (plane restart, lost container);
+                grace + consecutive not-alive probes prevent false kills.
+              </li>
+              <li>
+                <strong>Dispatch concurrency</strong> — tenant-wide cap on
+                concurrent runs; effective limit per project is{" "}
+                <code>min(tenant, project)</code>.
+              </li>
+              <li>
+                <strong>Log management</strong> — rotate/prune serve logs:
+                directory, max size, roll interval, retention, max rotated
+                files. Applied live to a running serve.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Session</h3>
+            <p className="text-muted-foreground">
+              Token lifetimes: the access token (short, refreshed silently) and
+              the refresh token (HttpOnly cookie, keeps you signed in). Shorter
+              access-TTL = more frequent transparent refreshes; longer
+              refresh-TTL = longer stay signed-in.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Backups</h3>
+            <p className="text-muted-foreground">
+              Scheduled DB snapshots (cron, retention, target directory) plus
+              one-click "create backup now" / restore / delete. Restoring
+              returns the whole instance to a previous snapshot.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">User Guide</h3>
+            <p className="text-muted-foreground">
+              This page. Live in-session guidance for the whole control plane.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function SessionTab() {
+  const { data: settings, isLoading } = useGetSettings();
+  const updateSettings = useUpdateSettings();
+
+  const [draftAccessTtl, setDraftAccessTtl] = useState("");
+  const [draftRefreshTtl, setDraftRefreshTtl] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (settings) {
+      setDraftAccessTtl(settings.sessionAccessTokenTtlSeconds ? String(settings.sessionAccessTokenTtlSeconds) : "900");
+      setDraftRefreshTtl(settings.sessionRefreshTokenTtlSeconds ? String(settings.sessionRefreshTokenTtlSeconds) : "86400");
+    }
+  }, [settings]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateSettings.mutateAsync({
+        sessionAccessTokenTtlSeconds: parseInt(draftAccessTtl) || 0,
+        sessionRefreshTokenTtlSeconds: parseInt(draftRefreshTtl) || 0,
+      } as any);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Session timeout</CardTitle>
+            <CardDescription>
+              Controls how long authentication tokens remain valid. A shorter access-TTL
+              means more frequent transparent refreshes; a longer refresh-TTL keeps the
+              HttpOnly refresh cookie alive longer. Zero fields keep the current value.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="Access token TTL (seconds)"
+                description="How long an access token is valid. Range: 30–86400. Default: 900 (15 min)."
+                value={draftAccessTtl}
+                onChange={setDraftAccessTtl}
+                placeholder="900"
+              />
+              <StallField
+                label="Refresh token TTL (seconds)"
+                description="How long a refresh token (HttpOnly cookie) is valid. Range: 300–31536000. Default: 86400 (24 hours). Must exceed access token TTL."
+                value={draftRefreshTtl}
+                onChange={setDraftRefreshTtl}
+                placeholder="86400"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <div className="flex justify-end">
+          <Button onClick={handleSave} disabled={saving}>
+            <Save className="mr-2 h-4 w-4" />
+            {saving ? "Saving…" : "Save session settings"}
+          </Button>
         </div>
-        <div>
-          <h3 className="font-medium mb-1">Workers</h3>
-          <p className="text-muted-foreground">
-            Reusable execution profiles with Role, Skills, Behavior, and AGENTS.md
-            fields. Workers are versioned; published versions are immutable.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Work Items</h3>
-          <p className="text-muted-foreground">
-            Units of work dispatched to workers. Forms a DAG (Epic → Feature →
-            Task → Subtask). Dependencies enforce ordering.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Workflows</h3>
-          <p className="text-muted-foreground">
-            DAG of steps (Task, Approval, Loop Decision, Work Item, Project) that
-            orchestrates autonomous work. Templates can be run multiple times.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Recovery</h3>
-          <p className="text-muted-foreground">
-            When a worker execution fails, recovery runs automatically through a
-            6-step workflow (capture → summarize → preserve → review → plan →
-            resume). L1→L2→L3 escalation on repeated failures.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Policies</h3>
-          <p className="text-muted-foreground">
-            Rego-based policy engine evaluated at decision points (admission,
-            dispatch, budget, approval, recovery).
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Telemetry & Cost</h3>
-          <p className="text-muted-foreground">
-            OpenTelemetry pipeline exporting to the Grafana stack (Tempo /
-            Loki / VictoriaMetrics). Cost Explorer shows spend by Project, Task, Execution, Model, or Workflow.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Settings</h3>
-          <p className="text-muted-foreground">
-            Tenant-level defaults for models and recovery stall parameters.
-            Appearance controls light/dark mode and theme selection.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+      )}
+    </div>
   );
 }
 

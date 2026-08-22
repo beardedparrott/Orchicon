@@ -59,6 +59,9 @@ type KindSwitchPlan struct {
 	ClearWorkerRef bool
 	// ClearScheduledStartAt clears scheduled_start_at (non-schedulable).
 	ClearScheduledStartAt bool
+	// ClearRecurringSchedule clears recurring_schedule and next_run_at
+	// (non-schedulable kinds).
+	ClearRecurringSchedule bool
 	// ReparentedChildren are the direct children that can no longer sit
 	// under the switched item and must move to its resolved parent.
 	ReparentedChildren []ChildReparent
@@ -175,8 +178,10 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 	if !isSchedulableKind(kind) {
 		plan.ClearWorkerRef = true
 		plan.ClearScheduledStartAt = true
+		plan.ClearRecurringSchedule = true
 		switch current.Status {
-		case domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled:
+		case domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled,
+			domain.WorkItemRecurring:
 			s := domain.WorkItemPending
 			plan.NewStatus = &s
 		}

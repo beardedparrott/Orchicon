@@ -45,6 +45,19 @@ message Project {
   // of these files are injected into the composite prompt
   // (buildCompositePrompt).
   repeated string context_files = 11;
+  // max_concurrent_runs caps how many executions may run concurrently for
+  // this project (0 = no additional restriction — the tenant cap, or no
+  // cap, applies). The effective limit for a project is
+  // min(tenant.max_concurrent_runs, project.max_concurrent_runs). Non-repo
+  // projects (in-place fallback) serialize by default unless this field is
+  // explicitly set > 1 AND the tenant permits it.
+  int32 max_concurrent_runs = 12;
+  // repo_slug is the cached git origin ("owner/repo") of the project's
+  // project_dir, captured when the WorktreeReconciler detects the work
+  // tree. Empty when the project is not git-backed (or origin is unknown).
+  // Used to derive deterministic per-branch PR links without a provider
+  // call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
+  string repo_slug = 13;
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -108,6 +121,9 @@ message UpdateProjectRequest {
   string request_id = 4;
   optional string project_dir = 6;
   optional ContextFiles context_files = 7; // empty files list clears the selection
+  // Per-project max-concurrent-runs override (0 = no additional
+  // restriction).
+  optional int32 max_concurrent_runs = 8;
 }
 
 message ListProjectFilesRequest {

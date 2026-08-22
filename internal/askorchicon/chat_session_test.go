@@ -234,6 +234,14 @@ func busIdle(sessionID string) opencode.BusEvent {
 	return opencode.BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": sessionID}}
 }
 
+// busDelta builds a modern mid-generation token-delta bus event (the serve's
+// text-delta stream: message.part.delta with field "text").
+func busDelta(sessionID, delta string) opencode.BusEvent {
+	return opencode.BusEvent{Type: "message.part.delta", Properties: map[string]any{
+		"sessionID": sessionID, "messageID": "m1", "partID": "p1", "field": "text", "delta": delta,
+	}}
+}
+
 func busSessionError(sessionID, message string) opencode.BusEvent {
 	return opencode.BusEvent{Type: "session.error", Properties: map[string]any{
 		"sessionID": sessionID,
@@ -794,6 +802,54 @@ func TestCollectConversationReplyCollectsReply(t *testing.T) {
 	}
 }
 
+// TestCollectConversationReplyDeltaStreamPreventsStall verifies the
+// mid-generation delta feed (D1 chat mirror) on the REAL chat path
+// (collectConversationReply → runOneTurnAttempt, which owns the stall
+// monitor): a slow model turn that streams token deltas for longer than the
+// no_progress window does NOT trip the chat stall monitor — each delta
+// resets lastActivity, so the turn completes once the completed text part +
+// idle arrive. Without the feed, a generation longer than the window with no
+// completed parts is aborted as stalled (the same false-stall as worker
+// executions).
+func TestCollectConversationReplyDeltaStreamPreventsStall(t *testing.T) {
+	// Window 2s (min stall-ticker interval is 1s; 2s gives deterministic
+	// ticks at 2s/4s). Deltas every ~1s keep lastActivity ≤1s old at every
+	// tick. WITHOUT the feed the monitor trips at the FIRST tick (2s), when
+	// lastActivity is ~2s old — so the test fails fast on a regression.
+	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "2s")
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_delta", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		// A slow generation: only deltas stream for well past the window,
+		// then the completed part + idle finish the turn.
+		for i := 0; i < 4; i++ {
+			client.sub.feed(busDelta("ses_delta", "tok"))
+			time.Sleep(1000 * time.Millisecond)
+		}
+		client.sub.feed(busText("ses_delta", "The answer"))
+		client.sub.feed(busIdle("ses_delta"))
+	}()
+	reply, _, sid, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "The answer" {
+		t.Errorf("reply = %q, want %q", reply, "The answer")
+	}
+	if sid != "ses_delta" {
+		t.Errorf("final session = %q, want ses_delta", sid)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.aborted) != 0 {
+		t.Errorf("aborted sessions = %v, want none (deltas must prevent the stall abort)", client.aborted)
+	}
+}
+
 // TestCollectConversationReplyCollectsReasoning verifies reasoning parts on
 // the bus are unwrapped via LegacyEventFromBus, accumulated separately from
 // the reply text (never folded into assistant content), and returned by the
@@ -1170,24 +1226,50 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	}
 }
 
-// TestTurnRegistry verifies the one-turn-per-conversation gate and the
+// TestTurnRegistry verifies the one-turn-per-conversation gate, the
 // cancel-leaves-entry-until-remove semantics that keep a new send gated while
-// the old turn finalizes.
+// the old turn finalizes, and the token-guarded removal that lets a
+// superseded collector's deferred remove never clobber a replacement turn.
 func TestTurnRegistry(t *testing.T) {
 	r := newTurnRegistry()
-	ctx1, c1 := context.WithCancel(context.Background())
-	_, c2 := context.WithCancel(context.Background())
-	if !r.register("conv_a", c1) {
+	ctx1, c1 := context.WithCancelCause(context.Background())
+	_, c2 := context.WithCancelCause(context.Background())
+
+	tok1, ok := r.register("conv_a", "tnt_dev", "msg_a1", c1)
+	if !ok {
 		t.Fatal("first register should succeed")
 	}
-	if r.register("conv_a", c2) {
+	if tok1 == 0 {
+		t.Fatal("register must return a non-zero token")
+	}
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2); ok {
 		t.Fatal("second register for the same conversation must fail (one turn at a time)")
 	}
+
+	// get reports the running turn and its pending assistant message id (the
+	// id the frontend uses to re-attach the Stop button + completion poll
+	// after a refresh), and reports not-in-flight for unknown conversations.
+	entry, ok := r.get("conv_a")
+	if !ok || entry.assistantMsgID != "msg_a1" {
+		t.Fatalf("get after register = (assistantMsgID %q, ok %v), want msg_a1/true", entry.assistantMsgID, ok)
+	}
+	if _, ok := r.get("conv_missing"); ok {
+		t.Fatal("get for an unregistered conversation must report not in flight")
+	}
+
+	// cancel fires the collector's cancel with the cause and returns the
+	// token, leaving the entry until the collector removes it.
 	cancelled := make(chan struct{})
-	go func() { <-ctx1.Done(); close(cancelled) }()
-	got, ok := r.cancel("conv_a")
-	if !ok || got == nil {
-		t.Fatalf("cancel = (%v, %v), want (c1, true)", got, ok)
+	go func() {
+		<-ctx1.Done()
+		if cause := context.Cause(ctx1); cause != errUserStop {
+			t.Errorf("cancel cause = %v, want errUserStop", cause)
+		}
+		close(cancelled)
+	}()
+	tok, ok := r.cancel("conv_a", errUserStop)
+	if !ok || tok != tok1 {
+		t.Fatalf("cancel = (%d, %v), want (%d, true)", tok, ok, tok1)
 	}
 	select {
 	case <-cancelled:
@@ -1196,14 +1278,61 @@ func TestTurnRegistry(t *testing.T) {
 	}
 	// The entry stays until the collector removes it — a new send is still
 	// gated while the old turn finalizes.
-	if r.register("conv_a", c2) {
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
 		t.Fatal("register must still fail after cancel (entry removed on finalize)")
 	}
-	r.remove("conv_a")
-	if !r.register("conv_a", c2) {
-		t.Fatal("register must succeed after the collector removes its entry")
+
+	// Token-guarded removal: a STALE finalize (wrong token) must not remove
+	// the entry; the current token does.
+	r.remove("conv_a", tok1+999)
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
+		t.Fatal("stale-token remove must not delete the entry")
 	}
-	if _, ok := r.cancel("conv_a"); !ok {
-		t.Fatal("cancel after re-register should report the entry")
+	r.remove("conv_a", tok1)
+	tok2, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2)
+	if !ok || tok2 <= tok1 {
+		t.Fatal("register must succeed after the collector removes its entry, with a fresh token")
 	}
+	if tok, ok := r.cancel("conv_a", errUserStop); !ok || tok != tok2 {
+		t.Fatalf("cancel after re-register = (%d, %v), want (%d, true)", tok, ok, tok2)
+	}
+}
+
+// TestTurnRegistrySweep verifies the TTL sweeper: entries older than the
+// max age are cancelled with errTurnExpired, removed, and reported with
+// their tenant so the sweeper can abort the serve session. Fresh entries
+// are untouched.
+func TestTurnRegistrySweep(t *testing.T) {
+	r := newTurnRegistry()
+	_, c1 := context.WithCancelCause(context.Background())
+	_, c2 := context.WithCancelCause(context.Background())
+	_, ok := r.register("conv_old", "tnt_old", "msg_old", c1)
+	if !ok {
+		t.Fatal("register conv_old")
+	}
+	_, ok = r.register("conv_fresh", "tnt_fresh", "msg_fresh", c2)
+	if !ok {
+		t.Fatal("register conv_fresh")
+	}
+	// Manually age the old entry past the TTL.
+	now := time.Now()
+	r.mu.Lock()
+	old := r.turns["conv_old"]
+	old.started = now.Add(-10 * time.Minute)
+	r.turns["conv_old"] = old
+	r.mu.Unlock()
+
+	evicted := r.sweep(now, 5*time.Minute)
+	if len(evicted) != 1 || evicted[0].convID != "conv_old" || evicted[0].tenant != "tnt_old" {
+		t.Fatalf("evicted = %+v, want [conv_old/tnt_old]", evicted)
+	}
+	// The old entry is gone; the fresh one survives.
+	if _, ok := r.turns["conv_old"]; ok {
+		t.Error("expired entry must be removed by sweep")
+	}
+	if _, ok := r.turns["conv_fresh"]; !ok {
+		t.Error("fresh entry must survive the sweep")
+	}
+	// The expired cancel fired with errTurnExpired (captured above via
+	// context.Cause on the cancelled context).
 }

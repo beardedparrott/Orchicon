@@ -1,6 +1,6 @@
 // Execution detail page — the live execution view (docs/10, docs/07
 // §3.8, docs/04 §4). Streams telemetry/tool-call/health events in real
-// time, provides manual controls (pause/resume/cancel/checkpoint), and
+// time, provides manual controls (pause/resume/cancel), and
 // shows Tier 2 per-tool-call approval requests (docs/05 §7.1).
 //
 // Layout: a two-column workspace on lg+ — the chat-style runtime session
@@ -12,7 +12,7 @@
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Save, Trash2, ArrowLeft } from "lucide-react";
+import { Pause, Play, Square, Trash2, ArrowLeft } from "lucide-react";
 
 import {
   useGetExecution,
@@ -20,7 +20,6 @@ import {
   usePauseExecution,
   useResumeExecution,
   useCancelExecution,
-  useCheckpointNow,
   useDeleteExecution,
   useListPendingApprovals,
   useApproveToolCall,
@@ -30,8 +29,11 @@ import { useGetUsage } from "@/api/aigateway";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
+import { PrLinkChip } from "@/components/work-items/work-item-card";
+import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { isTerminalExecutionStatus } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -49,7 +51,6 @@ function ExecutionDetailPage() {
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
-  const checkpointNow = useCheckpointNow();
   const deleteExec = useDeleteExecution();
 
   const navigate = useNavigate();
@@ -65,6 +66,7 @@ function ExecutionDetailPage() {
     onEvent: () => {
       qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
       qc.invalidateQueries({ queryKey: executionKeys.session(id) });
+      qc.invalidateQueries({ queryKey: executionKeys.todos(id) });
     },
   });
 
@@ -95,7 +97,7 @@ function ExecutionDetailPage() {
   return (
     <div className="space-y-4">
       {/* Compact top action bar — back to list, ID, status pill,
-          and the lifecycle actions (pause/resume/cancel/checkpoint/
+          and the lifecycle actions (pause/resume/cancel/
           delete) as icon buttons. On phones the icon-only buttons
           collapse into a wrap-friendly row; on desktop they sit in
           a single line. */}
@@ -133,14 +135,6 @@ function ExecutionDetailPage() {
               label="Resume"
               onClick={() => resumeExec.mutate(id)}
               disabled={resumeExec.isPending}
-            />
-          )}
-          {isRunning && (
-            <IconAction
-              icon={Save}
-              label="Checkpoint"
-              onClick={() => checkpointNow.mutate(id)}
-              disabled={checkpointNow.isPending}
             />
           )}
           {!isTerminal && (
@@ -326,15 +320,25 @@ function ExecutionContextFooter({
         ? `${exec.workflowName || exec.workflowRunId}${exec.workflowStepId ? ` · step ${exec.workflowStepId}` : ""}`
         : "—",
     },
+    ...worktreeTileItems(exec.worktreeStatus, exec.worktreeBranch, exec.worktreePath),
   ];
   return (
     <div className="rounded-xl border bg-card p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Execution context
         </h3>
-        <span className="font-mono text-[10px] text-muted-foreground/70 sm:hidden">
-          {exec.id}
+        <span className="flex shrink-0 items-center gap-2">
+          <PrLinkChip
+            run={{
+              prUrl: exec.prUrl || undefined,
+              prState: exec.prState || undefined,
+              completed: isTerminalExecutionStatus(exec.status),
+            }}
+          />
+          <span className="font-mono text-[10px] text-muted-foreground/70 sm:hidden">
+            {exec.id}
+          </span>
         </span>
       </div>
       <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">

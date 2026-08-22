@@ -7,10 +7,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/migrate"
@@ -172,7 +173,7 @@ func validateParentItem(t *testing.T, ctx context.Context, pool *db.Pool, projec
 	item, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
 		ID: db.NewID(), TenantID: validateParentTestTenant,
 		ProjectID: projectID, ParentID: parentID, Kind: kind,
-		Title: "Parent test " + strings.ToLower(db.NewID()),
+		Title:  "Parent test " + strings.ToLower(db.NewID()),
 		Status: domain.WorkItemPending,
 	})
 	if err != nil {
@@ -356,4 +357,520 @@ func mustTx(t *testing.T, pool *db.Pool) pgx.Tx {
 	}
 	t.Cleanup(func() { _ = ttx.Rollback(context.Background()) })
 	return ttx.Tx
+}
+
+// --- Recurring schedule tests -----------------------------------------------
+
+func TestValidateRecurringSchedule_Nil(t *testing.T) {
+	b, err := ValidateRecurringSchedule(nil)
+	if err != nil {
+		t.Fatalf("nil schedule: unexpected error: %v", err)
+	}
+	if b != nil {
+		t.Fatalf("nil schedule: expected nil bytes, got %s", b)
+	}
+}
+
+func TestValidateRecurringSchedule_ValidDaily(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	b, err := ValidateRecurringSchedule(msg)
+	if err != nil {
+		t.Fatalf("valid daily schedule: unexpected error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("valid daily schedule: expected non-nil bytes")
+	}
+	if !strings.Contains(string(b), `"daily"`) {
+		t.Errorf("expected daily frequency in JSON, got %s", b)
+	}
+}
+
+func TestValidateRecurringSchedule_ValidWeeklyWithDays(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  2,
+		Days:      []string{"Mon", "Wed", "Fri"},
+		StartDate: "2026-08-15",
+		StartTime: "14:30",
+	}
+	b, err := ValidateRecurringSchedule(msg)
+	if err != nil {
+		t.Fatalf("valid weekly schedule: unexpected error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("valid weekly schedule: expected non-nil bytes")
+	}
+}
+
+func TestValidateRecurringSchedule_InvalidFrequency(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "yearly",
+		Interval:  1,
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("invalid frequency should be rejected")
+	}
+	if !strings.Contains(err.Error(), "frequency") {
+		t.Errorf("error should mention frequency, got: %v", err)
+	}
+}
+
+func TestValidateRecurringSchedule_ZeroInterval(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  0,
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("interval < 1 should be rejected")
+	}
+	if !strings.Contains(err.Error(), "interval") {
+		t.Errorf("error should mention interval, got: %v", err)
+	}
+}
+
+func TestValidateRecurringSchedule_NegativeInterval(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "hourly",
+		Interval:  -5,
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("negative interval should be rejected")
+	}
+}
+
+func TestValidateRecurringSchedule_InvalidDay(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		Days:      []string{"Mon", "Funday"},
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("invalid day should be rejected")
+	}
+	if !strings.Contains(err.Error(), "Funday") {
+		t.Errorf("error should mention the invalid day, got: %v", err)
+	}
+}
+
+func TestValidateRecurringSchedule_EmptyStartDate(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("empty start_date should be rejected")
+	}
+}
+
+func TestValidateRecurringSchedule_BadStartDate(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026/08/15",
+		StartTime: "09:00",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("bad start_date format should be rejected")
+	}
+	if !strings.Contains(err.Error(), "YYYY-MM-DD") {
+		t.Errorf("error should mention YYYY-MM-DD, got: %v", err)
+	}
+}
+
+func TestValidateRecurringSchedule_EmptyStartTime(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-15",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("empty start_time should be rejected")
+	}
+}
+
+func TestValidateRecurringSchedule_BadStartTime(t *testing.T) {
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-15",
+		StartTime: "9am",
+	}
+	_, err := ValidateRecurringSchedule(msg)
+	if err == nil {
+		t.Fatal("bad start_time format should be rejected")
+	}
+	if !strings.Contains(err.Error(), "HH:MM") {
+		t.Errorf("error should mention HH:MM, got: %v", err)
+	}
+}
+
+func TestComputeNextRunAt_Nil(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	got := ComputeNextRunAt(nil, now)
+	if got != nil {
+		t.Fatalf("nil schedule: expected nil, got %v", got)
+	}
+}
+
+func TestComputeNextRunAt_DailyInFuture(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-15",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_DailyInPast(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Start date is 2 days ago at 09:00, so next occurrence >= now is
+	// 2026-08-12 09:00 (yesterday) — no, that's before now (10:00).
+	// Next is 2026-08-13 09:00.
+	expected := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyWithDays(t *testing.T) {
+	// 2026-08-12 is a Wednesday. Start is Monday 09:00. Every week.
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		Days:      []string{"Mon", "Wed"},
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Today is Wed 10:00, start is Mon 09:00. Wed 09:00 is before now.
+	// Next Mon is 2026-08-17 09:00.
+	expected := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_Hourly(t *testing.T) {
+	now := time.Date(2026, 8, 12, 14, 30, 0, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "hourly",
+		Interval:  2,
+		StartDate: "2026-08-12",
+		StartTime: "08:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Anchor 08:00. Steps: 08:00, 10:00, 12:00, 14:00, 16:00.
+	// 14:00 is before now (14:30). Next is 16:00.
+	expected := time.Date(2026, 8, 12, 16, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_Monthly(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "monthly",
+		Interval:  1,
+		StartDate: "2026-08-01",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Anchor 2026-08-01 09:00. That's before now. Next is 2026-09-01 09:00.
+	expected := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_MinuteInterval(t *testing.T) {
+	now := time.Date(2026, 8, 12, 14, 30, 15, 0, time.UTC)
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "minute",
+		Interval:  5,
+		StartDate: "2026-08-12",
+		StartTime: "14:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Steps: 14:00, 14:05, 14:10, ..., 14:30, 14:35.
+	// 14:30 is before now (14:30:15). Next is 14:35.
+	expected := time.Date(2026, 8, 12, 14, 35, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestDayMatches(t *testing.T) {
+	// 2026-08-12 is a Wednesday.
+	wed := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	if !dayMatches(wed, []string{"Mon", "Wed", "Fri"}) {
+		t.Error("Wed should match [Mon, Wed, Fri]")
+	}
+	if dayMatches(wed, []string{"Mon", "Tue"}) {
+		t.Error("Wed should not match [Mon, Tue]")
+	}
+	if dayMatches(wed, []string{}) {
+		t.Error("Wed should not match empty slice")
+	}
+}
+
+// --- Blocker 2 regression tests: weekly-with-days must find same-week matches ---
+
+func TestComputeNextRunAt_WeeklyWithDays_SameWeek(t *testing.T) {
+	// 2026-08-10 is a Monday. days=[Mon, Wed], now=Wed 08:00.
+	// Wed 09:00 is in the future and in the same cadence week → should return it.
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC) // Wed 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		Days:      []string{"Mon", "Wed"},
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Wed 08-12 09:00 is the same-week Wednesday, in the future.
+	expected := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyWithDays_AnchorNotInDays(t *testing.T) {
+	// Anchor is Monday, days=[Wed] only. now=Wed 08:00.
+	// Should return Wed 08-12 09:00, not the anchor Mon 08-10.
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC) // Wed 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		Days:      []string{"Wed"},
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC) // Wed 09:00
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyWithDays_Biweekly(t *testing.T) {
+	// Anchor Mon 08-10, interval=2 (every 2 weeks), days=[Mon, Wed].
+	// now=Thu 08-13 08:00. The current cadence week is 08-10 to 08-16.
+	// Wed 08-12 09:00 is past. Next cadence week starts 08-24.
+	// Mon 08-24 09:00 should be returned.
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC) // Thu 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  2,
+		Days:      []string{"Mon", "Wed"},
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC) // Mon 08-24
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyWithDays_WrongAnchorDay(t *testing.T) {
+	// Anchor Mon 08-10, days=[Wed] only, interval=2.
+	// now=Tue 08-11 08:00. Wed 08-12 is in the future AND in the same
+	// cadence week as the anchor (offset 2 from Mon, mod 14 = 2, valid).
+	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) // Tue 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  2,
+		Days:      []string{"Wed"},
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC) // Wed 08-12
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyEmptyDays_Daily(t *testing.T) {
+	// Anchor Mon 08-10, empty days = every day, interval=1.
+	// now=Tue 08-11 08:00. Tue 08-11 09:00 is >= now and is day offset 1
+	// from anchor (valid since all offsets are valid with empty days).
+	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) // Tue 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 11, 9, 0, 0, 0, time.UTC) // Tue 08-11
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyEmptyDays_Biweekly(t *testing.T) {
+	// Anchor Mon 08-10, empty days = every day, interval=2 (every 14 days).
+	// now=Sat 08-15 08:00. Anchor weekday Mon (offset 0). Day offset 5
+	// (Sat) from anchor: 5%14=5, valid (all offsets valid).
+	now := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC) // Sat 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  2,
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Sat 08-15 is 5 days from anchor, cadenceDays=14, 5%14=5, valid.
+	expected := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC) // Sat 08-15
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+// --- Blocker 1 regression test: IsRecurringScheduleEmpty ---
+
+func TestIsRecurringScheduleEmpty(t *testing.T) {
+	if !IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{}) {
+		t.Error("empty message should be detected as empty")
+	}
+	if !IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{Frequency: "", Interval: 0}) {
+		t.Error("all-zero message should be detected as empty")
+	}
+	if IsRecurringScheduleEmpty(nil) {
+		t.Error("nil should not be empty")
+	}
+	if IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{Frequency: "daily"}) {
+		t.Error("message with frequency should not be empty")
+	}
+	if IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{Interval: 1}) {
+		t.Error("message with interval should not be empty")
+	}
+	if IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{Days: []string{"Mon"}}) {
+		t.Error("message with days should not be empty")
+	}
+	if IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{StartDate: "2026-01-01"}) {
+		t.Error("message with start_date should not be empty")
+	}
+	if IsRecurringScheduleEmpty(&apiv1.RecurringSchedule{StartTime: "09:00"}) {
+		t.Error("message with start_time should not be empty")
+	}
+}
+
+// --- Blocked status mapping ---
+
+// TestBlockedStatusMapping pins the blocked/waiting-state status switches:
+// the proto→domain and domain→proto maps accept the new BLOCKED enum value
+// so it round-trips through the API, while user-facing ValidateStatus (used
+// by the Ask Orchicon tools and board drops) rejects it — blocked is
+// system-managed and only the reconcilers may set it.
+func TestBlockedStatusMapping(t *testing.T) {
+	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED); got != domain.WorkItemBlocked {
+		t.Errorf("validateStatus(BLOCKED) = %q, want %q", got, domain.WorkItemBlocked)
+	}
+	if got := statusToProto(domain.WorkItemBlocked); got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED {
+		t.Errorf("statusToProto(blocked) = %v, want BLOCKED", got)
+	}
+	if _, err := ValidateStatus("blocked"); err == nil {
+		t.Error("ValidateStatus must reject 'blocked' (system-managed status)")
+	}
+	if _, err := ValidateStatus("BLOCKED"); err == nil {
+		t.Error("ValidateStatus must reject 'BLOCKED' (case-insensitive normalization still rejects)")
+	}
+	if _, err := ValidateStatus("ready"); err != nil {
+		t.Errorf("ValidateStatus('ready') = %v, want nil", err)
+	}
+}
+
+// TestSkippedStatusMapping pins the skip-status interplay round-trip: the
+// proto→domain and domain→proto maps accept the new SKIPPED enum value so
+// a skipped work item round-trips through the API, while user-facing
+// ValidateStatus rejects it — skipped is system-managed (set only by the
+// reconciler when a bound run completes with a skipped step), never
+// user-assignable (mirrors the blocked rule).
+func TestSkippedStatusMapping(t *testing.T) {
+	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED); got != domain.WorkItemSkipped {
+		t.Errorf("validateStatus(SKIPPED) = %q, want %q", got, domain.WorkItemSkipped)
+	}
+	if got := statusToProto(domain.WorkItemSkipped); got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED {
+		t.Errorf("statusToProto(skipped) = %v, want SKIPPED", got)
+	}
+	if _, err := ValidateStatus("skipped"); err == nil {
+		t.Error("ValidateStatus must reject 'skipped' (system-managed status)")
+	}
+	if _, err := ValidateStatus("SKIPPED"); err == nil {
+		t.Error("ValidateStatus must reject 'SKIPPED' (case-insensitive normalization still rejects)")
+	}
 }

@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -165,6 +165,51 @@ export const WorkItemService = {
       name: "ReorderWorkItems",
       I: ReorderWorkItemsRequest,
       O: ReorderWorkItemsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ArchiveWorkItem hides a terminal work item (succeeded/failed/cancelled/
+     * skipped) from every normal view. Blocked when the item has children.
+     * Reversible via RestoreWorkItem. Audited as work_item.archived.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.ArchiveWorkItem
+     */
+    archiveWorkItem: {
+      name: "ArchiveWorkItem",
+      I: ArchiveWorkItemRequest,
+      O: ArchiveWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreWorkItem returns an archived work item to the active views,
+     * back to the terminal status it was archived from (not pending).
+     * Audited as work_item.restored.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.RestoreWorkItem
+     */
+    restoreWorkItem: {
+      name: "RestoreWorkItem",
+      I: RestoreWorkItemRequest,
+      O: RestoreWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ControlSequence drives a sequence parent manually (START / RESUME /
+     * STOP). A parent with children IS a sequence run; these explicit
+     * gestures are what the engine's derived cursor cannot infer on its own:
+     *   - START re-fires the chain from child #1 (destructive — every
+     *     descendant resets to pending); validations + in-flight guards run
+     *     server-side.
+     *   - RESUME continues from the first non-succeeded child (keeps state).
+     *   - STOP parks the chain (parent → pending, schedule cleared) so
+     *     children can be run standalone.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.ControlSequence
+     */
+    controlSequence: {
+      name: "ControlSequence",
+      I: ControlSequenceRequest,
+      O: ControlSequenceResponse,
       kind: MethodKind.Unary,
     },
   }

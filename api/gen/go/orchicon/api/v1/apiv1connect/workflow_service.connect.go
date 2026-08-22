@@ -113,6 +113,9 @@ const (
 	// WorkflowServiceGetEditLockProcedure is the fully-qualified name of the WorkflowService's
 	// GetEditLock RPC.
 	WorkflowServiceGetEditLockProcedure = "/orchicon.api.v1.WorkflowService/GetEditLock"
+	// WorkflowServiceUpdateWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// UpdateWorkflow RPC.
+	WorkflowServiceUpdateWorkflowProcedure = "/orchicon.api.v1.WorkflowService/UpdateWorkflow"
 )
 
 // WorkflowServiceClient is a client for the orchicon.api.v1.WorkflowService service.
@@ -160,7 +163,11 @@ type WorkflowServiceClient interface {
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
-	// ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+	// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+	// any combination of workflow / project / work item. All scope filters
+	// are optional (empty = no filter); at least one scope filter or an
+	// empty scope is allowed. Runs are sorted by id descending by default,
+	// or by their real started_at when sort_by=started_at.
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)
@@ -206,6 +213,10 @@ type WorkflowServiceClient interface {
 	ReleaseEditLock(context.Context, *connect.Request[v1.ReleaseWorkflowEditLockRequest]) (*connect.Response[v1.ReleaseWorkflowEditLockResponse], error)
 	// GetEditLock returns the current edit lock state for a Workflow, if any.
 	GetEditLock(context.Context, *connect.Request[v1.GetWorkflowEditLockRequest]) (*connect.Response[v1.GetWorkflowEditLockResponse], error)
+	// UpdateWorkflow updates mutable workflow header fields (e.g. name).
+	// Unlike UpdateWorkflowVersion which edits a draft version's steps,
+	// this updates the workflow itself and is allowed in any lifecycle state.
+	UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the orchicon.api.v1.WorkflowService service. By
@@ -351,6 +362,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetEditLock")),
 			connect.WithClientOptions(opts...),
 		),
+		updateWorkflow: connect.NewClient[v1.UpdateWorkflowRequest, v1.UpdateWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServiceUpdateWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("UpdateWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -378,6 +395,7 @@ type workflowServiceClient struct {
 	acquireEditLock          *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
 	releaseEditLock          *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
 	getEditLock              *connect.Client[v1.GetWorkflowEditLockRequest, v1.GetWorkflowEditLockResponse]
+	updateWorkflow           *connect.Client[v1.UpdateWorkflowRequest, v1.UpdateWorkflowResponse]
 }
 
 // CreateWorkflow calls orchicon.api.v1.WorkflowService.CreateWorkflow.
@@ -490,6 +508,11 @@ func (c *workflowServiceClient) GetEditLock(ctx context.Context, req *connect.Re
 	return c.getEditLock.CallUnary(ctx, req)
 }
 
+// UpdateWorkflow calls orchicon.api.v1.WorkflowService.UpdateWorkflow.
+func (c *workflowServiceClient) UpdateWorkflow(ctx context.Context, req *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error) {
+	return c.updateWorkflow.CallUnary(ctx, req)
+}
+
 // WorkflowServiceHandler is an implementation of the orchicon.api.v1.WorkflowService service.
 type WorkflowServiceHandler interface {
 	// CreateWorkflow creates a new Workflow in draft state with its first
@@ -535,7 +558,11 @@ type WorkflowServiceHandler interface {
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
-	// ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+	// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+	// any combination of workflow / project / work item. All scope filters
+	// are optional (empty = no filter); at least one scope filter or an
+	// empty scope is allowed. Runs are sorted by id descending by default,
+	// or by their real started_at when sort_by=started_at.
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)
@@ -581,6 +608,10 @@ type WorkflowServiceHandler interface {
 	ReleaseEditLock(context.Context, *connect.Request[v1.ReleaseWorkflowEditLockRequest]) (*connect.Response[v1.ReleaseWorkflowEditLockResponse], error)
 	// GetEditLock returns the current edit lock state for a Workflow, if any.
 	GetEditLock(context.Context, *connect.Request[v1.GetWorkflowEditLockRequest]) (*connect.Response[v1.GetWorkflowEditLockResponse], error)
+	// UpdateWorkflow updates mutable workflow header fields (e.g. name).
+	// Unlike UpdateWorkflowVersion which edits a draft version's steps,
+	// this updates the workflow itself and is allowed in any lifecycle state.
+	UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -722,6 +753,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetEditLock")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceUpdateWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServiceUpdateWorkflowProcedure,
+		svc.UpdateWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("UpdateWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceCreateWorkflowProcedure:
@@ -768,6 +805,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceReleaseEditLockHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetEditLockProcedure:
 			workflowServiceGetEditLockHandler.ServeHTTP(w, r)
+		case WorkflowServiceUpdateWorkflowProcedure:
+			workflowServiceUpdateWorkflowHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -863,4 +902,8 @@ func (UnimplementedWorkflowServiceHandler) ReleaseEditLock(context.Context, *con
 
 func (UnimplementedWorkflowServiceHandler) GetEditLock(context.Context, *connect.Request[v1.GetWorkflowEditLockRequest]) (*connect.Response[v1.GetWorkflowEditLockResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.GetEditLock is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.UpdateWorkflow is not implemented"))
 }

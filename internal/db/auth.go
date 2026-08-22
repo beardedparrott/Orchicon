@@ -23,6 +23,12 @@ type IdentityRow struct {
 	Version      int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// Username is the local-account login handle bound to this identity via
+	// local_credentials, populated by the LEFT JOIN on the identity read
+	// paths (GetIdentity/ListIdentities). Empty when the identity has no
+	// local credential. Only the username is projected — never
+	// password_hash (the credential boundary, docs/07 §6.1).
+	Username string
 }
 
 // GetOrCreateIdentity finds an identity by (tenant_id, subject), or
@@ -66,16 +72,25 @@ func GetOrCreateIdentity(ctx context.Context, tx pgx.Tx, tenantID, subject, disp
 	return row, true, nil
 }
 
-// GetIdentity fetches a single identity by id within the tenant scope.
+// GetIdentity fetches a single identity by id within the tenant scope. The
+// local_credentials username is LEFT JOINed in (username only, never the
+// hash) so the read path surfaces the identity's local login handle.
 func GetIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) (IdentityRow, error) {
-	const q = `SELECT id, tenant_id, subject, display_name, identity_type, status, version,
-		created_at, updated_at
-		FROM identities WHERE id = $1 AND tenant_id = $2`
+	const q = `SELECT i.id, i.tenant_id, i.subject, i.display_name, i.identity_type,
+		i.status, i.version, i.created_at, i.updated_at, lc.username
+		FROM identities i
+		LEFT JOIN local_credentials lc
+			ON lc.tenant_id = i.tenant_id AND lc.identity_id = i.id
+		WHERE i.id = $1 AND i.tenant_id = $2`
 	var r IdentityRow
+	var username *string
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
-		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType,
+		&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt, &username,
 	)
+	if username != nil {
+		r.Username = *username
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IdentityRow{}, ErrNotFound
 	}
@@ -92,16 +107,21 @@ type ListIdentitiesFilter struct {
 	AfterID  string
 }
 
-// ListIdentities returns a page of identities for the tenant.
+// ListIdentities returns a page of identities for the tenant. The
+// local_credentials username is LEFT JOINed in (username only, never the
+// hash) so the admin identities list surfaces each identity's local login
+// handle.
 func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]IdentityRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	const q = `SELECT id, tenant_id, subject, display_name, identity_type, status, version,
-		created_at, updated_at
-		FROM identities
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)
-		ORDER BY id ASC LIMIT $3`
+	const q = `SELECT i.id, i.tenant_id, i.subject, i.display_name, i.identity_type,
+		i.status, i.version, i.created_at, i.updated_at, lc.username
+		FROM identities i
+		LEFT JOIN local_credentials lc
+			ON lc.tenant_id = i.tenant_id AND lc.identity_id = i.id
+		WHERE i.tenant_id = $1 AND ($2 = '' OR i.id > $2)
+		ORDER BY i.id ASC LIMIT $3`
 	rows, err := tx.Query(ctx, q, f.TenantID, f.AfterID, f.PageSize)
 	if err != nil {
 		return nil, fmt.Errorf("db: list identities: %w", err)
@@ -110,13 +130,116 @@ func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]I
 	var out []IdentityRow
 	for rows.Next() {
 		var r IdentityRow
+		var username *string
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType,
-			&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt, &username); err != nil {
 			return nil, fmt.Errorf("db: scan identity: %w", err)
+		}
+		if username != nil {
+			r.Username = *username
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// CreateIdentity inserts a new identity row for the tenant. The id is
+// server-assigned and the version starts at 1. A duplicate
+// (tenant_id, subject) surfaces as a unique-constraint error the
+// caller maps to CodeAlreadyExists.
+func CreateIdentity(ctx context.Context, tx pgx.Tx, r IdentityRow) (IdentityRow, error) {
+	if r.ID == "" {
+		r.ID = NewID()
+	}
+	if r.Status == "" {
+		r.Status = "active"
+	}
+	if r.IdentityType == "" {
+		r.IdentityType = "user"
+	}
+	const q = `INSERT INTO identities (id, tenant_id, subject, display_name, identity_type, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	err := tx.QueryRow(ctx, q, r.ID, r.TenantID, r.Subject, nullableStr(r.DisplayName),
+		r.IdentityType, r.Status).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: create identity: %w", err)
+	}
+	return r, nil
+}
+
+// UpdateIdentityDisplayName edits an identity's display name with
+// optimistic concurrency. expectedVersion < 0 disables the version
+// check (the caller supplied none); a non-negative value must match the
+// current row version or the update touches nothing and ErrNotFound is
+// returned. The version column is bumped on every successful update.
+func UpdateIdentityDisplayName(ctx context.Context, tx pgx.Tx, tenantID, id, displayName string, expectedVersion int) (IdentityRow, error) {
+	const q = `UPDATE identities SET display_name = $1, updated_at = now(), version = version + 1
+		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	var r IdentityRow
+	err := tx.QueryRow(ctx, q, nullableStr(displayName), tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityRow{}, ErrNotFound
+	}
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: update identity display name: %w", err)
+	}
+	return r, nil
+}
+
+// SetIdentityStatus flips an identity between "active" and "disabled"
+// with optimistic concurrency (expectedVersion < 0 disables the check).
+// The service validates the status value before this is reached; the
+// column is unconstrained text so the data-access layer stores it as-is.
+func SetIdentityStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status string, expectedVersion int) (IdentityRow, error) {
+	const q = `UPDATE identities SET status = $1, updated_at = now(), version = version + 1
+		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	var r IdentityRow
+	err := tx.QueryRow(ctx, q, status, tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityRow{}, ErrNotFound
+	}
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: set identity status: %w", err)
+	}
+	return r, nil
+}
+
+// DeleteIdentity hard-deletes an identity plus the dependent rows that
+// reference it. role_bindings and api_keys carry no FK to identities
+// (only local_credentials does, with ON DELETE CASCADE), so the cleanup
+// is explicit and tenant-scoped — the whole delete happens in the
+// caller's transaction. 0 rows affected on the identity row → ErrNotFound.
+func DeleteIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	for _, q := range []string{
+		`DELETE FROM role_bindings WHERE tenant_id = $1 AND identity_id = $2`,
+		`DELETE FROM api_keys WHERE tenant_id = $1 AND identity_id = $2`,
+		`DELETE FROM local_credentials WHERE tenant_id = $1 AND identity_id = $2`,
+	} {
+		if _, err := tx.Exec(ctx, q, tenantID, id); err != nil {
+			return fmt.Errorf("db: delete identity dependents: %w", err)
+		}
+	}
+	const q = `DELETE FROM identities WHERE tenant_id = $1 AND id = $2`
+	ct, err := tx.Exec(ctx, q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete identity: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // --- tenants (no tenant_id; admin reads cross-tenant via a BYPASSRLS-free
@@ -161,11 +284,13 @@ func ListTenants(ctx context.Context, p *Pool, pageSize int, afterID string) ([]
 	return out, rows.Err()
 }
 
-// CreateTenant inserts a new tenant row. The id is server-assigned (a
-// ULID) and the version starts at 1. Returns the persisted row. The
-// tenants table has no tenant_id column so this is an admin-only path
-// (the API enforces auth:write / tenant:create entitlement).
-func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
+// CreateTenant inserts a new tenant row within the caller's transaction.
+// The id is server-assigned (a ULID) and the version starts at 1. Returns
+// the persisted row. The tenants table has no tenant_id column and no RLS
+// so this is an admin-only path (the API enforces auth:write /
+// tenant:create entitlement); taking a pgx.Tx lets the caller commit the
+// audit row atomically with the tenant creation.
+func CreateTenant(ctx context.Context, tx pgx.Tx, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
 	if budgetEnvelopeJSON == "" {
 		budgetEnvelopeJSON = "{}"
 	}
@@ -173,7 +298,7 @@ func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON s
 		VALUES ($1, $2, $3, 'active', $4::jsonb, 1)
 		RETURNING id, slug, name, status, version, created_at, updated_at`
 	id := newULID()
-	row := p.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
+	row := tx.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
 	var r TenantRow
 	if err := row.Scan(&r.ID, &r.Slug, &r.Name, &r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return TenantRow{}, fmt.Errorf("db: insert tenant: %w", err)
@@ -255,6 +380,60 @@ func GetRole(ctx context.Context, tx pgx.Tx, tenantID, id string) (RoleRow, erro
 	return r, nil
 }
 
+// UpdateRole edits a role's name and entitlements with optimistic
+// concurrency (expectedVersion < 0 disables the version check). The
+// service re-validates name + entitlements before this is reached.
+func UpdateRole(ctx context.Context, tx pgx.Tx, tenantID, id, name string, entitlements []string, expectedVersion int) (RoleRow, error) {
+	ent, err := json.Marshal(entitlements)
+	if err != nil {
+		return RoleRow{}, fmt.Errorf("db: marshal entitlements: %w", err)
+	}
+	const q = `UPDATE roles SET name = $1, entitlements = $2, updated_at = now(), version = version + 1
+		WHERE tenant_id = $3 AND id = $4 AND ($5 < 0 OR version = $5)
+		RETURNING id, tenant_id, name, scope, scope_ref, entitlements, version, created_at, updated_at`
+	var r RoleRow
+	var entBytes []byte
+	err = tx.QueryRow(ctx, q, name, ent, tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Name, &r.Scope, &r.ScopeRef, &entBytes, &r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoleRow{}, ErrNotFound
+	}
+	if err != nil {
+		return RoleRow{}, fmt.Errorf("db: update role: %w", err)
+	}
+	r.Entitlements = scanEntitlements(entBytes)
+	return r, nil
+}
+
+// DeleteRole hard-deletes a role. The caller must ensure it is not the
+// admin role before this is reached; the data-access layer deletes the
+// role's bindings in the same statement as a cleanup (role_bindings has
+// no FK to roles, so orphaned rows would otherwise silently stop
+// contributing entitlements).
+func DeleteRole(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	const q = `DELETE FROM roles WHERE tenant_id = $1 AND id = $2`
+	ct, err := tx.Exec(ctx, q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete role: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteRoleBindingsByRole removes all role bindings referencing a role
+// within the tenant scope. Used to keep role_bindings clean when a role
+// is deleted (no FK exists, so this prevents dangling rows).
+func DeleteRoleBindingsByRole(ctx context.Context, tx pgx.Tx, tenantID, roleID string) error {
+	const q = `DELETE FROM role_bindings WHERE tenant_id = $1 AND role_id = $2`
+	if _, err := tx.Exec(ctx, q, tenantID, roleID); err != nil {
+		return fmt.Errorf("db: delete role bindings by role: %w", err)
+	}
+	return nil
+}
+
 // ListRoles returns a page of roles for the tenant.
 func ListRoles(ctx context.Context, tx pgx.Tx, tenantID string, pageSize int, afterID string) ([]RoleRow, error) {
 	if pageSize <= 0 || pageSize > 1000 {
@@ -328,6 +507,24 @@ func DeleteRoleBinding(ctx context.Context, tx pgx.Tx, tenantID, id string) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// GetRoleBinding fetches a single role binding by id within the tenant
+// scope (used to snapshot before/after for the audit trail).
+func GetRoleBinding(ctx context.Context, tx pgx.Tx, tenantID, id string) (RoleBindingRow, error) {
+	const q = `SELECT id, tenant_id, identity_id, role_id, scope, scope_ref, created_at
+		FROM role_bindings WHERE id = $1 AND tenant_id = $2`
+	var b RoleBindingRow
+	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
+		&b.ID, &b.TenantID, &b.IdentityID, &b.RoleID, &b.Scope, &b.ScopeRef, &b.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoleBindingRow{}, ErrNotFound
+	}
+	if err != nil {
+		return RoleBindingRow{}, fmt.Errorf("db: get role binding: %w", err)
+	}
+	return b, nil
 }
 
 // ListRoleBindings returns a page of role bindings for the tenant,

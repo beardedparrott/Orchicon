@@ -93,6 +93,21 @@ message WorkflowRun {
   google.protobuf.Timestamp updated_at = 13;
   string work_item_id = 14; // bound work item id, if any; empty for one-shot runs
   string runtime_image = 15; // resolved runtime container image tag at run start
+  // Worktree provisioning state (the non-repo in-place fallback):
+  // worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+  // is 'skipped' with empty path/branch and renders as "runs in place".
+  string worktree_status = 16;
+  string worktree_branch = 17;
+  string worktree_path = 18;
+  // Pull-request surface for the run's branch (additive, read-time). The
+  // per-branch DevOps worker writes these into the run's structured
+  // `run_context` (JSON) after it runs `gh pr create`/`gh pr merge`; the
+  // read path parses them out. When pr_url is empty the UI falls back to a
+  // deterministic `pull/new/{branch}` link derived from the project's
+  // stored git origin (repo_slug) so every provisioned git-backed run can
+  // still jump to a PR even before one exists.
+  string pr_url = 19;
+  string pr_state = 20; // e.g. open/merged/draft/none; empty until worker-authored
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

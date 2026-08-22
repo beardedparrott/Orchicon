@@ -22,11 +22,14 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/beardedparrott/orchicon/internal/transcript"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -136,9 +139,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListExecutionsFilter{
-		TenantID:       tenantID,
-		PageSize:       int(req.Msg.PageSize),
-		AfterID:        req.Msg.PageToken,
+		TenantID:        tenantID,
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
 		ExcludeFollowUp: true, // hide follow-up executions from the main list
 	}
 	if req.Msg.ProjectId != nil {
@@ -210,6 +213,10 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.deleted", "execution", current.ID,
+		audit.SnapshotStatus(current.Status), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.deleted: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -258,6 +265,10 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 			continue
 		}
 		deleted++
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.batch_deleted", "execution", tenantID,
+		nil, audit.Snapshot(map[string]any{"count": deleted, "ids": req.Msg.Ids})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.batch_deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -343,6 +354,10 @@ func (s *Service) PauseExecution(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "pause"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.paused", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.paused: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -381,6 +396,10 @@ func (s *Service) ResumeExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "resume"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.resumed", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.resumed: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -426,6 +445,10 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "cancel", "reason": reason}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.cancelled", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.cancelled: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -466,12 +489,16 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.checkpoint", updated, map[string]any{"checkpoint_ref": checkpointRef}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.checkpointed", "execution", updated.ID,
+		nil, audit.Snapshot(map[string]any{"checkpoint_ref": checkpointRef})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.checkpointed: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("execution checkpoint requested", "id", updated.ID, "checkpoint_ref", checkpointRef)
 	return connect.NewResponse(&apiv1.CheckpointNowResponse{
-		Execution:    rowToProto(updated),
+		Execution:     rowToProto(updated),
 		CheckpointRef: checkpointRef,
 	}), nil
 }
@@ -480,6 +507,10 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 // (docs/05 §7.1, docs/07 §3.8). The decision is signaled to the
 // adapter's Execute stream via the pending approval registry.
 func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv1.ApproveToolCallRequest]) (*connect.Response[apiv1.ApproveToolCallResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if req.Msg.RequestId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("request_id must not be empty"))
 	}
@@ -506,8 +537,33 @@ func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv
 	s.mu.Lock()
 	delete(s.approvals, req.Msg.RequestId)
 	s.mu.Unlock()
+	s.recordApprovalAudit(ctx, tenantID, req.Msg.Approved, pending.request.ExecutionId)
 	s.log.Info("tool call approved", "request_id", req.Msg.RequestId, "approved", req.Msg.Approved)
 	return connect.NewResponse(&apiv1.ApproveToolCallResponse{Approval: pending.request}), nil
+}
+
+// recordApprovalAudit writes the tool-call approval/rejection row in a
+// short tenant tx (ApproveToolCall resolves an in-memory registry entry
+// and has no state mutation to share a tx with).
+func (s *Service) recordApprovalAudit(ctx context.Context, tenantID string, approved bool, executionID string) {
+	action := "execution.tool_call_rejected"
+	if approved {
+		action = "execution.tool_call_approved"
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID,
+		nil, audit.Snapshot(map[string]any{"approved": approved})); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 // ListPendingApprovals returns unresolved Tier 2 approval requests for
@@ -615,17 +671,17 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		"_is_follow_up":        "true",
 	})
 	newWI := db.WorkItemRow{
-		ID:        db.NewID(),
-		TenantID:  tenantID,
-		ProjectID: task.ProjectID,
-		ParentID:  &task.ID,
-		Kind:      domain.WorkItemKindTask,
-		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
-		Status:    domain.WorkItemReady,
+		ID:                db.NewID(),
+		TenantID:          tenantID,
+		ProjectID:         task.ProjectID,
+		ParentID:          &task.ID,
+		Kind:              domain.WorkItemKindTask,
+		Title:             fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: task.AssignedWorkerRef,
-		Priority:  task.Priority,
-		PromptContext: promptCtx,
-		Results:   resultsJSON,
+		Priority:          task.Priority,
+		PromptContext:     promptCtx,
+		Results:           resultsJSON,
 	}
 	if _, err := db.CreateWorkItem(ctx, ttx.Tx, newWI); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
@@ -659,6 +715,10 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update execution conversation: %w", err))
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.follow_up_created", "execution", msg.ExecutionId,
+		nil, audit.Snapshot(map[string]any{"work_item_id": newWI.ID})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.follow_up_created: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -689,21 +749,37 @@ func (s *Service) RegisterApproval(req *apiv1.ApprovalRequest) <-chan approvalDe
 
 // --- helpers ---------------------------------------------------------------
 
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":        e.TenantID,
-		"execution_id":     e.ID,
-		"task_id":          e.TaskID,
-		"project_id":       e.ProjectID,
-		"worker_id":        e.WorkerID,
-		"worker_version":   e.WorkerVersion,
-		"status":           e.Status,
-		"health_state":     e.HealthState,
-		"aggregate_type":   "execution",
-		"aggregate_id":     e.ID,
+		"event_type":        eventType,
+		"tenant_id":         e.TenantID,
+		"execution_id":      e.ID,
+		"task_id":           e.TaskID,
+		"project_id":        e.ProjectID,
+		"worker_id":         e.WorkerID,
+		"worker_version":    e.WorkerVersion,
+		"status":            e.Status,
+		"health_state":      e.HealthState,
+		"aggregate_type":    "execution",
+		"aggregate_id":      e.ID,
 		"aggregate_version": e.Version,
-		"occurred_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -728,13 +804,13 @@ func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.Exe
 // into an ExecutionEvent proto message.
 func parseExecutionEvent(data []byte) (*apiv1.ExecutionEvent, error) {
 	var env struct {
-		EventType    string `json:"event_type"`
-		TenantID     string `json:"tenant_id"`
-		ExecutionID  string `json:"execution_id"`
-		TaskID       string `json:"task_id"`
-		Status       string `json:"status"`
-		HealthState  string `json:"health_state"`
-		OccurredAt   string `json:"occurred_at"`
+		EventType   string `json:"event_type"`
+		TenantID    string `json:"tenant_id"`
+		ExecutionID string `json:"execution_id"`
+		TaskID      string `json:"task_id"`
+		Status      string `json:"status"`
+		HealthState string `json:"health_state"`
+		OccurredAt  string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("parse execution event: %w", err)
@@ -878,22 +954,22 @@ func eventTypeToProto(eventType string) apiv1.ExecutionEventType {
 
 func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	p := &apiv1.WorkerExecution{
-		Id:            e.ID,
-		TenantId:      e.TenantID,
-		ProjectId:     e.ProjectID,
-		TaskId:        e.TaskID,
-		WorkerId:      e.WorkerID,
-		WorkerVersion: int32(e.WorkerVersion),
-		Status:        execStatusToProto(e.Status),
-		HealthState:   healthStateToProto(e.HealthState),
-		TokenUsage:    e.TokenUsage,
-		CostUsd:       e.CostUSD,
-		Version:       int32(e.Version),
-		WorkflowRunId: e.WorkflowRunID,
+		Id:             e.ID,
+		TenantId:       e.TenantID,
+		ProjectId:      e.ProjectID,
+		TaskId:         e.TaskID,
+		WorkerId:       e.WorkerID,
+		WorkerVersion:  int32(e.WorkerVersion),
+		Status:         execStatusToProto(e.Status),
+		HealthState:    healthStateToProto(e.HealthState),
+		TokenUsage:     e.TokenUsage,
+		CostUsd:        e.CostUSD,
+		Version:        int32(e.Version),
+		WorkflowRunId:  e.WorkflowRunID,
 		WorkflowStepId: e.WorkflowStepID,
-		WorkflowName:  e.WorkflowName,
-		WorkerName:    e.WorkerName,
-		Iteration:     int32(e.Iteration),
+		WorkflowName:   e.WorkflowName,
+		WorkerName:     e.WorkerName,
+		Iteration:      int32(e.Iteration),
 	}
 	if e.AdapterID != nil {
 		p.AdapterId = *e.AdapterID
@@ -918,6 +994,21 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	}
 	if len(e.Conversation) > 0 {
 		p.Conversation = e.Conversation
+	}
+	if e.WorktreeStatus != nil {
+		p.WorktreeStatus = *e.WorktreeStatus
+	}
+	if e.WorktreeBranch != nil {
+		p.WorktreeBranch = *e.WorktreeBranch
+	}
+	if e.WorktreePath != nil {
+		p.WorktreePath = *e.WorktreePath
+	}
+	if e.PrURL != nil {
+		p.PrUrl = *e.PrURL
+	}
+	if e.PrState != nil {
+		p.PrState = *e.PrState
 	}
 	return p
 }
@@ -956,7 +1047,8 @@ func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID st
 // execution has no live session (finished, legacy one-shot path, or the
 // plane restarted).
 func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request[apiv1.SendExecutionMessageRequest]) (*connect.Response[apiv1.SendExecutionMessageResponse], error) {
-	if _, err := requireTenant(ctx); err != nil {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	msg := req.Msg
@@ -975,7 +1067,37 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 	if err := s.sendExecMessage(ctx, msg.ExecutionId, msg.Message); err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	s.recordMessageAudit(ctx, tenantID, msg.ExecutionId, "execution.message_sent")
 	return connect.NewResponse(&apiv1.SendExecutionMessageResponse{}), nil
+}
+
+// recordMessageAudit writes a session-message audit row in a short
+// tenant tx.
+//
+// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
+// same tx as the mutation): SendExecutionMessage / ContinueExecutionSession
+// push the message into the adapter's LIVE session (or its durable
+// transcript via the adapter's best-effort session store) — there is no
+// control-plane DB mutation in the handler to share a tx with. The audit
+// row is therefore written best-effort in its own short tx after the
+// session write succeeds. A record failure is logged, not fatal.
+func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID, action string) {
+	if tenantID == "" {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID, nil, nil); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 // GetExecutionSession returns the durable session transcript for an
@@ -1071,8 +1193,19 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Resolve the run's runtime image so the follow-up system prompt can open
+	// with the same stable prompt prefix as the original composite prompt —
+	// the shared head carries the worker identity, safety rules, and
+	// efficiency directives that the stored AGENTS.md no longer duplicates
+	// (it is stripped at seed time; the prefix is the single source). A
+	// follow-up's per-message system prompt is applied to the turn, so
+	// without this every follow-up turn would lose the safety block.
+	runtimeImage := ""
+	if wi, werr := db.GetWorkItem(ctx, ttx.Tx, tenantID, exec.TaskID); werr == nil {
+		runtimeImage = wi.RuntimeImage
+	}
 	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
-	systemPrompt := composeFollowUpPrompt(version)
+	systemPrompt := composeFollowUpPrompt(version, runtimeImage)
 	startSeq := int64(0)
 	for _, p := range parts {
 		if p.Seq > startSeq {
@@ -1097,14 +1230,60 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	s.recordMessageAudit(ctx, tenantID, msg.ExecutionId, "execution.session_continued")
 	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
+}
+
+// GetExecutionTodos returns the worker's most recent todo list for an
+// execution, parsed from the session transcript's latest todowrite tool
+// call. It is display-only data: the todos live in the durable transcript
+// (execution_session_parts) and are the source of truth. Returns an empty
+// list when the worker never recorded a todowrite call (or the transcript is
+// empty).
+func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.LatestToolUseParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, 1000)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetExecutionTodosResponse{Todos: latestTodos(parts)}), nil
 }
 
 // composeFollowUpPrompt rebuilds the worker's composed system prompt for a
 // follow-up session (mirrors the TaskReconciler's composeSystemPrompt).
-func composeFollowUpPrompt(v db.WorkerVersionRow) string {
+//
+// It opens with the shared stable prompt prefix (db.StablePromptPrefix) —
+// worker identity + safety rules + efficiency directives + runtime
+// environment — the same byte-identical head every composite prompt starts
+// with. The stored AGENTS.md no longer duplicates the safety block (seedAgentsMD
+// strips it at persistence), so without the prefix a follow-up turn's
+// per-message system prompt would silently drop the HARD-limit safety rules.
+// runtimeImage is the run's runtime container image tag ("" falls back to the
+// default in the prefix text).
+func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
+	var sb strings.Builder
+	sb.WriteString(db.StablePromptPrefix(runtimeImage))
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
-		return v.SystemPrompt
+		if v.SystemPrompt != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(v.SystemPrompt)
+		}
+		return sb.String()
 	}
 	var parts []string
 	add := func(heading, content string) {
@@ -1118,29 +1297,21 @@ func composeFollowUpPrompt(v db.WorkerVersionRow) string {
 	add("Skills", v.Skills)
 	add("Behavior", v.Behavior)
 	add("AGENTS.md", v.AgentsMD)
-	return strings.Join(parts, "\n\n")
+	sb.WriteString("\n\n")
+	sb.WriteString(strings.Join(parts, "\n\n"))
+	return sb.String()
 }
 
 // renderSessionContext renders the durable transcript into a readable
 // chronological context for a follow-up seed and extracts the original
 // session identity (session_info part). The context is bounded so a long
-// session doesn't blow the model window.
+// session doesn't blow the model window. The per-part rendering is shared
+// with the scheduler's recovery seed via the leaf transcript package.
 func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword string) {
-	const maxContext = 60000
-	var sb strings.Builder
-	trunc := func(text string) string {
-		if len(text) > 2000 {
-			return text[:2000] + "\n…(truncated)"
-		}
-		return text
-	}
 	for _, p := range parts {
 		var pl struct {
-			Text   string          `json:"text"`
-			Source string          `json:"source"`
-			Part   json.RawMessage `json:"part"`
-			SID    string          `json:"session_id"`
-			SURL   string          `json:"serve_url"`
+			SID  string `json:"session_id"`
+			SURL string `json:"serve_url"`
 		}
 		_ = json.Unmarshal(p.Payload, &pl)
 		if pl.SID != "" {
@@ -1149,37 +1320,8 @@ func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL,
 		if pl.SURL != "" {
 			serveURL = pl.SURL
 		}
-		switch p.Kind {
-		case "user_message":
-			sb.WriteString("USER (" + pl.Source + "): " + trunc(pl.Text) + "\n\n")
-		case "text":
-			// The assistant text lives under part.text in the raw part JSON.
-			var part struct {
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(pl.Part, &part)
-			if part.Text != "" {
-				sb.WriteString("ASSISTANT: " + trunc(part.Text) + "\n\n")
-			}
-		case "tool_use":
-			var part struct {
-				Tool string `json:"tool"`
-			}
-			_ = json.Unmarshal(pl.Part, &part)
-			if part.Tool != "" {
-				sb.WriteString("TOOL CALL: " + part.Tool + "\n\n")
-			}
-		case "reasoning":
-			// skip — verbose, and the assistant text carries the outcome.
-		case "error":
-			sb.WriteString("ERROR\n\n")
-		}
-		if sb.Len() >= maxContext {
-			sb.WriteString("\n…(conversation truncated)\n")
-			break
-		}
 	}
-	return sb.String(), sessionID, serveURL, servePassword
+	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword
 }
 
 func strPtr(s string) *string { return &s }

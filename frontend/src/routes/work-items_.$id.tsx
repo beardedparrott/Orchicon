@@ -1,6 +1,6 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Link2 } from "lucide-react";
 
 import {
   useCreateWorkItem,
@@ -12,6 +12,8 @@ import {
   useRemoveDependency,
   useGetDependencyGraph,
   useListWorkItems,
+  useArchiveWorkItem,
+  useRestoreWorkItem,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
@@ -19,6 +21,7 @@ import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -30,12 +33,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { KindPill, PositionBadge } from "@/components/work-items/work-item-badges";
+import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
+import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
@@ -54,6 +58,8 @@ function WorkItemDetailPage() {
   const updateWorkItem = useUpdateWorkItem(item?.projectId ?? "");
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
   const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
+  const archiveWorkItem = useArchiveWorkItem(item?.projectId ?? "");
+  const restoreWorkItem = useRestoreWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
   const removeDependency = useRemoveDependency(item?.projectId ?? "");
   const createWorkItem = useCreateWorkItem();
@@ -78,6 +84,7 @@ function WorkItemDetailPage() {
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
   const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
+  const [editRecurringSchedule, setEditRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -158,6 +165,38 @@ function WorkItemDetailPage() {
     }
   };
 
+  const handleArchive = () => {
+    if (directChildren.length > 0) {
+      window.alert(
+        "This work item has child work items. Archive the children first.",
+      );
+      return;
+    }
+    if (!isTerminal(item.status)) {
+      window.alert(
+        "This work item is not finished. Finish or cancel it before archiving.",
+      );
+      return;
+    }
+    if (
+      window.confirm(
+        "Archive this work item? It will be hidden from all views and only visible in the Archive view.",
+      )
+    ) {
+      archiveWorkItem.mutate(id);
+    }
+  };
+
+  const handleRestore = () => {
+    if (
+      window.confirm(
+        "Restore this work item? It will reappear in the active views with its prior status.",
+      )
+    ) {
+      restoreWorkItem.mutate(id);
+    }
+  };
+
   const handleAddDep = () => {
     if (!depTarget || depTarget === id) return;
     addDependency.mutate(
@@ -194,9 +233,10 @@ function WorkItemDetailPage() {
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <KindPill kind={item.kind} />
-              <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+                  {showRecurringBadge(item) && <RecurringBadge />}
+              <h1 className="min-w-0 break-words [overflow-wrap:anywhere] text-lg font-semibold tracking-tight sm:text-2xl">
                 {item.title}
               </h1>
             </div>
@@ -247,6 +287,11 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
+                setEditRecurringSchedule(
+                  item.recurringSchedule
+                    ? new RecurringSchedule(item.recurringSchedule)
+                    : undefined,
+                );
                 setEditing(true);
               }}
             >
@@ -256,10 +301,34 @@ function WorkItemDetailPage() {
           <Button
             variant="outline"
             onClick={handleSoftDelete}
-            disabled={deleteWorkItem.isPending || item.status === 8}
+            disabled={deleteWorkItem.isPending || item.status === WorkItemStatus.CANCELLED}
           >
             {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
           </Button>
+          {item.status === WorkItemStatus.ARCHIVED ? (
+            <Button
+              variant="outline"
+              onClick={handleRestore}
+              disabled={restoreWorkItem.isPending}
+            >
+              {restoreWorkItem.isPending ? "Restoring…" : "Restore"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={handleArchive}
+              disabled={archiveWorkItem.isPending}
+              title={
+                !isTerminal(item.status)
+                  ? "Finish or cancel the work item before archiving"
+                  : directChildren.length > 0
+                    ? "Archive the child work items first"
+                    : "Hide this work item from all views"
+              }
+            >
+              {archiveWorkItem.isPending ? "Archiving…" : "Archive"}
+            </Button>
+          )}
           <Button
             variant="destructive"
             onClick={handleHardDelete}
@@ -289,23 +358,24 @@ function WorkItemDetailPage() {
             id: item.id,
             title: item.title,
             kind: ({
-              1: "epic",
-              2: "feature",
-              3: "task",
-              4: "subtask",
+              [WorkItemKind.EPIC]: "epic",
+              [WorkItemKind.FEATURE]: "feature",
+              [WorkItemKind.TASK]: "task",
+              [WorkItemKind.SUBTASK]: "subtask",
             } as Record<number, string>)[item.kind] ?? "unknown",
             project_id: item.projectId,
             parent_id: item.parentId || undefined,
             status: ({
-              1: "pending",
-              10: "scheduled",
-              2: "ready",
-              3: "assigned",
-              4: "running",
-              6: "succeeded",
-              7: "failed",
-              8: "cancelled",
-              9: "recovering",
+              [WorkItemStatus.PENDING]: "pending",
+              [WorkItemStatus.SCHEDULED]: "scheduled",
+              [WorkItemStatus.READY]: "ready",
+              [WorkItemStatus.ASSIGNED]: "assigned",
+              [WorkItemStatus.RUNNING]: "running",
+              [WorkItemStatus.SUCCEEDED]: "succeeded",
+              [WorkItemStatus.FAILED]: "failed",
+              [WorkItemStatus.CANCELLED]: "cancelled",
+              [WorkItemStatus.RECOVERING]: "recovering",
+              [WorkItemStatus.RECURRING]: "recurring",
             } as Record<number, string>)[item.status] ?? "unknown",
             priority: item.priority,
             description: item.description || undefined,
@@ -319,6 +389,15 @@ function WorkItemDetailPage() {
               item.contextFiles && item.contextFiles.length > 0
                 ? item.contextFiles
                 : undefined,
+            recurring_schedule: item.recurringSchedule
+              ? {
+                  frequency: item.recurringSchedule.frequency,
+                  interval: item.recurringSchedule.interval,
+                  days: item.recurringSchedule.days.length > 0 ? item.recurringSchedule.days : undefined,
+                  start_date: item.recurringSchedule.startDate || undefined,
+                  start_time: item.recurringSchedule.startTime || undefined,
+                }
+              : undefined,
             version: item.version,
             created_at: item.createdAt
               ? new Date(Number(item.createdAt.seconds) * 1000).toISOString()
@@ -330,7 +409,17 @@ function WorkItemDetailPage() {
           title="Work Item YAML"
           editable
           onSave={(parsed) => {
-            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
+            const statusMap: Record<string, number> = {
+              pending: WorkItemStatus.PENDING,
+              scheduled: WorkItemStatus.SCHEDULED,
+              ready: WorkItemStatus.READY,
+              assigned: WorkItemStatus.ASSIGNED,
+              running: WorkItemStatus.RUNNING,
+              succeeded: WorkItemStatus.SUCCEEDED,
+              failed: WorkItemStatus.FAILED,
+              cancelled: WorkItemStatus.CANCELLED,
+              recurring: WorkItemStatus.RECURRING,
+            };
             // Always include all known fields from the YAML. Optional text
             // fields default to "" so removing a line from YAML clears it.
             const str = (key: string): string => String(parsed[key] ?? "");
@@ -360,6 +449,19 @@ function WorkItemDetailPage() {
               // (orphan, or line removed) stays unchanged instead of
               // erroring on every save.
               parentId: str("parent_id") || undefined,
+              // recurring_schedule is parsed from the YAML object if present;
+              // an absent field leaves it unchanged.
+              recurringSchedule: parsed.recurring_schedule
+                ? new RecurringSchedule({
+                    frequency: String((parsed.recurring_schedule as Record<string, unknown>).frequency ?? "daily"),
+                    interval: Number((parsed.recurring_schedule as Record<string, unknown>).interval ?? 1),
+                    days: Array.isArray((parsed.recurring_schedule as Record<string, unknown>).days)
+                      ? ((parsed.recurring_schedule as Record<string, unknown>).days as unknown[]).map(String)
+                      : [],
+                    startDate: String((parsed.recurring_schedule as Record<string, unknown>).start_date ?? ""),
+                    startTime: String((parsed.recurring_schedule as Record<string, unknown>).start_time ?? ""),
+                  })
+                : undefined,
             });
           }}
           saveDisabled={updateWorkItem.isPending}
@@ -421,6 +523,24 @@ function WorkItemDetailPage() {
         </Card>
       )}
 
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recurring schedule</CardTitle>
+            <CardDescription>
+              Set a recurrence pattern. Setting this flips the item to
+              recurring status; clearing it resets to non-recurring.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RecurringScheduleForm
+              value={editRecurringSchedule}
+              onChange={setEditRecurringSchedule}
+            />
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader>
@@ -429,30 +549,39 @@ function WorkItemDetailPage() {
               {editing ? (
                 <select
                   value={status}
-                  onChange={(e) => setStatus(Number(e.target.value))}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setStatus(next);
+                    // Switching away from recurring clears the schedule
+                    if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
+                      setEditRecurringSchedule(undefined);
+                    }
+                  }}
                   className="rounded-md border bg-background px-2 py-1 text-sm"
                 >
-                  <option value={1}>pending</option>
-                  <option value={2}>ready</option>
-                  <option value={3}>assigned</option>
-                  <option value={4}>running</option>
-                  <option value={6}>succeeded</option>
-                  <option value={7}>failed</option>
-                  <option value={8}>cancelled</option>
-                  <option value={9}>recovering</option>
-                  <option value={10}>scheduled</option>
+                  <option value={WorkItemStatus.PENDING}>pending</option>
+                  <option value={WorkItemStatus.READY}>ready</option>
+                  <option value={WorkItemStatus.ASSIGNED}>assigned</option>
+                  <option value={WorkItemStatus.RUNNING}>running</option>
+                  <option value={WorkItemStatus.SUCCEEDED}>succeeded</option>
+                  <option value={WorkItemStatus.FAILED}>failed</option>
+                  <option value={WorkItemStatus.CANCELLED}>cancelled</option>
+                  <option value={WorkItemStatus.RECOVERING}>recovering</option>
+                  <option value={WorkItemStatus.SCHEDULED}>scheduled</option>
+                  <option value={WorkItemStatus.RECURRING}>recurring</option>
                 </select>
               ) : (
                 ({
-                  1: "pending",
-                  10: "scheduled",
-                  2: "ready",
-                  3: "assigned",
-                  4: "running",
-                  6: "succeeded",
-                  7: "failed",
-                  8: "cancelled",
-                  9: "recovering",
+                  [WorkItemStatus.PENDING]: "pending",
+                  [WorkItemStatus.SCHEDULED]: "scheduled",
+                  [WorkItemStatus.READY]: "ready",
+                  [WorkItemStatus.ASSIGNED]: "assigned",
+                  [WorkItemStatus.RUNNING]: "running",
+                  [WorkItemStatus.SUCCEEDED]: "succeeded",
+                  [WorkItemStatus.FAILED]: "failed",
+                  [WorkItemStatus.CANCELLED]: "cancelled",
+                  [WorkItemStatus.RECOVERING]: "recovering",
+                  [WorkItemStatus.RECURRING]: "recurring",
                 } as Record<number, string>)[item.status] ?? "unknown"
               )}
             </CardTitle>
@@ -478,10 +607,10 @@ function WorkItemDetailPage() {
                   }
                   className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value={1}>Epic</option>
-                  <option value={2}>Feature</option>
-                  <option value={3}>Task</option>
-                  <option value={4}>Subtask</option>
+                  <option value={WorkItemKind.EPIC}>Epic</option>
+                  <option value={WorkItemKind.FEATURE}>Feature</option>
+                  <option value={WorkItemKind.TASK}>Task</option>
+                  <option value={WorkItemKind.SUBTASK}>Subtask</option>
                 </select>
               ) : (
                 <span className="inline-flex items-center gap-2">
@@ -497,12 +626,12 @@ function WorkItemDetailPage() {
             parent picker (ADR-WIT-5); candidates are filtered by the
             SELECTED kind (a switched-to deeper kind offers deeper
             parents, an epic switched to a non-epic forces a pick). */}
-        {item.parentId || (editing && editKind !== 1) ? (
+                {item.parentId || (editing && editKind !== WorkItemKind.EPIC) ? (
           <Card>
             <CardHeader>
               <CardDescription>Parent</CardDescription>
               <CardTitle className="text-base">
-                {editing && editKind !== 1 ? (
+                {editing && editKind !== WorkItemKind.EPIC ? (
                   <WorkItemParentSelect
                     items={editProjectItems ?? []}
                     childKind={editKind}
@@ -520,11 +649,11 @@ function WorkItemDetailPage() {
                   <Link
                     to="/work-items/$id"
                     params={{ id: item.parentId }}
-                    className="inline-flex items-center gap-2 font-medium hover:underline"
+                    className="inline-flex min-w-0 max-w-full items-center gap-2 font-medium hover:underline"
                     title={parentItem.title}
                   >
                     <KindPill kind={parentItem.kind} />
-                    <span className="truncate">{parentItem.title}</span>
+                    <span className="min-w-0 truncate">{parentItem.title}</span>
                   </Link>
                 ) : (
                   item.parentId
@@ -538,17 +667,33 @@ function WorkItemDetailPage() {
             <CardHeader>
               <CardDescription>Chain position</CardDescription>
               <CardTitle className="text-base">
-                <PositionBadge position={chainPosition} />
+                <span className="inline-flex items-center gap-1.5">
+                  <PositionBadge position={chainPosition} />
+              {showRecurringBadge(item) && <RecurringBadge />}
+                </span>
               </CardTitle>
             </CardHeader>
           </Card>
         ) : null}
-        {item.scheduledStartAt && (
+        {(() => {
+          const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
+          return nextRunTs ? (
+            <Card>
+              <CardHeader>
+                <CardDescription>Next Run</CardDescription>
+                <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
+                  {new Date(Number(nextRunTs.seconds) * 1000).toLocaleString()}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          ) : null;
+        })()}
+        {item.recurringSchedule && (
           <Card>
             <CardHeader>
-              <CardDescription>Next Run</CardDescription>
-              <CardTitle className="text-sm font-normal">
-                {new Date(Number(item.scheduledStartAt.seconds) * 1000).toLocaleString()}
+              <CardDescription>Recurrence</CardDescription>
+              <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
+                {formatRecurrence(item.recurringSchedule)}
               </CardTitle>
             </CardHeader>
           </Card>
@@ -594,7 +739,7 @@ function WorkItemDetailPage() {
         <Card>
           <CardHeader>
             <CardDescription>Workflow template</CardDescription>
-            <CardTitle className="text-base">
+            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
               {editing ? (
                 <select
                   value={editWorkflowId}
@@ -632,7 +777,7 @@ function WorkItemDetailPage() {
         <Card>
           <CardHeader>
             <CardDescription>Runtime image</CardDescription>
-            <CardTitle className="text-base">
+            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
               {editing ? (
                 <RuntimeImageSelect
                   value={editRuntimeImage}
@@ -805,9 +950,9 @@ function WorkItemDetailPage() {
                     moving.map((c) => `  • ${c.title}`).join("\n"),
                   );
                 }
-                if (editKind === 1 || editKind === 2) {
+                if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
                   lines.push(
-                    "\nWorker assignment, scheduled start, and ready/assigned/scheduled status will be cleared.",
+                    "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
                   );
                 }
                 if (!window.confirm(lines.join("\n"))) return;
@@ -832,6 +977,10 @@ function WorkItemDetailPage() {
                   parentId: editParentId || undefined,
                   kind: kindChanging ? editKind : undefined,
                   contextFiles: { files: editContextFiles },
+                  recurringSchedule:
+                    kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
+                      ? new RecurringSchedule()
+                      : editRecurringSchedule,
                 },
                 { onSuccess: () => setEditing(false) },
               );
@@ -856,6 +1005,35 @@ function WorkItemDetailPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Blocked-by banner — server-authoritative blockers (the DAG
+              sources not yet terminal-success). Rendered whenever the
+              server computed unsat edges, so the reason this item isn't
+              dispatching is always visible. */}
+          {item.blockedBy.length > 0 && (
+            <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
+                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                Blocked by
+              </h4>
+              <ul className="mt-2 space-y-1.5">
+                {item.blockedBy.map((b) => (
+                  <li key={b.id} className="flex items-center gap-2 text-xs">
+                    <Link
+                      to="/work-items/$id"
+                      params={{ id: b.id }}
+                      className="min-w-0 flex-1 truncate font-medium hover:underline"
+                    >
+                      {b.title}
+                    </Link>
+                    <span className="shrink-0 text-muted-foreground">
+                      ({b.status || "unknown"})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Add dependency form */}
           <div className="flex items-end gap-2">
             <div className="flex-1 space-y-1">

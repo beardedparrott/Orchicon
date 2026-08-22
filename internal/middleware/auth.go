@@ -18,7 +18,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/beardedparrott/orchicon/internal/auth"
-	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/rbac"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -28,23 +27,45 @@ const AuthHeader = "Authorization"
 
 // publicPaths are not tenant-scoped and require no authentication.
 var publicPaths = map[string]bool{
-	"/healthz": true,
-	"/versionz": true,
-	"/auth/dev-login":   true,
-	"/auth/refresh":     true,
-	"/auth/oidc/login":  true,
+	"/healthz":          true,
+	"/versionz":         true,
+	"/auth/local-login": true,
+	// Self-service account creation (embedded IdP): happens before a
+	// session exists, exactly like local-login.
+	"/auth/signup":    true,
+	"/auth/refresh":   true,
+	// /auth/logout is credential-free by design (cookie-based): it can only
+	// end the caller's own browser session, and requiring a bearer token
+	// here would 401 the sign-out request before the refresh cookie is
+	// cleared — leaving a reload after sign-out able to re-authenticate.
+	"/auth/logout":        true,
+	"/auth/oidc/login":    true,
 	"/auth/oidc/callback": true,
-	"/auth/session":     true,
+	"/auth/session":       true,
+	// /auth/config is the pre-login capability-flags endpoint the SPA
+	// login page reads to render the honest set of sign-in affordances
+	// (embedded-OP / external IdP). Public + secret-free.
+	"/auth/config": true,
+	// Embedded OpenID Provider endpoints (internal/auth/op). These are NOT
+	// /auth/*-prefixed so they must be listed here explicitly: discovery,
+	// authorize + callback, token, userinfo, and jwks are all reached by
+	// unauthenticated RPs/browsers. The login bridge /auth/op/login inherits
+	// the /auth/* bypass.
+	"/.well-known/openid-configuration": true,
+	"/authorize":                        true,
+	"/authorize/callback":               true,
+	"/token":                            true,
+	"/userinfo":                         true,
+	"/jwks":                             true,
+	"/auth/op/login":                    true,
 }
 
 // ResolveAuth wraps h with auth-resolution middleware. It resolves the
 // caller's identity from the Authorization bearer token (OIDC access
 // token or API key) and stores the resolved identity + tenant in the
-// context. In local mode with no Authorization header, it falls back
-// to the dev tenant (so the UI works before login during the
-// transition) — this dev fallback is gated by the local mode flag and
-// is never available in production.
-func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolver, mode config.DeploymentMode, log *slog.Logger) http.Handler {
+// context. A request with no (valid) credential gets a 401 in every
+// mode — there is no anonymous dev bypass.
+func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolver, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Public paths skip auth entirely.
 		if publicPaths[r.URL.Path] {
@@ -62,17 +83,6 @@ func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolv
 			}
 			ctx = auth.WithIdentity(ctx, ident)
 			ctx = tenant.WithID(ctx, ident.TenantID)
-			h.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		// Dev fallback: no auth header. In local mode, allow the
-		// dev tenant so the UI works before login. Production rejects.
-		if mode == config.ModeLocal {
-			tid := strings.TrimSpace(r.Header.Get(TenantHeader))
-			if tid == "" {
-				tid = DefaultTenantID
-			}
-			ctx = tenant.WithID(ctx, tid)
 			h.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -131,16 +141,13 @@ func writeUnauthenticated(w http.ResponseWriter, msg string) {
 // RBACInterceptor is a Connect interceptor that enforces the per-RPC
 // entitlement check (docs/07 §6.2, §6.3). It reads the resolved
 // identity from the request context and checks that it holds the
-// entitlement required by the procedure. Admins bypass; the dev
-// fallback (no identity in context) is allowed in local mode so the
-// unauthenticated dev UI still works.
-type RBACInterceptor struct {
-	mode config.DeploymentMode
-}
+// entitlement required by the procedure. Admins bypass; a missing
+// identity is always Unauthenticated (no local-mode dev fallback).
+type RBACInterceptor struct{}
 
 // NewRBACInterceptor constructs the per-RPC entitlement interceptor.
-func NewRBACInterceptor(mode config.DeploymentMode) *RBACInterceptor {
-	return &RBACInterceptor{mode: mode}
+func NewRBACInterceptor() *RBACInterceptor {
+	return &RBACInterceptor{}
 }
 
 // WrapUnary implements connect.Interceptor.
@@ -168,16 +175,12 @@ func (i *RBACInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 	}
 }
 
-// check enforces the entitlement for a procedure. In local mode with no
-// resolved identity (dev fallback) it allows the call so the
-// unauthenticated dev UI works. Otherwise it requires the resolved
-// identity to hold the procedure's entitlement (or be admin).
+// check enforces the entitlement for a procedure. It requires the
+// resolved identity to hold the procedure's entitlement (or be admin);
+// a request with no resolved identity is Unauthenticated in every mode.
 func (i *RBACInterceptor) check(ctx context.Context, procedure string) error {
 	ident, ok := auth.FromContext(ctx)
 	if !ok {
-		if i.mode == config.ModeLocal {
-			return nil // dev fallback
-		}
 		return connect.NewError(connect.CodeUnauthenticated, errors.New("no authenticated identity"))
 	}
 	required := rbac.EntitlementFor(procedure)

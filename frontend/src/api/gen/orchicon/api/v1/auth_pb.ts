@@ -159,6 +159,19 @@ export class Identity extends Message<Identity> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * username is the local-account login handle bound to this identity via
+   * local_credentials (empty when the identity has no local credential).
+   * The login handle is not password material — only the username is
+   * exposed, never the hash — and it need not equal the subject (a
+   * dev-login/SSO-provisioned identity can hold a locally-named
+   * credential). This is the narrow documented exception that surfaces the
+   * handle on the identity read path (docs/07 §6.1).
+   *
+   * @generated from field: string username = 10;
+   */
+  username = "";
+
   constructor(data?: PartialMessage<Identity>) {
     super();
     proto3.util.initPartial(data, this);
@@ -176,6 +189,7 @@ export class Identity extends Message<Identity> {
     { no: 7, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 8, name: "created_at", kind: "message", T: Timestamp },
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 10, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Identity {
@@ -232,7 +246,7 @@ export class Role extends Message<Role> {
   scopeRef = "";
 
   /**
-   * e.g. ["project:create", "worker:publish"]
+   * e.g. ["workitem:read", "policy:publish"]; "*" = admin
    *
    * @generated from field: repeated string entitlements = 6;
    */

@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -25,10 +26,10 @@ import (
 // (docs/07_API_Specification.md §3.11). Subscriptions are tenant-scoped;
 // deliveries are recorded per attempt with retry + dead-letter.
 type Service struct {
-	pool        *db.Pool
-	log         *slog.Logger
-	dispatcher  *Dispatcher
-	subscriber  eventbus.Subscriber
+	pool       *db.Pool
+	log        *slog.Logger
+	dispatcher *Dispatcher
+	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedWebhookServiceHandler
 }
 
@@ -45,6 +46,41 @@ func NewService(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher, sub eve
 const maxURLLen = 2048
 
 // CreateSubscription validates + creates a webhook subscription.
+// --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// subAuditSnapshot is the non-secret projection of a webhook
+// subscription for the audit trail. The HMAC secret is NEVER included
+// (only the hint is safe); target_url can embed credentials — excluded.
+func subAuditSnapshot(r db.EventSubscriptionRow) map[string]any {
+	return map[string]any{
+		"id":           r.ID,
+		"name":         r.Name,
+		"event_filter": r.EventFilter,
+		"scope":        r.Scope,
+		"scope_ref":    r.ScopeRef,
+		"secret_hint":  r.SecretHint,
+		"status":       r.Status,
+		"max_retries":  r.MaxRetries,
+		"version":      r.Version,
+	}
+}
+
 func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[apiv1.CreateSubscriptionRequest]) (*connect.Response[apiv1.CreateSubscriptionResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -105,6 +141,10 @@ func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[a
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.created", "webhook_subscription", row.ID,
+		nil, audit.Snapshot(subAuditSnapshot(row))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -211,6 +251,10 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.updated", "webhook_subscription", updated.ID,
+		audit.Snapshot(subAuditSnapshot(current)), audit.Snapshot(subAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -238,13 +282,21 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *connect.Request[a
 	if err := db.SoftDeleteSubscription(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version); err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.deleted", "webhook_subscription", current.ID,
+		audit.Snapshot(subAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.deleted: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	return connect.NewResponse(&apiv1.DeleteSubscriptionResponse{}), nil
 }
 
-// TestSubscription sends a test event to the subscription endpoint.
+// TestSubscription sends a test event to the subscription endpoint. The
+// delivery row, its result, and the audit row commit in ONE tenant
+// transaction (transactional outbox — AC1): the test POST is bounded by
+// the dispatcher's 15s client timeout, so the tx is never held open
+// across a hanging target.
 func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[apiv1.TestSubscriptionRequest]) (*connect.Response[apiv1.TestSubscriptionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -260,17 +312,17 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	defer ttx.Rollback(ctx)
 	sub, err := db.GetSubscription(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	_ = ttx.Rollback(ctx)
 	testData, _ := json.Marshal(map[string]any{
 		"event_type": "webhook.test",
 		"tenant_id":  tenantID,
-		"message":   "Orchicon webhook test event",
+		"message":    "Orchicon webhook test event",
 	})
-	delivery, err := db.CreateDelivery(ctx, s.pool, db.WebhookDeliveryRow{
+	delivery, err := db.CreateDelivery(ctx, ttx.Tx, db.WebhookDeliveryRow{
 		TenantID:       tenantID,
 		SubscriptionID: sub.ID,
 		EventID:        "test-" + db.NewID(),
@@ -283,7 +335,7 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 	}
 	statusCode, derr := s.dispatcher.postOnce(ctx, sub, testData, delivery.ID)
 	if derr == nil && statusCode >= 200 && statusCode < 300 {
-		_ = db.UpdateDeliveryResult(ctx, s.pool, delivery.ID, statusCode, "delivered", "", nil)
+		_ = db.UpdateDeliveryResult(ctx, ttx.Tx, delivery.ID, statusCode, "delivered", "", nil)
 	} else {
 		errMsg := ""
 		if derr != nil {
@@ -291,9 +343,16 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 		} else {
 			errMsg = fmt.Sprintf("HTTP %d", statusCode)
 		}
-		_ = db.UpdateDeliveryResult(ctx, s.pool, delivery.ID, statusCode, "dead_letter", errMsg, nil)
+		_ = db.UpdateDeliveryResult(ctx, ttx.Tx, delivery.ID, statusCode, "dead_letter", errMsg, nil)
 	}
 	updated, _ := db.GetDelivery(ctx, ttx.Tx, tenantID, delivery.ID)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.tested", "webhook_subscription", sub.ID,
+		nil, audit.Snapshot(map[string]any{"delivery_id": delivery.ID, "status_code": statusCode})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.tested: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
 	return connect.NewResponse(&apiv1.TestSubscriptionResponse{Delivery: deliveryRowToProto(updated)}), nil
 }
 
@@ -323,7 +382,9 @@ func (s *Service) ListDeliveries(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(resp), nil
 }
 
-// ReplayDelivery re-enqueues a dead-lettered delivery.
+// ReplayDelivery re-enqueues a dead-lettered delivery. The replayed
+// delivery row and the audit row commit in ONE tenant transaction
+// (transactional outbox — AC1).
 func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1.ReplayDeliveryRequest]) (*connect.Response[apiv1.ReplayDeliveryResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -336,14 +397,22 @@ func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	defer ttx.Rollback(ctx)
 	orig, err := db.GetDelivery(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	_ = ttx.Rollback(ctx)
-	replayed, err := db.ReenqueueDelivery(ctx, s.pool, orig)
+	replayed, err := db.ReenqueueDelivery(ctx, ttx.Tx, orig)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_delivery.replayed", "webhook_subscription", orig.SubscriptionID,
+		audit.Snapshot(map[string]any{"delivery_id": orig.ID, "status": orig.Status}),
+		audit.Snapshot(map[string]any{"delivery_id": replayed.ID, "status": replayed.Status})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_delivery.replayed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	return connect.NewResponse(&apiv1.ReplayDeliveryResponse{Delivery: deliveryRowToProto(replayed)}), nil
 }
@@ -379,11 +448,11 @@ func (s *Service) StreamSubscriptionDeliveries(ctx context.Context, req *connect
 			}
 			_ = json.Unmarshal(msg.Data, &env)
 			delivery := &apiv1.WebhookDelivery{
-				TenantId:    tenantID,
-				EventId:     env.EventID,
-				EventType:   env.EventType,
-				Status:      "delivered",
-				OccurredAt:  timestamppb.Now(),
+				TenantId:   tenantID,
+				EventId:    env.EventID,
+				EventType:  env.EventType,
+				Status:     "delivered",
+				OccurredAt: timestamppb.Now(),
 			}
 			if err := stream.Send(&apiv1.StreamSubscriptionDeliveriesResponse{
 				Delivery: delivery, Sequence: int64(msg.Seq),

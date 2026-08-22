@@ -78,6 +78,29 @@ export class TenantSettings extends Message<TenantSettings> {
   stallRepetitionWindowSeconds = protoInt64.zero;
 
   /**
+   * Max nudges sent to a live session before an advisory stall escalates to
+   * a fatal kill + recovery. Default 2.
+   *
+   * @generated from field: int32 stall_nudge_max = 31;
+   */
+  stallNudgeMax = 0;
+
+  /**
+   * How long a nudge waits for the worker to break the pattern before the
+   * next trip escalates. Seconds. Default 300 (5 min).
+   *
+   * @generated from field: int64 stall_nudge_reply_window_seconds = 32;
+   */
+  stallNudgeReplyWindowSeconds = protoInt64.zero;
+
+  /**
+   * Minimum gap between nudges. Seconds. Default 60.
+   *
+   * @generated from field: int64 stall_nudge_cooldown_seconds = 33;
+   */
+  stallNudgeCooldownSeconds = protoInt64.zero;
+
+  /**
    * How long an execution must have been running before it becomes
    * eligible for reaping (skips the fresh-dispatch race). Seconds.
    * Default 60.
@@ -172,6 +195,40 @@ export class TenantSettings extends Message<TenantSettings> {
   logMaxFiles = 0;
 
   /**
+   * --- Dispatch concurrency (per-project/tenant max-concurrent-runs) ---
+   * Cap on how many worker executions may run CONCURRENTLY across the
+   * whole tenant. Enforced at dispatch time in the TaskReconciler. A
+   * project can override this per-project (Project.max_concurrent_runs);
+   * the effective limit for a project is min(tenant, project), where 0 on
+   * either side means "no additional restriction from that side". Projects
+   * at their cap hold ready items until a running execution frees a slot.
+   * Optional so an update can distinguish "set to 0 (no cap)" from
+   * "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
+   *
+   * @generated from field: optional int32 max_concurrent_runs = 28;
+   */
+  maxConcurrentRuns?: number;
+
+  /**
+   * --- Session timeout ---
+   * Access-token TTL in seconds (how long an access token is valid).
+   * Zero = leave unchanged on update. Default is 900 (15 minutes).
+   * Range: [30, 86400].
+   *
+   * @generated from field: int64 session_access_token_ttl_seconds = 29;
+   */
+  sessionAccessTokenTtlSeconds = protoInt64.zero;
+
+  /**
+   * Refresh-token TTL in seconds (how long a refresh token is valid).
+   * Zero = leave unchanged on update. Default is 86400 (24 hours).
+   * Range: [300, 31536000].
+   *
+   * @generated from field: int64 session_refresh_token_ttl_seconds = 30;
+   */
+  sessionRefreshTokenTtlSeconds = protoInt64.zero;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -196,6 +253,9 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 31, name: "stall_nudge_max", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },
@@ -207,6 +267,9 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 25, name: "log_roll_interval_hours", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 26, name: "log_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 27, name: "log_max_files", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 28, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 29, name: "session_access_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 30, name: "session_refresh_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

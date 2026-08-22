@@ -3,21 +3,30 @@
 // Shows all currently scheduled work items in chronological order with
 // their next runtimes ("Upcoming", the default view), a view of items
 // that have fired and are actively executing ("Running"), plus a history
-// of items that already ran ("History"). All data comes from existing
-// Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
-// status = WORK_ITEM_STATUS_SCHEDULED query; Running and History are
-// broad fetches filtered client-side — Running to items with an in-flight
-// workflow run (status RUNNING / CHECKPOINTING / RECOVERING, workflow
-// bound), History to items that have a scheduled_start_at and a terminal
-// status (the ListWorkItems API accepts exactly one status filter, so
-// those status unions cannot be fetched in one call — the fetch is
-// isolated behind useListWorkItems so a future backend filter/RPC can
-// swap in without touching this page's layout).
+// of workflow runs that already executed ("History"). All data comes from
+// existing Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
+// status = WORK_ITEM_STATUS_SCHEDULED query plus a client-side "queued"
+// section of pending sequence children; Running is a broad item fetch
+// filtered client-side to items with an in-flight workflow run (status
+// RUNNING / CHECKPOINTING / RECOVERING, workflow bound); History is
+// run-driven — it enumerates the tenant's workflow_runs via the extended
+// ListWorkflowRuns RPC (scoped by project, sorted by each run's real
+// started_at) and renders one card per executed run, resolving each run's
+// bound work item / workflow for its title and kind.
 //
-// Recurring scheduled tasks are a future backend feature (design §5).
-// Every card reserves a right-aligned frequency slot that today renders
-// a muted "One-time" chip; when recurrence lands, only `recurrenceBadge`
-// changes — the slot already exists so the card layout does not reflow.
+// Sequence runs (a parent with children and no bound workflow) fan out to
+// per-child workflows: the engine resets every descendant to pending and
+// arms one child at a time. Only the parent carries scheduled_start_at,
+// so the children never match the SCHEDULED query — the Upcoming view
+// derives them from the full project list (see QueuedSection). In History,
+// a completed child's executed run appears like any other run (it carries
+// a real started_at in workflow_runs).
+//
+// Recurring work items (status = RECURRING, next_run_at set) are fetched
+// alongside scheduled items and merged into the Upcoming view. The
+// recurrenceBadge already renders the schedule's frequency; recurring
+// items use next_run_at as their effective fire time instead of
+// scheduled_start_at.
 import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 import { z } from "zod";
@@ -32,15 +41,20 @@ import {
 import type { Timestamp } from "@bufbuild/protobuf";
 
 import {
-  useBatchDeleteWorkItems,
   useDeleteWorkItem,
   useListWorkItems,
+  useRemoveSchedule,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import {
+  useListWorkflowRuns,
+  useListWorkflows,
+} from "@/api/workflows";
 import {
   WorkItemStatus,
   type WorkItem as WorkItemProto,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { WorkflowRun, Workflow as WorkflowProto } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,13 +65,23 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge } from "@/components/work-items/work-item-badges";
+import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge, RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
+import { showRecurringBadge } from "@/components/work-items/work-item-meta";
 import {
   computeSequencePositions,
   sequenceParentIds,
 } from "@/components/work-items/sequence-utils";
 import { cn } from "@/lib/utils";
+import { LiveDuration } from "@/components/ui/live-duration";
+import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { Route as rootRoute } from "@/routes/__root";
+import {
+  ACTIVE_RUNNING_STATUSES,
+  historyRunRanAt,
+  isHistoryRun,
+  queuedSequenceChildren,
+  upcomingSortTime,
+} from "@/lib/schedules-model";
 
 const schedulesSearchSchema = z.object({
   view: z.enum(["upcoming", "running", "history"]).optional(),
@@ -70,21 +94,6 @@ export const Route = createRoute({
   validateSearch: schedulesSearchSchema,
   component: SchedulesPage,
 });
-
-// Terminal statuses that count as "previously ran" for History
-// (succeeded / failed / cancelled).
-const TERMINAL_STATUSES = new Set([6, 7, 8]);
-
-// Active statuses that count as "currently running" for the Running view:
-// work items whose bound workflow run is in flight (RUNNING /
-// CHECKPOINTING / RECOVERING). These are only ever set for tickets bound
-// to an in-flight run (standalone dispatches use assigned), so the
-// predicate captures exactly "currently running workflows" — whether or
-// not the item carried a scheduled start. Disjoint from TERMINAL_STATUSES
-// and from SCHEDULED. A SEQUENCE parent (children + no bound workflow)
-// has no workflow_run_id, so the Running predicate is extended separately
-// (isSequenceRunningParent).
-const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
 
 // Schedulable kinds: Task, Subtask, and the recovery kinds. Epics and
 // features cannot be scheduled, so they are not offered in the filter.
@@ -115,7 +124,7 @@ function SchedulesPage() {
 
   const hasProjects = projects && projects.length > 0;
   const cancelScheduled = useDeleteWorkItem(projectId);
-  const batchDelete = useBatchDeleteWorkItems();
+  const removeSchedule = useRemoveSchedule(projectId);
 
   const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
@@ -156,19 +165,18 @@ function SchedulesPage() {
     setSelected(new Set());
   };
 
-  const handleBatchDelete = () => {
+  const handleRemoveSchedule = () => {
     if (selected.size === 0) return;
     const count = selected.size;
     if (
       !window.confirm(
-        `Permanently delete ${count} work item${count === 1 ? "" : "s"}? This cannot be undone.`,
+        `Remove ${count} schedule${count === 1 ? "" : "s"}? The work items will remain unchanged.`,
       )
     ) {
       return;
     }
-    batchDelete.mutate(Array.from(selected), {
-      onSuccess: () => setSelected(new Set()),
-    });
+    Array.from(selected).forEach((id) => removeSchedule.mutate(id));
+    setSelected(new Set());
   };
 
   return (
@@ -296,11 +304,11 @@ function SchedulesPage() {
             <Button
               variant="destructive"
               size="sm"
-              onClick={handleBatchDelete}
-              disabled={batchDelete.isPending}
+              onClick={handleRemoveSchedule}
+              disabled={removeSchedule.isPending}
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
-              Delete {selected.size} selected
+              Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
             </Button>
           ) : (
             <Button
@@ -350,6 +358,7 @@ function SchedulesPage() {
           selected={selected}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          now={now}
         />
       )}
 
@@ -396,48 +405,82 @@ function UpcomingView({
 }) {
   const {
     data: scheduled,
-    isLoading,
-    error,
+    isLoading: scheduledLoading,
+    error: scheduledError,
   } = useListWorkItems(projectId, {
     status: WorkItemStatus.SCHEDULED,
     search: search || undefined,
     refetchInterval: 5_000,
   });
-  // A scheduled item is a sequence parent when it has children and no
-  // bound workflow — its own run fans out to per-child workflows. The
-  // parent derivation needs the FULL project list: a scheduled sequence
-  // parent's children are pending (not scheduled), so they never appear
-  // in the SCHEDULED query above.
-  const { data: allItems } = useListWorkItems(projectId, {
+  const {
+    data: recurring,
+    isLoading: recurringLoading,
+    error: recurringError,
+  } = useListWorkItems(projectId, {
+    status: WorkItemStatus.RECURRING,
+    search: search || undefined,
+    refetchInterval: 5_000,
+  });
+  // The full project list is needed for the sequence derivations below (a
+  // scheduled sequence parent's children are pending, never scheduled), so
+  // the query is isolated behind its own load/error flags.
+  const {
+    data: allItems,
+    isLoading: allLoading,
+    error: allError,
+  } = useListWorkItems(projectId, {
     search: search || undefined,
     refetchInterval: 5_000,
   });
   const parentIds = useMemo(() => sequenceParentIds(allItems ?? []), [allItems]);
+  const positions = useMemo(
+    () => computeSequencePositions(allItems ?? []),
+    [allItems],
+  );
+
+  // Queued sequence children: a running sequence parent's not-yet-armed
+  // children. The sequence engine resets every descendant to pending on
+  // fire and arms one child at a time (parent + current child show under
+  // Running), so the remaining children are pending — NOT scheduled — and
+  // never match the SCHEDULED query above. Deriving them from the full
+  // project list keeps them visible under Upcoming until their turn.
+  const queued = useMemo(
+    () => queuedSequenceChildren(allItems ?? [], kindFilter),
+    [allItems, kindFilter],
+  );
 
   // Kind filter + chronological sort are client-side (the server sort_by
   // only supports title/priority/created_at; scheduled_start_at is not
-  // one of them).
+  // one of them). Recurring items use next_run_at as their effective
+  // fire time.
   const items = useMemo(() => {
-    const base = kindFilter
+    const scheduledFiltered = kindFilter
       ? (scheduled ?? []).filter((i) => i.kind === Number(kindFilter))
       : (scheduled ?? []);
-    const sorted = [...base].sort(
-      (a, b) => tsToMs(a.scheduledStartAt) - tsToMs(b.scheduledStartAt),
+    const recurringFiltered = kindFilter
+      ? (recurring ?? []).filter((i) => i.kind === Number(kindFilter))
+      : (recurring ?? []);
+    const all = [...scheduledFiltered, ...recurringFiltered];
+    const sorted = [...all].sort(
+      (a, b) => upcomingSortTime(a) - upcomingSortTime(b),
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
-  }, [scheduled, kindFilter, sortOrder]);
+  }, [scheduled, recurring, kindFilter, sortOrder]);
 
-  if (isLoading) {
+  const isLoading = scheduledLoading || recurringLoading;
+  const loadError = scheduledError || recurringError;
+
+  if (isLoading || allLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
-  if (error) {
+  if (loadError || allError) {
     return (
       <p className="text-sm text-destructive">
-        Failed to load schedules: {String(error)}
+        Failed to load schedules: {String(loadError || allError)}
       </p>
     );
   }
-  if (items.length === 0) {
+  if (items.length === 0 && queued.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -462,17 +505,27 @@ function UpcomingView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === items.length}
-          onChange={() => onToggleSelectAll(items)}
+          checked={selected.size === items.length + queued.length}
+          onChange={() => onToggleSelectAll([...queued, ...items])}
           className="h-4 w-4 rounded border-input"
           aria-label="Select all upcoming schedules"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
-            ? `${selected.size} of ${items.length} selected`
-            : `${items.length} scheduled item${items.length === 1 ? "" : "s"}`}
+            ? `${selected.size} of ${items.length + queued.length} selected`
+            : `${items.length + queued.length} scheduled item${items.length + queued.length === 1 ? "" : "s"}`}
         </span>
       </div>
+      {queued.length > 0 && (
+        <QueuedSection
+          queued={queued}
+          projects={projects}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
+          parentIds={parentIds}
+          positions={positions}
+        />
+      )}
       {groups.map((group, gi) => (
         <AgendaGroup
           key={group.key}
@@ -485,6 +538,130 @@ function UpcomingView({
           parentIds={parentIds}
         />
       ))}
+    </div>
+  );
+}
+
+// Queued section: the pending children of a running sequence parent. They
+// have no scheduled_start_at of their own (only the sequence parent is
+// scheduled), so they can't join the day-grouped agenda — this section
+// sits above it and orders them by chain order.
+function QueuedSection({
+  queued,
+  projects,
+  selected,
+  onToggleSelect,
+  parentIds,
+  positions,
+}: {
+  queued: WorkItemProto[];
+  projects?: Project[];
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  parentIds: Set<string>;
+  positions: Map<string, number>;
+}) {
+  return (
+    <section aria-label="Queued sequence children">
+      <div className="flex items-center gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Queued
+        </h2>
+        <div className="h-px flex-1 bg-border" />
+        <span className="text-xs text-muted-foreground">{queued.length}</span>
+      </div>
+      <ul className="mt-3 space-y-3">
+        {queued.map((item, ii) => (
+          <li key={item.id} className="flex gap-3">
+            <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
+              {positions.get(item.id) ? `#${positions.get(item.id)}` : "…"}
+            </div>
+            <div className="relative flex flex-col items-center">
+              <KindDot
+                kind={item.kind}
+                className="mt-4 ring-2 ring-background"
+              />
+              {ii !== queued.length - 1 && (
+                <span
+                  aria-hidden
+                  className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
+                />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <QueuedCard
+                item={item}
+                projects={projects}
+                selected={selected.has(item.id)}
+                onToggleSelect={onToggleSelect}
+                isSequenceChild={!!item.parentId && parentIds.has(item.parentId)}
+                position={positions.get(item.id)}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function QueuedCard({
+  item,
+  projects,
+  selected,
+  onToggleSelect,
+  isSequenceChild,
+  position,
+}: {
+  item: WorkItemProto;
+  projects?: Project[];
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+  isSequenceChild: boolean;
+  position?: number;
+}) {
+  const projectName = projects?.find((p) => p.id === item.projectId)?.name;
+  return (
+    <div className="group flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggleSelect(item.id)}
+        className="h-4 w-4 shrink-0 rounded border-input"
+        aria-label={`Select ${item.title}`}
+      />
+      <Link
+        to="/work-items/$id"
+        params={{ id: item.id }}
+        className="min-w-0 flex-1"
+      >
+        <Card className="transition-colors hover:bg-accent">
+          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <KindDot kind={item.kind} />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium group-hover:underline">
+                    {item.title}
+                  </span>
+                  <KindBadge kind={item.kind} />
+                  {isSequenceChild && <MultiWorkflowChip />}
+                  {position ? <PositionBadge position={position} /> : null}
+                  {showRecurringBadge(item) && <RecurringBadge />}
+                  <StatusPill status={item.status} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {projectName && <span>{projectName}</span>}
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Queued — waits for the current step
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
     </div>
   );
 }
@@ -526,7 +703,7 @@ function AgendaGroup({
           return (
             <li key={item.id} className="flex gap-3">
               <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-                {formatTime(tsToMs(item.scheduledStartAt))}
+                {formatTime(upcomingSortTime(item))}
               </div>
               <div className="relative flex flex-col items-center">
                 <KindDot
@@ -574,7 +751,7 @@ function ScheduleCard({
   isSequenceParent: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const scheduledAt = tsToMs(item.scheduledStartAt);
+  const fireTime = upcomingSortTime(item);
   return (
     <div className="group flex items-center gap-2">
       <input
@@ -600,6 +777,7 @@ function ScheduleCard({
                   </span>
                   <KindBadge kind={item.kind} />
                   {isSequenceParent && <MultiWorkflowChip />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -611,9 +789,9 @@ function ScheduleCard({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
               <span className="inline-flex items-center gap-1 font-mono tabular-nums">
                 <Clock className="h-3 w-3" />
-                {formatTime(scheduledAt)}
+                {formatTime(fireTime)}
               </span>
-              <CountdownChip target={scheduledAt} now={now} />
+              <CountdownChip target={fireTime} now={now} />
               <span className="rounded-full border border-input px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 {recurrenceBadge(item)}
               </span>
@@ -638,6 +816,7 @@ function RunningView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  now,
 }: {
   projectId: string;
   search: string;
@@ -647,6 +826,7 @@ function RunningView({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
+  now: number;
 }) {
   const {
     data: allItems,
@@ -752,6 +932,7 @@ function RunningView({
                 isSequenceParent={parentIds.has(item.id)}
                 position={positions.get(item.id)}
                 isSequenceChild={!!item.parentId && parentIds.has(item.parentId)}
+                now={now}
               />
             </div>
           </li>
@@ -769,6 +950,7 @@ function RunningCard({
   isSequenceParent,
   position,
   isSequenceChild,
+  now,
 }: {
   item: WorkItemProto;
   projects?: Project[];
@@ -777,6 +959,7 @@ function RunningCard({
   isSequenceParent: boolean;
   position?: number;
   isSequenceChild: boolean;
+  now: number;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
   const startedAt = runningStartedAt(item);
@@ -806,6 +989,7 @@ function RunningCard({
                   <KindBadge kind={item.kind} />
                   {(isSequenceParent || isSequenceChild) && <MultiWorkflowChip />}
                   {isSequenceChild && position ? <PositionBadge position={position} /> : null}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -818,6 +1002,7 @@ function RunningCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
+              <LiveDuration startedAt={startedAt} now={now} className="font-mono text-xs tabular-nums text-muted-foreground" />
               {!isSequenceParent && <WorkflowChip workflowId={item.workflowId} />}
               {item.workflowId && item.workflowRunId && (
                 <RunChip
@@ -856,30 +1041,74 @@ function HistoryView({
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
 }) {
+  // History is run-driven: enumerate the tenant's workflow runs for the
+  // selected scope (project, or all projects when empty) ordered by each
+  // run's real started_at. Every executed run appears — recurring fires
+  // whose work item re-armed to SCHEDULED/RECURRING, prior runs of a work
+  // item that ran more than once, and in-flight runs all carry a real
+  // started_at (the authoritative workflow_runs record), so none of them
+  // are dropped by a work-item-status derivation.
   const {
-    data: allItems,
-    isLoading,
-    error,
-  } = useListWorkItems(projectId, {
-    search: search || undefined,
+    data: runs,
+    isLoading: runsLoading,
+    error: runsError,
+  } = useListWorkflowRuns({
+    projectId: projectId || undefined,
+    sortBy: "started_at",
+    sortOrder,
+    pageSize: 1000,
     refetchInterval: 30_000,
   });
+  // The FULL project work item list (no search/kind filter) so every run's
+  // bound item resolves; search/kind are applied client-side below.
+  const {
+    data: allItems,
+    isLoading: itemsLoading,
+    error: itemsError,
+  } = useListWorkItems(projectId, {
+    refetchInterval: 30_000,
+  });
+  // All tenant workflows (including templates) so unbound one-shot runs —
+  // and bound runs whose workflow is a tenant-level template — render a
+  // human-readable workflow name.
+  const { data: workflows } = useListWorkflows();
 
-  // History = items that had a scheduled start and reached a terminal
-  // status (the API accepts one status filter, so this union is derived
-  // client-side; see the header comment).
-  const items = useMemo(() => {
-    const base = (allItems ?? []).filter(
-      (i) =>
-        i.scheduledStartAt &&
-        TERMINAL_STATUSES.has(i.status) &&
-        (!kindFilter || i.kind === Number(kindFilter)),
-    );
+  const itemsById = useMemo(() => {
+    const m = new Map<string, WorkItemProto>();
+    for (const i of allItems ?? []) m.set(i.id, i);
+    return m;
+  }, [allItems]);
+  const workflowsById = useMemo(() => {
+    const m = new Map<string, WorkflowProto>();
+    for (const w of workflows ?? []) m.set(w.id, w);
+    return m;
+  }, [workflows]);
+
+  // Resolve each run to a bound item (when it has one) and apply
+  // search/kind client-side, then order by the run's actual start time.
+  const entries = useMemo(() => {
+    const base = (runs ?? []).filter((run) => {
+      if (!isHistoryRun(run)) return false;
+      const item = run.workItemId ? itemsById.get(run.workItemId) : undefined;
+      if (kindFilter && (!item || item.kind !== Number(kindFilter))) return false;
+      if (search) {
+        const itemMatch = item?.title.toLowerCase().includes(search.toLowerCase());
+        const workflowName = workflowsById.get(run.workflowId)?.name.toLowerCase();
+        const workflowMatch =
+          (workflowName ?? "").includes(search.toLowerCase()) ||
+          run.workflowId.toLowerCase().includes(search.toLowerCase());
+        if (!itemMatch && !workflowMatch) return false;
+      }
+      return true;
+    });
     const sorted = [...base].sort(
-      (a, b) => tsToMs(b.scheduledStartAt) - tsToMs(a.scheduledStartAt),
+      (a, b) => historyRunRanAt(b) - historyRunRanAt(a),
     );
     return sortOrder === "desc" ? sorted : sorted.reverse();
-  }, [allItems, kindFilter, sortOrder]);
+  }, [runs, itemsById, workflowsById, kindFilter, search, sortOrder]);
+
+  const isLoading = runsLoading || itemsLoading;
+  const error = runsError || itemsError;
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -891,7 +1120,7 @@ function HistoryView({
       </p>
     );
   }
-  if (items.length === 0) {
+  if (entries.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -900,7 +1129,7 @@ function HistoryView({
             No past runs yet
           </CardTitle>
           <CardDescription>
-            Scheduled work items that have run will appear here.
+            Workflow runs that have executed will appear here.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -912,29 +1141,33 @@ function HistoryView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === items.length}
-          onChange={() => onToggleSelectAll(items)}
+          checked={selected.size === entries.length}
+          onChange={() => onToggleSelectAll(
+            entries
+              .map((r) => (r.workItemId ? itemsById.get(r.workItemId) : undefined))
+              .filter((i): i is WorkItemProto => !!i),
+          )}
           className="h-4 w-4 rounded border-input"
           aria-label="Select all history items"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
-            ? `${selected.size} of ${items.length} selected`
-            : `${items.length} past run item${items.length === 1 ? "" : "s"}`}
+            ? `${selected.size} of ${entries.length} selected`
+            : `${entries.length} past run${entries.length === 1 ? "" : "s"}`}
         </span>
       </div>
       <ul className="space-y-3">
-        {items.map((item, ii) => (
-          <li key={item.id} className="flex gap-3">
+        {entries.map((run, ii) => (
+          <li key={run.id} className="flex gap-3">
             <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-              {formatTime(tsToMs(item.scheduledStartAt))}
+              {formatTime(historyRunRanAt(run))}
             </div>
             <div className="relative flex flex-col items-center">
               <KindDot
-                kind={item.kind}
+                kind={itemsById.get(run.workItemId ?? "")?.kind ?? 0}
                 className="mt-4 ring-2 ring-background"
               />
-              {ii !== items.length - 1 && (
+              {ii !== entries.length - 1 && (
                 <span
                   aria-hidden
                   className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
@@ -943,9 +1176,11 @@ function HistoryView({
             </div>
             <div className="min-w-0 flex-1">
               <HistoryCard
-                item={item}
+                run={run}
+                item={run.workItemId ? itemsById.get(run.workItemId) : undefined}
+                workflow={workflowsById.get(run.workflowId)}
                 projects={projects}
-                selected={selected.has(item.id)}
+                selected={run.workItemId ? selected.has(run.workItemId) : false}
                 onToggleSelect={onToggleSelect}
               />
             </div>
@@ -957,43 +1192,54 @@ function HistoryView({
 }
 
 function HistoryCard({
+  run,
   item,
+  workflow,
   projects,
   selected,
   onToggleSelect,
 }: {
-  item: WorkItemProto;
+  run: WorkflowRun;
+  item?: WorkItemProto;
+  workflow?: WorkflowProto;
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
 }) {
-  const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const ranAt = tsToMs(item.scheduledStartAt);
+  const projectName = projects?.find((p) => p.id === run.projectId)?.name;
+  const ranAt = historyRunRanAt(run);
+  const startedAt = run.startedAt ? tsToMs(run.startedAt) : ranAt;
+  const endedAt = run.endedAt ? tsToMs(run.endedAt) : undefined;
+  const title = item?.title ?? workflow?.name ?? run.workflowId;
+  const itemId = item?.id;
   return (
     <div className="group flex items-center gap-2">
       <input
         type="checkbox"
         checked={selected}
-        onChange={() => onToggleSelect(item.id)}
+        onChange={() => itemId && onToggleSelect(itemId)}
+        disabled={!itemId}
         className="h-4 w-4 shrink-0 rounded border-input"
-        aria-label={`Select ${item.title}`}
+        aria-label={`Select ${title}`}
       />
       <Link
         to="/work-items/$id"
-        params={{ id: item.id }}
+        params={{ id: itemId ?? "" }}
+        disabled={!itemId}
         className="min-w-0 flex-1"
       >
         <Card className="transition-colors hover:bg-accent">
           <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3">
-              <KindDot kind={item.kind} />
+              <KindDot kind={item?.kind ?? 0} />
               <div className="min-w-0 flex-1 overflow-hidden">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-medium group-hover:underline">
-                    {item.title}
+                    {title}
                   </span>
-                  <KindBadge kind={item.kind} />
-                  <StatusPill status={item.status} />
+                  {item && <KindBadge kind={item.kind} />}
+                  {item && showRecurringBadge(item) && <RecurringBadge />}
+                  <RunStatusBadge status={run.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {projectName && <span>{projectName}</span>}
@@ -1005,11 +1251,12 @@ function HistoryCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
-              <WorkflowChip workflowId={item.workflowId} />
-              {item.workflowId && item.workflowRunId && (
+              <LiveDuration startedAt={startedAt} endedAt={endedAt} className="font-mono text-xs tabular-nums text-muted-foreground" />
+              <WorkflowChip workflowId={run.workflowId} />
+              {run.workflowId && (
                 <RunChip
-                  workflowId={item.workflowId}
-                  runId={item.workflowRunId}
+                  workflowId={run.workflowId}
+                  runId={run.id}
                 />
               )}
             </div>
@@ -1097,9 +1344,9 @@ function LiveClock({ now }: { now: number }) {
 // Optional polish strip: upcoming count, next run + countdown, due today.
 function StatsStrip({ items, now }: { items: WorkItemProto[]; now: number }) {
   if (items.length === 0) return null;
-  const nextMs = tsToMs(items[0].scheduledStartAt);
+  const nextMs = upcomingSortTime(items[0]);
   const dueToday = items.filter((i) =>
-    isSameLocalDay(tsToMs(i.scheduledStartAt), now),
+    isSameLocalDay(upcomingSortTime(i), now),
   ).length;
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border bg-card px-4 py-2.5 text-xs text-muted-foreground">
@@ -1178,14 +1425,11 @@ function RunChip({ workflowId, runId }: { workflowId: string; runId: string }) {
   );
 }
 
-// Recurring scheduled tasks are a future backend feature (design §5).
-// Today every scheduled item is one-time; when a recurrence/cron field
-// lands on the work item, ONLY this helper changes — the frequency slot
-// already exists on every card, so the layout does not reflow. The `item`
-// parameter is the future recurrence contract (kept for the signature).
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function recurrenceBadge(_item: WorkItemProto): string {
-  return "One-time";
+// Recurring scheduled tasks: when a recurrence/cron field lands on the work
+// item, this helper returns the human-readable badge string. The frequency
+// slot already exists on every card, so the layout does not reflow.
+function recurrenceBadge(item: WorkItemProto): string {
+  return formatRecurrence(item.recurringSchedule);
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,6 +1440,11 @@ function tsToMs(ts?: Timestamp): number {
   if (!ts) return 0;
   return Number(ts.seconds) * 1000;
 }
+
+// upcomingSortTime lives in schedules-model.ts (unit-tested): it returns
+// the effective fire time for an Upcoming-view item. Scheduled items use
+// scheduled_start_at; recurring items use next_run_at (the computed next
+// occurrence).
 
 // runningStartedAt is the effective start time for a Running-view item. A
 // running ticket started without a schedule has no scheduled_start_at, so
@@ -1275,7 +1524,7 @@ function groupByDay(items: WorkItemProto[], now: number) {
   const today = startOfDay(now);
   const groups: { key: string; label: string; items: WorkItemProto[] }[] = [];
   for (const item of items) {
-    const ts = tsToMs(item.scheduledStartAt);
+    const ts = upcomingSortTime(item);
     const day = startOfDay(ts);
     const diffDays = Math.round((day - today) / 86_400_000);
     let label: string;

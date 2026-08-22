@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { CheckCircle2, FastForward, RefreshCw, XCircle } from "lucide-react";
 import ReactFlow, {
   Background,
@@ -13,7 +13,6 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Timestamp } from "@bufbuild/protobuf";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
@@ -30,6 +29,7 @@ import {
 import { useListExecutions } from "@/api/executions";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
 import { workflowKeys } from "@/api/workflows";
+import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -39,8 +39,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { WorktreeTiles, worktreeTileItems } from "@/components/WorktreeTiles";
 import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
+import { LiveDuration } from "@/components/ui/live-duration";
 import { Route as rootRoute } from "@/routes/__root";
 
 import "reactflow/dist/style.css";
@@ -357,6 +359,35 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           )}
         </div>
       </div>
+
+      {run.startedAt && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-1.5">
+          <LiveDuration startedAt={run.startedAt} endedAt={run.endedAt} />
+          <span className="text-xs text-muted-foreground">elapsed</span>
+        </div>
+      )}
+
+      {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
+        <div className="rounded-xl border bg-card p-4 shadow-sm">
+          <h3 className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <span>Worktree</span>
+            {run && (
+              <PrLinkChip
+                run={{
+                  prUrl: run.prUrl || undefined,
+                  prState: run.prState || undefined,
+                  completed: isTerminal,
+                }}
+              />
+            )}
+          </h3>
+          <WorktreeTiles
+            worktreeStatus={run.worktreeStatus}
+            worktreeBranch={run.worktreeBranch}
+            worktreePath={run.worktreePath}
+          />
+        </div>
+      )}
 
       {/* run canvas with live step transitions */}
       <div className="h-[600px] rounded-lg border bg-card">
@@ -962,41 +993,6 @@ const STEP_RUN_STATUS_LABELS: Record<number, string> = {
   7: "blocked",
   8: "approval_pending",
 };
-
-function formatDuration(seconds: number): string {
-  if (seconds < 1) return "<1s";
-  if (seconds < 60) return `${Math.round(seconds * 10) / 10}s`;
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return `${m}m ${s}s`;
-}
-
-function LiveDuration({ startedAt, endedAt }: { startedAt?: Timestamp | null; endedAt?: Timestamp | null }) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const startMs = startedAt ? Number(startedAt.seconds) * 1000 + (startedAt.nanos ?? 0) / 1_000_000 : 0;
-    if (!startMs) { setElapsed(0); return; }
-
-    if (endedAt) {
-      const endMs = Number(endedAt.seconds) * 1000 + (endedAt.nanos ?? 0) / 1_000_000;
-      setElapsed((endMs - startMs) / 1000);
-      return;
-    }
-
-    const tick = () => setElapsed((Date.now() - startMs) / 1000);
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [startedAt, endedAt]);
-
-  if (!startedAt) return null;
-  return (
-    <span className="font-mono text-xs text-muted-foreground shrink-0">
-      {formatDuration(elapsed)}
-    </span>
-  );
-}
 
 function ExecStatusBadge({ status }: { status: number }) {
   const labels: Record<number, string> = {

@@ -13,8 +13,9 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems } from "@/api/workItems";
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems, useRestoreWorkItem } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -40,10 +41,12 @@ import {
 import {
   WorkItemsFilterBar,
 } from "@/components/work-items/work-items-filter-bar";
+import { WorkItemsArchiveView } from "@/components/work-items/work-items-archive-view";
 import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
+import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -82,6 +85,17 @@ function WorkItemsPage() {
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
   const toast = useToast();
   const reorder = useReorderWorkItems();
+  const restoreWorkItem = useRestoreWorkItem(projectId);
+  const handleRestore = (id: string) => {
+    restoreWorkItem.mutate(id, {
+      onSuccess: (item) => {
+        toast.success(`Restored "${item.title}" to the active views.`);
+      },
+      onError: (e) => {
+        toast.error(`Failed to restore: ${String(e)}`);
+      },
+    });
+  };
   const handleReorder = (parentId: string, childIds: string[]) => {
     // The RPC requires the siblings' project — derive it from the items
     // themselves so reorder works in the "All projects" view too (the
@@ -113,8 +127,37 @@ function WorkItemsPage() {
   } = useListWorkItems(projectId, {
     sortBy: sortBy || undefined,
     sortOrder: sortOrder || undefined,
+    // The archive view is the ONLY caller that opts in to archived items;
+    // every active view (tree/board) leaves this false so archived items
+    // never surface in them.
+    includeArchived: view === "archive",
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
+
+  // Run/PR visibility (parallel board view): executions carry the run's
+  // branch/worktree and PR surface (mirrored at dispatch), so group them by
+  // work item (taskId) to render a per-run footer on the board/list cards.
+  // Reuses useListExecutions (MVP path) — no new RPC. Polling matches the
+  // board's 5s rhythm so concurrent runs stay fresh.
+  const { data: executions } = useListExecutions({
+    projectId: projectId || undefined,
+  });
+  const runsByItem = useMemo(() => {
+    const m = new Map<string, PrRun[]>();
+    for (const e of executions ?? []) {
+      if (!e.taskId) continue;
+      const pr: PrRun = {
+        prUrl: e.prUrl || undefined,
+        prState: e.prState || undefined,
+        worktreeBranch: e.worktreeBranch || undefined,
+        completed: isTerminalExecutionStatus(e.status),
+      };
+      const list = m.get(e.taskId);
+      if (list) list.push(pr);
+      else m.set(e.taskId, [pr]);
+    }
+    return m;
+  }, [executions]);
 
   const blockState = useMemo(
     () => computeBlockState(graph?.nodes, graph?.edges),
@@ -282,7 +325,15 @@ function WorkItemsPage() {
             </p>
           )}
           <TooltipProvider delayDuration={200}>
-            {view === "tree" ? (
+            {view === "archive" ? (
+              <WorkItemsArchiveView
+                items={items}
+                isLoading={isLoading}
+                error={error}
+                onRestore={handleRestore}
+                restorePending={restoreWorkItem.isPending}
+              />
+            ) : view === "tree" ? (
               <WorkItemsTree
                 treeItems={treeData.treeItems}
                 allItems={items}
@@ -300,6 +351,7 @@ function WorkItemsPage() {
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}
+                runsByItem={runsByItem}
               />
             ) : (
               <WorkItemsBoard
@@ -314,6 +366,7 @@ function WorkItemsPage() {
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}
+                runsByItem={runsByItem}
               />
             )}
           </TooltipProvider>

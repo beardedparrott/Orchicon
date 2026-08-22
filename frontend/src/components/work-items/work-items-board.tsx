@@ -56,12 +56,14 @@ import {
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { blockingTitles } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import type { PrRun } from "@/lib/pr";
 
 export interface WorkItemsBoardProps {
   projectId: string;
@@ -81,6 +83,9 @@ export interface WorkItemsBoardProps {
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
+  /** per-work-item run footer data (branch/worktree/PR per active run) —
+   *  makes concurrent runs visible on the board card */
+  runsByItem?: Map<string, PrRun[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +136,7 @@ export function WorkItemsBoard({
   isLoading,
   error,
   hasQuery,
+  runsByItem,
 }: WorkItemsBoardProps) {
   const updateStatus = useUpdateWorkItem(projectId);
   const { moveItems: batchMoveItems } = useBatchMoveWorkItems(projectId);
@@ -384,6 +390,7 @@ export function WorkItemsBoard({
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
               positions={positions}
+              runsByItem={runsByItem}
             />
           );
         })}
@@ -400,6 +407,7 @@ export function WorkItemsBoard({
                 (blockState.blocks.get(activeItem.id)?.length ?? 0) +
                 (blockState.blockedBy.get(activeItem.id)?.length ?? 0)
               }
+              runs={runsByItem?.get(activeItem.id)}
             />
             {dragCount > 1 && (
               <span
@@ -433,6 +441,7 @@ function BoardColumn({
   onToggleCollapse,
   dragCount,
   positions,
+  runsByItem,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -446,6 +455,7 @@ function BoardColumn({
   onToggleCollapse: (id: string) => void;
   dragCount: number;
   positions: Map<string, number>;
+  runsByItem?: Map<string, PrRun[]>;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -517,6 +527,7 @@ function BoardColumn({
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
               positions={positions}
+              runsByItem={runsByItem}
             />
           ))}
         </SortableContext>
@@ -548,6 +559,7 @@ function HierarchyNodeComponent({
   onToggleCollapse,
   dragCount,
   positions,
+  runsByItem,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -561,6 +573,7 @@ function HierarchyNodeComponent({
   onToggleCollapse: (id: string) => void;
   dragCount: number;
   positions: Map<string, number>;
+  runsByItem?: Map<string, PrRun[]>;
   depth?: number;
 }) {
   // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
@@ -583,6 +596,7 @@ function HierarchyNodeComponent({
           onToggleExpand={() => onToggleCollapse(node.item.id)}
           multiDragCount={dragCount}
           position={positions.get(node.item.id)}
+          runs={runsByItem?.get(node.item.id)}
         />
       </div>
       {expanded &&
@@ -601,6 +615,7 @@ function HierarchyNodeComponent({
             onToggleCollapse={onToggleCollapse}
             dragCount={dragCount}
             positions={positions}
+            runsByItem={runsByItem}
             depth={depth + 1}
           />
         ))}
@@ -624,6 +639,7 @@ function SortableCard({
   onToggleExpand,
   multiDragCount = 0,
   position,
+  runs,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -638,6 +654,8 @@ function SortableCard({
   multiDragCount?: number;
   /** chain position badge (#1, #2, …) — true sequence order */
   position?: number;
+  /** run footer data (branch/worktree/PR per active run) */
+  runs?: PrRun[];
 }) {
   const {
     attributes,
@@ -682,6 +700,7 @@ function SortableCard({
         moving={moving}
         actions={
           <div className="flex items-center gap-1">
+            <SequenceControls item={item} hasChildren={hasChildren} />
             {hasChildren && (
               <button
                 type="button"
@@ -706,6 +725,7 @@ function SortableCard({
             <MoveToMenu item={item} disabled={moving} onMove={onMove} />
           </div>
         }
+        runs={runs}
       />
     </div>
   );

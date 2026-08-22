@@ -34,6 +34,7 @@ import {
   usePublishWorkflow,
   useReleaseWorkflowEditLock,
   useStartWorkflow,
+  useUpdateWorkflow,
   useUpdateWorkflowVersion,
   workflowKeys,
 } from "@/api/workflows";
@@ -108,7 +109,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const navigate = useNavigate();
   const { data, isLoading, error } = useGetWorkflow(workflowId);
   const { data: versions } = useListWorkflowVersions(workflowId);
-  const { data: runs } = useListWorkflowRuns(workflowId);
+  const { data: runs } = useListWorkflowRuns({ workflowId });
   const { data: editLock } = useGetWorkflowEditLock(workflowId);
   const acquireLock = useAcquireWorkflowEditLock();
   const releaseLock = useReleaseWorkflowEditLock();
@@ -121,6 +122,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const deleteVersion = useDeleteWorkflowVersion();
   const createVersion = useCreateWorkflowVersion();
   const createWorkflow = useCreateWorkflow();
+  const updateWorkflow = useUpdateWorkflow();
   const qc = useQueryClient();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -132,6 +134,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const [dirty, setDirty] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState("");
 
   // Resolve project from canvas PROJECT connector nodes. Must be before
   // the early returns (hooks cannot be conditional).
@@ -698,7 +702,38 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               <span className="ml-1 hidden sm:inline">Back</span>
             </Button>
             <div className="min-w-0">
-              <h1 className="text-lg font-semibold tracking-tight sm:text-2xl truncate">{wf.name}</h1>
+              {editingName ? (
+                <input
+                  autoFocus
+                  className="text-lg font-semibold tracking-tight sm:text-2xl bg-transparent border-b border-primary outline-none w-full"
+                  value={nameValue}
+                  onChange={(e) => setNameValue(e.target.value)}
+                  onBlur={() => {
+                    const trimmed = nameValue.trim();
+                    if (trimmed && trimmed !== wf.name) {
+                      updateWorkflow.mutate({ workflowId: wf.id, name: trimmed });
+                    }
+                    setEditingName(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      (e.target as HTMLInputElement).blur();
+                    }
+                    if (e.key === "Escape") {
+                      setEditingName(false);
+                    }
+                  }}
+                  maxLength={500}
+                />
+              ) : (
+                <h1
+                  className="text-lg font-semibold tracking-tight sm:text-2xl truncate cursor-text hover:opacity-80"
+                  onClick={() => { setNameValue(wf.name); setEditingName(true); }}
+                  title="Click to rename"
+                >
+                  {wf.name}
+                </h1>
+              )}
               <p className="truncate text-xs text-muted-foreground">
                 {effectiveProjectId ? `project: ${effectiveProjectId.slice(0, 12)}…` : "tenant template"} ·
                 {" "}v{wf.currentVersion || "—"} · status:{" "}

@@ -12,11 +12,14 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -31,6 +34,16 @@ type StartWorkflowStarter func(ctx context.Context, tenantID, workflowID, projec
 // sequence engine; validation of the subtree runs BEFORE it is called.
 type StartSequenceStarter func(ctx context.Context, tenantID, parentID string) error
 
+// ResumeSequenceStarter resumes a sequence parent from its current state:
+// parent → running, first non-succeeded child armed, history kept.
+// Injected by the server wired to the sequence engine.
+type ResumeSequenceStarter func(ctx context.Context, tenantID, parentID string) error
+
+// StopSequenceStarter parks a sequence parent: parent → pending and the
+// scheduled start cleared, nothing else. Injected by the server wired to
+// the sequence engine.
+type StopSequenceStarter func(ctx context.Context, tenantID, parentID string) error
+
 // RuntimeImageResolver resolves the base runtime image tag (or "" when no
 // daemon is configured). Injected by the server so the backend can stamp
 // the work item's runtime_image default (AGENTS.md: the default is a
@@ -44,11 +57,13 @@ type RuntimeImageResolver func(ctx context.Context) string
 // (docs/09 §5). Dependency cycles are rejected at admission using a
 // recursive CTE (docs/09 §11).
 type Service struct {
-	pool            *db.Pool
-	log             *slog.Logger
-	startWorkflowFn StartWorkflowStarter
-	sequenceStartFn StartSequenceStarter
-	runtimeImageFn  RuntimeImageResolver
+	pool             *db.Pool
+	log              *slog.Logger
+	startWorkflowFn  StartWorkflowStarter
+	sequenceStartFn  StartSequenceStarter
+	sequenceResumeFn ResumeSequenceStarter
+	sequenceStopFn   StopSequenceStarter
+	runtimeImageFn   RuntimeImageResolver
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -68,6 +83,16 @@ func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWork
 // for a parent work item with children (auto-start / run-instant path).
 // Called by the server before the reconciler starts.
 func (s *Service) SetStartSequenceStarter(fn StartSequenceStarter) { s.sequenceStartFn = fn }
+
+// SetResumeSequenceStarter injects the function that resumes a sequence
+// parent (parent → running, first non-succeeded child armed, history
+// kept). Called by the server before the reconciler starts.
+func (s *Service) SetResumeSequenceStarter(fn ResumeSequenceStarter) { s.sequenceResumeFn = fn }
+
+// SetStopSequenceStarter injects the function that parks a sequence parent
+// (parent → pending, scheduled start cleared). Called by the server before
+// the reconciler starts.
+func (s *Service) SetStopSequenceStarter(fn StopSequenceStarter) { s.sequenceStopFn = fn }
 
 // SetRuntimeImageResolver injects the function that resolves the base
 // runtime image tag, used to stamp the work item's runtime_image default.
@@ -171,9 +196,28 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
+	// Parse and validate recurring schedule (if provided). An empty but
+	// present message (proto3 "clear" semantics) is normalized to nil
+	// before validation — same treatment as UpdateWorkItem.
+	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+		msg.RecurringSchedule = nil
+	}
+	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	status := domain.WorkItemPending
 	if scheduledStartAt != nil {
 		status = domain.WorkItemScheduled
+	}
+	if recurringSchedule != nil {
+		status = domain.WorkItemRecurring
+	}
+	now := time.Now().UTC()
+	var nextRunAt *time.Time
+	if recurringSchedule != nil {
+		nextRunAt = ComputeNextRunAt(msg.RecurringSchedule, now)
 	}
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
@@ -192,6 +236,8 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		ScheduledStartAt:   scheduledStartAt,
 		AutoStartWorkflow:  autoStart,
 		ContextFiles:       contextFiles,
+		RecurringSchedule:  recurringSchedule,
+		NextRunAt:          nextRunAt,
 	}
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
@@ -217,6 +263,50 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.created", "work_item", created.ID, nil, audit.Snapshot(workItemAuditSnapshot(created))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.created: %w", err))
+	}
+	// depends_on edges: create a DEPENDS_ON-type edge for each listed ID in
+	// the same transaction as the item. Cycle check is intentionally NOT
+	// run here — it is provably safe by construction: a fresh item has no
+	// incoming edges, so an outgoing item→target edge can never close a
+	// cycle regardless of the graph around it. (Do not assume this for a
+	// path that creates edges between two fresh items — that can cycle and
+	// must cycle-check; the DB trigger enforce_work_dag_acyclic is the
+	// backstop for every writer.) Validation (same project, exists, no
+	// self-dependency) still runs against the effective project. Any
+	// failure rolls the whole tx back — no item, no edges.
+	if len(msg.DependsOn) > 0 {
+		validated, err := validateDependsOn(ctx, ttx.Tx, tenantID, msg.ProjectId, created.ID, msg.DependsOn)
+		if err != nil {
+			return nil, err
+		}
+		for _, depID := range validated {
+			d := db.DependencyRow{
+				ID:        db.NewID(),
+				TenantID:  tenantID,
+				ProjectID: msg.ProjectId,
+				FromID:    created.ID,
+				ToID:      depID,
+				Type:      domain.DependencyDependsOn,
+			}
+			createdDep, err := db.CreateDependency(ctx, ttx.Tx, d)
+			if err != nil {
+				return nil, mapDBError(err)
+			}
+			if err := enqueueDependencyEvent(ctx, ttx.Tx, "work_item.dependency_added", createdDep); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_added", "work_item", createdDep.FromID,
+				nil, audit.Snapshot(map[string]any{"from_id": createdDep.FromID, "to_id": createdDep.ToID, "type": createdDep.Type})); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
+			}
+		}
+	}
+	proto := rowToProto(created)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -236,7 +326,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 
 	s.log.Info("work item created", "id", created.ID, "kind", kind, "project", msg.ProjectId)
-	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: rowToProto(created)}), nil
+	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: proto}), nil
 }
 
 // GetWorkItem returns a single work item by id.
@@ -257,7 +347,14 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: rowToProto(w)}), nil
+	proto := rowToProto(w)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
 }
 
 // ListWorkItems returns a page of work items for a project, optionally
@@ -269,13 +366,14 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 	}
 	// Empty project_id = list across all projects (for "All" filter).
 	f := db.ListWorkItemsFilter{
-		TenantID:  tenantID,
-		ProjectID: req.Msg.ProjectId,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
-		Search:    req.Msg.Search,
-		SortBy:    req.Msg.SortBy,
-		SortOrder: req.Msg.SortOrder,
+		TenantID:        tenantID,
+		ProjectID:       req.Msg.ProjectId,
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
+		Search:          req.Msg.Search,
+		SortBy:          req.Msg.SortBy,
+		SortOrder:       req.Msg.SortOrder,
+		IncludeArchived: req.Msg.IncludeArchived,
 	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
@@ -296,6 +394,12 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 	resp := &apiv1.ListWorkItemsResponse{}
 	for _, w := range items {
 		resp.WorkItems = append(resp.WorkItems, rowToProto(w))
+	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if len(items) > 0 {
 		resp.NextPageToken = items[len(items)-1].ID
@@ -344,7 +448,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		fields.AcceptanceReview = &ar
 	}
 	if msg.Status != nil {
-		fields.Status = strPtr(validateStatus(*msg.Status))
+		st := validateStatus(*msg.Status)
+		// Archiving is a deliberate, gated action with its own preconditions
+		// (terminal status only, no children) and its own archived_at /
+		// archived_from_status bookkeeping. Routing it through the generic
+		// update path would set status='archived' with archived_at NULL —
+		// which every active view (archived_at IS NULL filter) would then
+		// wrongly surface. Reject it here; callers must use ArchiveWorkItem.
+		if st == domain.WorkItemArchived {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("archiving must go through ArchiveWorkItem; it is not settable via the generic update path"))
+		}
+		fields.Status = strPtr(st)
 	}
 	if msg.Priority != nil {
 		fields.Priority = intPtr(int(*msg.Priority))
@@ -379,6 +494,24 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		fields.AutoStartWorkflow = &v
 		if v && msg.ScheduledStartAt == nil {
 			fields.ClearScheduledStartAt = true
+		}
+	}
+	// Parse and validate recurring schedule (if provided). Setting a
+	// recurring schedule flips the item to "recurring" status; setting
+	// status to anything OTHER than "recurring" clears the schedule.
+	// An empty but present message (proto3 "clear" semantics) sets the
+	// clear flag instead of running validation.
+	if msg.RecurringSchedule != nil {
+		if IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+			fields.ClearRecurringSchedule = true
+		} else {
+			recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			fields.RecurringSchedule = &recurringSchedule
+			nextRunAt := ComputeNextRunAt(msg.RecurringSchedule, time.Now().UTC())
+			fields.NextRunAt = nextRunAt
 		}
 	}
 	if msg.WorkflowRunId != nil {
@@ -496,6 +629,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, *fields.ProjectID); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("target project not active: %w", err))
 		}
+		// Dependency edges are project-scoped and the DAG is per-project, so
+		// an item that participates in any edge (outgoing or incoming) may
+		// not silently move across projects — reject instead of leaving a
+		// dangling or cross-project graph. Remove the edges first.
+		participates, err := db.ItemParticipatesInDependency(ctx, ttx.Tx, tenantID, msg.Id)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if participates {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot move a work item to another project while it has dependency edges; remove the edges first"))
+		}
 	}
 	// Reparenting is validated against the *effective* project — the
 	// request's project_id if also being changed, otherwise the current
@@ -542,6 +687,9 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if kindSwitchPlan.ClearScheduledStartAt {
 			fields.ClearScheduledStartAt = true
 		}
+		if kindSwitchPlan.ClearRecurringSchedule {
+			fields.ClearRecurringSchedule = true
+		}
 	}
 	// Saving a scheduled start flips the item to "scheduled" (ADR-001 in
 	// architecture-notes/running-workflows-not-showing-in-schedules.md).
@@ -555,6 +703,48 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		!IsActiveRunStatus(current.Status) &&
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		fields.Status = strPtr(domain.WorkItemScheduled)
+	}
+	// Setting a recurring schedule flips the item to "recurring" status.
+	// Applied AFTER the kind-switch plan so a switch to a non-schedulable
+	// kind (which clears the schedule and demotes status to pending) always
+	// wins. Guarded against in-flight runs: flipping a running item would
+	// misstate an in-flight run. Clearing a schedule (form omits the field)
+	// never triggers the flip.
+	if msg.RecurringSchedule != nil &&
+		!IsRecurringScheduleEmpty(msg.RecurringSchedule) &&
+		!IsActiveRunStatus(current.Status) &&
+		!(kindSwitchPlan != nil && kindSwitchPlan.ClearRecurringSchedule) {
+		fields.Status = strPtr(domain.WorkItemRecurring)
+	}
+	// Switching status to anything OTHER than "recurring" clears the
+	// recurring schedule and next_run_at. This mirrors the
+	// ClearScheduledStartAt semantics for scheduled_start_at. The clear
+	// only fires when the request explicitly sets status AND the new
+	// status is not recurring AND the item currently has a schedule.
+	if fields.Status != nil && *fields.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
+		fields.ClearRecurringSchedule = true
+	}
+	// Final-state invariant: "recurring" is derived state — it is only
+	// valid while a recurring_schedule is present. The edit form unchecks
+	// the Recurring schedule toggle while its status dropdown still reports
+	// "recurring", so the clear (empty-but-present message) and the
+	// explicit recurring status arrive in the SAME request — the clear
+	// wins: demote to pending (AC: disabling recurring cancels upcoming
+	// schedules AND returns the status to pending). The same final-state
+	// guard closes the inverse hole (a manual status=recurring pick with
+	// no schedule present), which would otherwise persist a zombie the
+	// RecurringFireReconciler never re-fires (its scan requires
+	// status='recurring' AND next_run_at IS NOT NULL). An explicit
+	// NON-recurring status in the same request (e.g. clear the schedule
+	// and pick "scheduled") is honored as-is.
+	schedulePresent := !fields.ClearRecurringSchedule &&
+		(fields.RecurringSchedule != nil || current.RecurringSchedule != nil)
+	wouldBeRecurring := current.Status == domain.WorkItemRecurring ||
+		(fields.Status != nil && *fields.Status == domain.WorkItemRecurring)
+	explicitOtherStatus := fields.Status != nil && *fields.Status != domain.WorkItemRecurring
+	if wouldBeRecurring && !schedulePresent && !explicitOtherStatus {
+		s := domain.WorkItemPending
+		fields.Status = &s
 	}
 	// Schedule-time validation (architecture-notes §3): scheduling or
 	// auto-starting runs the subtree validation — a parent WITH children is
@@ -613,6 +803,32 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	} else if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// depends_on set-replace semantics: the request's list fully replaces
+	// the item's outgoing DEPENDS_ON edges (absent = unchanged, empty =
+	// clear), mirroring context_files. Applied inside this transaction so
+	// cycle detection reads the live intermediate state and any failure
+	// rolls the whole update back — no partial edges. Validated against the
+	// effective (post-reassignment) project.
+	if msg.DependsOn != nil {
+		effectiveProject := current.ProjectID
+		if fields.ProjectID != nil && *fields.ProjectID != "" {
+			effectiveProject = *fields.ProjectID
+		}
+		if err := s.replaceDependsOn(ctx, ttx.Tx, tenantID, effectiveProject, updated.ID, msg.DependsOn.Ids); err != nil {
+			return nil, err
+		}
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.updated", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -649,7 +865,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ContextFiles != nil {
 		project.NotifyProjectChanged()
 	}
-	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto}), nil
 }
 
 // DeleteWorkItem soft-deletes a work item by setting status to cancelled.
@@ -678,11 +894,22 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.deleted", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.deleted", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.deleted: %w", err))
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("work item deleted (cancelled)", "id", updated.ID)
-	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: proto}), nil
 }
 
 // HardDeleteWorkItem permanently removes a work item. Cascades to its
@@ -709,6 +936,10 @@ func (s *Service) HardDeleteWorkItem(ctx context.Context, req *connect.Request[a
 	}
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.purged", current); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.hard_deleted", "work_item", current.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.hard_deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -767,22 +998,33 @@ func (s *Service) AddDependency(ctx context.Context, req *connect.Request[apiv1.
 	// Cycle check: would adding from→to create a cycle? Traverse
 	// forward from `to` — if `from` is reachable, the edge closes a
 	// cycle (docs/09 §11: recursive CTE).
-	createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, ttx.Tx, tenantID, msg.ProjectId, msg.FromId, msg.ToId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if createsCycle {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("adding this dependency would create a cycle in the work DAG"))
+	//
+	// Gated on edge type: only `depends_on`/`blocks` are DAG edges.
+	// `relates_to` is symmetric and never an ordering edge, so it is
+	// exempt from the DAG invariant and the check is skipped entirely —
+	// the traversal filter alone would still false-positive (with an
+	// existing A depends_on B, adding B relates_to A would walk A→B,
+	// reach B = `from`, and report a cycle). The DB trigger
+	// (enforce_work_dag_acyclic) enforces the same gate at the
+	// persistence boundary.
+	if depType != domain.DependencyRelatesTo {
+		createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, ttx.Tx, tenantID, msg.ProjectId, msg.FromId, msg.ToId)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if createsCycle {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("cannot add dependency %s -> %s: would create a cycle in the work DAG", msg.FromId, msg.ToId))
+		}
 	}
 
 	dep := db.DependencyRow{
-		ID:       db.NewID(),
-		TenantID: tenantID,
+		ID:        db.NewID(),
+		TenantID:  tenantID,
 		ProjectID: msg.ProjectId,
-		FromID:   msg.FromId,
-		ToID:     msg.ToId,
-		Type:     depType,
+		FromID:    msg.FromId,
+		ToID:      msg.ToId,
+		Type:      depType,
 	}
 	created, err := db.CreateDependency(ctx, ttx.Tx, dep)
 	if err != nil {
@@ -790,6 +1032,10 @@ func (s *Service) AddDependency(ctx context.Context, req *connect.Request[apiv1.
 	}
 	if err := enqueueDependencyEvent(ctx, ttx.Tx, "work_item.dependency_added", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_added", "work_item", created.FromID,
+		nil, audit.Snapshot(map[string]any{"from_id": created.FromID, "to_id": created.ToID, "type": created.Type})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -812,8 +1058,16 @@ func (s *Service) RemoveDependency(ctx context.Context, req *connect.Request[api
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetDependency(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	if err := db.DeleteDependency(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_removed", "work_item", current.FromID,
+		audit.Snapshot(map[string]any{"from_id": current.FromID, "to_id": current.ToID, "type": current.Type}), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_removed: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -852,6 +1106,12 @@ func (s *Service) GetDependencyGraph(ctx context.Context, req *connect.Request[a
 	graph := &apiv1.DependencyGraph{}
 	for _, w := range items {
 		graph.Nodes = append(graph.Nodes, rowToProto(w))
+	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, graph.Nodes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, graph.Nodes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	for _, d := range deps {
 		graph.Edges = append(graph.Edges, depRowToProto(d))
@@ -893,11 +1153,22 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.worker_assigned", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.worker_assigned", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_assigned: %w", err))
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("worker assigned to work item", "id", updated.ID)
-	return connect.NewResponse(&apiv1.AssignWorkerResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.AssignWorkerResponse{WorkItem: proto}), nil
 }
 
 // UnassignWorker removes the worker binding from a Task/Subtask.
@@ -925,15 +1196,10 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	const q = `UPDATE work_items
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at`
+		RETURNING ` + db.WorkItemSelectCols
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
-		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
-		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
-		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.SortOrder, &updated.Results,
-		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		db.WorkItemScanPtrs(&updated)...,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
@@ -944,11 +1210,22 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.worker_unassigned", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.worker_unassigned", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_unassigned: %w", err))
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("worker unassigned from work item", "id", updated.ID)
-	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: proto}), nil
 }
 
 // ReorderWorkItems renumbers sort_order for the siblings under parent_id
@@ -1042,17 +1319,370 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 		}
 		ordered[i] = updated
 	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	ids := make([]string, len(ordered))
+	for i, sib := range ordered {
+		ids[i] = sib.ID
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.reordered", "work_item", msg.ParentId,
+		nil, audit.Snapshot(map[string]any{"parent_id": msg.ParentId, "child_ids": ids})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.reordered: %w", err))
 	}
 	resp := &apiv1.ReorderWorkItemsResponse{}
 	for _, sib := range ordered {
 		resp.WorkItems = append(resp.WorkItems, rowToProto(sib))
 	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
 	return connect.NewResponse(resp), nil
 }
 
+// ArchiveWorkItem hides a terminal work item from every normal view. It is
+// only allowed from a terminal status (succeeded/failed/cancelled/skipped)
+// and is blocked when the item has children (block, not cascade — silently
+// archiving a parent would orphan its live children). Audited as
+// work_item.archived and emits a work_item.archived outbox event.
+func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv1.ArchiveWorkItemRequest]) (*connect.Response[apiv1.ArchiveWorkItemResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if !domain.WorkItemIsTerminalArchivable(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(children) > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	}
+
+	archived, err := db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.archived", archived); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.archived", "work_item", archived.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(archived))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.archived: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item archived", "id", archived.ID)
+	return connect.NewResponse(&apiv1.ArchiveWorkItemResponse{WorkItem: rowToProto(archived)}), nil
+}
+
+// RestoreWorkItem returns an archived work item to the active views, back
+// to the terminal status it was archived from (archived_from_status, not
+// pending). Audited as "work_item.restored" and emits a
+// work_item.restored outbox event.
+func (s *Service) RestoreWorkItem(ctx context.Context, req *connect.Request[apiv1.RestoreWorkItemRequest]) (*connect.Response[apiv1.RestoreWorkItemResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkItemArchived {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item is not archived; only archived work items can be restored"))
+	}
+	fromStatus := current.ArchivedFromStatus
+	if fromStatus == nil || *fromStatus == "" {
+		// Defensive fallback: an archived item should always carry its
+		// prior status; default to cancelled (a terminal, non-dispatchable
+		// state) rather than pending so a restored item never becomes
+		// dispatchable unexpectedly.
+		fromStatus = strPtr(domain.WorkItemCancelled)
+	}
+	restored, err := db.RestoreWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, *fromStatus)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.restored", restored); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.restored", "work_item", restored.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(restored))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.restored: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item restored", "id", restored.ID)
+	return connect.NewResponse(&apiv1.RestoreWorkItemResponse{WorkItem: rowToProto(restored)}), nil
+}
+
+// ControlSequence drives a sequence parent manually (START / RESUME /
+// STOP). A parent with children IS a sequence run; these explicit gestures
+// are what the engine's derived cursor cannot infer on its own:
+//   - START re-fires the chain from child #1 (destructive — every
+//     descendant resets to pending); validations + in-flight guards run
+//     server-side.
+//   - RESUME continues from the first non-succeeded child (keeps state).
+//   - STOP parks the chain (parent → pending, schedule cleared) so
+//     children can be run standalone.
+//
+// All three actions require a work item that IS a sequence parent: it must
+// have at least one direct child and carry no bound workflow run (a parent
+// with children and a bound run is a run ticket, not a sequence).
+func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv1.ControlSequenceRequest]) (*connect.Response[apiv1.ControlSequenceResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	switch msg.Action {
+	case apiv1.SequenceAction_SEQUENCE_ACTION_START,
+		apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
+		apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of START, RESUME, STOP"))
+	}
+
+	// Load the item and determine whether it is a sequence parent (has
+	// children) or a leaf (bound to a workflow run / standalone). The
+	// engine's reconcileParent guard uses the same predicate, so this can
+	// never drift. Controls work on BOTH kinds:
+	//   - parent (has children): START/RESUME re-fire/continue the chain;
+	//     STOP cascades — parks the whole subtree and aborts in-flight runs.
+	//   - leaf (no children): START/RESUME fire the item's own bound
+	//     workflow; STOP parks just the leaf and aborts its run.
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	isParent := len(children) > 0
+
+	switch msg.Action {
+	case apiv1.SequenceAction_SEQUENCE_ACTION_START:
+		if isParent {
+			// START is destructive (wipes prior child successes). Reject while
+			// the parent is running/checkpointing/recovering — an active chain
+			// must be STOPped (parked) before it can be re-fired.
+			if IsActiveRunStatus(current.Status) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot START a sequence that is already running — STOP it first"))
+			}
+			// Subtree validation (workflows bound, no one-shots) before the
+			// destructive fire, mirroring the schedule-time path.
+			if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+				return nil, err
+			}
+			if s.sequenceStartFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence starter not wired"))
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.sequence_started", "work_item", current.ID,
+				audit.SnapshotStatus(current.Status), nil); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.sequence_started: %w", err))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.sequenceStartFn(ctx, tenantID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		} else {
+			// Leaf START: fire the item's own bound workflow immediately.
+			if current.WorkflowID == nil || *current.WorkflowID == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("cannot START a leaf work item with no workflow bound"))
+			}
+			if current.WorkflowRunID != "" || IsActiveRunStatus(current.Status) ||
+				current.Status == domain.WorkItemReady || current.Status == domain.WorkItemAssigned {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot START a work item that is already running or queued for dispatch — STOP it first"))
+			}
+			if s.startWorkflowFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.started", "work_item", current.ID,
+				audit.SnapshotStatus(current.Status), nil); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.started: %w", err))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.startWorkflowFn(ctx, tenantID, *current.WorkflowID, current.ProjectID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		}
+	case apiv1.SequenceAction_SEQUENCE_ACTION_RESUME:
+		if isParent {
+			// RESUME is enabled when the chain is halted (parent failed) or
+			// parked (parent pending with children). A running chain has
+			// nothing to resume — the derived cursor is already advancing it.
+			if current.Status != domain.WorkItemFailed && current.Status != domain.WorkItemPending {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot RESUME a sequence that is not halted (failed) or parked (pending)"))
+			}
+			// The subtree must still be schedulable (a failed child's workflow
+			// may have been unbound); validate before re-arming.
+			if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+				return nil, err
+			}
+			if s.sequenceResumeFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence resume not wired"))
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.sequence_resumed", "work_item", current.ID,
+				audit.SnapshotStatus(current.Status), nil); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.sequence_resumed: %w", err))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.sequenceResumeFn(ctx, tenantID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		} else {
+			// Leaf RESUME: re-arm a halted/parked leaf — reset to pending and
+			// fire its bound workflow.
+			if current.WorkflowID == nil || *current.WorkflowID == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("cannot RESUME a leaf work item with no workflow bound"))
+			}
+			if current.WorkflowRunID != "" || IsActiveRunStatus(current.Status) ||
+				current.Status == domain.WorkItemReady || current.Status == domain.WorkItemAssigned {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot RESUME a work item that is already running or queued for dispatch"))
+			}
+			if s.startWorkflowFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.resumed", "work_item", current.ID,
+				audit.SnapshotStatus(current.Status), nil); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.resumed: %w", err))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.startWorkflowFn(ctx, tenantID, *current.WorkflowID, current.ProjectID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		}
+	case apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
+		// STOP halts the item: a parent parks its whole subtree (every
+		// descendant → pending, in-flight runs aborted), a leaf parks just
+		// itself and aborts its run. Idempotent — stopping a parked item is a
+		// no-op. Works from running, failed, ready, scheduled, or pending.
+		if current.Status == domain.WorkItemSucceeded {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot STOP a work item that has already succeeded"))
+		}
+		if s.sequenceStopFn == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence stop not wired"))
+		}
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.stopped", "work_item", current.ID,
+			audit.SnapshotStatus(current.Status), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.stopped: %w", err))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		if err := s.sequenceStopFn(ctx, tenantID, msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
+	// Re-read the parent after the action and return server-confirmed state.
+	ttx2, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx2.Rollback(ctx)
+	updated, err := db.GetWorkItem(ctx, ttx2.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx2.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx2.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.ControlSequenceResponse{WorkItem: proto}), nil
+}
+
 // --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// workItemAuditSnapshot is the non-secret projection of a work item row
+// for the audit trail (no credentials or run artifacts).
+func workItemAuditSnapshot(w db.WorkItemRow) map[string]any {
+	return map[string]any{
+		"id":         w.ID,
+		"project_id": w.ProjectID,
+		"kind":       w.Kind,
+		"title":      w.Title,
+		"status":     w.Status,
+		"priority":   w.Priority,
+		"version":    w.Version,
+	}
+}
 
 // EnqueueWorkItemEvent emits a work item outbox row (work_item.created /
 // work_item.updated / work_item.worker_assigned / ...) in the caller's
@@ -1082,7 +1712,7 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 		AggregateID:   w.ID,
 		AggregateVer:  w.Version,
 		Payload:       payload,
-		OccurredAt:     time.Now().UTC(),
+		OccurredAt:    time.Now().UTC(),
 	}
 	return db.EnqueueOutbox(ctx, tx, row)
 }
@@ -1109,16 +1739,16 @@ func enqueueKindChangedEvent(ctx context.Context, tx pgx.Tx, before, after db.Wo
 
 func enqueueDependencyEvent(ctx context.Context, tx pgx.Tx, eventType string, d db.DependencyRow) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":        d.TenantID,
-		"project_id":       d.ProjectID,
-		"aggregate_type":   "work_item_dependency",
-		"aggregate_id":     d.ID,
-		"dependency_id":    d.ID,
-		"from_id":          d.FromID,
-		"to_id":            d.ToID,
-		"type":             d.Type,
-		"occurred_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      d.TenantID,
+		"project_id":     d.ProjectID,
+		"aggregate_type": "work_item_dependency",
+		"aggregate_id":   d.ID,
+		"dependency_id":  d.ID,
+		"from_id":        d.FromID,
+		"to_id":          d.ToID,
+		"type":           d.Type,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
@@ -1133,6 +1763,226 @@ func enqueueDependencyEvent(ctx context.Context, tx pgx.Tx, eventType string, d 
 		OccurredAt:    time.Now().UTC(),
 	}
 	return db.EnqueueOutbox(ctx, tx, row)
+}
+
+// validateDependsOn dedupes and validates a depends_on ID list against the
+// effective project, mirroring the AddDependency admission rules: targets
+// must exist (NotFound), live in the given project, and not be the item
+// itself (self-dependency). Blank IDs are rejected. Returns the validated,
+// deduped IDs in input order; a nil/empty input returns nil.
+func validateDependsOn(ctx context.Context, tx pgx.Tx, tenantID, projectID, itemID string, depIDs []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range depIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("depends_on ids must not be blank"))
+		}
+		if id == itemID {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("cannot create a self-dependency"))
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		item, err := db.GetWorkItem(ctx, tx, tenantID, id)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("depends_on target %q not found", id))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if item.ProjectID != projectID {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("depends_on target %q is not in the same project", id))
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// replaceDependsOn applies set-replace semantics to an item's outgoing
+// DEPENDS_ON edges inside the caller's transaction: it deletes the current
+// outgoing edge set, validates + re-inserts the desired set (cycle-checked
+// against the live intermediate state via the recursive CTE), and emits
+// work_item.dependency_added / work_item.dependency_removed events + audit
+// rows only for the diff. Any error rolls the caller's transaction back —
+// no partial edge sets.
+func (s *Service) replaceDependsOn(ctx context.Context, tx pgx.Tx, tenantID, projectID, itemID string, depIDs []string) error {
+	current, err := db.ListDependenciesForItems(ctx, tx, tenantID, []string{itemID}, domain.DependencyDependsOn)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	desired, err := validateDependsOn(ctx, tx, tenantID, projectID, itemID, depIDs)
+	if err != nil {
+		return err
+	}
+	// Delete the whole outgoing depends_on set first, then re-add the
+	// desired set — the recursive-CTE cycle check then reads the live
+	// intermediate state (design decision, matches the AddDependency path).
+	if err := db.DeleteOutgoingDependencies(ctx, tx, tenantID, itemID, domain.DependencyDependsOn); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	had := map[string]bool{}
+	for _, d := range current {
+		had[d.ToID] = true
+	}
+	var removed []db.DependencyRow
+	for _, d := range current {
+		if !stringInSet(d.ToID, desired) {
+			removed = append(removed, d)
+		}
+	}
+	for _, depID := range desired {
+		createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, tx, tenantID, projectID, itemID, depID)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if createsCycle {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("cannot add dependency %s -> %s: would create a cycle in the work DAG", itemID, depID))
+		}
+		created, err := db.CreateDependency(ctx, tx, db.DependencyRow{
+			ID:        db.NewID(),
+			TenantID:  tenantID,
+			ProjectID: projectID,
+			FromID:    itemID,
+			ToID:      depID,
+			Type:      domain.DependencyDependsOn,
+		})
+		if err != nil {
+			return mapDBError(err)
+		}
+		// Emit events + audit only for the diff: an edge that already
+		// existed before this request is recreated silently (same set).
+		if !had[depID] {
+			if err := enqueueDependencyEvent(ctx, tx, "work_item.dependency_added", created); err != nil {
+				return connect.NewError(connect.CodeInternal, err)
+			}
+			if err := recordAudit(ctx, tx, tenantID, "work_item.dependency_added", "work_item", created.FromID,
+				nil, audit.Snapshot(map[string]any{"from_id": created.FromID, "to_id": created.ToID, "type": created.Type})); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
+			}
+		}
+	}
+	for _, d := range removed {
+		if err := recordAudit(ctx, tx, tenantID, "work_item.dependency_removed", "work_item", d.FromID,
+			audit.Snapshot(map[string]any{"from_id": d.FromID, "to_id": d.ToID, "type": d.Type}), nil); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_removed: %w", err))
+		}
+		if err := enqueueDependencyEvent(ctx, tx, "work_item.dependency_removed", d); err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	return nil
+}
+
+// stringInSet reports whether s is present in ids.
+func stringInSet(s string, ids []string) bool {
+	for _, id := range ids {
+		if id == s {
+			return true
+		}
+	}
+	return false
+}
+
+// attachDependsOn populates proto.DependsOn (the item's outgoing
+// DEPENDS_ON target IDs) with one extra query, inside the caller's
+// transaction. rowToProto stays pure; every WorkItem-returning handler
+// attaches the field so the payload is consistent across endpoints.
+func attachDependsOn(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
+	if p == nil {
+		return nil
+	}
+	deps, err := db.ListDependenciesForItems(ctx, tx, tenantID, []string{p.Id}, domain.DependencyDependsOn)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		p.DependsOn = append(p.DependsOn, d.ToID)
+	}
+	return nil
+}
+
+// attachDependsOnBatch populates DependsOn for a whole page of work items
+// with ONE query (from_id = ANY(...)) to avoid an N+1 per row.
+func attachDependsOnBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
+	ids := make([]string, 0, len(items))
+	byID := map[string]*apiv1.WorkItem{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		ids = append(ids, it.Id)
+		byID[it.Id] = it
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	deps, err := db.ListDependenciesForItems(ctx, tx, tenantID, ids, domain.DependencyDependsOn)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		if it, ok := byID[d.FromID]; ok {
+			it.DependsOn = append(it.DependsOn, d.ToID)
+		}
+	}
+	return nil
+}
+
+// attachBlockedBy populates proto.BlockedBy (the sources of the item's
+// unsatisfied incoming blocks/depends_on edges) with one extra query,
+// inside the caller's transaction. Computed at read time so it can never
+// go stale on edge removal or status drift — the DAG + statuses are the
+// persisted authority. Attached for EVERY item with unsat edges (even a
+// pending/ready item the reconciler hasn't flipped yet), so the reason is
+// always visible.
+func attachBlockedBy(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
+	if p == nil {
+		return nil
+	}
+	blockers, err := db.ListUnsatisfiedDependencies(ctx, tx, tenantID, []string{p.Id})
+	if err != nil {
+		return err
+	}
+	for _, b := range blockers {
+		p.BlockedBy = append(p.BlockedBy, &apiv1.WorkItemBlocker{Id: b.ID, Title: b.Title, Status: b.Status})
+	}
+	return nil
+}
+
+// attachBlockedByBatch populates BlockedBy for a whole page of work items
+// with ONE query (to_id = ANY(...)) to avoid an N+1 per row.
+func attachBlockedByBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
+	ids := make([]string, 0, len(items))
+	byID := map[string]*apiv1.WorkItem{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		ids = append(ids, it.Id)
+		byID[it.Id] = it
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	blockers, err := db.ListUnsatisfiedDependencies(ctx, tx, tenantID, ids)
+	if err != nil {
+		return err
+	}
+	for _, b := range blockers {
+		// ListUnsatisfiedDependencies returns rows keyed by the DEPENDENT
+		// (ToID) — the blocker is the edge's from_id. Mapping by ToID puts
+		// each blocker on the item it actually blocks; mapping by b.ID
+		// here would drop every edge (and attach a self-blocker when the
+		// blocker shares the page).
+		if it, ok := byID[b.ToID]; ok {
+			it.BlockedBy = append(it.BlockedBy, &apiv1.WorkItemBlocker{Id: b.ID, Title: b.Title, Status: b.Status})
+		}
+	}
+	return nil
 }
 
 func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, error) {
@@ -1214,11 +2064,31 @@ func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID s
 	return p == projectID, nil
 }
 
+// mapDBError maps a DB error to a Connect error: a missing row is
+// NotFound; a cycle rejection from the enforce_work_dag_acyclic trigger
+// (raised by the concurrent-write serialization path, where the app-layer
+// check ran against stale state) is FailedPrecondition with the trigger's
+// message naming the offending edge; everything else is Internal.
 func mapDBError(err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
+	if isDependencyCycleError(err) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// isDependencyCycleError reports whether err is the
+// enforce_work_dag_acyclic trigger's cycle rejection. The trigger and the
+// app layer emit the same message shape, so the detection is message-based
+// (stable across both) rather than code-based.
+func isDependencyCycleError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.Contains(pgErr.Message, "would create a cycle in the work DAG")
 }
 
 // mapParentError maps a ValidateParent error to a Connect error: a
@@ -1368,6 +2238,14 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECOVERING
 	case domain.WorkItemScheduled:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
+	case domain.WorkItemRecurring:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING
+	case domain.WorkItemBlocked:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED
+	case domain.WorkItemSkipped:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
+	case domain.WorkItemArchived:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}
@@ -1403,27 +2281,27 @@ func kindForDepth(depth int) string {
 
 func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	p := &apiv1.WorkItem{
-		Id:                  w.ID,
-		TenantId:            w.TenantID,
-		ProjectId:           w.ProjectID,
-		Kind:                kindToProto(w.Kind),
-		Title:               w.Title,
-		Description:         w.Description,
-		AcceptanceCriteria:  w.AcceptanceCriteria,
-		AcceptanceReview:    w.AcceptanceReview,
-		Status:              statusToProto(w.Status),
-		Priority:            int32(w.Priority),
-		Budgets:             string(w.Budgets),
-		ContextWindow:       int32(w.ContextWindow),
-		Results:             string(w.Results),
-		ContextFiles:        contextFilesFromJSONOrEmpty(w.ContextFiles),
+		Id:                 w.ID,
+		TenantId:           w.TenantID,
+		ProjectId:          w.ProjectID,
+		Kind:               kindToProto(w.Kind),
+		Title:              w.Title,
+		Description:        w.Description,
+		AcceptanceCriteria: w.AcceptanceCriteria,
+		AcceptanceReview:   w.AcceptanceReview,
+		Status:             statusToProto(w.Status),
+		Priority:           int32(w.Priority),
+		Budgets:            string(w.Budgets),
+		ContextWindow:      int32(w.ContextWindow),
+		Results:            string(w.Results),
+		ContextFiles:       contextFilesFromJSONOrEmpty(w.ContextFiles),
 		// PR B (context propagation): carries the composite prompt.
 		// Stored as JSONB {"composite": "# Task\n..."} — extract the
 		// inner text so the frontend gets plain markdown.
-		PromptContext:       extractCompositePrompt(w.PromptContext),
-		Version:             int32(w.Version),
-		CreatedAt:           timestamppb.New(w.CreatedAt),
-		UpdatedAt:           timestamppb.New(w.UpdatedAt),
+		PromptContext: extractCompositePrompt(w.PromptContext),
+		Version:       int32(w.Version),
+		CreatedAt:     timestamppb.New(w.CreatedAt),
+		UpdatedAt:     timestamppb.New(w.UpdatedAt),
 	}
 	if w.ParentID != nil {
 		p.ParentId = *w.ParentID
@@ -1444,6 +2322,21 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	p.RuntimeImage = w.RuntimeImage
 	if w.SortOrder != nil {
 		p.SortOrder = *w.SortOrder
+	}
+	if len(w.RecurringSchedule) > 0 {
+		var rs apiv1.RecurringSchedule
+		if err := json.Unmarshal(w.RecurringSchedule, &rs); err == nil {
+			p.RecurringSchedule = &rs
+		}
+	}
+	if w.NextRunAt != nil {
+		p.NextRunAt = timestamppb.New(*w.NextRunAt)
+	}
+	if w.ArchivedAt != nil {
+		p.ArchivedAt = timestamppb.New(*w.ArchivedAt)
+	}
+	if w.ArchivedFromStatus != nil {
+		p.ArchivedFromStatus = *w.ArchivedFromStatus
 	}
 	return p
 }

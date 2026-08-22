@@ -96,6 +96,11 @@ func NewTokenIssuer(signingKey, issuer, audience string, accessTTL, refreshTTL t
 
 // IssueAccess mints a signed access token for the given identity context.
 func (i *TokenIssuer) IssueAccess(subject, tenantID string, entitlements []string, isAdmin bool) (string, error) {
+	return i.IssueAccessWithTTL(subject, tenantID, entitlements, isAdmin, i.accessTTL)
+}
+
+// IssueAccessWithTTL mints a signed access token with an explicit TTL.
+func (i *TokenIssuer) IssueAccessWithTTL(subject, tenantID string, entitlements []string, isAdmin bool, ttl time.Duration) (string, error) {
 	now := time.Now().UTC()
 	claims := AccessClaims{
 		Subject:      subject,
@@ -106,7 +111,7 @@ func (i *TokenIssuer) IssueAccess(subject, tenantID string, entitlements []strin
 		Issuer:       i.issuer,
 		Audience:     i.audience,
 		IssuedAt:     now.Unix(),
-		ExpiresAt:    now.Add(i.accessTTL).Unix(),
+		ExpiresAt:    now.Add(ttl).Unix(),
 		JTI:          randID(16),
 	}
 	return signHS256(claims, i.signingKey)
@@ -114,6 +119,11 @@ func (i *TokenIssuer) IssueAccess(subject, tenantID string, entitlements []strin
 
 // IssueRefresh mints a signed refresh token.
 func (i *TokenIssuer) IssueRefresh(subject, tenantID string) (string, error) {
+	return i.IssueRefreshWithTTL(subject, tenantID, i.refreshTTL)
+}
+
+// IssueRefreshWithTTL mints a signed refresh token with an explicit TTL.
+func (i *TokenIssuer) IssueRefreshWithTTL(subject, tenantID string, ttl time.Duration) (string, error) {
 	now := time.Now().UTC()
 	claims := RefreshClaims{
 		Subject:   subject,
@@ -122,26 +132,32 @@ func (i *TokenIssuer) IssueRefresh(subject, tenantID string) (string, error) {
 		Issuer:    i.issuer,
 		Audience:  i.audience,
 		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(i.refreshTTL).Unix(),
+		ExpiresAt: now.Add(ttl).Unix(),
 		JTI:       randID(16),
 	}
 	return signHS256(claims, i.signingKey)
 }
 
-// IssuePair mints an access + refresh token pair.
+// IssuePair mints an access + refresh token pair using the issuer's
+// configured TTLs.
 func (i *TokenIssuer) IssuePair(subject, tenantID string, entitlements []string, isAdmin bool) (TokenPair, error) {
-	access, err := i.IssueAccess(subject, tenantID, entitlements, isAdmin)
+	return i.IssuePairWithTTL(subject, tenantID, entitlements, isAdmin, i.accessTTL, i.refreshTTL)
+}
+
+// IssuePairWithTTL mints an access + refresh token pair with explicit TTLs.
+func (i *TokenIssuer) IssuePairWithTTL(subject, tenantID string, entitlements []string, isAdmin bool, accessTTL, refreshTTL time.Duration) (TokenPair, error) {
+	access, err := i.IssueAccessWithTTL(subject, tenantID, entitlements, isAdmin, accessTTL)
 	if err != nil {
 		return TokenPair{}, fmt.Errorf("auth: issue access: %w", err)
 	}
-	refresh, err := i.IssueRefresh(subject, tenantID)
+	refresh, err := i.IssueRefreshWithTTL(subject, tenantID, refreshTTL)
 	if err != nil {
 		return TokenPair{}, fmt.Errorf("auth: issue refresh: %w", err)
 	}
 	return TokenPair{
 		AccessToken:  access,
 		RefreshToken: refresh,
-		ExpiresIn:    int64(i.accessTTL / time.Second),
+		ExpiresIn:    int64(accessTTL / time.Second),
 	}, nil
 }
 

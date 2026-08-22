@@ -8,6 +8,7 @@ syntax = "proto3";
 
 package orchicon.api.v1;
 
+import "google/protobuf/timestamp.proto";
 import "orchicon/api/v1/auth.proto";
 
 service AuthService {
@@ -21,10 +22,16 @@ service AuthService {
   // --- Identity + entitlements ---
   rpc GetIdentity(GetIdentityRequest) returns (GetIdentityResponse);
   rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  rpc CreateIdentity(CreateIdentityRequest) returns (CreateIdentityResponse);
+  rpc UpdateIdentity(UpdateIdentityRequest) returns (UpdateIdentityResponse);
+  rpc SetIdentityStatus(SetIdentityStatusRequest) returns (SetIdentityStatusResponse);
+  rpc DeleteIdentity(DeleteIdentityRequest) returns (DeleteIdentityResponse);
   rpc ListEntitlements(ListEntitlementsRequest) returns (ListEntitlementsResponse);
 
   // --- RBAC roles + bindings ---
   rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
   rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
   rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
   rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
@@ -34,8 +41,12 @@ service AuthService {
   rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
   rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
 
+  // --- Local-account credentials (embedded IdP boundary) ---
+  rpc SetLocalCredential(SetLocalCredentialRequest) returns (SetLocalCredentialResponse);
+
   // --- Audit ---
   rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +112,53 @@ message ListIdentitiesResponse {
   repeated Identity identities = 1;
   string next_page_token = 2;
 }
+// CreateIdentityRequest provisions a new identity (a user or service
+// account) in the caller's tenant. Admin-only path: the RBAC interceptor
+// gates this to auth:write. For identity_type "user" the subject is the
+// login handle (matching the local-account username charset); for
+// "service" it is optional — when omitted the server generates a
+// synthetic "sa-<ULID>" subject.
+message CreateIdentityRequest {
+  // Required. "user" | "service".
+  string identity_type = 1;
+  // Required for "user", optional for "service" (see above).
+  string subject = 2;
+  // Required. Human-readable name, <= 200 runes.
+  string display_name = 3;
+}
+message CreateIdentityResponse {
+  Identity identity = 1;
+}
+// UpdateIdentityRequest edits an identity's display_name. The optional
+// version enables optimistic concurrency: when present and mismatched the
+// update fails with NotFound.
+message UpdateIdentityRequest {
+  string id = 1;
+  string display_name = 2;
+  optional int32 version = 3;
+}
+message UpdateIdentityResponse {
+  Identity identity = 1;
+}
+// SetIdentityStatusRequest flips an identity between "active" and
+// "disabled". Only those two values are writable; anything else is
+// InvalidArgument. The optional version enables optimistic concurrency.
+message SetIdentityStatusRequest {
+  string id = 1;
+  string status = 2; // "active" | "disabled"
+  optional int32 version = 3;
+}
+message SetIdentityStatusResponse {
+  Identity identity = 1;
+}
+// DeleteIdentityRequest hard-deletes an identity plus its role bindings,
+// API keys, and local credentials in one tenant-scoped transaction.
+// Guarded server-side: the caller cannot delete their own identity, and
+// an "active" identity must be disabled first.
+message DeleteIdentityRequest {
+  string id = 1;
+}
+message DeleteIdentityResponse {}
 message ListEntitlementsRequest {
   string identity_id = 1;
 }
@@ -123,6 +181,36 @@ message CreateRoleRequest {
 message CreateRoleResponse {
   Role role = 1;
 }
+// UpdateRoleRequest edits a role's name and/or entitlements. scope and
+// scope_ref are intentionally immutable here (project-scoped bindings are
+// a non-goal for the admin UI). The optional version enables optimistic
+// concurrency: when present and mismatched the update fails with NotFound.
+message UpdateRoleRequest {
+  string id = 1;
+  // Optional. When absent the name is left unchanged.
+  optional string name = 2;
+  // Optional. When absent the entitlements are left unchanged. When present,
+  // the role's entitlements are replaced exactly by this set — an empty set
+  // clears the role to zero entitlements.
+  optional EntitlementSet entitlements = 3;
+  optional int32 version = 4;
+}
+
+// EntitlementSet wraps a list of entitlements so UpdateRoleRequest can
+// distinguish "leave entitlements unchanged" (field absent) from "set the
+// entitlements to exactly these" (field present, possibly empty).
+message EntitlementSet {
+  repeated string values = 1;
+}
+message UpdateRoleResponse {
+  Role role = 1;
+}
+// DeleteRoleRequest hard-deletes a role plus its role bindings in one
+// tenant-scoped transaction. The role named "admin" cannot be deleted.
+message DeleteRoleRequest {
+  string id = 1;
+}
+message DeleteRoleResponse {}
 message ListRolesRequest {
   string tenant_id = 1;
   string page_token = 2;
@@ -185,6 +273,32 @@ message CreateTenantResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Local-account credentials (embedded IdP boundary)
+// ---------------------------------------------------------------------------
+
+// SetLocalCredential creates or updates the local-account credential bound
+// to an identity (upsert by tenant + identity). Admin-only path: the caller
+// must hold auth:write (enforced by the RBAC interceptor). The plaintext
+// password is hashed with argon2id at the boundary and the stored hash is
+// never returned by any RPC or API response.
+message SetLocalCredentialRequest {
+  // Required. The identity the local credential binds to.
+  string identity_id = 1;
+  // Required. The login handle the human types (unique per tenant).
+  string username = 2;
+  // Required. The plaintext password. Hashed at the boundary; never
+  // stored, logged, or returned.
+  string password = 3;
+}
+message SetLocalCredentialResponse {
+  // The stored credential status ("active"). The hash is intentionally
+  // absent.
+  string status = 1;
+  // The normalized username.
+  string username = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 
@@ -197,5 +311,41 @@ message ListAuditEntriesRequest {
 }
 message ListAuditEntriesResponse {
   repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// AuditEvent is one row from the audit_events trail (the actor-based
+// audit of user actions — the transactional-outbox writer in
+// internal/audit). Distinct from AuditEntry (policy decisions): this is
+// the "who did what" trail, AuditEntry is the "what did the policy say".
+message AuditEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string actor_identity_id = 3; // null when actor_type = system
+  string actor_type = 4; // "user" | "system"
+  string auth_method = 5; // "oidc"|"apikey"|"local"|"signup"|"dev"|"refresh"|"system"; "" legacy
+  string action = 6; // e.g. "work_item.created"
+  string target_type = 7; // e.g. "work_item"
+  string target_id = 8; // entity ULID
+  string before = 9; // JSON snapshot (pre-mutation); "{}" for creates
+  string after = 10; // JSON snapshot (post-mutation); "{}" for deletes
+  string trace_id = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+}
+
+message ListAuditEventsRequest {
+  string action = 1; // optional exact filter
+  string actor_id = 2; // optional filter (actor_identity_id)
+  string target_type = 3; // optional exact filter
+  string target_id = 4; // optional exact filter
+  string page_token = 5; // keyset on (occurred_at, id)
+  int32 page_size = 6;
+  // Optional inclusive lower bound on occurred_at; absent = unbounded.
+  google.protobuf.Timestamp start_time = 7;
+  // Optional exclusive upper bound on occurred_at; absent = unbounded.
+  google.protobuf.Timestamp end_time = 8;
+}
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
   string next_page_token = 2;
 }

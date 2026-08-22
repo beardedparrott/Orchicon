@@ -345,8 +345,23 @@ type ConfigOptions struct {
 	// binary's `mcp` subcommand with ORCHICON_MCP_TENANT_ID set) so every
 	// opencode run has Orchicon's tools natively. Disable ONLY for
 	// executions that cannot reach the plane's Postgres — workflow runtime
-	// containers are isolated sandboxes with no DB route.
+	// containers are isolated sandboxes with no DB route (except the
+	// in-sandbox plane on :orchicon-dev, where MCPEnv points the sidecar
+	// at the container-local Postgres).
 	OrchiconMCP bool
+	// MCPEnv are extra environment variables merged into the built-in
+	// Orchicon MCP server's `environment` map (on top of the tenant id).
+	// The runtime-container sandbox uses it to point `orchicon mcp` at the
+	// in-container Postgres (ORCHICON_POSTGRES_DSN) so workers get
+	// `orchicon_*` tools against the sandbox DB, never the host plane's.
+	MCPEnv map[string]string
+	// MCPBinaryPath overrides the orchicon binary path in the built-in MCP
+	// server's command (defaults to the current executable). The
+	// runtime-container sandbox forces /usr/local/bin/orchicon — the
+	// daemon's bind-mount, guaranteed present in every runtime container —
+	// because the plane's own executable path (which builds the config) is
+	// not necessarily present inside the container.
+	MCPBinaryPath string
 	// SkipUserMCP omits the operator's opencode-config MCP servers from the
 	// injected config. Required for the runtime-container serve: a SERVE
 	// eagerly connects to every configured MCP server at startup, and the
@@ -397,7 +412,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	}
 	if o.OrchiconMCP && o.TenantID != "" {
 		if _, exists := mcp["orchicon"]; !exists {
-			mcp["orchicon"] = orchiconMCPServer(o.TenantID)
+			mcp["orchicon"] = orchiconMCPServer(o.TenantID, o.MCPEnv, o.MCPBinaryPath)
 		}
 	}
 	if len(mcp) > 0 {
@@ -447,16 +462,25 @@ func orchiconBinaryPath() string {
 // orchiconMCPServer builds the opencode MCP config entry for the built-in
 // Orchicon MCP server (opencode v1 schema: type "local", command array,
 // environment map, enabled). The tenant flows to the sidecar through the
-// environment map; the Postgres DSN is inherited from the plane's env.
-func orchiconMCPServer(tenantID string) map[string]any {
+// environment map; the Postgres DSN is inherited from the plane's env
+// unless overridden via extraEnv (the runtime-container sandbox points the
+// sidecar at its in-container Postgres this way). binaryPath overrides the
+// orchicon binary used as the MCP command (defaults to the current
+// executable) — the sandbox forces the daemon's runtime-container mount.
+func orchiconMCPServer(tenantID string, extraEnv map[string]string, binaryPath string) map[string]any {
+	env := map[string]string{"ORCHICON_MCP_TENANT_ID": tenantID}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	if binaryPath == "" {
+		binaryPath = orchiconBinaryPath()
+	}
 	return map[string]any{
-		"type":    "local",
-		"command": []string{orchiconBinaryPath(), "mcp"},
-		"environment": map[string]string{
-			"ORCHICON_MCP_TENANT_ID": tenantID,
-		},
-		"enabled": true,
-		"timeout": 15000,
+		"type":        "local",
+		"command":     []string{binaryPath, "mcp"},
+		"environment": env,
+		"enabled":     true,
+		"timeout":     15000,
 	}
 }
 

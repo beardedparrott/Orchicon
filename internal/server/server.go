@@ -19,13 +19,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/auth"
+	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/logging"
@@ -39,9 +39,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
-	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 // Server owns the running control plane process and its dependencies.
@@ -82,10 +82,16 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
 	// If the collector is unreachable, telemetry is dropped with bounded
-	// in-process buffering; control flow is not blocked (docs/08 §8).
-	otelShutdown, err := telemetry.Setup(context.Background(), cfg, log)
-	if err != nil {
-		log.Warn("otel setup failed (telemetry disabled)", "error", err)
+	// in-process buffering; control flow is not blocked (docs/08 §8). The
+	// runtime-container sandbox plane sets ORCHICON_TELEMETRY=none (no
+	// Grafana stack in the sandbox) — the pipeline is skipped entirely.
+	var otelShutdown *telemetry.Shutdowner
+	var err error
+	if cfg.Telemetry != "none" {
+		otelShutdown, err = telemetry.Setup(context.Background(), cfg, log)
+		if err != nil {
+			log.Warn("otel setup failed (telemetry disabled)", "error", err)
+		}
 	}
 
 	pool, err := db.Open(context.Background(), cfg.PostgresDSN)
@@ -93,9 +99,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return nil, fmt.Errorf("server: open db: %w", err)
 	}
 
-	// Seed the dev tenant so the control plane has a tenant context
-	// before auth (Phase 9) lands. Idempotent.
-	if err := db.SeedDevTenant(context.Background(), pool); err != nil {
+	// Seed the deployment tenant so the control plane has a tenant context
+	// before auth (Phase 9) lands. Idempotent. The tenant id comes from
+	// ORCHICON_DEPLOYMENT_TENANT_ID (default "tnt_dev").
+	if err := db.SeedDevTenant(context.Background(), pool, cfg.DeploymentTenantID); err != nil {
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 
@@ -159,6 +166,18 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// auth middleware (docs/07 §6).
 	authHandler := auth.NewHandler(cfg, pool, log)
 	log.Info("auth configured", "issuer", cfg.Auth.Issuer, "mode", cfg.Mode)
+
+	// Local-mode first-admin bootstrap: OPT-IN. A fresh plane is
+	// bootstrapped by the operator creating their own admin account via the
+	// embedded-OP sign-up link on first load (the first sign-up on a tenant
+	// with no admin becomes the tenant admin). BootstrapLocalAdmin mints a
+	// credential ONLY when the operator pins BOTH
+	// ORCHICON_LOCAL_ADMIN_USERNAME and ORCHICON_LOCAL_ADMIN_PASSWORD; no
+	// default credential is ever seeded. No-op in production, when the OP
+	// is disabled, or when either env is unset.
+	if err := auth.BootstrapLocalAdmin(context.Background(), pool, log, cfg); err != nil {
+		log.Warn("local admin bootstrap failed (continuing)", "error", err)
+	}
 
 	// Phase 9: Webhook dispatcher (NATS consumer → HTTP POST + retries +
 	// dead-letter — docs/07 §3.11). Starts in Run(); nil when NATS is
@@ -269,6 +288,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	// Bounded in-pass fan-out for the scan pass: independent ready tasks
+	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
+	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
+	// Per-project/tenant max-concurrent-runs admission gate (concurrency
+	// guards): reconcileOne holds a dispatch when the project is at its
+	// effective cap, leaving the item ready until a slot frees.
+	taskRec.SetDispatchLimiter(scheduler.DBDispatchLimiter())
 	// Per-workflow runtime containers: the control plane talks to the
 	// host-side runtime daemon over a unix socket. When the socket is
 	// absent (headless `orchicon serve`), the lifecycle is disabled and
@@ -349,7 +375,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig())
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
@@ -366,6 +392,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
+	// Bounded in-pass fan-out for the post-commit inline dispatch: parallel
+	// branch step runs dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY,
+	// default 4) — the workflow mirror of the TaskReconciler scan fan-out.
+	workflowRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
 	// The Server keeps a concrete *runtime.Lifecycle for the adopt sweep;
 	// the interface may be nil (no daemon) while the concrete value is
 	// set — type-assert to extract it.
@@ -396,18 +426,40 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	scheduledRunRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})
+	recurringFireRec := scheduler.NewRecurringFireReconciler(pool, log, startWorkflowFn)
+	recurringFireRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
+	})
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
 	s.rcmgr.Register(recoveryRec)
 	s.rcmgr.Register(scheduledRunRec)
 	s.rcmgr.Register(sequenceRec)
+	s.rcmgr.Register(recurringFireRec)
+	// Worktree provisioning (per-run isolated working tree at arm time). The
+	// notifier makes provisioning fire at run-arm; the reconciler's scan
+	// pass is the safety net.
+	worktreeRec := scheduler.NewWorktreeReconciler(pool, log)
+	// Non-repo in-place serialization gate (concurrency guards D3): non-repo
+	// runs are atomically admitted before being marked 'skipped', so two
+	// runs never share the mutable project_dir.
+	worktreeRec.SetDispatchLimiter(scheduler.DBDispatchLimiter())
+	s.rcmgr.Register(worktreeRec)
 	// Wire the sequence notifier: when a bound child work item reaches a
 	// terminal state, advance its parent's chain immediately (the scan
 	// pass every 200ms is the safety net).
 	workflowRec.SetSequenceNotifier(func(ctx context.Context, parentID string) {
 		if s.rcmgr != nil {
 			s.rcmgr.Enqueue("sequence", parentID)
+		}
+	})
+	// Wire the worktree notifier: when a run is armed (pending→running),
+	// provision its isolated working tree immediately (the scan pass every
+	// 200ms is the safety net).
+	workflowRec.SetWorktreeNotifier(func(ctx context.Context, runID string) {
+		if s.rcmgr != nil {
+			s.rcmgr.Enqueue("worktree", runID)
 		}
 	})
 
@@ -601,6 +653,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.webhookD != nil {
 			s.webhookD.Stop()
 		}
+		s.authH.CloseEmbeddedOP()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 		defer cancel()
 		if err := s.httpSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -612,6 +665,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.shutdownOTel()
 		return nil
 	case err := <-errCh:
+		s.authH.CloseEmbeddedOP()
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {

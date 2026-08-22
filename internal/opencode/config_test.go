@@ -63,6 +63,71 @@ func TestBuildConfigContentSkipsOrchiconMCP(t *testing.T) {
 	}
 }
 
+func TestBuildConfigContentMCPEnvAndBinaryPath(t *testing.T) {
+	out := BuildConfigContent(ConfigOptions{
+		TenantID:      "tnt_dev",
+		OrchiconMCP:   true,
+		MCPEnv:        map[string]string{"ORCHICON_POSTGRES_DSN": "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"},
+		MCPBinaryPath: "/usr/local/bin/orchicon",
+	})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("config content is not valid JSON: %v", err)
+	}
+	oc := cfg["mcp"].(map[string]any)["orchicon"].(map[string]any)
+	cmd, _ := oc["command"].([]any)
+	if len(cmd) != 2 || cmd[0] != "/usr/local/bin/orchicon" || cmd[1] != "mcp" {
+		t.Fatalf("orchicon MCP command = %#v, want [/usr/local/bin/orchicon, mcp]", oc["command"])
+	}
+	env, _ := oc["environment"].(map[string]any)
+	if env["ORCHICON_MCP_TENANT_ID"] != "tnt_dev" {
+		t.Errorf("tenant env = %#v, want tnt_dev", env["ORCHICON_MCP_TENANT_ID"])
+	}
+	if env["ORCHICON_POSTGRES_DSN"] == "" {
+		t.Errorf("expected ORCHICON_POSTGRES_DSN in MCP environment, got %#v", env)
+	}
+}
+
+func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
+	// Dev image: the container serve must register the Orchicon MCP against
+	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev")
+	var devCfg map[string]any
+	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
+		t.Fatalf("dev config not valid JSON: %v", err)
+	}
+	devMCP, ok := devCfg["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp block on dev image config: %s", dev)
+	}
+	oc, ok := devMCP["orchicon"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected orchicon MCP entry on dev image config: %s", dev)
+	}
+	cmd, _ := oc["command"].([]any)
+	if len(cmd) != 2 || cmd[0] != runtimeContainerBinaryPath || cmd[1] != "mcp" {
+		t.Fatalf("dev image MCP command = %#v, want [%s, mcp]", oc["command"], runtimeContainerBinaryPath)
+	}
+	env, _ := oc["environment"].(map[string]any)
+	if env["ORCHICON_POSTGRES_DSN"] != "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable" {
+		t.Errorf("sandbox DSN env = %#v", env["ORCHICON_POSTGRES_DSN"])
+	}
+
+	// Base/gui image: no sandbox plane, no MCP — behavior identical to today.
+	for _, tag := range []string{"ghcr.io/beardedparrott/orchicon-runtime:latest", "orchicon-runtime:gui-latest"} {
+		base := RuntimeServeConfig(tag)
+		var baseCfg map[string]any
+		if err := json.Unmarshal([]byte(base), &baseCfg); err != nil {
+			t.Fatalf("base config not valid JSON: %v", err)
+		}
+		if m, ok := baseCfg["mcp"].(map[string]any); ok {
+			if _, exists := m["orchicon"]; exists {
+				t.Errorf("orchicon MCP registered on non-dev image %s: %s", tag, base)
+			}
+		}
+	}
+}
+
 func TestStripJSONC(t *testing.T) {
 	in := `{
   // line comment

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -24,7 +25,14 @@ type ExecutionManifest struct {
 	ContextSources     []byte // jsonb
 	Budgets            []byte // jsonb
 	Permissions        []byte // jsonb
-	ProjectDir         string // working directory for the adapter subprocess
+	// ProjectDir is the project root: the container bind-mount source and
+	// the daemon-level guard/serve boundary. Always the true project dir.
+	ProjectDir string
+	// WorktreePath is the execution's working directory when the run has a
+	// provisioned worktree (a subdir of ProjectDir: .orchicon-worktrees/
+	// <runID>, worker starts checked out on its branch). Empty = run in
+	// ProjectDir directly.
+	WorktreePath string
 	// RuntimeWorkflowID is the workflow run whose runtime container this
 	// execution should dispatch into. When non-empty AND a runtime
 	// daemon is configured, the adapter runs `opencode` inside the
@@ -36,11 +44,16 @@ type ExecutionManifest struct {
 	RuntimeImage string
 	// Stall detection thresholds from tenant settings. Zero means "use
 	// env-var or built-in default".
-	StallNoProgressWindowSeconds  int64
-	StallNoFileDiffWindowSeconds  int64
-	StallTextLoopWindowSeconds    int64
-	StallRepetitionCount          int32
-	StallRepetitionWindowSeconds  int64
+	StallNoProgressWindowSeconds int64
+	StallNoFileDiffWindowSeconds int64
+	StallTextLoopWindowSeconds   int64
+	StallRepetitionCount         int32
+	StallRepetitionWindowSeconds int64
+	// Nudge knobs (advisory-stall escalation) from tenant settings. Zero
+	// means "use env-var or built-in default".
+	StallNudgeMax                int32
+	StallNudgeReplyWindowSeconds int64
+	StallNudgeCooldownSeconds    int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to
@@ -60,6 +73,16 @@ type ExecutionCallbacks interface {
 	// adapter didn't accumulate any text (e.g. the worker errored
 	// before producing output).
 	OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string)
+	// OnWrittenFiles carries the paths of files the worker's session
+	// actually wrote or edited during the run (opencode file_diff
+	// telemetry). More reliable than parsing diff markers out of the
+	// worker's text output: it includes files the model saved without
+	// echoing a diff (e.g. .orchicon/ review notes written via the Write
+	// tool). The receiver folds these into the step run's _touched_files
+	// so the next worker is told exactly what to read before it starts.
+	// Called before the terminal OnResult; may be called once with the
+	// full set, or incrementally.
+	OnWrittenFiles(ctx context.Context, execID string, files []string)
 	OnHealth(ctx context.Context, execID, healthState string)
 	// OnStall signals a detected stall (the reason carries which signal
 	// tripped: stalled:no_progress | stalled:no_file_progress |
@@ -117,8 +140,12 @@ var _ ExecutionCallbacks = (*TaskReconciler)(nil)
 // ("" for standalone, non-workflow failures). Recovery is scoped per
 // failing step run so every step that fails gets its own recovery cycle,
 // and the work item (the ticket) stays untouched during a run.
+//
+// auditEntry, when non-nil, is recorded atomically with the recovery
+// creation inside the engine's own transaction (the RPC path passes the
+// resolved actor; the reconciler system path passes nil).
 type RecoveryTrigger interface {
-	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string) error
+	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, auditEntry *audit.Entry) error
 }
 
 // PolicyEvaluator is the interface the WorkflowReconciler uses to

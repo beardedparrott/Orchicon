@@ -157,6 +157,42 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_SCHEDULED = 10;
    */
   SCHEDULED = 10,
+
+  /**
+   * @generated from enum value: WORK_ITEM_STATUS_RECURRING = 11;
+   */
+  RECURRING = 11,
+
+  /**
+   * System-managed: set by the reconcilers when an armed/on-deck item
+   * cannot dispatch because an upstream dependency (blocks/depends_on edge)
+   * is not terminal-success. Cleared automatically by the next reconcile
+   * pass when the dependency gate satisfies. Never user-assignable.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_BLOCKED = 12;
+   */
+  BLOCKED = 12,
+
+  /**
+   * System-managed terminal-success: set by the reconcilers when a bound
+   * workflow run completes with every active step terminal-success but at
+   * least one step skipped. Satisfies dependency edges exactly like
+   * SUCCEEDED (never blocks dependents). Never user-assignable.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_SKIPPED = 13;
+   */
+  SKIPPED = 13,
+
+  /**
+   * User-initiated terminal status: the item is hidden from every normal
+   * work-item view (archived_at IS NOT NULL). Only archivable from a
+   * terminal status (SUCCEEDED/FAILED/CANCELLED/SKIPPED) and only when the
+   * item has no children. Reversible via RestoreWorkItem, which returns the
+   * item to its archived_from_status.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_ARCHIVED = 14;
+   */
+  ARCHIVED = 14,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -171,6 +207,10 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 8, name: "WORK_ITEM_STATUS_CANCELLED" },
   { no: 9, name: "WORK_ITEM_STATUS_RECOVERING" },
   { no: 10, name: "WORK_ITEM_STATUS_SCHEDULED" },
+  { no: 11, name: "WORK_ITEM_STATUS_RECURRING" },
+  { no: 12, name: "WORK_ITEM_STATUS_BLOCKED" },
+  { no: 13, name: "WORK_ITEM_STATUS_SKIPPED" },
+  { no: 14, name: "WORK_ITEM_STATUS_ARCHIVED" },
 ]);
 
 /**
@@ -397,6 +437,61 @@ export class WorkItem extends Message<WorkItem> {
    */
   sortOrder = 0;
 
+  /**
+   * recurring_schedule holds the recurrence definition (frequency, interval,
+   * days, start_date, start_time). NULL = not recurring.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 29;
+   */
+  recurringSchedule?: RecurringSchedule;
+
+  /**
+   * next_run_at is the computed next occurrence of a recurring item, used by
+   * the scheduler due-scan. NULL = not recurring or no next occurrence.
+   *
+   * @generated from field: google.protobuf.Timestamp next_run_at = 30;
+   */
+  nextRunAt?: Timestamp;
+
+  /**
+   * depends_on are the IDs of the work items this item depends on (its
+   * outgoing edges of type DEPENDS_ON in the work DAG, independent of the
+   * parent/child hierarchy). Mirrors the create/update request shape so the
+   * set round-trips; full edge objects are available from GetDependencyGraph.
+   *
+   * @generated from field: repeated string depends_on = 31;
+   */
+  dependsOn: string[] = [];
+
+  /**
+   * blocked_by names the blocking dependency edges this item waits on:
+   * the sources of its incoming blocks/depends_on edges that are not yet
+   * terminal-success. Computed by the server at read time (never stored),
+   * so it is always consistent with the DAG + statuses. Populated whenever
+   * unsatisfied edges exist — even for a pending/ready item the reconciler
+   * has not yet flipped to blocked — so the reason is always visible.
+   *
+   * @generated from field: repeated orchicon.api.v1.WorkItemBlocker blocked_by = 32;
+   */
+  blockedBy: WorkItemBlocker[] = [];
+
+  /**
+   * archived_at is set when the work item is archived (NULL = active). Every
+   * active work-item read filters archived_at IS NULL; the dedicated archive
+   * view opts in via ListWorkItems include_archived.
+   *
+   * @generated from field: google.protobuf.Timestamp archived_at = 33;
+   */
+  archivedAt?: Timestamp;
+
+  /**
+   * archived_from_status is the terminal status the item had when archived;
+   * RestoreWorkItem returns the item to this status (not pending).
+   *
+   * @generated from field: string archived_from_status = 34;
+   */
+  archivedFromStatus = "";
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -432,6 +527,12 @@ export class WorkItem extends Message<WorkItem> {
     { no: 26, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 27, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 28, name: "sort_order", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 29, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 30, name: "next_run_at", kind: "message", T: Timestamp },
+    { no: 31, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 32, name: "blocked_by", kind: "message", T: WorkItemBlocker, repeated: true },
+    { no: 33, name: "archived_at", kind: "message", T: Timestamp },
+    { no: 34, name: "archived_from_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {
@@ -448,6 +549,135 @@ export class WorkItem extends Message<WorkItem> {
 
   static equals(a: WorkItem | PlainMessage<WorkItem> | undefined, b: WorkItem | PlainMessage<WorkItem> | undefined): boolean {
     return proto3.util.equals(WorkItem, a, b);
+  }
+}
+
+/**
+ * WorkItemBlocker is one upstream dependency edge that keeps its dependent
+ * from dispatching (the source is not terminal-success). Populated at read
+ * time on WorkItem.blocked_by.
+ *
+ * @generated from message orchicon.api.v1.WorkItemBlocker
+ */
+export class WorkItemBlocker extends Message<WorkItemBlocker> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string title = 2;
+   */
+  title = "";
+
+  /**
+   * current status of the blocking item
+   *
+   * @generated from field: string status = 3;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<WorkItemBlocker>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkItemBlocker";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkItemBlocker | PlainMessage<WorkItemBlocker> | undefined, b: WorkItemBlocker | PlainMessage<WorkItemBlocker> | undefined): boolean {
+    return proto3.util.equals(WorkItemBlocker, a, b);
+  }
+}
+
+/**
+ * RecurringSchedule defines the recurrence pattern for a recurring work item.
+ * Stored as JSONB in the recurring_schedule column. NULL = not recurring.
+ *
+ * @generated from message orchicon.api.v1.RecurringSchedule
+ */
+export class RecurringSchedule extends Message<RecurringSchedule> {
+  /**
+   * minute | hourly | daily | weekly | monthly
+   *
+   * @generated from field: string frequency = 1;
+   */
+  frequency = "";
+
+  /**
+   * >= 1 (e.g. every 2 hours)
+   *
+   * @generated from field: int32 interval = 2;
+   */
+  interval = 0;
+
+  /**
+   * subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+   *
+   * @generated from field: repeated string days = 3;
+   */
+  days: string[] = [];
+
+  /**
+   * YYYY-MM-DD (first occurrence date)
+   *
+   * @generated from field: string start_date = 4;
+   */
+  startDate = "";
+
+  /**
+   * HH:MM (time of day for occurrences)
+   *
+   * @generated from field: string start_time = 5;
+   */
+  startTime = "";
+
+  constructor(data?: PartialMessage<RecurringSchedule>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RecurringSchedule";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "frequency", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "interval", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "days", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "start_date", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "start_time", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RecurringSchedule | PlainMessage<RecurringSchedule> | undefined, b: RecurringSchedule | PlainMessage<RecurringSchedule> | undefined): boolean {
+    return proto3.util.equals(RecurringSchedule, a, b);
   }
 }
 

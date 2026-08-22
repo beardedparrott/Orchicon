@@ -14,34 +14,39 @@ import (
 // against a Task on an adapter. Created by the TaskReconciler at
 // dispatch; owns the adapter session.
 type ExecutionRow struct {
-	ID              string
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	WorkerID        string
-	WorkerVersion   int
-	AdapterID       *string
-	Status          string
-	HealthState     string
-	StartedAt       *time.Time
-	EndedAt         *time.Time
-	TokenUsage      int64
-	CostUSD         float64
-	CheckpointRef   *string
-	RecoveryID      *string
-	WorkflowRunID   string
-	WorkflowStepID  string
-	WorkflowName    string
-	WorkerName      string // worker display name (LEFT JOINed from workers at query time)
-	TaskName        string // work item title (denormalised via LEFT JOIN at query time)
-	ErrorMessage    string
-	Output          string
-	Conversation    []byte // jsonb: follow-up conversation array
-	IsFollowUp      bool
-	Iteration       int    // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
-	Version         int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID             string
+	TenantID       string
+	ProjectID      string
+	TaskID         string
+	WorkerID       string
+	WorkerVersion  int
+	AdapterID      *string
+	Status         string
+	HealthState    string
+	StartedAt      *time.Time
+	EndedAt        *time.Time
+	TokenUsage     int64
+	CostUSD        float64
+	CheckpointRef  *string
+	RecoveryID     *string
+	WorktreeStatus *string // worktree provisioning state (pending/ready/skipped/failed/pruned; NULL = no worktree)
+	WorktreePath   *string // isolated working tree the execution ran in
+	WorktreeBranch *string // deterministic branch created for the run
+	PrURL          *string // PR URL for the run's branch, mirrored from the parent workflow run at dispatch
+	PrState        *string // PR state (open/merged/draft/none), mirrored from the parent workflow run at dispatch
+	WorkflowRunID  string
+	WorkflowStepID string
+	WorkflowName   string
+	WorkerName     string // worker display name (LEFT JOINed from workers at query time)
+	TaskName       string // work item title (denormalised via LEFT JOIN at query time)
+	ErrorMessage   string
+	Output         string
+	Conversation   []byte // jsonb: follow-up conversation array
+	IsFollowUp     bool
+	Iteration      int // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
+	Version        int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // CreateExecution inserts a new worker execution row
@@ -51,11 +56,13 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
 		 adapter_id, status, health_state, started_at,
+		 worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
 		 workflow_run_id, workflow_step_id, conversation, is_follow_up, iteration)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
+			worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
 			workflow_run_id, workflow_step_id, error_message, output, conversation, is_follow_up, iteration, version,
 			created_at, updated_at`
 	conv := e.Conversation
@@ -66,12 +73,14 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	err := tx.QueryRow(ctx, q,
 		e.ID, e.TenantID, e.ProjectID, e.TaskID, e.WorkerID, e.WorkerVersion,
 		e.AdapterID, e.Status, e.HealthState, e.StartedAt,
+		e.WorktreeStatus, e.WorktreePath, e.WorktreeBranch, e.PrURL, e.PrState,
 		e.WorkflowRunID, e.WorkflowStepID, conv, e.IsFollowUp, e.Iteration,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.WorkerID,
 		&row.WorkerVersion, &row.AdapterID, &row.Status, &row.HealthState,
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch, &row.PrURL, &row.PrState,
 		&row.WorkflowRunID, &row.WorkflowStepID,
 		&row.ErrorMessage, &row.Output, &row.Conversation, &row.IsFollowUp, &row.Iteration,
 		&row.Version,
@@ -88,6 +97,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -101,6 +111,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
@@ -119,16 +130,16 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 // filtered by project/task/status/workflow_run_id, with free-text
 // search and sort.
 type ListExecutionsFilter struct {
-	TenantID       string
-	ProjectID      string
-	TaskID         string
-	Status         string
-	WorkflowRunID  string
-	Search         string
-	SortBy         string
-	SortOrder      string
-	PageSize       int
-	AfterID        string
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	Status          string
+	WorkflowRunID   string
+	Search          string
+	SortBy          string
+	SortOrder       string
+	PageSize        int
+	AfterID         string
 	ExcludeFollowUp bool
 }
 
@@ -146,6 +157,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -221,6 +233,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -236,18 +249,23 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 // UpdateExecutionFields is a partial update applied with optimistic
 // concurrency (docs/09 §5).
 type UpdateExecutionFields struct {
-	Status       *string
-	HealthState  *string
-	AdapterID    *string
-	StartedAt    *time.Time
-	EndedAt      *time.Time
-	TokenUsage   *int64
-	CostUSD      *float64
-	CheckpointRef *string
-	RecoveryID   *string
-	ErrorMessage *string
-	Output       *string
-	Conversation *[]byte
+	Status         *string
+	HealthState    *string
+	AdapterID      *string
+	StartedAt      *time.Time
+	EndedAt        *time.Time
+	TokenUsage     *int64
+	CostUSD        *float64
+	CheckpointRef  *string
+	RecoveryID     *string
+	WorktreeStatus *string
+	WorktreePath   *string
+	WorktreeBranch *string
+	PrURL          *string
+	PrState        *string
+	ErrorMessage   *string
+	Output         *string
+	Conversation   *[]byte
 }
 
 // UpdateExecution applies a partial update with optimistic concurrency.
@@ -302,6 +320,31 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 		args = append(args, *f.RecoveryID)
 		setIdx++
 	}
+	if f.WorktreeStatus != nil {
+		q += fmt.Sprintf(`, worktree_status = $%d`, setIdx)
+		args = append(args, *f.WorktreeStatus)
+		setIdx++
+	}
+	if f.WorktreePath != nil {
+		q += fmt.Sprintf(`, worktree_path = $%d`, setIdx)
+		args = append(args, *f.WorktreePath)
+		setIdx++
+	}
+	if f.WorktreeBranch != nil {
+		q += fmt.Sprintf(`, worktree_branch = $%d`, setIdx)
+		args = append(args, *f.WorktreeBranch)
+		setIdx++
+	}
+	if f.PrURL != nil {
+		q += fmt.Sprintf(`, pr_url = $%d`, setIdx)
+		args = append(args, *f.PrURL)
+		setIdx++
+	}
+	if f.PrState != nil {
+		q += fmt.Sprintf(`, pr_state = $%d`, setIdx)
+		args = append(args, *f.PrState)
+		setIdx++
+	}
 	if f.ErrorMessage != nil {
 		q += fmt.Sprintf(`, error_message = $%d`, setIdx)
 		args = append(args, *f.ErrorMessage)
@@ -320,14 +363,18 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, conversation, is_follow_up, iteration, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id,
+		worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
+		error_message, output, conversation, is_follow_up, iteration, version,
 		created_at, updated_at`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
+		&e.CheckpointRef, &e.RecoveryID,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
+		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -340,12 +387,40 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	return e, nil
 }
 
+// activeExecutionStatuses is the SQL form of the non-terminal execution
+// set the concurrency guard counts: dispatching / running / healthy /
+// stalled / unhealthy / terminating. Any other status (succeeded, failed,
+// failed_to_start, terminated) has released its dispatch slot. Every
+// per-project dispatch-limit COUNT query MUST use this constant so the
+// "active execution" definition stays in one place.
+const activeExecutionStatuses = "('dispatching','running','healthy','stalled','unhealthy','terminating')"
+
+// CountActiveExecutionsForProject returns the number of currently active
+// (non-terminal) executions for a project. It is the per-project admission
+// measure for the max-concurrent-runs dispatch guard: when the count is at
+// or above a project's effective limit, the TaskReconciler holds the next
+// dispatch until a running execution releases its slot.
+func CountActiveExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM worker_executions
+		WHERE tenant_id = $1 AND project_id = $2
+		  AND status IN `+activeExecutionStatuses,
+		tenantID, projectID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("db: count active executions for project: %w", err)
+	}
+	return count, nil
+}
+
 // ListDispatchingExecutions returns executions in "dispatching" state
 // (docs/03 §6). Used by the TaskReconciler to track in-flight dispatches.
 func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -367,6 +442,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -387,6 +463,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -408,6 +485,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -430,6 +508,7 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'ready' AND assigned_worker_ref IS NOT NULL
+		  AND archived_at IS NULL
 		ORDER BY priority DESC, created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {
@@ -466,14 +545,59 @@ func DeleteExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error 
 	return nil
 }
 
+// ListBlockedTasks returns work items in "blocked" status for a tenant,
+// ordered by priority — the TaskReconciler scan complement to
+// ListReadyTasks. Blocked tasks are re-evaluated on every pass so a newly
+// satisfied dependency gate flips them back to ready (and dispatches in
+// the same pass) without any new notifier wiring.
+func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
+	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
+		FROM work_items
+		WHERE tenant_id = $1 AND status = 'blocked' AND assigned_worker_ref IS NOT NULL
+		  AND archived_at IS NULL
+		ORDER BY priority DESC, created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list blocked tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
+			&w.PromptContext, &w.ContextFiles, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan blocked work item: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// terminalSuccessStatuses is the SQL form of
+// domain.WorkItemIsTerminalSuccess: a work item is terminal-success for
+// dependency/arming purposes exactly when its status is one of these.
+// Every SQL dependency gate MUST use this constant (and stay in lockstep
+// with the Go predicate) so skip-status and depends_on share one
+// terminal-success definition. failed/cancelled are NOT listed — they
+// keep dependents blocked.
+const terminalSuccessStatuses = "('succeeded','skipped')"
+
 // CheckDependenciesSatisfied returns true if all dependency edges pointing
 // TO the given work item have their source (from_id) in a terminal-success
-// state (succeeded). A task is only dispatched when its dependencies are
-// satisfied (docs/02 §4 invariant #1, docs/03 §4).
+// state (succeeded or skipped). A task is only dispatched when its
+// dependencies are satisfied (docs/02 §4 invariant #1, docs/03 §4).
 func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) (bool, error) {
 	// A work item is ready to dispatch if:
 	// 1. It has no blocking dependencies (no from_id edges where type in blocks/depends_on), OR
-	// 2. All blocking dependencies point to items in succeeded state.
+	// 2. All blocking dependencies point to items in a terminal-success state.
 	const q = `WITH blocking_deps AS (
 		SELECT from_id FROM work_item_dependencies
 		WHERE tenant_id = $1 AND to_id = $2
@@ -483,7 +607,7 @@ func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workIt
 		OR NOT EXISTS(
 			SELECT 1 FROM blocking_deps bd
 			JOIN work_items wi ON wi.id = bd.from_id
-			WHERE wi.status != 'succeeded'
+			WHERE wi.status NOT IN ` + terminalSuccessStatuses + `
 		)`
 	var satisfied bool
 	err := tx.QueryRow(ctx, q, tenantID, workItemID).Scan(&satisfied)
@@ -499,6 +623,7 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -513,6 +638,7 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,

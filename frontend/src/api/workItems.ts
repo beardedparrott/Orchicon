@@ -12,8 +12,10 @@ import { projectKeys } from "@/api/projects";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { DependencyGraph } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -33,11 +35,14 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) => {
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean) => {
     const key: unknown[] = [...workItemKeys.all, "list", projectId];
     if (parentId !== undefined) key.push(parentId);
     if (status !== undefined) key.push(status);
     if (opts !== undefined) key.push(opts);
+    // Archive partition is part of the key so the active list and the
+    // archive view never share a cache entry (same projectId).
+    if (includeArchived === true) key.push("archived");
     return key;
   },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
@@ -50,13 +55,13 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
   const listOpts = { search: opts?.search, sortBy: opts?.sortBy, sortOrder: opts?.sortOrder };
   return useQuery({
-    queryKey: workItemKeys.list(projectId, parentId, status, listOpts),
+    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived),
     queryFn: async () => {
       const res = await workItemClient.listWorkItems({
         projectId,
@@ -66,6 +71,7 @@ export function useListWorkItems(
         sortBy: opts?.sortBy || "",
         sortOrder: opts?.sortOrder || "",
         pageSize: 1000,
+        includeArchived: opts?.includeArchived ?? false,
       });
       return res.workItems as WorkItem[];
     },
@@ -172,6 +178,42 @@ export function useDeleteWorkItem(projectId: string) {
   });
 }
 
+// useArchiveWorkItem archives a terminal work item, hiding it from every
+// normal view. Mirrors useArchiveProject. Invalidates the list, detail and
+// graph so the item disappears from the board/tree immediately.
+export function useArchiveWorkItem(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await workItemClient.archiveWorkItem({ id });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+    },
+  });
+}
+
+// useRestoreWorkItem restores an archived work item to the active views,
+// back to the terminal status it was archived from. Invalidates the list,
+// detail and graph so the item reappears in the board/tree immediately.
+export function useRestoreWorkItem(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await workItemClient.restoreWorkItem({ id });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+    },
+  });
+}
+
 // useHardDeleteWorkItem permanently removes a work item and its
 // dependencies. After success, the caller is responsible for navigating
 // away from the detail page.
@@ -197,6 +239,31 @@ export function useBatchDeleteWorkItems() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workItemKeys.all });
+    },
+  });
+}
+
+// useRemoveSchedule removes the schedule from a work item without
+// changing its status. It clears recurring_schedule, unbinds the
+// workflow_run_id, and disables auto_start_workflow using proto3 clear
+// semantics. auto_start_workflow must be set to false to prevent the
+// backend from re-firing a new run after the workflow_run_id is cleared.
+export function useRemoveSchedule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await workItemClient.updateWorkItem({
+        id,
+        recurringSchedule: new RecurringSchedule(),
+        workflowRunId: "",
+        autoStartWorkflow: false,
+      });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
     },
   });
 }
@@ -286,6 +353,35 @@ export function useReorderWorkItems() {
       if (items.length > 0) {
         qc.invalidateQueries({ queryKey: workItemKeys.detail(items[0].id) });
       }
+    },
+  });
+}
+
+// useControlSequence drives a sequence parent manually (START / RESUME /
+// STOP). A parent with children IS a sequence run; these explicit gestures
+// are what the engine's derived cursor cannot infer on its own:
+//   - START re-fires the chain from child #1 (destructive — every
+//     descendant resets to pending); validations + in-flight guards run
+//     server-side.
+//   - RESUME continues from the first non-succeeded child (keeps state).
+//   - STOP parks the chain (parent → pending, schedule cleared) so
+//     children can be run standalone.
+// Invalidates by the returned item's project (works in any view — board,
+// tree, schedules, all-projects).
+export function useControlSequence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { id: string; action: SequenceAction }) => {
+      const res = await workItemClient.controlSequence({
+        id: input.id,
+        action: input.action,
+      });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(item.projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(item.projectId) });
     },
   });
 }

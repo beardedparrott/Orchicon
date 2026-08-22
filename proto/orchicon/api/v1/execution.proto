@@ -45,6 +45,20 @@ message WorkerExecution {
   int32 iteration = 23; // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
   string system_prompt = 24; // the actual system prompt sent to the model for this execution — the workflow step run's _prompt (per-step composite). Empty for non-workflow / legacy dispatch.
   string worker_name = 25; // human-readable worker name (LEFT JOINed from workers at query time)
+  // Worktree provisioning state (the non-repo in-place fallback), copied
+  // from the parent workflow run at dispatch:
+  // worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+  // is 'skipped' with empty path/branch and renders as "runs in place".
+  string worktree_status = 26;
+  string worktree_branch = 27; // deterministic branch created for the run
+  string worktree_path = 28; // isolated working tree the execution ran in
+  // Pull-request surface for the run's branch, mirrored from the parent
+  // workflow run at dispatch (same seam as the worktree columns). The
+  // per-branch DevOps worker authors pr_url/pr_state into the run's
+  // `run_context`; when empty the UI falls back to a deterministic
+  // `pull/new/{branch}` link from the project's repo_slug.
+  string pr_url = 29;
+  string pr_state = 30;
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution
@@ -280,4 +294,42 @@ message ContinueExecutionSessionRequest {
 
 message ContinueExecutionSessionResponse {
   string reply = 1;
+}
+
+// TodoStatus is the lifecycle state of a worker's todo item, mirroring the
+// opencode todowrite tool's statuses.
+enum TodoStatus {
+  TODO_STATUS_UNSPECIFIED = 0;
+  TODO_STATUS_PENDING = 1;
+  TODO_STATUS_IN_PROGRESS = 2;
+  TODO_STATUS_COMPLETED = 3;
+  TODO_STATUS_CANCELLED = 4;
+}
+
+// TodoPriority is the priority of a worker's todo item, mirroring the
+// opencode todowrite tool's priorities.
+enum TodoPriority {
+  TODO_PRIORITY_UNSPECIFIED = 0;
+  TODO_PRIORITY_HIGH = 1;
+  TODO_PRIORITY_MEDIUM = 2;
+  TODO_PRIORITY_LOW = 3;
+}
+
+// TodoItem is a single entry of a worker's todo list, as recorded by the
+// latest todowrite tool call in the execution's session transcript.
+message TodoItem {
+  string content = 1;
+  TodoStatus status = 2;
+  TodoPriority priority = 3;
+}
+
+// GetExecutionTodos returns the worker's most recent todo list for an
+// execution, parsed from the session transcript's latest todowrite tool
+// call. Empty when the worker never recorded a todo list.
+message GetExecutionTodosRequest {
+  string execution_id = 1;
+}
+
+message GetExecutionTodosResponse {
+  repeated TodoItem todos = 1;
 }

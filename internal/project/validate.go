@@ -35,14 +35,14 @@ import (
 // maxNameLen / maxSlugLen bound input size to prevent abuse. Slugs are
 // also constrained to URL-safe characters by the slug regex.
 const (
-	maxNameLen        = 500
-	maxSlugLen        = 63
-	maxGoalKeyLen     = 100
-	maxGoalValueLen   = 10000
-	maxGoalsLen       = 1 << 20 // 1 MiB; goals is a JSON document
-	maxContextFiles   = 1000   // max number of context files
-	maxFilePathLen    = 4096   // max length of a single file path
-	maxDirEntries     = 10000  // max entries returned by listDirectory
+	maxNameLen      = 500
+	maxSlugLen      = 63
+	maxGoalKeyLen   = 100
+	maxGoalValueLen = 10000
+	maxGoalsLen     = 1 << 20 // 1 MiB; goals is a JSON document
+	maxContextFiles = 1000    // max number of context files
+	maxFilePathLen  = 4096    // max length of a single file path
+	maxDirEntries   = 10000   // max entries returned by listDirectory
 )
 
 // slugRE defines the canonical slug character set: lowercase alphanumerics
@@ -356,18 +356,28 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 // Timestamps are converted to timestamppb.
 func rowToProto(p db.ProjectRow) *apiv1.Project {
 	return &apiv1.Project{
-		Id:           p.ID,
-		TenantId:     p.TenantID,
-		Name:         p.Name,
-		Slug:         p.Slug,
-		Status:       apiv1.ProjectStatus(statusToProto(p.Status)),
-		Goals:        string(p.Goals),
-		Version:      int32(p.Version),
-		CreatedAt:    timestamppb.New(p.CreatedAt),
-		UpdatedAt:    timestamppb.New(p.UpdatedAt),
-		ProjectDir:   p.ProjectDir,
-		ContextFiles: contextFilesFromJSONOrEmpty(p.ContextFiles),
+		Id:                p.ID,
+		TenantId:          p.TenantID,
+		Name:              p.Name,
+		Slug:              p.Slug,
+		Status:            apiv1.ProjectStatus(statusToProto(p.Status)),
+		Goals:             string(p.Goals),
+		Version:           int32(p.Version),
+		CreatedAt:         timestamppb.New(p.CreatedAt),
+		UpdatedAt:         timestamppb.New(p.UpdatedAt),
+		ProjectDir:        p.ProjectDir,
+		ContextFiles:      contextFilesFromJSONOrEmpty(p.ContextFiles),
+		MaxConcurrentRuns: int32(p.MaxConcurrentRuns),
+		RepoSlug:          stringOrEmpty(p.RepoSlug),
 	}
+}
+
+// stringOrEmpty dereferences a nullable string, returning "" for nil.
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // contextFilesFromJSONOrEmpty is a best-effort parser for the context_files

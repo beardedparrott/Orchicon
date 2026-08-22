@@ -124,8 +124,15 @@ func toolGetSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 
 func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		DefaultWorkerModel      string `json:"default_worker_model"`
-		DefaultAskOrchiconModel string `json:"default_ask_orchicon_model"`
+		DefaultWorkerModel           string `json:"default_worker_model"`
+		DefaultAskOrchiconModel      string `json:"default_ask_orchicon_model"`
+		StallNoProgressWindowSeconds int64  `json:"stall_no_progress_window_seconds"`
+		StallNoFileDiffWindowSeconds int64  `json:"stall_no_file_diff_window_seconds"`
+		StallTextLoopWindowSeconds   int64  `json:"stall_text_loop_window_seconds"`
+		StallRepetitionCount         int32  `json:"stall_repetition_count"`
+		StallRepetitionWindowSeconds int64  `json:"stall_repetition_window_seconds"`
+		SessionAccessTokenTtlSeconds int64  `json:"session_access_token_ttl_seconds"`
+		SessionRefreshTokenTtlSeconds int64 `json:"session_refresh_token_ttl_seconds"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -137,8 +144,15 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	defer ttx.Rollback(ctx)
 	settings, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, db.TenantSettingsRow{
-		DefaultWorkerModel:      params.DefaultWorkerModel,
-		DefaultAskOrchiconModel: params.DefaultAskOrchiconModel,
+		DefaultWorkerModel:           params.DefaultWorkerModel,
+		DefaultAskOrchiconModel:      params.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds: params.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds: params.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:   params.StallTextLoopWindowSeconds,
+		StallRepetitionCount:         params.StallRepetitionCount,
+		StallRepetitionWindowSeconds: params.StallRepetitionWindowSeconds,
+		SessionAccessTokenTtlSeconds: params.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds: params.SessionRefreshTokenTtlSeconds,
 	})
 	if err != nil {
 		return nil, err

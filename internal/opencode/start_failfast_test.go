@@ -16,14 +16,15 @@ import (
 // paths never invoke OnStarted/OnResult.
 type failFastCallbacks struct{}
 
-func (failFastCallbacks) OnStarted(context.Context, string)                       {}
-func (failFastCallbacks) OnHealth(context.Context, string, string)                {}
-func (failFastCallbacks) OnStall(context.Context, string, string, bool)           {}
-func (failFastCallbacks) OnRecovered(context.Context, string, string)             {}
-func (failFastCallbacks) OnText(context.Context, string, string)                  {}
+func (failFastCallbacks) OnStarted(context.Context, string)                          {}
+func (failFastCallbacks) OnHealth(context.Context, string, string)                   {}
+func (failFastCallbacks) OnStall(context.Context, string, string, bool)              {}
+func (failFastCallbacks) OnRecovered(context.Context, string, string)                {}
+func (failFastCallbacks) OnText(context.Context, string, string)                     {}
 func (failFastCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {}
 func (failFastCallbacks) OnArtifact(context.Context, string, string, string, string) {}
 func (failFastCallbacks) OnResult(context.Context, string, bool, string, string)     {}
+func (failFastCallbacks) OnWrittenFiles(context.Context, string, []string)           {}
 
 func failFastManifest() scheduler.ExecutionManifest {
 	return scheduler.ExecutionManifest{

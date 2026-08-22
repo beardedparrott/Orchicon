@@ -17,9 +17,11 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
-	apiv1connect 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -42,10 +44,10 @@ var regexpSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Service implements the RuntimeImageService Connect handler.
 type Service struct {
-	pool   *db.Pool
-	log    *slog.Logger
-	rt     *runtime.Client // nil in headless (no daemon)
-	base   string          // resolved base image ref from the daemon (cached at first Images call)
+	pool *db.Pool
+	log  *slog.Logger
+	rt   *runtime.Client // nil in headless (no daemon)
+	base string          // resolved base image ref from the daemon (cached at first Images call)
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 }
 
@@ -148,6 +150,10 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create runtime image: %w", err))
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.created", "runtime_image", row.ID,
+		nil, audit.Snapshot(runtimeImageAuditSnapshot(row))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -291,6 +297,10 @@ func (s *Service) UpdateRuntimeImage(ctx context.Context, req *connect.Request[a
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.updated", "runtime_image", row.ID,
+		audit.Snapshot(runtimeImageAuditSnapshot(cur)), audit.Snapshot(runtimeImageAuditSnapshot(row))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -328,6 +338,10 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
+		audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -452,6 +466,11 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 	if err != nil {
 		_ = ttx.Rollback(ctx)
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.build_started", "runtime_image", row.ID,
+		nil, audit.Snapshot(map[string]any{"tag": row.Tag, "status": "building"})); err != nil {
+		_ = ttx.Rollback(ctx)
+		return row, 1, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.build_started: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return row, 1, connect.NewError(connect.CodeInternal, err)
@@ -769,4 +788,37 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// --- audit helpers ---------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// runtimeImageAuditSnapshot is the non-secret projection of a runtime
+// image spec for the audit trail. Env and the dockerfile override can
+// embed secrets; apt_packages/toolchains are install commands (also
+// potentially sensitive) — keep the snapshot to identity + status.
+func runtimeImageAuditSnapshot(r db.RuntimeImageRow) map[string]any {
+	return map[string]any{
+		"id":      r.ID,
+		"name":    r.Name,
+		"slug":    r.Slug,
+		"tag":     r.Tag,
+		"status":  r.Status,
+		"version": r.Version,
+	}
 }

@@ -7,12 +7,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
 // These tests exercise the Ask Orchicon create_work_item tool against a
@@ -502,6 +505,134 @@ func TestUpdateWorkItemAutoStartClearsScheduleDB(t *testing.T) {
 	}
 }
 
+// TestUpdateWorkItemRecurringMirrorDB verifies the MCP tool mirrors the
+// Connect Update handler's recurring-status invariant (AGENTS.md: the tool
+// and the service cannot drift). The tool cannot SET a schedule, so only
+// the clear/demote direction applies:
+//   - a status switch away from "recurring" clears a carried schedule (the
+//     tool previously left it behind on a non-recurring status),
+//   - a manual status="recurring" pick on a schedule-less item is demoted to
+//     pending ("recurring" is derived, not settable),
+//   - a kind switch to a non-schedulable kind clears the schedule too.
+func TestUpdateWorkItemRecurringMirrorDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	epicID := createParentEpicForTest(t, ctx, pool, projectID)
+
+	// mkRecurring seeds a recurring task directly (the tool cannot set a
+	// schedule), mirroring the Connect Create path's stored state.
+	mkRecurring := func() db.WorkItemRow {
+		t.Helper()
+		item, err := callToolCreate(t, ctx, pool, map[string]any{
+			"project_id": projectID,
+			"title":      "Recurring mirror " + strings.ToLower(db.NewID()),
+			"kind":       "task",
+			"parent_id":  epicID,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		scheduleJSON, err := workitem.ValidateRecurringSchedule(&apiv1.RecurringSchedule{
+			Frequency: "daily",
+			Interval:  1,
+			StartDate: "2026-08-12",
+			StartTime: "09:00",
+		})
+		if err != nil {
+			t.Fatalf("validate recurring schedule: %v", err)
+		}
+		future := time.Now().Add(24 * time.Hour)
+		ttx, err := pool.BeginTenantTx(ctx, workItemKindTestTenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ttx.Rollback(ctx)
+		w, err := db.GetWorkItem(ctx, ttx.Tx, workItemKindTestTenant, item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := db.UpdateWorkItem(ctx, ttx.Tx, workItemKindTestTenant, item.ID, w.Version, db.UpdateWorkItemFields{
+			Status:            strPtr(domain.WorkItemRecurring),
+			RecurringSchedule: &scheduleJSON,
+			NextRunAt:         &future,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+
+	// 1. status=pending on a recurring item clears the schedule.
+	item1 := mkRecurring()
+	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id": item1.ID, "status": domain.WorkItemPending,
+	})
+	if err != nil {
+		t.Fatalf("update status=pending on recurring: %v", err)
+	}
+	if updated.Status != domain.WorkItemPending {
+		t.Errorf("status = %q, want pending", updated.Status)
+	}
+	if len(updated.RecurringSchedule) != 0 || updated.NextRunAt != nil {
+		t.Errorf("recurring schedule should be cleared, got schedule=%q next_run=%v", updated.RecurringSchedule, updated.NextRunAt)
+	}
+
+	// 2a. A recurring item saved with the dropdown's "recurring" stays
+	// recurring (the mirror must not demote a schedule-carrying item).
+	item2 := mkRecurring()
+	updated2, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id": item2.ID, "status": domain.WorkItemRecurring,
+	})
+	if err != nil {
+		t.Fatalf("update status=recurring on recurring item: %v", err)
+	}
+	if updated2.Status != domain.WorkItemRecurring {
+		t.Errorf("recurring item + explicit recurring status = %q, want recurring", updated2.Status)
+	}
+
+	// 2b. A manual status=recurring pick on a schedule-less item demotes.
+	plain, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Plain for recurring pick",
+		"kind":       "task",
+		"parent_id":  epicID,
+	})
+	if err != nil {
+		t.Fatalf("create plain: %v", err)
+	}
+	updated3, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id": plain.ID, "status": domain.WorkItemRecurring,
+	})
+	if err != nil {
+		t.Fatalf("update status=recurring on plain item: %v", err)
+	}
+	if updated3.Status != domain.WorkItemPending {
+		t.Errorf("status=recurring on a schedule-less item = %q, want pending (demoted)", updated3.Status)
+	}
+
+	// 3. Kind switch to a non-schedulable kind clears the schedule too.
+	item4 := mkRecurring()
+	updated4, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id": item4.ID, "kind": "feature",
+	})
+	if err != nil {
+		t.Fatalf("switch recurring task -> feature: %v", err)
+	}
+	if updated4.Kind != domain.WorkItemKindFeature {
+		t.Errorf("kind = %q, want feature", updated4.Kind)
+	}
+	if updated4.Status != domain.WorkItemPending {
+		t.Errorf("status after switch = %q, want pending", updated4.Status)
+	}
+	if len(updated4.RecurringSchedule) != 0 || updated4.NextRunAt != nil {
+		t.Errorf("recurring schedule should be cleared on kind switch, got schedule=%q next_run=%v", updated4.RecurringSchedule, updated4.NextRunAt)
+	}
+}
+
 // TestUpdateWorkItemProjectReassignDB verifies project_id reassignment is
 // settable via the MCP and the target must be active.
 func TestUpdateWorkItemProjectReassignDB(t *testing.T) {
@@ -715,5 +846,99 @@ func TestReorderWorkItemsToolValidation(t *testing.T) {
 				t.Fatalf("reorder error %q does not contain %q", err.Error(), tc.errMsg)
 			}
 		})
+	}
+}
+
+// callToolArchive invokes toolArchiveWorkItem with the given id and returns
+// the archived row.
+func callToolArchive(t *testing.T, ctx context.Context, pool *db.Pool, id string) (db.WorkItemRow, error) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"id": id})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res, err := toolArchiveWorkItem(ctx, pool, raw)
+	if err != nil {
+		return db.WorkItemRow{}, err
+	}
+	var item db.WorkItemRow
+	if err := json.Unmarshal(res, &item); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	return item, nil
+}
+
+// TestArchiveWorkItemToolDB verifies the archive_work_item tool hides a
+// terminal item (status → archived, archived_at set, archived_from_status
+// preserved) and that restore_work_item returns it to its prior terminal
+// status.
+func TestArchiveWorkItemToolDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "Archive tool item", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	// Flip to a terminal status (succeeded) so it is archivable.
+	if _, err := callToolUpdate(t, ctx, pool, map[string]any{"id": item.ID, "status": domain.WorkItemSucceeded}); err != nil {
+		t.Fatalf("set succeeded: %v", err)
+	}
+
+	archived, err := callToolArchive(t, ctx, pool, item.ID)
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if archived.Status != domain.WorkItemArchived {
+		t.Fatalf("status = %q, want archived", archived.Status)
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived_at not set")
+	}
+	if archived.ArchivedFromStatus == nil || *archived.ArchivedFromStatus != domain.WorkItemSucceeded {
+		t.Fatalf("archived_from_status = %v, want succeeded", archived.ArchivedFromStatus)
+	}
+
+	// Restore returns it to the prior terminal status.
+	raw, err := json.Marshal(map[string]any{"id": item.ID})
+	if err != nil {
+		t.Fatalf("marshal restore args: %v", err)
+	}
+	res, err := toolRestoreWorkItem(ctx, pool, raw)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	var restored db.WorkItemRow
+	if err := json.Unmarshal(res, &restored); err != nil {
+		t.Fatalf("unmarshal restore result: %v", err)
+	}
+	if restored.Status != domain.WorkItemSucceeded {
+		t.Fatalf("restored status = %q, want succeeded", restored.Status)
+	}
+	if restored.ArchivedAt != nil {
+		t.Fatal("archived_at not cleared on restore")
+	}
+}
+
+// TestArchiveWorkItemToolRejectsNonTerminal verifies the tool refuses to
+// archive a non-terminal item.
+func TestArchiveWorkItemToolRejectsNonTerminal(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "Non-terminal", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	if _, err := callToolArchive(t, ctx, pool, item.ID); err == nil {
+		t.Fatal("expected archive of a non-terminal item to fail")
+	} else if !strings.Contains(err.Error(), "terminal state") {
+		t.Fatalf("archive error %q does not mention terminal state", err.Error())
 	}
 }

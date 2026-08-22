@@ -24,7 +24,7 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 		ID:        "approval-1",
 		Name:      "Approve",
 		Kind:      "approval",
-		Ref:       "w_se_ai_approver",
+		Ref:       "w_se_code_approver",
 		DependsOn: []string{"workitem-1"},
 	}
 	// A bare approval step with no upstream WORK_ITEM marker — used for
@@ -34,7 +34,7 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 		ID:   "approval-2",
 		Name: "Approve (bare)",
 		Kind: "approval",
-		Ref:  "w_se_ai_approver",
+		Ref:  "w_se_code_approver",
 	}
 	markerStep := workflow.StepWire{
 		ID:     "workitem-1",
@@ -109,7 +109,7 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 func TestBuildApprovalStepResult(t *testing.T) {
 	prev := []byte(`{"_recovery_summary":"the first attempt failed"}`)
 	got := buildApprovalStepResult(
-		"ticket-01", "composite prompt", "w_se_ai_approver", 7,
+		"ticket-01", "composite prompt", "w_se_code_approver", 7,
 		"Senior SWE", "the upstream summary", []string{"a.go", "b.go"}, "the AC",
 		prev,
 	)
@@ -120,7 +120,7 @@ func TestBuildApprovalStepResult(t *testing.T) {
 	want := map[string]any{
 		"_work_item_id":     "ticket-01",
 		"_prompt":           "composite prompt",
-		"_worker_id":        "w_se_ai_approver",
+		"_worker_id":        "w_se_code_approver",
 		"_worker_version":   float64(7),
 		"_upstream_worker":  "Senior SWE",
 		"_upstream_summary": "the upstream summary",
@@ -140,7 +140,7 @@ func TestBuildApprovalStepResult(t *testing.T) {
 	}
 
 	// A fresh dispatch (no prior result) must NOT carry a recovery summary.
-	fresh := buildApprovalStepResult("ticket-01", "p", "w_se_ai_approver", 7, "", "", nil, "", nil)
+	fresh := buildApprovalStepResult("ticket-01", "p", "w_se_code_approver", 7, "", "", nil, "", nil)
 	var fm map[string]any
 	_ = json.Unmarshal(fresh, &fm)
 	if _, ok := fm["_recovery_summary"]; ok {

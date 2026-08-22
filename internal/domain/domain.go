@@ -135,22 +135,70 @@ func NormalizeWorkItemKind(kind string) (string, error) {
 const (
 	WorkItemPending       = "pending"
 	WorkItemScheduled     = "scheduled"
-	WorkItemReady        = "ready"
-	WorkItemAssigned     = "assigned"
-	WorkItemRunning      = "running"
+	WorkItemReady         = "ready"
+	WorkItemAssigned      = "assigned"
+	WorkItemRunning       = "running"
 	WorkItemCheckpointing = "checkpointing"
-	WorkItemSucceeded    = "succeeded"
-	WorkItemFailed       = "failed"
-	WorkItemCancelled    = "cancelled"
-	WorkItemRecovering   = "recovering"
+	WorkItemSucceeded     = "succeeded"
+	WorkItemFailed        = "failed"
+	WorkItemCancelled     = "cancelled"
+	WorkItemRecovering    = "recovering"
+	WorkItemRecurring     = "recurring"
+	// WorkItemBlocked is a system-managed status set by the reconcilers
+	// when an armed/on-deck item cannot dispatch because an upstream
+	// dependency (blocks/depends_on edge) is not terminal-success. The
+	// next reconcile pass clears it automatically when the gate satisfies.
+	WorkItemBlocked = "blocked"
+	// WorkItemSkipped is a system-managed terminal-success status set by
+	// the reconcilers when a bound workflow run completes with every
+	// active step terminal-success but at least one step skipped. A
+	// skipped work item satisfies dependency edges exactly like succeeded
+	// and never blocks dependents (docs/02_Domain_Model.md §2.2). Never
+	// user-settable; mirrors WorkItemBlocked's system-managed rule.
+	WorkItemSkipped = "skipped"
+	// WorkItemArchived is a user-initiated terminal status set by
+	// ArchiveWorkItem. An archived item is hidden from every normal
+	// work-item view (board/tree/list/sequence/workflows/counts) because
+	// it carries archived_at IS NOT NULL and every active read filters
+	// archived_at IS NULL. Archiving is only allowed from a terminal
+	// status (succeeded/failed/cancelled/skipped) and only when the item
+	// has no children. Reversible via RestoreWorkItem, which returns the
+	// item to the terminal status recorded in archived_from_status.
+	WorkItemArchived = "archived"
 )
+
+// WorkItemIsTerminalArchivable reports whether a work item may be
+// archived — i.e. it is in a terminal (non-pending, non-running) state.
+// The set is exactly succeeded | failed | cancelled | skipped. Pending,
+// ready, assigned, running, checkpointing, recovering, scheduled,
+// recurring and blocked items must first finish or be cancelled.
+func WorkItemIsTerminalArchivable(status string) bool {
+	switch status {
+	case WorkItemSucceeded, WorkItemFailed, WorkItemCancelled, WorkItemSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+// WorkItemIsTerminalSuccess reports whether a work item is terminal-
+// success for dependency/arming purposes: succeeded or skipped. This is
+// THE single shared terminal-success definition — every dependency gate,
+// sequence chain gate, sequence cursor, blocked_by computation and
+// sequence-advance notification must use it (or its SQL equivalent
+// `status NOT IN ('succeeded','skipped')` in internal/db) so skip-status
+// and depends_on can never disagree. failed/cancelled are terminal-
+// FAILURE and deliberately return false: they keep dependents blocked.
+func WorkItemIsTerminalSuccess(status string) bool {
+	return status == WorkItemSucceeded || status == WorkItemSkipped
+}
 
 // Dependency types — edges in the work DAG
 // (docs/02_Domain_Model.md §2.2).
 const (
-	DependencyBlocks     = "blocks"
-	DependencyDependsOn  = "depends_on"
-	DependencyRelatesTo  = "relates_to"
+	DependencyBlocks    = "blocks"
+	DependencyDependsOn = "depends_on"
+	DependencyRelatesTo = "relates_to"
 )
 
 // Resource types for edit locks (docs/07 §3.3).
@@ -193,6 +241,28 @@ const (
 	WorkflowRunPaused    = "paused"
 )
 
+// WorktreeStatus — the WorktreeReconciler's per-run working-tree
+// provisioning states, shared between workflow_runs.worktree_status and
+// worker_executions.worktree_status:
+//   - pending: not yet provisioned (the default; self-healing for runs
+//     armed before the columns existed).
+//   - ready: the isolated working tree exists; worktree_path +
+//     worktree_branch are recorded.
+//   - skipped: the project is not a git work tree — the run proceeds in
+//     place (the non-repo fallback work item consumes this decision).
+//   - failed: provisioning errored; the run proceeds in place (today's
+//     behavior) and the DAG gate / cwd wiring is the execution-cwd
+//     companion's job.
+//   - pruned: the working tree was reaped after the run (set by the
+//     pruning task on worker_executions.worktree_status).
+const (
+	WorktreePending = "pending"
+	WorktreeReady   = "ready"
+	WorktreeSkipped = "skipped"
+	WorktreeFailed  = "failed"
+	WorktreePruned  = "pruned"
+)
+
 // StepKind — the five step types (docs/02 §2.4):
 // StepKind enumerates the step types a workflow author can place on the
 // canvas (docs/02 §2.4, docs/10 §5.1). Stored as a string in StepWire
@@ -212,47 +282,47 @@ const (
 //     downstream work items. Sets the workflow's project_id on the
 //     first reconcile pass.
 const (
-	StepKindTask     = "task"
-	StepKindDecision = "decision"
-	StepKindApproval = "approval"
-	StepKindParallel = "parallel"
-	StepKindRecover  = "recover"
-	StepKindWorkItem = "work_item"
-	StepKindProject       = "project"
-	StepKindLoopDecision  = "loop_decision"
+	StepKindTask         = "task"
+	StepKindDecision     = "decision"
+	StepKindApproval     = "approval"
+	StepKindParallel     = "parallel"
+	StepKindRecover      = "recover"
+	StepKindWorkItem     = "work_item"
+	StepKindProject      = "project"
+	StepKindLoopDecision = "loop_decision"
 )
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):
 // pending → ready → running → succeeded | failed | skipped | blocked |
 // approval_pending | recovering.
 const (
-	StepRunPending          = "pending"
-	StepRunReady            = "ready"
-	StepRunRunning          = "running"
-	StepRunSucceeded        = "succeeded"
-	StepRunFailed           = "failed"
-	StepRunSkipped          = "skipped"
-	StepRunBlocked          = "blocked"
-	StepRunApprovalPending  = "approval_pending"
-	StepRunRecovering       = "recovering"
+	StepRunPending         = "pending"
+	StepRunReady           = "ready"
+	StepRunRunning         = "running"
+	StepRunSucceeded       = "succeeded"
+	StepRunFailed          = "failed"
+	StepRunSkipped         = "skipped"
+	StepRunBlocked         = "blocked"
+	StepRunApprovalPending = "approval_pending"
+	StepRunRecovering      = "recovering"
 )
 
 // WorkflowEventType — event kinds streamed via StreamWorkflowEvents
 // (docs/07 §3.4, docs/10 §4.1). Step transitions + run lifecycle.
 const (
-	WorkflowEventRunStarted       = "workflow.run_started"
-	WorkflowEventRunCompleted     = "workflow.run_completed"
-	WorkflowEventRunFailed        = "workflow.run_failed"
-	WorkflowEventRunAborted       = "workflow.run_aborted"
-	WorkflowEventRunRetried       = "workflow.run_retried"
-	WorkflowEventStepReady        = "workflow.step_ready"
-	WorkflowEventStepStarted      = "workflow.step_started"
-	WorkflowEventStepSucceeded    = "workflow.step_succeeded"
-	WorkflowEventStepFailed       = "workflow.step_failed"
-	WorkflowEventStepSkipped      = "workflow.step_skipped"
-	WorkflowEventStepBlocked      = "workflow.step_blocked"
-	WorkflowEventStepRecovering   = "workflow.step_recovering"
-	WorkflowEventStepApproval     = "workflow.step_approval_pending"
+	WorkflowEventRunStarted     = "workflow.run_started"
+	WorkflowEventRunCompleted   = "workflow.run_completed"
+	WorkflowEventRunFailed      = "workflow.run_failed"
+	WorkflowEventRunAborted     = "workflow.run_aborted"
+	WorkflowEventRunRetried     = "workflow.run_retried"
+	WorkflowEventStepReady      = "workflow.step_ready"
+	WorkflowEventStepStarted    = "workflow.step_started"
+	WorkflowEventStepSucceeded  = "workflow.step_succeeded"
+	WorkflowEventStepFailed     = "workflow.step_failed"
+	WorkflowEventStepSkipped    = "workflow.step_skipped"
+	WorkflowEventStepBlocked    = "workflow.step_blocked"
+	WorkflowEventStepRecovering = "workflow.step_recovering"
+	WorkflowEventStepApproval   = "workflow.step_approval_pending"
 )
 
 // AdapterStatus — runtime adapter registration lifecycle
@@ -269,16 +339,16 @@ const (
 // (docs/02_Domain_Model.md §2.7, docs/03 §6):
 // dispatching → running → healthy|stalled|unhealthy → terminating → succeeded|failed
 const (
-	ExecutionDispatching    = "dispatching"
-	ExecutionRunning        = "running"
-	ExecutionHealthy        = "healthy"
-	ExecutionStalled        = "stalled"
-	ExecutionUnhealthy      = "unhealthy"
+	ExecutionDispatching   = "dispatching"
+	ExecutionRunning       = "running"
+	ExecutionHealthy       = "healthy"
+	ExecutionStalled       = "stalled"
+	ExecutionUnhealthy     = "unhealthy"
 	ExecutionTerminating   = "terminating"
-	ExecutionTerminated     = "terminated"
+	ExecutionTerminated    = "terminated"
 	ExecutionFailedToStart = "failed_to_start"
-	ExecutionSucceeded      = "succeeded"
-	ExecutionFailed         = "failed"
+	ExecutionSucceeded     = "succeeded"
+	ExecutionFailed        = "failed"
 )
 
 // HealthState — union of heartbeat freshness, progress rate, error rate,
@@ -293,15 +363,15 @@ const (
 // ExecutionEventType — event kinds streamed via StreamExecutionEvents
 // (docs/04 §4, docs/07 §3.8).
 const (
-	ExecEventStarted          = "started"
-	ExecEventTelemetry        = "telemetry"
-	ExecEventToolCall         = "tool_call"
-	ExecEventCheckpoint       = "checkpoint"
-	ExecEventApprovalRequest  = "approval_request"
-	ExecEventHealth           = "health"
-	ExecEventResult           = "result"
-	ExecEventError            = "error"
-	ExecEventControl          = "control"
+	ExecEventStarted         = "started"
+	ExecEventTelemetry       = "telemetry"
+	ExecEventToolCall        = "tool_call"
+	ExecEventCheckpoint      = "checkpoint"
+	ExecEventApprovalRequest = "approval_request"
+	ExecEventHealth          = "health"
+	ExecEventResult          = "result"
+	ExecEventError           = "error"
+	ExecEventControl         = "control"
 )
 
 // Policy lifecycle states (docs/02 §2.5):
@@ -340,22 +410,22 @@ const (
 
 // PolicyEffect — the decision a Policy asserts (docs/02 §2.5).
 const (
-	PolicyEffectAllow            = "allow"
-	PolicyEffectDeny             = "deny"
-	PolicyEffectRequireApproval  = "require_approval"
-	PolicyEffectRequireReview    = "require_review"
+	PolicyEffectAllow           = "allow"
+	PolicyEffectDeny            = "deny"
+	PolicyEffectRequireApproval = "require_approval"
+	PolicyEffectRequireReview   = "require_review"
 )
 
 // RecoveryStatus lifecycle (docs/06 §3, §7):
 // pending → running → resumed | escalated | failed | cancelled | blocked.
 const (
-	RecoveryPending    = "pending"
-	RecoveryRunning    = "running"
-	RecoveryResumed    = "resumed"
-	RecoveryEscalated  = "escalated"
-	RecoveryFailed     = "failed"
-	RecoveryCancelled  = "cancelled"
-	RecoveryBlocked    = "blocked"
+	RecoveryPending   = "pending"
+	RecoveryRunning   = "running"
+	RecoveryResumed   = "resumed"
+	RecoveryEscalated = "escalated"
+	RecoveryFailed    = "failed"
+	RecoveryCancelled = "cancelled"
+	RecoveryBlocked   = "blocked"
 )
 
 // RecoveryStepStatus lifecycle (docs/06 §3, §9).
@@ -403,7 +473,7 @@ const (
 // summarize-resume. The engine attempts direct replay first and falls
 // back on incompatibility.
 const (
-	ResumptionPathCheckpoint    = "checkpoint"
+	ResumptionPathCheckpoint      = "checkpoint"
 	ResumptionPathSummarizeResume = "summarize_resume"
 )
 
@@ -426,18 +496,18 @@ const (
 // RecoveryEventType — event kinds streamed via StreamRecoveryEvents
 // (docs/07 §3.6, docs/06 §11).
 const (
-	RecoveryEventTriggered      = "recovery.triggered"
-	RecoveryEventStepStarted    = "recovery.step.started"
-	RecoveryEventStepCompleted  = "recovery.step.completed"
-	RecoveryEventStepFailed     = "recovery.step.failed"
-	RecoveryEventPlanProduced   = "recovery.plan.produced"
-	RecoveryEventPlanApproved   = "recovery.plan.approved"
-	RecoveryEventPlanRejected   = "recovery.plan.rejected"
-	RecoveryEventEscalated      = "recovery.escalated"
-	RecoveryEventResumed        = "recovery.resumed"
-	RecoveryEventFailed         = "recovery.failed"
+	RecoveryEventTriggered     = "recovery.triggered"
+	RecoveryEventStepStarted   = "recovery.step.started"
+	RecoveryEventStepCompleted = "recovery.step.completed"
+	RecoveryEventStepFailed    = "recovery.step.failed"
+	RecoveryEventPlanProduced  = "recovery.plan.produced"
+	RecoveryEventPlanApproved  = "recovery.plan.approved"
+	RecoveryEventPlanRejected  = "recovery.plan.rejected"
+	RecoveryEventEscalated     = "recovery.escalated"
+	RecoveryEventResumed       = "recovery.resumed"
+	RecoveryEventFailed        = "recovery.failed"
 	RecoveryEventCancelled     = "recovery.cancelled"
-	RecoveryEventBlocked        = "recovery.blocked"
+	RecoveryEventBlocked       = "recovery.blocked"
 )
 
 // PolicyEventType — event kinds for the policy lifecycle (docs/08 §4.4).
@@ -445,8 +515,8 @@ const (
 // distinct from `PolicyEventPublished`, which is emitted only when a
 // draft version is explicitly published.
 const (
-	PolicyEventEvaluated   = "policy.evaluated"
-	PolicyEventCreated     = "policy.created"
-	PolicyEventPublished   = "policy.published"
-	PolicyEventSuperseded  = "policy.superseded"
+	PolicyEventEvaluated  = "policy.evaluated"
+	PolicyEventCreated    = "policy.created"
+	PolicyEventPublished  = "policy.published"
+	PolicyEventSuperseded = "policy.superseded"
 )

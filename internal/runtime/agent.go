@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,12 +50,77 @@ type AgentEvent struct {
 	Pong     bool   `json:"pong,omitempty"`
 	Port     int    `json:"port,omitempty"`     // serve cmd: the container-internal serve port
 	Password string `json:"password,omitempty"` // serve cmd: the container's serve password
+	// PlaneEnabled reports (serve handshake) whether this image boots the
+	// sandbox plane (postgres + nats-server present). The daemon uses it
+	// to publish the plane's /healthz URL so the run-start gate can verify
+	// the sandbox plane before dispatching. Base/gui images answer false.
+	PlaneEnabled bool `json:"plane_enabled,omitempty"`
 }
 
 // DefaultAgentSocket is the in-container path of the supervisor's unix
 // socket. It lives under /tmp (tmpfs) so it is ephemeral like everything
 // else in the runtime container.
 const DefaultAgentSocket = "/tmp/orchicon-agent.sock"
+
+// Sandbox plane — a disposable, in-container Orchicon control plane that
+// the supervisor boots at container start on images that bake the pieces
+// (currently :orchicon-dev: PostgreSQL + nats-server + the mounted orchicon
+// binary). Postgres -> NATS -> `orchicon serve` on container-local ports
+// gives every worker a consistent full environment — curl
+// http://localhost:8080/healthz, DB-backed tests against localhost:5432,
+// and the `orchicon_*` MCP tools against the sandbox DB — instead of each
+// worker booting Postgres/the app itself ad-hoc. The plane dies with the
+// container (pool reset recreates pristine), preserving the no-DB-route
+// sandbox invariant: it never reaches the host plane's Postgres.
+const (
+	// SandboxPostgresDSN is the in-container DSN of the sandbox plane's
+	// Postgres (trust auth, user orchicon). Exported for the opencode
+	// package, which injects it into the sandbox Orchicon MCP sidecar.
+	SandboxPostgresDSN = "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
+
+	// sandboxDataDir is the stable per-container sandbox state root (the
+	// rootfs is chowned to the runtime uid, so the non-root user owns it).
+	// Stable across supervisor/plane restarts — the watchdog reuses the
+	// Postgres cluster instead of re-initdb'ing — and wiped when the
+	// container dies (pool reset recreates pristine).
+	sandboxDataDir     = "/var/lib/orchicon-sandbox"
+	sandboxPgDataDir   = "/var/lib/orchicon-sandbox/postgres"
+	sandboxNATSDataDir = "/var/lib/orchicon-sandbox/nats"
+	sandboxPgLog       = "/var/lib/orchicon-sandbox/postgres.log"
+
+	// Container-local ports the sandbox plane binds (nothing else in the
+	// runtime container uses them).
+	sandboxPgPort    = 5432
+	sandboxNATSPort  = 4222
+	sandboxPlanePort = 8080
+
+	// Reserved exec ids for the sandbox plane children (the opencode serve
+	// keeps serveExecID).
+	sandboxNATSExecID  = "__orchicon_sandbox_nats__"
+	sandboxPlaneExecID = "__orchicon_sandbox_plane__"
+
+	// sandboxWatchInterval is how often the sandbox-plane watchdog polls
+	// the plane's /healthz.
+	sandboxWatchInterval = 15 * time.Second
+)
+
+// IsDevImageTag reports whether a runtime image tag is a dev variant — the
+// stock variant that bakes the sandbox-plane pieces (postgres + nats-server),
+// so the sandbox plane boots there and the container serve should register
+// the Orchicon MCP against the sandbox DB. Mirrors the dev-tag suffix
+// resolution in internal/runtimeimage (resolveVariant).
+func IsDevImageTag(tag string) bool {
+	lower := strings.ToLower(tag)
+	colon := strings.LastIndex(lower, ":")
+	suffix := lower
+	if colon >= 0 {
+		suffix = lower[colon+1:]
+	}
+	return strings.HasSuffix(suffix, "orchicon-dev") ||
+		strings.HasSuffix(suffix, "dev") ||
+		strings.HasPrefix(suffix, "dev-") ||
+		strings.HasPrefix(suffix, "dev_")
+}
 
 // runtimeBinAllowlist is the set of binaries the runtime supervisor may
 // exec (argv[0] basenames). It mirrors the adapter CLIs Orchicon drives:
@@ -98,6 +165,7 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	// stray opencode running inside.
 	handle := newChildRegistry(log)
 	defer handle.killAll(syscall.SIGKILL)
+	defer handle.stopSandboxPlane()
 
 	// Serve watchdog: poll the container's opencode serve and restart it
 	// when it stops answering /global/health (wedged OR exited). A serve
@@ -107,6 +175,16 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	// watchdog restarts the serve in place (same port + password, stable
 	// XDG data dir), so sessions survive and the SSE client re-attaches.
 	go handle.watchServe()
+
+	// Sandbox plane: boot the disposable in-container Orchicon control
+	// plane (Postgres -> NATS -> `orchicon serve`) on images that bake the
+	// pieces, so workers get a consistent full environment without booting
+	// Postgres/the app themselves ad-hoc. Self-gating on binary presence —
+	// base/gui images (no postgres/nats-server) skip entirely and behave
+	// exactly as today. Both run in the background so the socket accept
+	// loop (ping / serve handshakes) stays responsive during the ~2s boot.
+	go handle.bootSandboxPlane()
+	go handle.watchSandboxPlane()
 
 	for {
 		conn, err := l.Accept()
@@ -172,6 +250,14 @@ type childRegistry struct {
 	// so the watchdog only acts on a serve the plane actually requested.
 	// Guarded by mu.
 	serveStarted bool
+	// sandboxChecked/sandboxOK cache the sandbox-plane self-gate (binary
+	// presence in the image — the image's contents never change while the
+	// container runs). Guarded by mu.
+	sandboxChecked bool
+	sandboxOK      bool
+	// sandboxMu serializes sandbox-plane bring-up (boot + watchdog
+	// restart), mirroring serveMu for the opencode serve.
+	sandboxMu sync.Mutex
 }
 
 func newChildRegistry(log *slog.Logger) *childRegistry {
@@ -242,7 +328,7 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		// removed from the registry, and start a fresh one below.
 		if pw != "" && serveHealthy(defaultServePort, pw) {
 			_ = existing
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw, PlaneEnabled: h.sandboxAvailable()})
 			return
 		}
 		h.log.Warn("serve registered but not healthy — restarting", "pid", existing.pidOrZero())
@@ -320,7 +406,7 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	for time.Now().Before(deadline) {
 		if serveHealthy(defaultServePort, pw) {
 			h.log.Info("runtime opencode serve ready", "port", defaultServePort, "pid", cmd.Process.Pid)
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw, PlaneEnabled: h.sandboxAvailable()})
 			return
 		}
 		select {
@@ -513,6 +599,317 @@ func serveHealthy(port int, password string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// sandboxAvailable reports whether this image can boot the sandbox plane
+// (a Postgres server bin dir + nats-server on PATH). Base/gui images
+// answer false and behave exactly as today — no plane, no extra children.
+// The probe is cheap (a few stat calls) and cached once per supervisor
+// lifetime: the image's contents never change while the container runs.
+func (h *childRegistry) sandboxAvailable() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.sandboxChecked {
+		_, natsErr := exec.LookPath("nats-server")
+		h.sandboxOK = sandboxPgBinDir() != "" && natsErr == nil
+		h.sandboxChecked = true
+	}
+	return h.sandboxOK
+}
+
+// sandboxPgBinDir resolves the Postgres server bin dir (initdb/pg_ctl/
+// pg_isready/postgres). Postgres 15 on Debian installs these under
+// /usr/lib/postgresql/<ver>/bin, not on PATH. Returns "" when absent
+// (base/gui images — the sandbox plane is skipped entirely).
+func sandboxPgBinDir() string {
+	dirs, err := filepath.Glob("/usr/lib/postgresql/*/bin")
+	if err != nil {
+		return ""
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
+	for _, dir := range dirs {
+		if sandboxPgBinDirComplete(dir) {
+			return dir
+		}
+	}
+	return ""
+}
+
+// sandboxPgBinDirComplete reports whether a Postgres bin dir contains ALL
+// four server binaries the sandbox plane execs (initdb, pg_ctl,
+// pg_isready, postgres). A partial dir must NOT satisfy the self-gate:
+// bootSandboxPlane execs each of these, so a dir with only some of them
+// would pass sandboxAvailable() and then fail at boot.
+func sandboxPgBinDirComplete(dir string) bool {
+	for _, bin := range []string{"initdb", "pg_ctl", "pg_isready", "postgres"} {
+		if _, err := os.Stat(filepath.Join(dir, bin)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// bootSandboxPlane brings up the sandbox plane in dependency order —
+// Postgres (initdb once into the stable data dir, then pg_ctl start) ->
+// nats-server -js (tracked child) -> `orchicon serve` (tracked child,
+// sandbox env). Idempotent and restart-safe: a watchdog re-runs it after
+// a failure, and each component's "already up" probe short-circuits, so a
+// restart reuses the stable Postgres cluster instead of re-initializing.
+func (h *childRegistry) bootSandboxPlane() {
+	h.sandboxMu.Lock()
+	defer h.sandboxMu.Unlock()
+	if !h.sandboxAvailable() {
+		h.log.Info("sandbox plane skipped: postgres/nats-server not present in image")
+		return
+	}
+	if err := os.MkdirAll(sandboxDataDir, 0o755); err != nil {
+		h.log.Error("sandbox plane: mkdir data dir", "error", err)
+		return
+	}
+	if err := h.bootSandboxPostgres(); err != nil {
+		h.log.Error("sandbox plane: postgres failed", "error", err)
+		return
+	}
+	if err := h.bootSandboxNATS(); err != nil {
+		h.log.Error("sandbox plane: nats failed", "error", err)
+		return
+	}
+	if err := h.bootSandboxServe(); err != nil {
+		h.log.Error("sandbox plane: serve failed", "error", err)
+		return
+	}
+	h.log.Info("sandbox plane ready", "http", fmt.Sprintf("http://localhost:%d", sandboxPlanePort))
+}
+
+// bootSandboxPostgres initializes (once) and starts the sandbox Postgres,
+// then ensures the `orchicon` database exists for the plane's migrations.
+func (h *childRegistry) bootSandboxPostgres() error {
+	pgb := sandboxPgBinDir()
+	if pgb == "" {
+		return errors.New("postgres bin dir not found")
+	}
+	if _, err := os.Stat(filepath.Join(sandboxPgDataDir, "PG_VERSION")); os.IsNotExist(err) {
+		h.log.Info("sandbox plane: initdb", "dir", sandboxPgDataDir)
+		if out, err := exec.Command(filepath.Join(pgb, "initdb"),
+			"-D", sandboxPgDataDir, "-U", "orchicon", "--auth=trust").CombinedOutput(); err != nil {
+			return fmt.Errorf("initdb: %v: %s", err, out)
+		}
+	}
+	// pg_ctl -w start blocks until the server is up; it errors when the
+	// server is already running (a previous boot / watchdog restart) — the
+	// readiness probe below decides either way. unix_socket_directories
+	// must point at a dir the runtime user owns: /var/run/postgresql (the
+	// default) is root-owned in the container (docker's /run tmpfs), and
+	// postgres refuses to start without a writable socket dir.
+	opts := fmt.Sprintf("-p %d -c listen_addresses=localhost -c unix_socket_directories=%s", sandboxPgPort, sandboxDataDir)
+	if out, err := exec.Command(filepath.Join(pgb, "pg_ctl"),
+		"-D", sandboxPgDataDir, "-l", sandboxPgLog, "-o", opts, "-w", "start").CombinedOutput(); err != nil {
+		h.log.Warn("sandbox plane: pg_ctl start (may already be running)", "output", string(out), "error", err)
+	}
+	if !h.waitPgReady(pgb, 30*time.Second) {
+		return errors.New("postgres did not become ready")
+	}
+	// initdb creates only postgres/template DBs; the plane's migrations
+	// target the `orchicon` database (the DSN's db name).
+	cmd := exec.Command(filepath.Join(pgb, "createdb"),
+		"-h", "localhost", "-p", fmt.Sprintf("%d", sandboxPgPort), "-U", "orchicon", "orchicon")
+	if out, err := cmd.CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
+		return fmt.Errorf("createdb orchicon: %v: %s", err, out)
+	}
+	h.log.Info("sandbox plane: postgres ready", "port", sandboxPgPort)
+	return nil
+}
+
+// waitPgReady polls pg_isready until the sandbox Postgres accepts
+// connections or the window expires.
+func (h *childRegistry) waitPgReady(pgb string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command(filepath.Join(pgb, "pg_isready"),
+			"-h", "localhost", "-p", fmt.Sprintf("%d", sandboxPgPort), "-U", "orchicon").CombinedOutput()
+		if err == nil && strings.Contains(string(out), "accepting connections") {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+// bootSandboxNATS starts the sandbox nats-server (JetStream) as a tracked
+// child and waits for it to accept connections.
+func (h *childRegistry) bootSandboxNATS() error {
+	if natsReady() {
+		return nil
+	}
+	h.killAndClear(sandboxNATSExecID)
+	if err := os.MkdirAll(sandboxNATSDataDir, 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("nats-server", "-js", "-p", fmt.Sprintf("%d", sandboxNATSPort), "-sd", sandboxNATSDataDir)
+	cmd.Stdout = os.Stderr // sandbox logs go to the supervisor log
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("nats-server start: %w", err)
+	}
+	s := newExecSession(sandboxNATSExecID)
+	s.cmd = cmd
+	h.mu.Lock()
+	h.cmd[sandboxNATSExecID] = s
+	h.mu.Unlock()
+	go h.watchExec(s)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if natsReady() {
+			h.log.Info("sandbox plane: nats ready", "port", sandboxNATSPort)
+			return nil
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-s.done:
+			return errors.New("nats-server exited before becoming ready")
+		}
+	}
+	return errors.New("nats-server did not become ready within 15s")
+}
+
+// natsReady reports whether the sandbox nats-server accepts connections.
+func natsReady() bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", sandboxNATSPort), 1*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// bootSandboxServe starts the sandbox `orchicon serve` (the sandbox
+// control plane) as a tracked child and waits for its /healthz. The plane
+// runs migrations + tenant/worker seeding on boot against the sandbox DB.
+// Sessions are OFF (ORCHICON_OPCODE_SESSION_TRANSPORT=0): the sandbox is
+// an API/DB/MCP surface, not a second execution plane, so it never spawns
+// a nested opencode serve (whose eager MCP connects would hang) and never
+// competes with the supervisor's opencode serve.
+func (h *childRegistry) bootSandboxServe() error {
+	if sandboxPlaneHealthy() {
+		return nil
+	}
+	h.killAndClear(sandboxPlaneExecID)
+	cmd := exec.Command("orchicon", "serve")
+	cmd.Stdout = os.Stderr // sandbox plane logs go to the supervisor log
+	cmd.Stderr = os.Stderr
+	env := os.Environ()
+	env = setEnv(env, "ORCHICON_POSTGRES_DSN", SandboxPostgresDSN)
+	env = setEnv(env, "ORCHICON_NATS_URL", fmt.Sprintf("nats://localhost:%d", sandboxNATSPort))
+	env = setEnv(env, "ORCHICON_HTTP_ADDR", fmt.Sprintf(":%d", sandboxPlanePort))
+	env = setEnv(env, "ORCHICON_GRPC_ADDR", ":9090")
+	env = setEnv(env, "ORCHICON_TELEMETRY", "none")
+	env = setEnv(env, "ORCHICON_OPCODE_SESSION_TRANSPORT", "0")
+	env = setEnv(env, "ORCHICON_SANDBOX_PLANE", "1")
+	env = setEnv(env, "ORCHICON_INSTANCE", "sandbox")
+	env = setEnv(env, "ORCHICON_BLOB_DIR", filepath.Join(sandboxDataDir, "blobs"))
+	env = setEnv(env, "ORCHICON_INDEX_CHECK_INTERVAL", "0")
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("sandbox serve start: %w", err)
+	}
+	s := newExecSession(sandboxPlaneExecID)
+	s.cmd = cmd
+	h.mu.Lock()
+	h.cmd[sandboxPlaneExecID] = s
+	h.mu.Unlock()
+	go h.watchExec(s)
+	// The plane runs migrations + seeds on boot against a fresh DB; give
+	// it the full window (the run-start gate's own 120s window bounds the
+	// total wait either way).
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if sandboxPlaneHealthy() {
+			h.log.Info("sandbox plane: serve ready", "port", sandboxPlanePort)
+			return nil
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-s.done:
+			return fmt.Errorf("sandbox serve exited before becoming ready")
+		}
+	}
+	return errors.New("sandbox serve did not become ready within 90s")
+}
+
+// sandboxPlaneHealthy reports whether the sandbox control plane answers
+// /healthz on the container-local port.
+func sandboxPlaneHealthy() bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/healthz", sandboxPlanePort))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// watchSandboxPlane is the sandbox-plane health watchdog. It polls the
+// plane's /healthz and, when it stops answering (wedged or exited —
+// invisible to watchExec's process-exit-only watch), re-boots the stack
+// via the idempotent bootSandboxPlane: Postgres is restarted in place
+// (pg_ctl reuses the stable cluster — no re-initdb), NATS re-leased, the
+// serve re-spawned. A dead plane would otherwise fail the run-start gate
+// with no recovery path.
+func (h *childRegistry) watchSandboxPlane() {
+	interval := sandboxWatchInterval
+	for {
+		time.Sleep(interval)
+		if !h.sandboxAvailable() {
+			return // base/gui image — nothing to watch
+		}
+		if sandboxPlaneHealthy() {
+			interval = sandboxWatchInterval
+			continue
+		}
+		h.log.Warn("sandbox plane unhealthy — restarting", "backoff", interval.String())
+		time.Sleep(interval)
+		h.bootSandboxPlane()
+		interval = sandboxWatchInterval
+	}
+}
+
+// killAndClear terminates a tracked child (if any) and removes it from
+// the registry, waiting briefly for the reap so a restart doesn't race
+// "address already in use" on the next Start.
+func (h *childRegistry) killAndClear(id string) {
+	h.mu.Lock()
+	s, ok := h.cmd[id]
+	h.mu.Unlock()
+	if ok && s != nil {
+		s.kill()
+		select {
+		case <-s.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	h.mu.Lock()
+	delete(h.cmd, id)
+	h.mu.Unlock()
+}
+
+// stopSandboxPlane is a best-effort teardown of the sandbox plane on
+// supervisor exit. The tracked children (nats + serve) are covered by
+// killAll; this stops the pg_ctl-detached Postgres. Container teardown is
+// the real guarantee (pool resets `docker rm -f`) — this just avoids a
+// stray postgres lingering if the supervisor exits while the container
+// lives.
+func (h *childRegistry) stopSandboxPlane() {
+	if !h.sandboxAvailable() {
+		return
+	}
+	pgb := sandboxPgBinDir()
+	if pgb == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, filepath.Join(pgb, "pg_ctl"),
+		"-D", sandboxPgDataDir, "-m", "fast", "stop").Run()
 }
 
 // watchExec waits for the child to exit, records the terminal state, and

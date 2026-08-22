@@ -12,27 +12,35 @@
 import { useEffect, type ReactNode } from "react";
 
 import {
-  fetchSession,
-  loadStashedToken,
+  ensureSession,
   logout as doLogout,
-  devLogin,
+  localLogin,
+  signup,
   oidcLoginURL,
+  scheduleLoginProactiveRefresh,
   useSessionStore,
   type SessionInfo,
 } from "@/auth/session";
 
 // AuthProvider boots the session on mount. Place it above the router
 // (or as a layout effect in the root route).
+//
+// The router auth guard (root beforeLoad) runs before React mounts and
+// already resolved the session via the shared ensureSession bootstrap on a
+// full page load — skip the bootstrap when the store was resolved by it.
+// Otherwise (public-route loads like /login, or no guard) bootstrap here;
+// the shared promise dedups against any in-flight guard resolution.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const setSession = useSessionStore((s) => s.setSession);
   const setLoading = useSessionStore((s) => s.setLoading);
 
   useEffect(() => {
     let cancelled = false;
+    const already = useSessionStore.getState();
+    if (!already.loading && already.session.authenticated) return;
     setLoading(true);
     (async () => {
-      loadStashedToken();
-      const s = await fetchSession();
+      const s = await ensureSession();
       if (!cancelled) {
         setSession(s);
         setLoading(false);
@@ -76,11 +84,34 @@ export function RequireEntitlement({
   return <>{children}</>;
 }
 
-// startDevLogin triggers the local dev IdP synthetic login.
-export async function startDevLogin(subject: string): Promise<SessionInfo> {
-  const s = await devLogin(subject);
-  useSessionStore.getState().setSession(s);
-  return s;
+// startLocalLogin authenticates a local account (embedded IdP) with a
+// username + password. Returns the server-constructed `next` path to
+// full-page-load (set when a pending embedded-OP authorize request was
+// completed) so the OIDC flow returns the browser to the relying party.
+export async function startLocalLogin(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const out = await localLogin(username, password, next);
+  useSessionStore.getState().setSession(out.session);
+  scheduleLoginProactiveRefresh(out.session);
+  return out;
+}
+
+// startSignup creates a self-service account (embedded IdP) and starts a
+// session, exactly like startLocalLogin: the response's server-constructed
+// `next` path (set when a pending embedded-OP authorize request was
+// completed) is what the caller full-page-loads to finish the OIDC flow.
+export async function startSignup(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const out = await signup(username, password, next);
+  useSessionStore.getState().setSession(out.session);
+  scheduleLoginProactiveRefresh(out.session);
+  return out;
 }
 
 // startOIDCLogin redirects the browser to the IdP authorize URL.

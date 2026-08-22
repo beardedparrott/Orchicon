@@ -25,6 +25,25 @@ type ProjectRow struct {
 	UpdatedAt    time.Time
 	ProjectDir   string
 	ContextFiles []byte // jsonb: absolute file paths selected as context
+
+	// MaxConcurrentRuns caps how many executions may run concurrently for
+	// this project (concurrency guards). 0 = no additional restriction
+	// (the tenant cap, or no cap, applies).
+	MaxConcurrentRuns int
+
+	// Git work-tree detection cache (non-repo in-place fallback). The
+	// WorktreeReconciler shells out to `git rev-parse --is-inside-work-tree`
+	// once and records the result here so the loop never repeats the
+	// subprocess on every pass. git_detected_at == nil means the cache is
+	// empty/undetermined and the reconciler must detect.
+	GitWorkTree   bool
+	GitDetectedAt *time.Time
+
+	// RepoSlug is the cached git origin ("owner/repo") of the project_dir,
+	// captured alongside git detection. Used to derive deterministic
+	// per-branch PR links without a provider call. NULL when the project is
+	// not git-backed or the origin is unknown.
+	RepoSlug *string
 }
 
 // ErrNotFound is returned when a single-row query matches no rows. The
@@ -42,17 +61,17 @@ var ErrNotFound = errors.New("db: not found")
 // and RLS is the backstop (docs/09 §8.5).
 func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
-		(id, tenant_id, name, slug, status, goals, project_dir)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug`
 	row := p
 	err := tx.QueryRow(ctx, q,
-		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir,
+		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
-		&row.ProjectDir, &row.ContextFiles,
+		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug,
 	)
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
@@ -65,13 +84,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug
 		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -133,7 +152,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		sortOrder = "DESC"
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug
 		FROM projects
 		WHERE %s
 		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
@@ -148,7 +167,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		var p ProjectRow
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status,
 			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt,
-			&p.ProjectDir, &p.ContextFiles); err != nil {
+			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug); err != nil {
 			return nil, fmt.Errorf("db: scan project: %w", err)
 		}
 		out = append(out, p)
@@ -162,11 +181,12 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 // fields are written; nil fields are left untouched (field-mask
 // semantics — docs/07 §5.4).
 type UpdateProjectFields struct {
-	Name         *string
-	Slug         *string
-	Goals        *[]byte
-	ProjectDir   *string
-	ContextFiles *[]byte
+	Name              *string
+	Slug              *string
+	Goals             *[]byte
+	ProjectDir        *string
+	ContextFiles      *[]byte
+	MaxConcurrentRuns *int
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
@@ -196,25 +216,61 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		q += fmt.Sprintf(`, project_dir = $%d`, setIdx)
 		args = append(args, *f.ProjectDir)
 		setIdx++
+		// A project_dir change invalidates the cached git detection: reset
+		// the cache to "undetermined" (git_detected_at = NULL) so the
+		// WorktreeReconciler re-detects on its next pass instead of trusting
+		// a stale value for the old directory.
+		q += fmt.Sprintf(`, git_work_tree = false, git_detected_at = NULL`)
 	}
 	if f.ContextFiles != nil {
 		q += fmt.Sprintf(`, context_files = $%d`, setIdx)
 		args = append(args, *f.ContextFiles)
 		setIdx++
 	}
+	if f.MaxConcurrentRuns != nil {
+		q += fmt.Sprintf(`, max_concurrent_runs = $%d`, setIdx)
+		args = append(args, *f.MaxConcurrentRuns)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files`
+	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
 	}
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: update project: %w", err)
+	}
+	return p, nil
+}
+
+// UpdateProjectGitDetection records the WorktreeReconciler's cached git
+// work-tree detection on the project row (non-repo in-place fallback),
+// along with the remote origin's owner/repo slug (for deterministic
+// per-branch PR links). The update is guarded by optimistic concurrency; a
+// lost-write race with a concurrent reconciler pass simply converges on the
+// next pass, so the caller treats a failure as best-effort.
+func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, isWorkTree bool, repoSlug string) (ProjectRow, error) {
+	q := `UPDATE projects SET updated_at = now(), version = version + 1,
+		git_work_tree = $4, git_detected_at = now(), repo_slug = $5
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug`
+	var p ProjectRow
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, isWorkTree, repoSlug).Scan(
+		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
+		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProjectRow{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectRow{}, fmt.Errorf("db: update project git detection: %w", err)
 	}
 	return p, nil
 }
@@ -278,12 +334,12 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		SET status = 'archived', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound

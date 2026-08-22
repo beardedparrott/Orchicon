@@ -35,29 +35,29 @@ type WorkerRow struct {
 // budget_overrides, etc.) are stored as raw []byte and validated at the
 // API boundary (AGENTS.md security standards).
 type WorkerVersionRow struct {
-	ID                 string
-	TenantID           string
-	WorkerID           string
-	Version            int
-	VersionNote        string
-	Status             string
-	RuntimeRef         string
-	ModelRef           string
-	SystemPrompt       string
-	Role               string
-	Skills             string
-	Behavior           string
-	AgentsMD           string
-	ContextSources     []byte // jsonb
-	Permissions        []byte // jsonb
-	GatedTools         []byte // jsonb
-	BudgetOverrides    []byte // jsonb
-	ExecutionPolicyRef string
-	ConcurrencyLimit   int
+	ID                  string
+	TenantID            string
+	WorkerID            string
+	Version             int
+	VersionNote         string
+	Status              string
+	RuntimeRef          string
+	ModelRef            string
+	SystemPrompt        string
+	Role                string
+	Skills              string
+	Behavior            string
+	AgentsMD            string
+	ContextSources      []byte // jsonb
+	Permissions         []byte // jsonb
+	GatedTools          []byte // jsonb
+	BudgetOverrides     []byte // jsonb
+	ExecutionPolicyRef  string
+	ConcurrencyLimit    int
 	RecoveryWorkflowRef string
-	Labels             []byte // jsonb
-	PublishedAt        *time.Time
-	CreatedAt          time.Time
+	Labels              []byte // jsonb
+	PublishedAt         *time.Time
+	CreatedAt           time.Time
 }
 
 // WorkerSlugExists reports whether a worker with the given slug already
@@ -490,6 +490,23 @@ func RevertWorkerVersionToDraft(ctx context.Context, tx pgx.Tx, tenantID, versio
 		return ErrNotFound
 	}
 	return nil
+}
+
+// GetWorkerIDForVersion resolves the owning worker_id for a worker
+// version within the tenant scope (used to target audit rows for
+// version-only requests like RevertWorkerVersionToDraft).
+func GetWorkerIDForVersion(ctx context.Context, tx pgx.Tx, tenantID, versionID string) (string, error) {
+	var workerID string
+	err := tx.QueryRow(ctx,
+		`SELECT worker_id FROM worker_versions WHERE id = $1 AND tenant_id = $2`,
+		versionID, tenantID).Scan(&workerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: get worker id for version: %w", err)
+	}
+	return workerID, nil
 }
 
 // GetWorkerVersionByID fetches a single worker version by its ID within

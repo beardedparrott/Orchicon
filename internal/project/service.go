@@ -11,6 +11,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -80,6 +82,9 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.created", "project", created.ID, nil, audit.Snapshot(projectAuditSnapshot(created))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -201,7 +206,14 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.ContextFiles = &filesJSON
 	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil {
+	if msg.MaxConcurrentRuns != nil {
+		limit := int(*msg.MaxConcurrentRuns)
+		if limit < 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max_concurrent_runs must be >= 0"))
+		}
+		fields.MaxConcurrentRuns = &limit
+	}
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 
@@ -235,6 +247,10 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.updated", "project", updated.ID,
+		audit.Snapshot(projectAuditSnapshot(current)), audit.Snapshot(projectAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.updated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -273,6 +289,10 @@ func (s *Service) ArchiveProject(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.archived", archived); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.archived", "project", archived.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(archived.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.archived: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -296,11 +316,16 @@ func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	defer ttx.Rollback(ctx)
 	// Check project exists before deleting
-	if _, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
 		return nil, mapDBError(err)
 	}
 	if err := db.DeleteProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.deleted", "project", current.ID,
+		audit.Snapshot(projectAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -334,12 +359,12 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	const q = `UPDATE projects SET status = 'paused', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
@@ -349,6 +374,10 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.paused", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.paused", "project", p.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.paused: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -379,12 +408,12 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	const q = `UPDATE projects SET status = 'active', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'drafting'
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either the version was stale or the project is not drafting.
@@ -398,6 +427,10 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.activated", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.activated", "project", p.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.activated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -568,22 +601,51 @@ func enqueueProjectEvent(ctx context.Context, tx pgx.Tx, eventType string, p db.
 // gets stored in the outbox and published to NATS.
 func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       p.TenantID,
-		"project_id":      p.ID,
-		"aggregate_type":  "project",
-		"aggregate_id":    p.ID,
+		"event_type":        eventType,
+		"tenant_id":         p.TenantID,
+		"project_id":        p.ID,
+		"aggregate_type":    "project",
+		"aggregate_id":      p.ID,
 		"aggregate_version": p.Version,
-		"status":          p.Status,
-		"name":            p.Name,
-		"slug":            p.Slug,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"status":            p.Status,
+		"name":              p.Name,
+		"slug":              p.Slug,
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	b, err := json.Marshal(evt)
 	if err != nil {
 		return nil, fmt.Errorf("marshal event payload: %w", err)
 	}
 	return b, nil
+}
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// projectAuditSnapshot is the non-secret projection of a project row
+// for the audit trail. Goals and context_files can embed secrets;
+// excluded here (keep the trail compact and credential-free).
+func projectAuditSnapshot(p db.ProjectRow) map[string]any {
+	return map[string]any{
+		"id":      p.ID,
+		"name":    p.Name,
+		"slug":    p.Slug,
+		"status":  p.Status,
+		"version": p.Version,
+	}
 }
 
 // mapDBError translates a data-access error into a Connect error code.

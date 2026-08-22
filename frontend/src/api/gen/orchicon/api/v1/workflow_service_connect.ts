@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -187,7 +187,11 @@ export const WorkflowService = {
       kind: MethodKind.Unary,
     },
     /**
-     * ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+     * ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+     * any combination of workflow / project / work item. All scope filters
+     * are optional (empty = no filter); at least one scope filter or an
+     * empty scope is allowed. Runs are sorted by id descending by default,
+     * or by their real started_at when sort_by=started_at.
      *
      * @generated from rpc orchicon.api.v1.WorkflowService.ListWorkflowRuns
      */
@@ -311,6 +315,19 @@ export const WorkflowService = {
       name: "GetEditLock",
       I: GetWorkflowEditLockRequest,
       O: GetWorkflowEditLockResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * UpdateWorkflow updates mutable workflow header fields (e.g. name).
+     * Unlike UpdateWorkflowVersion which edits a draft version's steps,
+     * this updates the workflow itself and is allowed in any lifecycle state.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.UpdateWorkflow
+     */
+    updateWorkflow: {
+      name: "UpdateWorkflow",
+      I: UpdateWorkflowRequest,
+      O: UpdateWorkflowResponse,
       kind: MethodKind.Unary,
     },
   }

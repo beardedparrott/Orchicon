@@ -1,7 +1,13 @@
-import { useState } from "react";
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import {
+  Link,
+  createRoute,
+  useNavigate,
+  useSearch,
+} from "@tanstack/react-router";
 
-import { startDevLogin, startOIDCLogin } from "@/auth/auth";
+import { startLocalLogin, startOIDCLogin } from "@/auth/auth";
+import { fetchAuthConfig, type AuthConfig } from "@/auth/session";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,28 +19,104 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Route as rootRoute } from "@/routes/__root";
+import { router } from "@/router";
 
-// Login page (docs/10 §7). In local mode the dev IdP synthetic login is
-// shown; OIDC SSO is the production path. The access token lands in
-// memory; the refresh token in an HttpOnly cookie.
+// Login page (docs/10 §7). Local accounts of the embedded IdP sign in with
+// a username + password; OIDC SSO is the external-IdP path. The access
+// token lands in memory; the refresh token in an HttpOnly cookie.
+//
+// The page is honest about the running plane: it fetches the public
+// /auth/config capability flags and renders only the sign-in affordances
+// the plane actually supports (config validation guarantees at least one).
+//
+// The embedded OpenID Provider's login bridge redirects unauthenticated
+// users here with ?next=<same-origin path>. `next` is honored only when
+// it is a same-origin path (no open redirect): after authenticating the
+// SPA performs a full page load so the browser returns through the bridge
+// and completes the OP authorize flow.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   component: LoginPage,
+  validateSearch: (search: Record<string, unknown>): { next?: string } => ({
+    next: typeof search.next === "string" ? search.next : undefined,
+  }),
 });
+
+// safeNext returns the next path only when it is a same-origin absolute
+// path: starts with "/", but is not "//host" or "///..." (which the
+// browser treats as a scheme-relative URL).
+function safeNext(raw: string | undefined): string | null {
+  if (!raw || !raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  if (raw.startsWith("/\\")) return null;
+  return raw;
+}
 
 function LoginPage() {
   const navigate = useNavigate();
-  const [subject, setSubject] = useState("dev@orchicon.local");
+  const search = useSearch({ from: "/login" });
+  const [cfg, setCfg] = useState<AuthConfig | null>(null);
+  const [cfgError, setCfgError] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function handleDevLogin() {
+  // Fetch the plane's auth capability flags once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthConfig()
+      .then((c) => {
+        if (!cancelled) setCfg(c);
+      })
+      .catch((e) => {
+        if (!cancelled) setCfgError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const next = safeNext(search.next);
+
+  // isSpaRoute reports whether the target pathname has a router route (the
+  // discriminator between SPA destinations and server-only OP-bridge paths).
+  // getMatchedRoutes resolves dynamic routes too (e.g. /work-items/$id).
+  function isSpaRoute(p: string): boolean {
+    const pathname = p.split(/[?#]/)[0];
+    return !!router.getMatchedRoutes(pathname).foundRoute;
+  }
+
+  function continueTo(target: string) {
+    if (target && target !== "/") {
+      if (isSpaRoute(target)) {
+        // SPA route: navigate in-place so the in-memory access token set by
+        // the login response survives (a full page load would wipe it and
+        // bounce the user straight back to /login).
+        navigate({ to: target as never });
+      } else {
+        // Server-only path (embedded-OP bridge / authorize callback): the
+        // router has no route for it, so the browser must load it directly
+        // to complete the OIDC flow.
+        window.location.assign(target);
+      }
+    } else {
+      // Same-origin home after a plain (non-OP) login: SPA-side navigate so
+      // the in-memory access token set by the login response survives.
+      navigate({ to: "/" });
+    }
+  }
+
+  async function handleLocalLogin() {
     setBusy(true);
     setError("");
     try {
-      await startDevLogin(subject);
-      navigate({ to: "/" });
+      // `next` (the URL the OP bridge bounced us from) is passed through so
+      // the server can complete the pending authorize request; the response
+      // carries the server-constructed path to continue the OIDC flow.
+      const out = await startLocalLogin(username, password, next ?? undefined);
+      continueTo(out.next ?? next ?? "/");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -48,41 +130,68 @@ function LoginPage() {
         <CardHeader>
           <CardTitle>Sign in to Orchicon</CardTitle>
           <CardDescription>
-            Authenticate to access the control plane. In local mode the
-            dev identity provider mints a short-lived token.
+            Authenticate to access the control plane.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="subject">Subject (dev IdP)</Label>
-            <Input
-              id="subject"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="you@example.com"
-            />
-          </div>
-          <Button className="w-full" onClick={handleDevLogin} disabled={busy}>
-            {busy ? "Signing in…" : "Dev sign in"}
-          </Button>
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-card px-2 text-muted-foreground">or</span>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => startOIDCLogin()}
-            disabled={busy}
-          >
-            Continue with SSO (OIDC)
-          </Button>
+          {cfgError && <p className="text-sm text-destructive">{cfgError}</p>}
+          {cfg?.embedded_op && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="username">Username</Label>
+                <Input
+                  id="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="username"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleLocalLogin();
+                  }}
+                />
+              </div>
+              <Button className="w-full" onClick={handleLocalLogin} disabled={busy}>
+                {busy ? "Signing in…" : "Sign in"}
+              </Button>
+            </>
+          )}
+          {cfg?.external_oidc && (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setBusy(true);
+                startOIDCLogin();
+              }}
+              disabled={busy}
+            >
+              Continue with SSO (OIDC)
+            </Button>
+          )}
           {error && (
             <p className="text-sm text-destructive">{error}</p>
+          )}
+          {cfg?.signup && (
+            <div className="text-center text-sm">
+              <span className="text-muted-foreground">New here? </span>
+              <Link
+                to="/signup"
+                search={next ? { next } : undefined}
+                className="text-primary hover:underline"
+              >
+                Create an account
+              </Link>
+            </div>
           )}
         </CardContent>
       </Card>

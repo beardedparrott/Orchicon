@@ -16,17 +16,20 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
-	maxReasonLen   = 1000
-	maxActorLen    = 200
-	maxSummaryLen  = 1 << 14
+	maxReasonLen  = 1000
+	maxActorLen   = 200
+	maxSummaryLen = 1 << 14
 )
 
 // Service implements the RecoveryService Connect handler
@@ -77,7 +80,9 @@ func (s *Service) TriggerRecovery(ctx context.Context, req *connect.Request[apiv
 	if len(execs) > 0 {
 		failedExecID = execs[0].ID
 	}
-	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, "", triggerReason); err != nil {
+	entry := actorEntry(ctx, tenantID, "recovery.triggered", "recovery", req.Msg.TaskId,
+		nil, audit.Snapshot(map[string]any{"task_id": req.Msg.TaskId, "trigger_reason": triggerReason}))
+	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, "", triggerReason, &entry); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Fetch the created recovery.
@@ -134,6 +139,10 @@ func (s *Service) CancelRecovery(ctx context.Context, req *connect.Request[apiv1
 		})
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventCancelled, updated, "", "", current.TriggerReason, "cancelled by operator: "+reason, "")
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "recovery.cancelled", "recovery", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit recovery.cancelled: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -154,8 +163,16 @@ func (s *Service) DeleteRecovery(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetRecoveryExecution(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	if err := db.DeleteRecoveryExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "recovery.deleted", "recovery", current.ID,
+		audit.SnapshotStatus(current.Status), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit recovery.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -302,7 +319,8 @@ func (s *Service) ApproveContinuationPlan(ctx context.Context, req *connect.Requ
 	if actor == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("actor must not be empty"))
 	}
-	plan, rec, err := s.engine.ApproveContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor)
+	entry := actorEntry(ctx, tenantID, "recovery.continuation_plan_approved", "recovery", req.Msg.RecoveryId, nil, nil)
+	plan, rec, err := s.engine.ApproveContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -331,7 +349,8 @@ func (s *Service) RejectContinuationPlan(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	plan, rec, err := s.engine.RejectContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, reason)
+	entry := actorEntry(ctx, tenantID, "recovery.continuation_plan_rejected", "recovery", req.Msg.RecoveryId, nil, nil)
+	plan, rec, err := s.engine.RejectContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, reason, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -389,7 +408,8 @@ func (s *Service) MarkTaskSucceeded(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	auditID, err := s.engine.MarkTaskSucceeded(ctx, tenantID, req.Msg.TaskId, actorType, actorID, reason)
+	entry := actorEntry(ctx, tenantID, "recovery.task_marked_succeeded", "recovery", req.Msg.TaskId, nil, nil)
+	auditID, err := s.engine.MarkTaskSucceeded(ctx, tenantID, req.Msg.TaskId, actorType, actorID, reason, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -399,6 +419,40 @@ func (s *Service) MarkTaskSucceeded(ctx context.Context, req *connect.Request[ap
 }
 
 // --- helpers + mappers -----------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// actorEntry builds the audit entry for an engine-passed audit row:
+// actor resolved from the request context (user identity + auth method),
+// tenant defaulted to the handler's tenant, action/target/before/after
+// filled in. The engine records it inside its own transaction, so the
+// row commits atomically with the mutation (AC1).
+func actorEntry(ctx context.Context, tenantID, action, targetType, targetID string, before, after json.RawMessage) audit.Entry {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return e
+}
 
 func validateTextField(s string, max int, field string) (string, error) {
 	s = strings.TrimSpace(s)
@@ -435,10 +489,10 @@ func parseRecoveryEvent(data []byte) (*apiv1.RecoveryEvent, error) {
 		StepID         string `json:"step_id"`
 		StepRunID      string `json:"step_run_id"`
 		RecoveryStatus string `json:"recovery_status"`
-		StepStatus    string `json:"step_status"`
+		StepStatus     string `json:"step_status"`
 		TriggerReason  string `json:"trigger_reason"`
 		Action         string `json:"action"`
-		AdapterRef    string `json:"adapter_ref"`
+		AdapterRef     string `json:"adapter_ref"`
 		OccurredAt     string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -548,7 +602,7 @@ func recoveryRowToProto(r db.RecoveryExecutionRow) *apiv1.RecoveryExecution {
 		FailedExecutionId: r.FailedExecutionID, RecoveryWorkflowId: r.RecoveryWorkflowID,
 		TriggerReason: r.TriggerReason, Level: recoveryLevelToProto(r.Level),
 		Status: recoveryStatusToProto(r.Status), CurrentStep: r.CurrentStep,
-		ResumptionPath: r.ResumptionPath,
+		ResumptionPath:    r.ResumptionPath,
 		BudgetTokensLimit: r.BudgetTokensLimit, BudgetTokensUsed: r.BudgetTokensUsed,
 		BudgetCostLimitUsd: r.BudgetCostLimitUSD, BudgetCostUsedUsd: r.BudgetCostUsedUSD,
 		BudgetRelaxFraction: r.BudgetRelaxFraction, NeedsHumanApproval: r.NeedsHumanApproval,

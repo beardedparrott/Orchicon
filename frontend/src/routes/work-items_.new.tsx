@@ -9,7 +9,9 @@ import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
+import { RecurringSchedule, WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -57,10 +59,10 @@ const createWorkItemSchema = z.object({
 type CreateWorkItemForm = z.infer<typeof createWorkItemSchema>;
 
 const KIND_TO_PROTO: Record<string, number> = {
-  epic: 1,
-  feature: 2,
-  task: 3,
-  subtask: 4,
+  epic: WorkItemKind.EPIC,
+  feature: WorkItemKind.FEATURE,
+  task: WorkItemKind.TASK,
+  subtask: WorkItemKind.SUBTASK,
 };
 
 function NewWorkItemPage() {
@@ -107,6 +109,7 @@ function NewWorkItemPage() {
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
   const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
 
   // Changing the kind can invalidate the previously chosen parent: epics
@@ -142,6 +145,7 @@ function NewWorkItemPage() {
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
+      recurringSchedule: recurringSchedule,
     });
     navigate({
       to: "/work-items/$id",
@@ -286,6 +290,11 @@ function NewWorkItemPage() {
                 files or directories for this work item.
               </p>
             )}
+
+            <RecurringScheduleForm
+              value={recurringSchedule}
+              onChange={setRecurringSchedule}
+            />
 
             <div className="space-y-2">
               <Label htmlFor="description">Description (optional)</Label>

@@ -1,5 +1,6 @@
 // AuthService query + mutation hooks (TanStack Query + Connect-ES).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Timestamp } from "@bufbuild/protobuf";
 
 import { authClient } from "@/api/clients";
 
@@ -7,9 +8,21 @@ export const authKeys = {
   tenants: () => ["auth", "tenants"] as const,
   identities: () => ["auth", "identities"] as const,
   roles: () => ["auth", "roles"] as const,
+  roleBindings: () => ["auth", "roleBindings"] as const,
   apiKeys: () => ["auth", "apiKeys"] as const,
   entitlements: (id: string) => ["auth", "entitlements", id] as const,
   audit: () => ["auth", "audit"] as const,
+  auditEvents: (filters?: AuditEventFilters) =>
+    [
+      "auth",
+      "auditEvents",
+      filters?.action ?? "",
+      filters?.actorId ?? "",
+      filters?.targetType ?? "",
+      filters?.targetId ?? "",
+      filters?.startTime ? Number(filters.startTime.seconds) : "",
+      filters?.endTime ? Number(filters.endTime.seconds) : "",
+    ] as const,
 };
 
 export function useListTenants() {
@@ -38,6 +51,52 @@ export function useListIdentities() {
   });
 }
 
+export function useCreateIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      identityType: string;
+      subject?: string;
+      displayName: string;
+    }) => (await authClient.createIdentity(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useUpdateIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      displayName: string;
+      version?: number;
+    }) => (await authClient.updateIdentity(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useSetIdentityStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      status: string;
+      version?: number;
+    }) => (await authClient.setIdentityStatus(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useDeleteIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.deleteIdentity({ id });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
 export function useListRoles() {
   return useQuery({
     queryKey: authKeys.roles(),
@@ -54,7 +113,55 @@ export function useCreateRole() {
       scopeRef?: string;
       entitlements: string[];
     }) => (await authClient.createRole(input)).role,
-    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.roles() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useUpdateRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      name?: string;
+      entitlements?: string[];
+      version?: number;
+    }) =>
+      (await authClient.updateRole({
+        id: input.id,
+        name: input.name,
+        entitlements: input.entitlements !== undefined
+          ? { values: input.entitlements }
+          : undefined,
+        version: input.version,
+      })).role,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useDeleteRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.deleteRole({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useListRoleBindings() {
+  return useQuery({
+    queryKey: authKeys.roleBindings(),
+    queryFn: async () =>
+      (await authClient.listRoleBindings({ pageSize: 100 })).bindings ?? [],
   });
 }
 
@@ -70,6 +177,21 @@ export function useAssignRole() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: authKeys.roles() });
       qc.invalidateQueries({ queryKey: authKeys.identities() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useRevokeRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.revokeRole({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.identities() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
     },
   });
 }
@@ -117,10 +239,56 @@ export function useListEntitlements(identityId: string) {
   });
 }
 
+export function useSetLocalCredential() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      identityId: string;
+      username: string;
+      password: string;
+    }) => (await authClient.setLocalCredential(input)).username,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
 export function useListAuditEntries() {
   return useQuery({
     queryKey: authKeys.audit(),
     queryFn: async () =>
       (await authClient.listAuditEntries({ pageSize: 100 })).entries ?? [],
+  });
+}
+
+// AuditEventFilters scopes useListAuditEvents. All fields optional;
+// startTime is an inclusive lower bound, endTime an exclusive upper
+// bound on occurred_at (absent = unbounded).
+export interface AuditEventFilters {
+  action?: string;
+  actorId?: string;
+  targetType?: string;
+  targetId?: string;
+  startTime?: Timestamp;
+  endTime?: Timestamp;
+}
+
+// useListAuditEvents fetches a page of audit_events rows (the
+// actor-based trail written by internal/audit.Record — distinct from the
+// policy-decision AuditEntry view). The query is keyed on the filters so
+// each filter combination refetches independently.
+export function useListAuditEvents(filters?: AuditEventFilters) {
+  return useQuery({
+    queryKey: authKeys.auditEvents(filters),
+    queryFn: async () =>
+      (
+        await authClient.listAuditEvents({
+          pageSize: 200,
+          action: filters?.action ?? undefined,
+          actorId: filters?.actorId ?? undefined,
+          targetType: filters?.targetType ?? undefined,
+          targetId: filters?.targetId ?? undefined,
+          startTime: filters?.startTime,
+          endTime: filters?.endTime,
+        })
+      ).events ?? [],
   });
 }

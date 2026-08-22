@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -22,40 +23,70 @@ const (
 	ModeProduction DeploymentMode = "production"
 )
 
+// maxTenantIDLen bounds the deployment tenant id (the tenant slugs across
+// the schema follow the same bound).
+const maxTenantIDLen = 63
+
+// tenantIDRE is the canonical tenant-id charset: lowercase alphanumerics
+// plus '-'/'_', must start and end alphanumeric. Accepts the codebase's
+// default ("tnt_dev") and the slug pattern used across the schema.
+var tenantIDRE = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+
 // AuthConfig holds OIDC + token-issuance configuration (docs/07 §6.1).
-// In local mode, Issuer="local" enables the built-in dev IdP that mints
-// short-lived HS256 access tokens + refresh tokens (no external IdP
-// required). In production, the control plane validates OIDC ID tokens
-// from the configured issuer and issues its own access tokens.
+// OIDC is the base authentication path in every mode: the embedded
+// OpenID Provider (EmbeddedOP, default on) is the default IdP in
+// local/non-prod; production validates ID tokens from the configured
+// external issuer. Issuer="local" is the vestigial "no external IdP"
+// marker — it is NOT an issuer and only boots when the embedded OP is
+// enabled (Validate enforces this in every mode).
 type AuthConfig struct {
-	Issuer        string // OIDC issuer URL, or "local" for the dev IdP
-	ClientID      string // OIDC client id
-	ClientSecret  string // OIDC client secret (only for confidential flows)
-	RedirectURL   string // OIDC redirect URL (e.g. http://localhost:5173/auth/callback)
-	SigningKey    string // HMAC key for minting/verifying Orchicon access tokens
-	AccessTTL     time.Duration
-	RefreshTTL    time.Duration
-	DevLoginAllowed bool // local mode: allow the synthetic /auth/dev-login endpoint
+	Issuer       string // OIDC issuer URL; "local" = no external IdP (embedded OP is the issuer)
+	ClientID     string // OIDC client id
+	ClientSecret string // OIDC client secret (only for confidential flows)
+	RedirectURL  string // OIDC redirect URL (e.g. http://localhost:5173/auth/callback)
+	SigningKey   string // HMAC key for minting/verifying Orchicon access tokens
+	AccessTTL    time.Duration
+	RefreshTTL   time.Duration
+
+	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3,
+	// pkg/op) mounted on the plane origin. Defaults to true; a strict
+	// production plane that only trusts its BYO IdP can disable the
+	// surface entirely.
+	EmbeddedOP bool
+	// OPRedirectURIs are the registered redirect URIs for the OP's
+	// built-in public client, comma-separated. Empty derives the default:
+	// the auth RedirectURL plus the plane-origin /auth/callback when
+	// OPIssuer is pinned.
+	OPRedirectURIs string
+	// OPIssuer pins the OP issuer URL (ORCHICON_OP_ISSUER). Empty derives
+	// the issuer from the request Host on every request.
+	OPIssuer string
 }
 
 // BlobStoreConfig selects the object-storage backend (docs/01 §2).
 // "local" uses the filesystem (production-viable); "s3" uses S3-compatible
 // storage.
 type BlobStoreConfig struct {
-	Kind     string // "local" | "s3"
-	LocalDir string
-	S3Bucket string
-	S3Region string
+	Kind       string // "local" | "s3"
+	LocalDir   string
+	S3Bucket   string
+	S3Region   string
 	S3Endpoint string // empty for AWS; set for MinIO/other S3-compatible
 }
 
 // Config holds all control-plane runtime configuration.
 type Config struct {
-	HTTPAddr      string
-	GRPCAddr      string
+	HTTPAddr     string
+	GRPCAddr     string
 	PostgresDSN  string
-	NATSURL       string
+	NATSURL      string
 	OTelEndpoint string
+	// Telemetry selects the OTel pipeline mode. "none" skips telemetry
+	// entirely (no exporters, no OTLP dial) — used by the runtime-container
+	// sandbox plane, which has no Grafana stack. Empty/"embedded"/"remote"
+	// keep the default pipeline (the same env the single-container
+	// supervisor reads for the embedded stack decision).
+	Telemetry string
 	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
 	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
 	// are the query endpoints the control plane reads tenant-scoped
@@ -76,15 +107,24 @@ type Config struct {
 	// containers).
 	RuntimeSocket string
 
+	// DeploymentTenantID is the single tenant this deployment owns
+	// (ORCHICON_DEPLOYMENT_TENANT_ID, default "tnt_dev"). Every auth path
+	// — OIDC callback, the embedded-OP local login, the local-admin
+	// bootstrap — resolves logins into this tenant, and boot provisions it
+	// via SeedDevTenant. It is server config, never client input; the IdP's
+	// identity claims are not consulted for tenant selection
+	// (single-tenant-per-deployment, decision #178).
+	DeploymentTenantID string
+
 	// Instance identifies this control plane ("dev"/"prod"). It labels
 	// the runtime containers this plane creates and scopes its orphan
 	// reaping, so two instances sharing one runtime daemon do not reap
 	// each other's containers.
 	Instance string
 
-	Mode       DeploymentMode
-	Auth       AuthConfig
-	BlobStore  BlobStoreConfig
+	Mode      DeploymentMode
+	Auth      AuthConfig
+	BlobStore BlobStoreConfig
 
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
@@ -98,26 +138,37 @@ type Config struct {
 	// failed to load a worker that existed. 0 disables the periodic
 	// sweep (the boot check still runs).
 	IndexCheckInterval time.Duration
+
+	// DispatchConcurrency bounds how many ready work items the
+	// TaskReconciler scan pass dispatches CONCURRENTLY in one pass
+	// (ORCHICON_DISPATCH_CONCURRENCY, default 4). Independent,
+	// dependency-satisfied items fan out up to this limit; each in-flight
+	// dispatch holds one pgx pool connection for its short transaction, so
+	// the pool's max_conns must comfortably exceed it. Values are clamped
+	// to [1, scanBatchSize=16] by the reconciler setter.
+	DispatchConcurrency int
 }
 
 // Default returns a Config populated with local-dev defaults that match
 // the docker-compose stack in deploy/compose.
 func Default() Config {
 	return Config{
-		HTTPAddr:          env("ORCHICON_HTTP_ADDR", ":8080"),
-		GRPCAddr:          env("ORCHICON_GRPC_ADDR", ":9090"),
-		PostgresDSN:       env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
-		NATSURL:           env("ORCHICON_NATS_URL", "nats://localhost:4222"),
-		OTelEndpoint:      env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
-		GrafanaURL:        env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
-		TempoURL:          env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
-		LokiURL:           env("ORCHICON_LOKI_URL", "http://localhost:3100"),
-		VMURL:             env("ORCHICON_VM_URL", "http://localhost:8428"),
-		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
-		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
-		RuntimeSocket:     env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
-		Instance:          env("ORCHICON_INSTANCE", "dev"),
-		Mode:              DeploymentMode(env("ORCHICON_MODE", "local")),
+		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
+		GRPCAddr:           env("ORCHICON_GRPC_ADDR", ":9090"),
+		PostgresDSN:        env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
+		NATSURL:            env("ORCHICON_NATS_URL", "nats://localhost:4222"),
+		OTelEndpoint:       env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
+		Telemetry:          env("ORCHICON_TELEMETRY", ""),
+		GrafanaURL:         env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
+		TempoURL:           env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
+		LokiURL:            env("ORCHICON_LOKI_URL", "http://localhost:3100"),
+		VMURL:              env("ORCHICON_VM_URL", "http://localhost:8428"),
+		BlobStoreDir:       env("ORCHICON_BLOB_DIR", "./data/blobs"),
+		MigrateOnBoot:      envBool("ORCHICON_MIGRATE_ON_BOOT", true),
+		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
+		DeploymentTenantID: env("ORCHICON_DEPLOYMENT_TENANT_ID", "tnt_dev"),
+		Instance:           env("ORCHICON_INSTANCE", "dev"),
+		Mode:               DeploymentMode(env("ORCHICON_MODE", "local")),
 		Auth: AuthConfig{
 			Issuer:          env("ORCHICON_OIDC_ISSUER", "local"),
 			ClientID:        env("ORCHICON_OIDC_CLIENT_ID", "orchicon"),
@@ -126,19 +177,31 @@ func Default() Config {
 			SigningKey:      env("ORCHICON_AUTH_SIGNING_KEY", "orchicon-dev-signing-key-change-in-production"),
 			AccessTTL:       15 * time.Minute,
 			RefreshTTL:      24 * time.Hour,
-			DevLoginAllowed: envBool("ORCHICON_DEV_LOGIN", true),
+			EmbeddedOP:      envBool("ORCHICON_OP_ENABLED", true),
+			OPRedirectURIs:  env("ORCHICON_OP_REDIRECT_URIS", ""),
+			OPIssuer:        env("ORCHICON_OP_ISSUER", ""),
 		},
 		BlobStore: BlobStoreConfig{
-			Kind:     env("ORCHICON_BLOB_STORE", "local"),
-			LocalDir: env("ORCHICON_BLOB_DIR", "./data/blobs"),
-			S3Bucket: env("ORCHICON_S3_BUCKET", ""),
-			S3Region: env("ORCHICON_S3_REGION", ""),
+			Kind:       env("ORCHICON_BLOB_STORE", "local"),
+			LocalDir:   env("ORCHICON_BLOB_DIR", "./data/blobs"),
+			S3Bucket:   env("ORCHICON_S3_BUCKET", ""),
+			S3Region:   env("ORCHICON_S3_REGION", ""),
 			S3Endpoint: env("ORCHICON_S3_ENDPOINT", ""),
 		},
-		ReadHeaderTimeout: 10 * time.Second,
-		ShutdownTimeout:   15 * time.Second,
-		IndexCheckInterval: envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		ReadHeaderTimeout:   10 * time.Second,
+		ShutdownTimeout:     15 * time.Second,
+		IndexCheckInterval:  envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
 	}
+}
+
+func envInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {
@@ -167,11 +230,18 @@ func envBool(key string, fallback bool) bool {
 }
 
 // Validate reports configuration errors before the process starts serving.
-// Production mode requires an OIDC issuer (not "local") and a real
-// signing key; local mode relaxes these for the dev experience.
+// Every mode requires a real IdP (the embedded OP or an external issuer);
+// production additionally requires a real external issuer and signing key
+// (BYO-IdP posture), which local mode relaxes for the dev experience.
 func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("config: HTTPAddr must be set")
+	}
+	if c.DeploymentTenantID == "" {
+		return fmt.Errorf("config: DeploymentTenantID must be set (ORCHICON_DEPLOYMENT_TENANT_ID)")
+	}
+	if len(c.DeploymentTenantID) > maxTenantIDLen || !tenantIDRE.MatchString(c.DeploymentTenantID) {
+		return fmt.Errorf("config: DeploymentTenantID %q invalid: must be %d chars max, lowercase alphanumerics plus '-'/'_' (ORCHICON_DEPLOYMENT_TENANT_ID)", c.DeploymentTenantID, maxTenantIDLen)
 	}
 	if c.PostgresDSN == "" {
 		return fmt.Errorf("config: PostgresDSN must be set")
@@ -184,7 +254,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("config: Mode must be %q or %q", ModeLocal, ModeProduction)
 	}
+	// OIDC is the base auth path in every mode: a plane must have a real
+	// IdP — the embedded OP or an external issuer. Issuer="local" is the
+	// vestigial "no external IdP" marker, not an issuer; with the embedded
+	// OP disabled it would leave the plane with no way to authenticate
+	// (the old local-mode anonymous bypass is gone), so it is a config
+	// error, not a runtime surprise.
+	if !c.Auth.EmbeddedOP && (c.Auth.Issuer == "" || c.Auth.Issuer == "local") {
+		return fmt.Errorf("config: an OIDC issuer is required in every mode: enable the embedded OP (ORCHICON_OP_ENABLED) or set ORCHICON_OIDC_ISSUER to an external IdP")
+	}
 	if c.Mode == ModeProduction {
+		// Production keeps its stricter BYO-IdP posture: a real external
+		// issuer is required even when the embedded OP is enabled — the
+		// embedded OP alone is not a production trust surface.
 		if c.Auth.Issuer == "" || c.Auth.Issuer == "local" {
 			return fmt.Errorf("config: production mode requires ORCHICON_OIDC_ISSUER (not local)")
 		}

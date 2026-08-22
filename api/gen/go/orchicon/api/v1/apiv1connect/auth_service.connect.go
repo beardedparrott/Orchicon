@@ -58,11 +58,27 @@ const (
 	// AuthServiceListIdentitiesProcedure is the fully-qualified name of the AuthService's
 	// ListIdentities RPC.
 	AuthServiceListIdentitiesProcedure = "/orchicon.api.v1.AuthService/ListIdentities"
+	// AuthServiceCreateIdentityProcedure is the fully-qualified name of the AuthService's
+	// CreateIdentity RPC.
+	AuthServiceCreateIdentityProcedure = "/orchicon.api.v1.AuthService/CreateIdentity"
+	// AuthServiceUpdateIdentityProcedure is the fully-qualified name of the AuthService's
+	// UpdateIdentity RPC.
+	AuthServiceUpdateIdentityProcedure = "/orchicon.api.v1.AuthService/UpdateIdentity"
+	// AuthServiceSetIdentityStatusProcedure is the fully-qualified name of the AuthService's
+	// SetIdentityStatus RPC.
+	AuthServiceSetIdentityStatusProcedure = "/orchicon.api.v1.AuthService/SetIdentityStatus"
+	// AuthServiceDeleteIdentityProcedure is the fully-qualified name of the AuthService's
+	// DeleteIdentity RPC.
+	AuthServiceDeleteIdentityProcedure = "/orchicon.api.v1.AuthService/DeleteIdentity"
 	// AuthServiceListEntitlementsProcedure is the fully-qualified name of the AuthService's
 	// ListEntitlements RPC.
 	AuthServiceListEntitlementsProcedure = "/orchicon.api.v1.AuthService/ListEntitlements"
 	// AuthServiceCreateRoleProcedure is the fully-qualified name of the AuthService's CreateRole RPC.
 	AuthServiceCreateRoleProcedure = "/orchicon.api.v1.AuthService/CreateRole"
+	// AuthServiceUpdateRoleProcedure is the fully-qualified name of the AuthService's UpdateRole RPC.
+	AuthServiceUpdateRoleProcedure = "/orchicon.api.v1.AuthService/UpdateRole"
+	// AuthServiceDeleteRoleProcedure is the fully-qualified name of the AuthService's DeleteRole RPC.
+	AuthServiceDeleteRoleProcedure = "/orchicon.api.v1.AuthService/DeleteRole"
 	// AuthServiceListRolesProcedure is the fully-qualified name of the AuthService's ListRoles RPC.
 	AuthServiceListRolesProcedure = "/orchicon.api.v1.AuthService/ListRoles"
 	// AuthServiceAssignRoleProcedure is the fully-qualified name of the AuthService's AssignRole RPC.
@@ -77,9 +93,15 @@ const (
 	// AuthServiceCreateTenantProcedure is the fully-qualified name of the AuthService's CreateTenant
 	// RPC.
 	AuthServiceCreateTenantProcedure = "/orchicon.api.v1.AuthService/CreateTenant"
+	// AuthServiceSetLocalCredentialProcedure is the fully-qualified name of the AuthService's
+	// SetLocalCredential RPC.
+	AuthServiceSetLocalCredentialProcedure = "/orchicon.api.v1.AuthService/SetLocalCredential"
 	// AuthServiceListAuditEntriesProcedure is the fully-qualified name of the AuthService's
 	// ListAuditEntries RPC.
 	AuthServiceListAuditEntriesProcedure = "/orchicon.api.v1.AuthService/ListAuditEntries"
+	// AuthServiceListAuditEventsProcedure is the fully-qualified name of the AuthService's
+	// ListAuditEvents RPC.
+	AuthServiceListAuditEventsProcedure = "/orchicon.api.v1.AuthService/ListAuditEvents"
 )
 
 // AuthServiceClient is a client for the orchicon.api.v1.AuthService service.
@@ -93,9 +115,15 @@ type AuthServiceClient interface {
 	// --- Identity + entitlements ---
 	GetIdentity(context.Context, *connect.Request[v1.GetIdentityRequest]) (*connect.Response[v1.GetIdentityResponse], error)
 	ListIdentities(context.Context, *connect.Request[v1.ListIdentitiesRequest]) (*connect.Response[v1.ListIdentitiesResponse], error)
+	CreateIdentity(context.Context, *connect.Request[v1.CreateIdentityRequest]) (*connect.Response[v1.CreateIdentityResponse], error)
+	UpdateIdentity(context.Context, *connect.Request[v1.UpdateIdentityRequest]) (*connect.Response[v1.UpdateIdentityResponse], error)
+	SetIdentityStatus(context.Context, *connect.Request[v1.SetIdentityStatusRequest]) (*connect.Response[v1.SetIdentityStatusResponse], error)
+	DeleteIdentity(context.Context, *connect.Request[v1.DeleteIdentityRequest]) (*connect.Response[v1.DeleteIdentityResponse], error)
 	ListEntitlements(context.Context, *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error)
 	// --- RBAC roles + bindings ---
 	CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error)
+	UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error)
+	DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error)
 	ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error)
 	AssignRole(context.Context, *connect.Request[v1.AssignRoleRequest]) (*connect.Response[v1.AssignRoleResponse], error)
 	RevokeRole(context.Context, *connect.Request[v1.RevokeRoleRequest]) (*connect.Response[v1.RevokeRoleResponse], error)
@@ -103,8 +131,11 @@ type AuthServiceClient interface {
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
 	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
+	// --- Local-account credentials (embedded IdP boundary) ---
+	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
+	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the orchicon.api.v1.AuthService service. By default,
@@ -160,6 +191,30 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("ListIdentities")),
 			connect.WithClientOptions(opts...),
 		),
+		createIdentity: connect.NewClient[v1.CreateIdentityRequest, v1.CreateIdentityResponse](
+			httpClient,
+			baseURL+AuthServiceCreateIdentityProcedure,
+			connect.WithSchema(authServiceMethods.ByName("CreateIdentity")),
+			connect.WithClientOptions(opts...),
+		),
+		updateIdentity: connect.NewClient[v1.UpdateIdentityRequest, v1.UpdateIdentityResponse](
+			httpClient,
+			baseURL+AuthServiceUpdateIdentityProcedure,
+			connect.WithSchema(authServiceMethods.ByName("UpdateIdentity")),
+			connect.WithClientOptions(opts...),
+		),
+		setIdentityStatus: connect.NewClient[v1.SetIdentityStatusRequest, v1.SetIdentityStatusResponse](
+			httpClient,
+			baseURL+AuthServiceSetIdentityStatusProcedure,
+			connect.WithSchema(authServiceMethods.ByName("SetIdentityStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteIdentity: connect.NewClient[v1.DeleteIdentityRequest, v1.DeleteIdentityResponse](
+			httpClient,
+			baseURL+AuthServiceDeleteIdentityProcedure,
+			connect.WithSchema(authServiceMethods.ByName("DeleteIdentity")),
+			connect.WithClientOptions(opts...),
+		),
 		listEntitlements: connect.NewClient[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse](
 			httpClient,
 			baseURL+AuthServiceListEntitlementsProcedure,
@@ -170,6 +225,18 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			httpClient,
 			baseURL+AuthServiceCreateRoleProcedure,
 			connect.WithSchema(authServiceMethods.ByName("CreateRole")),
+			connect.WithClientOptions(opts...),
+		),
+		updateRole: connect.NewClient[v1.UpdateRoleRequest, v1.UpdateRoleResponse](
+			httpClient,
+			baseURL+AuthServiceUpdateRoleProcedure,
+			connect.WithSchema(authServiceMethods.ByName("UpdateRole")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteRole: connect.NewClient[v1.DeleteRoleRequest, v1.DeleteRoleResponse](
+			httpClient,
+			baseURL+AuthServiceDeleteRoleProcedure,
+			connect.WithSchema(authServiceMethods.ByName("DeleteRole")),
 			connect.WithClientOptions(opts...),
 		),
 		listRoles: connect.NewClient[v1.ListRolesRequest, v1.ListRolesResponse](
@@ -208,10 +275,22 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
 			connect.WithClientOptions(opts...),
 		),
+		setLocalCredential: connect.NewClient[v1.SetLocalCredentialRequest, v1.SetLocalCredentialResponse](
+			httpClient,
+			baseURL+AuthServiceSetLocalCredentialProcedure,
+			connect.WithSchema(authServiceMethods.ByName("SetLocalCredential")),
+			connect.WithClientOptions(opts...),
+		),
 		listAuditEntries: connect.NewClient[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse](
 			httpClient,
 			baseURL+AuthServiceListAuditEntriesProcedure,
 			connect.WithSchema(authServiceMethods.ByName("ListAuditEntries")),
+			connect.WithClientOptions(opts...),
+		),
+		listAuditEvents: connect.NewClient[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse](
+			httpClient,
+			baseURL+AuthServiceListAuditEventsProcedure,
+			connect.WithSchema(authServiceMethods.ByName("ListAuditEvents")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -219,22 +298,30 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 
 // authServiceClient implements AuthServiceClient.
 type authServiceClient struct {
-	createApiKey     *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
-	revokeApiKey     *connect.Client[v1.RevokeApiKeyRequest, v1.RevokeApiKeyResponse]
-	rotateApiKey     *connect.Client[v1.RotateApiKeyRequest, v1.RotateApiKeyResponse]
-	listApiKeys      *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
-	getApiKey        *connect.Client[v1.GetApiKeyRequest, v1.GetApiKeyResponse]
-	getIdentity      *connect.Client[v1.GetIdentityRequest, v1.GetIdentityResponse]
-	listIdentities   *connect.Client[v1.ListIdentitiesRequest, v1.ListIdentitiesResponse]
-	listEntitlements *connect.Client[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse]
-	createRole       *connect.Client[v1.CreateRoleRequest, v1.CreateRoleResponse]
-	listRoles        *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
-	assignRole       *connect.Client[v1.AssignRoleRequest, v1.AssignRoleResponse]
-	revokeRole       *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
-	listRoleBindings *connect.Client[v1.ListRoleBindingsRequest, v1.ListRoleBindingsResponse]
-	listTenants      *connect.Client[v1.ListTenantsRequest, v1.ListTenantsResponse]
-	createTenant     *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
-	listAuditEntries *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
+	createApiKey       *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
+	revokeApiKey       *connect.Client[v1.RevokeApiKeyRequest, v1.RevokeApiKeyResponse]
+	rotateApiKey       *connect.Client[v1.RotateApiKeyRequest, v1.RotateApiKeyResponse]
+	listApiKeys        *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
+	getApiKey          *connect.Client[v1.GetApiKeyRequest, v1.GetApiKeyResponse]
+	getIdentity        *connect.Client[v1.GetIdentityRequest, v1.GetIdentityResponse]
+	listIdentities     *connect.Client[v1.ListIdentitiesRequest, v1.ListIdentitiesResponse]
+	createIdentity     *connect.Client[v1.CreateIdentityRequest, v1.CreateIdentityResponse]
+	updateIdentity     *connect.Client[v1.UpdateIdentityRequest, v1.UpdateIdentityResponse]
+	setIdentityStatus  *connect.Client[v1.SetIdentityStatusRequest, v1.SetIdentityStatusResponse]
+	deleteIdentity     *connect.Client[v1.DeleteIdentityRequest, v1.DeleteIdentityResponse]
+	listEntitlements   *connect.Client[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse]
+	createRole         *connect.Client[v1.CreateRoleRequest, v1.CreateRoleResponse]
+	updateRole         *connect.Client[v1.UpdateRoleRequest, v1.UpdateRoleResponse]
+	deleteRole         *connect.Client[v1.DeleteRoleRequest, v1.DeleteRoleResponse]
+	listRoles          *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
+	assignRole         *connect.Client[v1.AssignRoleRequest, v1.AssignRoleResponse]
+	revokeRole         *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
+	listRoleBindings   *connect.Client[v1.ListRoleBindingsRequest, v1.ListRoleBindingsResponse]
+	listTenants        *connect.Client[v1.ListTenantsRequest, v1.ListTenantsResponse]
+	createTenant       *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
+	setLocalCredential *connect.Client[v1.SetLocalCredentialRequest, v1.SetLocalCredentialResponse]
+	listAuditEntries   *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
+	listAuditEvents    *connect.Client[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse]
 }
 
 // CreateApiKey calls orchicon.api.v1.AuthService.CreateApiKey.
@@ -272,6 +359,26 @@ func (c *authServiceClient) ListIdentities(ctx context.Context, req *connect.Req
 	return c.listIdentities.CallUnary(ctx, req)
 }
 
+// CreateIdentity calls orchicon.api.v1.AuthService.CreateIdentity.
+func (c *authServiceClient) CreateIdentity(ctx context.Context, req *connect.Request[v1.CreateIdentityRequest]) (*connect.Response[v1.CreateIdentityResponse], error) {
+	return c.createIdentity.CallUnary(ctx, req)
+}
+
+// UpdateIdentity calls orchicon.api.v1.AuthService.UpdateIdentity.
+func (c *authServiceClient) UpdateIdentity(ctx context.Context, req *connect.Request[v1.UpdateIdentityRequest]) (*connect.Response[v1.UpdateIdentityResponse], error) {
+	return c.updateIdentity.CallUnary(ctx, req)
+}
+
+// SetIdentityStatus calls orchicon.api.v1.AuthService.SetIdentityStatus.
+func (c *authServiceClient) SetIdentityStatus(ctx context.Context, req *connect.Request[v1.SetIdentityStatusRequest]) (*connect.Response[v1.SetIdentityStatusResponse], error) {
+	return c.setIdentityStatus.CallUnary(ctx, req)
+}
+
+// DeleteIdentity calls orchicon.api.v1.AuthService.DeleteIdentity.
+func (c *authServiceClient) DeleteIdentity(ctx context.Context, req *connect.Request[v1.DeleteIdentityRequest]) (*connect.Response[v1.DeleteIdentityResponse], error) {
+	return c.deleteIdentity.CallUnary(ctx, req)
+}
+
 // ListEntitlements calls orchicon.api.v1.AuthService.ListEntitlements.
 func (c *authServiceClient) ListEntitlements(ctx context.Context, req *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error) {
 	return c.listEntitlements.CallUnary(ctx, req)
@@ -280,6 +387,16 @@ func (c *authServiceClient) ListEntitlements(ctx context.Context, req *connect.R
 // CreateRole calls orchicon.api.v1.AuthService.CreateRole.
 func (c *authServiceClient) CreateRole(ctx context.Context, req *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error) {
 	return c.createRole.CallUnary(ctx, req)
+}
+
+// UpdateRole calls orchicon.api.v1.AuthService.UpdateRole.
+func (c *authServiceClient) UpdateRole(ctx context.Context, req *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error) {
+	return c.updateRole.CallUnary(ctx, req)
+}
+
+// DeleteRole calls orchicon.api.v1.AuthService.DeleteRole.
+func (c *authServiceClient) DeleteRole(ctx context.Context, req *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error) {
+	return c.deleteRole.CallUnary(ctx, req)
 }
 
 // ListRoles calls orchicon.api.v1.AuthService.ListRoles.
@@ -312,9 +429,19 @@ func (c *authServiceClient) CreateTenant(ctx context.Context, req *connect.Reque
 	return c.createTenant.CallUnary(ctx, req)
 }
 
+// SetLocalCredential calls orchicon.api.v1.AuthService.SetLocalCredential.
+func (c *authServiceClient) SetLocalCredential(ctx context.Context, req *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error) {
+	return c.setLocalCredential.CallUnary(ctx, req)
+}
+
 // ListAuditEntries calls orchicon.api.v1.AuthService.ListAuditEntries.
 func (c *authServiceClient) ListAuditEntries(ctx context.Context, req *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {
 	return c.listAuditEntries.CallUnary(ctx, req)
+}
+
+// ListAuditEvents calls orchicon.api.v1.AuthService.ListAuditEvents.
+func (c *authServiceClient) ListAuditEvents(ctx context.Context, req *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
+	return c.listAuditEvents.CallUnary(ctx, req)
 }
 
 // AuthServiceHandler is an implementation of the orchicon.api.v1.AuthService service.
@@ -328,9 +455,15 @@ type AuthServiceHandler interface {
 	// --- Identity + entitlements ---
 	GetIdentity(context.Context, *connect.Request[v1.GetIdentityRequest]) (*connect.Response[v1.GetIdentityResponse], error)
 	ListIdentities(context.Context, *connect.Request[v1.ListIdentitiesRequest]) (*connect.Response[v1.ListIdentitiesResponse], error)
+	CreateIdentity(context.Context, *connect.Request[v1.CreateIdentityRequest]) (*connect.Response[v1.CreateIdentityResponse], error)
+	UpdateIdentity(context.Context, *connect.Request[v1.UpdateIdentityRequest]) (*connect.Response[v1.UpdateIdentityResponse], error)
+	SetIdentityStatus(context.Context, *connect.Request[v1.SetIdentityStatusRequest]) (*connect.Response[v1.SetIdentityStatusResponse], error)
+	DeleteIdentity(context.Context, *connect.Request[v1.DeleteIdentityRequest]) (*connect.Response[v1.DeleteIdentityResponse], error)
 	ListEntitlements(context.Context, *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error)
 	// --- RBAC roles + bindings ---
 	CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error)
+	UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error)
+	DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error)
 	ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error)
 	AssignRole(context.Context, *connect.Request[v1.AssignRoleRequest]) (*connect.Response[v1.AssignRoleResponse], error)
 	RevokeRole(context.Context, *connect.Request[v1.RevokeRoleRequest]) (*connect.Response[v1.RevokeRoleResponse], error)
@@ -338,8 +471,11 @@ type AuthServiceHandler interface {
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
 	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
+	// --- Local-account credentials (embedded IdP boundary) ---
+	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
+	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -391,6 +527,30 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("ListIdentities")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceCreateIdentityHandler := connect.NewUnaryHandler(
+		AuthServiceCreateIdentityProcedure,
+		svc.CreateIdentity,
+		connect.WithSchema(authServiceMethods.ByName("CreateIdentity")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceUpdateIdentityHandler := connect.NewUnaryHandler(
+		AuthServiceUpdateIdentityProcedure,
+		svc.UpdateIdentity,
+		connect.WithSchema(authServiceMethods.ByName("UpdateIdentity")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceSetIdentityStatusHandler := connect.NewUnaryHandler(
+		AuthServiceSetIdentityStatusProcedure,
+		svc.SetIdentityStatus,
+		connect.WithSchema(authServiceMethods.ByName("SetIdentityStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceDeleteIdentityHandler := connect.NewUnaryHandler(
+		AuthServiceDeleteIdentityProcedure,
+		svc.DeleteIdentity,
+		connect.WithSchema(authServiceMethods.ByName("DeleteIdentity")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceListEntitlementsHandler := connect.NewUnaryHandler(
 		AuthServiceListEntitlementsProcedure,
 		svc.ListEntitlements,
@@ -401,6 +561,18 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		AuthServiceCreateRoleProcedure,
 		svc.CreateRole,
 		connect.WithSchema(authServiceMethods.ByName("CreateRole")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceUpdateRoleHandler := connect.NewUnaryHandler(
+		AuthServiceUpdateRoleProcedure,
+		svc.UpdateRole,
+		connect.WithSchema(authServiceMethods.ByName("UpdateRole")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceDeleteRoleHandler := connect.NewUnaryHandler(
+		AuthServiceDeleteRoleProcedure,
+		svc.DeleteRole,
+		connect.WithSchema(authServiceMethods.ByName("DeleteRole")),
 		connect.WithHandlerOptions(opts...),
 	)
 	authServiceListRolesHandler := connect.NewUnaryHandler(
@@ -439,10 +611,22 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceSetLocalCredentialHandler := connect.NewUnaryHandler(
+		AuthServiceSetLocalCredentialProcedure,
+		svc.SetLocalCredential,
+		connect.WithSchema(authServiceMethods.ByName("SetLocalCredential")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceListAuditEntriesHandler := connect.NewUnaryHandler(
 		AuthServiceListAuditEntriesProcedure,
 		svc.ListAuditEntries,
 		connect.WithSchema(authServiceMethods.ByName("ListAuditEntries")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceListAuditEventsHandler := connect.NewUnaryHandler(
+		AuthServiceListAuditEventsProcedure,
+		svc.ListAuditEvents,
+		connect.WithSchema(authServiceMethods.ByName("ListAuditEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/orchicon.api.v1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -461,10 +645,22 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceGetIdentityHandler.ServeHTTP(w, r)
 		case AuthServiceListIdentitiesProcedure:
 			authServiceListIdentitiesHandler.ServeHTTP(w, r)
+		case AuthServiceCreateIdentityProcedure:
+			authServiceCreateIdentityHandler.ServeHTTP(w, r)
+		case AuthServiceUpdateIdentityProcedure:
+			authServiceUpdateIdentityHandler.ServeHTTP(w, r)
+		case AuthServiceSetIdentityStatusProcedure:
+			authServiceSetIdentityStatusHandler.ServeHTTP(w, r)
+		case AuthServiceDeleteIdentityProcedure:
+			authServiceDeleteIdentityHandler.ServeHTTP(w, r)
 		case AuthServiceListEntitlementsProcedure:
 			authServiceListEntitlementsHandler.ServeHTTP(w, r)
 		case AuthServiceCreateRoleProcedure:
 			authServiceCreateRoleHandler.ServeHTTP(w, r)
+		case AuthServiceUpdateRoleProcedure:
+			authServiceUpdateRoleHandler.ServeHTTP(w, r)
+		case AuthServiceDeleteRoleProcedure:
+			authServiceDeleteRoleHandler.ServeHTTP(w, r)
 		case AuthServiceListRolesProcedure:
 			authServiceListRolesHandler.ServeHTTP(w, r)
 		case AuthServiceAssignRoleProcedure:
@@ -477,8 +673,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceListTenantsHandler.ServeHTTP(w, r)
 		case AuthServiceCreateTenantProcedure:
 			authServiceCreateTenantHandler.ServeHTTP(w, r)
+		case AuthServiceSetLocalCredentialProcedure:
+			authServiceSetLocalCredentialHandler.ServeHTTP(w, r)
 		case AuthServiceListAuditEntriesProcedure:
 			authServiceListAuditEntriesHandler.ServeHTTP(w, r)
+		case AuthServiceListAuditEventsProcedure:
+			authServiceListAuditEventsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -516,12 +716,36 @@ func (UnimplementedAuthServiceHandler) ListIdentities(context.Context, *connect.
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListIdentities is not implemented"))
 }
 
+func (UnimplementedAuthServiceHandler) CreateIdentity(context.Context, *connect.Request[v1.CreateIdentityRequest]) (*connect.Response[v1.CreateIdentityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateIdentity is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) UpdateIdentity(context.Context, *connect.Request[v1.UpdateIdentityRequest]) (*connect.Response[v1.UpdateIdentityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.UpdateIdentity is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) SetIdentityStatus(context.Context, *connect.Request[v1.SetIdentityStatusRequest]) (*connect.Response[v1.SetIdentityStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.SetIdentityStatus is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) DeleteIdentity(context.Context, *connect.Request[v1.DeleteIdentityRequest]) (*connect.Response[v1.DeleteIdentityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.DeleteIdentity is not implemented"))
+}
+
 func (UnimplementedAuthServiceHandler) ListEntitlements(context.Context, *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListEntitlements is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateRole is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.UpdateRole is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.DeleteRole is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error) {
@@ -548,6 +772,14 @@ func (UnimplementedAuthServiceHandler) CreateTenant(context.Context, *connect.Re
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateTenant is not implemented"))
 }
 
+func (UnimplementedAuthServiceHandler) SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.SetLocalCredential is not implemented"))
+}
+
 func (UnimplementedAuthServiceHandler) ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListAuditEntries is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListAuditEvents is not implemented"))
 }

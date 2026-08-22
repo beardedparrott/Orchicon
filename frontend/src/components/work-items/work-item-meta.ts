@@ -237,6 +237,51 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
   },
+  // Fuchsia — visually distinct from every other status hue (the earlier
+  // teal collided with the SUCCEEDED emerald family at a glance). Same
+  // hue as the RecurringBadge so the pill and the badge read as one
+  // recurring concept.
+  [WorkItemStatus.RECURRING]: {
+    label: "recurring",
+    titleLabel: "Recurring",
+    pill: "bg-fuchsia-500/15 text-fuchsia-800",
+    pillDark: "bg-fuchsia-500/15 text-fuchsia-300",
+    dot: "bg-fuchsia-500",
+  },
+  // Teal — visually distinct from every other pill (teal is otherwise
+  // unused by statuses/kinds). System-managed: set by the reconcilers when
+  // an armed/on-deck item cannot dispatch because an upstream dependency is
+  // not terminal-success. Distinct from pending/scheduled so operators see
+  // WHY nothing is dispatching.
+  [WorkItemStatus.BLOCKED]: {
+    label: "blocked",
+    titleLabel: "Blocked",
+    pill: "bg-teal-500/15 text-teal-800",
+    pillDark: "bg-teal-500/15 text-teal-300",
+    dot: "bg-teal-500",
+  },
+  // Yellow — distinct from every other status hue (amber is ASSIGNED's,
+  // emerald is SUCCEEDED's). System-managed terminal-success: set by the
+  // reconcilers when a bound run completes with every active step
+  // terminal-success but at least one step skipped. Satisfies dependency
+  // edges exactly like SUCCEEDED (never blocks dependents).
+  [WorkItemStatus.SKIPPED]: {
+    label: "skipped",
+    titleLabel: "Skipped",
+    pill: "bg-yellow-500/15 text-yellow-800",
+    pillDark: "bg-yellow-500/15 text-yellow-300",
+    dot: "bg-yellow-500",
+  },
+  // Slate — visually distinct from every other status. User-initiated
+  // terminal status: the item is hidden from every normal view and only
+  // visible in the dedicated Archive view, where it can be restored.
+  [WorkItemStatus.ARCHIVED]: {
+    label: "archived",
+    titleLabel: "Archived",
+    pill: "bg-slate-500/15 text-slate-800",
+    pillDark: "bg-slate-500/15 text-slate-300",
+    dot: "bg-slate-500",
+  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -251,6 +296,45 @@ export function statusMeta(status: number): StatusMeta {
   );
 }
 
+/** Map a canonical status string (as stored server-side, e.g. "succeeded",
+ *  and as echoed in WorkItem.archivedFromStatus) to its numeric enum value
+ *  for statusMeta(). Returns WorkItemStatus.UNSPECIFIED for unknown strings
+ *  so callers fall back to the "unknown" presentation. */
+export function statusMetaFromString(status: string): StatusMeta {
+  switch (status) {
+    case "pending":
+      return statusMeta(WorkItemStatus.PENDING);
+    case "ready":
+      return statusMeta(WorkItemStatus.READY);
+    case "assigned":
+      return statusMeta(WorkItemStatus.ASSIGNED);
+    case "running":
+      return statusMeta(WorkItemStatus.RUNNING);
+    case "checkpointing":
+      return statusMeta(WorkItemStatus.CHECKPOINTING);
+    case "succeeded":
+      return statusMeta(WorkItemStatus.SUCCEEDED);
+    case "failed":
+      return statusMeta(WorkItemStatus.FAILED);
+    case "cancelled":
+      return statusMeta(WorkItemStatus.CANCELLED);
+    case "recovering":
+      return statusMeta(WorkItemStatus.RECOVERING);
+    case "scheduled":
+      return statusMeta(WorkItemStatus.SCHEDULED);
+    case "recurring":
+      return statusMeta(WorkItemStatus.RECURRING);
+    case "blocked":
+      return statusMeta(WorkItemStatus.BLOCKED);
+    case "skipped":
+      return statusMeta(WorkItemStatus.SKIPPED);
+    case "archived":
+      return statusMeta(WorkItemStatus.ARCHIVED);
+    default:
+      return statusMeta(WorkItemStatus.UNSPECIFIED);
+  }
+}
+
 export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.PENDING, label: "Pending" },
   { value: WorkItemStatus.READY, label: "Ready" },
@@ -262,6 +346,9 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.CANCELLED, label: "Cancelled" },
   { value: WorkItemStatus.RECOVERING, label: "Recovering" },
   { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
+  { value: WorkItemStatus.RECURRING, label: "Recurring" },
+  { value: WorkItemStatus.BLOCKED, label: "Blocked" },
+  { value: WorkItemStatus.SKIPPED, label: "Skipped" },
 ];
 
 /** Every status value offered by the status filter — the default
@@ -278,6 +365,7 @@ export const ALL_STATUS_VALUES = STATUS_FILTER_OPTIONS.map((o) => o.value);
 
 export const TERMINAL_STATUSES = new Set<number>([
   WorkItemStatus.SUCCEEDED,
+  WorkItemStatus.SKIPPED,
   WorkItemStatus.FAILED,
   WorkItemStatus.CANCELLED,
 ]);
@@ -308,11 +396,17 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 
 // Statuses without a dedicated column render in the column of their
 // closest active status: checkpointing/recovering → Running,
-// scheduled → Pending. The card still shows its REAL status pill.
+// scheduled/recurring/blocked → Pending, skipped → Succeeded. The card
+// still shows its REAL status pill (blocked keeps its distinct teal pill
+// while sitting in the Pending column; skipped keeps its yellow pill in
+// the Succeeded column).
 export function columnForStatus(status: number): number {
   if (status === WorkItemStatus.CHECKPOINTING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.RECOVERING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.SCHEDULED) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.RECURRING) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.BLOCKED) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.SKIPPED) return WorkItemStatus.SUCCEEDED;
   return status;
 }
 
@@ -320,11 +414,18 @@ export function columnForStatus(status: number): number {
 // System-managed statuses — users cannot manually drag items into these.
 // Running is set by the TaskReconciler when a workflow executes;
 // Checkpointing and Recovering are transient states within a workflow.
+// Blocked is set by the reconcilers when an upstream dependency is
+// unsatisfied (system-managed — operators can't drag INTO it; it clears
+// automatically). Skipped is set by the reconcilers when a bound run
+// completes with a skipped step (system-managed — operators can't drag
+// into it or out of it).
 // ---------------------------------------------------------------------------
 export const MANUALLY_UNMOVABLE_STATUSES = new Set<number>([
   WorkItemStatus.RUNNING,
   WorkItemStatus.CHECKPOINTING,
   WorkItemStatus.RECOVERING,
+  WorkItemStatus.BLOCKED,
+  WorkItemStatus.SKIPPED,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -370,6 +471,22 @@ export function allowedStatusesForKind(kind: number): number[] {
 /** "P3" for priority > 0, otherwise a muted "—" (rendered by the card). */
 export function priorityLabel(priority: number): string {
   return priority > 0 ? `P${priority}` : "";
+}
+
+/** True when a work item participates in a recurring schedule. The
+ *  persistent `recurringSchedule` field is the stable signal — the status
+ *  flips to `running` (and back to `recurring`) while an occurrence fires,
+ *  so a status-only check would make the badge blink off mid-run. */
+export function isRecurringItem(item: WorkItem): boolean {
+  return item.recurringSchedule != null || item.status === WorkItemStatus.RECURRING;
+}
+
+/** Recurring marker — rendered only when the status pill is NOT already
+ *  "recurring" (i.e. mid-run, where the pill reads "running"). At rest the
+ *  fuchsia RECURRING status pill is the single recurrence signal, so the
+ *  badge would only duplicate it. */
+export function showRecurringBadge(item: WorkItem): boolean {
+  return isRecurringItem(item) && item.status !== WorkItemStatus.RECURRING;
 }
 
 /** Relative age of a work item from its created_at ("just now", "2d ago"). */

@@ -831,6 +831,59 @@ export class AbortConversationTurnResponse extends Message<AbortConversationTurn
 }
 
 /**
+ * InterjectConversationTurnRequest identifies the conversation to interject
+ * and carries the steering message. The message replaces (supersedes) the
+ * in-flight turn and is answered on a fresh turn; attachments are optional.
+ *
+ * @generated from message orchicon.api.v1.InterjectConversationTurnRequest
+ */
+export class InterjectConversationTurnRequest extends Message<InterjectConversationTurnRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.AttachmentInput attachments = 3;
+   */
+  attachments: AttachmentInput[] = [];
+
+  constructor(data?: PartialMessage<InterjectConversationTurnRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.InterjectConversationTurnRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "attachments", kind: "message", T: AttachmentInput, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): InterjectConversationTurnRequest {
+    return new InterjectConversationTurnRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): InterjectConversationTurnRequest {
+    return new InterjectConversationTurnRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): InterjectConversationTurnRequest {
+    return new InterjectConversationTurnRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined, b: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined): boolean {
+    return proto3.util.equals(InterjectConversationTurnRequest, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.UploadAttachmentRequest
  */
 export class UploadAttachmentRequest extends Message<UploadAttachmentRequest> {

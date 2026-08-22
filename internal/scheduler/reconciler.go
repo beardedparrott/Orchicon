@@ -22,10 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -40,6 +44,79 @@ import (
 // selection (docs/03 §5: heartbeat age > 60s → unhealthy).
 const heartbeatTTL = 60 * time.Second
 
+// scanBatchSize caps how many work items the TaskReconciler's empty-key
+// scan pass processes per tick (docs/03 §4: "Limited to a batch per tick
+// so one scan doesn't monopolize the reconciler goroutine"). It is the
+// candidate BATCH for one pass (how many items the pass examines), which
+// is deliberately DECOUPLED from the concurrency bound below.
+const scanBatchSize = 16
+
+// defaultDispatchConcurrency is the default bound on how many ready work
+// items the scan pass dispatches CONCURRENTLY in one pass (docs/03 §4,
+// parallel dispatch). Conservative: each in-flight dispatch holds one pgx
+// pool connection for its short transaction (pool default max conns =
+// max(4, NumCPU)) and the daemon has a per-execution container budget.
+// Overridable via Config.DispatchConcurrency (ORCHICON_DISPATCH_CONCURRENCY).
+const defaultDispatchConcurrency = 4
+
+// ConcurrencyLimiter reports the maximum number of concurrent dispatches
+// allowed for a project. It is the seam for the per-project concurrency
+// guard (sibling concurrency-guards work item): when set on the
+// TaskReconciler, the effective per-pass dispatch bound is the minimum of
+// the global DispatchConcurrency and the per-project limits of the
+// candidate items. Nil (the default) applies only the global bound.
+type ConcurrencyLimiter interface {
+	// Limit returns the maximum concurrent dispatches allowed for a
+	// project. A value <= 0 means the project imposes no additional
+	// restriction (the global bound alone applies).
+	Limit(ctx context.Context, projectID string) int
+}
+
+// DispatchLimiter resolves the configured max-concurrent-runs caps for a
+// project (concurrency-guards work item, architecture-notes
+// per-project-dispatch-limits.md). It is the seam for:
+//
+//   - D2 — the admission gate in TaskReconciler.reconcileOne, which holds
+//     a dispatch (returns without creating an execution, leaving the item
+//     'ready') when the project's effective cap is reached;
+//   - D3 — the WorktreeReconciler's in-place (non-repo) serialization
+//     gate, which atomically admits non-repo runs so two never share the
+//     mutable project_dir.
+//
+// Both methods read in the caller's transaction so the limit value is
+// consistent with the count queries that follow.
+type DispatchLimiter interface {
+	// Limit returns the effective max-concurrent-runs cap for the project:
+	// min(tenant.max_concurrent_runs, project.max_concurrent_runs), where 0
+	// on either side means "no additional restriction from that side".
+	Limit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error)
+	// InPlaceLimit returns the non-repo in-place serialization limit for
+	// the project (default 1 = serialize, unless the project explicitly
+	// opts into concurrency with max_concurrent_runs > 1).
+	InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error)
+}
+
+// dbDispatchLimiter is the production DispatchLimiter, backed by the
+// tenant_settings + projects tables (db.GetDispatchLimitValues).
+type dbDispatchLimiter struct{}
+
+// DBDispatchLimiter is the exported constructor for the production
+// DispatchLimiter. It is stateless — the resolver reads live from the
+// database via the reconciler's transaction.
+func DBDispatchLimiter() DispatchLimiter { return dbDispatchLimiter{} }
+
+func (dbDispatchLimiter) Limit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	return db.GetEffectiveDispatchLimit(ctx, tx, tenantID, projectID)
+}
+
+func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	tenantLimit, projectLimit, err := db.GetDispatchLimitValues(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return db.InPlaceLimit(tenantLimit, projectLimit), nil
+}
+
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
 // dispatches them via the AdapterBridge.
@@ -47,13 +124,78 @@ type TaskReconciler struct {
 	pool             *db.Pool
 	log              *slog.Logger
 	bridge           AdapterBridge
-	eventPub         eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
+
+	// pendingWrittenFiles holds the file paths a running execution's
+	// session actually wrote (OnWrittenFiles), keyed by execution ID. They
+	// are folded into the execution's _touched_files when it terminates so
+	// the next worker is told to read exactly what was produced. Guarded
+	// by writtenMu.
+	writtenMu           sync.Mutex
+	pendingWrittenFiles map[string][]string
+
+	// blockedMu guards the blocked re-evaluation rotation cursor below.
+	// The scan pass re-checks a rotating window of blocked tasks so every
+	// blocked item is eventually re-evaluated (not just the same oldest
+	// rows) when the backlog exceeds scanBatchSize.
+	blockedMu     sync.Mutex
+	blockedCursor int
+
+	// dispatchConcurrency bounds how many reconcileOne calls the scan pass
+	// runs concurrently (in flight at once) when fanning out its candidate
+	// batch. Zero means defaultDispatchConcurrency. Set via
+	// SetDispatchConcurrency.
+	dispatchConcurrency int
+	// concurrencyLimiter, when set, further bounds the pass by the
+	// per-project limits of the candidate items (concurrency-guards seam).
+	// Set via SetConcurrencyLimiter.
+	concurrencyLimiter ConcurrencyLimiter
+	// dispatchLimiter, when set, applies the per-project/tenant
+	// max-concurrent-runs admission gate inside reconcileOne (concurrency
+	// guards D2). Set via SetDispatchLimiter.
+	dispatchLimiter DispatchLimiter
+	// dispatchOverlap is a test-only hook invoked with the current number
+	// of reconcileOne calls in flight whenever the scan fan-out acquires a
+	// semaphore slot, so tests can assert the concurrency bound without
+	// coupling to the adapter bridge. Nil in production.
+	dispatchOverlap func(inFlight int)
 }
 
 // NewTaskReconciler creates a TaskReconciler.
 func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
 	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
+}
+
+// SetDispatchConcurrency sets the per-pass concurrency bound for the scan
+// pass (ORCHICON_DISPATCH_CONCURRENCY). Values are clamped to
+// [1, scanBatchSize]; zero/negative falls back to the default (4) at scan
+// time. Setters are called at startup, before the reconciler loop runs.
+func (r *TaskReconciler) SetDispatchConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > scanBatchSize {
+		n = scanBatchSize
+	}
+	r.dispatchConcurrency = n
+}
+
+// SetConcurrencyLimiter installs the per-project concurrency guard seam
+// (concurrency-guards work item). When set, the effective per-pass limit
+// is the minimum of the global DispatchConcurrency and the per-project
+// limits reported for the candidate items. Nil keeps the global bound.
+func (r *TaskReconciler) SetConcurrencyLimiter(l ConcurrencyLimiter) {
+	r.concurrencyLimiter = l
+}
+
+// SetDispatchLimiter installs the per-project/tenant max-concurrent-runs
+// admission seam (concurrency-guards work item D2). When set, reconcileOne
+// holds a dispatch — returns without creating an execution, leaving the
+// item 'ready' for the next scan pass — whenever the project is at its
+// effective cap. Nil (the default) keeps today's unbounded dispatch.
+func (r *TaskReconciler) SetDispatchLimiter(l DispatchLimiter) {
+	r.dispatchLimiter = l
 }
 
 // SetRecoveryTrigger is deprecated. Recovery is triggered exclusively by
@@ -105,33 +247,180 @@ func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID, stepRunID str
 // any other ready task) get dispatched without an explicit enqueue path.
 func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	if key == "" {
-		// Scan pass: find ready tasks and dispatch each (docs/03 §4).
-		// Limited to a batch per tick so one scan doesn't monopolize the
-		// reconciler goroutine. v0.1: single dev tenant.
-		tenantID := "tnt_dev"
-		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			return reconciler.Result{Error: err}
-		}
-		ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
-		ttx.Rollback(ctx)
-		if err != nil {
-			return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
-		}
-		for i, task := range ready {
-			if i >= 16 {
-				break
-			}
-			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
-				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
-			}
-		}
-		return reconciler.Result{}
+		return r.scan(ctx)
 	}
 	if err := r.reconcileOne(ctx, key, ""); err != nil {
 		return reconciler.Result{Error: err}
 	}
 	return reconciler.Result{}
+}
+
+// scan is the empty-key scan pass (docs/03 §4): find ready + blocked tasks
+// and dispatch them with a BOUNDED IN-PASS FAN-OUT. Independent,
+// dependency-satisfied items dispatch CONCURRENTLY (up to
+// dispatchConcurrency in flight) instead of one-at-a-time, so a tick's
+// wall time becomes MAX(item time) instead of SUM(item time).
+//
+// The candidate set is built exactly as before — ready tasks
+// (priority-ordered) first, then a rotating window of blocked tasks filling
+// the rest of the per-tick batch (scanBatchSize) — but the batch cap is
+// DECOUPLED from the concurrency bound: every candidate in the batch goes
+// through the unchanged reconcileOne in one pass, with at most
+// dispatchConcurrency in flight at any moment. Keeping the batch at 16
+// preserves the blocked re-evaluation rotation cadence under load — capping
+// candidates at the concurrency limit (4) would starve the blocked window
+// whenever ≥4 ready items exist, stalling dependency clears indefinitely.
+//
+// The fan-out waits for all in-flight items before returning, so the
+// manager stays single-scan-per-tick and the blocked rotation cursor stays
+// owned by the scan goroutine (no new races on blockedMu). Per-item errors
+// are logged as warnings and never fail the pass (same as the serial scan).
+func (r *TaskReconciler) scan(ctx context.Context) reconciler.Result {
+	// v0.1: single dev tenant.
+	tenantID := "tnt_dev"
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return reconciler.Result{Error: err}
+	}
+	ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
+	}
+	// Blocked tasks are re-evaluated every pass so a newly satisfied
+	// dependency gate flips them back to ready (and dispatches) without
+	// waiting on a notifier. The re-evaluation window ROTATES: with more
+	// blocked tasks than the per-tick batch, a fixed oldest-first window
+	// would re-scan the same rows forever and a blocker that turned
+	// terminal past the window would never clear.
+	blocked, err := db.ListBlockedTasks(ctx, ttx.Tx, tenantID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		return reconciler.Result{Error: fmt.Errorf("scan blocked tasks: %w", err)}
+	}
+	// Ready tasks are dispatch candidates and must not be starved by a
+	// blocked backlog; blocked re-evaluation fills the rest of the batch.
+	candidates, examined := r.scanCandidates(ready, blocked)
+	r.advanceBlockedCursor(len(blocked), examined)
+	if len(candidates) == 0 {
+		return reconciler.Result{}
+	}
+	r.dispatchCandidates(ctx, candidates)
+	return reconciler.Result{}
+}
+
+// scanCandidates builds this pass's candidate set: ready tasks
+// (priority-ordered) first, then the rotating blocked window up to the
+// remaining batch. Ready items get priority; blocked re-evaluation fills
+// the rest — the same budget semantics as the serial scan. It returns the
+// candidates and the number of blocked items examined (used to advance
+// the rotation cursor). The candidate batch is scanBatchSize regardless of
+// the concurrency bound (see scan).
+func (r *TaskReconciler) scanCandidates(ready, blocked []db.WorkItemRow) ([]db.WorkItemRow, int) {
+	budget := scanBatchSize
+	var candidates []db.WorkItemRow
+	for _, task := range ready {
+		if budget == 0 {
+			break
+		}
+		candidates = append(candidates, task)
+		budget--
+	}
+	examined := 0
+	if budget > 0 && len(blocked) > 0 {
+		n := len(blocked)
+		start := r.blockedWindowStart(n)
+		for k := 0; k < n && examined < budget; k++ {
+			candidates = append(candidates, blocked[(start+k)%n])
+			examined++
+		}
+	}
+	return candidates, examined
+}
+
+// dispatchCandidates fans out reconcileOne across the pass's candidate
+// items with bounded concurrency (effectiveDispatchLimit), waiting for
+// every in-flight item before returning. Each candidate still goes through
+// the UNCHANGED reconcileOne — the ready→assigned version CAS prevents
+// double dispatch, and each dispatch creates its own WorkerExecution /
+// execution container, so independent items share no mutable state.
+func (r *TaskReconciler) dispatchCandidates(ctx context.Context, candidates []db.WorkItemRow) {
+	limit := r.effectiveDispatchLimit(ctx, candidates)
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	r.log.Info("dispatch pass", "candidates", len(candidates), "concurrency", limit)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var inFlight atomic.Int32
+	for _, task := range candidates {
+		wg.Add(1)
+		go func(task db.WorkItemRow) {
+			defer wg.Done()
+			sem <- struct{}{}
+			cur := inFlight.Add(1)
+			if r.dispatchOverlap != nil {
+				r.dispatchOverlap(int(cur))
+			}
+			defer func() {
+				inFlight.Add(-1)
+				<-sem
+			}()
+			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
+				r.log.Warn("scan: dispatch task failed", "task", task.ID, "error", err)
+			}
+		}(task)
+	}
+	wg.Wait()
+}
+
+// effectiveDispatchLimit returns the concurrency bound for this pass: the
+// configured global dispatchConcurrency (default 4), further restricted to
+// the minimum POSITIVE per-project limit reported by the ConcurrencyLimiter
+// when one is set (concurrency-guards seam). Clamped to [1, scanBatchSize].
+func (r *TaskReconciler) effectiveDispatchLimit(ctx context.Context, candidates []db.WorkItemRow) int {
+	limit := r.dispatchConcurrency
+	if limit < 1 {
+		limit = defaultDispatchConcurrency
+	}
+	if limit > scanBatchSize {
+		limit = scanBatchSize
+	}
+	if r.concurrencyLimiter != nil {
+		for _, c := range candidates {
+			if pl := r.concurrencyLimiter.Limit(ctx, c.ProjectID); pl > 0 && pl < limit {
+				limit = pl
+			}
+		}
+	}
+	return limit
+}
+
+// blockedWindowStart returns the rotation offset for this pass's blocked
+// re-evaluation window. It is an in-memory cursor (not persisted): a
+// reconciler restart simply resumes rotation from the start, and the
+// guarantee is only that every blocked item is eventually rechecked.
+func (r *TaskReconciler) blockedWindowStart(n int) int {
+	r.blockedMu.Lock()
+	defer r.blockedMu.Unlock()
+	if n <= 0 {
+		return 0
+	}
+	return r.blockedCursor % n
+}
+
+// advanceBlockedCursor records how many blocked tasks this pass examined so
+// the next pass picks up further along the list.
+func (r *TaskReconciler) advanceBlockedCursor(n, examined int) {
+	if n <= 0 || examined <= 0 {
+		return
+	}
+	r.blockedMu.Lock()
+	defer r.blockedMu.Unlock()
+	r.blockedCursor = (r.blockedCursor + examined) % n
 }
 
 // reconcileOne dispatches a single task. When stepRunID is set it is a
@@ -184,9 +473,21 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 		stepRun = &sr
 	} else {
-		// Only reconcile tasks in "ready" state (docs/03 §4: if status !=
-		// ready, return).
-		if task.Status != domain.WorkItemReady {
+		// Standalone dispatch. Only "ready" (docs/03 §4) and "blocked"
+		// tasks are processed:
+		//
+		//   - ready + unsat deps → flip to blocked (persisted) so the stall
+		//     is SURFACED instead of silently requeued;
+		//   - blocked + satisfied deps → flip to ready, then fall through
+		//     to dispatch in this same pass;
+		//   - blocked + unsat deps → stay blocked (return nil).
+		//
+		// A blocked item must clear back to ready before any dispatch —
+		// dispatch only ever proceeds from ready here, so the "no dispatch
+		// for blocked" invariant holds by construction.
+		switch task.Status {
+		case domain.WorkItemReady, domain.WorkItemBlocked:
+		default:
 			return nil
 		}
 		// Skip items that belong to a WORKFLOW RUN: they are dispatched
@@ -211,8 +512,37 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			return fmt.Errorf("check deps: %w", err)
 		}
 		if !satisfied {
-			// Requeue: dependencies not yet terminal-success.
+			// Dependency stall. A ready task parks as blocked (persisted) —
+			// surfaced, never silently requeued. A blocked task stays
+			// blocked; the scan re-evaluates it on the next pass.
+			if task.Status == domain.WorkItemReady {
+				status := domain.WorkItemBlocked
+				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				}); err != nil {
+					return fmt.Errorf("park task blocked: %w", err)
+				}
+				// Commit the park so the surfaced status is durable — the
+				// dispatch path below is skipped for a parked task (the
+				// deferred Rollback is then a no-op).
+				if err := ttx.Commit(ctx); err != nil {
+					return fmt.Errorf("commit park blocked: %w", err)
+				}
+			}
 			return nil
+		}
+		// Gate satisfied: a blocked task flips back to ready and dispatches
+		// in this same pass (carry the fresh version forward so the
+		// assigned transition below still CAS-matches).
+		if task.Status == domain.WorkItemBlocked {
+			status := domain.WorkItemReady
+			updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			})
+			if err != nil {
+				return fmt.Errorf("clear task blocked: %w", err)
+			}
+			task = updated
 		}
 	}
 
@@ -265,6 +595,32 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		return nil
 	}
 
+	// Concurrency guard (D2, architecture-notes/per-project-dispatch-limits
+	// .md): never dispatch beyond the project's effective
+	// max-concurrent-runs cap. Count-check-create has a TOCTOU window, so a
+	// transient overshoot is possible — that is a resource spike, not a
+	// correctness break, because the working-tree invariant is enforced
+	// STRUCTURALLY by the WorktreeReconciler (D3). The item (or step run)
+	// stays 'ready' and the next scan pass re-evaluates it, so it "waits
+	// until a slot frees" by construction.
+	if r.dispatchLimiter != nil {
+		limit, lerr := r.dispatchLimiter.Limit(ctx, ttx.Tx, tenantID, task.ProjectID)
+		if lerr != nil {
+			return fmt.Errorf("resolve dispatch limit: %w", lerr)
+		}
+		if limit > 0 {
+			active, aerr := db.CountActiveExecutionsForProject(ctx, ttx.Tx, tenantID, task.ProjectID)
+			if aerr != nil {
+				return fmt.Errorf("count active executions: %w", aerr)
+			}
+			if active >= limit {
+				r.log.Info("dispatch deferred: project at max concurrent runs",
+					"task", task.ID, "project", task.ProjectID, "active", active, "limit", limit)
+				return nil
+			}
+		}
+	}
+
 	// Create WorkerExecution (docs/03 §4: createWorkerExecution).
 	// Check if the work item's results indicate this is a follow-up
 	// execution (created by CreateFollowUpExecution).
@@ -293,6 +649,49 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			iteration = sr.Iteration
 		}
 	}
+	// Carry the worktree state onto the execution row so the execution
+	// detail view can render worktree status/branch/path. D2: a
+	// parallel-branch child's execution runs in the STEP RUN's own branch
+	// worktree, so its state is copied from the step run when the step run
+	// carries a ready worktree; every other step run keeps the per-run
+	// worktree (provisioned at run arm). The WorktreeReconciler writes the
+	// run/step-run rows; without this copy the worker_executions columns
+	// stay NULL and the UI shows nothing.
+	var worktreeStatus, worktreePath, worktreeBranch *string
+	if stepRun != nil && stepRun.WorktreeStatus == domain.WorktreeReady && stepRun.WorktreePath != "" {
+		worktreeStatus = strPtr(stepRun.WorktreeStatus)
+		worktreePath = strPtr(stepRun.WorktreePath)
+		worktreeBranch = strPtr(stepRun.WorktreeBranch)
+	} else if workflowRunID != "" {
+		if run, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, workflowRunID); gerr == nil {
+			if run.WorktreeStatus != "" {
+				worktreeStatus = strPtr(run.WorktreeStatus)
+			}
+			if run.WorktreePath != "" {
+				worktreePath = strPtr(run.WorktreePath)
+			}
+			if run.WorktreeBranch != "" {
+				worktreeBranch = strPtr(run.WorktreeBranch)
+			}
+		}
+	}
+	// Carry the run's PR surface onto the execution row so the executions
+	// list/detail can link out to the run's PR (same seam as the worktree
+	// columns). The authoritative pr_url/pr_state live in the run's
+	// run_context (worker-authored); when empty the UI falls back to a
+	// deterministic `pull/new/{branch}` link from the project's repo_slug.
+	var prURL, prState *string
+	if workflowRunID != "" {
+		if run, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, workflowRunID); gerr == nil {
+			u, s := db.PrFromRunContext(run.RunContext)
+			if u != "" {
+				prURL = strPtr(u)
+			}
+			if s != "" {
+				prState = strPtr(s)
+			}
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -308,6 +707,11 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		WorkflowStepID: workflowStepID,
 		IsFollowUp:     isFollowUp,
 		Iteration:      iteration,
+		WorktreeStatus: worktreeStatus,
+		WorktreePath:   worktreePath,
+		WorktreeBranch: worktreeBranch,
+		PrURL:          prURL,
+		PrState:        prState,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {
@@ -388,8 +792,8 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 // approval steps) when the step run carries none.
 func (r *TaskReconciler) workerVersionForStepRun(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) (db.WorkerVersionRow, error) {
 	var meta struct {
-		WorkerID     string `json:"_worker_id"`
-		WorkerVer    int    `json:"_worker_version"`
+		WorkerID  string `json:"_worker_id"`
+		WorkerVer int    `json:"_worker_version"`
 	}
 	_ = json.Unmarshal(sr.Result, &meta)
 	if meta.WorkerID != "" {
@@ -447,6 +851,53 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 			projectDir = p.ProjectDir
 		}
 	}
+	// Resolve the workflow run's runtime container image (the adapter's
+	// self-heal recreates the container with the identical image the
+	// WorkflowReconciler used at run start) AND the run's provisioned
+	// worktree path, which becomes the execution working directory. This
+	// fetch runs BEFORE the recovery-seed gate: the seed file lands in the
+	// execution cwd (the worktree for worktree runs), so the cwd must be
+	// resolved first.
+	runtimeImage := ""
+	worktreePath := ""
+	worktreeStatus := ""
+	worktreeBranch := ""
+	if task.WorkflowRunID != "" {
+		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
+				runtimeImage = run.RuntimeImage
+				worktreeStatus = run.WorktreeStatus
+				worktreeBranch = run.WorktreeBranch
+				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
+					worktreePath = run.WorktreePath
+				}
+			}
+			// D2: a parallel-branch child execution runs in the STEP RUN's
+			// OWN branch worktree — its cwd must be the branch worktree,
+			// not the run worktree. Resolve via the step run LINKED to this
+			// execution (GetWorkflowStepRunByExecution), because
+			// exec.WorkflowStepID alone is not unique across loop
+			// iterations. Non-branch steps carry no ready branch worktree,
+			// so they keep the run worktree (today's behavior).
+			if exec.WorkflowStepID != "" {
+				if sr, gerr := db.GetWorkflowStepRunByExecution(context.Background(), rtx.Tx, exec.TenantID, exec.ID); gerr == nil &&
+					sr.WorktreeStatus == domain.WorktreeReady && sr.WorktreePath != "" {
+					worktreeStatus = sr.WorktreeStatus
+					worktreePath = sr.WorktreePath
+					worktreeBranch = sr.WorktreeBranch
+				}
+			}
+			_ = rtx.Rollback(context.Background())
+		}
+	}
+	// The execution working directory is the provisioned worktree path when
+	// the run has one (the worker starts already checked out on its branch
+	// inside the worktree), else the project dir. Only worktree_status='ready'
+	// switches the cwd; skipped/failed/pending runs keep the project dir.
+	execCwd := projectDir
+	if worktreePath != "" {
+		execCwd = worktreePath
+	}
 	// The system prompt is the full context the model sees on every
 	// turn. The WorkflowReconciler builds the composite per step and
 	// stores it on the STEP RUN's result (_prompt) — the ticket is a
@@ -460,9 +911,11 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
+	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if sr, err := db.GetWorkflowStepRunByStep(context.Background(), stx.Tx, exec.TenantID, exec.WorkflowRunID, exec.WorkflowStepID); err == nil {
+				stepRunResult = sr.Result
 				var srMeta struct {
 					Prompt string `json:"_prompt"`
 				}
@@ -483,11 +936,30 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// work-item context + instructions) so standalone dispatches see
 	// project/work-item context "just like projects" (F5).
 	if systemPrompt == "" {
-		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version)
+		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
 				"Complete the work item described in the user message and report back."
 		}
+	}
+	// Recovery seeding — a HARD gate: if this is a recovery-resumed dispatch
+	// for the SAME worker that died, .orchicon/worker.recovery must exist,
+	// be non-empty, and carry this recovery's footer BEFORE the session may
+	// start. A different worker or a fresh dispatch never sees the file or
+	// the reference (and any existing file is left alone — it may belong to
+	// another in-flight recovery). A failure to write/verify the seed file
+	// fails the dispatch (failed_to_start) instead of launching cold — the
+	// recovery-resume invariant.
+	if projectDir != "" {
+		updatedPrompt, err := r.seedRecoveryFile(context.Background(), exec, task, version, execCwd, stepRunResult, systemPrompt)
+		if err != nil {
+			r.log.Error("recovery seed gate failed — failing dispatch instead of starting cold",
+				"execution", exec.ID, "error", err)
+			recoverySeedMetricsSingleton.recordBlocked()
+			r.markFailedToStart(context.Background(), exec, "recovery seed file could not be written: "+err.Error())
+			return
+		}
+		systemPrompt = updatedPrompt
 	}
 	// User message (Goal): just the work item title. The composite
 	// (with the full task + project + recovery context) is the
@@ -499,6 +971,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
 	var stallRepCount int32
 	var stallRepWindow int64
+	var stallNudgeMax int32
+	var stallNudgeReplyWindow, stallNudgeCooldown int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -512,22 +986,12 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallTextLoop = s.StallTextLoopWindowSeconds
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
+				stallNudgeMax = s.StallNudgeMax
+				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
+				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				defaultBudgetOverrides = s.DefaultBudgetOverrides
 			}
 			stx.Rollback(settingsCtx)
-		}
-	}
-
-	// Resolve the workflow run's runtime container image so the adapter's
-	// self-heal recreates the container with the identical image the
-	// WorkflowReconciler used at run start.
-	runtimeImage := ""
-	if task.WorkflowRunID != "" {
-		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
-			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
-				runtimeImage = run.RuntimeImage
-			}
-			_ = rtx.Rollback(context.Background())
 		}
 	}
 
@@ -538,27 +1002,31 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	budgetsJSON := mergeBudgets(defaultBudgetOverrides, version.BudgetOverrides)
 
 	manifest := ExecutionManifest{
-		ExecutionID:                 exec.ID,
-		TaskID:                      exec.TaskID,
-		ProjectID:                   exec.ProjectID,
-		WorkerID:                    version.WorkerID,
-		WorkerVersion:               version.Version,
-		SystemPrompt:                systemPrompt,
-		Goal:                        task.Title,
-		AcceptanceCriteria:          task.AcceptanceCriteria,
-		ModelRef:                    version.ModelRef,
-		DefaultModelRef:             defaultModelRef,
-		ContextSources:              version.ContextSources,
-		Budgets:                     budgetsJSON,
-		Permissions:                 version.Permissions,
-		ProjectDir:                  projectDir,
-		RuntimeWorkflowID:           task.WorkflowRunID,
-		RuntimeImage:                runtimeImage,
-		StallNoProgressWindowSeconds:  stallNoProgress,
-		StallNoFileDiffWindowSeconds:  stallNoFileDiff,
-		StallTextLoopWindowSeconds:    stallTextLoop,
-		StallRepetitionCount:          stallRepCount,
-		StallRepetitionWindowSeconds:  stallRepWindow,
+		ExecutionID:                  exec.ID,
+		TaskID:                       exec.TaskID,
+		ProjectID:                    exec.ProjectID,
+		WorkerID:                     version.WorkerID,
+		WorkerVersion:                version.Version,
+		SystemPrompt:                 systemPrompt,
+		Goal:                         task.Title,
+		AcceptanceCriteria:           task.AcceptanceCriteria,
+		ModelRef:                     version.ModelRef,
+		DefaultModelRef:              defaultModelRef,
+		ContextSources:               version.ContextSources,
+		Budgets:                      budgetsJSON,
+		Permissions:                  version.Permissions,
+		ProjectDir:                   projectDir,
+		WorktreePath:                 worktreePath,
+		RuntimeWorkflowID:            task.WorkflowRunID,
+		RuntimeImage:                 runtimeImage,
+		StallNoProgressWindowSeconds: stallNoProgress,
+		StallNoFileDiffWindowSeconds: stallNoFileDiff,
+		StallTextLoopWindowSeconds:   stallTextLoop,
+		StallRepetitionCount:         stallRepCount,
+		StallRepetitionWindowSeconds: stallRepWindow,
+		StallNudgeMax:                stallNudgeMax,
+		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
+		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -697,6 +1165,42 @@ func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 	r.updateExecStatus(ctx, execID, domain.ExecutionRunning, domain.HealthHealthy, "")
 }
 
+// OnWrittenFiles is called by the adapter when the worker's session reports
+// files it wrote or edited (opencode file_diff telemetry). The paths are
+// stashed keyed by execution and folded into _touched_files when the
+// execution terminates, so the next worker is told exactly which files to
+// read before starting.
+func (r *TaskReconciler) OnWrittenFiles(ctx context.Context, execID string, files []string) {
+	if execID == "" || len(files) == 0 {
+		return
+	}
+	r.writtenMu.Lock()
+	defer r.writtenMu.Unlock()
+	if r.pendingWrittenFiles == nil {
+		r.pendingWrittenFiles = make(map[string][]string)
+	}
+	seen := make(map[string]bool, len(r.pendingWrittenFiles[execID]))
+	for _, f := range r.pendingWrittenFiles[execID] {
+		seen[f] = true
+	}
+	for _, f := range files {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			r.pendingWrittenFiles[execID] = append(r.pendingWrittenFiles[execID], f)
+		}
+	}
+}
+
+// writtenFilesFor returns (and clears) the pending written files for an
+// execution, so the terminal transition can fold them into _touched_files.
+func (r *TaskReconciler) writtenFilesFor(execID string) []string {
+	r.writtenMu.Lock()
+	defer r.writtenMu.Unlock()
+	files := r.pendingWrittenFiles[execID]
+	delete(r.pendingWrittenFiles, execID)
+	return files
+}
+
 // OnResult is called by the adapter bridge when the execution reaches a
 // terminal state (docs/03 §6: running → succeeded|failed). It updates
 // the execution status and transitions the linked WorkItem to
@@ -778,6 +1282,13 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if succeeded && output != "" {
 		summary = extractWorkerSummary(output)
 	}
+	// Cap the narrative portion of the summary so a bloated summary doesn't
+	// tax every later step that re-embeds it (Execution history + the
+	// .orchicon/<run>/summary + issues fallback files). The cap preserves the
+	// routing word and every FACTS LEARNED: line verbatim (see
+	// capSummaryNarrative); the full worker output remains in _output for
+	// audit.
+	summary = capSummaryNarrative(summary, maxSummaryTokens)
 	// Check if this work item is a follow-up with a parent execution
 	// to write back to. Read _parent_execution_id from the raw results
 	// before we overwrite them with the worker output.
@@ -797,14 +1308,16 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	//
 	// We start fresh — previous results from an earlier execution
 	// (e.g. SSE) carry stale fields that must NOT survive into this
-	// execution. _parent_execution_id and _recovery_summary are
-	// carried forward for traceability. _issues is NOT preserved —
-	// the execution history in the prompt already shows prior issues.
+	// execution. _parent_execution_id and the _recovery_* keys are
+	// carried forward for traceability and so the dispatch path can
+	// gate the .orchicon/worker.recovery file on a same-worker
+	// recovery. _issues is NOT preserved — the execution history in
+	// the prompt already shows prior issues.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
 		var existing map[string]any
 		if err := json.Unmarshal(wi.Results, &existing); err == nil {
-			for _, k := range []string{"_parent_execution_id", "_recovery_summary"} {
+			for _, k := range []string{"_parent_execution_id", "_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
 				if v, ok := existing[k]; ok {
 					results[k] = v
 				}
@@ -826,8 +1339,10 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// no separate `_decision:` or `_issues:` channel that can contradict
 	// it — a standalone `_decision:` line or an `_issues:` block must
 	// never override the summary word. `_issues` is still captured for
-	// the run view and .orchicon/issues (informational only). The
-	// decision key is only set when a marker was found, so a step run
+	// the run view and .orchicon/issues (informational only). The first
+	// word may be any signal: "success"/"failure" normalize, and custom
+	// words pass through verbatim.
+	// The decision key is only set when a marker was found, so a step run
 	// that starts with a placeholder (e.g. worker-backed approval's
 	// `_decision: "pending"`) keeps it until a real signal lands.
 	if d := extractSummaryDecision(output); d != "" {
@@ -840,7 +1355,88 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			results["_touched_files"] = files
 		}
 	}
+	// Fold in the files the session itself reported as written (opencode
+	// file_diff telemetry). This is the authoritative set — it catches
+	// files the model wrote without echoing a diff (e.g. .orchicon/ review
+	// notes). Merge with any diff-marker files, deduped.
+	if written := r.writtenFilesFor(execID); len(written) > 0 {
+		merged := make([]any, 0, len(written))
+		seen := make(map[string]bool, len(written))
+		for _, f := range written {
+			if f == "" || seen[f] {
+				continue
+			}
+			seen[f] = true
+			merged = append(merged, f)
+		}
+		if existing, ok := results["_touched_files"].([]any); ok {
+			for _, e := range existing {
+				if s, ok := e.(string); ok && !seen[s] {
+					seen[s] = true
+					merged = append(merged, s)
+				}
+			}
+		}
+		if len(merged) > 0 {
+			results["_touched_files"] = merged
+		}
+	}
 	resultsJSON, _ := json.Marshal(results)
+	// Write authored PR URL/state into the run's run_context (for the run
+	// detail page) and the execution row columns (for the work item card
+	// and execution detail page). The PR is a fact — extracted regardless
+	// of execution success, so a PR that was created but not merged still
+	// surfaces (the worker may have failed after creating it).
+	prURL, prState := extractPRFields(output)
+	if exec.WorkflowRunID != "" && (prURL != "" || prState != "") {
+		run, err := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				r.log.Warn("transition: workflow run not found for PR capture", "run", exec.WorkflowRunID, "execution", exec.ID)
+			} else {
+				r.log.Error("transition: get workflow run for PR capture", "run", exec.WorkflowRunID, "execution", exec.ID, "error", err)
+			}
+		} else {
+			ctxBytes, ok := mergeRunContext(run.RunContext, map[string]any{
+				"pr_url":   prURL,
+				"pr_state": prState,
+			})
+			if ok {
+				_, err := db.UpdateWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID, run.Version, db.UpdateWorkflowRunFields{RunContext: &ctxBytes})
+				if err != nil {
+					// One retry on CAS conflict: re-read the run and try once more.
+					reRead, reErr := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
+					if reErr == nil {
+						ctxBytes2, ok2 := mergeRunContext(reRead.RunContext, map[string]any{
+							"pr_url":   prURL,
+							"pr_state": prState,
+						})
+						if ok2 {
+							_, err = db.UpdateWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID, reRead.Version, db.UpdateWorkflowRunFields{RunContext: &ctxBytes2})
+						}
+					}
+					if err != nil {
+						r.log.Warn("transition: update run_context for PR capture (best-effort)", "run", exec.WorkflowRunID, "execution", exec.ID, "error", err)
+					}
+				}
+			}
+		}
+	}
+	// Update the execution row columns for PR URL/state (non-empty only,
+	// so partial reports don't clobber existing values).
+	if prURL != "" || prState != "" {
+		fields := db.UpdateExecutionFields{}
+		if prURL != "" {
+			fields.PrURL = &prURL
+		}
+		if prState != "" {
+			fields.PrState = &prState
+		}
+		_, err := db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", exec.ID, exec.Version, fields)
+		if err != nil {
+			r.log.Warn("transition: update execution PR fields", "execution", exec.ID, "error", err)
+		}
+	}
 	// A work item bound to an ACTIVE workflow run tracks the RUN, not any
 	// single step execution: the ticket is a shared input reference and
 	// stays "running" for the whole run — its per-step results/status are
@@ -892,6 +1488,14 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 
 	// Write .orchicon/ files for the next worker to read.
 	r.writeOrchiconFiles(ctx, exec, wi, succeeded, results)
+
+	// System-side recovery-seed cleanup: a successful recovery-resumed
+	// execution removes .orchicon/worker.recovery when the file's footer
+	// matches this execution (the worker-side `rm` in the file's own
+	// directive is the primary mechanism; this is the backstop so the file
+	// never lingers across workflows/projects and never deletes a newer
+	// recovery's file).
+	r.removeRecoveryFileForSuccess(ctx, exec, results, succeeded)
 
 	// Follow-up write-back: if this work item has a parent execution
 	// (created via CreateFollowUpExecution), append the assistant's
@@ -960,10 +1564,55 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 
 	if summary, ok := results["_summary"].(string); ok && summary != "" {
 		write("summary", summary)
+		// Facts ledger: persist the FACTS LEARNED lines this step recorded
+		// so later steps can read them from disk (the composite prompt
+		// points the next worker at .orchicon/<run>/facts_learned first —
+		// it is the single authoritative source of established facts since
+		// the embedded "## Facts learned (this run)" prompt block was
+		// removed). Append to any facts earlier steps already recorded.
+		// Each line carries the originating step name so downstream workers
+		// keep the same per-step attribution the embedded block used to give.
+		facts := extractFactsLearned(summary)
+		if len(facts) > 0 {
+			stepName := r.stepNameForExecution(ctx, exec)
+			existing := ""
+			if b, err := os.ReadFile(filepath.Join(orchDir, "facts_learned")); err == nil {
+				existing = string(b)
+			}
+			var sb strings.Builder
+			if existing != "" {
+				sb.WriteString(existing)
+				if !strings.HasSuffix(existing, "\n") {
+					sb.WriteString("\n")
+				}
+			}
+			for _, f := range facts {
+				if stepName != "" {
+					sb.WriteString("FACTS LEARNED (from ")
+					sb.WriteString(stepName)
+					sb.WriteString("): ")
+				} else {
+					sb.WriteString("FACTS LEARNED: ")
+				}
+				sb.WriteString(f)
+				sb.WriteString("\n")
+			}
+			write("facts_learned", strings.TrimSpace(sb.String()))
+		}
 	}
+	// The `issues` file is the feedback channel the composite prompt points
+	// the next worker at ("read .orchicon/<run>/issues"). It must ALWAYS be
+	// written when there is anything to communicate — a reviewer that
+	// reports problems via _summary (rather than a separate _issues block)
+	// would otherwise leave the file missing and the next worker blind.
+	// Prefer _issues; fall back to _summary.
 	if issues, ok := results["_issues"].(string); ok && issues != "" {
 		write("issues", issues)
+	} else if summary, ok := results["_summary"].(string); ok && summary != "" {
+		write("issues", summary)
 	}
+	// The `files` file lists every path the session wrote (opencode
+	// file_diff telemetry) so the next worker knows exactly what to read.
 	if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
 		var sb strings.Builder
 		for _, f := range files {
@@ -974,6 +1623,36 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		}
 		write("touched_files", strings.TrimSpace(sb.String()))
 	}
+}
+
+// stepNameForExecution resolves the workflow step name that dispatched an
+// execution, so facts written to .orchicon/<run>/facts_learned can carry
+// per-step attribution (the embedded "## Facts learned (this run)" prompt
+// block that used to supply that attribution is gone). Looks up the step run
+// that owns the execution via worker_execution_id. Best-effort: returns ""
+// when the execution isn't tied to a step run (direct dispatch) or the lookup
+// fails — the facts then fall back to the plain marker.
+func (r *TaskReconciler) stepNameForExecution(ctx context.Context, exec db.ExecutionRow) string {
+	if exec.TenantID == "" || exec.ID == "" {
+		return ""
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Warn("step name lookup: begin tx", "error", err)
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	var name string
+	err = ttx.Tx.QueryRow(ctx,
+		`SELECT step_name FROM workflow_step_runs
+		  WHERE tenant_id = $1 AND worker_execution_id = $2 LIMIT 1`,
+		exec.TenantID, exec.ID,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	_ = ttx.Commit(ctx)
+	return name
 }
 
 // lookupProjectDir returns the project directory for a project id.
@@ -1025,21 +1704,19 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 //
 // `fatal` distinguishes the two cases:
 //
-//   - FATAL (no_progress / text_loop / repetition): a genuine hang/loop.
-//     The adapter has already hard-killed the subprocess, so the execution
-//     is marked unhealthy and the work item transitions to failed — the
-//     downstream recover step (if any) activates on the next reconcile
-//     pass. This closes the "worker stuck looping" gap: a worker that
-//     repeats the same tool calls, makes no file changes, or makes no
-//     token progress is recovered rather than running forever.
-//   - ADVISORY (no_file_progress): the subprocess is NOT killed and the
-//     execution is NOT failed. A reviewer or analyst may legitimately go
-//     long stretches without touching files while still producing output
-//     (observed: the SSE worker was flagged yet completed successfully).
-//     The execution gets a non-terminal `stalled` health notice + reason
-//     so the operator sees the flag, stays `running`, and is either
-//     revived to healthy when file progress resumes (OnRecovered) or
-//     reaches its real terminal state via OnResult.
+//   - FATAL (no_progress only): total silence — there is no responsive
+//     surface to nudge. The adapter has already hard-killed the subprocess,
+//     so the execution is marked unhealthy and the work item transitions to
+//     failed — the downstream recover step (if any) activates on the next
+//     reconcile pass.
+//   - ADVISORY (text_loop / repetition / no_file_progress): the worker is
+//     generating text / issuing tool calls, so a nudge can reach it. The
+//     subprocess is NOT killed and the execution is NOT failed. The
+//     execution gets a non-terminal `stalled` health notice + reason so the
+//     operator sees the flag, stays `running`, and is either revived to
+//     healthy when progress resumes (OnRecovered) or — after the nudge
+//     budget is spent without the worker breaking the pattern — escalated
+//     to a fatal kill + recovery by the session's onStall.
 func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fatal bool) {
 	r.log.Warn("execution stalled",
 		"execution", execID, "reason", reason, "fatal", fatal)
@@ -1310,18 +1987,18 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 		return
 	}
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       e.TenantID,
-		"execution_id":    e.ID,
-		"task_id":         e.TaskID,
-		"project_id":      e.ProjectID,
-		"worker_id":       e.WorkerID,
-		"worker_version":  e.WorkerVersion,
-		"status":          e.Status,
-		"health_state":    e.HealthState,
-		"aggregate_type":  "execution",
-		"aggregate_id":    e.ID,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      e.TenantID,
+		"execution_id":   e.ID,
+		"task_id":        e.TaskID,
+		"project_id":     e.ProjectID,
+		"worker_id":      e.WorkerID,
+		"worker_version": e.WorkerVersion,
+		"status":         e.Status,
+		"health_state":   e.HealthState,
+		"aggregate_type": "execution",
+		"aggregate_id":   e.ID,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -1345,18 +2022,18 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       e.TenantID,
-		"execution_id":    e.ID,
-		"task_id":         e.TaskID,
-		"project_id":      e.ProjectID,
-		"worker_id":       e.WorkerID,
-		"worker_version":  e.WorkerVersion,
-		"status":          e.Status,
-		"health_state":    e.HealthState,
-		"aggregate_type":  "execution",
-		"aggregate_id":    e.ID,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      e.TenantID,
+		"execution_id":   e.ID,
+		"task_id":        e.TaskID,
+		"project_id":     e.ProjectID,
+		"worker_id":      e.WorkerID,
+		"worker_version": e.WorkerVersion,
+		"status":         e.Status,
+		"health_state":   e.HealthState,
+		"aggregate_type": "execution",
+		"aggregate_id":   e.ID,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -1464,6 +2141,74 @@ func extractIssuesLine(output string, results map[string]any) {
 	}
 }
 
+// extractPRFields parses PR_URL: and PR_STATE: lines from the worker's
+// final output and returns the extracted (prURL, prState). The contract:
+//
+// Workers emit these lines anywhere in their final output, line-anchored:
+//
+//	PR_URL: https://github.com/OWNER/REPO/pull/42
+//	PR_STATE: merged
+//
+// Rules:
+//
+// - Last occurrence of each line wins (final state is authoritative).
+// - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
+//   stripped before matching — exactly as extractIssuesLine does.
+// - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
+//   an absolute http:// or https:// URL (net/url parse + scheme check).
+// - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
+//   open, merged, draft, closed, none. Unknown values are ignored.
+// - Lines are case-sensitive uppercase (consistent with
+//   ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
+// - Extraction is not gated on execution success: a PR URL is a fact.
+// - Only non-empty fields are written, per-key: a URL-only report must
+//   not clobber a previously recorded state, and vice versa.
+//
+// Returns ("", "") when no valid lines are found.
+func extractPRFields(output string) (prURL, prState string) {
+	if output == "" {
+		return "", ""
+	}
+	validStates := map[string]bool{
+		"open":   true,
+		"merged": true,
+		"draft":  true,
+		"closed": true,
+		"none":   true,
+	}
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Strip a leading markdown list bullet ("- " / "* ").
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+		trimmed = strings.TrimSpace(trimmed)
+		// Strip markdown code-fence markers.
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+
+		if strings.HasPrefix(trimmed, "PR_URL:") {
+			raw := strings.TrimSpace(trimmed[len("PR_URL:"):])
+			if raw == "" {
+				continue
+			}
+			if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+				if u.Host != "" {
+					prURL = raw
+				}
+			}
+		}
+		if strings.HasPrefix(trimmed, "PR_STATE:") {
+			raw := strings.TrimSpace(trimmed[len("PR_STATE:"):])
+			state := strings.ToLower(raw)
+			if validStates[state] {
+				prState = state
+			}
+		}
+	}
+	return prURL, prState
+}
+
 // extractComposite pulls the "composite" string out of a work item's
 // prompt_context JSON (set by the WorkflowReconciler's buildCompositePrompt).
 // Returns "" if the field is absent or unparseable.
@@ -1495,11 +2240,12 @@ func extractComposite(pc []byte) (string, error) {
 // (must ask before PRing/merging). Both composite builders
 // (buildStandaloneComposite and the workflow buildCompositePrompt) emit
 // it so every dispatch carries the same self-definition.
-const workerIdentityPreamble = "You are an autonomous worker running inside the Orchicon orchestration platform. " +
-	"You are not a human operator and there is no human attached to this run. " +
-	"You execute one assigned work item per run, operate within your role and the project's acceptance criteria, " +
-	"and report your result via the ORCHICON WORKER SUMMARY contract at the end of your output. " +
-	"Work autonomously to completion; do not wait for interactive approval for work that is within your assigned scope.\n\n"
+//
+// The canonical text lives in internal/db (db.WorkerIdentityPreamble) so
+// the stable prompt prefix (db.StablePromptPrefix) can be built from a
+// single shared constant. This alias keeps the scheduler's call sites
+// terse.
+const workerIdentityPreamble = db.WorkerIdentityPreamble
 
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
@@ -1531,9 +2277,13 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 //
 // Best-effort: any DB read failure degrades to the subset that succeeded
 // (the caller falls back to a bare worker prompt if the result is empty).
-func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow) string {
+func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) string {
 	var sb strings.Builder
-	sb.WriteString(workerIdentityPreamble)
+	// Stable prefix first: shared identity + safety + efficiency + runtime
+	// environment. Same byte-identical block the workflow path prepends, so a
+	// standalone dispatch and a workflow step share the llama.cpp KV-cache
+	// prefix.
+	sb.WriteString(db.StablePromptPrefix(task.RuntimeImage))
 	if worker := composeSystemPrompt(version); worker != "" {
 		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
 	}
@@ -1546,6 +2296,16 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	}
 	if ac := strings.TrimSpace(task.AcceptanceCriteria); ac != "" {
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+
+	// Recovery context: same-worker recovery-resumed dispatch reads the
+	// seed and points at .orchicon/worker.recovery (transcript tail +
+	// already-done directive). A different worker / fresh dispatch gets
+	// no block and never sees the file. buildStandaloneComposite parity
+	// with the workflow path (the recovery engine writes the seed keys
+	// into the work item's Results on resume).
+	if seed := recoverySeedFor(nil, task.Results, version.WorkerID); seed != nil {
+		sb.WriteString(recoveryFileReferenceBlock(seed))
 	}
 
 	// Project context — project_dir + project context_files.
@@ -1585,12 +2345,17 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 
 	// Worker's contract.
 	sb.WriteString("# Instructions\n\n")
+	// Git/branch guidance keyed on the run's worktree_status: a non-repo
+	// (in-place) run is never told to work on a branch. Same block the
+	// workflow composite emits, so the two dispatch paths agree.
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
 	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
 
 	return sb.String()
 }
@@ -1627,8 +2392,9 @@ func extractWorkerSummary(output string) string {
 
 // extractSummaryDecision reads the first word of the summary block
 // (the text after ORCHICON WORKER SUMMARY:) and returns "success",
-// "failure", or "" if neither is found. The first word and any
-// separator (—, :, whitespace) are consumed.
+// "failure", any other verbatim first word, or ""
+// if no marker is present. The first word and any separator (—, :,
+// whitespace) are consumed.
 func extractSummaryDecision(output string) string {
 	idx := strings.LastIndex(output, summaryMarker)
 	if idx < 0 {
@@ -1651,8 +2417,10 @@ func trimSummaryDecision(s string) string {
 	return strings.TrimSpace(rest)
 }
 
-// firstWordAsDecision returns "success", "failure", or "" depending
-// on the first whitespace-delimited word of s.
+// firstWordAsDecision returns the normalized decision from the first
+// whitespace-delimited word of s: "success"/"failure" for words that
+// start with those prefixes. Any OTHER first word is passed through
+// verbatim (lowercased). Returns "" only for an empty input.
 func firstWordAsDecision(s string) string {
 	parts := strings.Fields(s)
 	if len(parts) == 0 {
@@ -1665,7 +2433,74 @@ func firstWordAsDecision(s string) string {
 	case strings.HasPrefix(first, "failure"):
 		return "failure"
 	}
-	return ""
+	return first
+}
+
+// maxSummaryTokens caps the narrative portion of a worker summary persisted as
+// `_summary` and re-embedded into every later step's prompt. Local-model runs
+// pay for context size, and a bloated summary taxes all downstream steps, so
+// the cap is a hard guard on top of the soft "keep it under ~500 tokens"
+// instruction in the summary contract.
+const maxSummaryTokens = 500
+
+// capSummaryNarrative truncates the NARRATIVE portion of a worker summary to
+// ~maxTokens tokens (lenient ~4 chars/token heuristic) while preserving the
+// structural content verbatim:
+//
+//   - the ORCHICON WORKER SUMMARY: <decision> routing line, if present in the
+//     text (normally already stripped into `_decision`, kept defensively)
+//   - every FACTS LEARNED: line — extractFactsLearned must still see them.
+//     Both the plain `FACTS LEARNED: <fact>` form a worker writes and the
+//     `FACTS LEARNED (from <step>): <fact>` form the handoff writer persists to
+//     .orchicon/<run>/facts_learned (a downstream worker may quote file lines
+//     back verbatim) are treated as structural and pass through untouched.
+//
+// Narrative lines are kept from the front of the summary until the budget is
+// spent, in original order, so blocking feedback (stated up front) survives.
+// A clear marker is appended so downstream workers know the summary was
+// capped. When nothing was truncated (e.g. a summary that is entirely facts)
+// the original text is returned unchanged.
+func capSummaryNarrative(summary string, maxTokens int) string {
+	if summary == "" {
+		return summary
+	}
+	const charsPerToken = 4
+	budget := maxTokens * charsPerToken
+	if len(summary) <= budget {
+		return summary
+	}
+	var out []string
+	used := 0
+	truncated := false
+	for _, line := range strings.Split(summary, "\n") {
+		trimmed := strings.TrimSpace(line)
+		isFact := false
+		if trimmed != "" {
+			s := strings.ToLower(strings.TrimLeft(strings.TrimLeft(trimmed, "-"), " "))
+			// Structural facts: both the plain marker a worker writes and the
+			// step-attributed form the facts_learned file carries.
+			if strings.HasPrefix(s, "facts learned:") || strings.HasPrefix(s, "facts learned (from") {
+				isFact = true
+			}
+		}
+		if isFact || strings.Contains(line, summaryMarker) {
+			// Structural content always passes through untouched.
+			out = append(out, line)
+			continue
+		}
+		if used >= budget {
+			truncated = true
+			continue
+		}
+		out = append(out, line)
+		used += len(line) + 1
+	}
+	if !truncated {
+		return summary
+	}
+	out = append(out, "…[summary narrative truncated at ~"+strconv.Itoa(maxTokens)+
+		" tokens — FACTS LEARNED lines and the ORCHICON WORKER SUMMARY routing are preserved verbatim; see the execution output for the full text]")
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 // extractTouchedFiles parses `diff --git` lines from the worker's

@@ -49,6 +49,24 @@ message TenantSettings {
   // Window for repetition detection. Seconds. Default 300 (5 min).
   int64 stall_repetition_window_seconds = 14;
 
+  // --- Nudge knobs (advisory-stall escalation) ---
+  // These tune the nudge-first routing: an advisory stall (text_loop /
+  // repetition / no_file_progress) nudges the live session first, and only
+  // escalates to a fatal kill + recovery after the nudge budget is spent.
+  // Each field has an env-var counterpart (ORCHICON_STALL_NUDGE_*). Zero
+  // means "use the env var or code default".
+
+  // Max nudges sent to a live session before an advisory stall escalates to
+  // a fatal kill + recovery. Default 2.
+  int32 stall_nudge_max = 31;
+
+  // How long a nudge waits for the worker to break the pattern before the
+  // next trip escalates. Seconds. Default 300 (5 min).
+  int64 stall_nudge_reply_window_seconds = 32;
+
+  // Minimum gap between nudges. Seconds. Default 60.
+  int64 stall_nudge_cooldown_seconds = 33;
+
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone
   // (control-plane restart, lost runtime container). The liveness probe
@@ -114,6 +132,28 @@ message TenantSettings {
   // Max rotated log files kept on disk (newest kept). Default 7.
   // Zero = default.
   int32 log_max_files = 27;
+
+  // --- Dispatch concurrency (per-project/tenant max-concurrent-runs) ---
+  // Cap on how many worker executions may run CONCURRENTLY across the
+  // whole tenant. Enforced at dispatch time in the TaskReconciler. A
+  // project can override this per-project (Project.max_concurrent_runs);
+  // the effective limit for a project is min(tenant, project), where 0 on
+  // either side means "no additional restriction from that side". Projects
+  // at their cap hold ready items until a running execution frees a slot.
+  // Optional so an update can distinguish "set to 0 (no cap)" from
+  // "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
+  optional int32 max_concurrent_runs = 28;
+
+  // --- Session timeout ---
+  // Access-token TTL in seconds (how long an access token is valid).
+  // Zero = leave unchanged on update. Default is 900 (15 minutes).
+  // Range: [30, 86400].
+  int64 session_access_token_ttl_seconds = 29;
+
+  // Refresh-token TTL in seconds (how long a refresh token is valid).
+  // Zero = leave unchanged on update. Default is 86400 (24 hours).
+  // Range: [300, 31536000].
+  int64 session_refresh_token_ttl_seconds = 30;
 
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;

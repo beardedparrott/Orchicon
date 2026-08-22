@@ -14,7 +14,11 @@ import (
 func toolListWorkflowRuns(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		WorkflowID string `json:"workflow_id"`
+		ProjectID  string `json:"project_id"`
+		WorkItemID string `json:"work_item_id"`
 		Status     string `json:"status"`
+		SortBy     string `json:"sort_by"`
+		SortOrder  string `json:"sort_order"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -28,7 +32,11 @@ func toolListWorkflowRuns(ctx context.Context, pool *db.Pool, args json.RawMessa
 	runs, err := db.ListWorkflowRuns(ctx, ttx.Tx, db.ListWorkflowRunsFilter{
 		TenantID:   tenantID,
 		WorkflowID: params.WorkflowID,
+		ProjectID:  params.ProjectID,
+		WorkItemID: params.WorkItemID,
 		Status:     params.Status,
+		SortBy:     params.SortBy,
+		SortOrder:  params.SortOrder,
 	})
 	if err != nil {
 		return nil, err

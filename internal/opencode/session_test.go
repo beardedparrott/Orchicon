@@ -3,9 +3,14 @@ package opencode
 import (
 	"context"
 	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
 // TestLegacyEventFromBus verifies the bus→legacy event mapping matches the
@@ -67,8 +72,8 @@ func TestLegacyEventFromBus(t *testing.T) {
 			wantType: "error", wantOK: true,
 		},
 		{
-			name: "unrelated event is ignored",
-			evt:  BusEvent{Type: "catalog.updated", Properties: map[string]any{}},
+			name:   "unrelated event is ignored",
+			evt:    BusEvent{Type: "catalog.updated", Properties: map[string]any{}},
 			wantOK: false,
 		},
 	}
@@ -83,6 +88,110 @@ func TestLegacyEventFromBus(t *testing.T) {
 			}
 			if got["type"] != tc.wantType {
 				t.Fatalf("type = %v, want %v", got["type"], tc.wantType)
+			}
+		})
+	}
+}
+
+// TestTokenDeltaFromBus verifies the mid-generation delta detection: streamed
+// text/reasoning deltas (modern `message.part.delta` and legacy
+// `message.part.updated`-with-delta shapes) are recognized so the progress
+// monitors can count a slow generation as alive, while completed parts and
+// non-token events are excluded.
+func TestTokenDeltaFromBus(t *testing.T) {
+	cases := []struct {
+		name     string
+		evt      BusEvent
+		wantText string
+		wantOK   bool
+	}{
+		{
+			name: "modern delta text field",
+			evt: BusEvent{Type: "message.part.delta", Properties: map[string]any{
+				"sessionID": "s", "messageID": "m", "partID": "p", "field": "text", "delta": "hel",
+			}},
+			wantText: "hel", wantOK: true,
+		},
+		{
+			name: "modern delta reasoning field",
+			evt: BusEvent{Type: "message.part.delta", Properties: map[string]any{
+				"sessionID": "s", "messageID": "m", "partID": "p", "field": "reasoning", "delta": "think",
+			}},
+			wantText: "think", wantOK: true,
+		},
+		{
+			name: "modern delta empty field still counts",
+			evt: BusEvent{Type: "message.part.delta", Properties: map[string]any{
+				"sessionID": "s", "messageID": "m", "partID": "p", "delta": "hi",
+			}},
+			wantText: "hi", wantOK: true,
+		},
+		{
+			name: "modern delta non-token field is not progress",
+			evt: BusEvent{Type: "message.part.delta", Properties: map[string]any{
+				"sessionID": "s", "messageID": "m", "partID": "p", "field": "metadata", "delta": "{}",
+			}},
+			wantOK: false,
+		},
+		{
+			name: "modern delta empty delta is not progress",
+			evt: BusEvent{Type: "message.part.delta", Properties: map[string]any{
+				"sessionID": "s", "messageID": "m", "partID": "p", "field": "text", "delta": "",
+			}},
+			wantOK: false,
+		},
+		{
+			name: "legacy updated text part with delta and no time.end",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "text", "delta": map[string]any{"text": "hel"}, "time": map[string]any{"start": 1}},
+			}},
+			wantText: "hel", wantOK: true,
+		},
+		{
+			name: "legacy updated reasoning part with delta",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "reasoning", "delta": map[string]any{"text": "think"}},
+			}},
+			wantText: "think", wantOK: true,
+		},
+		{
+			name: "completed text part is not a delta",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "text", "text": "hello", "time": map[string]any{"start": 1, "end": 2}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "legacy part without delta is not a delta",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "text", "text": "hel", "time": map[string]any{"start": 1}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "tool part is not a delta",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "state": map[string]any{"status": "running"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:   "unrelated event is not a delta",
+			evt:    BusEvent{Type: "session.status", Properties: map[string]any{}},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, ok := TokenDeltaFromBus(tc.evt)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if text != tc.wantText {
+				t.Fatalf("delta text = %q, want %q", text, tc.wantText)
 			}
 		})
 	}
@@ -132,6 +241,83 @@ func TestSubscriptionCloseUnblocks(t *testing.T) {
 		t.Fatal("Close did not terminate the reader")
 	}
 	pw.Close()
+}
+
+// TestStallReasonSurvivesAbortEcho verifies the abort-path ordering fix
+// (D2): when a fatal stall fires, the terminal reason is recorded BEFORE the
+// session is aborted, so the serve's `session.error: Aborted` echo is a no-op
+// and the true cause (e.g. stalled:no_progress) survives into OnResult. This
+// is the exact-300s Aborted root cause: previously onStall aborted first and
+// recordStreamError could win the finish() race and mask the stall reason.
+func TestStallReasonSurvivesAbortEcho(t *testing.T) {
+	// The Abort HTTP call lands on a local test server (error ignored by
+	// onStall, but the call must not hit the network).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	client := NewSessionClient(srv.URL, "", "")
+
+	callbacks := &liveCallbacks{}
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-abort-race", TenantID: "tnt_dev"},
+		callbacks: callbacks,
+		client:    client,
+		done:      make(chan struct{}),
+		stats:     &execStreamState{},
+	}
+	// The stall fires: the terminal reason is recorded first, then the
+	// session is aborted.
+	r.onStall("stalled:no_progress")
+	// The abort echo arrives on the SSE bus — it must NOT overwrite the
+	// stall reason or mark the run unhealthy.
+	r.recordStreamError(BusEvent{Type: "session.error", Properties: map[string]any{
+		"error": map[string]any{"message": "Aborted"},
+	}})
+
+	r.mu.Lock()
+	fin, ok, resultErr, lastErr := r.finished, r.resultOk, r.resultErr, r.lastStreamErr
+	r.mu.Unlock()
+	if !fin {
+		t.Fatal("run did not finish after the fatal stall")
+	}
+	if ok {
+		t.Fatal("fatal stall must fail the run")
+	}
+	if resultErr != "stalled:no_progress" {
+		t.Fatalf("resultErr = %q, want stalled:no_progress (true cause must survive the abort echo)", resultErr)
+	}
+	if lastErr != "" {
+		t.Fatalf("lastStreamErr = %q, want empty (abort echo must not be recorded)", lastErr)
+	}
+}
+
+// TestRecordStreamErrorGuard verifies recordStreamError on an already-finished
+// run is a no-op (the abort-echo guard): it must not re-mark health, bump the
+// recycle counter, or change the terminal reason.
+func TestRecordStreamErrorGuard(t *testing.T) {
+	callbacks := &liveCallbacks{}
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-abort-guard", TenantID: "tnt_dev"},
+		callbacks: callbacks,
+		done:      make(chan struct{}),
+		stats:     &execStreamState{},
+	}
+	r.finish(false, "stalled:no_progress")
+	r.recordStreamError(BusEvent{Type: "session.error", Properties: map[string]any{
+		"error": map[string]any{"message": "Aborted"},
+	}})
+	r.mu.Lock()
+	resultErr, lastErr := r.resultErr, r.lastStreamErr
+	r.mu.Unlock()
+	if resultErr != "stalled:no_progress" {
+		t.Fatalf("resultErr = %q, want stalled:no_progress", resultErr)
+	}
+	if lastErr != "" {
+		t.Fatalf("lastStreamErr = %q, want empty (guard must skip the abort echo)", lastErr)
+	}
 }
 
 // TestSessionRunPendingAccounting verifies completion is driven by
@@ -232,10 +418,117 @@ func TestCompletionProbeDecision(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			probe, fail := completionProbeDecision(tc.output, tc.nudges, tc.lastNudge, now)
+			probe, fail := completionProbeDecision(tc.output, tc.nudges, tc.lastNudge, now, nudgeMax(), nudgeCooldown())
 			if probe != tc.wantProbe || fail != tc.wantFail {
 				t.Fatalf("probe=%v fail=%v, want probe=%v fail=%v", probe, fail, tc.wantProbe, tc.wantFail)
 			}
 		})
+	}
+}
+
+// TestStallNudgeFirstEscalation verifies the nudge-first routing core (the
+// exact repro of the blocked-write loop): an advisory stall (repetition /
+// text_loop / no_file_progress) nudges the live session instead of killing
+// it, and only escalates to a fatal kill + recovery after the nudge budget
+// (nudgeMax) is spent. no_progress stays fatal from the first trip.
+func TestStallNudgeFirstEscalation(t *testing.T) {
+	// The Abort / SendMessage HTTP calls land on a local test server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	client := NewSessionClient(srv.URL, "", "")
+
+	callbacks := &liveCallbacks{}
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-nudge-escalate", TenantID: "tnt_dev"},
+		callbacks: callbacks,
+		client:    client,
+		done:      make(chan struct{}),
+		stats:     &execStreamState{},
+		// Explicit budget of 2 nudges; reply window long enough that the
+		// background probe-timeout goroutine never fires during the test;
+		// cooldown negligible so consecutive trips can nudge.
+		nudgeMaxVal:         2,
+		nudgeReplyWindowVal: time.Hour,
+		nudgeCooldownVal:    time.Nanosecond,
+	}
+	r.monitor = newProgressMonitor(r.execRow.ID, stallWindows{noProgress: time.Hour, noFileDiff: time.Hour})
+
+	// Trip 1: an advisory repetition stall must NUDGE, not kill.
+	r.onStall("stalled:repetition:bash|[\"go test\"]")
+	r.mu.Lock()
+	nudges, pending, fin := r.nudgesSent, r.probePending, r.finished
+	r.mu.Unlock()
+	if nudges != 1 || !pending {
+		t.Fatalf("after first advisory trip: nudges=%d pending=%v, want 1/true (must nudge, not kill)", nudges, pending)
+	}
+	if fin {
+		t.Fatal("advisory stall must not kill on the first trip")
+	}
+
+	// The worker keeps tripping. Reset the probe so the next trip nudges
+	// again (the worker responded to the nudge but didn't break the loop).
+	r.mu.Lock()
+	r.probePending = false
+	r.mu.Unlock()
+
+	// Trip 2: budget not yet spent → second nudge, still no kill.
+	r.onStall("stalled:repetition:bash|[\"go test\"]")
+	r.mu.Lock()
+	nudges, pending, fin = r.nudgesSent, r.probePending, r.finished
+	r.mu.Unlock()
+	if nudges != 2 || !pending {
+		t.Fatalf("after trip 2: nudges=%d pending=%v, want 2/true", nudges, pending)
+	}
+	if fin {
+		t.Fatal("advisory stall must not kill on the second trip (budget has one more nudge before exhaustion)")
+	}
+
+	r.mu.Lock()
+	r.probePending = false
+	r.mu.Unlock()
+
+	// Trip 3: budget exhausted (2 nudges consumed) → escalate to fatal.
+	r.onStall("stalled:repetition:bash|[\"go test\"]")
+	r.mu.Lock()
+	fin, ok, errMsg := r.finished, r.resultOk, r.resultErr
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatalf("third trip must escalate to a fatal kill (finished=%v ok=%v)", fin, ok)
+	}
+	if errMsg != "stalled:repetition:bash|[\"go test\"]" {
+		t.Fatalf("escalation reason = %q, want the advisory reason", errMsg)
+	}
+}
+
+// TestStallNoProgressFatal verifies no_progress stays FATAL from the first
+// trip — total silence means there is no responsive surface to nudge, so it
+// aborts immediately rather than nudging.
+func TestStallNoProgressFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	client := NewSessionClient(srv.URL, "", "")
+	callbacks := &liveCallbacks{}
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-noprogress-fatal", TenantID: "tnt_dev"},
+		callbacks: callbacks,
+		client:    client,
+		done:      make(chan struct{}),
+		stats:     &execStreamState{},
+	}
+	r.monitor = newProgressMonitor(r.execRow.ID, stallWindows{noProgress: time.Hour, noFileDiff: time.Hour})
+
+	r.onStall("stalled:no_progress")
+	r.mu.Lock()
+	fin, ok, errMsg := r.finished, r.resultOk, r.resultErr
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatalf("no_progress must kill immediately (finished=%v ok=%v)", fin, ok)
+	}
+	if errMsg != "stalled:no_progress" {
+		t.Fatalf("reason = %q, want stalled:no_progress", errMsg)
 	}
 }

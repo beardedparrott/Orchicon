@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/config"
@@ -56,6 +57,8 @@ func main() {
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
 			os.Exit(runDB(os.Args[2:], log))
+		case "backfill-pr":
+			os.Exit(runBackfillPR(os.Args[2:], log))
 		case "runtime-daemon":
 			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
 		case "runtime-supervisor":
@@ -67,6 +70,8 @@ func main() {
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
+		case "notices":
+			os.Exit(runNotices(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -203,6 +208,32 @@ func runDB(args []string, log *slog.Logger) int {
 	}
 }
 
+// runNotices prints the embedded third-party license + notice text shipped
+// in the binary (Apache-2.0 attribution for vendored libraries).
+func runNotices(args []string) int {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println("Usage: orchicon notices")
+		return 0
+	}
+	entries, err := assets.ThirdPartyFS.ReadDir("third_party/oidc")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "notices: %v\n", err)
+		return 1
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := assets.ThirdPartyFS.ReadFile("third_party/oidc/" + e.Name())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "notices: read %s: %v\n", e.Name(), err)
+			return 1
+		}
+		fmt.Printf("=== %s ===\n\n%s\n\n", e.Name(), data)
+	}
+	return 0
+}
+
 // exitOnErr turns an error into a process exit code (1 on error, 0 nil).
 // Used by the runtime subcommands, which return error values.
 func exitOnErr(err error) int {
@@ -228,16 +259,18 @@ Usage:
   %s db list        List available backups
   %s db restore     Restore from a backup
   %s db prune       Remove backups older than N days
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+  %s backfill-pr    Backfill real PR URLs for completed git-backed runs
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
   %s version       Print version info
+  %s notices       Print third-party license + notice text
 
 The binary embeds the single-container runtime configs, migrations, and
 the frontend bundle. Run the full stack with `+"`docker run`"+` (see
 DOCUMENTATION.md §Single-Container Deployment) or `+"`%s container`"+` as
 the container's PID-1 supervisor.
-`, bin, bin)
+`, bin, bin, bin)
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {

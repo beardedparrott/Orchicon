@@ -25,6 +25,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -102,13 +104,24 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		decisionStatus = "rejected"
 	}
 
+	// An exhausted LOOP_DECISION gate escalated to human review is
+	// kind-sensitive: approving it SUCCEEDS the gate (the run completes),
+	// while rejecting it FAILS the gate (the run fails — the human
+	// determined the loop cannot be resolved within budget). A plain
+	// approval step keeps the old behavior: both outcomes succeed the step
+	// and branch downstream on the decision.
+	newStatus := domain.StepRunSucceeded
+	if sr.StepKind == domain.StepKindLoopDecision && decisionStatus == "rejected" {
+		newStatus = domain.StepRunFailed
+	}
+
 	// Resolve attachment write paths (project-dir .orchicon/<run_id>/attachments/)
 	// so they can be recorded in the step result and written in the same tx.
 	attPaths := make([]map[string]string, 0, len(attachments))
 	for i, a := range attachments {
 		attPaths = append(attPaths, map[string]string{
-			"filename": a.Filename,
-			"path":     filepath.Join(".orchicon", sr.WorkflowRunID, "attachments", a.Filename),
+			"filename":     a.Filename,
+			"path":         filepath.Join(".orchicon", sr.WorkflowRunID, "attachments", a.Filename),
 			"content_type": a.ContentType,
 		})
 		_ = i
@@ -125,16 +138,21 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 
 	now := time.Now().UTC()
 	updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:    strPtr(domain.StepRunSucceeded),
-		Result:    &resultPayload,
-		EndedAt:   &now,
+		Status:  strPtr(newStatus),
+		Result:  &resultPayload,
+		EndedAt: &now,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update step run: %w", err))
 	}
 
 	// Enqueue a step_succeeded event so the reconciler progresses the DAG.
+	// An exhausted loop_decision gate that is rejected fails (step_failed)
+	// so the reconciler terminalizes the run.
 	evtType := domain.WorkflowEventStepSucceeded
+	if newStatus == domain.StepRunFailed {
+		evtType = domain.WorkflowEventStepFailed
+	}
 	evt := map[string]any{
 		"event_type":      evtType,
 		"tenant_id":       sr.TenantID,
@@ -166,6 +184,16 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	// Write .orchicon/ files so downstream workers read the decision.
 	if err := s.writeApprovalOrchiconFiles(ctx, ttx.Tx, tenantID, sr, msg.Approved, msg.Reason, attachments); err != nil {
 		s.log.Warn("write approval .orchicon files", "step_run", sr.ID, "error", err)
+	}
+
+	// Audit the review decision atomically with the step resolution.
+	approvalAction := "approval.step_rejected"
+	if msg.Approved {
+		approvalAction = "approval.step_approved"
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, approvalAction, "approval", sr.ID,
+		audit.SnapshotStatus(sr.Status), audit.Snapshot(map[string]any{"approved": msg.Approved, "reviewed_by": msg.ReviewedBy})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit %s: %w", approvalAction, err))
 	}
 
 	if err := ttx.Commit(ctx); err != nil {
@@ -340,7 +368,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		JOIN workflows w ON w.id = wr.workflow_id AND w.tenant_id = wr.tenant_id
 		LEFT JOIN work_items wi ON wi.workflow_run_id = wr.id AND wi.id = wr.work_item_id
 		LEFT JOIN projects p ON p.id = wr.project_id AND p.tenant_id = wr.tenant_id
-		WHERE wsr.tenant_id = $1 AND wsr.step_kind = 'approval'
+		WHERE wsr.tenant_id = $1 AND wsr.step_kind IN ('approval', 'loop_decision')
 		  AND wsr.status IN ('approval_pending', 'succeeded')`
 
 	args := []any{tenantID}
@@ -447,20 +475,20 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		}
 
 		item := &apiv1.ApprovalItem{
-			StepRunId:         r.StepRunID,
-			WorkflowRunId:     r.WorkflowRunID,
-			WorkflowId:        r.WorkflowID,
-			ProjectName:       r.ProjectName,
-			WorkItemName:      r.WorkItemTitle,
-			WorkflowName:      r.WorkflowName,
-			UpstreamWorker:    r.UpstreamWorker,
-			UpstreamSummary:   r.UpstreamSummary,
-			TouchedFiles:      files,
+			StepRunId:          r.StepRunID,
+			WorkflowRunId:      r.WorkflowRunID,
+			WorkflowId:         r.WorkflowID,
+			ProjectName:        r.ProjectName,
+			WorkItemName:       r.WorkItemTitle,
+			WorkflowName:       r.WorkflowName,
+			UpstreamWorker:     r.UpstreamWorker,
+			UpstreamSummary:    r.UpstreamSummary,
+			TouchedFiles:       files,
 			AcceptanceCriteria: r.AcceptanceCrit,
-			Status:            mappedStatus,
-			Reason:            r.Reason,
-			AttachmentNames:   attNames,
-			CreatedAt:         timestamppb.New(r.CreatedAt),
+			Status:             mappedStatus,
+			Reason:             r.Reason,
+			AttachmentNames:    attNames,
+			CreatedAt:          timestamppb.New(r.CreatedAt),
 		}
 		out = append(out, item)
 	}
@@ -468,6 +496,22 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
 
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)

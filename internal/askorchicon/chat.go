@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
@@ -25,7 +26,7 @@ import (
 // subscribe (a never-reachable serve is bounded by the serve-down grace) nor
 // the reply itself (the reply window bounds the whole turn). Override via
 // ORCHICON_ASK_TIMEOUT.
-const defaultHandshakeTimeout = 600 * time.Second
+const defaultHandshakeTimeout = 60 * time.Second
 
 func askTimeout() time.Duration {
 	if v := os.Getenv("ORCHICON_ASK_TIMEOUT"); v != "" {
@@ -50,6 +51,40 @@ func askReplyWindow() time.Duration {
 		}
 	}
 	return defaultReplyWindow
+}
+
+// defaultTurnMaxAge is the hard upper bound on how long a chat turn may live
+// in the registry before the background sweeper evicts it (cancelling the
+// collector with errTurnExpired and aborting the serve session). It is the
+// "every turn has a hard backstop" guarantee for chat: a collector that can
+// never finalize (wedged serve, lost goroutine) is reaped in bounded time
+// instead of blocking the conversation forever. The reply window covers the
+// normal case, so the TTL is reply window + a generous margin (the sweeper
+// tick granularity + re-attach slack). Env override ORCHICON_ASK_TURN_MAX_AGE
+// is a dev/test knob.
+const defaultTurnMaxAge = 31 * time.Minute
+
+func askTurnMaxAge() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_TURN_MAX_AGE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultTurnMaxAge
+}
+
+// Sweeper tick: how often the background sweeper scans the turn registry for
+// expired turns. Fixed at one minute; the TTL is computed with this slack in
+// mind. Override via ORCHICON_ASK_SWEEP_INTERVAL (dev/test knob).
+const defaultSweepInterval = time.Minute
+
+func askSweepInterval() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_SWEEP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultSweepInterval
 }
 
 // defaultReattachBackoff is the pause between re-attach attempts after the
@@ -93,8 +128,49 @@ type opencodeEvent struct {
 // streamCallback is called for each streaming event from opencode.
 type streamCallback func(evt opencodeEvent) error
 
+// Turn-cancellation causes. These are the distinct reasons a turn's
+// collector context is cancelled; the collector finalizes differently per
+// cause (ADR-ASK-3):
+//
+//   - errUserStop: the Stop button — persist "Turn stopped by the user."
+//   - errTurnSuperseded: an interjection took over the conversation — persist
+//     the partial content as a PLAIN message (no error bubble) or skip the
+//     write entirely when nothing arrived.
+//   - errTurnExpired: the TTL sweeper reaped the turn — persist an error.
+//
+// The collector returns context.Cause(subCtx) (never subCtx.Err()) so the
+// caller can distinguish them.
+var (
+	errUserStop       = errors.New("turn stopped by the user")
+	errTurnSuperseded = errors.New("turn superseded by an interjection")
+	errTurnExpired    = errors.New("turn expired without completing")
+)
+
+// turnEntry is one in-flight turn in the registry.
+type turnEntry struct {
+	// cancel fires the collector's cancellation with an explicit cause
+	// (Stop / supersede / expiry).
+	cancel context.CancelCauseFunc
+	// token uniquely identifies this turn generation. remove() only deletes
+	// the entry when the stored token matches the caller's, so a superseded
+	// collector's deferred remove can never clobber the replacement turn.
+	token uint64
+	// started is when the turn was registered; the sweeper evicts entries
+	// older than the TTL.
+	started time.Time
+	// tenant is the turn's tenant, needed by the sweeper to load the
+	// conversation row (RLS) for the serve-session abort.
+	tenant string
+	// assistantMsgID is the acked assistant message id under which this turn's
+	// reply (or error) will be persisted. Surfaced to the frontend via
+	// Conversation.pending_assistant_message_id so a refreshed page can
+	// re-attach to the running turn (Stop + completion poll), not just know
+	// that one exists.
+	assistantMsgID string
+}
+
 // turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
-// id) with their collector cancellation functions. It serves two purposes:
+// id) with their collector cancellation functions. It serves three purposes:
 //
 //   - the one-turn-per-conversation gate: a second send while a turn is
 //     pending is rejected with FailedPrecondition (the frontend also
@@ -102,51 +178,103 @@ type streamCallback func(evt opencodeEvent) error
 //   - the Stop path: AbortConversationTurn cancels the collector so it
 //     finalizes promptly and persists the user-initiated-stop error, rather
 //     than sitting idle waiting the full reply window for an idle the serve
-//     may not emit after abort.
+//     may not emit after abort;
+//   - the no-orphan guarantee: every entry carries a started timestamp and
+//     the background sweeper evicts (cancels + removes) entries older than
+//     the TTL, so a wedged collector can never block a conversation forever.
 //
-// cancel() fires the collector's cancellation but leaves the entry in place
-// until the collector removes it on finalize, so a new send stays gated while
-// the old turn drains (the gap is milliseconds).
+// Token-guarded removal (remove only when the token matches) eliminates the
+// stale-finalize race once supersede exists: the superseding turn's register
+// assigns a NEW token, so the superseded collector's deferred remove with its
+// own token is a no-op on the replacement entry.
 type turnRegistry struct {
-	mu    sync.Mutex
-	turns map[string]context.CancelFunc
+	mu      sync.Mutex
+	nextTok uint64
+	turns   map[string]turnEntry
 }
 
 func newTurnRegistry() *turnRegistry {
-	return &turnRegistry{turns: make(map[string]context.CancelFunc)}
+	return &turnRegistry{turns: make(map[string]turnEntry)}
 }
 
 // register records a turn's cancellation function for a conversation. It
-// returns false when a turn is already in flight for that conversation.
-func (r *turnRegistry) register(convID string, cancel context.CancelFunc) bool {
+// returns the caller's token and ok=true, or (0, false) when a turn is
+// already in flight for that conversation. assistantMsgID is the acked
+// assistant message id under which the reply will be persisted — the running
+// turn's identity exposed to readers of the registry.
+func (r *turnRegistry) register(convID, tenant, assistantMsgID string, cancel context.CancelCauseFunc) (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.turns[convID]; ok {
-		return false
+		return 0, false
 	}
-	r.turns[convID] = cancel
-	return true
+	r.nextTok++
+	token := r.nextTok
+	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID}
+	return token, true
 }
 
-// cancel fires the collector's cancellation for a conversation (if any) and
-// reports whether a turn was registered. The entry is removed by the
-// collector via remove() once it finalizes.
-func (r *turnRegistry) cancel(convID string) (context.CancelFunc, bool) {
+// get reports whether a turn is in flight for a conversation and, if so,
+// returns its entry (the caller uses entry.assistantMsgID to re-attach to the
+// running turn). This is the server-side source of truth for "is this
+// conversation busy right now" — the frontend reconciles its in-memory stream
+// slot against it after a page refresh.
+func (r *turnRegistry) get(convID string) (turnEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cancel, ok := r.turns[convID]
+	entry, ok := r.turns[convID]
+	return entry, ok
+}
+
+// cancel fires the collector's cancellation for a conversation (if any) with
+// the given cause and reports whether a turn was registered, returning its
+// token. The entry is removed by the collector via remove() once it
+// finalizes — unless the caller supersedes/expires it and removes it itself.
+func (r *turnRegistry) cancel(convID string, cause error) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.turns[convID]
 	if ok {
-		cancel()
+		entry.cancel(cause)
 	}
-	return cancel, ok
+	return entry.token, ok
 }
 
-// remove drops the registry entry for a conversation (called by the
-// collector on finalize, success or error).
-func (r *turnRegistry) remove(convID string) {
+// remove drops the registry entry for a conversation only when its token
+// matches the caller's (called by the collector on finalize, success or
+// error). A stale finalize from a superseded turn never clobbers the
+// replacement turn's entry.
+func (r *turnRegistry) remove(convID string, token uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.turns, convID)
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		delete(r.turns, convID)
+	}
+}
+
+// turnEviction is one turn evicted by the sweeper.
+type turnEviction struct {
+	convID string
+	tenant string
+}
+
+// sweep evicts (cancels with errTurnExpired and removes) every entry older
+// than maxAge and returns the evicted conversations (with their tenants) so
+// the caller can abort their serve sessions (belt-and-suspenders on top of
+// the stall monitor — a collector that finalizes normally never reaches the
+// TTL).
+func (r *turnRegistry) sweep(now time.Time, maxAge time.Duration) []turnEviction {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var evicted []turnEviction
+	for id, entry := range r.turns {
+		if now.Sub(entry.started) > maxAge {
+			entry.cancel(errTurnExpired)
+			delete(r.turns, id)
+			evicted = append(evicted, turnEviction{convID: id, tenant: entry.tenant})
+		}
+	}
+	return evicted
 }
 
 func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.ChatStreamRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
@@ -169,8 +297,45 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	if err != nil {
 		return err
 	}
+	return s.drainTurnStream(stream, assistantID, streamEventCh)
+}
 
-	// Ack immediately.
+// InterjectConversationTurn is the chat equivalent of a worker-execution
+// nudge, with an interrupt: it SUPERSEDES the conversation's in-flight turn
+// (if any) and dispatches the interjection on a fresh turn. The superseded
+// turn's collector is cancelled (its partial content is persisted as a plain
+// assistant message — or dropped when empty), the conversation's opencode
+// session is aborted so the model stops generating NOW, and the interjection
+// is answered at the next turn boundary rather than queued behind a stuck
+// turn. When nothing is running it behaves exactly like ChatStream
+// (idempotent).
+func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	msg := strings.TrimSpace(req.Msg.Message)
+	if msg == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if req.Msg.ConversationId == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
+	}
+	if utf8.RuneCountInString(msg) > 10000 {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+
+	assistantID, streamEventCh, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
+	if err != nil {
+		return err
+	}
+	return s.drainTurnStream(stream, assistantID, streamEventCh)
+}
+
+// drainTurnStream acks a freshly-started turn with TurnStarted and then
+// drains streaming events to the client until the channel closes (turn
+// complete or error), which lets the RPC return and close the HTTP stream.
+func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse) error {
 	if err := stream.Send(&apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_TurnStarted{
 			TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID},
@@ -178,16 +343,20 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	}); err != nil {
 		return err
 	}
-
-	// Drain streaming events to the client. When the channel closes (turn
-	// complete or error), this goroutine exits, which lets ChatStream return,
-	// closing the HTTP stream.
 	for resp := range streamEventCh {
 		if err := stream.Send(resp); err != nil {
 			break // client gone — stop draining
 		}
 	}
 	return nil
+}
+
+// turnDispatchOpts carries the dispatch-mode switches for
+// startConversationTurnOpts.
+type turnDispatchOpts struct {
+	// supersede makes the dispatch first interrupt any in-flight turn for
+	// the conversation (interject semantics) instead of rejecting it.
+	supersede bool
 }
 
 // startConversationTurn is ChatStream's core (extracted for testability): it
@@ -197,36 +366,70 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 // values with the right code (NotFound for a missing conversation,
 // FailedPrecondition when a turn is already pending — one turn at a time).
 func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, error) {
-	// --- 1. Load conversation + register the turn. ---
-	// The turn is registered BEFORE the user message is persisted so a
-	// rejected second send (one turn per conversation) never orphans a
-	// persisted user message. The detached context keeps the collector alive
-	// across a stream disconnect / tab close; only the turn registry's
-	// cancellation (Stop) ends it. On any error below, the turn is released.
-	detached := context.WithoutCancel(ctx)
-	turnCtx, cancelTurn := context.WithCancel(detached)
-	if !s.turns.register(convID, cancelTurn) {
-		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
-	}
-	releaseTurn := func() {
-		cancelTurn()
-		s.turns.remove(convID)
-	}
+	return s.startConversationTurnOpts(ctx, tenantID, convID, msg, attachments, turnDispatchOpts{})
+}
 
+// startConversationTurnOpts is the shared dispatch core for ChatStream
+// (supersede=false) and InterjectConversationTurn (supersede=true). With
+// supersede, an in-flight turn is first interrupted: its collector is
+// cancelled with errTurnSuperseded, its registry entry removed (token-guarded
+// so the superseded collector's finalize cannot clobber the replacement), and
+// the conversation's opencode session aborted so the model stops generating
+// NOW — the interjection is answered at the next turn boundary rather than
+// queued behind a stuck turn.
+func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, opts turnDispatchOpts) (string, chan *apiv1.ChatStreamResponse, error) {
+	// --- 0. Load the conversation. Needed up front: the persisted session
+	// id for the supersede serve-abort, plus existence for NotFound. ---
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		releaseTurn()
 		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, convID)
 	ttx.Rollback(ctx)
 	if err != nil {
-		releaseTurn()
 		if errors.Is(err, db.ErrNotFound) {
 			return "", nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
 		}
 		return "", nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// --- 0.5. Supersede an in-flight turn (interject only). ---
+	if opts.supersede {
+		if token, ok := s.turns.cancel(convID, errTurnSuperseded); ok {
+			s.turns.remove(convID, token)
+			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
+		}
+		// Abort the serve session so the model stops generating NOW (the
+		// same abort the Stop button uses). Best-effort; idempotent.
+		if conv.SessionID != "" {
+			if client := s.hostServeClient(); client != nil {
+				_ = client.Abort(context.WithoutCancel(ctx), conv.SessionID)
+			}
+		}
+	}
+
+	// --- 1. Register the turn. ---
+	// The turn is registered BEFORE the user message is persisted so a
+	// rejected second send (one turn per conversation) never orphans a
+	// persisted user message. The detached context keeps the collector alive
+	// across a stream disconnect / tab close; only the turn registry's
+	// cancellation (Stop / supersede / TTL expiry) ends it. On any error
+	// below, the turn is released.
+	detached := context.WithoutCancel(ctx)
+	turnCtx, cancelTurn := context.WithCancelCause(detached)
+	// The acked assistant message id is generated up front so the registry
+	// entry can carry it — a refreshed page re-attaches to the running turn
+	// via Conversation.pending_assistant_message_id, which is read from this
+	// entry.
+	assistantID := db.NewID()
+	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
+	if !ok {
+		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
+	}
+	releaseTurn := func() {
+		cancelTurn(errUserStop)
+		s.turns.remove(convID, token)
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
@@ -264,6 +467,22 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 		}
 		db.UpdateConversationTitle(ctx, ttx.Tx, tenantID, convID, title)
 	}
+	// Audit the user send atomically with the message persistence (one
+	// row per user action — covers ChatStream and InterjectConversationTurn,
+	// which both dispatch through here). Message content is excluded from
+	// the snapshot (echo-privacy / compact trail); the message id refs the
+	// stored row.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", convID,
+		nil, audit.Snapshot(map[string]any{
+			"message_id": userMsg.ID,
+			"role":       "user",
+			"mode":       conv.Mode,
+			"superseded": opts.supersede,
+		})); err != nil {
+		ttx.Rollback(ctx)
+		releaseTurn()
+		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		releaseTurn()
 		return "", nil, connect.NewError(connect.CodeInternal, err)
@@ -273,7 +492,14 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	// interaction — the reply is collected detached). ---
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	if modelRef == "" {
+		// No model configured anywhere (conversation, tenant default): fall
+		// back to the free model. This is the silent failure that turned
+		// into "Ask Orchicon is stuck" for users — the free model is
+		// rate-limited and wedges turns. Log it loudly so the operator
+		// knows a model setting is missing.
 		modelRef = "opencode/deepseek-v4-flash-free"
+		s.log.Warn("ask orchicon using fallback free model — no model configured for conversation or tenant default",
+			"conversation", convID, "tenant", tenantID, "model", modelRef)
 	}
 
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
@@ -304,7 +530,6 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	// client. The stream channel is buffered so the collector never blocks.
 	// When the channel closes (turn complete or error), the drain goroutine
 	// exits, which lets ChatStream return, closing the HTTP stream. ---
-	assistantID := db.NewID()
 	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
 	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
 		select {
@@ -320,6 +545,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 				client:         client,
 				tenantID:       tenantID,
 				convID:         convID,
+				token:          token,
 				assistantMsgID: assistantID,
 				sessionID:      conv.SessionID,
 				modelRef:       modelRef,
@@ -328,16 +554,28 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 				userMsg:        msg,
 				onStreamEvent:  onStreamEvent,
 			})
-			// Reasoning chunks that arrived before the turn ended (success or
-			// error/stop/timeout) are always persisted on the assistant
-			// message — partial reasoning is preserved, matching the
-			// "partial content is preserved as an error message" spirit.
+			// Cause-aware finalize (ADR-ASK-3). The collector returns
+			// context.Cause on cancellation so Stop / supersede / expiry are
+			// distinguished:
+			//   - superseded: partial content persisted as a PLAIN assistant
+			//     message (the interjection is intentional — no error bubble),
+			//     skipped entirely when nothing arrived;
+			//   - user stop: the friendly "Turn stopped by the user." error;
+			//   - anything else: the error text (timeout, stall, expiry).
+			// Reasoning chunks that arrived before the turn ended are always
+			// persisted (partial reasoning is preserved, matching the
+			// "partial content is preserved" spirit).
 			if terr != nil {
-				errText := terr.Error()
-				if errors.Is(terr, context.Canceled) {
-					errText = "Turn stopped by the user."
+				switch {
+				case errors.Is(terr, errTurnSuperseded):
+					if content := strings.TrimSpace(reply); content != "" {
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning)
+					}
+				case errors.Is(terr, errUserStop):
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning)
+				default:
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, terr.Error(), reasoning)
 				}
-				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning)
 			} else {
 				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
 			}
@@ -383,7 +621,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if _, ok := s.turns.cancel(req.Msg.ConversationId); ok {
+	if _, ok := s.turns.cancel(req.Msg.ConversationId, errUserStop); ok {
 		s.log.Info("conversation turn aborted by user", "conversation", req.Msg.ConversationId)
 	}
 
@@ -392,6 +630,17 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 	if conv.SessionID != "" {
 		if client := s.hostServeClient(); client != nil {
 			_ = client.Abort(ctx, conv.SessionID)
+		}
+	}
+	// Audit the Stop action in its own short tx (Abort writes no row itself
+	// — the durable "turn stopped" message is persisted by the detached
+	// collector, which is excluded system churn).
+	attx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err == nil {
+		defer attx.Rollback(ctx)
+		if err := recordAudit(ctx, attx.Tx, tenantID, "conversation.turn_aborted", "conversation", req.Msg.ConversationId,
+			nil, audit.Snapshot(map[string]any{"stopped": true})); err == nil {
+			_ = attx.Commit(ctx)
 		}
 	}
 	return connect.NewResponse(&apiv1.AbortConversationTurnResponse{}), nil
@@ -529,9 +778,14 @@ func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, co
 // across serve restarts, so the session identity here is the starting point,
 // not the final one.
 type turnCollectOpts struct {
-	client         sessionTurnClient
-	tenantID       string
-	convID         string
+	client   sessionTurnClient
+	tenantID string
+	convID   string
+	// token is this turn's registry token, carried so the collector's
+	// deferred remove(convID, token) can never clobber a replacement turn
+	// (token-guarded removal — the supersede race is eliminated by
+	// construction).
+	token          uint64
 	assistantMsgID string
 	// sessionID is the persisted opencode session id (empty on a first
 	// message, recreated on serve loss when the serve no longer knows it).
@@ -589,7 +843,7 @@ type turnAttemptResult struct {
 // error (reply timeout, session.error, serve loss exhausted, user stop via
 // the registry cancel).
 func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (text string, reasoning []string, sid string, err error) {
-	defer s.turns.remove(c.convID)
+	defer s.turns.remove(c.convID, c.token)
 
 	sid = c.sessionID
 	system := c.reuseSystem
@@ -650,7 +904,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			everLive = true
 			select {
 			case <-ctx.Done():
-				return res.text, reasoning, sid, ctx.Err()
+				return res.text, reasoning, sid, context.Cause(ctx)
 			case <-window.C:
 				return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 			case <-time.After(askReattachBackoff()):
@@ -667,13 +921,13 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 				}
 				select {
 				case <-ctx.Done():
-					return res.text, reasoning, sid, ctx.Err()
+					return res.text, reasoning, sid, context.Cause(ctx)
 				case <-time.After(askReattachBackoff()):
 				}
 			} else {
 				select {
 				case <-ctx.Done():
-					return res.text, reasoning, sid, ctx.Err()
+					return res.text, reasoning, sid, context.Cause(ctx)
 				case <-window.C:
 					return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 				case <-time.After(askReattachBackoff()):
@@ -727,17 +981,53 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	handshake := time.NewTimer(askTimeout())
 	defer handshake.Stop()
 
+	// Stall detection (ADR-ASK-1): a model that hangs mid-generation (no
+	// events) or loops on the same tool call trips the monitor, which aborts
+	// the serve session NOW and fails the turn with a clear, retryable error
+	// — instead of the user watching a spinner until the reply window. The
+	// ticker polls on a bounded interval (≤30s, ≥1s) so a trip is detected
+	// promptly; the monitor is fed only after sent == true (pre-accept
+	// events belong to a prior turn draining on the shared bus).
+	monitor := newChatStallMonitor(c.modelRef)
+	stallTick := monitor.noProgressWindow
+	if rw := monitor.repetitionWindow; rw < stallTick {
+		stallTick = rw
+	}
+	if stallTick > 30*time.Second {
+		stallTick = 30 * time.Second
+	}
+	if stallTick < time.Second {
+		stallTick = time.Second
+	}
+	stallTicker := time.NewTicker(stallTick)
+	defer stallTicker.Stop()
+
 	for {
 		select {
 		case <-subCtx.Done():
-			// User stop (registry cancel) or the request-context's
-			// cancellation — the turn ends without a reply.
-			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: subCtx.Err()}
+			// Registry cancel (Stop / supersede / TTL expiry) or the
+			// request-context's cancellation — the turn ends without a
+			// reply. Return the CAUSE so the caller can distinguish the
+			// finalize behaviour per cause, and carry the partial text (the
+			// superseded turn's partial content is persisted as a plain
+			// message).
+			return turnAttemptResult{kind: turnFailed, text: reply.String(), reasoning: reasoning, err: context.Cause(subCtx)}
 		case <-window.C:
-			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s — the model may be overloaded or unavailable", askReplyWindow())}
+			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
+			}
+		case <-stallTicker.C:
+			if reason := monitor.stallReason(); reason != "" {
+				// The model has stopped making progress: interrupt it NOW
+				// (the same abort the Stop button uses) and fail the turn
+				// with a clear, retryable message that names the model —
+				// a rate-limited or unavailable provider looks exactly
+				// like a "stuck" model to the user.
+				_ = c.client.Abort(context.WithoutCancel(subCtx), sid)
+				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
 			}
 		case res := <-sendCh:
 			if res != nil {
@@ -800,9 +1090,25 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				if !sent {
 					continue
 				}
+				// Mid-generation token deltas are liveness evidence: feed
+				// them to the stall monitor so a long, slow generation on
+				// a local model resets the no_progress clock instead of
+				// false-tripping the stall. Deltas must NOT flow into the
+				// reply text / reasoning / stream events (completed parts
+				// carry the durable record — TokenDeltaFromBus).
+				if _, ok := opencode.TokenDeltaFromBus(evt); ok {
+					// observe("text") resets lastActivity — for "text" the
+					// monitor ignores the part, so pass nil (no per-delta
+					// allocation).
+					monitor.observe("text", nil)
+					continue
+				}
 				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
 					t, _ := legacy["type"].(string)
 					part, _ := legacy["part"].(map[string]any)
+					// Activity resets the stall clock: text, reasoning,
+					// step_finish and tool_use all count as progress.
+					monitor.observe(t, part)
 					switch t {
 					case "text":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {

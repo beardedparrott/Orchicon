@@ -92,6 +92,50 @@ message WorkItem {
   // ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
   // sort_by) never mutates it. NULL sorts last.
   double sort_order = 28;
+  // recurring_schedule holds the recurrence definition (frequency, interval,
+  // days, start_date, start_time). NULL = not recurring.
+  optional RecurringSchedule recurring_schedule = 29;
+  // next_run_at is the computed next occurrence of a recurring item, used by
+  // the scheduler due-scan. NULL = not recurring or no next occurrence.
+  google.protobuf.Timestamp next_run_at = 30;
+  // depends_on are the IDs of the work items this item depends on (its
+  // outgoing edges of type DEPENDS_ON in the work DAG, independent of the
+  // parent/child hierarchy). Mirrors the create/update request shape so the
+  // set round-trips; full edge objects are available from GetDependencyGraph.
+  repeated string depends_on = 31;
+  // blocked_by names the blocking dependency edges this item waits on:
+  // the sources of its incoming blocks/depends_on edges that are not yet
+  // terminal-success. Computed by the server at read time (never stored),
+  // so it is always consistent with the DAG + statuses. Populated whenever
+  // unsatisfied edges exist — even for a pending/ready item the reconciler
+  // has not yet flipped to blocked — so the reason is always visible.
+  repeated WorkItemBlocker blocked_by = 32;
+  // archived_at is set when the work item is archived (NULL = active). Every
+  // active work-item read filters archived_at IS NULL; the dedicated archive
+  // view opts in via ListWorkItems include_archived.
+  google.protobuf.Timestamp archived_at = 33;
+  // archived_from_status is the terminal status the item had when archived;
+  // RestoreWorkItem returns the item to this status (not pending).
+  string archived_from_status = 34;
+}
+
+// WorkItemBlocker is one upstream dependency edge that keeps its dependent
+// from dispatching (the source is not terminal-success). Populated at read
+// time on WorkItem.blocked_by.
+message WorkItemBlocker {
+  string id = 1;
+  string title = 2;
+  string status = 3; // current status of the blocking item
+}
+
+// RecurringSchedule defines the recurrence pattern for a recurring work item.
+// Stored as JSONB in the recurring_schedule column. NULL = not recurring.
+message RecurringSchedule {
+  string frequency = 1;   // minute | hourly | daily | weekly | monthly
+  int32 interval = 2;     // >= 1 (e.g. every 2 hours)
+  repeated string days = 3; // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+  string start_date = 4;  // YYYY-MM-DD (first occurrence date)
+  string start_time = 5;  // HH:MM (time of day for occurrences)
 }
 
 // WorkItemStatus — schedulable kinds follow:
@@ -110,6 +154,23 @@ enum WorkItemStatus {
   WORK_ITEM_STATUS_CANCELLED = 8;
   WORK_ITEM_STATUS_RECOVERING = 9;
   WORK_ITEM_STATUS_SCHEDULED = 10;
+  WORK_ITEM_STATUS_RECURRING = 11;
+  // System-managed: set by the reconcilers when an armed/on-deck item
+  // cannot dispatch because an upstream dependency (blocks/depends_on edge)
+  // is not terminal-success. Cleared automatically by the next reconcile
+  // pass when the dependency gate satisfies. Never user-assignable.
+  WORK_ITEM_STATUS_BLOCKED = 12;
+  // System-managed terminal-success: set by the reconcilers when a bound
+  // workflow run completes with every active step terminal-success but at
+  // least one step skipped. Satisfies dependency edges exactly like
+  // SUCCEEDED (never blocks dependents). Never user-assignable.
+  WORK_ITEM_STATUS_SKIPPED = 13;
+  // User-initiated terminal status: the item is hidden from every normal
+  // work-item view (archived_at IS NOT NULL). Only archivable from a
+  // terminal status (SUCCEEDED/FAILED/CANCELLED/SKIPPED) and only when the
+  // item has no children. Reversible via RestoreWorkItem, which returns the
+  // item to its archived_from_status.
+  WORK_ITEM_STATUS_ARCHIVED = 14;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
