@@ -837,77 +837,201 @@ function DefaultsTab() {
 
 function UserGuideTab() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <BookOpen className="h-5 w-5" />
-          Orchicon User Guide
-        </CardTitle>
-        <CardDescription>
-          Quick-reference guide to the control plane. See DOCUMENTATION.md for
-          the full reference.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6 text-sm leading-relaxed">
-        <div>
-          <h3 className="font-medium mb-1">Projects</h3>
-          <p className="text-muted-foreground">
-            Top-level organizational unit. Each project has a directory, goals,
-            and context files that workers use as reference.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Workers</h3>
-          <p className="text-muted-foreground">
-            Reusable execution profiles with Role, Skills, Behavior, and AGENTS.md
-            fields. Workers are versioned; published versions are immutable.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Work Items</h3>
-          <p className="text-muted-foreground">
-            Units of work dispatched to workers. Forms a DAG (Epic → Feature →
-            Task → Subtask). Dependencies enforce ordering.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Workflows</h3>
-          <p className="text-muted-foreground">
-            DAG of steps (Task, Approval, Loop Decision, Work Item, Project) that
-            orchestrates autonomous work. Templates can be run multiple times.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Recovery</h3>
-          <p className="text-muted-foreground">
-            When a worker execution fails, recovery runs automatically through a
-            6-step workflow (capture → summarize → preserve → review → plan →
-            resume). L1→L2→L3 escalation on repeated failures.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Policies</h3>
-          <p className="text-muted-foreground">
-            Rego-based policy engine evaluated at decision points (admission,
-            dispatch, budget, approval, recovery).
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Telemetry & Cost</h3>
-          <p className="text-muted-foreground">
-            OpenTelemetry pipeline exporting to the Grafana stack (Tempo /
-            Loki / VictoriaMetrics). Cost Explorer shows spend by Project, Task, Execution, Model, or Workflow.
-          </p>
-        </div>
-        <div>
-          <h3 className="font-medium mb-1">Settings</h3>
-          <p className="text-muted-foreground">
-            Tenant-level defaults for models and recovery stall parameters.
-            Appearance controls light/dark mode and theme selection.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-8 text-sm leading-relaxed">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5" />
+            Orchicon User Guide
+          </CardTitle>
+          <CardDescription>
+            How Orchicon works and how to use it, end to end. The in-app
+            reference stays high level; DOCUMENTATION.md has the full detail.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div>
+            <h3 className="font-medium mb-1">The big idea</h3>
+            <p className="text-muted-foreground">
+              Orchicon separates <strong>orchestration</strong> from{" "}
+              <strong>execution</strong>. You configure the plan (projects,
+              workers, work items, workflows, schedules, policies); the control
+              plane dispatches autonomous AI workers to execute it and watches
+              for failures, stalls, and cost. Everything you configure lives in
+              this UI and can also be driven conversationally through{" "}
+              <strong>Ask Orchicon</strong>.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Typical flow</h3>
+            <ol className="list-decimal pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong>Create a project</strong> — the top-level container with
+                a directory, goals, and context files that workers read.
+              </li>
+              <li>
+                <strong>Define a worker</strong> — a reusable persona (Role,
+                Skills, Behavior, AGENTS.md, model, budget). Draft it, then{" "}
+                <strong>publish</strong>; published versions are immutable and
+                dispatchable.
+              </li>
+              <li>
+                <strong>Create a work item</strong> — Epic → Feature → Task →
+                Subtask, optionally with dependency edges and acceptance
+                criteria. Assign it a worker.
+              </li>
+              <li>
+                <strong>Build a workflow</strong> — a DAG of steps (task,
+                human/AI approval, loop decision, sub-work-item) that turns the
+                work item into autonomous work. Many steps can run in parallel.
+              </li>
+              <li>
+                <strong>Run it</strong> — start it now, schedule a one-time
+                start, make it recurring, or chain multiple work items into a
+                sequence that runs one after another.
+              </li>
+              <li>
+                <strong>Watch & verify</strong> — executions stream their
+                output; the run view shows step state, PRs for git-backed work,
+                the acceptance review on completion, and any recovery episodes.
+              </li>
+            </ol>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Scheduling & sequences</h3>
+            <p className="text-muted-foreground">
+              A work item can be <strong>scheduled</strong> (one-time start),
+              <strong> recurring</strong> (minute/hourly/daily/weekly/monthly
+              cadence — it re-arms instead of going terminal between
+              occurrences), or, when it has children, become a{" "}
+              <strong>sequence</strong> that runs its children one after another
+              (an epic whose features run in chain order, depth-first). Sequence
+              order is derived from your drag order on the board/tree.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Dependencies & blocked work</h3>
+            <p className="text-muted-foreground">
+              Work items can depend on each other (<code>depends_on</code> /
+              <code>blocks</code>, forming a DAG with cycle protection). An item
+              waiting on an upstream success shows a distinct{" "}
+              <strong>blocked</strong> status with the blocking items named — it
+              clears automatically once the dependency is met.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">When something fails</h3>
+            <p className="text-muted-foreground">
+              Failures recover automatically by default: capture → summarize →
+              preserve → review → plan → resume, with L1→L2→L3 escalation on
+              repeated failures. A stalled worker is <strong>nudged first</strong>{" "}
+              (an in-session message); only total silence or an unbroken loop
+              escalates to an abort. For git-backed runs, a failed run reuses
+              its branch so a retry carries over partial work.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="font-medium mb-1">Governance & visibility</h3>
+            <p className="text-muted-foreground">
+              Policies (Rego/OPA) gate admission, dispatch, budget, approval,
+              and recovery. Roles carry entitlements and bind to identities
+              (Admin → Roles / Manage Identity Roles; the{" "}
+              <code>admin</code> role is immutable). Every mutation writes a
+              row to the audit trail (Admin → Audit). Telemetry & Cost shows
+              traces, logs, metrics, and spend per project/task/execution/model/
+              workflow.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <SlidersHorizontal className="h-5 w-5" />
+            Settings explained
+          </CardTitle>
+          <CardDescription>
+            What each tab on this Settings page controls.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div>
+            <h3 className="font-medium mb-1">Appearance</h3>
+            <p className="text-muted-foreground">
+              Pick light or dark mode and a theme for each. Cosmetic only —
+              nothing here changes platform behavior.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Defaults</h3>
+            <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong>Default models</strong> — used when a worker/feature
+                doesn't pin a model. If both are empty, dispatch fails; you
+                generally want a worker model and an Ask Orchicon model set.
+              </li>
+              <li>
+                <strong>Recovery stall parameters</strong> — per-execution stall
+                thresholds: no progress (fatal silence), no file diff, text
+                loop, and tool-call repetition (count within a window; only
+                erroring calls count). Nudge max / reply window / cooldown
+                control how a stalled but responsive worker is probed before
+                escalation. Zero = use the built-in/env default.
+              </li>
+              <li>
+                <strong>Execution budget defaults</strong> — ceilings (tokens,
+                cost, wall clock, tool calls) applied when a worker/plan doesn't
+                override them. Protect against runaway spend.
+              </li>
+              <li>
+                <strong>Execution liveness reaper</strong> — fails executions
+                whose runtime process vanished (plane restart, lost container);
+                grace + consecutive not-alive probes prevent false kills.
+              </li>
+              <li>
+                <strong>Dispatch concurrency</strong> — tenant-wide cap on
+                concurrent runs; effective limit per project is{" "}
+                <code>min(tenant, project)</code>.
+              </li>
+              <li>
+                <strong>Log management</strong> — rotate/prune serve logs:
+                directory, max size, roll interval, retention, max rotated
+                files. Applied live to a running serve.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Session</h3>
+            <p className="text-muted-foreground">
+              Token lifetimes: the access token (short, refreshed silently) and
+              the refresh token (HttpOnly cookie, keeps you signed in). Shorter
+              access-TTL = more frequent transparent refreshes; longer
+              refresh-TTL = longer stay signed-in.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">Backups</h3>
+            <p className="text-muted-foreground">
+              Scheduled DB snapshots (cron, retention, target directory) plus
+              one-click "create backup now" / restore / delete. Restoring
+              returns the whole instance to a previous snapshot.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-medium mb-1">User Guide</h3>
+            <p className="text-muted-foreground">
+              This page. Live in-session guidance for the whole control plane.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

@@ -35,6 +35,10 @@ Read on demand by Orchicon workers. Your role, task, acceptance criteria, and th
 
 - Every claim about the repository, branch, PR, or merge state must come from a real command you ran. If a command fails, report the real error — never fabricate success.
 
+## Platform changes: keep Ask Orchicon in sync
+
+- If you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon tool registry to match (`internal/askorchicon/tools.go` + the tool files) so the Orchicon MCP/Ask Orchicon surface never drifts from what the platform actually does.
+
 ## Environment baseline (established facts — do not re-verify)
 
 - `/tmp` is noexec in the runtime containers: Go's default TMPDIR there makes test binaries fail with exec-format errors. Use an exec-able dir (e.g. `GOTMPDIR=$PWD/.gtmp`) for `go test` / `make ci`.
