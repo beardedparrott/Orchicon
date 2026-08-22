@@ -126,6 +126,7 @@ Every time you add/change/remove a first-class entity, RPC, or user-facing capab
 - Worker lifecycle: draft → published → deprecated → retired (published versions immutable). WorkItem hierarchy: Epic → Feature → Task → Subtask (max 4 levels). Dependency edges form a DAG with cycle detection.
 - TaskReconciler is the only component that creates WorkerExecutions. A work item bound to a workflow run goes `running` at run start and `succeeded`/`failed` at run end — the step run is the execution + recovery unit; the composite prompt lives on the step run (`_prompt`).
 - Policies use OPA v1 with bundles from Postgres, narrowest-scope-first, fail-open default. BlobStore has local-filesystem and S3 backends. Markdown is supported on all prompt-affecting fields.
+- RBAC: identities bind roles (roles carry `entitlements`, the `admin` role is immutable and bypasses). Roles CRUD + Manage Identity Roles live in Admin. Work items and projects can be archived (terminal + childless) and restored. A git-backed run's real PR link is captured from the worker's `PR_URL:`/`PR_STATE:` summary lines; `orchicon backfill-pr` idempotently backfills URLs onto already-completed runs.
 
 ## UPDATES.md
 
