@@ -38,6 +38,9 @@ message UsageEvent {
   double cost_usd = 12;
   google.protobuf.Timestamp occurred_at = 13;
   string correlation_id = 14;
+  int64 cache_read_tokens = 15;
+  int64 cache_write_tokens = 16;
+  int64 reasoning_tokens = 17;
 }
 
 // AIProvider is a configured LLM provider known to the gateway.
@@ -68,6 +71,9 @@ message UsageRecord {
   google.protobuf.Timestamp occurred_at = 14;
   string worker_name = 15;   // human-readable worker name (JOINed from workers table)
   string task_title = 16;    // human-readable work item title (JOINed from work_items table)
+  int64 cache_read_tokens = 17;
+  int64 cache_write_tokens = 18;
+  int64 reasoning_tokens = 19;
 }
 
 // CostSummary is a roll-up of cost + tokens over a time window, grouped

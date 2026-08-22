@@ -147,6 +147,21 @@ export class UsageEvent extends Message<UsageEvent> {
    */
   correlationId = "";
 
+  /**
+   * @generated from field: int64 cache_read_tokens = 15;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 16;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 17;
+   */
+  reasoningTokens = protoInt64.zero;
+
   constructor(data?: PartialMessage<UsageEvent>) {
     super();
     proto3.util.initPartial(data, this);
@@ -169,6 +184,9 @@ export class UsageEvent extends Message<UsageEvent> {
     { no: 12, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 13, name: "occurred_at", kind: "message", T: Timestamp },
     { no: 14, name: "correlation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 15, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 16, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 17, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UsageEvent {
@@ -349,6 +367,21 @@ export class UsageRecord extends Message<UsageRecord> {
    */
   taskTitle = "";
 
+  /**
+   * @generated from field: int64 cache_read_tokens = 17;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 18;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 19;
+   */
+  reasoningTokens = protoInt64.zero;
+
   constructor(data?: PartialMessage<UsageRecord>) {
     super();
     proto3.util.initPartial(data, this);
@@ -373,6 +406,9 @@ export class UsageRecord extends Message<UsageRecord> {
     { no: 14, name: "occurred_at", kind: "message", T: Timestamp },
     { no: 15, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "task_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 17, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 18, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 19, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UsageRecord {

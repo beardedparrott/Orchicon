@@ -252,7 +252,10 @@ func (a *Adapter) IsExecutionActive(execID string) bool {
 }
 
 // UsageRecord is the usage sample the adapter emits on step_finish
-// (docs/04 §6.1 step_finish carries tokens + cost).
+// (docs/04 §6.1 step_finish carries tokens + cost). It is the opencode
+// bridge shape onto the canonical aigateway.UsageInput — the server copies
+// it field-for-field into the gateway's input so the gateway never branches
+// on provider.
 type UsageRecord struct {
 	TenantID         string
 	ProjectID        string
@@ -262,7 +265,10 @@ type UsageRecord struct {
 	Provider         string
 	Model            string
 	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
 	CompletionTokens int64
+	ReasoningTokens  int64
 	CostUSD          float64
 	CorrelationID    string
 	TraceID          string
@@ -479,6 +485,13 @@ func (s *execStreamState) unfinished() bool {
 // allTokensZero reports whether a step_finish's tokens map is empty or all
 // counts are zero. A real completion carries input/output/cache counts; an
 // interrupted turn (reason "unknown") is emitted with no usage at all.
+//
+// opencode emits cache counts as a nested sub-object ({"cache":{"read":N,
+// "write":M}}), so a cache-served turn has non-zero token counts but an
+// empty input/output at the top level. The old top-level-only scan treated
+// such a turn as "zero" and wrongly flagged a real cache-served completion
+// as a truncated finish. The predicate must look inside the cache sub-object
+// before deciding.
 func allTokensZero(tokens map[string]any) bool {
 	if len(tokens) == 0 {
 		return true
@@ -486,6 +499,13 @@ func allTokensZero(tokens map[string]any) bool {
 	for _, v := range tokens {
 		if n, ok := v.(float64); ok && n > 0 {
 			return false
+		}
+		if m, ok := v.(map[string]any); ok {
+			for _, sub := range m {
+				if n, ok := sub.(float64); ok && n > 0 {
+					return false
+				}
+			}
 		}
 	}
 	return true
@@ -814,8 +834,15 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		return
 	}
 	promptTokens := toInt64(tokens["input"])
+	cacheReadTokens := toInt64(cacheToken(tokens, "read"))
+	cacheWriteTokens := toInt64(cacheToken(tokens, "write"))
 	completionTokens := toInt64(tokens["output"])
-	if promptTokens == 0 && completionTokens == 0 && cost == 0 {
+	reasoningTokens := toInt64(tokens["reasoning"])
+	// A genuinely empty sample (no tokens, no cost) is dropped. A cache-only
+	// turn that was fully served from cache (zero fresh input/output but
+	// non-zero cache read/write) must NOT be dropped — cache spend is real.
+	if promptTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0 &&
+		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
 	}
 	provider, model := parseModelRef(manifest.ModelRef)
@@ -828,13 +855,28 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		Provider:         provider,
 		Model:            model,
 		PromptTokens:     promptTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
 		CompletionTokens: completionTokens,
+		ReasoningTokens:  reasoningTokens,
 		CostUSD:          cost,
 		WorkflowRunID:    execRow.WorkflowRunID,
 	}
 	if err := a.usageRecorder(ctx, in); err != nil {
 		a.log.Warn("usage record failed", "execution", execRow.ID, "error", err)
 	}
+}
+
+// cacheToken reads a sub-count from the opencode tokens.cache sub-object
+// (e.g. {"cache":{"read":N,"write":M}} → cacheToken(tokens,"read")). opencode
+// emits cache counts as a nested object rather than flat fields, so a plain
+// toInt64(tokens["cache"]) would always be 0. Returns nil when the cache
+// sub-object is absent, which toInt64 turns into 0.
+func cacheToken(tokens map[string]any, key string) any {
+	if cache, ok := tokens["cache"].(map[string]any); ok {
+		return cache[key]
+	}
+	return nil
 }
 
 // extractErrorMessage pulls the human-readable message out of an opencode

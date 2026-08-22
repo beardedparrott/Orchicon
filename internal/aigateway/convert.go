@@ -58,6 +58,9 @@ func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 		Model:            r.Model,
 		PromptTokens:     r.PromptTokens,
 		CompletionTokens: r.CompletionTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		CacheWriteTokens: r.CacheWriteTokens,
+		ReasoningTokens:  r.ReasoningTokens,
 		TotalTokens:      r.TotalTokens,
 		CostUsd:          r.CostUSD,
 		CorrelationId:    r.CorrelationID,
@@ -69,18 +72,18 @@ func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 
 func costRowToProto(r *db.CostSummaryRow, groupBy, parentKey string, start, end time.Time) *apiv1.CostSummary {
 	return &apiv1.CostSummary{
-		GroupBy:           groupBy,
-		GroupKey:          r.GroupKey,
-		ParentKey:         parentKey,
-		DisplayName:       r.DisplayName,
-		TotalTokens:       r.TotalTokens,
-		PromptTokens:      r.PromptTokens,
-		CompletionTokens:  r.CompletionTokens,
-		CostUsd:           r.CostUSD,
-		ExecutionCount:    r.ExecutionCount,
+		GroupBy:          groupBy,
+		GroupKey:         r.GroupKey,
+		ParentKey:        parentKey,
+		DisplayName:      r.DisplayName,
+		TotalTokens:      r.TotalTokens,
+		PromptTokens:     r.PromptTokens,
+		CompletionTokens: r.CompletionTokens,
+		CostUsd:          r.CostUSD,
+		ExecutionCount:   r.ExecutionCount,
 		RecordCount:      r.RecordCount,
-		WindowStart:       timestamppb.New(start),
-		WindowEnd:         timestamppb.New(end),
+		WindowStart:      timestamppb.New(start),
+		WindowEnd:        timestamppb.New(end),
 	}
 }
 
@@ -103,6 +106,9 @@ func parseUsageEvent(data []byte) (*apiv1.UsageEvent, error) {
 		Model            string  `json:"model"`
 		PromptTokens     int64   `json:"prompt_tokens"`
 		CompletionTokens int64   `json:"completion_tokens"`
+		CacheReadTokens  int64   `json:"cache_read_tokens"`
+		CacheWriteTokens int64   `json:"cache_write_tokens"`
+		ReasoningTokens  int64   `json:"reasoning_tokens"`
 		TotalTokens      int64   `json:"total_tokens"`
 		CostUSD          float64 `json:"cost_usd"`
 		CorrelationID    string  `json:"correlation_id"`
@@ -122,6 +128,9 @@ func parseUsageEvent(data []byte) (*apiv1.UsageEvent, error) {
 		Model:            raw.Model,
 		PromptTokens:     raw.PromptTokens,
 		CompletionTokens: raw.CompletionTokens,
+		CacheReadTokens:  raw.CacheReadTokens,
+		CacheWriteTokens: raw.CacheWriteTokens,
+		ReasoningTokens:  raw.ReasoningTokens,
 		TotalTokens:      raw.TotalTokens,
 		CostUsd:          raw.CostUSD,
 		CorrelationId:    raw.CorrelationID,
@@ -148,6 +157,9 @@ type usageEventEnvelope struct {
 	Model            string  `json:"model"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	ReasoningTokens  int64   `json:"reasoning_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
 	CorrelationID    string  `json:"correlation_id"`
@@ -166,6 +178,9 @@ func usageEventPayload(r *db.UsageRecordRow) []byte {
 		Model:            r.Model,
 		PromptTokens:     r.PromptTokens,
 		CompletionTokens: r.CompletionTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		CacheWriteTokens: r.CacheWriteTokens,
+		ReasoningTokens:  r.ReasoningTokens,
 		TotalTokens:      r.TotalTokens,
 		CostUSD:          r.CostUSD,
 		CorrelationID:    r.CorrelationID,
