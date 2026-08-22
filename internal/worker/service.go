@@ -569,6 +569,262 @@ func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.R
 	return connect.NewResponse(&apiv1.RevertWorkerVersionToDraftResponse{}), nil
 }
 
+// maxBulkUpdateWorkerModel is the upper bound on ids per BulkUpdateWorkerModel
+// call; mirrors BatchDeleteExecutions (internal/execution/service.go).
+const maxBulkUpdateWorkerModel = 100
+
+// BulkUpdateWorkerModel sets model_ref on every requested Worker and
+// publishes the affected version in a single round trip. It mirrors the
+// manual edit-then-republish flow:
+//   - if the worker has a draft version, model_ref is updated in place
+//     and the version is published;
+//   - if the worker is published with no draft, the latest published
+//     version is reverted to draft, model_ref is set, and it is republished.
+//
+// Version numbers do NOT advance (no fork); current_version follows the
+// latest published version via UpdateWorkerCurrentVersion (same CAS as
+// PublishWorkerVersion). Per-worker logic runs in its own tenant
+// transaction so a failure in one row does not roll back the others —
+// the contract is partial success. Each mutation writes a
+// `worker.published` outbox row (one per affected worker) and a
+// `worker.bulk_model_updated` audit row; the batch as a whole emits one
+// `worker.bulk_model_updated_batch` audit row with the summary counts.
+func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Request[apiv1.BulkUpdateWorkerModelRequest]) (*connect.Response[apiv1.BulkUpdateWorkerModelResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(req.Msg.WorkerIds) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_ids must not be empty"))
+	}
+	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
+	}
+	modelRef, err := validateTextField(req.Msg.ModelRef, maxNameLen, "model_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if modelRef == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref must not be empty"))
+	}
+
+	resp := &apiv1.BulkUpdateWorkerModelResponse{}
+	for _, id := range req.Msg.WorkerIds {
+		if id == "" {
+			continue
+		}
+		result, err := s.bulkUpdateOneWorker(ctx, tenantID, id, modelRef)
+		if err != nil {
+			// Per-worker logic never returns a hard error — it converts
+			// failures into an Error outcome. This branch is a defensive
+			// fallback so a future change cannot accidentally abort the
+			// whole batch.
+			s.log.Warn("bulk_update_worker_model: per-worker outcome errored", "worker_id", id, "error", err)
+			resp.Results = append(resp.Results, &apiv1.BulkUpdateWorkerModelResult{
+				WorkerId: id,
+				Outcome: &apiv1.BulkUpdateWorkerModelResult_Error{
+					Error: &apiv1.BulkUpdateWorkerModelError{Message: err.Error()},
+				},
+			})
+			resp.ErrorCount++
+			continue
+		}
+		resp.Results = append(resp.Results, result)
+		switch result.Outcome.(type) {
+		case *apiv1.BulkUpdateWorkerModelResult_Updated:
+			resp.UpdatedCount++
+		case *apiv1.BulkUpdateWorkerModelResult_Skipped:
+			resp.SkippedCount++
+		case *apiv1.BulkUpdateWorkerModelResult_Error:
+			resp.ErrorCount++
+		}
+	}
+
+	if err := s.recordBulkAudit(ctx, tenantID, modelRef, req.Msg.WorkerIds, resp); err != nil {
+		s.log.Warn("bulk_update_worker_model: batch audit row failed", "error", err)
+	}
+
+	s.log.Info("bulk_update_worker_model completed",
+		"total", len(resp.Results),
+		"updated", resp.UpdatedCount,
+		"skipped", resp.SkippedCount,
+		"errors", resp.ErrorCount,
+		"model_ref", modelRef)
+	return connect.NewResponse(resp), nil
+}
+
+// bulkUpdateOneWorker runs the per-worker update-or-revert-and-publish
+// flow in its own tenant transaction. Failures are converted into
+// per-worker outcomes (Skipped / Error) so the batch keeps going.
+func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, modelRef string) (*apiv1.BulkUpdateWorkerModelResult, error) {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	worker, err := db.GetWorker(ctx, ttx.Tx, tenantID, workerID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NOT_FOUND), nil
+		}
+		return nil, fmt.Errorf("get worker: %w", err)
+	}
+	switch worker.Status {
+	case domain.WorkerDeprecated:
+		return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_DEPRECATED), nil
+	case domain.WorkerRetired:
+		return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_RETIRED), nil
+	}
+
+	latest, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, workerID, false)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NO_PUBLISHED_VERSION), nil
+		}
+		return nil, fmt.Errorf("get latest worker version: %w", err)
+	}
+
+	updatedVer, err := s.applyModelChange(ctx, ttx.Tx, worker, latest, modelRef)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return &apiv1.BulkUpdateWorkerModelResult{
+		WorkerId: workerID,
+		Outcome: &apiv1.BulkUpdateWorkerModelResult_Updated{
+			Updated: &apiv1.BulkUpdateWorkerModelUpdated{
+				Version:  int32(updatedVer.Version),
+				ModelRef: updatedVer.ModelRef,
+			},
+		},
+	}, nil
+}
+
+// applyModelChange applies the per-version update+publish flow:
+//   - draft: set model_ref on the row in place, then publish.
+//   - published: revert to draft, set model_ref, then republish.
+// In both branches the version number is preserved and UpdateWorkerCurrentVersion
+// is called so current_version follows the latest published version (mirrors
+// PublishWorkerVersion).
+func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
+	var (
+		before    db.WorkerVersionRow
+		after     db.WorkerVersionRow
+		auditVer  int
+		eventType string
+	)
+
+	switch latest.Status {
+	case domain.WorkerVersionDraft:
+		before = latest
+		merged := latest
+		merged.ModelRef = modelRef
+		updated, err := db.UpdateDraftVersion(ctx, tx, merged)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("update draft version: %w", err)
+		}
+		published, err := db.PublishWorkerVersion(ctx, tx, worker.TenantID, worker.ID, updated.Version)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("publish draft version: %w", err)
+		}
+		updatedWorker, err := db.UpdateWorkerCurrentVersion(ctx, tx, worker.TenantID, worker.ID, worker.Version, published.Version)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("update worker current_version: %w", err)
+		}
+		after = published
+		auditVer = published.Version
+		eventType = "worker.published"
+		if err := enqueueWorkerEvent(ctx, tx, eventType, updatedWorker, published); err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("enqueue %s: %w", eventType, err)
+		}
+	case domain.WorkerVersionPublished:
+		before = latest
+		if err := db.RevertWorkerVersionToDraft(ctx, tx, worker.TenantID, latest.ID); err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("revert published version: %w", err)
+		}
+		// Re-read the (now-draft) row so the audit and outbox payloads
+		// reflect the post-revert state.
+		reverted, err := db.GetWorkerVersionByID(ctx, tx, worker.TenantID, worker.ID, latest.ID)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("re-read reverted version: %w", err)
+		}
+		merged := reverted
+		merged.ModelRef = modelRef
+		updatedDraft, err := db.UpdateDraftVersion(ctx, tx, merged)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("update reverted draft: %w", err)
+		}
+		published, err := db.PublishWorkerVersion(ctx, tx, worker.TenantID, worker.ID, updatedDraft.Version)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("republish: %w", err)
+		}
+		updatedWorker, err := db.UpdateWorkerCurrentVersion(ctx, tx, worker.TenantID, worker.ID, worker.Version, published.Version)
+		if err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("update worker current_version: %w", err)
+		}
+		after = published
+		auditVer = published.Version
+		eventType = "worker.published"
+		if err := enqueueWorkerEvent(ctx, tx, eventType, updatedWorker, published); err != nil {
+			return db.WorkerVersionRow{}, fmt.Errorf("enqueue %s: %w", eventType, err)
+		}
+	default:
+		return db.WorkerVersionRow{}, fmt.Errorf("unsupported latest version status %q for bulk update", latest.Status)
+	}
+
+	// Per-mutation audit row. Use the action suffix that matches the
+	// single-worker publish flow so the granular trail is comparable.
+	if err := recordAudit(ctx, tx, worker.TenantID, "worker.bulk_model_updated", "worker", worker.ID,
+		audit.Snapshot(workerVersionAuditSnapshot(before)),
+		audit.Snapshot(workerVersionAuditSnapshot(after))); err != nil {
+		return db.WorkerVersionRow{}, fmt.Errorf("audit worker.bulk_model_updated: %w", err)
+	}
+	_ = auditVer
+	return after, nil
+}
+
+// skippedOutcome is a small constructor that packages the per-worker
+// Skipped outcome with its reason.
+func skippedOutcome(workerID string, reason apiv1.BulkUpdateWorkerModelSkipReason) *apiv1.BulkUpdateWorkerModelResult {
+	return &apiv1.BulkUpdateWorkerModelResult{
+		WorkerId: workerID,
+		Outcome: &apiv1.BulkUpdateWorkerModelResult_Skipped{
+			Skipped: &apiv1.BulkUpdateWorkerModelSkipped{Reason: reason},
+		},
+	}
+}
+
+// recordBulkAudit writes a single audit row that ties the batch together.
+// It runs in its own (very small) tenant transaction so a failure here
+// never rolls back the per-worker work — the per-mutation audit rows
+// already form the granular trail.
+func (s *Service) recordBulkAudit(ctx context.Context, tenantID, modelRef string, ids []string, resp *apiv1.BulkUpdateWorkerModelResponse) error {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin audit tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.bulk_model_updated_batch", "worker", tenantID,
+		nil,
+		audit.Snapshot(map[string]any{
+			"model_ref":     modelRef,
+			"count":         len(ids),
+			"updated_count": resp.UpdatedCount,
+			"skipped_count": resp.SkippedCount,
+			"error_count":   resp.ErrorCount,
+		})); err != nil {
+		return fmt.Errorf("audit worker.bulk_model_updated_batch: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit audit tx: %w", err)
+	}
+	return nil
+}
+
 // GetWorker returns a single worker header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {

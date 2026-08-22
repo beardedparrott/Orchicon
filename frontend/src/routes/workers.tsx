@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX, FolderPlus, GripVertical } from "lucide-react";
+import { Trash2, SearchX, FolderPlus, GripVertical, PencilLine } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 
-import { useBatchDeleteWorkers, useListWorkers } from "@/api/workers";
+import {
+  useBatchDeleteWorkers,
+  useBulkUpdateWorkerModel,
+  useListWorkers,
+} from "@/api/workers";
 import { WorkerStatus, type Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
+import type { BulkUpdateWorkerModelResult } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { BulkChangeWorkerModelDialog } from "@/components/BulkChangeWorkerModelDialog";
 import { CategoryFolder } from "@/components/CategoryFolder";
 import { CategoryDndContext } from "@/components/CategoryDndContext";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
@@ -38,6 +44,10 @@ function WorkersPage() {
   const [sortOrder, setSortOrder] = useState("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showCreateCategory, setShowCreateCategory] = useState(false);
+  const [showChangeModel, setShowChangeModel] = useState(false);
+  const [changeModelResults, setChangeModelResults] = useState<
+    BulkUpdateWorkerModelResult[] | null
+  >(null);
 
   const statusFilter =
     status === "all" ? undefined : (Number(status) as WorkerStatus);
@@ -47,6 +57,7 @@ function WorkersPage() {
     error,
   } = useListWorkers({ search, status: statusFilter, sortBy, sortOrder });
   const batchDelete = useBatchDeleteWorkers();
+  const bulkUpdateModel = useBulkUpdateWorkerModel();
 
   const prefs = useCategoryPreferences("workers");
   const { ensureSeeded } = prefs;
@@ -138,6 +149,31 @@ function WorkersPage() {
     });
   };
 
+  const handleChangeModelOpen = () => {
+    if (selected.size === 0) return;
+    setChangeModelResults(null);
+    setShowChangeModel(true);
+  };
+
+  const handleChangeModelApply = (input: { workerIds: string[]; modelRef: string }) => {
+    bulkUpdateModel.mutate(input, {
+      onSuccess: (res) => {
+        setChangeModelResults(res.results);
+        // Clear selection only after the user dismisses the summary (the
+        // dialog stays open in result-summary mode).
+      },
+    });
+  };
+
+  const handleChangeModelClose = () => {
+    setShowChangeModel(false);
+    setChangeModelResults(null);
+    // Successful apply → clear selection so the bulk bar disappears.
+    if (!bulkUpdateModel.isError && changeModelResults !== null) {
+      setSelected(new Set());
+    }
+  };
+
   const existingCategoryNames = prefs.state.categories.map((c) => c.name);
 
   return (
@@ -199,15 +235,25 @@ function WorkersPage() {
           New Category
         </Button>
         {selected.size > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleBatchDelete}
-            disabled={batchDelete.isPending}
-          >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Delete {selected.size} selected
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleChangeModelOpen}
+            >
+              <PencilLine className="mr-1 h-3.5 w-3.5" />
+              Change model…
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleBatchDelete}
+              disabled={batchDelete.isPending}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              Delete {selected.size} selected
+            </Button>
+          </>
         )}
       </div>
 
@@ -312,6 +358,20 @@ function WorkersPage() {
           prefs.createCategory(name, description)
         }
         existingNames={existingCategoryNames}
+      />
+
+      <BulkChangeWorkerModelDialog
+        open={showChangeModel}
+        onOpenChange={(open) => {
+          if (!open) handleChangeModelClose();
+          else setShowChangeModel(true);
+        }}
+        selectedIds={Array.from(selected)}
+        workers={workers}
+        onSubmit={handleChangeModelApply}
+        isPending={bulkUpdateModel.isPending}
+        error={bulkUpdateModel.error as Error | null}
+        results={changeModelResults}
       />
     </div>
   );

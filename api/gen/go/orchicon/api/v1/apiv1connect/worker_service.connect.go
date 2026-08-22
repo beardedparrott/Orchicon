@@ -94,6 +94,9 @@ const (
 	// WorkerServiceGetEditLockProcedure is the fully-qualified name of the WorkerService's GetEditLock
 	// RPC.
 	WorkerServiceGetEditLockProcedure = "/orchicon.api.v1.WorkerService/GetEditLock"
+	// WorkerServiceBulkUpdateWorkerModelProcedure is the fully-qualified name of the WorkerService's
+	// BulkUpdateWorkerModel RPC.
+	WorkerServiceBulkUpdateWorkerModelProcedure = "/orchicon.api.v1.WorkerService/BulkUpdateWorkerModel"
 )
 
 // WorkerServiceClient is a client for the orchicon.api.v1.WorkerService service.
@@ -150,6 +153,13 @@ type WorkerServiceClient interface {
 	ReleaseEditLock(context.Context, *connect.Request[v1.ReleaseEditLockRequest]) (*connect.Response[v1.ReleaseEditLockResponse], error)
 	// GetEditLock returns the current edit lock state for a Worker, if any.
 	GetEditLock(context.Context, *connect.Request[v1.GetEditLockRequest]) (*connect.Response[v1.GetEditLockResponse], error)
+	// BulkUpdateWorkerModel sets model_ref on each requested Worker and
+	// publishes the affected version in a single round trip (mirrors the
+	// manual edit-then-republish flow but applied atomically per worker).
+	// Per-worker outcomes are returned (updated / skipped / error) so
+	// partial success is observable. Max 100 ids per call (mirrors
+	// BatchDeleteExecutions).
+	BulkUpdateWorkerModel(context.Context, *connect.Request[v1.BulkUpdateWorkerModelRequest]) (*connect.Response[v1.BulkUpdateWorkerModelResponse], error)
 }
 
 // NewWorkerServiceClient constructs a client for the orchicon.api.v1.WorkerService service. By
@@ -271,6 +281,12 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("GetEditLock")),
 			connect.WithClientOptions(opts...),
 		),
+		bulkUpdateWorkerModel: connect.NewClient[v1.BulkUpdateWorkerModelRequest, v1.BulkUpdateWorkerModelResponse](
+			httpClient,
+			baseURL+WorkerServiceBulkUpdateWorkerModelProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("BulkUpdateWorkerModel")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -294,6 +310,7 @@ type workerServiceClient struct {
 	acquireEditLock            *connect.Client[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse]
 	releaseEditLock            *connect.Client[v1.ReleaseEditLockRequest, v1.ReleaseEditLockResponse]
 	getEditLock                *connect.Client[v1.GetEditLockRequest, v1.GetEditLockResponse]
+	bulkUpdateWorkerModel      *connect.Client[v1.BulkUpdateWorkerModelRequest, v1.BulkUpdateWorkerModelResponse]
 }
 
 // CreateWorker calls orchicon.api.v1.WorkerService.CreateWorker.
@@ -386,6 +403,11 @@ func (c *workerServiceClient) GetEditLock(ctx context.Context, req *connect.Requ
 	return c.getEditLock.CallUnary(ctx, req)
 }
 
+// BulkUpdateWorkerModel calls orchicon.api.v1.WorkerService.BulkUpdateWorkerModel.
+func (c *workerServiceClient) BulkUpdateWorkerModel(ctx context.Context, req *connect.Request[v1.BulkUpdateWorkerModelRequest]) (*connect.Response[v1.BulkUpdateWorkerModelResponse], error) {
+	return c.bulkUpdateWorkerModel.CallUnary(ctx, req)
+}
+
 // WorkerServiceHandler is an implementation of the orchicon.api.v1.WorkerService service.
 type WorkerServiceHandler interface {
 	// CreateWorker creates a new Worker in draft state with its first
@@ -440,6 +462,13 @@ type WorkerServiceHandler interface {
 	ReleaseEditLock(context.Context, *connect.Request[v1.ReleaseEditLockRequest]) (*connect.Response[v1.ReleaseEditLockResponse], error)
 	// GetEditLock returns the current edit lock state for a Worker, if any.
 	GetEditLock(context.Context, *connect.Request[v1.GetEditLockRequest]) (*connect.Response[v1.GetEditLockResponse], error)
+	// BulkUpdateWorkerModel sets model_ref on each requested Worker and
+	// publishes the affected version in a single round trip (mirrors the
+	// manual edit-then-republish flow but applied atomically per worker).
+	// Per-worker outcomes are returned (updated / skipped / error) so
+	// partial success is observable. Max 100 ids per call (mirrors
+	// BatchDeleteExecutions).
+	BulkUpdateWorkerModel(context.Context, *connect.Request[v1.BulkUpdateWorkerModelRequest]) (*connect.Response[v1.BulkUpdateWorkerModelResponse], error)
 }
 
 // NewWorkerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -557,6 +586,12 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(workerServiceMethods.ByName("GetEditLock")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workerServiceBulkUpdateWorkerModelHandler := connect.NewUnaryHandler(
+		WorkerServiceBulkUpdateWorkerModelProcedure,
+		svc.BulkUpdateWorkerModel,
+		connect.WithSchema(workerServiceMethods.ByName("BulkUpdateWorkerModel")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.WorkerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkerServiceCreateWorkerProcedure:
@@ -595,6 +630,8 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceReleaseEditLockHandler.ServeHTTP(w, r)
 		case WorkerServiceGetEditLockProcedure:
 			workerServiceGetEditLockHandler.ServeHTTP(w, r)
+		case WorkerServiceBulkUpdateWorkerModelProcedure:
+			workerServiceBulkUpdateWorkerModelHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -674,4 +711,8 @@ func (UnimplementedWorkerServiceHandler) ReleaseEditLock(context.Context, *conne
 
 func (UnimplementedWorkerServiceHandler) GetEditLock(context.Context, *connect.Request[v1.GetEditLockRequest]) (*connect.Response[v1.GetEditLockResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.GetEditLock is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) BulkUpdateWorkerModel(context.Context, *connect.Request[v1.BulkUpdateWorkerModelRequest]) (*connect.Response[v1.BulkUpdateWorkerModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.BulkUpdateWorkerModel is not implemented"))
 }

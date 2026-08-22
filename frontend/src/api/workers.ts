@@ -194,6 +194,23 @@ export function useBatchDeleteWorkers() {
   });
 }
 
+// useBulkUpdateWorkerModel sets model_ref on every requested worker and
+// publishes the affected version in a single round trip. Per-worker
+// outcomes (updated / skipped / error) are returned in the response so
+// the caller can render a per-worker result summary.
+export function useBulkUpdateWorkerModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerIds: string[]; modelRef: string }) => {
+      const res = await workerClient.bulkUpdateWorkerModel(input);
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
 // useUpdateWorker updates the mutable header fields of a draft worker.
 export function useUpdateWorker() {
   const qc = useQueryClient();
