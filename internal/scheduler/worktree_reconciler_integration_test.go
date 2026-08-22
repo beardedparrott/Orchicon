@@ -671,6 +671,47 @@ func setRunStatus(t *testing.T, env *worktreeTestEnv, status string) {
 	}
 }
 
+// setRunPrState writes the authoritative pr_state into the run's
+// run_context JSONB, the way the per-branch DevOps worker does after a
+// successful merge (`gh pr merge --squash` + pr_state="merged").
+func setRunPrState(t *testing.T, env *worktreeTestEnv, state string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("set pr_state: begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("set pr_state: get run: %v", err)
+	}
+	rc := []byte(`{"pr_state":"` + state + `"}`)
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		RunContext: &rc,
+	}); err != nil {
+		t.Fatalf("set pr_state: update run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("set pr_state: commit: %v", err)
+	}
+}
+
+// getStepRun reads a step run row outside a transaction.
+func getStepRun(t *testing.T, env *worktreeTestEnv, stepRunID string) db.WorkflowStepRunRow {
+	t.Helper()
+	ttx, err := env.pool.BeginTenantTx(context.Background(), approvalTestTenant)
+	if err != nil {
+		t.Fatalf("get step run: begin tx: %v", err)
+	}
+	defer ttx.Rollback(context.Background())
+	sr, err := db.GetWorkflowStepRun(context.Background(), ttx.Tx, approvalTestTenant, stepRunID)
+	if err != nil {
+		t.Fatalf("get step run: %v", err)
+	}
+	return sr
+}
+
 // assertPruned verifies the AC1/AC2 postconditions on the run row: pruned
 // status, cleared path, branch retained.
 func assertPruned(t *testing.T, env *worktreeTestEnv) db.WorkflowRunRow {
@@ -927,6 +968,262 @@ func TestWorktreePruneDeletesBranchMergedOnRemote(t *testing.T) {
 	// the LOCAL develop ref never advanced.
 	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
 		t.Fatalf("merged-on-remote branch %q was NOT deleted — stale-ref gate kept it", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneDeletesBranchSquashMergedOnRemote is the regression test
+// for the squash-merge leak: the DevOps worker merges via
+// `gh pr merge --squash`, which lands a NEW commit on develop whose parent is
+// the base tip — the PR branch tip is NEVER an ancestor of the base, so an
+// ancestry-only delete gate would refuse deletion forever. With the run's
+// authoritative pr_state == "merged" recorded, the reconciler must prove the
+// branch merged and prune it (and its worktree container) on terminal
+// success.
+func TestWorktreePruneDeletesBranchSquashMergedOnRemote(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Worker work on the branch.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "squash-me.txt"), []byte("squashed work\n"), 0o644); err != nil {
+		t.Fatalf("write squashed file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "squashed work")
+
+	// Create a bare remote, push develop + the feature branch, then SQUASH
+	// merge the feature branch into develop ON THE REMOTE — exactly what the
+	// DevOps worker's `gh pr merge --squash` does.
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
+	gitRun(t, env.repo, "remote", "add", "origin", bare)
+	gitRun(t, env.repo, "push", "origin", "develop")
+	gitRun(t, env.repo, "push", "origin", env.expectedBranch())
+
+	scratch := t.TempDir()
+	gitRun(t, scratch, "clone", bare, filepath.Join(scratch, "work"))
+	work := filepath.Join(scratch, "work")
+	gitRun(t, work, "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, work, "config", "user.name", "Worktree Test")
+	gitRun(t, work, "merge", "--squash", "origin/"+env.expectedBranch())
+	gitRun(t, work, "commit", "-m", "squash-merge PR")
+	gitRun(t, work, "push", "origin", "develop")
+
+	// Guard: the branch tip must NOT be an ancestor of the squashed base —
+	// this is exactly the case the old ancestry-only gate wrongly rejected.
+	gitRun(t, env.repo, "fetch", "origin", "develop")
+	if err := exec.Command("git", "-C", env.repo, "merge-base", "--is-ancestor", env.expectedBranch(), "origin/develop").Run(); err == nil {
+		t.Fatalf("setup wrong: branch tip IS an ancestor of the squashed base; not a squash scenario")
+	}
+	if err := exec.Command("git", "-C", env.repo, "merge-base", "--is-ancestor", env.expectedBranch(), "develop").Run(); err == nil {
+		t.Fatalf("setup wrong: local develop already contains the branch; no squash gap to guard")
+	}
+
+	// The DevOps worker writes the authoritative merged state post-merge.
+	setRunPrState(t, env, "merged")
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// The squash-merged branch must be deleted even though its tip is not an
+	// ancestor of the base — this is the leak fix.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("squash-merged branch %q was NOT deleted — squash-aware pruning failed", env.expectedBranch())
+	}
+	// The run worktree container is reaped too.
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("run worktree dir still exists after prune: %v", err)
+	}
+}
+
+// TestWorktreePruneKeepsSquashWithoutPrState locks in the no-delete-on-
+// uncertainty invariant for the squash-aware gate: a completed run whose
+// branch was squash-merged BUT whose run row records no pr_state must KEEP
+// the branch — no authoritative proof applies, and the remote-ref-gone
+// fallback is inconclusive because the branch still exists on the remote.
+func TestWorktreePruneKeepsSquashWithoutPrState(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "unprovable.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "unprovable squashed work")
+
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
+	gitRun(t, env.repo, "remote", "add", "origin", bare)
+	gitRun(t, env.repo, "push", "origin", "develop")
+	gitRun(t, env.repo, "push", "origin", env.expectedBranch())
+
+	scratch := t.TempDir()
+	gitRun(t, scratch, "clone", bare, filepath.Join(scratch, "work"))
+	work := filepath.Join(scratch, "work")
+	gitRun(t, work, "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, work, "config", "user.name", "Worktree Test")
+	gitRun(t, work, "merge", "--squash", "origin/"+env.expectedBranch())
+	gitRun(t, work, "commit", "-m", "squash-merge PR")
+	gitRun(t, work, "push", "origin", "develop")
+
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
+		t.Fatalf("branch %q was deleted without pr_state — no delete on uncertainty", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneStepBranchSquashMergedOnRemote extends the squash-aware
+// proof to parallel-branch step runs: a step sub-branch whose run's PR was
+// squash-merged (pr_state=merged) is reclaimed on terminal success. It also
+// covers the orphan sweep — after the sole step worktree inside the empty
+// <runID>/ container is pruned, the vacated run-namespaced container is
+// reaped.
+func TestWorktreePruneStepBranchSquashMergedOnRemote(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Seed a parallel-branch child step run for the run.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, WorkflowRunID: env.run.ID,
+		StepID: "step-branch-a", StepName: "QA", StepKind: "task",
+		Status: domain.StepRunReady, Result: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create branch step run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+
+	// Provision the branch worktree FIRST — this creates <runID>/ as a plain
+	// container holding only the nested <runID>/<stepRunID> worktree (the run
+	// worktree is never provisioned, so the container is a pure step-run
+	// container, the shape the orphan sweep reaps).
+	key := env.run.ID + ":" + sr.ID
+	if res := env.rec.Reconcile(ctx, key); res.Error != nil {
+		t.Fatalf("provision branch worktree: %v", res.Error)
+	}
+	branchPath := filepath.Join(env.repo, worktreeDirName, env.run.ID, sr.ID)
+	if _, err := os.Stat(branchPath); err != nil {
+		t.Fatalf("branch worktree missing after provision: %v", err)
+	}
+	step := getStepRun(t, env, sr.ID)
+	if step.WorktreeBranch == "" {
+		t.Fatalf("step run was not recorded with a branch: %+v", step)
+	}
+
+	// Worker work on the step branch.
+	gitRun(t, branchPath, "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, branchPath, "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(branchPath, "step-squash.txt"), []byte("step work\n"), 0o644); err != nil {
+		t.Fatalf("write step file: %v", err)
+	}
+	gitRun(t, branchPath, "add", ".")
+	gitRun(t, branchPath, "commit", "-m", "step squashed work")
+
+	// Create a bare remote, push develop + the step branch, then SQUASH merge
+	// the step branch into develop on the remote.
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
+	gitRun(t, env.repo, "remote", "add", "origin", bare)
+	gitRun(t, env.repo, "push", "origin", "develop")
+	gitRun(t, env.repo, "push", "origin", step.WorktreeBranch)
+
+	scratch := t.TempDir()
+	gitRun(t, scratch, "clone", bare, filepath.Join(scratch, "work"))
+	work := filepath.Join(scratch, "work")
+	gitRun(t, work, "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, work, "config", "user.name", "Worktree Test")
+	gitRun(t, work, "merge", "--squash", "origin/"+step.WorktreeBranch)
+	gitRun(t, work, "commit", "-m", "squash-merge step PR")
+	gitRun(t, work, "push", "origin", "develop")
+
+	// Guard: the step branch tip must NOT be an ancestor of the squashed base.
+	gitRun(t, env.repo, "fetch", "origin", "develop")
+	if err := exec.Command("git", "-C", env.repo, "merge-base", "--is-ancestor", step.WorktreeBranch, "origin/develop").Run(); err == nil {
+		t.Fatalf("setup wrong: step branch tip IS an ancestor of the squashed base")
+	}
+
+	// Authoritative merged state + terminal run.
+	setRunPrState(t, env, "merged")
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	if res := env.rec.Reconcile(ctx, key); res.Error != nil {
+		t.Fatalf("reconcile (prune step): %v", res.Error)
+	}
+
+	// The squash-merged step sub-branch must be deleted under pr_state=merged.
+	if out := gitRun(t, env.repo, "branch", "--list", step.WorktreeBranch); out != "" {
+		t.Fatalf("squash-merged step branch %q was NOT deleted", step.WorktreeBranch)
+	}
+	// The step worktree is removed and the vacated <runID>/ container is swept.
+	if _, err := os.Stat(branchPath); !os.IsNotExist(err) {
+		t.Fatalf("step worktree dir still exists after prune: %v", err)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("empty run container was NOT swept: %v", err)
+	}
+}
+
+// TestWorktreePruneOrphanContainerSweepKeepsForeign locks in the guard on
+// the orphan sweep: an empty run-namespaced container is reaped, while a
+// foreign (non-native) directory under .orchicon-worktrees/ is never
+// touched.
+func TestWorktreePruneOrphanContainerSweepKeepsForeign(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// An empty orphan run-namespace (a past run whose worktrees were pruned).
+	orphan := filepath.Join(env.repo, worktreeDirName, "01ORPHANRUNID000000000000")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+	// A foreign directory that must never be deleted.
+	foreign := filepath.Join(env.repo, worktreeDirName, "user-data-notes")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatalf("mkdir foreign: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "keep.txt"), []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write foreign file: %v", err)
+	}
+
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+
+	// The empty orphan container is swept.
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("empty orphan container was NOT swept: %v", err)
+	}
+	// The foreign directory is untouched.
+	if _, err := os.Stat(filepath.Join(foreign, "keep.txt")); err != nil {
+		t.Fatalf("foreign directory was modified/deleted: %v", err)
 	}
 }
 
