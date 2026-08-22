@@ -13,6 +13,11 @@ import (
 // (docs/08 §5.2, docs/09 §3.7). The AI Gateway writes these as the
 // source of truth; OTel metrics mirror them to VictoriaMetrics for fast
 // telemetry queries.
+//
+// CacheReadTokens / CacheWriteTokens / ReasoningTokens are the canonical
+// usage-sample buckets (docs canonical-usage-sample-contract §1). Reason
+// tokens are a sub-bucket of CompletionTokens and are NOT additive to
+// TotalTokens.
 type UsageRecordRow struct {
 	ID               string
 	TenantID         string
@@ -23,7 +28,10 @@ type UsageRecordRow struct {
 	Provider         string
 	Model            string
 	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
 	CompletionTokens int64
+	ReasoningTokens  int64
 	TotalTokens      int64
 	CostUSD          float64
 	CorrelationID    string
@@ -49,19 +57,19 @@ func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (Usag
 		row.CreatedAt = time.Now().UTC()
 	}
 	if row.TotalTokens == 0 {
-		row.TotalTokens = row.PromptTokens + row.CompletionTokens
+		row.TotalTokens = row.PromptTokens + row.CacheReadTokens + row.CacheWriteTokens + row.CompletionTokens
 	}
 	const q = `INSERT INTO usage_records
 		(id, tenant_id, project_id, task_id, execution_id, worker_id,
 		 provider, model, prompt_tokens, completion_tokens, total_tokens,
 		 cost_usd, correlation_id, trace_id, occurred_at, created_at,
-		 workflow_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+		 workflow_run_id, cache_read_tokens, cache_write_tokens, reasoning_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 	if _, err := tx.Exec(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.ExecutionID, row.WorkerID,
 		row.Provider, row.Model, row.PromptTokens, row.CompletionTokens, row.TotalTokens,
 		row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
-		row.WorkflowRunID,
+		row.WorkflowRunID, row.CacheReadTokens, row.CacheWriteTokens, row.ReasoningTokens,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: create usage record: %w", err)
 	}
@@ -92,7 +100,8 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		f.PageSize = 100
 	}
 	const q = `SELECT ur.id, ur.tenant_id, ur.project_id, ur.task_id, ur.execution_id, ur.worker_id,
-		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.total_tokens,
+		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.cache_read_tokens,
+		ur.cache_write_tokens, ur.reasoning_tokens, ur.total_tokens,
 		ur.cost_usd, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
 		COALESCE(w.name, '') AS worker_name,
 		COALESCE(wi.title, '') AS task_title
@@ -132,14 +141,14 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 // CostSummaryRow is an aggregated cost roll-up at one drill-down level
 // (docs/10 §11: Tenant → Project → Task → Execution).
 type CostSummaryRow struct {
-	GroupKey          string
-	DisplayName       string // human-readable name populated by the service layer
-	TotalTokens       int64
-	PromptTokens      int64
-	CompletionTokens  int64
-	CostUSD           float64
-	ExecutionCount    int32
-	RecordCount       int32
+	GroupKey         string
+	DisplayName      string // human-readable name populated by the service layer
+	TotalTokens      int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CostUSD          float64
+	ExecutionCount   int32
+	RecordCount      int32
 }
 
 // CostRollupLevel selects the group-by column for GetCostRollup.
@@ -264,13 +273,13 @@ type WorkflowRunCostRow struct {
 
 // WorkflowWorkerCostRow is a per-worker cost summary within one run.
 type WorkflowWorkerCostRow struct {
-	WorkerID        string
-	WorkerName      string
-	TotalCostUSD    float64
-	TotalTokens     int64
-	PromptTokens    int64
+	WorkerID         string
+	WorkerName       string
+	TotalCostUSD     float64
+	TotalTokens      int64
+	PromptTokens     int64
 	CompletionTokens int64
-	ExecutionCount  int32
+	ExecutionCount   int32
 }
 
 // GetWorkflowAggregateCosts returns cost grouped by workflow (across all
@@ -438,7 +447,8 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 	var occurredAt, createdAt pgtype.Timestamptz
 	if err := rows.Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.ExecutionID, &r.WorkerID,
-		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
+		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.CacheReadTokens,
+		&r.CacheWriteTokens, &r.ReasoningTokens, &r.TotalTokens,
 		&r.CostUSD, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
 		&r.WorkerName, &r.TaskTitle,
 	); err != nil {

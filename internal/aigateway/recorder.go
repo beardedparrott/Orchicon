@@ -28,7 +28,21 @@ func NewUsageRecorder(pool *db.Pool, log *slog.Logger) *UsageRecorder {
 }
 
 // UsageInput is the usage sample from an adapter telemetry event
-// (docs/04 §6.1 step_finish carries tokens + cost).
+// (docs/04 §6.1 step_finish carries tokens + cost). It is the canonical,
+// provider-agnostic shape every adapter normalizes into before the gateway
+// records it — the gateway never branches on provider.
+//
+// Token buckets (docs §canonical-usage-sample-contract):
+//   - PromptTokens     brand-new input tokens (not served from cache)
+//   - CacheReadTokens  prompt tokens served from an existing cache entry
+//   - CacheWriteTokens prompt tokens newly stored to cache (create/save)
+//   - CompletionTokens model-generated output tokens
+//   - ReasoningTokens  OPTIONAL sub-bucket of CompletionTokens (not additive)
+//
+// TotalTokens is NOT carried here: it is derived by UsageRecorder.Record as
+// the four-bucket sum (Prompt+CacheRead+CacheWrite+Completion). Reasoning is
+// deliberately excluded — providers that report it separately bill it as
+// output, so adding it would double-count.
 type UsageInput struct {
 	TenantID         string
 	ProjectID        string
@@ -38,7 +52,10 @@ type UsageInput struct {
 	Provider         string
 	Model            string
 	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
 	CompletionTokens int64
+	ReasoningTokens  int64
 	CostUSD          float64
 	CorrelationID    string
 	TraceID          string
@@ -60,8 +77,11 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 		Provider:         in.Provider,
 		Model:            in.Model,
 		PromptTokens:     in.PromptTokens,
+		CacheReadTokens:  in.CacheReadTokens,
+		CacheWriteTokens: in.CacheWriteTokens,
 		CompletionTokens: in.CompletionTokens,
-		TotalTokens:      in.PromptTokens + in.CompletionTokens,
+		ReasoningTokens:  in.ReasoningTokens,
+		TotalTokens:      in.PromptTokens + in.CacheReadTokens + in.CacheWriteTokens + in.CompletionTokens,
 		CostUSD:          in.CostUSD,
 		CorrelationID:    in.CorrelationID,
 		TraceID:          in.TraceID,
