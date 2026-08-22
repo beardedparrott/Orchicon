@@ -633,6 +633,7 @@ orchicon version
 | `orchicon serve` | Run the control plane with embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon db` | Database maintenance: `backup`, `restore`, `list`, `prune` |
+| `orchicon backfill-pr` | Idempotently backfill real PR URLs onto already-completed git-backed runs (resolves each terminal run's branch via `gh --state all`; writes `pr_url`/`pr_state`) |
 | `orchicon version` | Print installed version |
 
 ### Quick Start (First Run)
@@ -737,6 +738,8 @@ Shared presentation lives in `frontend/src/components/work-items/` (meta, badges
 
 **Acceptance Review:** the ticket also gains a first-class **Acceptance Review** field (`acceptance_review`, markdown) written in the same transaction that flips the item to `succeeded`/`failed`. It is a deterministic, human-readable aggregation of the run's own step results — the per-step `_summary`/`_decision`/`_issues` and any recovery episodes (the same data `_run_narrative` reads) — rendered as "What was delivered" (and, on a failed run, "Not delivered / needs attention"). It is *not* an LLM summarizer call: the reconciler runs on the critical path in a hot loop, and the step summaries are already the workers' own account of the work done (invariant #7 — no implicit model selection). The field is bounded (1 MiB), editable by humans via `UpdateWorkItem` (auto-generated reviews can be corrected), and empty until a bound run completes (standalone dispatches never populate it).
 
+**Archive / restore:** a terminal work item (`succeeded`/`failed`/`cancelled`/`skipped`) can be **archived** (`ArchiveWorkItem`) — it is hidden from every normal work-item view (board, tree, list, sequence, workflows, counts). Archiving is blocked while the item has children (archive the children first) and is reversible via `RestoreWorkItem`, which returns it to the active views with the terminal status it was archived from. A dedicated **Archive** view lists archived items with a Restore action; the Ask Orchicon `archive_work_item`/`restore_work_item` tools expose the same surface. Mirrors the project-archive pattern (`archived_at` + `archived_from_status` bookkeeping).
+
 #### Viewing Schedules
 1. Navigate to **Schedules** in the sidebar
 2. The **Upcoming** view (default) lists scheduled work items (`status = scheduled`) **and** recurring work items (`status = recurring`) in chronological order with their next runtimes, grouped by local day (Today / Tomorrow / weekday date). Recurring items use `next_run_at` (the computed next occurrence) as their effective fire time, so the next occurrence drives their position in the agenda. Below the scheduled agenda, a **Queued** section lists the not-yet-armed children of a running sequence parent (pending items derived from the full project list — sequence children carry no `scheduled_start_at` of their own, only the parent is scheduled), ordered by chain order
@@ -825,6 +828,9 @@ A run carries a facts ledger so later steps inherit established facts instead of
 **Fan-in loop decisions (parallel review/QA):**
 A `loop_decision` step may depend on **multiple** upstream steps. The gate waits until **all** upstreams are terminal, then aggregates their decisions: failure is decisive — if ANY upstream failed (or reported `_decision: failure`) the whole chain loops back to `loop_branch`; otherwise it proceeds forward only when every upstream succeeded. The non-human coding templates use this to run PR Reviewer and QA Engineer **in parallel** after the implementation step and fan both into a single gate before the Code Approver — the approval step then receives both review and QA results in its execution history, and a rejection by either loops the implementer's step and re-runs both. On re-entry both upstream steps are re-created (the chain between `loop_branch` and the gate), so QA always validates the final code state.
 
+**Worktrees, branches, and PR capture (git-backed runs):**
+Git-backed runs are dispatched with their working directory set to an **isolated worktree** at `<project_dir>/.orchicon-worktrees/<runID>/`, created by the `WorktreeReconciler` against a per-run branch off `develop` (providing a base ref). A **retry of a failed run re-attaches to the same branch** — the previous attempt's commits carry over (never `-b` a new branch); the branch is deleted **only on run SUCCESS**, gated on it being merged into the base (and never the current branch / `main` / `develop`; `origin develop` is fetched before the merge gate so a `gh pr merge` that advanced only the remote is not mistaken for unmerged). Non-repo projects fall back to in-place runs in `project_dir`. **PR links**: the per-branch worker reports `PR_URL:` / `PR_STATE:` lines in its summary (the last occurrence wins), which the scheduler captures into the run's `run_context` JSONB and mirrors onto the `WorkflowRun` / `WorkerExecution` rows — the board/list/run/execution views render a PR chip only for completed runs with a real captured URL (no compare-page fallback). For runs that completed before capture, `orchicon backfill-pr` idempotently resolves each git-backed terminal run's branch to its real PR via `gh --state all` and writes `pr_url`/`pr_state` into both the run context and the execution columns; no-PR runs stay linkless.
+
 #### Viewing Execution Results
 1. Navigate to **Executions** for the full list
 2. Click an execution to see: streaming output, conversation, cost, duration
@@ -837,7 +843,7 @@ A `loop_decision` step may depend on **multiple** upstream steps. The gate waits
 3. The recovery summary is written to the step run (`_recovery_summary`) so the replacement execution's prompt includes the failure context (prevents repeating the same failure)
 4. L1 → L2 → L3 escalation with bounded auto-relax
 5. View recovery timeline in the **Recovery** section; the ticket's run-level narrative (`_run_narrative.recoveries`) lists every episode
-6. **Advisory stalls do not fail executions.** The stall monitor flags `no_file_progress` when a worker goes the `no_file_diff` window without touching files (default 15m). Because reviewers/analysts may legitimately produce output for long stretches without writing files, an advisory stall never kills the subprocess and never fails the execution — it sets a non-terminal `stalled` health notice, keeps the execution `running`, and revives it to `healthy` when file progress resumes (`OnRecovered`). Only genuine hang/loop signals (`no_progress`, `text_loop`, `repetition`) hard-kill and route to recovery.
+6. **Advisory stalls are nudged first, not killed.** The stall monitor routes by what the worker is doing: `no_progress` (total silence — no responsive surface to reach) is **fatal** — the adapter hard-kills the subprocess, the execution is marked unhealthy, and the work item transitions to failed so the recover step activates on the next reconcile pass. `text_loop` / `repetition` / `no_file_progress` (the worker is generating text / issuing tool calls) get a **nudge first** — an advisory probe sent into the live session — and only escalate to an abort past the nudge reply/cooldown windows (tunable in Settings). **Repetition is result-aware**: only ERROR-status tool calls count toward the repetition threshold (a completed call or file progress resets the signature history — the normal build-fix-iterate-debug loop is real progress), and erroring calls have their volatile args normalized (write → key on path, edit → path + content fingerprint, bash → scrubbed command) so a worker looping on a blocked write collapses to one stable signature while genuinely distinct commands stay distinct.
 
 #### Policy Management
 1. Navigate to **Policies** → **New Policy**
@@ -1069,6 +1075,16 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   The SPA list follows the standard list-page pattern (search, status
   filter, select-all + per-row checkboxes, selection count, bulk
   Disable/Delete on ≥1 selected).
+- **Roles & entitlements (RBAC)** — Admin → Identity → **Roles** plus the
+  **Manage Identity Roles** picker (per identity, bound via `role_bindings`)
+  drive the role surface. A role carries a name and a set of
+  `entitlements` (validated against the known entitlement set); the built-in
+  `admin` role is **immutable** — it carries `["*"]` and `ListIdentityEntitlements`
+  treats a bound role named exactly `admin` as the tenant-admin bypass, so
+  it can never be renamed, re-entitled, or deleted (doing so would strand
+  the plane). Custom roles are created/edited/deleted through the Roles CRUD
+  RPCs (`CreateRole`/`UpdateRole`/`DeleteRole`, `auth:write`); project-scoped
+  bindings are a non-goal (roles are tenant-global).
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
   the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients
