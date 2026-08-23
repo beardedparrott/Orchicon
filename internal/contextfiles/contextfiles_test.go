@@ -263,8 +263,8 @@ func TestRenderManifest(t *testing.T) {
 	if !strings.Contains(strings.ToLower(out), "read the specific files you need") {
 		t.Fatalf("missing directory read-on-demand guidance:\n%s", out)
 	}
-	// Manifest is present.
-	if !strings.Contains(out, "big.txt (") {
+	// Manifest is present (large file as a size entry, not inlined).
+	if !strings.Contains(out, big+"` (") {
 		t.Fatalf("missing big.txt size entry:\n%s", out)
 	}
 }
