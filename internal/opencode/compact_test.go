@@ -19,7 +19,10 @@ import (
 // cache-aware cost trips when it reaches the configured cost_usd, with no
 // margin or fraction — the configured number is the threshold.
 func TestBudgetBreachedCostGate(t *testing.T) {
-	spec := budgetSpec{costUSD: float64Ptr(4.0)}
+	// tokens explicitly disabled so this test isolates the cost gate — an
+	// unset tokens field would otherwise resolve to the built-in 1,000,000
+	// default and mask the assertion below.
+	spec := budgetSpec{costUSD: float64Ptr(4.0), tokens: float64Ptr(0)}
 	// At the threshold → breach.
 	if !budgetBreached(spec, &budgetAccumulator{costUSD: 4.0}) {
 		t.Fatal("expected breach at exactly the cost threshold")
@@ -66,16 +69,41 @@ func TestBudgetBreachedTokenFallback(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedNoGate verifies that when neither cost_usd nor tokens is
-// configured, the gate never trips (wall-clock + stall remain the only live
-// killers).
-func TestBudgetBreachedNoGate(t *testing.T) {
-	acc := &budgetAccumulator{costUSD: 999, prompt: 1_000_000, completion: 1_000_000, cacheRead: 1_000_000}
-	if budgetBreached(budgetSpec{}, acc) {
-		t.Fatal("expected no breach when no budget gate is configured")
-	}
+// TestBudgetBreachedBuiltInDefaults verifies that when neither cost_usd nor
+// tokens is configured, the gate falls back to the built-in defaults
+// (defaultCompactCostUSD / defaultCompactTokens) instead of never
+// tripping — matching what Settings has always told operators an empty
+// field falls back to (frontend/src/routes/settings.tsx DefaultsTab).
+// A nil accumulator (no usage recorded yet) never breaches regardless.
+func TestBudgetBreachedBuiltInDefaults(t *testing.T) {
 	if budgetBreached(budgetSpec{}, nil) {
 		t.Fatal("expected no breach on a nil accumulator")
+	}
+	// Below both built-in defaults → no breach.
+	if budgetBreached(budgetSpec{}, &budgetAccumulator{costUSD: defaultCompactCostUSD - 0.01, prompt: 100}) {
+		t.Fatal("expected no breach below the built-in cost default")
+	}
+	// Cost crosses the built-in default → breach.
+	if !budgetBreached(budgetSpec{}, &budgetAccumulator{costUSD: defaultCompactCostUSD}) {
+		t.Fatalf("expected breach at the built-in cost default ($%v) with no configured budget", defaultCompactCostUSD)
+	}
+	// No cost recorded, but fresh tokens cross the built-in 1,000,000
+	// default → breach via the token fallback.
+	if !budgetBreached(budgetSpec{}, &budgetAccumulator{prompt: 900_000, completion: 100_000}) {
+		t.Fatal("expected breach at the built-in token default (1,000,000) with no configured budget")
+	}
+}
+
+// TestBudgetBreachedExplicitZeroDisables verifies that an explicit 0 (or
+// negative) cost_usd/tokens value opts a worker/tenant OUT of that gate
+// entirely, rather than resolving to the built-in default — mirroring
+// wallClockDeadline's "0 disables" convention so operators have a way to
+// turn a dimension off instead of just leaving it unset.
+func TestBudgetBreachedExplicitZeroDisables(t *testing.T) {
+	zero := float64Ptr(0)
+	acc := &budgetAccumulator{costUSD: 999, prompt: 5_000_000, completion: 5_000_000}
+	if budgetBreached(budgetSpec{costUSD: zero, tokens: zero}, acc) {
+		t.Fatal("expected no breach when both gates are explicitly disabled (0)")
 	}
 }
 
@@ -350,6 +378,203 @@ func TestMaybeCompactMalformedModelRef(t *testing.T) {
 	r.maybeCompact()
 	if rec.count() != 0 {
 		t.Fatalf("expected no compact on a malformed model ref, got %d", rec.count())
+	}
+}
+
+// TestMaybeCompactTurnCountTriggerWithNoBudgetBreach verifies the turn-count
+// gate fires compaction on its own cadence even when cost/tokens never
+// breach — the scenario a cheap-cache provider (DeepSeek) produces: many
+// turns, individually inexpensive, but cumulatively resending an
+// ever-growing cached prefix. costUSD/tokens are explicitly disabled (0) so
+// only the turn-count gate is live.
+func TestMaybeCompactTurnCountTriggerWithNoBudgetBreach(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-compact-turns", TenantID: "tnt_dev"},
+		manifest:  scheduler.ExecutionManifest{ModelRef: "opencode/deepseek-v4-flash-free"},
+		client:    NewSessionClient(srv.URL, "", ""),
+		sessionID: "sess-1",
+		modelRef:  "opencode/deepseek-v4-flash-free",
+		budget:    &budgetAccumulator{steps: 1},
+		budgetSpec: budgetSpec{
+			costUSD: float64Ptr(0), tokens: float64Ptr(0), compactMaxTurns: float64Ptr(4),
+		},
+		done: make(chan struct{}),
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
+	t.Setenv("ORCHICON_COMPACT_MAX", "5")
+	for step := 1; step <= 9; step++ {
+		r.budget.steps = step
+		r.maybeCompact()
+	}
+	// Turns 1-3: below the 4-turn cap → no compact. Turn 4: compact #1.
+	// Turns 5-7: within the re-arm window of the NEXT floor, but the
+	// turn-count gate re-checks turnsSinceLastCompact every call, so it
+	// re-fires once turnsSinceLastCompact reaches 4 again at turn 8.
+	if rec.count() != 2 {
+		t.Fatalf("expected 2 turn-count-triggered compacts over 9 steps (cap=4), got %d", rec.count())
+	}
+	firstCall := rec.calls[0]
+	if firstCall.body["providerID"] != "opencode" || firstCall.body["modelID"] != "deepseek-v4-flash-free" {
+		t.Fatalf("unexpected compact call body: %v", firstCall.body)
+	}
+}
+
+// TestMaybeCompactTurnCountGateDisabled verifies an explicit 0 for
+// compact_max_turns disables the turn-count trigger, leaving only
+// cost/tokens as live signals (so a worker/tenant can opt back into the
+// pre-fix one-shot-only-on-breach behavior for a specific dimension).
+func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-compact-turns-off", TenantID: "tnt_dev"},
+		manifest:  scheduler.ExecutionManifest{ModelRef: "opencode/deepseek-v4-flash-free"},
+		client:    NewSessionClient(srv.URL, "", ""),
+		sessionID: "sess-1",
+		modelRef:  "opencode/deepseek-v4-flash-free",
+		budget:    &budgetAccumulator{steps: 1},
+		budgetSpec: budgetSpec{
+			costUSD: float64Ptr(0), tokens: float64Ptr(0), compactMaxTurns: float64Ptr(0),
+		},
+		done: make(chan struct{}),
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
+	t.Setenv("ORCHICON_COMPACT_MAX", "5")
+	for step := 1; step <= 20; step++ {
+		r.budget.steps = step
+		r.maybeCompact()
+	}
+	if rec.count() != 0 {
+		t.Fatalf("expected no compacts with all gates explicitly disabled, got %d", rec.count())
+	}
+}
+
+// TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset
+// → built-in default (8), configured → that value, explicit 0/negative →
+// disabled.
+func TestEffectiveCompactMaxTurns(t *testing.T) {
+	if turns, ok := effectiveCompactMaxTurns(budgetSpec{}); !ok || turns != defaultCompactMaxTurns {
+		t.Fatalf("unset compactMaxTurns = (%d, %v), want (%d, true)", turns, ok, defaultCompactMaxTurns)
+	}
+	if turns, ok := effectiveCompactMaxTurns(budgetSpec{compactMaxTurns: float64Ptr(15)}); !ok || turns != 15 {
+		t.Fatalf("configured compactMaxTurns = (%d, %v), want (15, true)", turns, ok)
+	}
+	if _, ok := effectiveCompactMaxTurns(budgetSpec{compactMaxTurns: float64Ptr(0)}); ok {
+		t.Fatal("expected explicit 0 to disable the turn-count gate")
+	}
+	if _, ok := effectiveCompactMaxTurns(budgetSpec{compactMaxTurns: float64Ptr(-1)}); ok {
+		t.Fatal("expected explicit negative value to disable the turn-count gate")
+	}
+}
+
+// TestEffectiveToolCallLimit verifies the tool-call HARD-abort gate
+// resolver: unset → built-in default (100), configured → that value,
+// explicit 0/negative → disabled.
+func TestEffectiveToolCallLimit(t *testing.T) {
+	if limit, ok := effectiveToolCallLimit(budgetSpec{}); !ok || limit != defaultToolCallLimit {
+		t.Fatalf("unset toolCallCount = (%d, %v), want (%d, true)", limit, ok, defaultToolCallLimit)
+	}
+	if limit, ok := effectiveToolCallLimit(budgetSpec{toolCallCount: float64Ptr(25)}); !ok || limit != 25 {
+		t.Fatalf("configured toolCallCount = (%d, %v), want (25, true)", limit, ok)
+	}
+	if _, ok := effectiveToolCallLimit(budgetSpec{toolCallCount: float64Ptr(0)}); ok {
+		t.Fatal("expected explicit 0 to disable the tool-call limit")
+	}
+	if _, ok := effectiveToolCallLimit(budgetSpec{toolCallCount: float64Ptr(-1)}); ok {
+		t.Fatal("expected explicit negative value to disable the tool-call limit")
+	}
+}
+
+// TestCheckToolCallLimitAbortsAtBuiltInDefault verifies checkToolCallLimit
+// hard-aborts the execution once stats.toolUses reaches the built-in
+// default (100) when no tool_call_count is configured — making Settings'
+// long-standing "Empty = built-in default (100)" claim actually true.
+func TestCheckToolCallLimitAbortsAtBuiltInDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-toolcall-default", TenantID: "tnt_dev"},
+		callbacks: &liveCallbacks{},
+		client:    NewSessionClient(srv.URL, "", ""),
+		sessionID: "sess-1",
+		done:      make(chan struct{}),
+		stats:     &execStreamState{toolUses: defaultToolCallLimit - 1},
+	}
+	r.checkToolCallLimit() // 99 < 100 → no abort
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("expected no abort below the built-in tool-call default")
+	}
+	r.stats.toolUses = defaultToolCallLimit
+	r.checkToolCallLimit() // 100 >= 100 → abort
+	r.mu.Lock()
+	fin, ok, resultErr := r.finished, r.resultOk, r.resultErr
+	r.mu.Unlock()
+	if !fin {
+		t.Fatal("expected the execution to finish once the tool-call limit is reached")
+	}
+	if ok {
+		t.Fatal("a tool-call limit breach must fail the execution")
+	}
+	if resultErr != "tool_call_limit_exceeded" {
+		t.Fatalf("resultErr = %q, want tool_call_limit_exceeded", resultErr)
+	}
+}
+
+// TestCheckToolCallLimitDisabled verifies an explicit 0 for tool_call_count
+// disables the hard-abort gate entirely, even with a huge tool-call count.
+func TestCheckToolCallLimitDisabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	r := &sessionRun{
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-toolcall-disabled", TenantID: "tnt_dev"},
+		callbacks:  &liveCallbacks{},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		done:       make(chan struct{}),
+		stats:      &execStreamState{toolUses: 10_000},
+		budgetSpec: budgetSpec{toolCallCount: float64Ptr(0)},
+	}
+	r.checkToolCallLimit()
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("expected no abort with the tool-call limit explicitly disabled")
+	}
+}
+
+// TestCheckToolCallLimitNilStatsNoop verifies a nil stats pointer (should
+// never happen in production — adapter.go always initializes it — but
+// matches maybeCompact's defensive nil-budget guard) is a safe no-op rather
+// than a panic.
+func TestCheckToolCallLimitNilStatsNoop(t *testing.T) {
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-toolcall-nilstats", TenantID: "tnt_dev"},
+		done:      make(chan struct{}),
+	}
+	r.checkToolCallLimit()
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("expected a no-op with nil stats, not a finish")
 	}
 }
 

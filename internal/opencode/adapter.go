@@ -550,6 +550,12 @@ type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
 
+	// toolUses counts evtToolUse events for the execution — the real
+	// per-tool-call granularity (a single step/turn can contain several
+	// tool calls before its step_finish). Feeds checkToolCallLimit's
+	// tool_call_count HARD-abort gate in session_run.go.
+	toolUses int
+
 	// writtenFiles accumulates the paths opencode reported as file
 	// modifications (file_diff events). Unlike diff markers parsed out of
 	// the worker's text output, this is the telemetry the runtime itself
@@ -645,6 +651,9 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Debug("opencode text", "execution", execID, "text_len", len(text))
 	case evtToolUse:
+		if stats != nil {
+			stats.toolUses++
+		}
 		// opencode v1.x: input + output both arrive in a single
 		// `tool_use` event. The previous dispatch only matched the
 		// legacy `tool_call` / `tool_result` pair — which v1.x never

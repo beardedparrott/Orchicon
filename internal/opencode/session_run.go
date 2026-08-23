@@ -393,12 +393,16 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		if t, _ := legacy["type"].(string); t != "" {
 			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
 		}
-		// Soft-first compact gate: after the accumulator is fed at the
-		// quiet step boundary, evaluate the budget breach (once per step,
-		// never at start). The subsequent turns resend `system`, so goal/AC
-		// survive the lossy summary.
-		if et, _ := legacy["type"].(string); et == evtStepFinish {
+		// Two independent gates, evaluated on their own event boundary:
+		// step_finish → soft-first compact gate (evaluate the budget/
+		// turn-count breach; the subsequent turn resends `system`, so
+		// goal/AC survive the lossy summary). tool_use → hard tool-call
+		// ceiling (no "compact away a tool call" option, so this aborts).
+		switch et, _ := legacy["type"].(string); et {
+		case evtStepFinish:
 			r.maybeCompact()
+		case evtToolUse:
+			r.checkToolCallLimit()
 		}
 	}
 }
@@ -635,15 +639,20 @@ func (r *sessionRun) noteSessionProgress() {
 }
 
 // maybeCompact evaluates the soft-first compact gate at a quiet step
-// boundary (after a step_finish feeds the spend accumulator). On a budget
-// breach it calls Compact once and CONTINUES — best-effort, never a hard
-// abort, never a failure. The per-execution spend is CUMULATIVE, so once a
-// budget is tripped it stays tripped; the latch therefore bounds compaction
-// to at most one per step and re-arms only after the minimum-turn floor
-// elapses across normal forward progress (not within one step, and never at
-// start), so a fresh post-compact summary is not immediately re-collapsed
-// (the compact loop). The session's resolved provider/model is passed so the
-// compaction runs under the model the session actually uses.
+// boundary (after a step_finish feeds the spend accumulator). It fires on
+// EITHER of two independent triggers — a cost/token budget breach
+// (budgetBreached; the accumulator is cumulative, so once tripped it stays
+// tripped), or the turn-count gate (effectiveCompactMaxTurns; steps since
+// the last compact reaching the configured/default turn cap) — so a chatty
+// session gets compacted periodically even when per-turn spend never crosses
+// the cost gate. On either trigger it calls Compact once and CONTINUES —
+// best-effort, never a hard abort, never a failure. The shared min-turn
+// floor/re-arm latch (never at start, never immediately after a prior
+// compact within minT turns) applies to both triggers, so a fresh
+// post-compact summary is never immediately re-collapsed (the compact
+// loop), and the per-execution cap (compactMax) is the coarse safety
+// ceiling on top of that. The session's resolved provider/model is passed
+// so the compaction runs under the model the session actually uses.
 func (r *sessionRun) maybeCompact() {
 	r.mu.Lock()
 	if r.finished || r.budget == nil {
@@ -668,7 +677,14 @@ func (r *sessionRun) maybeCompact() {
 		r.mu.Unlock()
 		return
 	}
-	if !budgetBreached(r.budgetSpec, r.budget) {
+	turnsSinceLastCompact := steps
+	if r.compactsPerformed > 0 {
+		turnsSinceLastCompact = steps - r.lastCompactStep
+	}
+	maxTurns, turnGateOn := effectiveCompactMaxTurns(r.budgetSpec)
+	turnTriggered := turnGateOn && turnsSinceLastCompact >= maxTurns
+	breached := budgetBreached(r.budgetSpec, r.budget)
+	if !breached && !turnTriggered {
 		r.mu.Unlock()
 		return
 	}
@@ -676,14 +692,19 @@ func (r *sessionRun) maybeCompact() {
 	r.lastCompactStep = steps
 	r.mu.Unlock()
 
+	reason := "turn_count"
+	if breached {
+		reason = "budget_breach"
+	}
+
 	provider, model, ok := splitModelRef(r.modelRef)
 	if !ok {
 		r.a.log.Warn("compact skipped: malformed model ref",
 			"execution", r.execRow.ID, "modelRef", r.modelRef)
 		return
 	}
-	r.a.log.Info("compact triggering on budget breach (soft-first)",
-		"execution", r.execRow.ID, "step", steps,
+	r.a.log.Info("compact triggering (soft-first)",
+		"execution", r.execRow.ID, "step", steps, "reason", reason,
 		"costUSD", r.budget.costUSD, "provider", provider, "model", model)
 	if err := r.client.Compact(r.parentCtx, r.sessionID, provider, model); err != nil {
 		// Best-effort: a failed compact never fails the execution. The
@@ -692,8 +713,35 @@ func (r *sessionRun) maybeCompact() {
 		return
 	}
 	r.recordPart(db.SessionPartCompacted, map[string]any{
-		"step": steps, "costUSD": r.budget.costUSD, "provider": provider, "model": model,
+		"step": steps, "reason": reason, "costUSD": r.budget.costUSD, "provider": provider, "model": model,
 	})
+}
+
+// checkToolCallLimit evaluates the tool_call_count HARD-abort gate on every
+// evtToolUse event. Unlike maybeCompact's cost/token/turn-count gates (soft
+// — compact and continue), a tool call already made cannot be "compacted
+// away", so a breach here fails the execution immediately via the same
+// abort path onStall's fatal branch uses (finish() first, THEN Abort, so
+// the true reason survives the session.error echo the serve emits when the
+// abort lands). Settings has always described tool_call_count as a live
+// ceiling ("Max tool calls per execution. Empty = built-in default (100)")
+// — this makes that description true instead of aspirational.
+func (r *sessionRun) checkToolCallLimit() {
+	r.mu.Lock()
+	if r.finished || r.stats == nil {
+		r.mu.Unlock()
+		return
+	}
+	limit, ok := effectiveToolCallLimit(r.budgetSpec)
+	count := r.stats.toolUses
+	r.mu.Unlock()
+	if !ok || count < limit {
+		return
+	}
+	r.a.log.Warn("tool call limit exceeded — aborting session",
+		"execution", r.execRow.ID, "toolCalls", count, "limit", limit)
+	r.finish(false, "tool_call_limit_exceeded")
+	_ = r.client.Abort(r.parentCtx, r.sessionID)
 }
 
 // onStall is the progress monitor's stall callback. Nudge-first routing:

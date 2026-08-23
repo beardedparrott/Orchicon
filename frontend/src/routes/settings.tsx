@@ -475,6 +475,7 @@ function DefaultsTab() {
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
+  const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftLogDirectory, setDraftLogDirectory] = useState("");
@@ -502,6 +503,7 @@ function DefaultsTab() {
       setDraftBudgetCost(budget.costUsd);
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
+      setDraftCompactMaxTurns(budget.compactMaxTurns);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftLogDirectory(settings.logDirectory ?? "");
@@ -532,6 +534,7 @@ function DefaultsTab() {
           draftBudgetCost,
           draftBudgetWallClock,
           draftBudgetToolCalls,
+          draftCompactMaxTurns,
         ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
@@ -604,14 +607,14 @@ function DefaultsTab() {
               />
               <StallField
                 label="No file diff window (seconds)"
-                description="No file modifications within this window. 0 = disabled"
+                description="No file modifications within this window. Empty/0 = built-in default (900) — a fresh tenant keeps real stall detection. Set a negative value (e.g. -1) to disable this check."
                 value={draftNoFileDiff}
                 onChange={setDraftNoFileDiff}
                 placeholder="900"
               />
               <StallField
                 label="Text loop window (seconds)"
-                description="No meaningful action within this window. 0 = disabled"
+                description="No meaningful action within this window. Empty/0 = built-in default (600) — a fresh tenant keeps real stall detection. Set a negative value (e.g. -1) to disable this check."
                 value={draftTextLoop}
                 onChange={setDraftTextLoop}
                 placeholder="600"
@@ -671,14 +674,14 @@ function DefaultsTab() {
             <div className="grid gap-4 sm:grid-cols-2">
               <StallField
                 label="Token limit"
-                description="Max tokens per execution. Empty = built-in default (1,000,000)."
+                description="Max tokens per execution. Empty = built-in default (500,000)."
                 value={draftBudgetTokens}
                 onChange={setDraftBudgetTokens}
                 placeholder="1000000"
               />
               <StallField
                 label="Cost limit (USD)"
-                description="Max spend per execution. Empty = built-in default ($10)."
+                description="Max spend per execution. Empty = built-in default ($0.50)."
                 value={draftBudgetCost}
                 onChange={setDraftBudgetCost}
                 placeholder="10"
@@ -692,10 +695,17 @@ function DefaultsTab() {
               />
               <StallField
                 label="Tool call limit"
-                description="Max tool calls per execution. Empty = built-in default (100)."
+                description="Max tool calls per execution — a hard stop (unlike the token/cost/turn gates below, a tool call already made can't be undone by compacting). Empty = built-in default (100). Set 0 to disable."
                 value={draftBudgetToolCalls}
                 onChange={setDraftBudgetToolCalls}
                 placeholder="100"
+              />
+              <StallField
+                label="Compact interval (turns)"
+                description="Force a context compact at least every N turns, regardless of cost — bounds cumulative cache-read resend on long chatty sessions even when per-turn spend stays cheap. Empty = built-in default (8). Set 0 to rely on the cost/token gates only."
+                value={draftCompactMaxTurns}
+                onChange={setDraftCompactMaxTurns}
+                placeholder="8"
               />
             </div>
           </CardContent>
@@ -1183,8 +1193,9 @@ function parseBudgetDefaults(raw?: string): {
   costUsd: string;
   wallClockSeconds: string;
   toolCallCount: string;
+  compactMaxTurns: string;
 } {
-  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "" };
+  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "", compactMaxTurns: "" };
   if (!raw) return empty;
   try {
     const m = JSON.parse(raw);
@@ -1193,25 +1204,28 @@ function parseBudgetDefaults(raw?: string): {
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
       toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
+      compactMaxTurns: m.compact_max_turns != null ? String(m.compact_max_turns) : "",
     };
   } catch {
     return empty;
   }
 }
 
-// Build the default_budget_overrides JSON from the four form fields. Empty
+// Build the default_budget_overrides JSON from the form fields. Empty
 // fields are omitted so the worker/tenant fall back to built-in defaults.
 function buildBudgetDefaults(
   tokens: string,
   costUsd: string,
   wallClockSeconds: string,
   toolCallCount: string,
+  compactMaxTurns: string,
 ): string {
   const out: Record<string, number> = {};
   if (tokens !== "") out.tokens = Number(tokens);
   if (costUsd !== "") out.cost_usd = Number(costUsd);
   if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
   if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
+  if (compactMaxTurns !== "") out.compact_max_turns = Number(compactMaxTurns);
   return JSON.stringify(out);
 }
 

@@ -62,9 +62,11 @@ const DEFAULT_PERMISSIONS = `{
 }`;
 
 const DEFAULT_BUDGETS = `{
-  "max_prompt_tokens": 0,
-  "max_completion_tokens": 0,
-  "max_cost_usd": 0
+  "tokens": 500000,
+  "cost_usd": 0.5,
+  "wall_clock_seconds": 3600,
+  "tool_call_count": 100,
+  "compact_max_turns": 8
 }`;
 
 // Fields on UpdateWorkerVersionRequest — only version-level fields,
