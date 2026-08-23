@@ -242,6 +242,16 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
 		}
 	}
+	// Sweep orphaned branch refs: a COMPLETED run (or a step run of one)
+	// whose worktree was already pruned still records worktree_branch, but the
+	// prune pass only ran (and deleted the branch) for 'ready' worktrees at
+	// prune time. A branch that survived that moment — e.g. the run completed
+	// before the squash-aware merge gate landed, or a parallel/superseded step
+	// run was pruned-early while a later iteration carried the merge — is
+	// never revisited and leaks as a dead local ref. Reclaim any such branch
+	// that is provably merged into the base (success-only: never on a failed /
+	// aborted run's branch, which a retry re-attaches to).
+	r.sweepOrphanBranches(ctx, tenantID)
 	return reconciler.Result{}
 }
 
@@ -270,6 +280,140 @@ func (r *WorktreeReconciler) isParallelBranchChildStepRun(ctx context.Context, t
 		return false
 	}
 	return parallelBranchChildIDs(steps)[stepID]
+}
+
+// orphanBranchSweepLimit bounds how many orphaned branch refs the sweep
+// reclaims per scan pass, mirroring the other batch-capped scan surfaces.
+// Branch deletion is idempotent, so an over-budget scan simply continues on
+// the next tick.
+const orphanBranchSweepLimit = 32
+
+// sweepOrphanBranches reclaims dead local branch refs left behind by the
+// prune path. It runs at the end of every scan, after the terminal-run and
+// terminal-step-run prune passes:
+//
+//   - Runs/step-runs with worktree_status='ready' are handled by the prune
+//     passes (which delete the branch for a COMPLETED run at prune time).
+//   - Runs/step-runs whose worktree was ALREADY pruned ('pruned' +
+//     recorded branch) are exactly the ones the prune passes skip — but their
+//     branch may still exist locally. That class leaks (observed: 30+ local
+//     refs, all merged into develop) because nothing revisits a pruned row.
+//
+// The sweep reuses the SAME proof-deletion gate as pruneOne (deleteBranch →
+// branchProvablyMerged → success-only), so it never deletes unmerged work,
+// never touches protected/current branches, and only reaps branches whose run
+// actually completed. A branch still attached to a live worktree is left to
+// the prune pass (never swept while in use).
+func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string) {
+	// Completed runs whose worktree was pruned but branch still recorded.
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: orphan sweep begin tx failed", "error", err)
+		return
+	}
+	runs, err := db.ListTerminalRunsWithPrunedBranches(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
+	ttx.Rollback(ctx)
+	if err != nil {
+		r.log.Warn("worktree: orphan sweep list runs failed", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if err := r.sweepOrphanRun(ctx, tenantID, run); err != nil {
+			r.log.Warn("worktree: orphan sweep run branch failed",
+				"run", run.ID, "branch", run.WorktreeBranch, "error", err)
+		}
+	}
+
+	// Step runs (parallel-branch children) of completed runs, same class.
+	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: orphan sweep begin tx (step) failed", "error", err)
+		return
+	}
+	steps, err := db.ListTerminalStepRunsWithPrunedBranches(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
+	ttx.Rollback(ctx)
+	if err != nil {
+		r.log.Warn("worktree: orphan sweep list step runs failed", "error", err)
+		return
+	}
+	for _, sr := range steps {
+		if err := r.sweepOrphanStepBranch(ctx, tenantID, sr); err != nil {
+			r.log.Warn("worktree: orphan sweep step branch failed",
+				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
+		}
+	}
+}
+
+// sweepOrphanRun attempts to reclaim a pruned-run branch. It reuses the
+// DELETE gate (deleteBranch) so it is safe by construction: provably ours
+// (the deterministic name on the row), not protected, not current, no live
+// worktree, and provably merged. The call only succeeds for a COMPLETED
+// run (the query guarantees it) — a failed/aborted run's branch is never
+// swept because a retry must re-attach to it.
+func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
+	if run.WorktreeBranch == "" {
+		return nil
+	}
+	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
+	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
+		return nil // can't verify merge state — never delete on uncertainty
+	}
+	// A branch still attached to a live worktree is in use — leave it to
+	// the prune pass (which deletes it at prune time).
+	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, run.WorktreeBranch); err != nil {
+		return nil
+	} else if attached {
+		return nil
+	}
+	_, prState := db.PrFromRunContext(run.RunContext)
+	if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
+		return err
+	}
+	return nil
+}
+
+// sweepOrphanStepBranch is sweepOrphanRun for a parallel-branch child step
+// run: same proof gate, driven from the step run's recorded branch. The
+// step run is guaranteed to belong to a COMPLETED run (the query JOINs on
+// it), so a merged step branch is safely reclaimed.
+func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
+	if sr.WorktreeBranch == "" {
+		return nil
+	}
+	run, err := r.loadRun(ctx, tenantID, sr.WorkflowRunID)
+	if err != nil {
+		return nil
+	}
+	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
+	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
+		return nil
+	}
+	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, sr.WorktreeBranch); err != nil {
+		return nil
+	} else if attached {
+		return nil
+	}
+	_, prState := db.PrFromRunContext(run.RunContext)
+	if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
+		return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
+	}
+	return nil
+}
+
+// branchAttachedToWorktree reports whether branch currently has a live
+// worktree attached (git worktree list). A branch with a registered worktree
+// is in use — never swept, never deleted while its worktree exists.
+func (r *WorktreeReconciler) branchAttachedToWorktree(ctx context.Context, projectDir, branch string) (bool, error) {
+	wts, err := listWorktrees(ctx, projectDir)
+	if err != nil {
+		return false, err
+	}
+	for i := range wts {
+		if wts[i].branch == branch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // reconcileOne provisions a single run's isolated working tree and records
