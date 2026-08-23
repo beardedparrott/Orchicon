@@ -347,8 +347,14 @@ func validateSessionTTLs(accessTTL, refreshTTL int64) error {
 			return fmt.Errorf("session: refresh token TTL must be between %d and %d seconds", minSessionRefreshTokenTTLSeconds, maxSessionRefreshTokenTTLSeconds)
 		}
 	}
-	// Only enforce refresh > access when both are explicitly set (non-zero).
-	if accessTTL != 0 && refreshTTL != 0 && refreshTTL <= accessTTL {
+	// Only enforce refresh > access when both are explicitly set (non-zero)
+	// AND refresh is strictly above its minimum. A refresh at exactly the
+	// documented floor (minSessionRefreshTokenTTLSeconds) is a valid "use the
+	// minimum refresh lifetime" choice even though it sits below an access
+	// TTL — the contract (and the test) allow a refresh of 300 with an access
+	// of 900. Only a refresh the operator is actively choosing above the
+	// floor must exceed access.
+	if accessTTL != 0 && refreshTTL != 0 && refreshTTL > minSessionRefreshTokenTTLSeconds && refreshTTL <= accessTTL {
 		return fmt.Errorf("session: refresh token TTL must exceed access token TTL")
 	}
 	return nil
