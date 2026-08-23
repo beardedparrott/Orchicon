@@ -202,6 +202,14 @@ export function ExecutionContextSidebar({
   // current/peak context window used by the model. The Context card and
   // its % bar key off `peak` (bounded, interpretable); the cumulative
   // figure is surfaced separately and labelled as cumulative.
+  //
+  // The Messages token bars ALSO key off `peak`: they show the per-bucket
+  // composition OF the peak row (the single step with the largest working
+  // set), so Input/Output/Cache-read/Cache-write are slices of the same
+  // number the Context card shows — not cumulative sums that dwarf it
+  // (743k cache-read next to a 54k working set was cumulative-vs-peak,
+  // not a bug in either). Cumulative totals stay available under
+  // `cum.*` for the labelled footer.
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
@@ -211,6 +219,13 @@ export function ExecutionContextSidebar({
     let total = 0;
     let peak = 0;
     let cost = 0;
+    let cumCacheRead = 0;
+    let cumPrompt = 0;
+    let peakPrompt = 0;
+    let peakCompletion = 0;
+    let peakCacheRead = 0;
+    let peakCacheWrite = 0;
+    let peakReasoning = 0;
     for (const r of usage) {
       prompt += Number(r.promptTokens);
       completion += Number(r.completionTokens);
@@ -219,10 +234,29 @@ export function ExecutionContextSidebar({
       reasoning += Number(r.reasoningTokens) || 0;
       total += Number(r.totalTokens);
       const row = Number(r.totalTokens);
-      if (row > peak) peak = row;
+      if (row > peak) {
+        peak = row;
+        peakCacheRead = Number(r.cacheReadTokens) || 0;
+        peakCacheWrite = Number(r.cacheWriteTokens) || 0;
+        peakReasoning = Number(r.reasoningTokens) || 0;
+        peakPrompt = Number(r.promptTokens);
+        peakCompletion = Number(r.completionTokens);
+      }
+      // Cumulative numerators only what's meaningful for a hit-rate
+      // footer (cumulative reads vs cumulative new input).
+      cumCacheRead += Number(r.cacheReadTokens) || 0;
+      cumPrompt += Number(r.promptTokens);
       cost += Number(r.costUsd);
     }
-    return { prompt, completion, cacheRead, cacheWrite, reasoning, total, peak, cost };
+    // Peak-row buckets (coherent with `peak`).
+    const peakBuckets = {
+      prompt: peakPrompt,
+      completion: peakCompletion,
+      cacheRead: peakCacheRead,
+      cacheWrite: peakCacheWrite,
+      reasoning: peakReasoning,
+    };
+    return { prompt, completion, cacheRead, cacheWrite, reasoning, total, peak, cost, peakBuckets, cumCacheRead, cumPrompt };
   }, [usage]);
 
   // Context %: the PEAK single-step total_tokens (the model's working set)
@@ -253,7 +287,11 @@ export function ExecutionContextSidebar({
       : stats.lastAssistantText
     : "—";
 
-  const rolePct = (n: number) =>
+  // Token % bars key off the PEAK-row buckets (same basis as the Context
+  // card's working-set %) so the Messages breakdown is slices of the same
+  // number, not cumulative sums that dwarf it.
+  const peakBuckets = usageBreakdown.peakBuckets;
+  const peakRolePct = (n: number) =>
     totalTokens > 0 ? Math.round((n / totalTokens) * 100) : 0;
 
   return (
@@ -359,53 +397,61 @@ export function ExecutionContextSidebar({
         </div>
         {usageBreakdown.total > 0 && (
           <div className="mt-3 space-y-1">
+            <div className="text-[10px] text-muted-foreground">
+              Token mix at peak context (of {fmtNum(totalTokens)})
+            </div>
             <TokenBar
               label="Input"
-              count={usageBreakdown.prompt}
-              pct={rolePct(usageBreakdown.prompt)}
+              count={peakBuckets.prompt}
+              pct={peakRolePct(peakBuckets.prompt)}
               color="bg-blue-500"
             />
             <TokenBar
               label="Output"
-              count={usageBreakdown.completion}
-              pct={rolePct(usageBreakdown.completion)}
+              count={peakBuckets.completion}
+              pct={peakRolePct(peakBuckets.completion)}
               color="bg-violet-500"
             />
-            {usageBreakdown.cacheRead > 0 && (
+            {peakBuckets.cacheRead > 0 && (
               <TokenBar
                 label="Cache read"
-                count={usageBreakdown.cacheRead}
-                pct={rolePct(usageBreakdown.cacheRead)}
+                count={peakBuckets.cacheRead}
+                pct={peakRolePct(peakBuckets.cacheRead)}
                 color="bg-emerald-500"
               />
             )}
-            {usageBreakdown.cacheWrite > 0 && (
+            {peakBuckets.cacheWrite > 0 && (
               <TokenBar
                 label="Cache write"
-                count={usageBreakdown.cacheWrite}
-                pct={rolePct(usageBreakdown.cacheWrite)}
+                count={peakBuckets.cacheWrite}
+                pct={peakRolePct(peakBuckets.cacheWrite)}
                 color="bg-teal-500"
               />
             )}
-            {usageBreakdown.reasoning > 0 && (
+            {peakBuckets.reasoning > 0 && (
               <TokenBar
                 label="Reasoning"
-                count={usageBreakdown.reasoning}
-                pct={rolePct(usageBreakdown.reasoning)}
+                count={peakBuckets.reasoning}
+                pct={peakRolePct(peakBuckets.reasoning)}
                 color="bg-amber-500"
               />
             )}
-            {usageBreakdown.cacheRead > 0 && (
+            {usageBreakdown.cumCacheRead > 0 && (
               <div className="mt-2 text-[10px] font-medium text-emerald-600">
-                Cache hit{" "}
+                Cumulative cache hit{" "}
                 {Math.round(
-                  (usageBreakdown.cacheRead /
-                    (usageBreakdown.cacheRead + usageBreakdown.prompt)) *
+                  (usageBreakdown.cumCacheRead /
+                    (usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt)) *
                     100,
                 )}
                 %
               </div>
             )}
+            <div className="mt-1 border-t pt-1 text-[10px] text-muted-foreground">
+              Cumulative (transport): {fmtNum(usageBreakdown.prompt)} input ·{" "}
+              {fmtNum(usageBreakdown.cacheRead)} cache read ·{" "}
+              {fmtNum(usageBreakdown.completion)} output
+            </div>
           </div>
         )}
       </div>

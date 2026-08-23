@@ -6,7 +6,7 @@ Read on demand by Orchicon workers. Your role, task, acceptance criteria, and th
 
 - **The working directory IS your worktree.** Git-backed runs are dispatched with the working directory set to an isolated worktree at `<project_dir>/.orchicon-worktrees/<runID>/`. All file operations, builds, and tests must happen inside this worktree.
 - Do all your work inside the worktree; never write to `.orchicon/` or any other control-plane directory.
-- **GOTMPDIR and all scratch directories must live inside the worktree**, at an exec-able location. Use e.g. `GOTMPDIR=$PWD/.gotmp` for `go test` / `make ci`. This is required because the runtime container's `/tmp` is `noexec` (see Environment baseline) and because scratch must stay inside the worktree — never create `.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, or `.gtmp/` under `.orchicon/` or anywhere else outside your worktree.
+- **GOTMPDIR and all scratch directories must live inside the worktree.** Use e.g. `GOTMPDIR=$PWD/.gotmp` for `go test` / `make ci`. The runtime's `/tmp` is a private tmpfs (exec-capable, so Go test binaries run fine — but it is wiped at run end), while scratch must stay inside the worktree — never create `.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, or `.gtmp/` under `.orchicon/` or anywhere else outside your worktree.
 - Scratch inside the worktree is already ignored by the repo `.gitignore`, so it is never committed.
 - **Runs without a provisioned worktree** (non-worktree dispatches, e.g. non-repo projects) work in place directly in `project_dir` — the scratch-inside-worktree rule applies to worktree runs; those runs keep the existing in-place guidance.
 
@@ -41,7 +41,7 @@ Read on demand by Orchicon workers. Your role, task, acceptance criteria, and th
 
 ## Environment baseline (established facts — do not re-verify)
 
-- `/tmp` is noexec in the runtime containers: Go's default TMPDIR there makes test binaries fail with exec-format errors. Use an exec-able dir (e.g. `GOTMPDIR=$PWD/.gtmp`) for `go test` / `make ci`.
+- The runtime container's `/tmp` is a private **exec-capable** tmpfs: Go's default TMPDIR there works, so `go test`/`make ci` run without relocation. It is wiped at run end — keep durable work in the project/worktree, and point `GOCACHE`/`GOTMPDIR` inside the worktree only to keep scratch tidy (never under `.orchicon/`).
 - `:orchicon-dev` runtime containers boot a sandbox plane at `http://localhost:8080` with Postgres on `localhost:5432` (user `orchicon`) and `ORCHICON_TELEMETRY=none`. Base/`:gui` images boot no plane.
 - The runtime supervisor runs the daemon self-copy present at container start — a container started before a feature landed runs the pre-feature binary.
 - Pre-existing gofmt drift and whole-repo semgrep findings exist at base. Only NEW findings introduced by your change matter. Verify against the base (`git diff origin/develop`) once; do not fix unrelated files. Scope semgrep to the files you touched:

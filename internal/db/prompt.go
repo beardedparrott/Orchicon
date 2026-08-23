@@ -75,6 +75,7 @@ func RuntimeEnvironmentBlock(image string) string {
 	fmt.Fprintf(&sb, "\n## Runtime environment\n\n")
 	fmt.Fprintf(&sb, "You are running inside an ephemeral, rootless Linux container (`%s`). Everything you install is wiped when the workflow run ends, so only save durable work to the project directory.\n\n", img)
 	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). It is wiped at run end — never put durable work there, and always save final outputs to the project directory.\n")
+	sb.WriteString("- `/tmp` is an **exec-capable** tmpfs here: Go's default TMPDIR works, so `go test` / `make ci` run without relocating your build dir. Older runs may record a contrary \"`/tmp` is noexec\" fact — that was fixed; trust this block.\n")
 	sb.WriteString("- You are **not root** and cannot become root: `sudo` is blocked and `apt-get` refuses to run without root. Do not attempt them.\n")
 	sb.WriteString("- You may install tools freely into the ephemeral filesystem with the user-space package managers that ship in the image: `pip install` (PIP_BREAK_SYSTEM_PACKAGES is set), `npm install`, `mise install <tool>`, `uv`, `bun`, `curl`. These need no root and are wiped at run end.\n")
 	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
