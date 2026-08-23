@@ -395,6 +395,17 @@ export function ExecutionContextSidebar({
                 color="bg-amber-500"
               />
             )}
+            {usageBreakdown.cacheRead > 0 && (
+              <div className="mt-2 text-[10px] font-medium text-emerald-600">
+                Cache hit{" "}
+                {Math.round(
+                  (usageBreakdown.cacheRead /
+                    (usageBreakdown.cacheRead + usageBreakdown.prompt)) *
+                    100,
+                )}
+                %
+              </div>
+            )}
           </div>
         )}
       </div>
