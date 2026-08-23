@@ -19,7 +19,8 @@ export const usageKeys = {
   providers: ["usage", "providers"] as const,
   models: ["usage", "models"] as const,
   mcps: ["usage", "mcps"] as const,
-  records: (projectId?: string) => ["usage", "records", projectId] as const,
+  records: (projectId?: string, executionId?: string, taskId?: string) =>
+    ["usage", "records", projectId, executionId, taskId] as const,
   cost: (rollup?: UsageRollup, projectId?: string, taskId?: string) =>
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
@@ -64,7 +65,7 @@ export function useGetUsage(opts?: {
   model?: string;
 }) {
   return useQuery({
-    queryKey: usageKeys.records(opts?.projectId),
+    queryKey: usageKeys.records(opts?.projectId, opts?.executionId, opts?.taskId),
     queryFn: async () => {
       const res = await aiGatewayClient.getUsage({
         pageSize: 100,

@@ -40,8 +40,9 @@ tmp/
 data/
 .dev/
 .vite/
-# Go build/test scratch (GOTMPDIR) — the container's /tmp is noexec, so
-# builds with a default GOTMPDIR fail to run test binaries.
+# In-worktree Go build/test scratch + cache dirs — workers set
+# GOCACHE/GOTMPDIR inside the worktree so they stay tidy and get cleaned
+# up; these are never committed.
 .gotmp/
 .go-tmp/
 .gtmp/

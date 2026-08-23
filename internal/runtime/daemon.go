@@ -352,7 +352,15 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
 		"--memory", d.Memory,
-		"--tmpfs", "/tmp:rw,size=" + d.TmpfsSize,
+		// /tmp is a private tmpfs sized to TmpfsSize. It must be `exec`:
+		// Docker's `--tmpfs` default is noexec, which makes Go's default
+		// TMPDIR unusable (test binaries fail `fork/exec ... permission
+		// denied`) and defeats the execution-guard shim that lives under
+		// /tmp/orchicon-guard-*. The runtime user already has full
+		// write+exec access across the chowned ephemeral rootfs, so /tmp
+		// being exec adds no host-escape surface — noexec was incidental
+		// Docker defaulting, not a security boundary.
+		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
 	}
 	// NO port publish: the plane reaches the container's opencode serve
 	// DIRECTLY on the docker bridge via the container IP (the serve binds
