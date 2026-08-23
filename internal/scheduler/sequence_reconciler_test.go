@@ -232,10 +232,12 @@ func TestDeriveNextChild(t *testing.T) {
 	}
 }
 
-// TestStartSequenceArmsFirstChild verifies the fire semantics: parent →
-// running, every descendant reset to pending (prior successes included),
-// only the FIRST child in sort_order arms with its OWN workflow.
-func TestStartSequenceArmsFirstChild(t *testing.T) {
+// TestStartSequencePreservesSucceededChildren verifies the new contract
+// (AC2): parent → running, every NON-terminal descendant reset to pending,
+// succeeded/skipped children ALWAYS kept, and only the first NON-succeeded
+// child in sort_order arms with its OWN workflow. Prior successes are never
+// reset.
+func TestStartSequencePreservesSucceededChildren(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
 	wf1 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
@@ -245,11 +247,9 @@ func TestStartSequenceArmsFirstChild(t *testing.T) {
 	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child One", &parent.ID, &wf1)
 	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child Two", &parent.ID, &wf2)
 
-	// Prior successes from an earlier manual run — must be reset to pending.
+	// c1 succeeded from an earlier manual run; c2 is on-deck. START must
+	// preserve c1 and arm only c2 — no destructive re-fire.
 	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
-	setStatus(t, env.pool, c2.ID, domain.WorkItemSucceeded)
-
-	// Establish sort_order so child order is unambiguous.
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
 
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
@@ -261,23 +261,178 @@ func TestStartSequenceArmsFirstChild(t *testing.T) {
 		t.Errorf("parent status = %q, want running", gotParent.Status)
 	}
 	gotC1 := mustGet(t, env.pool, c1.ID)
-	if gotC1.Status != domain.WorkItemRunning {
-		t.Errorf("child one status = %q, want running (armed)", gotC1.Status)
+	if gotC1.Status != domain.WorkItemSucceeded {
+		t.Errorf("child one status = %q, want succeeded (preserved, never re-armed)", gotC1.Status)
 	}
 	gotC2 := mustGet(t, env.pool, c2.ID)
-	if gotC2.Status != domain.WorkItemPending {
-		t.Errorf("child two status = %q, want pending (not yet armed)", gotC2.Status)
+	if gotC2.Status != domain.WorkItemRunning {
+		t.Errorf("child two status = %q, want running (armed)", gotC2.Status)
 	}
 	armed := env.armedWorkItems()
-	if len(armed) != 1 || armed[0] != c1.ID {
-		t.Errorf("armed work items = %v, want exactly [%s]", armed, c1.ID)
+	if len(armed) != 1 || armed[0] != c2.ID {
+		t.Errorf("armed work items = %v, want exactly [%s]", armed, c2.ID)
 	}
 	// The armed child ran with its OWN workflow (no config copy).
 	env.mu.Lock()
 	started := append([]leafStart(nil), env.starts...)
 	env.mu.Unlock()
-	if len(started) != 1 || started[0].workflowID != wf1 {
-		t.Errorf("started workflow = %+v, want child one's own workflow %s", started, wf1)
+	if len(started) != 1 || started[0].workflowID != wf2 {
+		t.Errorf("started workflow = %+v, want child two's own workflow %s", started, wf2)
+	}
+}
+
+// TestStartSequenceAllTerminalSuccessCompletes: START on a chain whose
+// children are ALL terminal-success (succeeded/skipped) completes the
+// sequence — the parent transitions to succeeded (nothing armed, nothing
+// reset) rather than re-firing completed work.
+func TestStartSequenceAllTerminalSuccessCompletes(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	setStatus(t, env.pool, c2.ID, domain.WorkItemSkipped)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("parent status = %q, want succeeded (every child terminal-success)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("c1 status = %q, want succeeded (preserved)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemSkipped {
+		t.Errorf("c2 status = %q, want skipped (preserved)", got.Status)
+	}
+	if armed := env.armedWorkItems(); len(armed) != 0 {
+		t.Errorf("armed work items = %v, want none", armed)
+	}
+}
+
+// TestStopSequencePreservesSucceededSibling (AC1, ADR #3): STOP parks a
+// non-terminal sibling to pending but leaves a succeeded sibling untouched —
+// a succeeded child is never re-armed by STOP.
+func TestStopSequencePreservesSucceededSibling(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Succeeded", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Running", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	// Parent running; c1 terminal-success, c2 in flight.
+	setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		s := domain.WorkItemRunning
+		f.Status = &s
+	})
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	setField(t, env.pool, c2.ID, func(f *db.UpdateWorkItemFields) {
+		s := domain.WorkItemRunning
+		f.Status = &s
+	})
+
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("succeeded child status = %q, want succeeded (preserved)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("running child status = %q, want pending (parked)", got.Status)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("parent status = %q, want pending (parked)", got.Status)
+	}
+}
+
+// TestOneOffSucceededChildNeverReKicked (AC3, ADR #4): a one-off
+// manually-fired succeeded child is never re-kicked by a subsequent START
+// or STOP of its parent — it stays succeeded through both.
+func TestOneOffSucceededChildNeverReKicked(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	// c1 is a one-off manually-fired success; c2 is on-deck pending.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+
+	// START must preserve c1 and arm c2 (never re-kick c1).
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Fatalf("c1 after start = %q, want succeeded (preserved, never re-kicked)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("c2 after start = %q, want running (armed)", got.Status)
+	}
+
+	// STOP must also preserve c1 and park c2.
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("c1 after stop = %q, want succeeded (never re-kicked)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("c2 after stop = %q, want pending (parked)", got.Status)
+	}
+}
+
+// TestSequenceRecurringParentKeepsCadenceWithSucceededChild (AC5, ADR #5):
+// a recurring sequence parent whose cycle contains a succeeded child keeps
+// its cadence — a refire preserves the succeeded child, arms the next
+// non-succeeded child, and the completing cycle returns the parent to
+// "recurring" (not "succeeded") with next_run_at intact.
+func TestSequenceRecurringParentKeepsCadenceWithSucceededChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createRecurringParent(t, env.pool, env.proj.ID, "Recurring Parent")
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	// c1 succeeded in an earlier cycle; c2 is on-deck pending.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+
+	// A refire of the recurring cycle must PRESERVE the succeeded c1 and
+	// arm only c2 — the new START semantics.
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Fatalf("c1 status after start = %q, want succeeded (preserved)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("c2 status after start = %q, want running (armed)", got.Status)
+	}
+
+	// c2 succeeds → the cycle completes: the recurring parent returns to
+	// "recurring" (not "succeeded"), cadence preserved for the next fire.
+	setStatus(t, env.pool, c2.ID, domain.WorkItemSucceeded)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, env.pool, parent.ID)
+	if got.Status != domain.WorkItemRecurring {
+		t.Errorf("parent status = %q, want recurring (cadence kept with a succeeded child in cycle)", got.Status)
+	}
+	if len(got.RecurringSchedule) == 0 {
+		t.Error("parent recurring_schedule was cleared, want intact")
+	}
+	if got.NextRunAt == nil {
+		t.Error("parent next_run_at is nil, want preserved for the next cycle")
 	}
 }
 

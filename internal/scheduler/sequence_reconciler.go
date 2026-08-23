@@ -26,8 +26,9 @@ import (
 // resumes correctly (idempotent derived cursor — acceptance criterion
 // "Reconciliation stability").
 //
-//   - fire (scheduled / run-instant): parent → running, every descendant
-//     resets to pending, the first child arms (flips straight to running,
+//   - fire (scheduled / run-instant): parent → running, every NON-terminal
+//     descendant resets to pending (succeeded/skipped are always kept),
+//     the first non-succeeded child arms (flips straight to running,
 //     its OWN bound workflow starts — no ready/assigned dance, no config
 //     copy).
 //   - advance: child succeeds → next non-succeeded sibling arms.
@@ -429,8 +430,10 @@ func failSequenceChain(ctx context.Context, tx pgx.Tx, tenantID string, failed d
 	return nil
 }
 
-// resetSubtree sets every descendant of parentID to pending, recursively.
-// Prior successes from earlier manual runs are reset too (fire semantics).
+// resetSubtree sets every non-terminal descendant of parentID to pending,
+// recursively. Succeeded/skipped descendants are ALWAYS terminal and are
+// never reset (their subtree is already done too) — a START re-arms the
+// first non-succeeded child and preserves prior successes.
 // Descendants with an IN-FLIGHT bound run (running/checkpointing/
 // recovering) are skipped with their whole subtree — the derived cursor
 // waits for them instead of double-arming.
@@ -444,6 +447,10 @@ func resetSubtree(ctx context.Context, tx pgx.Tx, tenantID, parentID string) err
 		case domain.WorkItemPending:
 		case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
 			continue // in-flight bound run — leave it and its subtree
+		case domain.WorkItemSucceeded, domain.WorkItemSkipped:
+			// Terminal-success descendants are always kept — never reset to
+			// pending, never recursed (their subtree is already done too).
+			continue
 		default:
 			status := domain.WorkItemPending
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
@@ -460,8 +467,9 @@ func resetSubtree(ctx context.Context, tx pgx.Tx, tenantID, parentID string) err
 }
 
 // StartSequence implements StartSequenceFn: it fires a sequence run for a
-// parent work item with children — parent → running, every descendant
-// reset to pending, first child armed. Validation of the subtree
+// parent work item with children — parent → running, every NON-terminal
+// descendant reset to pending (succeeded/skipped are always preserved),
+// first non-succeeded child armed. Validation of the subtree
 // (workflows bound, no one-shots) is the CALLER's responsibility and runs
 // before this (schedule-time validation, architecture-notes §3).
 //
@@ -487,7 +495,8 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 		return errors.New("cannot start a sequence on a work item with no children")
 	}
 
-	// Parent → running; every descendant resets to pending. Also clear a
+	// Parent → running; every NON-terminal descendant resets to pending
+	// (succeeded/skipped are always preserved). Also clear a
 	// stale workflow binding on the parent: a parent with children IS a
 	// sequence container (its own workflow_id is ignored — children each
 	// run their own workflows), and leaving the stale binding would keep
@@ -637,6 +646,12 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 	item, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return err
+	}
+	// Terminal-success descendants are ALWAYS terminal — STOP must never
+	// reset or re-arm a succeeded/skipped item (or re-recurse into its
+	// subtree). Parks only non-terminal items.
+	if domain.WorkItemIsTerminalSuccess(item.Status) {
+		return nil
 	}
 	// Abort any in-flight bound run on this item (a leaf task with a live
 	// run, or a bound container). Idempotent: terminal runs are skipped.
