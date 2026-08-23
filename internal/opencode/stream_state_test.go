@@ -21,7 +21,7 @@ func parseStreamLine(t *testing.T, a *Adapter, ctx context.Context, execRow db.E
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		t.Fatalf("unmarshal event: %v", err)
 	}
-	a.parseEvent(ctx, execRow, manifest, evt, nil, nil, output, lastStreamErr, textSeq, stats)
+	a.parseEvent(ctx, execRow, manifest, evt, nil, nil, output, lastStreamErr, textSeq, stats, nil)
 }
 
 // TestExecStreamStateBalancedSteps verifies that a run which emits matching

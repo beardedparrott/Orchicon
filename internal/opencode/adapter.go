@@ -234,6 +234,10 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 		system:    manifest.SystemPrompt,
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
+		// Soft-first compact gate. The spend accumulator starts empty; the
+		// merged budget is parsed once (cost_usd primary, tokens fallback).
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec(manifest.Budgets),
 	}
 	return runner.run()
 }
@@ -610,7 +614,7 @@ func allTokensZero(tokens map[string]any) bool {
 // dispatch guarantees consistent downstream behavior: progress monitor,
 // usage recording, artifact capture, summary accumulation, and the
 // streaming callbacks.
-func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
+func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState, budget *budgetAccumulator) {
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
 	if monitor != nil {
@@ -780,6 +784,11 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
+		// Feed the compact-budget spend accumulator (same token/cost
+		// unpacking recordUsage just used — no second pricing formula).
+		if budget != nil {
+			budget.add(tokens, cost)
+		}
 	case evtFileDiff:
 		// A file_diff event carries the path of a file the session wrote
 		// or edited (part["path"]). Capture it so the worker's written
