@@ -413,17 +413,26 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	if !a.sessionsEnabled(manifest) {
 		return fmt.Errorf("opencode session transport disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0) — no execution transport available for execution %s", execRow.ID)
 	}
-	client := a.sessionClientFor(ctx, manifest)
-	if client == nil {
-		return fmt.Errorf("no opencode serve available for execution %s (host serve down or runtime container serve unavailable) — execution failed to start", execRow.ID)
-	}
 
-	// The serve converges within a minute of its container starting (cold
-	// start: providers/MCP + the docker-proxy settling). Retry the session
-	// setup with backoff before failing the execution — but never fall
-	// back to a one-shot subprocess.
+	// Session-transport setup with self-heal. The serve converges within a
+	// minute of its container starting (cold start: providers/MCP + the
+	// docker-proxy settling), so session setup retries with backoff — but
+	// never falls back to a one-shot subprocess. On top of the plain backoff
+	// retries, an INFRA failure (see isInfraSessionError: serve unreachable —
+	// connection refused — or POST /session 5xx on a poisoned session store)
+	// triggers a bounded RUNTIME-CONTAINER REPAIR: the run's container is
+	// recycled so the next dispatch builds a fresh serve AND a fresh store.
+	// A poisoned store cannot be fixed by restarting the serve process (the
+	// daemon watchdog reuses the same XDG data dir on disk — the observed
+	// field class), so recycling the container is the only repair that
+	// unblocks the run; the step's on-disk worktree state survives, so the
+	// re-dispatch continues the work rather than starting cold.
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	repairs := 0
+	maxRepairs := sessionRepairBudget()
+	consecutiveInfra := 0
+	infraThreshold := infraRepairThreshold()
+	for attempt := 0; attempt < 4+maxRepairs; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -431,15 +440,98 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 			case <-time.After(time.Duration(attempt) * 2 * time.Second):
 			}
 		}
-		if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
+		// Re-resolve the client every attempt so a repair (container killed)
+		// is picked up: sessionClientFor re-runs Create, which rebuilds the
+		// container and returns the freshly-published serve once it answers
+		// health — the repair's health-gate before re-dispatch.
+		client := a.sessionClientFor(ctx, manifest)
+		if client == nil {
+			// No serve to talk to at all. For a runtime-container run this
+			// is itself an infra condition: recycle and retry (bounded).
+			lastErr = fmt.Errorf("no opencode serve available for execution %s (host serve down or runtime container serve unavailable) — execution failed to start", execRow.ID)
+			consecutiveInfra++
+		} else if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
 			return nil
 		} else {
 			lastErr = err
 			a.log.Info("session transport setup attempt failed — retrying",
-				"execution", execRow.ID, "attempt", attempt+1, "max", 4, "error", err)
+				"execution", execRow.ID, "attempt", attempt+1, "max", 4+maxRepairs, "error", err)
+			if isInfraSessionError(err) {
+				consecutiveInfra++
+			} else {
+				// A worker/model-side failure won't be fixed by recycling
+				// the container — reset the counter so a later transient
+				// infra blip starts fresh (and never nukes the container
+				// on a single infra failure without a worker error in
+				// between).
+				consecutiveInfra = 0
+			}
+		}
+
+		// Infra repair is NOT first-resort: a single infra failure is retried
+		// on the SAME container (a fresh session create — the serve converges,
+		// transient provider hiccups happen), so a HEALTHY parallel step on
+		// the same run container is not torn down by one blip. Only a
+		// PERSISTENT infra failure — consecutiveInfra at the threshold — is
+		// treated as a genuinely broken backend (serve dead / store poisoned)
+		// and repaired by recycling the container: the poisoned store lives
+		// on disk in the container's stable XDG data dir, so only a fresh
+		// container discards it; the step's on-disk worktree survives.
+		// Bounded by sessionRepairBudget.
+		if consecutiveInfra >= infraThreshold && repairs < maxRepairs && a.rt != nil && manifest.RuntimeWorkflowID != "" {
+			repairs++
+			consecutiveInfra = 0
+			a.repairRuntimeContainer(ctx, manifest.RuntimeWorkflowID)
+			continue
+		}
+		// Non-infra, or below the repair threshold, or past the repair
+		// budget: keep the backoff retries; the step's own retry/recovery
+		// loop is the bounded owner of persistent failures.
+	}
+	return fmt.Errorf("session transport setup failed: %w", lastErr)
+}
+
+// infraRepairThreshold is how many CONSECUTIVE infra failures (within one
+// dispatch's session-setup) must occur before the adapter recycles the run's
+// runtime container. Default 2: the first infra failure is retried on the
+// same container so a transient service blip never tears down a healthy
+// parallel step on the same run container; a second consecutive infra
+// failure in the same dispatch indicates a broken backend worth repairing.
+// Overridable via ORCHICON_SESSION_INFRA_THRESHOLD; < 2 means container
+// repair can never be triggered by the consecutive counter (only the repair
+// budget, reached via repeated infra failures across executions, recycles).
+func infraRepairThreshold() int {
+	if v := os.Getenv("ORCHICON_SESSION_INFRA_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
-	return fmt.Errorf("session transport setup failed after 4 attempts: %w", lastErr)
+	return 2
+}
+
+// repairRuntimeContainer is the session-backend infra repair: it kills the run's
+// runtime container so the NEXT dispatch's Create rebuilds it with a fresh
+// opencode serve and a FRESH session store. Restarting the serve process in
+// place cannot heal a poisoned store (the daemon watchdog reuses the same XDG
+// data dir on disk), which is why this is the kernel of "restart the runtime
+// and continue": a Killed container has none of the poisoned on-disk state.
+// The step's worktree (the on-disk work it already did) is untouched.
+//
+// The caller (the dispatch retry loop) re-resolves the SessionClient after
+// this returns; the next sessionClientFor → rt.Create blocks until the fresh
+// serve answers health, which is the repair's health-gate before re-dispatch.
+// Best-effort: a failed kill is logged and the dispatch proceeds to its next
+// attempt (backoff) as today.
+func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string) {
+	if a.rt == nil || workflowID == "" {
+		return
+	}
+	a.log.Warn("session backend unhealthy — recycling runtime container (fresh serve + store)", "run", workflowID)
+	killCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := a.rt.Kill(killCtx, workflowID); err != nil {
+		a.log.Warn("session-backend repair: recycle runtime container failed", "run", workflowID, "error", err)
+	}
 }
 
 // execStreamState tracks per-execution opencode stream structure so a
@@ -1046,6 +1138,52 @@ func sessionErrorRecycleThreshold() int {
 		}
 	}
 	return 3
+}
+
+// sessionRepairBudget bounds the runtime-container repairs the adapter
+// attempts within a SINGLE dispatch when the session backend is infra-broken
+// (serve unreachable — connection refused — or alive-but-poisoned: POST
+// /session returns 5xx because its session store is corrupt). Each repair
+// kills the run's runtime container so the next dispatch rebuilds it with a
+// fresh serve AND a fresh store — a restart-in-place of the serve process
+// (the daemon watchdog) cannot fix a poisoned store because it reuses the
+// same XDG data dir on disk. After the budget is spent the dispatch fails as
+// today (failed_to_start → the step-level retry/recovery loop, which is
+// bounded separately). Overridable via ORCHICON_SESSION_REPAIR_ATTEMPTS; a
+// value < 1 disables the repair (legacy behavior: only backoff retries).
+func sessionRepairBudget() int {
+	if v := os.Getenv("ORCHICON_SESSION_REPAIR_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 3
+}
+
+// isInfraSessionError reports whether a session-transport setup failure is an
+// INFRASTRUCTURE failure — the serve is unreachable or refuses to create
+// sessions — as opposed to a worker/model failure. This is the discriminator
+// for the dispatch repair loop: an infra failure means EVERY re-dispatch
+// fails through the same hole (the observed field class: run 01a742NSHW... on
+// 2026-08-22/23 died when the runtime serve either process-died – dial
+// connection refused – or stayed up but its session store was poisoned with
+// `Failed to execute statement`, so `POST /session` 5xx'd every retry). Such
+// failures are REPAIRED (recycle the container → fresh serve + store → the
+// step continues) instead of counting against the step's retry budget.
+//
+// The signatures match what the SessionClient produces on the session-create
+// path (session.go: doJSON https-5xx + CreateSession dial errors) plus the
+// no-serve case the adapter itself raises. A 4xx is a client error, not an
+// infra failure.
+func isInfraSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no opencode serve available") ||
+		strings.Contains(msg, "opencode serve not healthy") ||
+		strings.Contains(msg, "opencode serve POST /session: http 5")
 }
 
 // projectMount returns the project-dir mount spec for a runtime container
