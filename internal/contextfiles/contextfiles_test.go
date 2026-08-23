@@ -250,7 +250,7 @@ func TestRenderManifest(t *testing.T) {
 	if strings.Contains(out, "## "+big+"\n\n```") {
 		t.Fatalf("large file was inlined instead of manifested")
 	}
-	if !strings.Contains(out, "(read this file on demand") {
+	if !strings.Contains(out, "read this file on demand") {
 		t.Fatalf("large file missing 'read on demand' instruction:\n%s", out)
 	}
 	// Directory is a manifest listing, not "read EVERY file".
