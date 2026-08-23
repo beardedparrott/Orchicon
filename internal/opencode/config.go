@@ -448,6 +448,17 @@ func BuildConfigContent(o ConfigOptions) string {
 	// sandboxed to its project directory regardless of --auto mode.
 	cfg["permission"] = permissionRules()
 
+	// Enable context compaction pruning for every worker session. `prune`
+	// trims OLD tool outputs (accumulating command/file-read results) from
+	// the conversation when the window nears its limit, so a long step does
+	// not keep re-sending every past `read`/`grep`/`bash` result on every
+	// turn. It is capability-safe: it removes stale tool RESULTS, not the
+	// tool definitions or the model's working instructions, and it does not
+	// collapse the conversation to a lossy summary (that is the separate
+	// `auto` compaction, left at opencode's default). Enabling `prune`
+	// directly cuts the accumulated-output token cost across a step.
+	cfg["compaction"] = map[string]any{"prune": true}
+
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		slog.Default().Warn("opencode: marshal config content", "error", err)
