@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -16,16 +17,29 @@ import (
 // Usage recording never blocks the execution path: a DB error is logged
 // and the row is dropped from Postgres (the OTel metric still emits).
 // Telemetry loss never corrupts control state (docs/08 §8 invariant #5).
+// PricingResolver resolves catalog pricing for a provider/model. It returns
+// (cost, true) when the catalog carries authoritative pricing for the model;
+// (nil, false) when it is absent so the caller falls back to the
+// adapter-reported cost. Matching is provider/model-aware and case-insensitive.
+type PricingResolver func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool)
+
 type UsageRecorder struct {
 	pool    *db.Pool
 	log     *slog.Logger
 	metrics *usageMetrics
+	pricing PricingResolver
 }
 
 // NewUsageRecorder constructs a UsageRecorder.
 func NewUsageRecorder(pool *db.Pool, log *slog.Logger) *UsageRecorder {
 	return &UsageRecorder{pool: pool, log: log, metrics: newUsageMetrics(log)}
 }
+
+// SetPricingResolver injects the catalog pricing resolver. When set, Record
+// computes CostUSD from catalog pricing (authoritative, incl. $0 free models)
+// instead of trusting the adapter-reported cost verbatim. A nil resolver (or
+// a resolver miss) leaves the adapter-reported cost authoritative.
+func (u *UsageRecorder) SetPricingResolver(fn PricingResolver) { u.pricing = fn }
 
 // UsageInput is the usage sample from an adapter telemetry event
 // (docs/04 §6.1 step_finish carries tokens + cost). It is the canonical,
@@ -88,6 +102,28 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 		OccurredAt:       time.Now().UTC(),
 		CreatedAt:        time.Now().UTC(),
 		WorkflowRunID:    in.WorkflowRunID,
+	}
+
+	// Cost authority: if a pricing resolver is wired, the catalog price is
+	// authoritative — even when it is $0 (a genuinely free model). The
+	// adapter-reported cost is the fallback when the model is unmatched or the
+	// catalog carries no pricing, so the recorded cost never regresses and a
+	// free model is never billed by an adapter-reported nonzero. A resolver
+	// error never fails the record: the adapter cost stands.
+	//
+	// The resolver runs on a context detached from the caller so a cancelled
+	// request does not short-circuit the telemetry write.
+	if u.pricing != nil {
+		cost, ok := u.pricing(context.WithoutCancel(ctx), in.Provider, in.Model)
+		if ok && cost != nil {
+			if p, ok := usageCostFromCatalog(in, cost); ok {
+				in.CostUSD = p
+				row.CostUSD = p
+				u.log.Debug("usage cost from catalog", "source", "catalog", "provider", in.Provider, "model", in.Model, "costUSD", p)
+			}
+		} else {
+			u.log.Debug("usage cost from adapter", "source", "adapter", "provider", in.Provider, "model", in.Model, "costUSD", in.CostUSD)
+		}
 	}
 
 	// Postgres write (source of truth). Own transaction — usage is
