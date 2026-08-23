@@ -59,6 +59,8 @@ func main() {
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "run-context":
+			os.Exit(runRunContext(os.Args[2:], log))
 		case "runtime-daemon":
 			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
 		case "runtime-supervisor":
@@ -260,7 +262,8 @@ Usage:
   %s db restore     Restore from a backup
   %s db prune       Remove backups older than N days
   %s backfill-pr    Backfill real PR URLs for completed git-backed runs
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+  %s run-context    Print a run's .orchicon archive (steps/summary) for context-by-reference
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
   %s version       Print version info

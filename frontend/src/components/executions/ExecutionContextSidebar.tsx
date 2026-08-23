@@ -199,15 +199,21 @@ export function ExecutionContextSidebar({
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let reasoning = 0;
     let total = 0;
     let cost = 0;
     for (const r of usage) {
       prompt += Number(r.promptTokens);
       completion += Number(r.completionTokens);
+      cacheRead += Number(r.cacheReadTokens) || 0;
+      cacheWrite += Number(r.cacheWriteTokens) || 0;
+      reasoning += Number(r.reasoningTokens) || 0;
       total += Number(r.totalTokens);
       cost += Number(r.costUsd);
     }
-    return { prompt, completion, total, cost };
+    return { prompt, completion, cacheRead, cacheWrite, reasoning, total, cost };
   }, [usage]);
 
   // Context %: total tokens used vs the model's context window.
@@ -351,6 +357,30 @@ export function ExecutionContextSidebar({
               pct={rolePct(usageBreakdown.completion)}
               color="bg-violet-500"
             />
+            {usageBreakdown.cacheRead > 0 && (
+              <TokenBar
+                label="Cache read"
+                count={usageBreakdown.cacheRead}
+                pct={rolePct(usageBreakdown.cacheRead)}
+                color="bg-emerald-500"
+              />
+            )}
+            {usageBreakdown.cacheWrite > 0 && (
+              <TokenBar
+                label="Cache write"
+                count={usageBreakdown.cacheWrite}
+                pct={rolePct(usageBreakdown.cacheWrite)}
+                color="bg-teal-500"
+              />
+            )}
+            {usageBreakdown.reasoning > 0 && (
+              <TokenBar
+                label="Reasoning"
+                count={usageBreakdown.reasoning}
+                pct={rolePct(usageBreakdown.reasoning)}
+                color="bg-amber-500"
+              />
+            )}
           </div>
         )}
       </div>
