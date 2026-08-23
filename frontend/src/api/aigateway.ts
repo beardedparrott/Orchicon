@@ -13,6 +13,7 @@ import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { CostSummary } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { WorkflowCostAggregate } from "@/api/gen/orchicon/api/v1/ai_gateway_service_pb";
 
 export const usageKeys = {
   all: ["usage"] as const,
@@ -85,7 +86,7 @@ export function useGetWorkflowCosts() {
     queryKey: ["usage", "workflow-costs"],
     queryFn: async () => {
       const res = await aiGatewayClient.getWorkflowCosts({});
-      return (res.workflows ?? []) as any[];
+      return (res.workflows ?? []) as WorkflowCostAggregate[];
     },
   });
 }
