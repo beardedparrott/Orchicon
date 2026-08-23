@@ -35,6 +35,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // Adapter is the OpenCode adapter bridge. It implements
@@ -83,6 +86,14 @@ type Adapter struct {
 	// instantly, poisoning every auto-retry. Reset to zero on any
 	// non-error progress (a successful step / tool call / message).
 	consecutiveSessionErrors int
+
+	// infraModelTurnRecycles counts runtime-container recycles performed
+	// for the infra-model-turn class (a model call that couldn't reach the
+	// model API at the socket/transport layer) within a SINGLE dispatch —
+	// the per-dispatch repair budget for the immediate recycle path. Reset
+	// on any non-error progress so a healthy step never inherits a prior
+	// dispatch's spent budget.
+	infraModelTurnRecycles int
 }
 
 // SessionStoreFunc persists transcript entries for one execution. The
@@ -531,6 +542,7 @@ func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string)
 		return
 	}
 	a.log.Warn("session backend unhealthy — recycling runtime container (fresh serve + store)", "run", workflowID)
+	sessionRecycleMetricsSingleton.recordInfraSessionCreate()
 	killCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := a.rt.Kill(killCtx, workflowID); err != nil {
@@ -1284,6 +1296,101 @@ func isInfraSessionError(err error) bool {
 		strings.Contains(msg, "opencode serve not healthy") ||
 		strings.Contains(msg, "opencode serve POST /session: http 5")
 }
+
+// isInfraModelTurnError reports whether a MODEL-TURN failure is an
+// INFRASTRUCTURE failure — the session's model call could not reach the
+// model API at the socket/transport layer — as opposed to a per-request or
+// server-decision rejection that must stay on the retry → recovery → human
+// path. This is the discriminator that lets a model-turn socket connect
+// failure recycle the run's runtime container IMMEDIATELY (the next dispatch
+// builds a fresh serve + store) instead of waiting for the 3-consecutive
+// `recycleOnWedgedServe` counter to burn a dead-API session three times.
+//
+// The input is the human-readable reason from a session.error bus event (the
+// observed field: "Cannot connect to API: Unable to connect. Is the computer
+// able to access the url?"), which is the same TCP-class as the session-create
+// path's "connection refused" but surfaces on the model-turn path. It is a
+// string heuristic, so it is guarded FIRST against the per-request /
+// server-decision class: if any guard term is present the message is
+// definitively NOT infra, even if it also carries a socket phrase. Only when
+// no guard matches does the socket/transport class decide.
+func isInfraModelTurnError(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	m := strings.ToLower(msg)
+	// Guard terms: a wrapped provider error that carries a status/auth/quota/
+	// policy rejection must never be reclassified as infra. Checked first so a
+	// message that happens to mention a socket phrase AND "http 400" stays on
+	// the retry path.
+	for _, term := range []string{
+		"http 4", "http 5",
+		"401", "403", "unauthorized", "forbidden",
+		"rate limit", "429",
+		"insufficient", "quota", "policy",
+	} {
+		if strings.Contains(m, term) {
+			return false
+		}
+	}
+	// Socket / transport-layer connect class: the serve tried to reach the
+	// model API and the attempt failed below the HTTP layer.
+	for _, term := range []string{
+		"unable to connect",
+		"connection refused",
+		"dial tcp", "dial udp",
+		"no such host",
+		"i/o timeout",
+		"connection reset",
+		"network unreachable",
+	} {
+		if strings.Contains(m, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionRecycleMetrics holds the OTel counter for runtime-container recycles
+// by reason. A single `orchicon_session_recycle{reason=…}` counter keeps the
+// recycle family (session-create infra, wedged-consecutive, infra-model-turn)
+// observable with one instrument and minimal wiring, mirroring the
+// recoverySeedMetrics best-effort pattern (internal/scheduler/recovery_seed.go).
+// Best-effort: a nil OTel pipeline is a no-op, never an error.
+type sessionRecycleMetrics struct {
+	ensureOnce sync.Once
+	recycled   otelmetric.Int64Counter
+}
+
+func (m *sessionRecycleMetrics) ensure() {
+	m.ensureOnce.Do(func() {
+		c, err := telemetry.Meter().Int64Counter("orchicon_session_recycle",
+			otelmetric.WithDescription("Runtime container recycles by reason"))
+		if err == nil {
+			m.recycled = c
+		}
+	})
+}
+
+func (m *sessionRecycleMetrics) record(reason string, exhausted bool) {
+	m.ensure()
+	if m.recycled != nil {
+		attrs := []attribute.KeyValue{attribute.String("reason", reason)}
+		if reason == "infra_model_turn" {
+			attrs = append(attrs, attribute.Bool("exhausted", exhausted))
+		}
+		m.recycled.Add(context.Background(), 1, otelmetric.WithAttributes(attrs...))
+	}
+}
+
+func (m *sessionRecycleMetrics) recordInfraSessionCreate()   { m.record("infra_session_create", false) }
+func (m *sessionRecycleMetrics) recordWedgedConsecutive()    { m.record("wedged_consecutive", false) }
+func (m *sessionRecycleMetrics) recordInfraModelTurn(v bool) { m.record("infra_model_turn", v) }
+
+// sessionRecycleMetricsSingleton is the shared instance for the recycle
+// counters (single instrument instance avoids duplicate-instrument churn on
+// the OTel Meter).
+var sessionRecycleMetricsSingleton = &sessionRecycleMetrics{}
 
 // projectMount returns the project-dir mount spec for a runtime container
 // (empty when no project dir — the daemon still adds the standard home
