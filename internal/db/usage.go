@@ -145,7 +145,10 @@ type CostSummaryRow struct {
 	DisplayName      string // human-readable name populated by the service layer
 	TotalTokens      int64
 	PromptTokens     int64
+	CacheReadTokens  int64
 	CompletionTokens int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
 	CostUSD          float64
 	ExecutionCount   int32
 	RecordCount      int32
@@ -188,6 +191,9 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
 		COALESCE(SUM(cost_usd), 0) AS cost_usd,
 		COUNT(DISTINCT execution_id) AS execution_count,
 		COUNT(*) AS record_count
@@ -209,7 +215,8 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 	for rows.Next() {
 		var r CostSummaryRow
 		if err := rows.Scan(&r.GroupKey, &r.TotalTokens, &r.PromptTokens,
-			&r.CompletionTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+			&r.CompletionTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
+			&r.ReasoningTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan cost rollup: %w", err)
 		}
@@ -223,6 +230,9 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 	const q = `SELECT COALESCE(SUM(total_tokens), 0),
 		COALESCE(SUM(prompt_tokens), 0),
 		COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0),
+		COALESCE(SUM(cache_write_tokens), 0),
+		COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(cost_usd), 0),
 		COUNT(DISTINCT execution_id),
 		COUNT(*)
@@ -236,8 +246,9 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 	var r CostSummaryRow
 	r.GroupKey = "total"
 	if err := tx.QueryRow(ctx, q, tenantID, projectID, taskID, executionID, start, end).Scan(
-		&r.TotalTokens, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD,
-		&r.ExecutionCount, &r.RecordCount,
+		&r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
+		&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
+		&r.CostUSD, &r.ExecutionCount, &r.RecordCount,
 	); err != nil {
 		return CostSummaryRow{}, fmt.Errorf("db: cost total: %w", err)
 	}
