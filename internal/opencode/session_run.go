@@ -65,6 +65,18 @@ type sessionRun struct {
 	muParts      sync.Mutex
 	seq          int64
 	pendingParts []db.SessionPart
+
+	// Soft-first compact-on-budget-breach gate (see compact.go). budget is
+	// the per-execution spend accumulator fed on each step_finish via
+	// parseEvent; budgetSpec is the parsed merged budget (cost_usd primary,
+	// tokens fallback). compactsPerformed + lastCompactStep implement the
+	// "at most once per step, never before the minimum-turn floor,
+	// re-arms only across normal forward progress" latch that prevents a
+	// compact loop.
+	budget            *budgetAccumulator
+	budgetSpec        budgetSpec
+	compactsPerformed int
+	lastCompactStep   int
 }
 
 // Nudge tuning (env-overridable; default matches the advisory no-file
@@ -373,13 +385,20 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.resolveProbe()
 		r.noteSessionProgress()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
-			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
+			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
 		// Record the raw part for the durable transcript, with the tool
 		// OUTPUT capped like the live forward (a follow-up or a
 		// recovery-resumed session re-seeds this transcript as context, so
 		// an uncapped giant build log would re-inflate it).
 		if t, _ := legacy["type"].(string); t != "" {
 			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
+		}
+		// Soft-first compact gate: after the accumulator is fed at the
+		// quiet step boundary, evaluate the budget breach (once per step,
+		// never at start). The subsequent turns resend `system`, so goal/AC
+		// survive the lossy summary.
+		if et, _ := legacy["type"].(string); et == evtStepFinish {
+			r.maybeCompact()
 		}
 	}
 }
@@ -613,6 +632,68 @@ func (r *sessionRun) noteSessionProgress() {
 	r.a.mu.Lock()
 	r.a.consecutiveSessionErrors = 0
 	r.a.mu.Unlock()
+}
+
+// maybeCompact evaluates the soft-first compact gate at a quiet step
+// boundary (after a step_finish feeds the spend accumulator). On a budget
+// breach it calls Compact once and CONTINUES — best-effort, never a hard
+// abort, never a failure. The per-execution spend is CUMULATIVE, so once a
+// budget is tripped it stays tripped; the latch therefore bounds compaction
+// to at most one per step and re-arms only after the minimum-turn floor
+// elapses across normal forward progress (not within one step, and never at
+// start), so a fresh post-compact summary is not immediately re-collapsed
+// (the compact loop). The session's resolved provider/model is passed so the
+// compaction runs under the model the session actually uses.
+func (r *sessionRun) maybeCompact() {
+	r.mu.Lock()
+	if r.finished || r.budget == nil {
+		r.mu.Unlock()
+		return
+	}
+	maxC := compactMax()
+	if maxC < 1 {
+		r.mu.Unlock()
+		return
+	}
+	steps := r.budget.steps
+	minT := compactMinTurns()
+	// Never at start / never immediately after a prior compact (the floor
+	// is the re-arm win — the latch holds across a step so the fresh
+	// summary gets to run before the gate can fire again).
+	if steps < minT || (r.compactsPerformed > 0 && steps < r.lastCompactStep+minT) {
+		r.mu.Unlock()
+		return
+	}
+	if r.compactsPerformed >= maxC {
+		r.mu.Unlock()
+		return
+	}
+	if !budgetBreached(r.budgetSpec, r.budget) {
+		r.mu.Unlock()
+		return
+	}
+	r.compactsPerformed++
+	r.lastCompactStep = steps
+	r.mu.Unlock()
+
+	provider, model, ok := splitModelRef(r.modelRef)
+	if !ok {
+		r.a.log.Warn("compact skipped: malformed model ref",
+			"execution", r.execRow.ID, "modelRef", r.modelRef)
+		return
+	}
+	r.a.log.Info("compact triggering on budget breach (soft-first)",
+		"execution", r.execRow.ID, "step", steps,
+		"costUSD", r.budget.costUSD, "provider", provider, "model", model)
+	if err := r.client.Compact(r.parentCtx, r.sessionID, provider, model); err != nil {
+		// Best-effort: a failed compact never fails the execution. The
+		// wall-clock and stall signals remain the only live killers.
+		r.a.log.Warn("compact failed (best-effort)", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	r.recordPart(db.SessionPartCompacted, map[string]any{
+		"step": steps, "costUSD": r.budget.costUSD, "provider": provider, "model": model,
+	})
 }
 
 // onStall is the progress monitor's stall callback. Nudge-first routing:

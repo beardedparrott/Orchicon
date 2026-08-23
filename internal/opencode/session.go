@@ -195,6 +195,27 @@ func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// Compact collapses the session's context by summarizing the collapsed
+// head (the lossy compaction collapsed region), invoked when the
+// execution's accumulated spend breaches its budget (soft-first, no hard
+// abort). It POSTs /session/{id}/summarize with the session's RESOLVED
+// provider/model so the compaction runs under the model the session
+// actually uses (the acceptance criterion). The route is verified live
+// (opencode 1.18.21): 200 true, then the SSE bus emits `compaction` and
+// `session.compacted`. Best-effort — a failure never fails the execution.
+//
+// The opencode summarize contract uses camelCase keys: `providerID`,
+// `modelID` (unlike SendMessage's snake_case `provider_id`).
+func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, modelID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	body := map[string]any{"providerID": providerID, "modelID": modelID}
+	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/summarize", body); err != nil {
+		return fmt.Errorf("opencode session compact: %w", err)
+	}
+	return nil
+}
+
 // ReplyPermission answers a permission.asked event with "once" — the
 // server-side equivalent of `opencode run --auto`, so tool calls never
 // block an unattended execution.

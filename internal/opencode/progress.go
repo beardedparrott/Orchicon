@@ -55,20 +55,20 @@ import (
 // stallWindows is the set of tunable stall thresholds. Loaded from env at
 // adapter construction so operators can tighten/loosen per environment.
 type stallWindows struct {
-	noProgress    time.Duration
-	noFileDiff    time.Duration
-	textLoop      time.Duration // pure text without meaningful action
-	repetitionN  int
-	repetitionW  time.Duration
+	noProgress  time.Duration
+	noFileDiff  time.Duration
+	textLoop    time.Duration // pure text without meaningful action
+	repetitionN int
+	repetitionW time.Duration
 }
 
 func defaultStallWindows() stallWindows {
 	return stallWindows{
-		noProgress:   envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 300*time.Second),
-		noFileDiff:   envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
-		textLoop:     envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
-		repetitionN:  envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
-		repetitionW:  envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
+		noProgress:  envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 300*time.Second),
+		noFileDiff:  envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
+		textLoop:    envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
+		repetitionN: envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
+		repetitionW: envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
 	}
 }
 
@@ -112,16 +112,16 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 type progressMonitor struct {
 	mu sync.Mutex
 
-	execID  string
-	w       stallWindows
-	now     func() time.Time
+	execID string
+	w      stallWindows
+	now    func() time.Time
 
 	startedAt time.Time
 
-	lastStepFinish     time.Time // step_finish = token progress
-	lastFileDiff       time.Time // file_diff = file progress
+	lastStepFinish       time.Time // step_finish = token progress
+	lastFileDiff         time.Time // file_diff = file progress
 	lastMeaningfulAction time.Time // tool_call / file_diff / step_finish (not just text)
-	lastTokenCt        int64     // cumulative tokens (for no-NEW-token detection)
+	lastTokenCt          int64     // cumulative tokens (for no-NEW-token detection)
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args hash) → timestamps within the window.
@@ -550,29 +550,23 @@ const defaultWallClockTimeout = 3600 * time.Second
 // explicit 0 in the worker OR the tenant default disables the hard timeout
 // (relying solely on stall detection); an unset field falls back to
 // defaultWallClockTimeout so every execution has a hard backstop.
+//
+// The wall-clock dimension shares the single budget parse (parseBudgetSpec)
+// with the compaction gate so both read the same merged budget.
 func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
 	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
 			return time.Now().Add(d), true
 		}
 	}
-	if len(budgets) == 0 {
-		return time.Now().Add(defaultWallClockTimeout), true
-	}
-	var b struct {
-		WallClockSeconds *float64 `json:"wall_clock_seconds"`
-	}
-	if err := json.Unmarshal(budgets, &b); err != nil {
-		// Unparseable budgets — fall back to the default backstop.
-		return time.Now().Add(defaultWallClockTimeout), true
-	}
-	// Absent field → default backstop (3600s).
-	if b.WallClockSeconds == nil {
+	spec := parseBudgetSpec(budgets)
+	// Absent field (or empty/unparseable budgets) → default backstop (3600s).
+	if spec.wallClockSeconds == nil {
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	// Explicit 0 (or negative) disables the hard timeout.
-	if *b.WallClockSeconds <= 0 {
+	if *spec.wallClockSeconds <= 0 {
 		return time.Time{}, false
 	}
-	return time.Now().Add(time.Duration(*b.WallClockSeconds * float64(time.Second))), true
+	return time.Now().Add(time.Duration(*spec.wallClockSeconds * float64(time.Second))), true
 }
