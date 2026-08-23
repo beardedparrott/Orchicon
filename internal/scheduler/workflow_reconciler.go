@@ -3536,6 +3536,10 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 	//    resumed — fail it loud instead of wedging or dispatching cold.
 	rec, err := db.GetLatestRecoveryForExecution(ctx, tx, tenantID, meta.WorkItemID, failedExecID)
 	if err == db.ErrNotFound {
+		stalled, holdErr := r.holdRecoveringStep(run, sr, "recovery never materialized for the failed execution")
+		if stalled {
+			return false, holdErr
+		}
 		return false, nil
 	}
 	if err != nil {
@@ -3554,8 +3558,13 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 	// 3. A seed must be resolvable for the exact dispatching worker
 	//    (step-run keys, or the recovery-row fallback). nil → hold: the
 	//    engine publishes the keys atomically with terminal-resumed, so
-	//    this resolves within the same commit window.
+	//    this resolves within the same commit window. A hold that never
+	//    resolves is bounded by holdRecoveringStep.
 	if seed := resolveRecoverySeed(ctx, tx, tenantID, meta.WorkItemID, sr.Result, nil, meta.WorkerID); seed == nil {
+		stalled, holdErr := r.holdRecoveringStep(run, sr, "recovery seed never became resolvable after resume")
+		if stalled {
+			return false, holdErr
+		}
 		return false, nil
 	}
 	return true, nil
@@ -3567,6 +3576,45 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 // "running" forever. The inline dispatch links the execution moments
 // after the reconcile transaction commits, so the grace is generous.
 const dispatchLinkGrace = 15 * time.Second
+
+// recoveringStallTimeout is how long a recovering step may sit in the
+// recovery-dispatch gate — holding on a recovery that never materializes,
+// or a terminal `resumed` recovery whose seed never becomes resolvable —
+// before the reconciler FAILS the step terminal (the "never limbo"
+// backstop). A recovery that is genuinely in flight (an active recovery
+// row, or a recovery in a pending/running state) holds freely; only the
+// two dead-end holds are bounded. The observed wedge on 2026-08-22/23: a
+// run's runtime session backend died; every summarize-resume finished
+// with status resumed yet its dispatch kept failing to start; the failing
+// steps sat "recovering" for 45+ minutes and the run stayed "running" the
+// whole time — nothing terminalized the step, so the Retry button never
+// surfaced. Overridable via ORCHICON_RECOVERING_STALL_TIMEOUT (default
+// 15m). A value < 1s disables the cap (legacy behavior).
+func recoveringStallTimeout() time.Duration {
+	if v := os.Getenv("ORCHICON_RECOVERING_STALL_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 15 * time.Minute
+}
+
+// holdRecoveringStep applies the stalled-recovering bound to one
+// recovery-dispatch hold. It returns (true, <reason>) to FAIL the step
+// terminal once the run has been running longer than
+// recoveringStallTimeout while this step remains un-resumable for
+// waitReason; (false, nil) keeps holding. The reconciler re-evaluates the
+// gate on every pass, so a stuck step can no longer wedge the run in
+// "running" forever.
+func (r *WorkflowReconciler) holdRecoveringStep(run db.WorkflowRunRow, sr db.WorkflowStepRunRow, waitReason string) (bool, error) {
+	wait := recoveringStallTimeout()
+	if wait <= 0 || run.StartedAt == nil || time.Since(*run.StartedAt) < wait {
+		return false, nil
+	}
+	r.log.Warn("recovering step stalled past limit — failing step terminal",
+		"run", run.ID, "step", sr.StepID, "reason", waitReason, "wait", wait.String())
+	return true, fmt.Errorf("step stuck recovering for %s (%s) — failing step", wait, waitReason)
+}
 
 // maxDAGPasses bounds the per-run DAG progression loop. A well-behaved
 // run completes its progression in a handful of passes (each step

@@ -502,3 +502,68 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 		t.Fatalf("terminal failed recovery must fail the step with a clear reason, got %v", fail)
 	}
 }
+
+// TestRecoveringStallGuardFailsStuckStep is the regression test for the
+// observed 45-minute "running" limbo: a recovering summarize_restart step
+// whose recovery row never materializes sits in the recovery-dispatch gate
+// forever (no active recovery, no recovery at all), so the run never
+// finalizes and the Retry button never surfaces. The recoveringStallTimeout
+// cap must FAIL the stuck step terminal once the run has been running past
+// the cap, letting the run finalize FAILED.
+func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "1m")
+	ctx := context.Background()
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// Young run (StartedAt nil): the same missing-recovery hold is transient
+	// (the post-commit trigger may not have created the row yet) — hold.
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, env.stepRun)
+	if ready || fail != nil {
+		t.Fatalf("young run: (ready=%v, fail=%v), want (false, nil) hold", ready, fail)
+	}
+
+	// Age the run beyond the stall cap: the same stuck step must now be
+	// FAILED terminal instead of holding a run "running" indefinitely.
+	aged := env.run
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	aged.StartedAt = &old
+	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, aged, env.stepRun)
+	if ready {
+		t.Fatal("aged run with an unrecoverable step MUST NOT dispatch")
+	}
+	if fail == nil || !strings.Contains(fail.Error(), "stuck recovering") {
+		t.Fatalf("aged run must fail the step with a clear 'stuck recovering' reason, got %v", fail)
+	}
+}
+
+// TestRecoveringStallDisabledHoldsLegacy verifies the cap can be disabled
+// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s): the gate returns to legacy
+// hold-only behavior even for an aged run.
+func TestRecoveringStallDisabledHoldsLegacy(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "0ms")
+	ctx := context.Background()
+
+	aged := env.run
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	aged.StartedAt = &old
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, aged, env.stepRun)
+	if ready {
+		t.Fatal("disabled cap + aged run must not dispatch")
+	}
+	if fail != nil {
+		t.Fatalf("disabled cap must hold legacy (false, nil), got fail=%v", fail)
+	}
+}
