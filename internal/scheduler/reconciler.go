@@ -2426,6 +2426,27 @@ func placeholderSummaryBody(rest string) bool {
 	if rest == "" {
 		return true
 	}
+	// Inline code (backtick-quoted) markers are seed/instruction echo, never a
+	// real sign-off. The recovery seed writes `` `ORCHICON WORKER SUMMARY:
+	// failure` reason `recovery seed file missing` `` and system prompts quote
+	// `` `ORCHICON WORKER SUMMARY: success` `` as an example. The body right
+	// after the marker is a backtick-wrapped word (e.g. "`failure`", or
+	// "failure` reason ..."), so strip a leading backtick from the first word:
+	// a bare `success`/`failure` in backticks is a placeholder, not a delivery.
+	if first := firstWordAsDecision(rest); first != "" {
+		words := strings.Fields(rest)
+		if len(words) > 0 {
+			raw := words[0]
+			before, _ := strings.CutPrefix(raw, "`")
+			after, afterBacktick := strings.CutSuffix(before, "`")
+			if afterBacktick {
+				lower := strings.ToLower(after)
+				if lower == "success" || lower == "failure" {
+					return true
+				}
+			}
+		}
+	}
 	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
 		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
 		return true

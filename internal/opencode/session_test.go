@@ -423,6 +423,20 @@ func TestCompletionProbeDecision(t *testing.T) {
 			wantProbe: true, wantFail: false,
 		},
 		{
+			name:      "recovery-seed inline-code marker is not a real decision",
+			output:    "If missing at start, finish with `ORCHICON WORKER SUMMARY: failure` reason `recovery seed file missing`. Let me read the classifier.",
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: true, wantFail: false,
+		},
+		{
+			name:      "backtick success example is not a real decision",
+			output:    "Note the contract: `ORCHICON WORKER SUMMARY: success` — wrapping matters.",
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: true, wantFail: false,
+		},
+		{
 			name: "real marker after an earlier placeholder echo is the decision",
 			output: "Plan: ORCHICON WORKER SUMMARY: success — <summary>.\n" +
 				"ORCHICON WORKER SUMMARY: success — the ADR is complete and the summary was delivered.",

@@ -218,9 +218,10 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 // TestCompositePromptTodoListDirectives verifies every worker's composite
 // prompt carries the Todo list guidance block in the stable prefix — the
 // todowrite tool is available in the opencode runtime toolset, and the
-// prompt must tell the worker to use it proactively for multi-step work
+// prompt must tell the worker to use it proactively AND incrementally
 // (acceptance: proactive use for 3+ steps, one in_progress at a time,
-// immediate completion, full-list replacement semantics).
+// immediate completion, full-list replacement semantics, per-turn
+// incremental maintenance so the live UI panel reflects progress).
 func TestCompositePromptTodoListDirectives(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -238,6 +239,9 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 		"`completed`",
 		"`cancelled`",
 		"pending | in_progress | completed | cancelled",
+		"EVERY turn",
+		"after every tool call",
+		"Before your first action",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)

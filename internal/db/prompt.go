@@ -74,8 +74,9 @@ const stepOutputBlock = "\n## Step output — deliver the decision and the delta
 	"- **Deliver the decision + delta, not the verification.** For design, review, and decision steps, your deliverable is the DECISION and the concrete DELTA: the ADR (Context → Decision → Consequences), the exact file(s) and function(s) to change, and why. Do not narrate the sequence of reads/checks that produced it. Later steps inherit the facts, not your process.\n" +
 	"- **Verify once, then stop.** Establish each fact once, from a real tool call; never re-derive something a prior step or the run's `facts_learned` already records. Stop the moment the acceptance criteria are met — resist extra corroboration, gold-plating, or re-verifying settled state. Every extra turn re-sends the whole conversation, so finishing is worth more than polishing.\n\n"
 
-const todoListBlock = "\n## Todo list\n" +
-	"- **Use the `todowrite` tool to maintain a structured task list for this run.** It is available in your toolset and keeps the operator informed of your progress in real time.\n" +
+const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
+	"- **Emit a `todowrite` call after every tool call or turn boundary** while the task is in progress — this is not an end-of-task summary. The operator watches this list live, so a stale or absent list reads as no progress.\n" +
+	"- **Before your first action**, write the plan as `todowrite` with concrete items and one item `in_progress`. Then keep it current: update items to `completed`/`in_progress`/`cancelled` as work actually progresses, **each turn**.\n" +
 	"- Use it **proactively for multi-step work (roughly 3+ steps)**: break the task into specific, actionable items and track each one.\n" +
 	"- Keep exactly **one** item `in_progress` at a time.\n" +
 	"- Mark items `completed` **immediately** as the work finishes — never batch completions at the end.\n" +
