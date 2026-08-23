@@ -609,7 +609,11 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	}
 	r.mu.Unlock()
 	r.callbacks.OnHealth(r.parentCtx, r.execRow.ID, "unhealthy")
-	r.recycleOnWedgedServe(msg)
+	if isInfraModelTurnError(msg) {
+		r.recycleOnInfraModelTurn(msg)
+	} else {
+		r.recycleOnWedgedServe(msg)
+	}
 	r.finish(false, "opencode_session_error: "+msg)
 }
 
@@ -635,11 +639,57 @@ func (r *sessionRun) recycleOnWedgedServe(msg string) {
 	if !r.a.countSessionError() {
 		return
 	}
+	sessionRecycleMetricsSingleton.recordWedgedConsecutive()
 	r.a.log.Warn("recycling wedged runtime container after consecutive session errors",
 		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
 		"threshold", threshold, "error", msg)
 	// Kill removes the container; the next dispatch's Create rebuilds it
 	// with a fresh serve. Best-effort — a failed recycle is just a log.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
+		r.a.log.Warn("runtime container recycle failed", "run", r.manifest.RuntimeWorkflowID, "error", err)
+	}
+}
+
+// recycleOnInfraModelTurn recycles the workflow's runtime container on the
+// FIRST model-turn failure whose root is a socket/transport connect error
+// (see isInfraModelTurnError). This is the sibling of recycleOnWedgedServe
+// but it does NOT wait for a run of consecutive errors: a model call that
+// cannot reach the model API at the socket layer (e.g. "Cannot connect to
+// API: Unable to connect. Is the computer able to access the url?") is the
+// same TCP-class as a session-create "connection refused", and burning the
+// 3-consecutive recycle gate would waste further dead-API turns before a
+// fresh serve arrives. Recycling on the first such failure means the next
+// dispatch's Create rebuilds the container with a fresh serve + store.
+//
+// Unlike the session-create infra path this is NOT dispatched-controllable by
+// an infra threshold, so it is still bounded by the per-dispatch repair
+// budget (sessionRepairBudget / ORCHICON_SESSION_REPAIR_ATTEMPTS) via a
+// dedicated infraModelTurnRecycles counter, reset on any progress. When the
+// budget is spent the step still fails (finish(false) in recordStreamError),
+// but further infra-model-turn recycles are suppressed so we never churn the
+// container unboundedly — the failure surfaces as the terminal
+// "opencode_session_error" reason instead.
+func (r *sessionRun) recycleOnInfraModelTurn(msg string) {
+	budget := sessionRepairBudget()
+	if budget < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
+		return
+	}
+	if r.a.infraModelTurnRecycleCount() >= budget {
+		r.a.log.Warn("not recycling — infra model-turn repair budget exhausted",
+			"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
+			"budget", budget, "error", msg)
+		sessionRecycleMetricsSingleton.recordInfraModelTurn(true)
+		return
+	}
+	r.a.incrInfraModelTurnRecycles()
+	r.a.log.Warn("recycling runtime container after infra model-turn connect failure",
+		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
+		"budget", budget, "error", msg)
+	sessionRecycleMetricsSingleton.recordInfraModelTurn(false)
+	// Kill removes the container; the next dispatch's Create rebuilds it with
+	// a fresh serve + store. Best-effort — a failed recycle is just a log.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
@@ -683,14 +733,31 @@ func (a *Adapter) resetSessionErrors() {
 	a.consecutiveSessionErrors = 0
 }
 
-// noteSessionProgress resets the consecutive-session-error counter on any
-// non-error session progress (a step, tool call, or message completing).
+// infraModelTurnRecycleCount returns the current per-dispatch
+// infra-model-turn recycle count (test helper).
+func (a *Adapter) infraModelTurnRecycleCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.infraModelTurnRecycles
+}
+
+// incrInfraModelTurnRecycles increments the per-dispatch infra-model-turn
+// recycle count.
+func (a *Adapter) incrInfraModelTurnRecycles() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.infraModelTurnRecycles++
+}
+
+// noteSessionProgress resets the consecutive-session-error counter and the
+// infra-model-turn per-dispatch recycle budget on any non-error session
+// progress (a step, tool call, or message completing), so a healthy step
+// never inherits a prior dispatch's spent budget. Both counters are reset
+// regardless of the wedge-recycle threshold: they gate independent classes.
 func (r *sessionRun) noteSessionProgress() {
-	if sessionErrorRecycleThreshold() < 1 {
-		return
-	}
 	r.a.mu.Lock()
 	r.a.consecutiveSessionErrors = 0
+	r.a.infraModelTurnRecycles = 0
 	r.a.mu.Unlock()
 }
 
