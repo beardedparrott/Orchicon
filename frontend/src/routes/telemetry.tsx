@@ -18,6 +18,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { SearchInput } from "@/components/cost-explorer/SearchInput";
+import { SortControls } from "@/components/cost-explorer/SortControls";
+import { SortableHeader } from "@/components/cost-explorer/SortableHeader";
+import {
+  filterSummaries,
+  filterUsageRecords,
+  filterWorkflowAggregates,
+  sortSummaries,
+  sortUsageRecords,
+  sortWorkflowAggregates,
+  toggleSort,
+  type SortKey,
+  type SortState,
+  type UsageSortKey,
+} from "@/components/cost-explorer/utils";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -164,6 +179,11 @@ function CostExplorer() {
   const [projectId, setProjectId] = useState("");
   const [taskId, setTaskId] = useState("");
   const [executionId, setExecutionId] = useState("");
+  const [search, setSearch] = useState("");
+  // Default matches the backend ORDER BY cost_usd DESC, so the initial view
+  // is unchanged until the user sorts. Local per-tab state — never mutates
+  // the API query params (docs/10 §11).
+  const [sort, setSort] = useState<SortState<SortKey>>({ key: "cost", dir: "desc" });
   const { data, isLoading, error } = useGetCost({
     rollup: rollup === "workflow" ? UsageRollupEnum.PROJECT : rollup,
     projectId: projectId || undefined,
@@ -254,6 +274,15 @@ function CostExplorer() {
     return s.groupKey.slice(0, 12);
   }
 
+  // Search + sort over the already-fetched page (no server round-trip).
+  // Rows keep their groupKey — drill-down reads it from these same objects,
+  // so sorting/filtering never breaks navigation.
+  const visibleSummaries = sortSummaries(
+    filterSummaries(data?.summaries ?? [], search, displayName),
+    sort,
+    displayName,
+  );
+
   return (
     <div className="space-y-6">
       <Card>
@@ -338,9 +367,17 @@ function CostExplorer() {
                   </div>
                 </div>
               )}
+              <div className="flex flex-wrap items-center gap-3">
+                <SearchInput
+                  value={search}
+                  onChange={setSearch}
+                  placeholder="Search by name…"
+                />
+                <SortControls sort={sort} onChange={setSort} />
+              </div>
               {data?.summaries && data.summaries.length > 0 && (
                 <div className="divide-y rounded-md border">
-                  {data.summaries.map((s) => (
+                  {visibleSummaries.map((s) => (
                     <button
                       key={s.groupKey || "unknown"}
                       onClick={() => {
@@ -366,10 +403,20 @@ function CostExplorer() {
                         )}{" "}
                         · {fmtInt(s.totalTokens ?? 0)} tok ·{" "}
                         {s.executionCount ?? 0} execs
+                        {s.finishedAt && (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            · finished {fmtWhen(s.finishedAt)}
+                          </span>
+                        )}
                       </span>
                     </button>
                   ))}
                 </div>
+              )}
+              {data?.summaries && data.summaries.length > 0 && visibleSummaries.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No rows match “{search}”.
+                </p>
               )}
               {data?.summaries && data.summaries.length === 0 && (
                 <p className="text-sm text-muted-foreground">
@@ -404,6 +451,19 @@ function WorkflowCostPanel() {
   const { data: workflows, isLoading, error } = useGetWorkflowCosts();
   const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<SortKey>>({ key: "cost", dir: "desc" });
+
+  // Search prunes workflows/runs/workers; the sort orders workflows and the
+  // runs within each expanded workflow (worker rows inherit the run order).
+  const visible = useMemo(
+    () =>
+      sortWorkflowAggregates(
+        filterWorkflowAggregates(workflows ?? [], search),
+        sort,
+      ),
+    [workflows, search, sort],
+  );
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading workflow costs…</p>;
   if (error) return <p className="text-sm text-destructive">Failed to load workflow costs: {String(error)}</p>;
@@ -412,7 +472,18 @@ function WorkflowCostPanel() {
 
   return (
     <div className="space-y-2">
-      {workflows.map((wf) => {
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search workflows, runs, workers…"
+        />
+        <SortControls sort={sort} onChange={setSort} />
+      </div>
+      {visible.length === 0 && (
+        <p className="text-sm text-muted-foreground">No workflows match “{search}”.</p>
+      )}
+      {visible.map((wf) => {
         const wfExpanded = expandedWorkflow === wf.workflowId;
         return (
           <div key={wf.workflowId} className="rounded-md border">
@@ -432,6 +503,11 @@ function WorkflowCostPanel() {
                   toNum(wf.promptTokens),
                 )}{" "}
                 · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.runCount ?? 0} runs · {wf.executionCount ?? 0} execs
+                {wf.finishedAt && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    · finished {fmtWhen(wf.finishedAt)}
+                  </span>
+                )}
               </span>
             </button>
 
@@ -468,6 +544,11 @@ function WorkflowCostPanel() {
                             toNum(run.promptTokens),
                           )}{" "}
                           · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs
+                          {run.finishedAt && (
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              · finished {fmtWhen(run.finishedAt)}
+                            </span>
+                          )}
                         </span>
                       </button>
 
@@ -527,6 +608,16 @@ function UsageRecordsTable({
   executionId?: string;
 }) {
   const { data, isLoading } = useGetUsage({ projectId, taskId, executionId });
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<UsageSortKey>>({ key: "when", dir: "desc" });
+
+  // Local per-tab search + sort over the already-fetched page. Default order
+  // (by When desc) matches the backend ORDER BY occurred_at DESC.
+  const visible = useMemo(
+    () => sortUsageRecords(filterUsageRecords(data ?? [], search), sort),
+    [data, search, sort],
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -536,7 +627,12 @@ function UsageRecordsTable({
           VictoriaMetrics as OTel metrics for the embedded Grafana views.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-2">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search records…"
+        />
         {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {data && data.length === 0 && (
           <p className="text-sm text-muted-foreground">No usage records yet.</p>
@@ -546,17 +642,17 @@ function UsageRecordsTable({
             <table className="w-full text-sm">
               <thead className="text-left text-muted-foreground">
                 <tr>
-                  <th className="py-1 pr-3">Worker</th>
-                  <th className="py-1 pr-3">Task</th>
-                  <th className="py-1 pr-3">Provider</th>
-                  <th className="py-1 pr-3">Model</th>
-                  <th className="py-1 pr-3 text-right">Tokens</th>
-                  <th className="py-1 pr-3 text-right">Cost (USD)</th>
-                  <th className="py-1">When</th>
+                  <SortableHeader label="Worker" sortKey="worker" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="Task" sortKey="task" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="Provider" sortKey="provider" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="Model" sortKey="model" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="Tokens" sortKey="tokens" align="right" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="Cost (USD)" sortKey="cost" align="right" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
+                  <SortableHeader label="When" sortKey="when" activeKey={sort.key} dir={sort.dir} onSort={(k) => setSort(toggleSort(sort, k))} />
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {data.map((r) => (
+                {visible.map((r) => (
                   <tr key={r.id}>
                     <td className="py-1 pr-3 text-sm">
                       {r.workerName || (r.workerId || "—").slice(0, 12)}
@@ -584,6 +680,11 @@ function UsageRecordsTable({
               </tbody>
             </table>
           </div>
+        )}
+        {data && data.length > 0 && visible.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No records match “{search}”.
+          </p>
         )}
       </CardContent>
     </Card>
@@ -948,6 +1049,13 @@ function fmtInt(n: number | bigint | undefined): string {
 function toNum(n: number | bigint | undefined | null): number {
   if (n === undefined || n === null) return 0;
   return typeof n === "bigint" ? Number(n) : n;
+}
+
+// fmtWhen renders a proto Timestamp as a locale date-time, or "—" when absent.
+function fmtWhen(ts: { seconds?: bigint; nanos?: number } | undefined): string {
+  if (!ts) return "—";
+  const millis = Number(ts.seconds ?? 0n) * 1000 + Math.floor((ts.nanos ?? 0) / 1e6);
+  return new Date(millis).toLocaleString();
 }
 
 // cacheHitRatioPct is the canonical platform cache hit ratio (docs/10 §11):

@@ -140,6 +140,10 @@ message WorkflowCostAggregate {
   int64 cache_read_tokens = 9;
   int64 cache_write_tokens = 10;
   int64 reasoning_tokens = 11;
+  // The latest occurred_at among the workflow's usage records — the time the
+  // workflow last finished activity. Used for the "Finished" sort on the
+  // By Workflow cost panel (docs/10 §11).
+  google.protobuf.Timestamp finished_at = 12;
 }
 
 // WorkflowRunCost is a single run within a workflow. Expand to see
@@ -163,6 +167,10 @@ message WorkflowRunCost {
   int64 cache_read_tokens = 10;
   int64 cache_write_tokens = 11;
   int64 reasoning_tokens = 12;
+  // The latest occurred_at among the run's usage records — the time the run
+  // last finished activity. Used for the "Finished" sort on the By Workflow
+  // cost panel (docs/10 §11).
+  google.protobuf.Timestamp finished_at = 13;
 }
 
 // WorkflowWorkerCost is the aggregated cost for one worker type within

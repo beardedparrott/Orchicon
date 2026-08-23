@@ -102,6 +102,10 @@ message CostSummary {
   int64 cache_read_tokens = 14;
   int64 cache_write_tokens = 15;
   int64 reasoning_tokens = 16;
+  // The latest occurred_at among the group's usage records — the time the
+  // drill-down group last finished activity. Used for the "Finished" sort
+  // on the cost explorer rollup tabs (docs/10 §11).
+  google.protobuf.Timestamp finished_at = 17;
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`

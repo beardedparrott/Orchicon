@@ -560,8 +560,12 @@ type CostSummary struct {
 	CacheReadTokens  int64 `protobuf:"varint,14,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64 `protobuf:"varint,15,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int64 `protobuf:"varint,16,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The latest occurred_at among the group's usage records — the time the
+	// drill-down group last finished activity. Used for the "Finished" sort
+	// on the cost explorer rollup tabs (docs/10 §11).
+	FinishedAt    *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CostSummary) Reset() {
@@ -704,6 +708,13 @@ func (x *CostSummary) GetReasoningTokens() int64 {
 		return x.ReasoningTokens
 	}
 	return 0
+}
+
+func (x *CostSummary) GetFinishedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return nil
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
@@ -1212,7 +1223,7 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"task_title\x18\x10 \x01(\tR\ttaskTitle\x12*\n" +
 	"\x11cache_read_tokens\x18\x11 \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x12 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
-	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\x9c\x05\n" +
+	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\xd9\x05\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +
@@ -1232,7 +1243,9 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\x12*\n" +
 	"\x11cache_read_tokens\x18\x0e \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x0f \x01(\x03R\x10cacheWriteTokens\x12)\n" +
-	"\x10reasoning_tokens\x18\x10 \x01(\x03R\x0freasoningTokens\"\x8e\x03\n" +
+	"\x10reasoning_tokens\x18\x10 \x01(\x03R\x0freasoningTokens\x12;\n" +
+	"\vfinished_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"finishedAt\"\x8e\x03\n" +
 	"\rOpenCodeModel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
@@ -1324,14 +1337,15 @@ var file_orchicon_api_v1_ai_gateway_proto_depIdxs = []int32{
 	10, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
 	10, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
 	4,  // 4: orchicon.api.v1.CostSummary.children:type_name -> orchicon.api.v1.CostSummary
-	6,  // 5: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
-	7,  // 6: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
-	8,  // 7: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	10, // 5: orchicon.api.v1.CostSummary.finished_at:type_name -> google.protobuf.Timestamp
+	6,  // 6: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
+	7,  // 7: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
+	8,  // 8: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ai_gateway_proto_init() }

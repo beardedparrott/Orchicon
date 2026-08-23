@@ -46,6 +46,17 @@ func tsToTime(ts *timestamppb.Timestamp) time.Time {
 	return ts.AsTime()
 }
 
+// optTimestamp converts a time.Time to a protobuf timestamp, returning nil
+// for the zero time so an absent "finished_at" stays absent on the wire
+// rather than serialising as year 1 (the total roll-up has no per-group
+// finish time and must not fabricate one).
+func optTimestamp(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t)
+}
+
 func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 	return &apiv1.UsageRecord{
 		Id:               r.ID,
@@ -87,6 +98,7 @@ func costRowToProto(r *db.CostSummaryRow, groupBy, parentKey string, start, end 
 		RecordCount:      r.RecordCount,
 		WindowStart:      timestamppb.New(start),
 		WindowEnd:        timestamppb.New(end),
+		FinishedAt:       optTimestamp(r.FinishedAt),
 	}
 }
 

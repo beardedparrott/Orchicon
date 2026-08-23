@@ -536,6 +536,15 @@ export class CostSummary extends Message<CostSummary> {
    */
   reasoningTokens = protoInt64.zero;
 
+  /**
+   * The latest occurred_at among the group's usage records — the time the
+   * drill-down group last finished activity. Used for the "Finished" sort
+   * on the cost explorer rollup tabs (docs/10 §11).
+   *
+   * @generated from field: google.protobuf.Timestamp finished_at = 17;
+   */
+  finishedAt?: Timestamp;
+
   constructor(data?: PartialMessage<CostSummary>) {
     super();
     proto3.util.initPartial(data, this);
@@ -560,6 +569,7 @@ export class CostSummary extends Message<CostSummary> {
     { no: 14, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 15, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 17, name: "finished_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CostSummary {
