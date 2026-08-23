@@ -120,10 +120,11 @@ const DEFAULT_PERMISSIONS = `{
 }`;
 
 const DEFAULT_BUDGETS = `{
-  "tokens": 1000000,
-  "cost_usd": 10,
+  "tokens": 500000,
+  "cost_usd": 0.5,
   "wall_clock_seconds": 3600,
-  "tool_call_count": 100
+  "tool_call_count": 100,
+  "compact_max_turns": 8
 }`;
 
 function NewWorkerPage() {

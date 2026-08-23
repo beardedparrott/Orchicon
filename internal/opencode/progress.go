@@ -73,8 +73,22 @@ func defaultStallWindows() stallWindows {
 }
 
 // stallWindowsFromManifest builds stallWindows from ExecutionManifest
-// settings, with env-var fallback for dev overrides. Zero values in the
-// manifest fall through to env vars, which fall through to code defaults.
+// settings, with env-var fallback for dev overrides. Zero (unset) values in
+// the manifest fall through to env vars, which fall through to code
+// defaults.
+//
+// noFileDiff/textLoop are the two advisory windows Settings documents as
+// "0 = disabled" — but 0 is also the manifest's unset value (a fresh/
+// never-configured tenant_settings row), so a plain `> 0` guard cannot
+// tell "never configured" from "explicitly disabled" and previously just
+// treated both as unset (the built-in default always applied — "0 =
+// disabled" was aspirational, nothing could ever actually disable these).
+// A negative value is unambiguous and needs no schema change: 0/unset →
+// default (safe — a never-configured tenant keeps real stall detection),
+// positive → explicit override, negative → the resulting duration is
+// itself <= 0, which every consumer below (the checker in this file)
+// already gates on `> 0`, so it naturally reads as disabled with no
+// change needed anywhere else.
 func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 	w := defaultStallWindows()
 	if m.StallNoProgressWindowSeconds > 0 {
@@ -82,12 +96,12 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 			w.noProgress = v
 		}
 	}
-	if m.StallNoFileDiffWindowSeconds > 0 {
+	if m.StallNoFileDiffWindowSeconds != 0 {
 		if v := time.Duration(m.StallNoFileDiffWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
 			w.noFileDiff = v
 		}
 	}
-	if m.StallTextLoopWindowSeconds > 0 {
+	if m.StallTextLoopWindowSeconds != 0 {
 		if v := time.Duration(m.StallTextLoopWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
 			w.textLoop = v
 		}
