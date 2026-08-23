@@ -455,6 +455,71 @@ func TestCompletionProbeDecision(t *testing.T) {
 	}
 }
 
+// TestCompletionProbeSuppressedAfterCompact verifies that a compacted run's
+// markerless session.idle is a mid-task pause, NOT a truncated final turn: the
+// completion probe must not interject (and the budget-exhausted fail must not
+// fire) while the run has been compacted. A marker-present idle still settles.
+func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
+	now := time.Now()
+	mkRun := func(output string, nudges int, compacted bool) *sessionRun {
+		r := &sessionRun{
+			a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+			parentCtx:  context.Background(),
+			execRow:    db.ExecutionRow{ID: "exec-probe-compact", TenantID: "tnt_dev"},
+			callbacks:  &liveCallbacks{},
+			client:     NewSessionClient("http://localhost:1", "", ""),
+			done:       make(chan struct{}),
+			stats:      &execStreamState{},
+			output:     strings.Builder{},
+			nudgesSent: nudges,
+			lastNudgeAt: now,
+			// Budget spent → absent the compact gate this would FAIL. The gate
+			// must take precedence so a compacted mid-task pause never fails.
+			nudgeMaxVal:       nudgeMax(),
+			nudgeReplyWindowVal: time.Hour,
+			nudgeCooldownVal:    time.Nanosecond,
+		}
+		r.output.WriteString(output)
+		if compacted {
+			r.compactsPerformed = 1
+			r.lastCompactStep = 1
+		}
+		return r
+	}
+
+	// Marker present + compacted → settle (return false), never wait.
+	r := mkRun("Did the work.\n\nORCHICON WORKER SUMMARY: success — done", 0, true)
+	if v := r.maybeProbeCompletion(); v {
+		t.Fatal("marker-present idle after compact must settle (return false), not wait")
+	}
+
+	// Markerless + compacted → wait for the next turn, even with budget spent:
+	// no probe, no fail, no settle.
+	r = mkRun("mid-task pause text", nudgeMax(), true)
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("markerless idle after compact must NOT settle (return true): waiting for next turn")
+	}
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("compacted mid-task pause must not fail the run on the missing marker")
+	}
+
+	// Markerless + NOT compacted + budget spent → still fails (probe budget
+	// exhausted remains the terminal guard for non-compacted runs).
+	r = mkRun("plain text pause", nudgeMax(), false)
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("non-compacted markerless idle with spent budget must fail (return true)")
+	}
+	r.mu.Lock()
+	fin, ok := r.finished, r.resultOk
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatal("non-compacted markerless idle with spent budget must fail, not succeed")
+	}
+}
+
 // TestStallNudgeFirstEscalation verifies the nudge-first routing core (the
 // exact repro of the blocked-write loop): an advisory stall (repetition /
 // text_loop / no_file_progress) nudges the live session instead of killing

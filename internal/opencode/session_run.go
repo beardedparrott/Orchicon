@@ -1055,6 +1055,31 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		return false
 	}
 	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
+	// A run that has been compacted is, by contract, mid-task: the compact
+	// fired on a cost / turn-count breach DURING the work, and the post-compact
+	// reminder explicitly tells the worker to keep going. Its session.idle
+	// after a compact is a boundary between work segments — the NORMAL pause of
+	// a resumed worker, not a truncated final turn. Treating that markerless
+	// idle as a missing decision interjects the "cut off" probe into a healthy,
+	// still-running session (the reported repro: the probe fires on every
+	// compacted run). So while compacted: a markerless idle waits for the next
+	// turn, while a marker-present idle still settles (return false). A
+	// compacted run that is genuinely truncated is still failed honestly by the
+	// unfinished-guard in finish() when the serve's stream ends.
+	if r.compactsPerformed > 0 {
+		r.mu.Unlock()
+		if probe || fail {
+			// Marker absent (probe or fail is only set on a markerless idle).
+			// A compacted run is mid-task, so this is a pause between work
+			// segments, not a truncated final turn: wait for the next turn
+			// rather than interjecting the "cut off" probe or failing on the
+			// exhausted budget.
+			r.a.log.Info("session idle without decision marker after compact — mid-task pause, waiting for the next turn",
+				"execution", r.execRow.ID, "nudges", r.nudgesSent)
+			return true
+		}
+		return false
+	}
 	if fail {
 		// Probe budget exhausted and still no signal — this is NOT a success.
 		// The final turn was truncated / the summary was lost.
