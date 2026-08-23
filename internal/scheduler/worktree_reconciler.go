@@ -366,10 +366,51 @@ func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string
 		return nil
 	}
 	_, prState := db.PrFromRunContext(run.RunContext)
+	// Reclaim the branch. deleteBranch returns nil for a branch that is
+	// already gone (idempotent no-op) AND for a branch that was skipped
+	// (not provably merged, protected, current, or attached — those must
+	// stay). Distinguish the two by re-checking existence AFTER the call:
+	// a branch that no longer exists was provably reclaimed and is safe to
+	// drop from the orphan window; a branch that still exists was skipped
+	// and must be retried on a later scan.
 	if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
 		return err
 	}
+	if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
+		return r.clearSweptRunBranch(ctx, tenantID, run)
+	}
 	return nil
+}
+
+// clearSweptRunBranch clears the worktree_branch on a COMPLETED run whose
+// branch was provably reclaimed by the orphan sweep. The orphan query selects
+// rows by `worktree_status='pruned' AND worktree_branch<>''` (ASC, LIMIT N);
+// WITHOUT clearing the branch, a swept row matches the query forever and the
+// per-scan page never advances to newer orphans (the observed stuck-backlog:
+// 116 swept rows pinned the MODE first-32 slot and starved 16 newer ones).
+// Clearing the recorded branch lets the sweep walk forward one page at a time.
+func (r *WorktreeReconciler) clearSweptRunBranch(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, run.ID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get run: %w", err)
+	}
+	if cur.WorktreeBranch == "" {
+		return ttx.Commit(ctx)
+	}
+	fields := db.UpdateWorkflowRunFields{WorktreeBranch: strPtr("")}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, cur.Version, fields); err != nil {
+		return fmt.Errorf("clear swept run branch: %w", err)
+	}
+	r.log.Info("worktree: orphan sweep cleared run branch", "run", run.ID, "branch", run.WorktreeBranch)
+	return ttx.Commit(ctx)
 }
 
 // sweepOrphanStepBranch is sweepOrphanRun for a parallel-branch child step
@@ -397,7 +438,40 @@ func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID
 	if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
 		return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
 	}
+	// Same post-reclaim check as sweepOrphanRun: only clear the orphan row
+	// when the branch is provably gone, so the sweep advances past already
+	// swept rows and reaches newer orphans.
+	if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
+		return r.clearSweptStepBranch(ctx, tenantID, sr)
+	}
 	return nil
+}
+
+// clearSweptStepBranch clears the worktree_branch on a completed step run
+// whose branch was provably reclaimed by the orphan sweep (mirror of
+// clearSweptRunBranch — see its doc for the stuck-backlog rationale).
+func (r *WorktreeReconciler) clearSweptStepBranch(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get step run: %w", err)
+	}
+	if cur.WorktreeBranch == "" {
+		return ttx.Commit(ctx)
+	}
+	fields := db.UpdateWorkflowStepRunFields{WorktreeBranch: strPtr("")}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, cur.Version, fields); err != nil {
+		return fmt.Errorf("clear swept step branch: %w", err)
+	}
+	r.log.Info("worktree: orphan sweep cleared step run", "step_run", sr.ID, "branch", sr.WorktreeBranch)
+	return ttx.Commit(ctx)
 }
 
 // branchAttachedToWorktree reports whether branch currently has a live

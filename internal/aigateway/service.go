@@ -216,12 +216,16 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 	out := make([]*apiv1.WorkflowCostAggregate, 0, len(aggregates))
 	for i := range aggregates {
 		wf := &apiv1.WorkflowCostAggregate{
-			WorkflowId:     aggregates[i].WorkflowID,
-			WorkflowName:   aggregates[i].WorkflowName,
-			TotalCostUsd:   aggregates[i].TotalCostUSD,
-			TotalTokens:    aggregates[i].TotalTokens,
-			RunCount:       aggregates[i].RunCount,
-			ExecutionCount: aggregates[i].ExecutionCount,
+			WorkflowId:       aggregates[i].WorkflowID,
+			WorkflowName:     aggregates[i].WorkflowName,
+			TotalCostUsd:     aggregates[i].TotalCostUSD,
+			TotalTokens:      aggregates[i].TotalTokens,
+			PromptTokens:     aggregates[i].PromptTokens,
+			CacheReadTokens:  aggregates[i].CacheReadTokens,
+			CacheWriteTokens: aggregates[i].CacheWriteTokens,
+			ReasoningTokens:  aggregates[i].ReasoningTokens,
+			RunCount:         aggregates[i].RunCount,
+			ExecutionCount:   aggregates[i].ExecutionCount,
 		}
 		// Mid level: individual runs for this workflow.
 		runs, err := db.GetWorkflowRunCosts(ctx, ttx.Tx, tenantID, aggregates[i].WorkflowID, start, end)
@@ -230,13 +234,17 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 		} else {
 			for j := range runs {
 				run := &apiv1.WorkflowRunCost{
-					WorkflowRunId:  runs[j].WorkflowRunID,
-					TotalCostUsd:   runs[j].TotalCostUSD,
-					TotalTokens:    runs[j].TotalTokens,
-					ExecutionCount: runs[j].ExecutionCount,
-					RunStatus:      runs[j].RunStatus,
-					WorkItemId:     runs[j].WorkItemID,
-					WorkItemName:   runs[j].WorkItemName,
+					WorkflowRunId:    runs[j].WorkflowRunID,
+					TotalCostUsd:     runs[j].TotalCostUSD,
+					TotalTokens:      runs[j].TotalTokens,
+					PromptTokens:     runs[j].PromptTokens,
+					CacheReadTokens:  runs[j].CacheReadTokens,
+					CacheWriteTokens: runs[j].CacheWriteTokens,
+					ReasoningTokens:  runs[j].ReasoningTokens,
+					ExecutionCount:   runs[j].ExecutionCount,
+					RunStatus:        runs[j].RunStatus,
+					WorkItemId:       runs[j].WorkItemID,
+					WorkItemName:     runs[j].WorkItemName,
 				}
 				// Leaf level: per-worker cost summary within this run.
 				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)
@@ -251,6 +259,9 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 							TotalTokens:      workers[k].TotalTokens,
 							PromptTokens:     workers[k].PromptTokens,
 							CompletionTokens: workers[k].CompletionTokens,
+CacheReadTokens:  workers[k].CacheReadTokens,
+							CacheWriteTokens: workers[k].CacheWriteTokens,
+							ReasoningTokens:  workers[k].ReasoningTokens,
 							ExecutionCount:   workers[k].ExecutionCount,
 						})
 					}

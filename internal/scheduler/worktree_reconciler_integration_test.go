@@ -1691,6 +1691,34 @@ func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
 		t.Fatalf("orphaned branch %q was NOT swept after completed run", branch)
 	}
+
+	// Regression for the stuck-backlog: the swept run's worktree_branch must
+	// be cleared in the DB, or the orphan query (`pruned` + branch <> '')
+	// selects it forever and the per-scan page never advances to newer
+	// orphans (the 132-orphan / 16-strand stuck state). After the sweep the
+	// row should no longer match the orphan predicate.
+	final := env.getRun(t)
+	if final.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("run worktree_status = %q, want %q", final.WorktreeStatus, domain.WorktreePruned)
+	}
+	if final.WorktreeBranch != "" {
+		t.Fatalf("run worktree_branch = %q after sweep, want \"\" (cleared so the orphan query advances)", final.WorktreeBranch)
+	}
+	// Assert the orphan query no longer returns the row.
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	rows, qerr := db.ListTerminalRunsWithPrunedBranches(ctx, ttx.Tx, approvalTestTenant, 10)
+	_ = ttx.Rollback(ctx)
+	if qerr != nil {
+		t.Fatalf("list terminal runs with pruned branches: %v", qerr)
+	}
+	for _, r := range rows {
+		if r.ID == env.run.ID {
+			t.Fatalf("swept run still returned by orphan query (branch %q not cleared)", r.WorktreeBranch)
+		}
+	}
 }
 
 // TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard:

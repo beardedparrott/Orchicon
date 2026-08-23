@@ -517,6 +517,25 @@ export class CostSummary extends Message<CostSummary> {
    */
   displayName = "";
 
+  /**
+   * Cache/token breakdown fields mirroring UsageRecord. cache_read and
+   * cache_write are separate cost buckets; reasoning_tokens is a sub-bucket
+   * of completion_tokens (never folded into total_tokens).
+   *
+   * @generated from field: int64 cache_read_tokens = 14;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 15;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 16;
+   */
+  reasoningTokens = protoInt64.zero;
+
   constructor(data?: PartialMessage<CostSummary>) {
     super();
     proto3.util.initPartial(data, this);
@@ -538,6 +557,9 @@ export class CostSummary extends Message<CostSummary> {
     { no: 11, name: "window_end", kind: "message", T: Timestamp },
     { no: 12, name: "children", kind: "message", T: CostSummary, repeated: true },
     { no: 13, name: "display_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 14, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 15, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 16, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CostSummary {

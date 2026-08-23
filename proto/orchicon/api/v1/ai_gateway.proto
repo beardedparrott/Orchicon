@@ -96,6 +96,12 @@ message CostSummary {
   // Human-readable display name for the group_key. Populated on the backend
   // so all sections (drill-down, usage table, etc.) show meaningful names.
   string display_name = 13;
+  // Cache/token breakdown fields mirroring UsageRecord. cache_read and
+  // cache_write are separate cost buckets; reasoning_tokens is a sub-bucket
+  // of completion_tokens (never folded into total_tokens).
+  int64 cache_read_tokens = 14;
+  int64 cache_write_tokens = 15;
+  int64 reasoning_tokens = 16;
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`

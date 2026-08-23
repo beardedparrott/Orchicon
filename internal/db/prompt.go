@@ -52,6 +52,28 @@ const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls
 // progress counter. The `todowrite` tool ships with the opencode runtime's
 // built-in tool set; this block is what tells the worker to actually use it
 // (replacement semantics, one in_progress at a time, immediate completion).
+// stepDisciplineBlock is the shared "one pass, then deliver" directive
+// injected into the stable prompt prefix of every worker. It targets
+// turns-to-success rather than per-output size: each tool call re-sends the
+// whole accumulated conversation, so the NUMBER of turns dominates cost more
+// than any single output (see efficiencyBlock, which this complements). It has
+// three parts:
+//
+//   - One-pass context: gather everything you need in ONE batched tool
+//     round-trip before acting; re-read only on a real failure. Sequential
+//     single-purpose reads are the main turn-burner observed in practice.
+//   - Deliverable-not-journey: for design/review/decision steps the deliverable
+//     is the DECISION and the concrete DELTA (ADR + file/function change list),
+//     not the step-by-step verification narrative that produced it. Downstream
+//     steps inherit the facts, not the process.
+//   - Verify once, stop: establish each fact once from a real command, never
+//     re-derive what a prior step already recorded, and stop once the
+//     acceptance criteria are met — no gold-plating or re-verification.
+const stepOutputBlock = "\n## Step output — deliver the decision and the delta, not the journey\n" +
+	"- **Gather context in one pass.** Before the first action, batch ALL reads and probes into a single tool round-trip (one `bash` chained with `&&`, one `read` covering several paths, `grep`/`glob` instead of sequential reads). Then act. Re-read only when a call actually fails — do not meter context out one read per turn.\n" +
+	"- **Deliver the decision + delta, not the verification.** For design, review, and decision steps, your deliverable is the DECISION and the concrete DELTA: the ADR (Context → Decision → Consequences), the exact file(s) and function(s) to change, and why. Do not narrate the sequence of reads/checks that produced it. Later steps inherit the facts, not your process.\n" +
+	"- **Verify once, then stop.** Establish each fact once, from a real tool call; never re-derive something a prior step or the run's `facts_learned` already records. Stop the moment the acceptance criteria are met — resist extra corroboration, gold-plating, or re-verifying settled state. Every extra turn re-sends the whole conversation, so finishing is worth more than polishing.\n\n"
+
 const todoListBlock = "\n## Todo list\n" +
 	"- **Use the `todowrite` tool to maintain a structured task list for this run.** It is available in your toolset and keeps the operator informed of your progress in real time.\n" +
 	"- Use it **proactively for multi-step work (roughly 3+ steps)**: break the task into specific, actionable items and track each one.\n" +
@@ -106,6 +128,7 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
+	sb.WriteString(stepOutputBlock)
 	sb.WriteString(todoListBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
 	return sb.String()
