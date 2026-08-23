@@ -33,7 +33,14 @@ const (
 	// improvement). Beyond the cap the worker is told to read the file
 	// from disk. The project-directory read tool uses the same cap as its
 	// default read bound.
-	MaxInlineFileBytes = 256 * 1024 // 256 KiB
+	MaxInlineFileBytes = 64 * 1024 // 64 KiB — a big single file stays on disk
+	// MaxInlineContextBytes is the CUMULATIVE budget for ALL inlined
+	// context (file contents + directory listings) rendered into one prompt
+	// section. Each inlined byte is re-sent to the model on EVERY tool call
+	// of the run, so the sum — not any single file — is what inflates
+	// context. Beyond this budget later paths degrade to a "read from disk"
+	// note instead of inlining, keeping the section bounded.
+	MaxInlineContextBytes = 384 * 1024 // 384 KiB ≈ ~90k tokens max per context section
 )
 
 // noiseDirNames are VCS/build/runtime-cache directories skipped when
@@ -287,7 +294,16 @@ func Render(rootNote string, paths []string, projectDir string) string {
 		fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(rootNote))
 	}
 	wroteAny := false
+	// Cumulative budget: track total rendered bytes so a large set of
+	// context files can't blow the prompt (every inlined byte is re-sent on
+	// every tool call). Beyond the budget, later paths degrade to a note.
+	budget := &renderBudget{remaining: MaxInlineContextBytes}
 	for _, p := range paths {
+		if budget.exhausted() {
+			fmt.Fprintf(&sb, "**Note:** context budget reached — stop inlisting further files; read `%s` from disk when needed\n\n", p)
+			wroteAny = true
+			continue
+		}
 		resolved := Resolve(p, projectDir)
 		if resolved == "" {
 			continue
@@ -299,11 +315,11 @@ func Render(rootNote string, paths []string, projectDir string) string {
 			continue
 		}
 		if info.IsDir() {
-			wroteAny = renderDirectory(&sb, resolved) || wroteAny
+			wroteAny = renderDirectory(&sb, resolved, budget) || wroteAny
 			continue
 		}
 		if info.Mode().IsRegular() {
-			wroteAny = renderFile(&sb, resolved) || wroteAny
+			wroteAny = renderFile(&sb, resolved, budget) || wroteAny
 			continue
 		}
 		fmt.Fprintf(&sb, "**Note:** `%s` is not a regular file or directory\n\n", resolved)
@@ -315,12 +331,31 @@ func Render(rootNote string, paths []string, projectDir string) string {
 	return sb.String()
 }
 
-// renderFile inlines a single context file's contents, capped. Returns
-// true when a section was written.
-func renderFile(sb *strings.Builder, path string) bool {
+// renderBudget tracks the remaining cumulative-inline bytes for a context
+// section. Costs are charged against the FULL rendered length (directive +
+// file body + headers), because that is what actually re-enters the model on
+// every turn.
+type renderBudget struct {
+	remaining int
+}
+
+func (b *renderBudget) charge(sb *strings.Builder, before int) {
+	b.remaining -= (sb.Len() - before)
+	if b.remaining < 0 {
+		b.remaining = 0
+	}
+}
+
+func (b *renderBudget) exhausted() bool { return b.remaining <= 0 }
+
+// renderFile inlines a single context file's contents, capped per-file and
+// against the section budget. Returns true when a section was written.
+func renderFile(sb *strings.Builder, path string, budget *renderBudget) bool {
+	before := sb.Len()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not read `%s`: %v\n\n", path, err)
+		budget.charge(sb, before)
 		return true
 	}
 	fmt.Fprintf(sb, "## %s\n\n```\n", path)
@@ -334,17 +369,20 @@ func renderFile(sb *strings.Builder, path string) bool {
 		}
 	}
 	sb.WriteString("```\n\n")
+	budget.charge(sb, before)
 	return true
 }
 
 // renderDirectory emits the "directory as context" block: an explicit
 // instruction that the path is a directory (read every file below, do
-// NOT open the directory itself) followed by the bounded file listing.
+// NOT open the directory path itself) followed by the bounded file listing.
 // Returns true when a section was written.
-func renderDirectory(sb *strings.Builder, path string) bool {
+func renderDirectory(sb *strings.Builder, path string, budget *renderBudget) bool {
+	before := sb.Len()
 	entries, err := WalkDir(path, MaxContextFiles)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not list `%s`: %v\n\n", path, err)
+		budget.charge(sb, before)
 		return true
 	}
 	fmt.Fprintf(sb, "## %s (directory)\n\n", path)

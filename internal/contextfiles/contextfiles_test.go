@@ -1,6 +1,7 @@
 package contextfiles
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,5 +395,36 @@ func TestIsNoiseDir(t *testing.T) {
 		if IsNoiseDir(name) {
 			t.Errorf("IsNoiseDir(%q) = true, want false", name)
 		}
+	}
+}
+
+// TestRenderCumulativeBudget verifies the cumulative inline budget: when
+// many per-file capped inlines exceed MaxInlineContextBytes together, later
+// files degrade to a "read from disk" note instead of being fully inlined —
+// so a large context selection can't re-inflate every turn's model context.
+func TestRenderCumulativeBudget(t *testing.T) {
+	root := t.TempDir()
+	// A file at the per-file cap: many of them sum past the cumulative
+	// budget (8 × 64KiB > 384KiB).
+	chunk := strings.Repeat("y", MaxInlineFileBytes)
+	files := make([]string, 8)
+	paths := make([]string, 0, 8)
+	for i := range files {
+		p := filepath.Join(root, fmt.Sprintf("f%d.txt", i))
+		mustWrite(t, p, chunk)
+		files[i] = p
+		paths = append(paths, p)
+	}
+
+	out := Render("# Project context", paths, root)
+	if !strings.Contains(out, "## "+files[0]) {
+		t.Fatalf("missing first file header")
+	}
+	if !strings.Contains(out, "context budget reached") {
+		t.Fatalf("cumulative budget did not kick in")
+	}
+	last := files[len(files)-1]
+	if strings.Contains(out, "## "+last+"\n\n```") {
+		t.Fatalf("final file was fully inlined past the cumulative budget")
 	}
 }

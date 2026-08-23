@@ -233,13 +233,34 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 
 // ScratchDir is the single directory workers may use outside the project
 // for ephemeral scratch (screenshots, logs, downloaded files). It is the
-// ONLY external_directory carve-out: a precise `/tmp/orchicon/**` allow,
-// so the supervisor socket (/tmp/orchicon-agent.sock), the execution
-// guard shims (/tmp/orchicon-guard-*), and the opencode-data dirs
-// (/tmp/opencode-data-*, which hold the seeded model auth.json copies)
-// stay behind the deny. Workers are told to use it in the composite
-// prompt's runtime-environment block.
+// primary external_directory carve-out: a precise `/tmp/orchicon/**` allow,
+// so the supervisor socket (/tmp/orchicon-agent.sock), the execution guard
+// shims (/tmp/orchicon-guard-*), and the opencode-data dirs
+// (/tmp/opencode-data-*, which hold the seeded model auth.json copies) stay
+// behind the deny. Workers are told to use it in the composite prompt's
+// runtime-environment block.
 const ScratchDir = "/tmp/orchicon"
+
+// OrchiconRunDirGlob is the external_directory carve-out for Orchicon's
+// own run metadata (`.orchicon/<run>/` under the project root, and any
+// `.orchicon/worker.recovery` / run summary files). Workflow step workers
+// run in an isolated worktree that is a SIBLING of the run `.orchicon/`
+// directory, so without this allow they hit an external_directory deny on
+// every read the composite prompt explicitly tells them to make (summary,
+// facts_learned, issues) — each block burns a full tool call + retry. The
+// carve-out is tight: only the `.orchicon/` subtree (Orchicon-owned,
+// aliased run metadata, gitignored), never the supervisor socket or the
+// auth/data dirs elsewhere on disk.
+const orchidsRunDirPattern = "**/.orchicon/**"
+
+// taskToolDeny denies opencode's built-in `task` (subagent) tool for every
+// worker execution. Orchicon already splits work into focused per-worker
+// steps; a subagent that opencode spawns re-prepends its own system prompt
+// and re-carries the parent's history, roughly DOUBLING context on that
+// turn. This rule removes the surface entirely (permission layers gate the
+// built-in `task` tool the same way they gate `bash`/`edit`). Denied via a
+// "*" catch-all so no subagent plan can be approved.
+const taskToolDeny = "task"
 
 // permissionRules builds the opencode `permission` config injected into every
 // worker execution. Rules with an explicit "deny" are enforced even when the
@@ -248,12 +269,13 @@ const ScratchDir = "/tmp/orchicon"
 //
 // external_directory is the primary guard: it is triggered by any tool that
 // reads or writes a path outside the project working directory (read, edit,
-// glob, grep, and path-carrying bash commands). It is denied by default with a
-// single precise carve-out for ScratchDir — a worker may read/write ephemeral
-// scratch under /tmp/orchicon but nothing else outside the project. opencode
-// evaluates the rules in order with the LAST matching rule winning, so the
-// catch-all "*" deny comes first and the specific scratch allow overrides it
-// only for that subtree (see config_permission_test.go).
+// glob, grep, and path-carrying bash commands). It is denied by default with
+// two precise carve-outs — the scratch subtree and the run-metadata subtree —
+// so a worker may read/write ephemeral scratch and Orchicon's own run metadata
+// but nothing else outside the project. opencode evaluates the rules in order
+// with the LAST matching rule winning, so the catch-all "*" deny comes first
+// and the specific allows override it only for those subtrees (see
+// config_permission_test.go).
 //
 // The bash deny list is the second layer. opencode matches each rule against
 // the command string, so these only see the exact command the Bash tool runs:
@@ -277,8 +299,8 @@ func permissionRules() map[string]any {
 		// `node_modules`, `.next`) is legitimate and no longer denied (the
 		// denial burned worker tokens on `find -delete`/python workarounds);
 		// the OS-level execution guard is the precise backstop (it allows rm
-		// only when every path stays inside the project). What stays denied
-		// is the destructive class: absolute system paths, /, ~, $HOME,
+		// only when every path stays inside the project + scratch). What stays
+		// denied is the destructive class: absolute system paths, /, ~, $HOME,
 		// --no-preserve-root, and the current-dir-wipe variants — the
 		// commands that escape the project no matter how they're written.
 		"rm -rf /", "rm -r /", "rm -R /", "rm -f /", "rm -fr /", "rm -Rf /",
@@ -323,8 +345,11 @@ func permissionRules() map[string]any {
 		"external_directory": map[string]any{
 			"*":                     "deny",
 			ScratchDir + "/**":      "allow",
+			orchidsRunDirPattern:    "allow",
 		},
 		"bash": rules,
+		// Deny the subagent tool (see taskToolDeny).
+		taskToolDeny: map[string]any{"*": "deny"},
 	}
 }
 

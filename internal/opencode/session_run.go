@@ -374,9 +374,12 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.noteSessionProgress()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
-		// Record the raw part for the durable transcript.
+		// Record the raw part for the durable transcript, with the tool
+		// OUTPUT capped like the live forward (a follow-up or a
+		// recovery-resumed session re-seeds this transcript as context, so
+		// an uncapped giant build log would re-inflate it).
 		if t, _ := legacy["type"].(string); t != "" {
-			r.recordPart(t, map[string]any{"part": legacy["part"], "error": legacy["error"]})
+			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
 		}
 	}
 }

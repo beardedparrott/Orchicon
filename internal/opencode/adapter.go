@@ -667,6 +667,15 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
 
+		// Cap tool OUTPUT before it is streamed to the UI / persisted into
+		// the durable transcript (which a follow-up or a recovery-resumed
+		// session re-seeds as context). A single giant output (a `make ci`
+		// build log, a full `git diff`, a huge glob/find listing) otherwise
+		// inflates everything downstream of this execution. Truncate with a
+		// clear marker so the worker/operator knows the tail is available on
+		// the host or project disk without ballooning the transcript.
+		outStr = capToolOutput(outStr)
+
 		// Detect `write` tool calls (opencode built-in file writer)
 		// and route them as artifacts instead of raw tool calls. The
 		// model uses `write` to save output files (essays, configs,
@@ -1031,6 +1040,78 @@ func toInt64(v any) int64 {
 		return int64(n)
 	}
 	return 0
+}
+
+// maxToolOutputBytes caps a single tool's output before it is persisted to
+// the session transcript / re-enters the model context. opencode passes the
+// FULL tool output (a build log, a directory listing) to OnToolCall; an
+// uncapped output is then re-sent on every later turn — the main amplifier
+// behind the observed ~45k-72k context-per-call across workflow runs. Keep
+// the head of the output (the summary/decision part) and mark the truncation
+// so the worker can grep/read the tail from disk if it needs to. Overridable
+// via ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
+const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
+
+func maxToolOutputBytes() int {
+	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return maxToolOutputBytesDefault
+}
+
+// capToolOutput truncates a tool output to maxToolOutputBytes (128k default),
+// keeping the head + a truncation marker. Returns the string unchanged when
+// under the cap or the cap is disabled.
+func capToolOutput(s string) string {
+	limit := maxToolOutputBytes()
+	if limit < 1 || len(s) <= limit {
+		return s
+	}
+	head := limit - len(toolOutputTruncatedMarker)
+	if head < 1 {
+		head = 1
+	}
+	return s[:head] + toolOutputTruncatedMarker
+}
+
+const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
+
+// capPartOutput applies the tool-output cap to a legacy event's `part`
+// map (the durable-transcript shape). It returns the part unchanged when
+// the part has no tool output. For a tool_use part it returns a shallow
+// copy with state.output replaced by the capped value, so the transcript
+// (re-seeded by follow-ups / recovery-resumed sessions) stays bounded
+// without mutating the event the UI path consumed.
+func capPartOutput(part any) any {
+	m, ok := part.(map[string]any)
+	if !ok {
+		return part
+	}
+	state, ok := m["state"].(map[string]any)
+	if !ok {
+		return part
+	}
+	out, _ := state["output"].(string)
+	if out == "" {
+		return part
+	}
+	capped := capToolOutput(out)
+	if capped == out {
+		return part
+	}
+	cp := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		cp[k] = v
+	}
+	cpState := make(map[string]any, len(state)+1)
+	for k, v := range state {
+		cpState[k] = v
+	}
+	cpState["output"] = capped
+	cp["state"] = cpState
+	return cp
 }
 
 // runSimulation emits synthetic telemetry events so the dispatch flow
