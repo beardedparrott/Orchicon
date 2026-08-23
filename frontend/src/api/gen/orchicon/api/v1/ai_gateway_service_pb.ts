@@ -769,6 +769,15 @@ export class WorkflowCostAggregate extends Message<WorkflowCostAggregate> {
    */
   reasoningTokens = protoInt64.zero;
 
+  /**
+   * The latest occurred_at among the workflow's usage records — the time the
+   * workflow last finished activity. Used for the "Finished" sort on the
+   * By Workflow cost panel (docs/10 §11).
+   *
+   * @generated from field: google.protobuf.Timestamp finished_at = 12;
+   */
+  finishedAt?: Timestamp;
+
   constructor(data?: PartialMessage<WorkflowCostAggregate>) {
     super();
     proto3.util.initPartial(data, this);
@@ -788,6 +797,7 @@ export class WorkflowCostAggregate extends Message<WorkflowCostAggregate> {
     { no: 9, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 10, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 11, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 12, name: "finished_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowCostAggregate {
@@ -886,6 +896,15 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
    */
   reasoningTokens = protoInt64.zero;
 
+  /**
+   * The latest occurred_at among the run's usage records — the time the run
+   * last finished activity. Used for the "Finished" sort on the By Workflow
+   * cost panel (docs/10 §11).
+   *
+   * @generated from field: google.protobuf.Timestamp finished_at = 13;
+   */
+  finishedAt?: Timestamp;
+
   constructor(data?: PartialMessage<WorkflowRunCost>) {
     super();
     proto3.util.initPartial(data, this);
@@ -906,6 +925,7 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
     { no: 10, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 11, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 12, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 13, name: "finished_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRunCost {

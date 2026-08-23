@@ -226,6 +226,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 			ReasoningTokens:  aggregates[i].ReasoningTokens,
 			RunCount:         aggregates[i].RunCount,
 			ExecutionCount:   aggregates[i].ExecutionCount,
+			FinishedAt:       optTimestamp(aggregates[i].FinishedAt),
 		}
 		// Mid level: individual runs for this workflow.
 		runs, err := db.GetWorkflowRunCosts(ctx, ttx.Tx, tenantID, aggregates[i].WorkflowID, start, end)
@@ -245,6 +246,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 					RunStatus:        runs[j].RunStatus,
 					WorkItemId:       runs[j].WorkItemID,
 					WorkItemName:     runs[j].WorkItemName,
+					FinishedAt:       optTimestamp(runs[j].FinishedAt),
 				}
 				// Leaf level: per-worker cost summary within this run.
 				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)

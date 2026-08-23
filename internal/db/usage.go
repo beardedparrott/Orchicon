@@ -152,6 +152,9 @@ type CostSummaryRow struct {
 	CostUSD          float64
 	ExecutionCount   int32
 	RecordCount      int32
+	// FinishedAt is the latest occurred_at among the group's usage records
+	// — the group's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // CostRollupLevel selects the group-by column for GetCostRollup.
@@ -196,7 +199,8 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
 		COALESCE(SUM(cost_usd), 0) AS cost_usd,
 		COUNT(DISTINCT execution_id) AS execution_count,
-		COUNT(*) AS record_count
+		COUNT(*) AS record_count,
+		MAX(occurred_at) AS finished_at
 		FROM usage_records
 		WHERE tenant_id = $1
 		  AND ($2 = '' OR project_id = $2)
@@ -217,6 +221,7 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		if err := rows.Scan(&r.GroupKey, &r.TotalTokens, &r.PromptTokens,
 			&r.CompletionTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
 			&r.ReasoningTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+			&r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan cost rollup: %w", err)
 		}
@@ -268,6 +273,9 @@ type WorkflowAggregateRow struct {
 	ReasoningTokens  int64
 	RunCount         int32
 	ExecutionCount   int32
+	// FinishedAt is the latest occurred_at among the workflow's usage records
+	// — the workflow's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // WorkflowRunCostRow is a cost roll-up grouped by workflow run.
@@ -288,6 +296,9 @@ type WorkflowRunCostRow struct {
 	// WorkItemName is the current title of the bound work item (LEFT JOINed
 	// from work_items so the run row can display a human-readable name).
 	WorkItemName string
+	// FinishedAt is the latest occurred_at among the run's usage records
+	// — the run's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // WorkflowWorkerCostRow is a per-worker cost summary within one run.
@@ -319,7 +330,8 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		COALESCE(SUM(ur.cache_write_tokens), 0) AS cache_write_tokens,
 		COALESCE(SUM(ur.reasoning_tokens), 0) AS reasoning_tokens,
 		COUNT(DISTINCT wr.id) AS run_count,
-		COUNT(DISTINCT ur.execution_id) AS execution_count
+		COUNT(DISTINCT ur.execution_id) AS execution_count,
+		MAX(ur.occurred_at) AS finished_at
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
@@ -341,7 +353,7 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		if err := rows.Scan(&r.WorkflowID, &r.WorkflowName,
 			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens,
 			&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
-			&r.RunCount, &r.ExecutionCount,
+			&r.RunCount, &r.ExecutionCount, &r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow aggregate: %w", err)
 		}
@@ -366,7 +378,8 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		COUNT(DISTINCT ur.execution_id) AS execution_count,
 		wr.status AS run_status,
 		COALESCE(wr.work_item_id, '') AS work_item_id,
-		COALESCE(wrun.title, '') AS work_item_name
+		COALESCE(wrun.title, '') AS work_item_name,
+		MAX(ur.occurred_at) AS finished_at
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
@@ -390,6 +403,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens,
 			&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
 			&r.ExecutionCount, &r.RunStatus, &r.WorkItemID, &r.WorkItemName,
+			&r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run cost: %w", err)
 		}
