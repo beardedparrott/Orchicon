@@ -128,6 +128,47 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	}
 }
 
+// TestBuildConfigContentCompactionPruneEnabled verifies every serve config —
+// host serve AND runtime-container serve — enables opencode context
+// compaction pruning, so a long step does not keep re-sending every past
+// tool output (read/grep/bash results) on every turn. Prune is
+// capability-safe: it removes stale tool RESULTS, not tool definitions,
+// prompts, or decisions; it does not enable lossy auto-compaction.
+func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
+	// Host serve path.
+	host := BuildConfigContent(ConfigOptions{AgentName: workerAgent})
+	var hostCfg map[string]any
+	if err := json.Unmarshal([]byte(host), &hostCfg); err != nil {
+		t.Fatalf("host config not valid JSON: %v", err)
+	}
+	comp, ok := hostCfg["compaction"].(map[string]any)
+	if !ok {
+		t.Fatalf("host serve config missing compaction block: %s", host)
+	}
+	if comp["prune"] != true {
+		t.Errorf("host serve compaction.prune = %#v, want true", comp["prune"])
+	}
+	if comp["auto"] == true {
+		t.Errorf("host serve compaction.auto should stay at opencode default (lossy); got true")
+	}
+
+	// Runtime-container serve (dev image, the SDLC runs) + base image.
+	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "ghcr.io/beardedparrott/orchicon-runtime:latest"} {
+		out := RuntimeServeConfig(tag)
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("runtime config not valid JSON: %v", err)
+		}
+		comp, ok := cfg["compaction"].(map[string]any)
+		if !ok {
+			t.Fatalf("runtime config %s missing compaction block: %s", tag, out)
+		}
+		if comp["prune"] != true {
+			t.Errorf("runtime %s compaction.prune = %#v, want true", tag, comp["prune"])
+		}
+	}
+}
+
 func TestStripJSONC(t *testing.T) {
 	in := `{
   // line comment
