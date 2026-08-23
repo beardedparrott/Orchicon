@@ -97,6 +97,14 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 // values. Empty/zero fields are NOT updated (only non-zero, non-empty values set).
 // Returns the full row after update.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
+	// The INSERT branch supplies a value for default_budget_overrides, which
+	// is jsonb NOT NULL. A caller that leaves the field unset (nil/empty)
+	// must still yield a valid '{}' — passing literal NULL here makes the
+	// INSERT violate the NOT NULL constraint BEFORE the ON CONFLICT arbiter
+	// engages, so the upsert errors (or returns no row) instead of updating.
+	if len(in.DefaultBudgetOverrides) == 0 {
+		in.DefaultBudgetOverrides = []byte("{}")
+	}
 	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
