@@ -268,14 +268,6 @@ func TestRenderManifest(t *testing.T) {
 		t.Fatalf("missing big.txt size entry:\n%s", out)
 	}
 }
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
 
 // TestResolveWithin verifies the shared path resolver used by the
 // project-directory tools: it resolves a caller-supplied path against a
