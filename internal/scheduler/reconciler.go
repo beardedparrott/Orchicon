@@ -2412,12 +2412,56 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 // as the summary (backward compatible).
 const summaryMarker = "ORCHICON WORKER SUMMARY:"
 
-// extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
-// the worker's text. It takes the LAST occurrence of the marker and
-// returns everything after it, trimmed, minus the decision prefix.
-// If the marker is not present, the entire input is returned.
-func extractWorkerSummary(output string) string {
+// placeholderSummaryBody reports whether the text following an
+// ORCHICON WORKER SUMMARY marker is a placeholder/template echo (the worker
+// wrote the marker as an *example* inside a plan — e.g. ending with
+// `ORCHICON WORKER SUMMARY: success — <summary>`) rather than the real
+// sign-off. A placeholder must not advance the workflow on a fake `success`;
+// the lenient fallback (no real marker → full output as summary) already
+// covers genuinely non-compliant workers, so this only filters out the
+// hollow echo. Keep in sync with internal/opencode/session_run.go
+// placeholderMarkerBody.
+func placeholderSummaryBody(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return true
+	}
+	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
+		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
+		return true
+	}
+	lower := strings.ToLower(rest)
+	switch lower {
+	case "", "success", "failure", "success —", "failure —", "success — <summary>", "failure — <reason>":
+		return true
+	}
+	return false
+}
+
+// lastRealSummaryMarker returns the index of the LAST genuine
+// ORCHICON WORKER SUMMARY marker in output — one whose body is real content,
+// skipping earlier placeholder/template echoes. Returns -1 when the worker
+// only ever wrote the marker as an example, never as an actual sign-off.
+func lastRealSummaryMarker(output string) int {
 	idx := strings.LastIndex(output, summaryMarker)
+	for idx >= 0 {
+		if !placeholderSummaryBody(output[idx+len(summaryMarker):]) {
+			return idx
+		}
+		idx = strings.LastIndex(output[:idx], summaryMarker)
+	}
+	return -1
+}
+
+// extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
+// the worker's text. It takes the LAST GENUINE occurrence of the marker
+// (a marker used as a literal example inside a plan — `success — <summary>` —
+// is treated as absent so a worker that never actually signed off has its
+// full output propagated as the lenient fallback) and returns everything
+// after it, trimmed, minus the decision prefix. If no real marker is
+// present, the entire input is returned.
+func extractWorkerSummary(output string) string {
+	idx := lastRealSummaryMarker(output)
 	if idx < 0 {
 		return strings.TrimSpace(output)
 	}
@@ -2428,10 +2472,10 @@ func extractWorkerSummary(output string) string {
 // extractSummaryDecision reads the first word of the summary block
 // (the text after ORCHICON WORKER SUMMARY:) and returns "success",
 // "failure", any other verbatim first word, or ""
-// if no marker is present. The first word and any separator (—, :,
-// whitespace) are consumed.
+// if no real marker is present (a placeholder echo like
+// "success: <summary>" does not count).
 func extractSummaryDecision(output string) string {
-	idx := strings.LastIndex(output, summaryMarker)
+	idx := lastRealSummaryMarker(output)
 	if idx < 0 {
 		return ""
 	}

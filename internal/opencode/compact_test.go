@@ -458,7 +458,7 @@ func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
 }
 
 // TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset
-// → built-in default (8), configured → that value, explicit 0/negative →
+// → built-in default (12), configured → that value, explicit 0/negative →
 // disabled.
 func TestEffectiveCompactMaxTurns(t *testing.T) {
 	if turns, ok := effectiveCompactMaxTurns(budgetSpec{}); !ok || turns != defaultCompactMaxTurns {

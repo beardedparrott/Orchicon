@@ -415,6 +415,21 @@ func TestCompletionProbeDecision(t *testing.T) {
 			lastNudge: now, // just nudged → cooldown blocks another probe
 			wantProbe: false, wantFail: true,
 		},
+		{
+			name:      "placeholder marker echo is not a real decision",
+			output:    "The plan: ORCHICON WORKER SUMMARY: success — <summary> (example only)",
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: true, wantFail: false,
+		},
+		{
+			name: "real marker after an earlier placeholder echo is the decision",
+			output: "Plan: ORCHICON WORKER SUMMARY: success — <summary>.\n" +
+				"ORCHICON WORKER SUMMARY: success — the ADR is complete and the summary was delivered.",
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: false, wantFail: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

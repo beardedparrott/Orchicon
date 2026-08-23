@@ -11,8 +11,8 @@ import (
 
 func toolDiagnoseFailure(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ExecutionID    string `json:"execution_id"`
-		WorkflowRunID  string `json:"workflow_run_id"`
+		ExecutionID   string `json:"execution_id"`
+		WorkflowRunID string `json:"workflow_run_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -55,7 +55,7 @@ func toolDiagnoseFailure(ctx context.Context, pool *db.Pool, args json.RawMessag
 
 	if params.WorkflowRunID != "" {
 		runs, err := db.ListExecutions(ctx, ttx.Tx, db.ListExecutionsFilter{
-			TenantID:     tenantID,
+			TenantID:      tenantID,
 			WorkflowRunID: params.WorkflowRunID,
 		})
 		if err == nil {
@@ -124,18 +124,28 @@ func toolGetSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 
 func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		DefaultWorkerModel           string `json:"default_worker_model"`
-		DefaultAskOrchiconModel      string `json:"default_ask_orchicon_model"`
-		StallNoProgressWindowSeconds int64  `json:"stall_no_progress_window_seconds"`
-		StallNoFileDiffWindowSeconds int64  `json:"stall_no_file_diff_window_seconds"`
-		StallTextLoopWindowSeconds   int64  `json:"stall_text_loop_window_seconds"`
-		StallRepetitionCount         int32  `json:"stall_repetition_count"`
-		StallRepetitionWindowSeconds int64  `json:"stall_repetition_window_seconds"`
-		SessionAccessTokenTtlSeconds int64  `json:"session_access_token_ttl_seconds"`
-		SessionRefreshTokenTtlSeconds int64 `json:"session_refresh_token_ttl_seconds"`
+		DefaultWorkerModel               string  `json:"default_worker_model"`
+		DefaultAskOrchiconModel          string  `json:"default_ask_orchicon_model"`
+		StallNoProgressWindowSeconds     int64   `json:"stall_no_progress_window_seconds"`
+		StallNoFileDiffWindowSeconds     int64   `json:"stall_no_file_diff_window_seconds"`
+		StallTextLoopWindowSeconds       int64   `json:"stall_text_loop_window_seconds"`
+		StallRepetitionCount             int32   `json:"stall_repetition_count"`
+		StallRepetitionWindowSeconds     int64   `json:"stall_repetition_window_seconds"`
+		StallNudgeMax                    int32   `json:"stall_nudge_max"`
+		StallNudgeReplyWindowSeconds     int64   `json:"stall_nudge_reply_window_seconds"`
+		StallNudgeCooldownSeconds        int64   `json:"stall_nudge_cooldown_seconds"`
+		DefaultBudgetOverrides           *string `json:"default_budget_overrides"`
+		ExecutionReapGraceSeconds        int64   `json:"execution_reap_grace_seconds"`
+		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
+		SessionAccessTokenTtlSeconds     int64   `json:"session_access_token_ttl_seconds"`
+		SessionRefreshTokenTtlSeconds    int64   `json:"session_refresh_token_ttl_seconds"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	var budget []byte
+	if params.DefaultBudgetOverrides != nil {
+		budget = []byte(*params.DefaultBudgetOverrides)
 	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
@@ -144,15 +154,21 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	defer ttx.Rollback(ctx)
 	settings, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, db.TenantSettingsRow{
-		DefaultWorkerModel:           params.DefaultWorkerModel,
-		DefaultAskOrchiconModel:      params.DefaultAskOrchiconModel,
-		StallNoProgressWindowSeconds: params.StallNoProgressWindowSeconds,
-		StallNoFileDiffWindowSeconds: params.StallNoFileDiffWindowSeconds,
-		StallTextLoopWindowSeconds:   params.StallTextLoopWindowSeconds,
-		StallRepetitionCount:         params.StallRepetitionCount,
-		StallRepetitionWindowSeconds: params.StallRepetitionWindowSeconds,
-		SessionAccessTokenTtlSeconds: params.SessionAccessTokenTtlSeconds,
-		SessionRefreshTokenTtlSeconds: params.SessionRefreshTokenTtlSeconds,
+		DefaultWorkerModel:               params.DefaultWorkerModel,
+		DefaultAskOrchiconModel:          params.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds:     params.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds:     params.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:       params.StallTextLoopWindowSeconds,
+		StallRepetitionCount:             params.StallRepetitionCount,
+		StallRepetitionWindowSeconds:     params.StallRepetitionWindowSeconds,
+		StallNudgeMax:                    params.StallNudgeMax,
+		StallNudgeReplyWindowSeconds:     params.StallNudgeReplyWindowSeconds,
+		StallNudgeCooldownSeconds:        params.StallNudgeCooldownSeconds,
+		DefaultBudgetOverrides:           budget,
+		ExecutionReapGraceSeconds:        params.ExecutionReapGraceSeconds,
+		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,
+		SessionAccessTokenTtlSeconds:     params.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
 	})
 	if err != nil {
 		return nil, err
@@ -169,5 +185,3 @@ func truncateStr(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
-
-

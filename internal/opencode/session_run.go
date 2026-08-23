@@ -162,12 +162,68 @@ const livenessProbeText = "Do NOT stop or restart your task. This is a liveness 
 	"If your task is complete, end your output with: ORCHICON WORKER SUMMARY: success — <summary>. " +
 	"If you are genuinely blocked and cannot proceed, end your output with: ORCHICON WORKER SUMMARY: failure — <reason>."
 
-// decisionMarker is the single routing signal every worker execution ends
+// decisionMarker is the single marker signal every worker execution ends
 // with (docs: the first word after it is success|failure). The completion
 // probe and the settle-time success guard check for its presence so a
 // session that ended without delivering the signal is never recorded as a
 // clean success.
 const decisionMarker = "ORCHICON WORKER SUMMARY:"
+
+// afterCompactReminderText is interjected into the session immediately
+// after a mid-flight compaction (compact.go maybeCompact) so the model
+// that just had its context summarized is reminded of the ORCHICON WORKER
+// SUMMARY contract and the todowrite obligation before it continues. A
+// summarized session otherwise can drift into "write a plan for the final
+// summary" and echo the marker as a literal template — which extraction
+// then parses as a fake `success` (see placeholderMarkerBody). The
+// reminder keeps the deliverable, its final line, and the live todo list
+// in view for the resumed turns.
+const afterCompactReminderText = "Your conversation was just compacted to keep it within budget — your task and progress notes are preserved in the compacted summary. " +
+	"Continue working on your task exactly as before. " +
+	"Keep maintaining your `todowrite` list (full replacement array, `pending | in_progress | completed | cancelled`) so the operator sees live progress. " +
+	"When you have actually finished — and only then — end your response with the literal line: " +
+	"ORCHICON WORKER SUMMARY: success — <your summary of what you did>  (or  ORCHICON WORKER SUMMARY: failure — <the blocker>). " +
+	"Do NOT emit that line as part of a plan; emit it only as your final sign-off when the deliverable is complete."
+
+// placeholderMarkerBody reports whether the text following an
+// ORCHICON WORKER SUMMARY marker is a doc/plan placeholder ("success — <summary>",
+// "<reason>", an empty body) rather than a real worker-written summary. A
+// worker that echoes the marker as an example inside its plan must not be
+// treated as having delivered the signal — both the completion probe
+// (completionProbeDecision) and settle-time success guard must ignore it.
+func placeholderMarkerBody(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return true
+	}
+	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
+		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
+		return true
+	}
+	// "success — <summary>", "success", "—", "failure" with nothing real.
+	lower := strings.ToLower(rest)
+	switch lower {
+	case "", "success", "failure", "success —", "failure —", "success — <summary>", "failure — <reason>":
+		return true
+	}
+	return false
+}
+
+// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER
+// SUMMARY marker in output — one whose body is actual content, not a
+// placeholder/template echo. Returns -1 when no real marker exists.
+func realDecisionMarkerIn(output string) int {
+	idx := strings.LastIndex(output, decisionMarker)
+	for idx >= 0 {
+		if !placeholderMarkerBody(output[idx+len(decisionMarker):]) {
+			return idx
+		}
+		// The last occurrence was a placeholder echo — look for an earlier
+		// genuine one (a worker may plan with the marker then deliver it).
+		idx = strings.LastIndex(output[:idx], decisionMarker)
+	}
+	return -1
+}
 
 // completionProbeText is sent on session.idle when the worker's turn ended
 // WITHOUT the decision marker — e.g. the final model response was truncated
@@ -307,7 +363,7 @@ func (r *sessionRun) run() error {
 	// completion probe may have salvaged it, or the summary was delivered
 	// before the trailing step event was lost). A missing signal means the
 	// worker's final response never completed.
-	if r.stats.unfinished() && !strings.Contains(r.output.String(), decisionMarker) {
+	if r.stats.unfinished() && realDecisionMarkerIn(r.output.String()) < 0 {
 		ok = false
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}
@@ -715,6 +771,22 @@ func (r *sessionRun) maybeCompact() {
 	r.recordPart(db.SessionPartCompacted, map[string]any{
 		"step": steps, "reason": reason, "costUSD": r.budget.costUSD, "provider": provider, "model": model,
 	})
+
+	// After a mid-flight compact, the resumed context is a lossy summary —
+	// the original system prompt's ORCHICON WORKER SUMMARY / todowrite
+	// guidance may no longer be in the window, which is how a worker can
+	// end a run by ECHOING the marker as a template in a plan instead of
+	// delivering the actual summary. Interject a compact reminder that
+	// re-states the summary contract + todowrite obligation so the resumed
+	// turns finish correctly (best-effort; a failure never fails the run).
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
+		r.a.log.Warn("post-compact reminder send failed (best-effort)",
+			"execution", r.execRow.ID, "error", err)
+		return
+	}
+	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": afterCompactReminderText, "source": "compact_reminder"})
+	r.a.log.Info("post-compact reminder sent", "execution", r.execRow.ID, "step", steps)
 }
 
 // checkToolCallLimit evaluates the tool_call_count HARD-abort gate on every
@@ -842,7 +914,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 // value first, env fallback) so the completion probe shares the same
 // per-session budget as the advisory-stall nudge path.
 func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time, nudgeMax int, nudgeCooldown time.Duration) (probe bool, fail bool) {
-	if strings.Contains(output, decisionMarker) {
+	if realDecisionMarkerIn(output) >= 0 {
 		return false, false
 	}
 	if nudgesSent >= nudgeMax || now.Sub(lastNudgeAt) < nudgeCooldown {
