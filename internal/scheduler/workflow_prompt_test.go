@@ -280,6 +280,33 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 	}
 }
 
+// TestCompositePromptStepOutputDiscipline verifies every worker's composite
+// prompt carries the step-output contract in the stable prefix: gather
+// context in one batched pass, deliver the decision + delta (not the
+// verification narrative), and verify once then stop. This is the
+// turns-to-success lever — each tool call re-sends the whole conversation, so
+// the number of turns dominates cost more than output size.
+func TestCompositePromptStepOutputDiscipline(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Step output discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	worker := db.WorkerVersionRow{Role: "Engineer"}
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Step output — deliver the decision and the delta, not the journey",
+		"Gather context in one pass.",
+		"Deliver the decision + delta, not the verification.",
+		"Verify once, then stop.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 // TestCompositePromptNoEmbeddedFactsBlock verifies the embedded
 // "## Facts learned (this run)" prompt block is gone — the
 // .orchicon/<run>/facts_learned file is now the single source of established
