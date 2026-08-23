@@ -321,11 +321,24 @@ export function ExecutionContextSidebar({
         </div>
         <div className="mt-1 flex items-baseline justify-between text-xs text-muted-foreground">
           <span className="font-mono">{fmtNum(totalTokens)} tokens</span>
-          <span>of {fmtNum(contextWindow)}</span>
+          <span>peak working set / {fmtNum(contextWindow)} window</span>
         </div>
         {usageBreakdown.total > totalTokens && (
-          <div className="mt-0.5 text-[10px] text-muted-foreground">
-            Cumulative input consumed: {fmtNum(usageBreakdown.total)} tokens
+          <div className="mt-1.5 border-t pt-1 text-[10px] text-muted-foreground">
+            <div>
+              Cumulative billed:{" "}
+              <span className="font-mono">
+                {fmtNum(usageBreakdown.total)} tokens · ${cost.toFixed(4)}
+              </span>
+            </div>
+            <div>
+              (of which{" "}
+              <span className="font-mono">
+                {fmtNum(usageBreakdown.cacheRead)}
+              </span>{" "}
+              cache-read re-sent each turn — the provider bills this
+              cumulative total, not the working set above)
+            </div>
           </div>
         )}
       </div>

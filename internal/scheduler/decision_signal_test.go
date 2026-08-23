@@ -48,10 +48,35 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want:   "",
 		},
 		{
-			name: "placeholder marker echo is not a decision",
+			name:   "placeholder marker echo is not a decision",
 			output: "The worker ends its plan with the contract example:\n" +
 				"ORCHICON WORKER SUMMARY: success — <summary>",
 			want: "",
+		},
+		{
+			name: "recovery-seed inline-code marker is not a decision",
+			output: "finish immediately with `ORCHICON WORKER SUMMARY: failure` reason " +
+				"`recovery seed file missing`. The file exists in the worktree and was read.\n" +
+				"Let me read the classifier function to finish the wiring.",
+			want: "",
+		},
+		{
+			name: "recovery-seed inline-code marker mid-run without a real sign-off is empty decision",
+			output: "## Important Details\n- if missing, finish with `ORCHICON WORKER SUMMARY: failure` reason " +
+				"`recovery seed file missing`\nLet me read the remaining symbols.",
+			want: "",
+		},
+		{
+			name: "backtick success example in a system instruction is not a decision",
+			output: "The contract is `ORCHICON WORKER SUMMARY: success` — note the format.\n" +
+				"No summary below yet.",
+			want: "",
+		},
+		{
+			name: "real marker after an inline-code seed echo resolves to the real one",
+			output: "If missing, print `ORCHICON WORKER SUMMARY: failure` reason `x`.\n" +
+				"ORCHICON WORKER SUMMARY: success — the wiring is complete.",
+			want: "success",
 		},
 		{
 			name: "placeholder echo before a real marker resolves to the real one",

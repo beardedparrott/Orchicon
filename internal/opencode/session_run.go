@@ -51,6 +51,13 @@ type sessionRun struct {
 	lastNudgeAt   time.Time
 	probeDeadline time.Time
 	probePending  bool
+	// probeGracePending is set while a completion-probe grace timer is armed:
+	// session.idle fired without the decision marker, but we are giving the
+	// trailing SSE events (the final text part that usually carries the
+	// marker) a short window to land before committing to a probe. Any
+	// mid-generation activity during the grace cancels it (resolveProbe), so
+	// a model that is merely still streaming is never interjected.
+	probeGracePending bool
 
 	// Session-scoped nudge tuning (manifest value first, env fallback).
 	// Populated by initNudgeTuning before the monitor starts. These drive
@@ -87,6 +94,11 @@ const (
 	defaultNudgeCooldown    = 60 * time.Second
 	defaultSettleAfterIdle  = 1 * time.Second
 	defaultSSEReconnectMax  = 10 * time.Second
+	// defaultCompletionProbeGrace is how long the completion probe waits
+	// after a markerless session.idle before interjecting, giving the serve's
+	// trailing final-text part (which usually carries the ORCHICON WORKER
+	// SUMMARY marker) time to flush. See maybeProbeCompletion.
+	defaultCompletionProbeGrace = 3 * time.Second
 )
 
 func nudgeMax() int {
@@ -104,6 +116,10 @@ func nudgeReplyWindow() time.Duration {
 
 func nudgeCooldown() time.Duration {
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
+}
+
+func completionProbeGrace() time.Duration {
+	return envDuration("ORCHICON_COMPLETION_PROBE_GRACE", defaultCompletionProbeGrace)
 }
 
 // initNudgeTuning resolves the session's nudge knobs: manifest (tenant
@@ -180,7 +196,7 @@ const decisionMarker = "ORCHICON WORKER SUMMARY:"
 // in view for the resumed turns.
 const afterCompactReminderText = "Your conversation was just compacted to keep it within budget — your task and progress notes are preserved in the compacted summary. " +
 	"Continue working on your task exactly as before. " +
-	"Keep maintaining your `todowrite` list (full replacement array, `pending | in_progress | completed | cancelled`) so the operator sees live progress. " +
+	"Resume your `todowrite` list NOW: emit a fresh full replacement array (`pending | in_progress | completed | cancelled`) reflecting current progress, and keep emitting it after every turn while you work — never wait until the end. " +
 	"When you have actually finished — and only then — end your response with the literal line: " +
 	"ORCHICON WORKER SUMMARY: success — <your summary of what you did>  (or  ORCHICON WORKER SUMMARY: failure — <the blocker>). " +
 	"Do NOT emit that line as part of a plan; emit it only as your final sign-off when the deliverable is complete."
@@ -195,6 +211,25 @@ func placeholderMarkerBody(rest string) bool {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return true
+	}
+	// Inline code (backtick-quoted) markers are seed/instruction echo, never a
+	// real sign-off. The recovery seed writes `` `ORCHICON WORKER SUMMARY:
+	// failure` reason `recovery seed file missing` `` and system prompts quote
+	// `` `ORCHICON WORKER SUMMARY: success` `` as an example. The body right
+	// after the marker is a backtick-wrapped word (e.g. "`failure`" or
+	// "failure` reason ..."), so strip a leading backtick from the first word:
+	// a bare `success`/`failure` in backticks is a placeholder, not a delivery.
+	words := strings.Fields(rest)
+	if len(words) > 0 {
+		raw := words[0]
+		before, _ := strings.CutPrefix(raw, "`")
+		after, afterBacktick := strings.CutSuffix(before, "`")
+		if afterBacktick {
+			lower := strings.ToLower(after)
+			if lower == "success" || lower == "failure" {
+				return true
+			}
+		}
 	}
 	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
 		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
@@ -529,10 +564,19 @@ func (r *sessionRun) flushParts() {
 func (r *sessionRun) resolveProbe() {
 	r.mu.Lock()
 	if !r.probePending {
+		// No probe is outstanding, but a completion-probe grace may be armed
+		// (session.idle fired without the marker and we are waiting for the
+		// trailing final text to land). Any telemetry activity during that
+		// window is evidence the model is still talking/finishing — cancel
+		// the pending probe so a still-streaming response is never
+		// interrupted. The next marker-bearing text part (arriving soon) will
+		// let the following session.idle settle normally.
+		r.probeGracePending = false
 		r.mu.Unlock()
 		return
 	}
 	r.probePending = false
+	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
 	revived := r.monitor.revive()
 	r.mu.Unlock()
@@ -1024,13 +1068,82 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		r.mu.Unlock()
 		return false
 	}
-	now := time.Now()
+
+	// A probe is warranted, but do NOT fire it immediately. The opencode
+	// serve can emit session.idle a beat BEFORE the final text part that
+	// actually carries the ORCHICON WORKER SUMMARY marker has been flushed
+	// through the event stream — so a session whose model is still finishing
+	// its (long) final response could be interjected mid-token with the
+	// "your response appears cut off" probe, which is disruptive and, worse,
+	// can make a model that WAS about to deliver the marker re-plan instead.
+	// Arm a short grace timer; any mid-generation activity (a text/tool/step
+	// part arriving) cancels it via resolveProbe, and the NEXT session.idle
+	// re-enters this decision with the now-complete output. After the grace,
+	// if the session is genuinely idle with no marker, but the output was
+	// updated during the window (a marker-bearing tail landed), the probe is
+	// skipped. Only a session that stays silent and markerless through the
+	// grace is actually probed.
+	if !r.probeGracePending {
+		r.probeGracePending = true
+		grace := completionProbeGrace()
+		r.mu.Unlock()
+
+		r.a.log.Info("session idle without decision marker — arming completion-probe grace",
+			"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", r.nudgeMax(), "grace", grace)
+		go func() {
+			select {
+			case <-r.done:
+				return
+			case <-time.After(grace):
+			}
+			r.mu.Lock()
+			if r.finished || r.probePending {
+				r.mu.Unlock()
+				return
+			}
+			r.probeGracePending = false
+			// The marker may have landed during the grace (the trailing final
+			// text part arrived) — if so, settle normally instead of probing.
+			probe2, fail2 := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
+			r.mu.Unlock()
+			if fail2 {
+				r.a.log.Warn("session idle without decision marker after grace — failing",
+					"execution", r.execRow.ID, "nudges", r.nudgesSent)
+				r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+				return
+			}
+			if !probe2 {
+				// Marker present now — the trailing text landed during the
+				// grace. Settle normally (the ordinary session.idle-finish
+				// path); do NOT interject a probe.
+				r.a.log.Info("decision marker landed during completion-probe grace — settling",
+					"execution", r.execRow.ID)
+				r.allTurnsDone()
+				return
+			}
+			r.sendCompletionProbe()
+		}()
+		return true
+	}
+	r.mu.Unlock()
+	return true
+}
+
+// sendCompletionProbe sends the completion-probe interjection (the
+// "your response appears to have been cut off" message) once the session has
+// been genuinely idle and markerless through the completion-probe grace.
+func (r *sessionRun) sendCompletionProbe() {
+	r.mu.Lock()
+	if r.finished || r.probePending {
+		r.mu.Unlock()
+		return
+	}
 	r.nudgesSent++
 	r.probePending = true
-	r.probeDeadline = now.Add(r.nudgeReplyWindow())
+	r.probeDeadline = time.Now().Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 
-	r.a.log.Info("session idle without decision signal — sending completion probe",
+	r.a.log.Info("session idle without decision marker — sending completion probe",
 		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", r.nudgeMax())
 	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, completionProbeText); err != nil {
 		r.mu.Lock()
@@ -1038,7 +1151,7 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		r.mu.Unlock()
 		r.a.log.Warn("completion probe send failed — failing", "execution", r.execRow.ID, "error", err)
 		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
-		return true
+		return
 	}
 	r.bumpPending()
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"})
@@ -1061,7 +1174,6 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 			r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
 		}
 	}()
-	return true
 }
 
 // runSSE maintains the /event subscription with reconnects, routing every
