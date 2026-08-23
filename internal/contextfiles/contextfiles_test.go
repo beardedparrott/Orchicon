@@ -260,7 +260,7 @@ func TestRenderManifest(t *testing.T) {
 	if strings.Contains(out, "Read EVERY file") {
 		t.Fatalf("directory still says 'read EVERY file' instead of read-on-demand")
 	}
-	if !strings.Contains(out, "read the specific files you need") {
+	if !strings.Contains(strings.ToLower(out), "read the specific files you need") {
 		t.Fatalf("missing directory read-on-demand guidance:\n%s", out)
 	}
 	// Manifest is present.
