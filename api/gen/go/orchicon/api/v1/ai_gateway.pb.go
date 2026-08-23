@@ -553,9 +553,15 @@ type CostSummary struct {
 	Children []*CostSummary `protobuf:"bytes,12,rep,name=children,proto3" json:"children,omitempty"`
 	// Human-readable display name for the group_key. Populated on the backend
 	// so all sections (drill-down, usage table, etc.) show meaningful names.
-	DisplayName   string `protobuf:"bytes,13,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DisplayName string `protobuf:"bytes,13,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// Cache/token breakdown fields mirroring UsageRecord. cache_read and
+	// cache_write are separate cost buckets; reasoning_tokens is a sub-bucket
+	// of completion_tokens (never folded into total_tokens).
+	CacheReadTokens  int64 `protobuf:"varint,14,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `protobuf:"varint,15,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64 `protobuf:"varint,16,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CostSummary) Reset() {
@@ -677,6 +683,27 @@ func (x *CostSummary) GetDisplayName() string {
 		return x.DisplayName
 	}
 	return ""
+}
+
+func (x *CostSummary) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *CostSummary) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *CostSummary) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
@@ -1185,7 +1212,7 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"task_title\x18\x10 \x01(\tR\ttaskTitle\x12*\n" +
 	"\x11cache_read_tokens\x18\x11 \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x12 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
-	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\x97\x04\n" +
+	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\x9c\x05\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +
@@ -1202,7 +1229,10 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\n" +
 	"window_end\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x128\n" +
 	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren\x12!\n" +
-	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\"\x8e\x03\n" +
+	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\x12*\n" +
+	"\x11cache_read_tokens\x18\x0e \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\x0f \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\x10 \x01(\x03R\x0freasoningTokens\"\x8e\x03\n" +
 	"\rOpenCodeModel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
