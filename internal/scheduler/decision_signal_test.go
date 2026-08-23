@@ -47,6 +47,18 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			output: "Just some prose with no summary marker.",
 			want:   "",
 		},
+		{
+			name: "placeholder marker echo is not a decision",
+			output: "The worker ends its plan with the contract example:\n" +
+				"ORCHICON WORKER SUMMARY: success — <summary>",
+			want: "",
+		},
+		{
+			name: "placeholder echo before a real marker resolves to the real one",
+			output: "Plan: ORCHICON WORKER SUMMARY: success — <summary>.\n" +
+				"ORCHICON WORKER SUMMARY: failure — the store is poisoned.",
+			want: "failure",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

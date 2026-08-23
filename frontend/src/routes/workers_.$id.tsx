@@ -66,7 +66,7 @@ const DEFAULT_BUDGETS = `{
   "cost_usd": 0.5,
   "wall_clock_seconds": 3600,
   "tool_call_count": 100,
-  "compact_max_turns": 8
+  "compact_max_turns": 12
 }`;
 
 // Fields on UpdateWorkerVersionRequest — only version-level fields,

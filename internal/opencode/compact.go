@@ -252,7 +252,15 @@ const (
 	// DeepSeek-backed worker whose cumulative cache-read count still climbs
 	// into the millions across dozens of turns). Independent of, and
 	// evaluated alongside, the cost/token gates in maybeCompact.
-	defaultCompactMaxTurns = 8
+	//
+	// Raised 8 -> 12 (2026-08-23): at 8 the gate fired more often than a
+	// deep-design worker finishes a unit of work, and each mid-flight
+	// compact ended with the completion probe interjecting at the next turn
+	// boundary ("your response appears cut off"), which is disruptive
+	// noise for long single-goal steps. 12 keeps the chatty-session bound
+	// while giving the turn cadence real headroom (minus the min-turn
+	// floor guarding the compact loop).
+	defaultCompactMaxTurns = 12
 	// defaultCompactMinTurns is the minimum completed turns before the gate
 	// is armed — never at start, and re-arms only after this floor elapses
 	// across normal forward progress (prevents the compact loop).
