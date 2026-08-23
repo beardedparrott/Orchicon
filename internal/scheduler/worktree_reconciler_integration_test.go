@@ -1630,3 +1630,104 @@ func TestWorktreeForeignDirStillFailsClosed(t *testing.T) {
 		t.Fatalf("foreign directory was modified/deleted: %v", err)
 	}
 }
+
+// TestWorktreeOrphanBranchSweptOnCompletedRun is the regression test for the
+// orphaned-branch ref leak. A COMPLETED run whose worktree was already pruned
+// (worktree_status='pruned') still records worktree_branch; the prune pass only
+// sweeps 'ready' worktrees, so a branch that survived pruning — e.g. the run
+// completed after its worktree was taken down by an earlier pass, while a
+// later dispatching run merged the same branch — was never revisited and
+// leaked as a dead local ref. The orphan sweep must reclaim it (provably
+// merged into the base), but must NOT reap a failed/aborted run's branch.
+func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Provision a real worktree + branch (deterministic name on the row).
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+	if branch == "" {
+		t.Fatal("run recorded no worktree_branch")
+	}
+
+	// Simulate the orphan class: the run's worktree was already pruned
+	// (status pruned, path cleared, branch retained) AND the branch has NO
+	// live worktree anymore. Mark the run completed so it is reclaimable.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunCompleted),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run completed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	// Detach the branch's worktree entirely: git worktree remove, so the
+	// branch is a free ref (only the main checkout remains).
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	if strings.Contains(gitRun(t, env.repo, "worktree", "list"), env.expectedPath()) {
+		t.Fatalf("worktree still listed after remove")
+	}
+
+	// The run's branch commits are already in develop (simulate the merge).
+	// Put the branch tip on develop so branchProvablyMerged → P1 ancestry.
+	gitRun(t, env.repo, "branch", "-f", branch, "develop")
+
+	// Full scan (key "") triggers the orphan sweep at the end.
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+
+	// The orphaned (merged) branch must now be gone.
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("orphaned branch %q was NOT swept after completed run", branch)
+	}
+}
+
+// TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard:
+// a FAILED run's pruned-but-recorded branch must NOT be swept (a retry
+// re-attaches to it — carry-over of partial work).
+func TestWorktreeSweepSkipsFailedRunBranch(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunFailed),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run failed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	gitRun(t, env.repo, "branch", "-f", branch, "develop")
+
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("failed run's branch %q was swept — success-only deletion violated", branch)
+	}
+}
