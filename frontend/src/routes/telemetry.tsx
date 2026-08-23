@@ -327,7 +327,12 @@ function CostExplorer() {
                     <span className="text-sm font-medium">Window total</span>
                     <span className="font-medium">
                       ${data.total.costUsd?.toFixed(4) ?? "0.0000"} ·{" "}
-                      {fmtInt(data.total.totalTokens ?? 0)} tokens ·{" "}
+                      {fmtSplitHit(
+                        toNum(data.total.cacheReadTokens),
+                        toNum(data.total.cacheWriteTokens),
+                        toNum(data.total.promptTokens),
+                      )}{" "}
+                      · {fmtInt(data.total.totalTokens ?? 0)} total tok ·{" "}
                       {data.total.executionCount ?? 0} executions
                     </span>
                   </div>
@@ -354,7 +359,12 @@ function CostExplorer() {
                       </span>
                       <span className="text-sm">
                         ${(s.costUsd ?? 0).toFixed(4)} ·{" "}
-                        {fmtInt(s.totalTokens ?? 0)} tok ·{" "}
+                        {fmtSplitHit(
+                          toNum(s.cacheReadTokens),
+                          toNum(s.cacheWriteTokens),
+                          toNum(s.promptTokens),
+                        )}{" "}
+                        · {fmtInt(s.totalTokens ?? 0)} tok ·{" "}
                         {s.executionCount ?? 0} execs
                       </span>
                     </button>
@@ -415,14 +425,20 @@ function WorkflowCostPanel() {
                 {wf.workflowName || wf.workflowId?.slice(0, 12)}
               </span>
               <span className="text-sm">
-                ${(wf.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.runCount ?? 0} runs · {wf.executionCount ?? 0} execs
+                ${(wf.totalCostUsd ?? 0).toFixed(4)} ·{" "}
+                {fmtSplitHit(
+                  toNum(wf.cacheReadTokens),
+                  toNum(wf.cacheWriteTokens),
+                  toNum(wf.promptTokens),
+                )}{" "}
+                · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.runCount ?? 0} runs · {wf.executionCount ?? 0} execs
               </span>
             </button>
 
             {/* Runs level */}
             {wfExpanded && wf.runs && wf.runs.length > 0 && (
               <div className="border-t divide-y">
-                {wf.runs.map((run: any) => {
+                {wf.runs.map((run) => {
                   const runExpanded = expandedRun === run.workflowRunId;
                   const badge = statusBadge(run.runStatus);
                   return (
@@ -445,14 +461,20 @@ function WorkflowCostPanel() {
                           )}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          ${(run.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs
+                          ${(run.totalCostUsd ?? 0).toFixed(4)} ·{" "}
+                          {fmtSplitHit(
+                            toNum(run.cacheReadTokens),
+                            toNum(run.cacheWriteTokens),
+                            toNum(run.promptTokens),
+                          )}{" "}
+                          · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs
                         </span>
                       </button>
 
                       {/* Worker level inside run */}
                       {runExpanded && run.workers && run.workers.length > 0 && (
                         <div className="border-t divide-y bg-muted/20">
-                          {run.workers.map((worker: any) => (
+                          {run.workers.map((worker) => (
                             <div
                               key={worker.workerId || "unknown"}
                               className="flex items-center justify-between px-7 py-2 text-sm"
@@ -470,7 +492,13 @@ function WorkflowCostPanel() {
                                   ${(worker.totalCostUsd ?? 0).toFixed(4)}
                                 </div>
                                 <div className="text-xs text-muted-foreground">
-                                  {fmtInt(worker.totalTokens ?? 0)} tok · {fmtInt(worker.promptTokens ?? 0)} in / {fmtInt(worker.completionTokens ?? 0)} out
+                                  {fmtInt(worker.totalTokens ?? 0)} tok total ·{" "}
+                                  {fmtSplitHit(
+                                    toNum(worker.cacheReadTokens),
+                                    toNum(worker.cacheWriteTokens),
+                                    toNum(worker.promptTokens),
+                                  )}{" "}
+                                  · {fmtInt(worker.completionTokens ?? 0)} out
                                 </div>
                               </div>
                             </div>
@@ -913,4 +941,37 @@ function fmtInt(n: number | bigint | undefined): string {
   if (n === undefined || n === null) return "0";
   const v = typeof n === "bigint" ? Number(n) : n;
   return v.toLocaleString();
+}
+
+// toNum normalises a proto int64 (bigint) or number to a JS number so the
+// cache-hit-ratio math and fmtInt work uniformly across every surface.
+function toNum(n: number | bigint | undefined | null): number {
+  if (n === undefined || n === null) return 0;
+  return typeof n === "bigint" ? Number(n) : n;
+}
+
+// cacheHitRatioPct is the canonical platform cache hit ratio (docs/10 §11):
+// cache_read ÷ (cache_read + fresh_input), where fresh_input = prompt_tokens.
+// cache_write is a separate cost bucket, excluded by definition. Renders 0%
+// when there is no cache activity (cache_read + fresh == 0). Mirrors the
+// ExecutionContextSidebar cumulative-hit formula so both stay identical.
+function cacheHitRatioPct(cacheRead: number, fresh: number): number {
+  if (cacheRead + fresh === 0) return 0;
+  return Math.round((cacheRead / (cacheRead + fresh)) * 100);
+}
+
+// fmtTokenSplit renders the fresh-input vs cache token split for a row:
+// "N fresh · N cache-read · N cache-write".
+function fmtTokenSplit(cacheRead: number, cacheWrite: number, fresh: number): string {
+  return [
+    `${fmtInt(fresh)} fresh`,
+    `${fmtInt(cacheRead)} cache-read`,
+    `${fmtInt(cacheWrite)} cache-write`,
+  ].join(" · ");
+}
+
+// fmtSplitHit renders the token split plus the cache hit ratio percentage,
+// e.g. "1,204 fresh · 32,000 cache-read · 41 cache-write · 96% hit".
+function fmtSplitHit(cacheRead: number, cacheWrite: number, fresh: number): string {
+  return `${fmtTokenSplit(cacheRead, cacheWrite, fresh)} · ${cacheHitRatioPct(cacheRead, fresh)}% hit`;
 }

@@ -826,8 +826,17 @@ type WorkflowCostAggregate struct {
 	RunCount       int32                  `protobuf:"varint,5,opt,name=run_count,json=runCount,proto3" json:"run_count,omitempty"`
 	ExecutionCount int32                  `protobuf:"varint,6,opt,name=execution_count,json=executionCount,proto3" json:"execution_count,omitempty"`
 	Runs           []*WorkflowRunCost     `protobuf:"bytes,7,rep,name=runs,proto3" json:"runs,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// prompt_tokens is the fresh-input bucket (input NOT read from cache),
+	// mirroring UsageRecord so the hit ratio can render on this row.
+	PromptTokens int64 `protobuf:"varint,8,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
+	// Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+	// cache_read and cache_write are separate cost buckets; reasoning_tokens
+	// is a sub-bucket of completion_tokens (never folded into total_tokens).
+	CacheReadTokens  int64 `protobuf:"varint,9,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `protobuf:"varint,10,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64 `protobuf:"varint,11,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkflowCostAggregate) Reset() {
@@ -909,6 +918,34 @@ func (x *WorkflowCostAggregate) GetRuns() []*WorkflowRunCost {
 	return nil
 }
 
+func (x *WorkflowCostAggregate) GetPromptTokens() int64 {
+	if x != nil {
+		return x.PromptTokens
+	}
+	return 0
+}
+
+func (x *WorkflowCostAggregate) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *WorkflowCostAggregate) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *WorkflowCostAggregate) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
 // WorkflowRunCost is a single run within a workflow. Expand to see
 // per-worker cost summaries.
 type WorkflowRunCost struct {
@@ -923,9 +960,16 @@ type WorkflowRunCost struct {
 	WorkItemId string `protobuf:"bytes,7,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`
 	// Current title of the bound work item (resolved server-side), used as the
 	// human-readable run label in the "By Workflow" cost breakdown.
-	WorkItemName  string `protobuf:"bytes,8,opt,name=work_item_name,json=workItemName,proto3" json:"work_item_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	WorkItemName string `protobuf:"bytes,8,opt,name=work_item_name,json=workItemName,proto3" json:"work_item_name,omitempty"`
+	// prompt_tokens is the fresh-input bucket (input NOT read from cache),
+	// mirroring UsageRecord so the hit ratio can render on this row.
+	PromptTokens int64 `protobuf:"varint,9,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
+	// Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+	CacheReadTokens  int64 `protobuf:"varint,10,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `protobuf:"varint,11,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64 `protobuf:"varint,12,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkflowRunCost) Reset() {
@@ -1014,6 +1058,34 @@ func (x *WorkflowRunCost) GetWorkItemName() string {
 	return ""
 }
 
+func (x *WorkflowRunCost) GetPromptTokens() int64 {
+	if x != nil {
+		return x.PromptTokens
+	}
+	return 0
+}
+
+func (x *WorkflowRunCost) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *WorkflowRunCost) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *WorkflowRunCost) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
 // WorkflowWorkerCost is the aggregated cost for one worker type within
 // a workflow run (all executions by that worker summed).
 type WorkflowWorkerCost struct {
@@ -1025,6 +1097,11 @@ type WorkflowWorkerCost struct {
 	PromptTokens     int64                  `protobuf:"varint,5,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
 	CompletionTokens int64                  `protobuf:"varint,6,opt,name=completion_tokens,json=completionTokens,proto3" json:"completion_tokens,omitempty"`
 	ExecutionCount   int32                  `protobuf:"varint,7,opt,name=execution_count,json=executionCount,proto3" json:"execution_count,omitempty"`
+	// Cache/token breakdown fields mirroring UsageRecord (and CostSummary);
+	// prompt_tokens is the fresh-input bucket.
+	CacheReadTokens  int64 `protobuf:"varint,8,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `protobuf:"varint,9,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64 `protobuf:"varint,10,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1108,6 +1185,27 @@ func (x *WorkflowWorkerCost) GetExecutionCount() int32 {
 	return 0
 }
 
+func (x *WorkflowWorkerCost) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *WorkflowWorkerCost) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *WorkflowWorkerCost) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
 var File_orchicon_api_v1_ai_gateway_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
@@ -1168,7 +1266,7 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\x05start\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05start\x12,\n" +
 	"\x03end\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x03end\"`\n" +
 	"\x18GetWorkflowCostsResponse\x12D\n" +
-	"\tworkflows\x18\x01 \x03(\v2&.orchicon.api.v1.WorkflowCostAggregateR\tworkflows\"\xa2\x02\n" +
+	"\tworkflows\x18\x01 \x03(\v2&.orchicon.api.v1.WorkflowCostAggregateR\tworkflows\"\xcc\x03\n" +
 	"\x15WorkflowCostAggregate\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12#\n" +
@@ -1177,7 +1275,12 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\ftotal_tokens\x18\x04 \x01(\x03R\vtotalTokens\x12\x1b\n" +
 	"\trun_count\x18\x05 \x01(\x05R\brunCount\x12'\n" +
 	"\x0fexecution_count\x18\x06 \x01(\x05R\x0eexecutionCount\x124\n" +
-	"\x04runs\x18\a \x03(\v2 .orchicon.api.v1.WorkflowRunCostR\x04runs\"\xd1\x02\n" +
+	"\x04runs\x18\a \x03(\v2 .orchicon.api.v1.WorkflowRunCostR\x04runs\x12#\n" +
+	"\rprompt_tokens\x18\b \x01(\x03R\fpromptTokens\x12*\n" +
+	"\x11cache_read_tokens\x18\t \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\n" +
+	" \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\v \x01(\x03R\x0freasoningTokens\"\xfb\x03\n" +
 	"\x0fWorkflowRunCost\x12&\n" +
 	"\x0fworkflow_run_id\x18\x01 \x01(\tR\rworkflowRunId\x12$\n" +
 	"\x0etotal_cost_usd\x18\x02 \x01(\x01R\ftotalCostUsd\x12!\n" +
@@ -1188,7 +1291,12 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\aworkers\x18\x06 \x03(\v2#.orchicon.api.v1.WorkflowWorkerCostR\aworkers\x12 \n" +
 	"\fwork_item_id\x18\a \x01(\tR\n" +
 	"workItemId\x12$\n" +
-	"\x0ework_item_name\x18\b \x01(\tR\fworkItemName\"\x96\x02\n" +
+	"\x0ework_item_name\x18\b \x01(\tR\fworkItemName\x12#\n" +
+	"\rprompt_tokens\x18\t \x01(\x03R\fpromptTokens\x12*\n" +
+	"\x11cache_read_tokens\x18\n" +
+	" \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\v \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\f \x01(\x03R\x0freasoningTokens\"\x9b\x03\n" +
 	"\x12WorkflowWorkerCost\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1f\n" +
 	"\vworker_name\x18\x02 \x01(\tR\n" +
@@ -1197,7 +1305,11 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\ftotal_tokens\x18\x04 \x01(\x03R\vtotalTokens\x12#\n" +
 	"\rprompt_tokens\x18\x05 \x01(\x03R\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x06 \x01(\x03R\x10completionTokens\x12'\n" +
-	"\x0fexecution_count\x18\a \x01(\x05R\x0eexecutionCount2\xc0\x05\n" +
+	"\x0fexecution_count\x18\a \x01(\x05R\x0eexecutionCount\x12*\n" +
+	"\x11cache_read_tokens\x18\b \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\t \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\n" +
+	" \x01(\x03R\x0freasoningTokens2\xc0\x05\n" +
 	"\x10AIGatewayService\x12^\n" +
 	"\rListProviders\x12%.orchicon.api.v1.ListProvidersRequest\x1a&.orchicon.api.v1.ListProvidersResponse\x12m\n" +
 	"\x12ListOpenCodeModels\x12*.orchicon.api.v1.ListOpenCodeModelsRequest\x1a+.orchicon.api.v1.ListOpenCodeModelsResponse\x12g\n" +
