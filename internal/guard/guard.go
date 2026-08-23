@@ -38,6 +38,14 @@ import (
 // its own binary. That residual risk is what the containerized execution
 // option (internal/opencode/README) closes. See also AGENTS.md.
 
+// ScratchDir is the one writable scratch area outside the project directory
+// (kept in sync with opencode.ScratchDir). Scoped binaries (rm/mv/cp/…)
+// are allowed to operate inside it — it is Orchicon-owned ephemeral
+// scratch (screenshots, logs, downloads), so guarding it like a foreign path
+// burns worker tokens on "blocked" retries for no safety gain. Everything
+// else outside the project stays blocked.
+const ScratchDir = "/tmp/orchicon"
+
 // guardedBinary names one binary the guard shims on PATH.
 type guardedBinary struct {
 	name   string
@@ -144,7 +152,8 @@ func buildGuardIn(dir, projectDir string) (*Guard, error) {
 	data := struct {
 		ProjectDir string
 		Real       map[string]string
-	}{projectDir, g.real}
+		ScratchDir string
+	}{projectDir, g.real, ScratchDir}
 
 	tmpl, err := template.New("guard").Parse(guardScriptTemplate)
 	if err != nil {
@@ -224,6 +233,7 @@ var guardScriptTemplate = `#!/bin/bash
 # outside the worker's project directory. Injected on PATH for every
 # worker execution; see internal/opencode/guard.go.
 PROJECT_DIR='{{.ProjectDir}}'
+SCRATCH_DIR='{{.ScratchDir}}'
 
 blocked() {
   echo "ORCHICON GUARD: command '${0##*/}' blocked (destructive, or targets a path outside the project directory)." >&2
@@ -231,6 +241,7 @@ blocked() {
 }
 
 # blocked_path returns 0 (block) if any path argument escapes PROJECT_DIR.
+# A target under SCRATCH_DIR (Orchicon-owned ephemeral scratch) is allowed.
 blocked_path() {
   local a
   for a in "$@"; do
@@ -240,17 +251,25 @@ blocked_path() {
     esac
     case "$a" in
       /*)
-        # Empty PROJECT_DIR = the shared host-serve mode: no single project
-        # root, so EVERY absolute target is outside scope and blocked (this
-        # also closes the rm / leak that an empty dir would otherwise allow
-        # through the "$PROJECT_DIR"/* glob).
-        if [ -z "$PROJECT_DIR" ]; then
+        if [ -n "$PROJECT_DIR" ]; then
+          case "$a" in
+            "$PROJECT_DIR"|"$PROJECT_DIR"/*) continue ;;
+          esac
+        else
+          # Empty PROJECT_DIR = the shared host-serve mode: no single
+          # project root, so every absolute target is outside scope and
+          # blocked (closes the rm / leak that an empty dir would otherwise
+          # allow through the "$PROJECT_DIR"/* glob).
           return 0
         fi
-        case "$a" in
-          "$PROJECT_DIR"|"$PROJECT_DIR"/*) ;;
-          *) return 0 ;;
-        esac
+        # Scratch carve-out: Orchicon-owned scratch is writable even though
+        # it lives outside the project (the worker is told to use it).
+        if [ -n "$SCRATCH_DIR" ]; then
+          case "$a" in
+            "$SCRATCH_DIR"|"$SCRATCH_DIR"/*) continue ;;
+          esac
+        fi
+        return 0
         ;;
       '~'|'~'/*|'$HOME'|'$HOME'/*|'${HOME}'|'${HOME}'/*|*".."*)
         return 0

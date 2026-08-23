@@ -3,6 +3,7 @@ package opencode
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +81,68 @@ func TestInfraRepairThresholdEnv(t *testing.T) {
 	}
 	if got := infraRepairThreshold(); got != 0 {
 		t.Fatalf("disabled threshold = %d, want 0", got)
+	}
+}
+
+// TestCapToolOutput pins the tool-output cap that keeps giant build/test
+// logs and listings from re-entering the model context on every later turn:
+// output under the cap passes through, output over it keeps the head + a
+// truncation marker, and a disabled cap (< 1) passes everything through.
+func TestCapToolOutput(t *testing.T) {
+	// Force a small cap so the test doesn't need to synthesize 128k.
+	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "1024"); err != nil {
+		t.Fatal(err)
+	}
+	small := strings.Repeat("a", 512)
+	if got := capToolOutput(small); got != small {
+		t.Fatalf("under-cap output was altered")
+	}
+	big := strings.Repeat("b", 8192)
+	got := capToolOutput(big)
+	if len(got) >= len(big) {
+		t.Fatalf("over-cap output not truncated: in=%d out=%d", len(big), len(got))
+	}
+	if !strings.Contains(got, "truncated by Orchicon") {
+		t.Fatalf("missing truncation marker: %q", got[len(got)-120:])
+	}
+
+	// Disabled cap → passthrough even for a huge output.
+	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := capToolOutput(big); got != big {
+		t.Fatalf("disabled cap altered output")
+	}
+}
+
+// TestCapPartOutput pins the transcript-side cap: a tool_use part's
+// state.output is capped in a copy (the live event is untouched); a part
+// without tool output passes through unchanged.
+func TestCapPartOutput(t *testing.T) {
+	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "1024"); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("b", 8192)
+	part := map[string]any{
+		"tool": "bash",
+		"state": map[string]any{
+			"status": "completed",
+			"output": big,
+		},
+	}
+	got := capPartOutput(part)
+	cp := got.(map[string]any)
+	st := cp["state"].(map[string]any)
+	if out := st["output"].(string); len(out) >= len(big) {
+		t.Fatalf("part output not capped: in=%d out=%d", len(big), len(out))
+	}
+	// The original event must be unchanged (the UI path already used it).
+	if stOrig := part["state"].(map[string]any); stOrig["output"] != big {
+		t.Fatalf("original event was mutated by capPartOutput")
+	}
+
+	// A non-tool part passes through.
+	if got := capPartOutput("not-a-map"); got != "not-a-map" {
+		t.Fatalf("non-map part was altered")
 	}
 }

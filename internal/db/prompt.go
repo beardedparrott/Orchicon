@@ -39,8 +39,10 @@ const WorkerIdentityPreamble = "You are an autonomous worker running inside the 
 // "Verify, don't assume" contract survives. Batching combines commands, never
 // results; a worker must not fabricate a combined output it did not observe.
 const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls\n" +
+	"- **Do not spawn subagents or delegate work.** Orchicon already splits your workflow into focused sibling steps (each with its own worker). A subagent re-prepends its system prompt and re-carries the parent's history, roughly doubling context cost. Do the work directly in this session.\n" +
 	"- **Minimize tool output.** Prefer compact formats: `git status --short`, `git log --oneline -5`, `git branch --list`, single-line `gh` queries. When reading `.orchicon/<run>/` files, read `summary`, `facts_learned`, and `issues` in full, but only `grep` `touched_files` for paths relevant to your task — do not read every touched file wholesale.\n" +
 	"- **Batch your tool calls.** Read multiple files in a single `read` call (use `limit`/`offset` or read several paths), combine related commands into one `bash` call (e.g. one `git status && git log`), and prefer `grep`/`glob` over sequential reads. Avoid micro tool calls: each call re-sends the whole conversation to the model, so fewer, larger calls are dramatically cheaper.\n" +
+	"- **Watch your working directory.** You operate inside your project directory (or an isolated worktree of it). In the runtime container `/tmp` is a private tmpfs: write scratch under `/tmp/orchicon/` (writable; see Runtime environment) and keep all real work + final artifacts inside the project. Do not fight a blocked path — choose a writable one.\n" +
 	"- Compact commands are still real commands: you MUST verify state with actual tool calls and never fabricate output. Batching combines commands, not results — never invent a combined result you did not observe.\n\n"
 
 // todoListBlock is the shared "## Todo list" guidance block injected into
