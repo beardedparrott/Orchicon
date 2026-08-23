@@ -1623,6 +1623,41 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		}
 		write("touched_files", strings.TrimSpace(sb.String()))
 	}
+
+	// Per-step archive: persist this execution's results to a per-step file
+	// so the delta handoff (execution-history index) can point workers at a
+	// stable, complete per-step record on disk. The run-level summary/status
+	// files are overwritten by each step; these per-step files are never
+	// overwritten, so a later step can `read`/`grep` the exact output of ANY
+	// earlier step (the "read on demand from the archive" contract instead of
+	// re-embedding every past summary into the prompt).
+	if exec.WorkflowStepID != "" {
+		stepDir := filepath.Join(orchDir, "steps")
+		if err := os.MkdirAll(stepDir, 0755); err == nil {
+			stepFile := filepath.Join(stepDir, exec.WorkflowStepID+".md")
+			var b strings.Builder
+			fmt.Fprintf(&b, "# Step archive: %s\n\n", exec.WorkflowStepID)
+			fmt.Fprintf(&b, "Status: %s\n", map[bool]string{true: "success", false: "failure"}[succeeded])
+			b.WriteString("Worker: " + exec.WorkerID + "\n")
+			if summary, ok := results["_summary"].(string); ok && summary != "" {
+				b.WriteString("\n## Summary\n\n" + summary + "\n")
+			}
+			if issues, ok := results["_issues"].(string); ok && issues != "" {
+				b.WriteString("\n## Issues\n\n" + issues + "\n")
+			}
+			if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
+				b.WriteString("\n## Touched files\n\n")
+				for _, f := range files {
+					if s, ok := f.(string); ok {
+						b.WriteString("- " + s + "\n")
+					}
+				}
+			}
+			if err := os.WriteFile(stepFile, []byte(b.String()), 0644); err != nil {
+				r.log.Warn("write per-step .orchicon file", "file", stepFile, "error", err)
+			}
+		}
+	}
 }
 
 // stepNameForExecution resolves the workflow step name that dispatched an
@@ -2327,7 +2362,7 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			ctxSB.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			ctxSB.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
 			if ctxSB.Len() > 0 {
 				sb.WriteString(ctxSB.String())
 			}
@@ -2338,7 +2373,7 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	if len(task.ContextFiles) > 0 {
 		var files []string
 		_ = json.Unmarshal(task.ContextFiles, &files)
-		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
 			sb.WriteString(r)
 		}
 	}

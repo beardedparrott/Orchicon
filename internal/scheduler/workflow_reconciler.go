@@ -2435,7 +2435,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			sb2.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			sb2.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
 			if sb2.Len() > 0 {
 				sb.WriteString(sb2.String())
 			}
@@ -2457,7 +2457,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			).Scan(&pd)
 			projectDir = pd
 		}
-		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
 			sb.WriteString(r)
 		}
 	}
@@ -2661,21 +2661,37 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// runaway summary cannot blow downstream context.
 	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
 
-	// Prior execution timeline: show what each completed step produced,
-	// so the worker understands the full context including loop-backs.
+	// Prior execution timeline — DELTA handoff. A worker gets the FULL
+	// result of only the steps it DIRECTLY depends on (its DependsOn — the
+	// immediate upstream in the DAG), plus a COMPACT INDEX of every other
+	// completed step. This replaces the old behavior of re-embedding every
+	// prior step's full summary + issues + reason into every later step's
+	// prompt — which grew quadratically with run length (analogous to the
+	// "read EVERY file" context-dumping the manifest renderer fixes). Older
+	// context is never lost: each step's detail is persisted to
+	// `.orchicon/<run>/steps/<stepId>.md` on disk, and the worker is
+	// pointed there to read/grep any step it needs. KEEPING the worker's
+	// AC/instructions unchanged — we only shrink what history is re-embedded,
+	// never the worker's own brief.
 	sb.WriteString("## Execution history\n\n")
-	sb.WriteString("The following steps have completed in this workflow run. If a step ran multiple times (loop-back), each iteration is listed.\n")
 	// Build a step-ID→name lookup from allSteps.
 	stepNameByID := make(map[string]string)
 	for _, s := range allSteps {
 		stepNameByID[s.ID] = s.Name
 	}
-
-	type histEntry struct {
-		stepName, status, summary, issues, reason, iteration string
-		attachments                                          []string
+	// Direct upstream: the steps THIS step depends on (DependsOn). These
+	// carry the load-bearing output (the diff/branch/facts this step must
+	// live with), so they are included in full.
+	directUpstream := map[string]bool{}
+	for _, s := range allSteps {
+		if s.ID == wi.WorkflowStepID {
+			for _, d := range s.DependsOn {
+				directUpstream[d] = true
+			}
+		}
 	}
-	var history []histEntry
+
+	var history []histEntryType
 	seen := make(map[string]bool)
 	for stepID, sr := range runs {
 		sr := sr
@@ -2699,13 +2715,15 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		if sr.Iteration > 0 {
 			iterLabel = fmt.Sprintf("iteration %d", sr.Iteration)
 		}
-		entry := histEntry{
+		entry := histEntryType{
+			stepID:    stepID,
 			stepName:  stepNameByID[stepID],
 			status:    sr.Status,
 			summary:   rData.Summary,
 			issues:    rData.Issues,
 			reason:    rData.Reason,
 			iteration: iterLabel,
+			direct:    directUpstream[stepID],
 		}
 		for _, a := range rData.Attachments {
 			if a.Filename != "" {
@@ -2730,27 +2748,38 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 		return pi < pj
 	})
-	if len(history) > 0 {
+	if len(history) == 0 {
+		sb.WriteString("No steps have completed yet. You are the first.\n\n")
+	} else {
+		// Full detail for direct upstreams.
+		sb.WriteString("**Directly above you** (these steps' output is the input you must work with):\n\n")
+		if !anyDirectCompleted(history) {
+			// No direct upstream completed yet — e.g. this is a fan-in / early
+			// step whose DependsOn steps haven't produced a full run, or the
+			// first step of a linear chain. In that case every completed step
+			// IS effectively upstream, so show them all in full.
+			sb.WriteString("(No directly-above step has completed yet — showing all completed steps below.)\n\n")
+			for i := range history {
+				history[i].direct = true
+			}
+		}
+		full := 0
 		for _, h := range history {
+			if !h.direct {
+				continue
+			}
+			full++
 			statusSym := "✓"
 			if h.status == domain.StepRunFailed {
 				statusSym = "✗"
 			}
-			fmt.Fprintf(&sb, "- **%s** %s [%s]", h.stepName, statusSym, h.iteration)
-			if h.status == domain.StepRunSucceeded {
-				sb.WriteString(" succeeded")
-			} else {
-				sb.WriteString(" failed")
-			}
+			fmt.Fprintf(&sb, "- **%s** %s [%s] %s\n", h.stepName, statusSym, h.iteration, map[bool]string{true: "succeeded", false: "failed"}[h.status == domain.StepRunSucceeded])
 			if h.summary != "" {
-				fmt.Fprintf(&sb, ": %s", h.summary)
+				fmt.Fprintf(&sb, "  - Summary: %s\n", h.summary)
 			}
-			sb.WriteString("\n")
 			if h.issues != "" {
 				fmt.Fprintf(&sb, "  - Issues: %s\n", h.issues)
 			}
-			// Human review feedback (approval step) + any attached files /
-			// screenshots the human shared so the worker can SEE the issues.
 			if h.reason != "" {
 				fmt.Fprintf(&sb, "  - Human review: %s\n", h.reason)
 			}
@@ -2758,9 +2787,27 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 				fmt.Fprintf(&sb, "  - Human attachments (read them from the project dir): %s\n", strings.Join(h.attachments, ", "))
 			}
 		}
-		sb.WriteString("\n")
-	} else {
-		sb.WriteString("No steps have completed yet. You are the first.\n\n")
+		// Compact index for all other completed steps — read on disk.
+		sb.WriteString("\n**Earlier steps** (index — read the file for any you need):\n")
+		for _, h := range history {
+			if h.direct {
+				continue
+			}
+			statusSym := "✓"
+			if h.status == domain.StepRunFailed {
+				statusSym = "✗"
+			}
+			fmt.Fprintf(&sb, "- **%s** %s [%s] %s", h.stepName, statusSym, h.iteration, map[bool]string{true: "succeeded", false: "failed"}[h.status == domain.StepRunSucceeded])
+			if h.summary != "" {
+				if len(h.summary) > 180 {
+					fmt.Fprintf(&sb, " — %s…", h.summary[:180])
+				} else {
+					fmt.Fprintf(&sb, " — %s", h.summary)
+				}
+			}
+			fmt.Fprintf(&sb, " (full detail: `.orchicon/%s/steps/%s.md`)\n", wi.WorkflowRunID, h.stepID)
+		}
+		sb.WriteString("\nIf you need the full detail of an earlier step listed above, read its file from the project directory; each is under `.orchicon/<run>/steps/`. Never reconstruct from memory — read the file.\n\n")
 	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 
@@ -2772,14 +2819,38 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 // canonical implementation lives in internal/db (alongside the other stable
 // prompt-prefix content).
 // orchiconLocationNote returns a concise note about where the .orchicon/
-// directory lives, so workers don't search the worktree for it. When projectDir
-// is non-empty the absolute path is interpolated; otherwise a placeholder
+// directory lives, so workers don't search for it. When projectDir is
+// non-empty the absolute path is interpolated; otherwise a placeholder
 // directs the worker to the project root.
 func orchiconLocationNote(projectDir string) string {
 	if projectDir != "" {
 		return fmt.Sprintf("the `.orchicon/` directory lives at the **project root** (%s/.orchicon/) — **not inside the worktree**", projectDir)
 	}
 	return "the `.orchicon/` directory lives at the **project root** — **not inside the worktree**"
+}
+
+// histEntryType is one completed step-run in the delta execution-history
+// renderer. `direct` marks a step that is a direct upstream (DependsOn) of
+// the dispatching step — only those get full detail in the prompt; the rest
+// become compact index entries pointing at the on-disk per-step archive
+// (`.orchicon/<run>/steps/<stepId>.md`).
+type histEntryType struct {
+	stepID, stepName, status, summary, issues, reason, iteration string
+	attachments                                                  []string
+	direct                                                       bool
+}
+
+// anyDirectCompleted reports whether the history contains a completed step
+// that is a direct upstream (DependsOn) of the dispatching step. When none
+// has produced a full run, the delta renderer falls back to showing every
+// completed step in full (first step / fan-in / linear-chain case).
+func anyDirectCompleted(history []histEntryType) bool {
+	for _, h := range history {
+		if h.direct {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeEnvironmentBlock(image string) string {
@@ -3110,7 +3181,7 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	if len(files) == 0 {
 		return "", nil
 	}
-	return contextfiles.Render("# Project context", files, p.ProjectDir), nil
+	return contextfiles.RenderManifest("# Project context", files, p.ProjectDir), nil
 }
 
 // workItemKindLabel returns a human-readable label for a work item's

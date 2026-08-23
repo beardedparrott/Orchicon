@@ -195,26 +195,41 @@ export function ExecutionContextSidebar({
   }, [events, transcript]);
 
   // Token usage breakdown from usage_records (AI Gateway dual-write).
-  // We sum across all step_finish events for this execution.
+  // `total` is the CUMULATIVE re-send sum (each usage_records row is the
+  // full per-step_finish request size, so the sum grows with every model
+  // call — a transport/spend figure, NOT the model's working set).
+  // `peak` is the LARGEST single-step total_tokens — the actual
+  // current/peak context window used by the model. The Context card and
+  // its % bar key off `peak` (bounded, interpretable); the cumulative
+  // figure is surfaced separately and labelled as cumulative.
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let reasoning = 0;
     let total = 0;
+    let peak = 0;
     let cost = 0;
     for (const r of usage) {
       prompt += Number(r.promptTokens);
       completion += Number(r.completionTokens);
+      cacheRead += Number(r.cacheReadTokens) || 0;
+      cacheWrite += Number(r.cacheWriteTokens) || 0;
+      reasoning += Number(r.reasoningTokens) || 0;
       total += Number(r.totalTokens);
+      const row = Number(r.totalTokens);
+      if (row > peak) peak = row;
       cost += Number(r.costUsd);
     }
-    return { prompt, completion, total, cost };
+    return { prompt, completion, cacheRead, cacheWrite, reasoning, total, peak, cost };
   }, [usage]);
 
-  // Context %: total tokens used vs the model's context window.
-  // Falls back to total tokens when no window is known — we still
-  // show a bar that the user can interpret.
-  const totalTokens =
-    usageBreakdown.total || Number(exec.tokenUsage) || 0;
+  // Context %: the PEAK single-step total_tokens (the model's working set)
+  // vs the context window. Falls back to exec.tokenUsage when no usage
+  // records exist. This is what makes a long-lived worker never show
+  // "context > window" from cumulative re-sends.
+  const totalTokens = usageBreakdown.peak || Number(exec.tokenUsage) || 0;
   const cost =
     usageBreakdown.cost > 0 ? usageBreakdown.cost : Number(exec.costUsd);
   const contextPct =
@@ -270,6 +285,11 @@ export function ExecutionContextSidebar({
           <span className="font-mono">{fmtNum(totalTokens)} tokens</span>
           <span>of {fmtNum(contextWindow)}</span>
         </div>
+        {usageBreakdown.total > totalTokens && (
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            Cumulative input consumed: {fmtNum(usageBreakdown.total)} tokens
+          </div>
+        )}
       </div>
 
       {/* Status card */}
@@ -351,6 +371,41 @@ export function ExecutionContextSidebar({
               pct={rolePct(usageBreakdown.completion)}
               color="bg-violet-500"
             />
+            {usageBreakdown.cacheRead > 0 && (
+              <TokenBar
+                label="Cache read"
+                count={usageBreakdown.cacheRead}
+                pct={rolePct(usageBreakdown.cacheRead)}
+                color="bg-emerald-500"
+              />
+            )}
+            {usageBreakdown.cacheWrite > 0 && (
+              <TokenBar
+                label="Cache write"
+                count={usageBreakdown.cacheWrite}
+                pct={rolePct(usageBreakdown.cacheWrite)}
+                color="bg-teal-500"
+              />
+            )}
+            {usageBreakdown.reasoning > 0 && (
+              <TokenBar
+                label="Reasoning"
+                count={usageBreakdown.reasoning}
+                pct={rolePct(usageBreakdown.reasoning)}
+                color="bg-amber-500"
+              />
+            )}
+            {usageBreakdown.cacheRead > 0 && (
+              <div className="mt-2 text-[10px] font-medium text-emerald-600">
+                Cache hit{" "}
+                {Math.round(
+                  (usageBreakdown.cacheRead /
+                    (usageBreakdown.cacheRead + usageBreakdown.prompt)) *
+                    100,
+                )}
+                %
+              </div>
+            )}
           </div>
         )}
       </div>

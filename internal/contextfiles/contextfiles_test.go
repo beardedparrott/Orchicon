@@ -215,13 +215,57 @@ func TestRenderMissingAndEmpty(t *testing.T) {
 	}
 }
 
+// mustWrite creates (or truncates) a file with the given content in a test.
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestRenderManifest pins the context-by-reference renderer: a small file is
+// inlined (the never-blind floor), a large file becomes a manifest entry with
+// a "read on demand" instruction, and a directory becomes a path+size listing
+// instead of "read EVERY file".
+func TestRenderManifest(t *testing.T) {
+	root := t.TempDir()
+	small := filepath.Join(root, "small.go")
+	mustWrite(t, small, "package main\n")
+	// A file larger than ManifestInlineMaxBytes.
+	big := filepath.Join(root, "big.txt")
+	mustWrite(t, big, strings.Repeat("z", ManifestInlineMaxBytes+1024))
+	dir := filepath.Join(root, "ctxdir")
+	mustWrite(t, filepath.Join(dir, "a.go"), "package a\n")
+	mustWrite(t, filepath.Join(dir, "nested", "b.txt"), "hello\n")
+
+	out := RenderManifest("# Project context", []string{small, big, dir}, root)
+	// Small file inlined.
+	if !strings.Contains(out, "## "+small) || !strings.Contains(out, "package main") {
+		t.Fatalf("small file was not inlined into the manifest:\n%s", out)
+	}
+	// Large file is a manifest entry, not inlined.
+	if strings.Contains(out, "## "+big+"\n\n```") {
+		t.Fatalf("large file was inlined instead of manifested")
+	}
+	if !strings.Contains(out, "read this file on demand") {
+		t.Fatalf("large file missing 'read on demand' instruction:\n%s", out)
+	}
+	// Directory is a manifest listing, not "read EVERY file".
+	if !strings.Contains(out, "(directory — read on demand)") {
+		t.Fatalf("directory missing manifest marker:\n%s", out)
+	}
+	if strings.Contains(out, "Read EVERY file") {
+		t.Fatalf("directory still says 'read EVERY file' instead of read-on-demand")
+	}
+	if !strings.Contains(strings.ToLower(out), "read the specific files you need") {
+		t.Fatalf("missing directory read-on-demand guidance:\n%s", out)
+	}
+	// Manifest is present (large file as a size entry, not inlined).
+	if !strings.Contains(out, big+"` (") {
+		t.Fatalf("missing big.txt size entry:\n%s", out)
 	}
 }
 
