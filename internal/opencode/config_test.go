@@ -148,8 +148,12 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 	if comp["prune"] != true {
 		t.Errorf("host serve compaction.prune = %#v, want true", comp["prune"])
 	}
-	if comp["auto"] == true {
-		t.Errorf("host serve compaction.auto should stay at opencode default (lossy); got true")
+	// `auto` (opencode's OWN lossy auto-compaction) must be explicitly OFF so
+	// opencode is not a second, independent compaction driver on top of
+	// Orchicon's budget ladder — which would interrupt the worker mid-flight.
+	// Leaving it at opencode's default risks exactly that double-compaction.
+	if comp["auto"] != false {
+		t.Errorf("host serve compaction.auto = %#v, want false", comp["auto"])
 	}
 
 	// Runtime-container serve (dev image, the SDLC runs) + base image.
@@ -202,8 +206,42 @@ func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 	}
 }
 
-func TestStripJSONC(t *testing.T) {
-	in := `{
+// TestBuildConfigContentToolOutputAndBatchTool verifies the emitted config
+// carries the tool-output size settings (tool_output.max_bytes/max_lines —
+// the "smart size" settings that let a worker read a large file in ONE call
+// instead of chunking it into many small reads, which is itself the re-send
+// amplification) and the experimental batch_tool flag (ask opencode to emit
+// independent tool calls in a single assistant turn). These are the two
+// settings the worker is told to use to collapse the number of round-trips.
+// They are only effective when opencode honors them, so this test is a
+// regression lock on the config that is actually handed to opencode.
+func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
+	for name, out := range map[string]string{
+		"host serve": BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
+		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev"),
+	} {
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("%s config not valid JSON: %v", name, err)
+		}
+		to, ok := cfg["tool_output"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s config missing tool_output block: %s", name, out)
+		}
+		if to["max_bytes"] != float64(512000) {
+			t.Errorf("%s tool_output.max_bytes = %#v, want 512000", name, to["max_bytes"])
+		}
+		exp, ok := cfg["experimental"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s config missing experimental block: %s", name, out)
+		}
+		if exp["batch_tool"] != true {
+			t.Errorf("%s experimental.batch_tool = %#v, want true", name, exp["batch_tool"])
+		}
+	}
+}
+
+func TestStripJSONC(t *testing.T) {	in := `{
   // line comment
   "mcp": {
     "server": { "command": "npx", /* inline */ "args": ["-y"] },

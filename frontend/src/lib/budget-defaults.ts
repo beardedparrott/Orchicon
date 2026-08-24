@@ -38,12 +38,20 @@ export const emptyWarnings: BudgetWarnings = {
   wallClockSeconds: { fracs: ["", "", ""], msgs: ["", "", ""] },
 };
 
+// Per-tier compaction policy [warn, escalate, final]: whether a budget-ladder
+// tier ALSO triggers a context compact (or only injects its warning message).
+// Mirrors the backend default — warn does NOT compact (the lossy collapse
+// interrupts the worker mid-flight), escalate + final do.
+export type CompactTiers = [boolean, boolean, boolean];
+export const defaultCompactTiers: CompactTiers = [false, true, true];
+
 export interface BudgetDefaultsForm {
   tokens: string;
   costUsd: string;
   wallClockSeconds: string;
   toolCallCount: string;
   compactMaxTurns: string;
+  compactTiers: CompactTiers;
   warnings: BudgetWarnings;
 }
 
@@ -57,6 +65,7 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     wallClockSeconds: "",
     toolCallCount: "",
     compactMaxTurns: "",
+    compactTiers: defaultCompactTiers,
     warnings: emptyWarnings,
   };
   if (!raw) return empty;
@@ -80,12 +89,20 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
         ],
       };
     };
+    // Read the per-tier compaction policy, defaulting to the built-in
+    // [false, true, true] when the stored budget has no compact_tiers array.
+    const ct = m.compact_tiers;
+    const compactTiers: CompactTiers =
+      Array.isArray(ct) && ct.length === 3
+        ? [Boolean(ct[0]), Boolean(ct[1]), Boolean(ct[2])]
+        : defaultCompactTiers;
     return {
       tokens: m.tokens != null ? String(m.tokens) : "",
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
       toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
       compactMaxTurns: m.compact_max_turns != null ? String(m.compact_max_turns) : "",
+      compactTiers,
       warnings: {
         tokens: read("tokens"),
         costUsd: read("costUsd"),
@@ -106,6 +123,7 @@ export function buildBudgetDefaults(
   wallClockSeconds: string,
   toolCallCount: string,
   compactMaxTurns: string,
+  compactTiers: CompactTiers,
   warnings: BudgetWarnings,
 ): string {
   const out: Record<string, number | object> = {};
@@ -114,6 +132,7 @@ export function buildBudgetDefaults(
   if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
   if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
   if (compactMaxTurns !== "") out.compact_max_turns = Number(compactMaxTurns);
+  out.compact_tiers = [...compactTiers];
 
   const fracs: Record<string, number[]> = {};
   const msgs: Record<string, string[]> = {};

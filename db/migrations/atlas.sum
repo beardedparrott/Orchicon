@@ -1,4 +1,4 @@
-h1:e2G89hqCF33SZIutm72gPPT3g6H1ntt5IEVeRFMF4ZM=
+h1:2EKLMQfpfnuPSRBH8kLxW5fYejs7Xod/ZE9GrE/a0mI=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -115,3 +115,5 @@ h1:e2G89hqCF33SZIutm72gPPT3g6H1ntt5IEVeRFMF4ZM=
 20260828000000_usage_cache_tokens_down.sql h1:QO1uEE82snAuwuVA2gWYnWZeYzrkdmHzTZPE0dGgrnM=
 20260829000000_typed_budget_ladder.sql h1:fTNSXgc/wJO9zq1JnRABEqQxKyH5cFCr5BZ7M5BW5iM=
 20260829000000_typed_budget_ladder_down.sql h1:TIs6Dpo/ie74DhsveV2QP5f+gmLkqHAp9Xg0FeyUN0Q=
+20260830000000_compact_policy_tiers_and_message_copy.sql h1:xyd6o85QfqbzfezBWOh/MLiTIpM9vTa12L8cqXiu6qM=
+20260830000000_compact_policy_tiers_and_message_copy_down.sql h1:efd2NVxae5F3vRZfKHciADM0ojo+IpCjoW+jTFkdyhQ=

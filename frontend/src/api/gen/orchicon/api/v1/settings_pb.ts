@@ -123,17 +123,21 @@ export class TenantSettings extends Message<TenantSettings> {
    * Default budget JSON applied to executions whose worker does not set its
    * own budget_overrides. Recognized keys: tokens (ALL tokens at full weight
    * including cache), cost_usd (cache-aware priced cost, separate from
-   * tokens), wall_clock_seconds, tool_call_count, compact_max_turns, and an
-   * optional `warnings` block:
+   * tokens), wall_clock_seconds, tool_call_count, compact_max_turns, an
+   * optional `compact_tiers` array [warn, escalate, final] that gates which
+   * budget-ladder tier ALSO triggers a context compaction (default
+   * [false, true, true] — the earliest tier never compacts, because the lossy
+   * collapse interrupts the worker mid-flight), and an optional `warnings`
+   * block:
    *   warnings.fractions.<dim> = [warn, escalate, final] as fractions of the
    *     limit (e.g. [0.5, 0.75, 0.9]);
    *   warnings.messages.<dim>  = [warn, escalate, final] message text.
    * The `dim` keys are tokens / cost_usd / tool_call_count /
    * wall_clock_seconds. Every dimension follows the SAME warn → escalate →
-   * final → abort ladder: warnings inject escalating messages (+ compact on
-   * escalate/final), and the limit is a HARD abort. A worker's explicit
-   * budget_overrides overrides these per-field. Empty ({}) means "use the
-   * built-in defaults".
+   * final → abort ladder: warnings inject escalating messages (+ compact per
+   * the compact_tiers policy), and the limit is a HARD abort. A worker's
+   * explicit budget_overrides overrides these per-field. Empty ({}) means
+   * "use the built-in defaults".
    *
    * @generated from field: string default_budget_overrides = 19;
    */

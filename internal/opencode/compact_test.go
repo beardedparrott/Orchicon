@@ -170,6 +170,31 @@ func TestParseBudgetSpecWarnings(t *testing.T) {
 	}
 }
 
+// TestParseBudgetSpecCompactTiers verifies the optional `compact_tiers`
+// [warn, escalate, final] policy is parsed, defaulting to the built-in
+// {false, true, true} when absent (warn does not compact, escalate + final
+// do). Partial arrays are not accepted — a full 3-element array is required.
+func TestParseBudgetSpecCompactTiers(t *testing.T) {
+	// Absent → built-in default: warn off, escalate + final on.
+	def := parseBudgetSpec([]byte(`{"tokens":1000}`))
+	if def.compactTiers != [3]bool{false, true, true} {
+		t.Fatalf("default compactTiers = %v, want [false true true]", def.compactTiers)
+	}
+	// Explicit override honored.
+	spec := parseBudgetSpec([]byte(`{"tokens":1000,"compact_tiers":[true,false,true]}`))
+	if spec.compactTiers != [3]bool{true, false, true} {
+		t.Fatalf("compactTiers = %v, want [true false true]", spec.compactTiers)
+	}
+	if !spec.compactsAt(levelWarn) || spec.compactsAt(levelEscalate) || !spec.compactsAt(levelFinal) {
+		t.Fatalf("compactsAt mismatch: warn=%v escalate=%v final=%v", spec.compactsAt(levelWarn), spec.compactsAt(levelEscalate), spec.compactsAt(levelFinal))
+	}
+	// All off → nothing compacts.
+	allOff := parseBudgetSpec([]byte(`{"tokens":1000,"compact_tiers":[false,false,false]}`))
+	if allOff.compactsAt(levelWarn) || allOff.compactsAt(levelEscalate) || allOff.compactsAt(levelFinal) {
+		t.Fatalf("all-off tiers must not compact")
+	}
+}
+
 // TestLevelForAndMessage verifies the ladder tier computation and the
 // built-in message copy with {pct} substitution.
 func TestLevelForAndMessage(t *testing.T) {
@@ -199,8 +224,11 @@ func TestLevelForAndMessage(t *testing.T) {
 	if !strings.Contains(msg, "60%") {
 		t.Fatalf("warning message missing {pct} substitution, got %q", msg)
 	}
-	if !strings.Contains(msg, "WARNING") {
-		t.Fatalf("warning message should be demanding (WARNING), got %q", msg)
+	// The reformed copy is calm-but-severe and instructive: it names the
+	// driver and tells the worker what to do, rather than panicking. It
+	// must carry the concrete remediation (batch into a round-trip).
+	if !strings.Contains(msg, "round-trip") {
+		t.Fatalf("warning message should give concrete batching guidance, got %q", msg)
 	}
 }
 
@@ -672,17 +700,19 @@ func TestLadderNilBudgetNoop(t *testing.T) {
 	}
 }
 
-// TestLadderTokenWarnThenEscalateCompacts verifies the unified ladder
-// enforcement for the token dimension with the front-loaded 25/50/75 ladder:
-// every non-abort tier (warn/escalate/final) injects a warning message AND
-// compacts — re-sent context is the dominant cost driver, so the earliest
-// warning must already shrink the working set. Each tier fires once (latched).
-func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
+// TestLadderTokenTiersGatedByCompactPolicy verifies the unified ladder for
+// the token dimension respects the DEFAULT per-tier compaction policy:
+// warn ALWAYS injects a warning message but does NOT compact (compaction at
+// the earliest tier is disabled by default — the lossy collapse interrupts
+// the worker mid-flight and force a re-read/re-derive, which is itself more
+// tool calls and more re-sent context), while escalate and final inject AND
+// compact subject to the shared re-arm latch. Each tier fires once (latched).
+func TestLadderTokenTiersGatedByCompactPolicy(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
 	// tokens limit 1000, front-loaded ladder → warn at 250, escalate at 500,
-	// final at 750. Every non-abort tier injects AND compacts.
+	// final at 750.
 	r := &sessionRun{
 		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
 		parentCtx:  context.Background(),
@@ -699,13 +729,13 @@ func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "3")
 
-	// 25% → warn: injects a message AND compacts (summarize).
+	// 25% → warn: injects a message but does NOT compact (default warn off).
 	r.budget.prompt = 250
 	r.maybeEnforceLadder(dimTokens)
-	if rec.summarizeCount() != 1 {
-		t.Fatalf("warn tier should compact the session (summarize), summarize=%d", rec.summarizeCount())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("warn tier must NOT compact by default, summarize=%d", rec.summarizeCount())
 	}
-	if rec.count() < 2 {
+	if rec.count() != 1 {
 		t.Fatalf("warn tier should inject a warning message, calls=%d", rec.count())
 	}
 	// Re-entering the same tier must not re-fire (latched).
@@ -715,12 +745,116 @@ func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
 		t.Fatalf("warn should latch (no re-send), calls %d->%d", before, rec.count())
 	}
 
-	// 75% → final: inject + compact again.
+	// 50% → escalate: inject + compact (#1).
+	r.budget.prompt = 500
+	r.budget.steps = 1
+	r.maybeEnforceLadder(dimTokens)
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("escalate tier should compact, summarize=%d", rec.summarizeCount())
+	}
+
+	// 75% → final: inject + compact (#2) after the re-arm window.
 	r.budget.prompt = 750
 	r.budget.steps = 2
 	r.maybeEnforceLadder(dimTokens)
 	if rec.summarizeCount() != 2 {
-		t.Fatalf("final tier should compact again (summarize), summarize=%d", rec.summarizeCount())
+		t.Fatalf("final tier should compact again, summarize=%d", rec.summarizeCount())
+	}
+}
+
+// TestLadderCompactTiersAllOff verifies an operator can disable compaction at
+// EVERY tier (compact_tiers=[false,false,false]) — the ladder still injects
+// warnings and still hard-aborts at the ceiling, but never collapses the
+// session mid-flight. This is the knob that takes compaction out of the
+// spend ladder entirely and leaves the turn-count hygiene gate + hard abort
+// as the only context-management mechanisms.
+func TestLadderCompactTiersAllOff(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	r := &sessionRun{
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-ladder-alloff", TenantID: "tnt_dev"},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		modelRef:   "opencode/deepseek-v4-flash-free",
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec([]byte(`{"tokens":1000,"compact_tiers":[false,false,false]}`)),
+		startedAt:  time.Now(),
+		done:       make(chan struct{}),
+		stats:      &execStreamState{},
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
+	t.Setenv("ORCHICON_COMPACT_MAX", "3")
+
+	// Cross every non-abort tier; compaction must stay zero while warnings fire.
+	r.budget.prompt = 250
+	r.maybeEnforceLadder(dimTokens) // warn
+	r.budget.prompt = 500
+	r.budget.steps = 1
+	r.maybeEnforceLadder(dimTokens) // escalate
+	r.budget.prompt = 750
+	r.budget.steps = 2
+	r.maybeEnforceLadder(dimTokens) // final
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("compact_tiers=[false,false,false] must disable all ladder compaction, summarize=%d", rec.summarizeCount())
+	}
+	if rec.count() < 3 {
+		t.Fatalf("all three tiers should still inject warning messages, calls=%d", rec.count())
+	}
+}
+
+// TestLadderCompactReArm verifies the shared re-arm latch: after a ladder
+// compact, a DIFFERENT trigger cannot compact again until min-turn turns have
+// passed — so two dimensions (or a tier + the turn-count gate) cannot
+// collapse the session on consecutive steps before the worker can recover.
+func TestLadderCompactReArm(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	r := &sessionRun{
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-ladder-rearm", TenantID: "tnt_dev"},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		modelRef:   "opencode/deepseek-v4-flash-free",
+		budget:     &budgetAccumulator{},
+		// All tiers compact, so the re-arm latch is the only thing gating.
+		budgetSpec: parseBudgetSpec([]byte(`{"tokens":1000,"tool_call_count":100,"compact_tiers":[true,true,true]}`)),
+		startedAt:  time.Now(),
+		done:       make(chan struct{}),
+		stats:      &execStreamState{},
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "2")
+	t.Setenv("ORCHICON_COMPACT_MAX", "5")
+
+	// tokens escalate (step 2) compacts #1.
+	r.budget.prompt = 500 // 50% of 1000 → escalate
+	r.budget.steps = 2
+	r.maybeEnforceLadder(dimTokens)
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("tokens escalate should compact, summarize=%d", rec.summarizeCount())
+	}
+	// tools escalate on the NEXT step (step 3) must inject its warning but NOT
+	// compact: within the re-arm window (lastCompactStep=2, minT=2 → next
+	// compact needs step >= 4).
+	r.stats.toolUses = 50 // 50% of 100 → escalate
+	r.budget.steps = 3
+	r.maybeEnforceLadder(dimTools)
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("tools escalate within the re-arm window must not compact, summarize=%d", rec.summarizeCount())
+	}
+	if rec.count() < 2 {
+		t.Fatalf("tools escalate should still inject its warning message, calls=%d", rec.count())
+	}
+	// After the window (step 4), a fresh tier can compact (#2).
+	r.budget.prompt = 750
+	r.budget.steps = 4
+	r.maybeEnforceLadder(dimTokens)
+	if rec.summarizeCount() != 2 {
+		t.Fatalf("tokens final after the re-arm window should compact, summarize=%d", rec.summarizeCount())
 	}
 }
 
