@@ -23,6 +23,17 @@ type BudgetLadder struct {
 	WallClockSecs   *float64 `json:"-"`
 	CompactMaxTurns *float64 `json:"-"`
 
+	// Per-tier compaction toggles (budget_compact_*_tier): whether that
+	// budget-ladder tier ALSO triggers a context compaction, or only injects
+	// its warning message. Mirrors the budget JSON `compact_tiers` key that
+	// the adapters' parseBudgetSpec honors at dispatch, so the Settings API
+	// and per-worker budget overrides stay in sync. Default {warn:false,
+	// escalate:true, final:true} — compaction at the earliest tier is OFF
+	// because the lossy collapse interrupts the worker mid-flight.
+	CompactWarnTier  bool `json:"-"`
+	CompactEscalTier bool `json:"-"`
+	CompactFinalTier bool `json:"-"`
+
 	// Thresholds (fractions of the limit). Columns are NOT NULL DEFAULT, so
 	// these are always populated (0.25 / 0.5 / 0.75 by default).
 	WarnFracTokens   float64
@@ -110,6 +121,9 @@ func (r *TenantSettingsRow) BudgetJSON() []byte {
 	if r.Budget.CompactMaxTurns != nil {
 		out["compact_max_turns"] = *r.Budget.CompactMaxTurns
 	}
+	// Per-tier compaction toggles are always emitted (NOT NULL DEFAULT
+	// columns), and mergeBudgets layers a worker's override on top.
+	out["compact_tiers"] = []bool{r.Budget.CompactWarnTier, r.Budget.CompactEscalTier, r.Budget.CompactFinalTier}
 	b, err := json.Marshal(out)
 	if err != nil {
 		// Marshal of a flat map of numbers/strings cannot fail.
@@ -134,6 +148,7 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 		ToolCallCount   *float64 `json:"tool_call_count"`
 		WallClockSecs   *float64 `json:"wall_clock_seconds"`
 		CompactMaxTurns *float64 `json:"compact_max_turns"`
+		CompactTiers    []bool   `json:"compact_tiers"`
 		Warnings        struct {
 			Fractions map[string][3]float64 `json:"fractions"`
 			Messages  map[string][3]string  `json:"messages"`
@@ -164,6 +179,14 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 	if raw.CompactMaxTurns != nil {
 		v := *raw.CompactMaxTurns
 		r.Budget.CompactMaxTurns = &v
+	}
+	// Per-tier compaction toggles: a full [warn, escalate, final] bool array.
+	// Absent (or not a 3-element array) leaves the current values, so a
+	// partial update preserves the existing policy.
+	if len(raw.CompactTiers) == 3 {
+		r.Budget.CompactWarnTier = raw.CompactTiers[0]
+		r.Budget.CompactEscalTier = raw.CompactTiers[1]
+		r.Budget.CompactFinalTier = raw.CompactTiers[2]
 	}
 
 	setFrac := func(dim string, set func(i int, v float64)) {

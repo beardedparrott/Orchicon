@@ -478,11 +478,20 @@ func BuildConfigContent(o ConfigOptions) string {
 	// the conversation when the window nears its limit, so a long step does
 	// not keep re-sending every past `read`/`grep`/`bash` result on every
 	// turn. It is capability-safe: it removes stale tool RESULTS, not the
-	// tool definitions or the model's working instructions, and it does not
-	// collapse the conversation to a lossy summary (that is the separate
-	// `auto` compaction, left at opencode's default). Enabling `prune`
-	// directly cuts the accumulated-output token cost across a step.
-	cfg["compaction"] = map[string]any{"prune": true}
+	// tool definitions or the model's working instructions.
+	//
+	// `auto` is set FALSE explicitly. It is opencode's OWN lossy
+	// auto-compaction (collapsing the conversation to a summary when the
+	// window fills), which is redundant — and harmful — alongside Orchicon's
+	// budget-ladder compaction. On a large-window SOTA model (e.g. DeepSeek
+	// with a 1M context) `auto` would never normally fire, but leaving it at
+	// opencode's default risks a second, independent compaction driver
+	// interrupting the worker mid-flight on top of Orchicon's own. Orchicon
+	// is the single source of compaction decisions (its ladder + the
+	// turn-count hygiene gate). Enabling `prune` directly cuts the
+	// accumulated-output token cost across a step; `auto: false` guarantees
+	// opencode does not independently collapse the session.
+	cfg["compaction"] = map[string]any{"prune": true, "auto": false}
 
 	// Let a worker ingest a large file in ONE `read` instead of being forced
 	// to chunk it across many small calls. opencode's default tool-output cap

@@ -906,19 +906,23 @@ func (r *sessionRun) sendAfterCompactReminder(steps int) {
 // one dimension (tokens/cost/time on a step boundary; tool-calls on a tool
 // use). It is the single enforcement point for every budget dimension:
 //
-//	levelWarn     → inject the warning message once + compact the session
-//	levelEscalate → inject the message once + compact the session
-//	levelFinal    → inject the FINAL message once + compact the session
+//	levelWarn     → inject the warning message once (compact if enabled)
+//	levelEscalate → inject the message once (compact if enabled)
+//	levelFinal    → inject the FINAL message once (compact if enabled)
 //	levelAbort    → KILL the session and fail the execution (HARD)
 //
-// Every non-abort tier compacts (not just escalate/final): the dominant
-// cost driver is re-sent context (cache reads) that grows each turn, so the
-// earliest warning must already shrink the working set before the worker is
-// well into budget. Each warning tier is latched in firedWarn so it fires
-// exactly once per execution (a dimension that crosses 25% then 50% then 75%
-// sends all three, but never re-sends one). abort is terminal and recovers
-// via the same path onStall's fatal branch uses (finish() first, THEN Abort,
-// so the true reason survives the serve's session.error echo).
+// Every non-abort tier ALWAYS injects its warning message when crossed;
+// whether it ALSO compacts is decided by the operator's per-tier
+// compact_tiers policy AND the shared re-arm latch (canCompactNow). The
+// default policy compacts only at escalate/final, not warn, and the re-arm
+// latch prevents compacts from different triggers firing on consecutive
+// steps — so the lossy collapse no longer repeatedly interrupts the worker
+// mid-flight while the spend climbs. Each warning tier is latched in
+// firedWarn so it fires exactly once per execution (a dimension that crosses
+// 25% then 50% then 75% sends all three, but never re-sends one). abort is
+// terminal and recovers via the same path onStall's fatal branch uses
+// (finish() first, THEN Abort, so the true reason survives the serve's
+// session.error echo).
 func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	r.mu.Lock()
 	if r.finished || r.budget == nil {
@@ -943,16 +947,47 @@ func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	}
 	r.firedWarn[d][idx] = true
 	msg := r.budgetSpec.message(d, level, frac)
-	// Compact at EVERY non-abort tier (warn/escalate/final), not just the
-	// escalate/final tiers: re-sent context is the dominant cost driver, so
-	// the first warning must already shrink the working set.
-	compact := true
+	// Whether this tier ALSO compacts is gated on the operator's per-tier
+	// compact_tiers policy AND the shared re-arm latch. A tier ALWAYS injects
+	// its warning message when crossed; compaction is the lossy,
+	// mid-flight-interrupting action. canCompactNow takes r.mu itself, so it
+	// must run AFTER the unlock below — otherwise it deadlocks re-locking the
+	// mutex the caller already holds.
+	compactPolicy := r.budgetSpec.compactsAt(level)
 	r.mu.Unlock()
 
 	r.injectBudgetWarning(d, level, msg)
-	if compact {
+	if compactPolicy && r.canCompactNow() {
 		r.doCompact(r.budget.steps, "budget_ladder:"+dimName(d))
 	}
+}
+
+// canCompactNow reports whether a context compaction is currently allowed:
+// under the per-execution cap, past the min-turn floor, and more than
+// min-turn turns since the last compact. It is shared by the turn-count
+// hygiene gate (maybeCompact) and the spend-ladder tiers
+// (maybeEnforceLadder) so compacts from DIFFERENT triggers cannot fire
+// back-to-back on consecutive steps — the exact "compactions stepping on
+// each other" failure where one trigger collapses context and the next, a
+// step later, collapses it again before the worker can rebuild.
+func (r *sessionRun) canCompactNow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finished || r.budget == nil {
+		return false
+	}
+	if r.compactsPerformed >= compactMax() {
+		return false
+	}
+	steps := r.budget.steps
+	minT := compactMinTurns()
+	if steps < minT {
+		return false
+	}
+	if r.compactsPerformed > 0 && steps < r.lastCompactStep+minT {
+		return false
+	}
+	return true
 }
 
 // injectBudgetWarning sends one configured warning message into the live

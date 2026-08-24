@@ -55,6 +55,8 @@ data/
 # Per-project scratch dirs written by the control plane (run results,
 # safety lint). Never committed.
 /.orchicon/
+# Worktrees Orchicon creates during work-item context. Never committed.
+/.orchicon-worktrees/
 
 # Architecture notes (worker-generated design summaries). Ephemeral per-work-item
 # artifacts — never committed so they can't confuse future workers.

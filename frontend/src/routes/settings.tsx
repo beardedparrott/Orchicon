@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 import { LIGHT_THEMES, DARK_THEMES } from "@/lib/themes";
 import { useThemeStore } from "@/lib/theme-store";
-import { emptyWarnings, parseBudgetDefaults, buildBudgetDefaults, type BudgetWarnings } from "@/lib/budget-defaults";
+import { emptyWarnings, parseBudgetDefaults, buildBudgetDefaults, defaultCompactTiers, type BudgetWarnings, type CompactTiers } from "@/lib/budget-defaults";
 import { useGetSettings, useUpdateSettings, useGetBackups, useCreateBackup, useRestoreBackup, useDeleteBackup } from "@/api/settings";
 import { useListDirPath } from "@/api/projectFiles";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -477,6 +477,7 @@ function DefaultsTab() {
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
+  const [draftCompactTiers, setDraftCompactTiers] = useState<CompactTiers>(defaultCompactTiers);
   const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
@@ -506,6 +507,7 @@ function DefaultsTab() {
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
+      setDraftCompactTiers(budget.compactTiers);
       setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
@@ -538,6 +540,7 @@ function DefaultsTab() {
           draftBudgetWallClock,
           draftBudgetToolCalls,
           draftCompactMaxTurns,
+          draftCompactTiers,
           draftWarn,
         ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
@@ -716,6 +719,11 @@ function DefaultsTab() {
             <BudgetWarningsEditor
               value={draftWarn}
               onChange={setDraftWarn}
+            />
+
+            <CompactTiersEditor
+              value={draftCompactTiers}
+              onChange={setDraftCompactTiers}
             />
           </CardContent>
         </Card>
@@ -1265,6 +1273,74 @@ function BudgetWarningsEditor({
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Compaction policy (per budget-ladder tier) ────────────────────────────
+//
+// Each budget-ladder tier (warn / escalate / final) can ALSO trigger a context
+// compact, or only inject its warning message. Compaction is lossy — it
+// collapses the working detail and forces the worker to re-read/re-derive,
+// which is itself more tool calls and more re-sent context. So it is an
+// explicit operator choice per tier, not a hidden side effect of crossing a
+// spend threshold. Reads/writes the budget JSON `compact_tiers` array.
+
+function CompactTiersEditor({
+  value,
+  onChange,
+}: {
+  value: CompactTiers;
+  onChange: (v: CompactTiers) => void;
+}) {
+  const setTier = (idx: number, v: boolean) => {
+    const next: CompactTiers = [...value];
+    next[idx] = v;
+    onChange(next);
+  };
+  const tiers: [string, string, string][] = [
+    [
+      "warn",
+      "Warn",
+      "Compact the session when the worker first crosses a warning tier (~25% of a limit). Off by default — the earliest stage is the most disruptive to interrupt, and the worker can still correct course without a destructive collapse.",
+    ],
+    [
+      "escalate",
+      "Escalate",
+      "Compact when the worker is deeply into budget (~50% of a limit). On by default — shrinking the re-sent working set before the hard abort.",
+    ],
+    [
+      "final",
+      "Final",
+      "Compact at the final warning (~75% of a limit), just before the hard abort. On by default so re-sent context is as small as possible right before the stop.",
+    ],
+  ];
+  return (
+    <div className="mt-4 border-t pt-4">
+      <h4 className="text-sm font-medium">Compaction policy (per warning tier)</h4>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Choose which warning tiers also collapse the session. Compaction is lossy
+        and interrupts the worker mid-flight, so it is off at the earliest tier by
+        default and on only once the worker is genuinely deep in budget. Turning
+        all three off leaves the turn-count hygiene gate + the hard abort as the
+        only context-management mechanisms.
+      </p>
+      <div className="mt-3 space-y-2">
+        {tiers.map(([key, label, desc], idx) => (
+          <label key={key} className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={value[idx]}
+              onChange={(e) => setTier(idx, e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-input accent-primary"
+            />
+            <span>
+              <span className="text-sm font-medium">{label}</span>
+              <span className="block text-xs text-muted-foreground">{desc}</span>
+            </span>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

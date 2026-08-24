@@ -60,6 +60,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		budget_warn_msg_cost_usd, budget_escalate_msg_cost_usd, budget_final_msg_cost_usd,
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
+		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
@@ -95,6 +96,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		budget_warn_msg_cost_usd, budget_escalate_msg_cost_usd, budget_final_msg_cost_usd,
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
+		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
@@ -148,8 +150,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_cost_usd, budget_escalate_msg_cost_usd, budget_final_msg_cost_usd,
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
+		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -204,6 +207,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_wall_clock_seconds = $53,
 		budget_escalate_msg_wall_clock_seconds = $54,
 		budget_final_msg_wall_clock_seconds = $55,
+		budget_compact_warn_tier = $56,
+		budget_compact_escalate_tier = $57,
+		budget_compact_final_tier = $58,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -221,6 +227,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_cost_usd, budget_escalate_msg_cost_usd, budget_final_msg_cost_usd,
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
+		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
@@ -251,6 +258,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.Budget.WarnMsgCostUSD, in.Budget.EscMsgCostUSD, in.Budget.FinalMsgCostUSD,
 		in.Budget.WarnMsgTools, in.Budget.EscMsgTools, in.Budget.FinalMsgTools,
 		in.Budget.WarnMsgTime, in.Budget.EscMsgTime, in.Budget.FinalMsgTime,
+		in.Budget.CompactWarnTier, in.Budget.CompactEscalTier, in.Budget.CompactFinalTier,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -281,6 +289,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.Budget.WarnMsgCostUSD, &r.Budget.EscMsgCostUSD, &r.Budget.FinalMsgCostUSD,
 		&r.Budget.WarnMsgTools, &r.Budget.EscMsgTools, &r.Budget.FinalMsgTools,
 		&r.Budget.WarnMsgTime, &r.Budget.EscMsgTime, &r.Budget.FinalMsgTime,
+		&r.Budget.CompactWarnTier, &r.Budget.CompactEscalTier, &r.Budget.CompactFinalTier,
 		&r.ExecutionReapGraceSeconds, &r.ExecutionReapConsecutiveFailures,
 		&r.BackupSchedule, &r.BackupRetentionDays, &r.BackupDirectory,
 		&r.LogDirectory, &r.LogMaxSizeMB, &r.LogRollIntervalHours,
