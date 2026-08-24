@@ -476,6 +476,7 @@ function DefaultsTab() {
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
+  const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftLogDirectory, setDraftLogDirectory] = useState("");
@@ -504,6 +505,7 @@ function DefaultsTab() {
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
+      setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftLogDirectory(settings.logDirectory ?? "");
@@ -535,6 +537,7 @@ function DefaultsTab() {
           draftBudgetWallClock,
           draftBudgetToolCalls,
           draftCompactMaxTurns,
+          draftWarn,
         ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
@@ -708,6 +711,11 @@ function DefaultsTab() {
                 placeholder="8"
               />
             </div>
+
+            <BudgetWarningsEditor
+              value={draftWarn}
+              onChange={setDraftWarn}
+            />
           </CardContent>
         </Card>
       )}
@@ -1187,24 +1195,141 @@ function ThemeCard({
   );
 }
 
-// Parse the tenant default_budget_overrides JSON into form strings.
+// ─── Budget warnings (warn → escalate → final ladder) ─────────────────────
+//
+// Each dimension (tokens/cost/tool-calls/time) has three thresholds, as
+// fractions of its limit, and three escalating message templates. The
+// thresholds are applied uniformly; messages may be left blank to fall back
+// to Orchicon's built-in demanding copy.
+
+interface DimWarnings {
+  fracs: [string, string, string]; // warn, escalate, final thresholds (0..1)
+  msgs: [string, string, string]; // warn / escalate / final messages
+}
+
+interface BudgetWarnings {
+  tokens: DimWarnings;
+  costUsd: DimWarnings;
+  toolCallCount: DimWarnings;
+  wallClockSeconds: DimWarnings;
+}
+
+const emptyWarnings: BudgetWarnings = {
+  tokens: { fracs: ["", "", ""], msgs: ["", "", ""] },
+  costUsd: { fracs: ["", "", ""], msgs: ["", "", ""] },
+  toolCallCount: { fracs: ["", "", ""], msgs: ["", "", ""] },
+  wallClockSeconds: { fracs: ["", "", ""], msgs: ["", "", ""] },
+};
+
+function BudgetWarningsEditor({
+  value,
+  onChange,
+}: {
+  value: BudgetWarnings;
+  onChange: (v: BudgetWarnings) => void;
+}) {
+  const setFrac = (dim: keyof BudgetWarnings, idx: number, v: string) => {
+    const next: BudgetWarnings = { ...value, [dim]: { ...value[dim], fracs: [...value[dim].fracs] } };
+    next[dim].fracs[idx] = v;
+    onChange(next);
+  };
+  const setMsg = (dim: keyof BudgetWarnings, idx: number, v: string) => {
+    const next: BudgetWarnings = { ...value, [dim]: { ...value[dim], msgs: [...value[dim].msgs] } };
+    next[dim].msgs[idx] = v;
+    onChange(next);
+  };
+  return (
+    <div className="mt-4 border-t pt-4">
+      <h4 className="text-sm font-medium">Budget warnings (warn → escalate → final)</h4>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Each dimension warns before its limit, escalating to a hard abort at 100%. Set the
+        three thresholds as fractions of the limit (e.g. 0.5 = 50%). Messages are injected
+        into the session at each stage; blank = built-in demanding copy.
+      </p>
+      {([
+        ["tokens", "Token warnings"],
+        ["costUsd", "Cost warnings"],
+        ["toolCallCount", "Tool-call warnings"],
+        ["wallClockSeconds", "Time warnings"],
+      ] as const).map(([dim, label]) => (
+        <div key={dim} className="mt-2 space-y-2">
+          <label className="mb-0.5 block text-xs font-medium text-muted-foreground">{label}</label>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {(["warn", "escalate", "final"] as const).map((tier, idx) => (
+              <div key={tier}>
+                <label className="mb-0.5 block text-xs text-muted-foreground capitalize">{tier} threshold</label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={value[dim].fracs[idx]}
+                  onChange={(e) => setFrac(dim, idx, e.target.value)}
+                  placeholder={["0.5", "0.75", "0.9"][idx]}
+                />
+              </div>
+            ))}
+          </div>
+          {(["warn", "escalate", "final"] as const).map((tier, idx) => (
+            <div key={tier}>
+              <label className="mb-0.5 block text-xs text-muted-foreground capitalize">{tier} message</label>
+              <Input
+                type="text"
+                value={value[dim].msgs[idx]}
+                onChange={(e) => setMsg(dim, idx, e.target.value)}
+                placeholder={`Message sent at the ${tier} stage`}
+              />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Parse the tenant default_budget_overrides JSON into form strings + warning
+// config.
 function parseBudgetDefaults(raw?: string): {
   tokens: string;
   costUsd: string;
   wallClockSeconds: string;
   toolCallCount: string;
   compactMaxTurns: string;
+  warnings: BudgetWarnings;
 } {
-  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "", compactMaxTurns: "" };
+  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "", compactMaxTurns: "", warnings: emptyWarnings };
   if (!raw) return empty;
   try {
     const m = JSON.parse(raw);
+    const w = m.warnings ?? {};
+    const read = (dim: string): DimWarnings => {
+      const f = w.fractions?.[dim];
+      const ms = w.messages?.[dim];
+      return {
+        fracs: [
+          f?.[0] != null ? String(f[0]) : "",
+          f?.[1] != null ? String(f[1]) : "",
+          f?.[2] != null ? String(f[2]) : "",
+        ],
+        msgs: [
+          ms?.[0] != null ? String(ms[0]) : "",
+          ms?.[1] != null ? String(ms[1]) : "",
+          ms?.[2] != null ? String(ms[2]) : "",
+        ],
+      };
+    };
     return {
       tokens: m.tokens != null ? String(m.tokens) : "",
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
       toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
       compactMaxTurns: m.compact_max_turns != null ? String(m.compact_max_turns) : "",
+      warnings: {
+        tokens: read("tokens"),
+        costUsd: read("cost_usd"),
+        toolCallCount: read("tool_call_count"),
+        wallClockSeconds: read("wall_clock_seconds"),
+      },
     };
   } catch {
     return empty;
@@ -1219,13 +1344,39 @@ function buildBudgetDefaults(
   wallClockSeconds: string,
   toolCallCount: string,
   compactMaxTurns: string,
+  warnings: BudgetWarnings,
 ): string {
-  const out: Record<string, number> = {};
+  const out: Record<string, number | object> = {};
   if (tokens !== "") out.tokens = Number(tokens);
   if (costUsd !== "") out.cost_usd = Number(costUsd);
   if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
   if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
   if (compactMaxTurns !== "") out.compact_max_turns = Number(compactMaxTurns);
+
+  const fracs: Record<string, number[]> = {};
+  const msgs: Record<string, string[]> = {};
+  const dimFrac = [
+    ["tokens", "tokens"],
+    ["cost_usd", "costUsd"],
+    ["tool_call_count", "toolCallCount"],
+    ["wall_clock_seconds", "wallClockSeconds"],
+  ] as const;
+  for (const [key, field] of dimFrac) {
+    const f = warnings[field].fracs;
+    if (f.some((x) => x !== "")) {
+      fracs[key] = f.map((x) => Number(x) || 0);
+    }
+    const m = warnings[field].msgs;
+    if (m.some((x) => x !== "")) {
+      msgs[key] = m;
+    }
+  }
+  if (Object.keys(fracs).length || Object.keys(msgs).length) {
+    const warningsObj: Record<string, object> = {};
+    if (Object.keys(fracs).length) warningsObj.fractions = fracs;
+    if (Object.keys(msgs).length) warningsObj.messages = msgs;
+    out.warnings = warningsObj;
+  }
   return JSON.stringify(out);
 }
 

@@ -169,6 +169,39 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 	}
 }
 
+// TestBuildConfigContentWorkerDefaultAgent verifies worker serves register a
+// minimal `orchicon-worker` agent prompt AND set it as default_agent, so
+// sessions do not run under opencode's large built-in `build` prompt. This
+// is the per-turn token win: Orchicon's real system prompt still rides the
+// per-message `system` field; the agent prompt is just a tool-guideline shell.
+func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev")
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("runtime config not valid JSON: %v", err)
+	}
+	if cfg["default_agent"] != workerAgent {
+		t.Fatalf("default_agent = %#v, want %q", cfg["default_agent"], workerAgent)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected agent block, got %#v", cfg["agent"])
+	}
+	wa, ok := agents[workerAgent].(map[string]any)
+	if !ok {
+		t.Fatalf("expected %q agent entry, got %#v", workerAgent, agents[workerAgent])
+	}
+	prompt, ok := wa["prompt"].(string)
+	if !ok || prompt == "" {
+		t.Fatalf("expected a non-empty %q prompt, got %#v", workerAgent, wa["prompt"])
+	}
+	// The prompt must be the minimal tool-guideline shell, not the full
+	// Orchicon system prompt (which rides the per-message system field).
+	if len(prompt) > 2000 {
+		t.Fatalf("worker agent prompt should be a short shell, got %d chars", len(prompt))
+	}
+}
+
 func TestStripJSONC(t *testing.T) {
 	in := `{
   // line comment

@@ -207,10 +207,11 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // get no MCP (no sandbox plane), behavior identical to today.
 func RuntimeServeConfig(imageTag string) string {
 	opts := ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: "",
-		ModelRef:    "",
-		SkipUserMCP: true,
+		AgentName:    workerAgent,
+		AgentPrompt:  workerAgentPrompt,
+		DefaultAgent: workerAgent,
+		ModelRef:     "",
+		SkipUserMCP:  true,
 	}
 	if runtime.IsDevImageTag(imageTag) {
 		opts.TenantID = serveTenantID()
@@ -245,10 +246,11 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 		system:    manifest.SystemPrompt,
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
-		// Soft-first compact gate. The spend accumulator starts empty; the
-		// merged budget is parsed once (cost_usd primary, tokens fallback).
+		// Unified warn→escalate→abort ladder. The spend accumulator starts
+		// empty; the merged budget is parsed once (limits + warning schedule).
 		budget:     &budgetAccumulator{},
 		budgetSpec: parseBudgetSpec(manifest.Budgets),
+		startedAt:  time.Now(),
 	}
 	return runner.run()
 }
@@ -307,6 +309,33 @@ func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
+
+// workerAgentPrompt is the MINIMAL system prompt registered for the
+// orchicon-worker agent. It deliberately carries ONLY a tool inventory and
+// tool-call discipline — the worker's actual identity/task/context rides
+// Orchicon's own per-message `system` field. The point is to REPLACE
+// opencode's large built-in `build` agent prompt (which the default agent
+// would otherwise inject into every turn) with this short shell, cutting
+// per-turn tokens. The tool list restores the "which tool fits which job"
+// guidance opencode's build prompt previously supplied, without its
+// verbosity.
+const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
+	"Tools you have:\n" +
+	"- `read` — read file contents\n" +
+	"- `write` — create or overwrite a file\n" +
+	"- `edit` — targeted string replacement in a file\n" +
+	"- `grep` — regex-search file contents\n" +
+	"- `glob` — find files by pattern\n" +
+	"- `bash` — run a shell command in the project\n" +
+	"- `todowrite` — maintain the live task-progress list (emit it every turn)\n" +
+	"- `webfetch` — fetch web content from a URL\n" +
+	"- `websearch` — search the web (use only if needed)\n" +
+	"- `skill` — load a skill's instructions\n" +
+	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools.\n\n" +
+	"Discipline — read carefully:\n" +
+	"- Batch tool calls: combine independent operations into ONE round-trip. " +
+	"NEVER split related work across many micro tool calls — each call re-sends the whole conversation to the model.\n" +
+	"- Prefer the fewest tool calls that complete the task."
 
 // runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
 // own executable in every runtime container (internal/runtime/daemon.go).
@@ -564,8 +593,8 @@ type execStreamState struct {
 
 	// toolUses counts evtToolUse events for the execution — the real
 	// per-tool-call granularity (a single step/turn can contain several
-	// tool calls before its step_finish). Feeds checkToolCallLimit's
-	// tool_call_count HARD-abort gate in session_run.go.
+	// tool calls before its step_finish). Drives the tool-call dimension of
+	// the unified warn→escalate→abort budget ladder (maybeEnforceLadder).
 	toolUses int
 
 	// writtenFiles accumulates the paths opencode reported as file

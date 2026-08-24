@@ -190,11 +190,12 @@ func (h *HostServe) kill() {
 // field (opencode applies it per turn).
 func (h *HostServe) serveConfig() string {
 	cfg := BuildConfigContent(ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: "",
-		ModelRef:    "",
-		TenantID:    serveTenantID(),
-		OrchiconMCP: true,
+		AgentName:    workerAgent,
+		AgentPrompt:  workerAgentPrompt,
+		DefaultAgent: workerAgent,
+		ModelRef:     "",
+		TenantID:     serveTenantID(),
+		OrchiconMCP:  true,
 	})
 	return cfg
 }

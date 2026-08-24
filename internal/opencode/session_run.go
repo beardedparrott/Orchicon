@@ -73,15 +73,19 @@ type sessionRun struct {
 	seq          int64
 	pendingParts []db.SessionPart
 
-	// Soft-first compact-on-budget-breach gate (see compact.go). budget is
+	// Unified warn→escalate→abort budget ladder (see compact.go). budget is
 	// the per-execution spend accumulator fed on each step_finish via
-	// parseEvent; budgetSpec is the parsed merged budget (cost_usd primary,
-	// tokens fallback). compactsPerformed + lastCompactStep implement the
-	// "at most once per step, never before the minimum-turn floor,
-	// re-arms only across normal forward progress" latch that prevents a
-	// compact loop.
+	// parseEvent; budgetSpec is the parsed merged budget. startedAt anchors
+	// the wall-clock dimension; firedWarn[dim][stage] latches each warning
+	// tier so a stage is injected exactly once per execution (never
+	// re-spammed every step once crossed). compactsPerformed +
+	// lastCompactStep implement the "at most once per step, never before
+	// the minimum-turn floor, re-arms only across normal forward progress"
+	// latch that prevents a compact loop.
 	budget            *budgetAccumulator
 	budgetSpec        budgetSpec
+	startedAt         time.Time
+	firedWarn         [dimCount][3]bool
 	compactsPerformed int
 	lastCompactStep   int
 }
@@ -166,17 +170,6 @@ func (r *sessionRun) nudgeCooldown() time.Duration {
 	}
 	return nudgeCooldown()
 }
-
-// livenessProbeText is the injected liveness check sent on an advisory
-// no_file_progress stall. It is designed to be answered at the next turn
-// boundary WITHOUT derailing the task: report status, then continue. It
-// preserves the ORCHICON WORKER SUMMARY decision-signal contract so the
-// probe reply cannot corrupt the routing signal.
-const livenessProbeText = "Do NOT stop or restart your task. This is a liveness check from Orchicon, not new work. " +
-	"In one short paragraph report: (1) what you have completed so far, (2) what you are doing right now, " +
-	"(3) what you will do next. Then continue your task exactly as planned. " +
-	"If your task is complete, end your output with: ORCHICON WORKER SUMMARY: success — <summary>. " +
-	"If you are genuinely blocked and cannot proceed, end your output with: ORCHICON WORKER SUMMARY: failure — <reason>."
 
 // decisionMarker is the single marker signal every worker execution ends
 // with (docs: the first word after it is success|failure). The completion
@@ -484,16 +477,19 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		if t, _ := legacy["type"].(string); t != "" {
 			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
 		}
-		// Two independent gates, evaluated on their own event boundary:
-		// step_finish → soft-first compact gate (evaluate the budget/
-		// turn-count breach; the subsequent turn resends `system`, so
-		// goal/AC survive the lossy summary). tool_use → hard tool-call
-		// ceiling (no "compact away a tool call" option, so this aborts).
+		// Unified warn→escalate→abort budget ladder, evaluated on its own
+		// event boundary: step_finish feeds the spend accumulator and then
+		// drives the tokens/cost/time dimensions (the subsequent turn
+		// resends `system`, so goal/AC survive a lossy compact); tool_use
+		// drives the tool-call dimension (no "compact away a tool call").
 		switch et, _ := legacy["type"].(string); et {
 		case evtStepFinish:
-			r.maybeCompact()
+			r.maybeEnforceLadder(dimTokens)
+			r.maybeEnforceLadder(dimCost)
+			r.maybeEnforceLadder(dimTime)
+			r.maybeCompact() // context-hygiene turn-count gate only
 		case evtToolUse:
-			r.checkToolCallLimit()
+			r.maybeEnforceLadder(dimTools)
 		}
 	}
 }
@@ -820,6 +816,12 @@ func (r *sessionRun) noteSessionProgress() {
 // loop), and the per-execution cap (compactMax) is the coarse safety
 // ceiling on top of that. The session's resolved provider/model is passed
 // so the compaction runs under the model the session actually uses.
+// maybeCompact is the context-hygiene compact gate, kept from the old model
+// but now firing ONLY on the turn-count trigger (compact_max_turns), NOT on
+// spend. Spend is handled by maybeEnforceLadder below (which compacts on
+// escalate1/escalate2 and aborts at the limit). It runs at a quiet step
+// boundary after a step_finish, respects the min-turn floor/re-arm latch and
+// the per-execution cap (compactMax), and is best-effort (never a failure).
 func (r *sessionRun) maybeCompact() {
 	r.mu.Lock()
 	if r.finished || r.budget == nil {
@@ -833,9 +835,6 @@ func (r *sessionRun) maybeCompact() {
 	}
 	steps := r.budget.steps
 	minT := compactMinTurns()
-	// Never at start / never immediately after a prior compact (the floor
-	// is the re-arm win — the latch holds across a step so the fresh
-	// summary gets to run before the gate can fire again).
 	if steps < minT || (r.compactsPerformed > 0 && steps < r.lastCompactStep+minT) {
 		r.mu.Unlock()
 		return
@@ -850,8 +849,21 @@ func (r *sessionRun) maybeCompact() {
 	}
 	maxTurns, turnGateOn := effectiveCompactMaxTurns(r.budgetSpec)
 	turnTriggered := turnGateOn && turnsSinceLastCompact >= maxTurns
-	breached := budgetBreached(r.budgetSpec, r.budget)
-	if !breached && !turnTriggered {
+	if !turnTriggered {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	r.doCompact(steps, "turn_count")
+}
+
+// doCompact performs one best-effort context compaction (the summarize
+// round-trip) and, on success, re-states the summary contract so the
+// resumed turns finish correctly. Used by BOTH the turn-count hygiene gate
+// and the escalate1/escalate2 tiers of the budget ladder.
+func (r *sessionRun) doCompact(steps int, reason string) {
+	r.mu.Lock()
+	if r.compactsPerformed >= compactMax() {
 		r.mu.Unlock()
 		return
 	}
@@ -859,37 +871,27 @@ func (r *sessionRun) maybeCompact() {
 	r.lastCompactStep = steps
 	r.mu.Unlock()
 
-	reason := "turn_count"
-	if breached {
-		reason = "budget_breach"
-	}
-
 	provider, model, ok := splitModelRef(r.modelRef)
 	if !ok {
 		r.a.log.Warn("compact skipped: malformed model ref",
 			"execution", r.execRow.ID, "modelRef", r.modelRef)
 		return
 	}
-	r.a.log.Info("compact triggering (soft-first)",
-		"execution", r.execRow.ID, "step", steps, "reason", reason,
-		"costUSD", r.budget.costUSD, "provider", provider, "model", model)
+	r.a.log.Info("compact triggering", "execution", r.execRow.ID, "step", steps, "reason", reason,
+		"provider", provider, "model", model)
 	if err := r.client.Compact(r.parentCtx, r.sessionID, provider, model); err != nil {
-		// Best-effort: a failed compact never fails the execution. The
-		// wall-clock and stall signals remain the only live killers.
 		r.a.log.Warn("compact failed (best-effort)", "execution", r.execRow.ID, "error", err)
 		return
 	}
 	r.recordPart(db.SessionPartCompacted, map[string]any{
-		"step": steps, "reason": reason, "costUSD": r.budget.costUSD, "provider": provider, "model": model,
+		"step": steps, "reason": reason, "provider": provider, "model": model,
 	})
+	r.sendAfterCompactReminder(steps)
+}
 
-	// After a mid-flight compact, the resumed context is a lossy summary —
-	// the original system prompt's ORCHICON WORKER SUMMARY / todowrite
-	// guidance may no longer be in the window, which is how a worker can
-	// end a run by ECHOING the marker as a template in a plan instead of
-	// delivering the actual summary. Interject a compact reminder that
-	// re-states the summary contract + todowrite obligation so the resumed
-	// turns finish correctly (best-effort; a failure never fails the run).
+// sendAfterCompactReminder re-states the summary contract + todowrite
+// obligation after a lossy compact so the resumed turns finish correctly.
+func (r *sessionRun) sendAfterCompactReminder(steps int) {
 	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
 		r.a.log.Warn("post-compact reminder send failed (best-effort)",
 			"execution", r.execRow.ID, "error", err)
@@ -900,30 +902,74 @@ func (r *sessionRun) maybeCompact() {
 	r.a.log.Info("post-compact reminder sent", "execution", r.execRow.ID, "step", steps)
 }
 
-// checkToolCallLimit evaluates the tool_call_count HARD-abort gate on every
-// evtToolUse event. Unlike maybeCompact's cost/token/turn-count gates (soft
-// — compact and continue), a tool call already made cannot be "compacted
-// away", so a breach here fails the execution immediately via the same
-// abort path onStall's fatal branch uses (finish() first, THEN Abort, so
-// the true reason survives the session.error echo the serve emits when the
-// abort lands). Settings has always described tool_call_count as a live
-// ceiling ("Max tool calls per execution. Empty = built-in default (100)")
-// — this makes that description true instead of aspirational.
-func (r *sessionRun) checkToolCallLimit() {
+// maybeEnforceLadder evaluates the UNIFIED warn→escalate→abort ladder for
+// one dimension (tokens/cost/time on a step boundary; tool-calls on a tool
+// use). It is the single enforcement point for every budget dimension:
+//
+//	levelWarn     → inject the warning message once (no compact)
+//	levelEscalate → inject the message once + compact the session
+//	levelFinal    → inject the FINAL message once + compact the session
+//	levelAbort    → KILL the session and fail the execution (HARD)
+//
+// Each warning tier is latched in firedWarn so it fires exactly once per
+// execution (a dimension that crosses 50% then 75% then 90% sends all three,
+// but never re-sends one). abort is terminal and recovers via the same path
+// onStall's fatal branch uses (finish() first, THEN Abort, so the true
+// reason survives the serve's session.error echo).
+func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	r.mu.Lock()
-	if r.finished || r.stats == nil {
+	if r.finished || r.budget == nil {
 		r.mu.Unlock()
 		return
 	}
-	limit, ok := effectiveToolCallLimit(r.budgetSpec)
-	count := r.stats.toolUses
-	r.mu.Unlock()
-	if !ok || count < limit {
+	frac := r.budgetSpec.fraction(d, r.budget, time.Since(r.startedAt), r.stats.toolUses)
+	level := r.budgetSpec.levelFor(d, frac)
+	if level == levelNone {
+		r.mu.Unlock()
 		return
 	}
-	r.a.log.Warn("tool call limit exceeded — aborting session",
-		"execution", r.execRow.ID, "toolCalls", count, "limit", limit)
-	r.finish(false, "tool_call_limit_exceeded")
+	if level == levelAbort {
+		r.mu.Unlock()
+		r.abortForLadder(d)
+		return
+	}
+	idx := levelIndex(level)
+	if r.firedWarn[d][idx] {
+		r.mu.Unlock()
+		return
+	}
+	r.firedWarn[d][idx] = true
+	msg := r.budgetSpec.message(d, level, frac)
+	compact := level == levelEscalate || level == levelFinal
+	r.mu.Unlock()
+
+	r.injectBudgetWarning(d, level, msg)
+	if compact {
+		r.doCompact(r.budget.steps, "budget_escalate:" + dimName(d))
+	}
+}
+
+// injectBudgetWarning sends one configured warning message into the live
+// session (best-effort) and records it in the transcript.
+func (r *sessionRun) injectBudgetWarning(d budgetDimension, level warnLevel, msg string) {
+	r.a.log.Warn("budget warning injected", "execution", r.execRow.ID,
+		"dimension", dimName(d), "level", levelIndex(level), "message", strings.TrimSpace(strings.Split(msg, "\n")[0]))
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, msg); err != nil {
+		r.a.log.Warn("budget warning send failed (best-effort)", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": msg, "source": "budget_warning"})
+}
+
+// abortForLadder is the HARD-abort terminal for a dimension that reached
+// its ceiling. finish() first (so the true reason survives the serve's
+// session.error echo), then Abort.
+func (r *sessionRun) abortForLadder(d budgetDimension) {
+	reason := "budget_abort:" + dimName(d)
+	r.a.log.Warn("budget limit reached — aborting session",
+		"execution", r.execRow.ID, "dimension", dimName(d), "reason", reason)
+	r.finish(false, reason)
 	_ = r.client.Abort(r.parentCtx, r.sessionID)
 }
 
@@ -954,12 +1000,26 @@ func (r *sessionRun) onStall(reason string) {
 	r.maybeNudge(reason)
 }
 
-// maybeNudge injects the liveness probe when an advisory stall (text_loop /
-// repetition / no_file_progress) trips and the nudge budget/cooldown allow
-// it. When the budget is spent and the worker is STILL tripping the same
-// advisory signal, it escalates to a fatal kill + recovery instead of
-// silently dropping the signal (the nudge-first reframe: nudge the live
-// session first, escalate only after persistent failure).
+// stallNudgeMessages returns the escalating liveness/stall messages, one per
+// nudge attempt (index 0..nudgeMax-1). Each is deliberately demanding and
+// frames the stall as the worker's fault that must be remedied immediately
+// or the session is killed. The last entry is the FINAL warning before the
+// abort.
+var stallNudgeMessages = []string{
+	"WARNING: You have gone quiet and are not making progress. You MUST work quickly and finish your work. " +
+		"Continue your task NOW — if you stall again your session will be KILLED.",
+	"CRITICAL: You are STILL not making progress. This is your final warning. " +
+		"You MUST work quickly and finish your work to avoid exceeding your budget — your session WILL BE KILLED if you do not continue immediately.",
+}
+
+// maybeNudge injects an escalating liveness warning when an advisory stall
+// (text_loop / repetition / no_file_progress) trips and the nudge
+// budget/cooldown allow it. The message gets harsher with each nudge (see
+// stallNudgeMessages). When the budget is spent and the worker is STILL
+// tripping the same advisory signal, it escalates to a fatal kill +
+// recovery instead of silently dropping the signal (the nudge-first
+// reframe, now with escalating scary messages under the same warn→escalate→
+// abort model as the budget ladder).
 func (r *sessionRun) maybeNudge(reason string) {
 	r.mu.Lock()
 	if r.finished || r.probePending {
@@ -981,11 +1041,16 @@ func (r *sessionRun) maybeNudge(reason string) {
 	r.nudgesSent++
 	r.probePending = true
 	r.probeDeadline = now.Add(r.nudgeReplyWindow())
+	idx := r.nudgesSent - 1
+	if idx >= len(stallNudgeMessages) {
+		idx = len(stallNudgeMessages) - 1
+	}
+	msg := stallNudgeMessages[idx]
 	r.mu.Unlock()
 
-	r.a.log.Info("advisory stall — sending liveness probe",
+	r.a.log.Info("advisory stall — sending escalating liveness warning",
 		"execution", r.execRow.ID, "reason", reason, "nudge", r.nudgesSent, "max", r.nudgeMax())
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, livenessProbeText); err != nil {
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, msg); err != nil {
 		r.mu.Lock()
 		r.probePending = false
 		r.mu.Unlock()
@@ -993,7 +1058,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 		return
 	}
 	r.bumpPending()
-	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": livenessProbeText, "source": "nudge"})
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": msg, "source": "nudge"})
 
 	// Verdict: no reply within the window → the worker is not responding
 	// → fail + recover (the true-hang case).

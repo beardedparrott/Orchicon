@@ -2,75 +2,144 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 )
 
-// Compact-on-budget-breach gate (soft-first) + tool-call HARD-abort gate.
+// Per-execution budget enforcement for the opencode session transport,
+// rebuilt around a UNIFIED escalation ladder applied to every dimension
+// (tokens, cost, tool calls, wall-clock time):
 //
-// Orchicon runs every worker inside a persistent opencode session. The
-// hard per-execution killers are the wall-clock deadline, the
-// stall/repetition signals (progress.go), and the tool-call ceiling
-// (checkToolCallLimit in session_run.go). Cost/tokens/turn-count are SOFT:
-// a raw token budget cannot express money because cache reads are
-// discounted differently per provider (DeepSeek cache ≈ 5% of input,
-// Claude cache ≈ ~30% of a far costlier input), so a PRICED budget
-// (cache-aware cost) is the primary compaction trigger, with tokens as a
-// secondary and turn-count as a third, cost-independent trigger (a chatty
-// session that's individually cheap per turn still gets bounded). Whatever
-// magnitude is configured (or the built-in default — see
-// effectiveCostBudget/effectiveTokenBudget/effectiveCompactMaxTurns) is
-// what compaction fires on — no extra margin, no fraction-of-budget
-// concept — and it is SOFT-FIRST: on breach the adapter compacts the
-// session and CONTINUES. tool_call_count is different in kind: there is no
-// "compact away" a tool call already made, so effectiveToolCallLimit feeds
-// a genuine hard abort instead.
+//	warn       (default 50%  of limit) → inject a demanding scary message
+//	escalate1  (default 75%  of limit) → inject a harsher message + compact
+//	escalate2  (default 90%  of limit) → inject the FINAL warning + compact
+//	abort      (100%        of limit) → KILL the session and recover (HARD)
 //
-// The compaction gate is evaluated at a QUIET STEP BOUNDARY (after a
-// step_finish), never before a minimum-turn floor, so a single log-flush
-// of step_finish events triggers at most one compact per boundary and a
-// fresh summary is never immediately re-collapsed (the compact-at-start/
-// loop pathology); the per-execution cap (compactMax) bounds how many
-// times it can recur. The Claude adapter sibling must be driven by the
-// SAME gates — keep this file provider-neutral so the claude bridge can
-// reuse budgetBreached/effectiveToolCallLimit.
+// This replaces the old soft-first "compact and continue forever" model.
+// The failure mode it fixes: a worker that is individually cheap per turn
+// (DeepSeek cache reads at ~5%) but explodes in raw token volume or turn
+// count never hit a real ceiling — Orchicon kept compacting and the spend
+// kept climbing. Now every dimension has both a warning schedule (so the
+// worker is told, in escalating and demanding terms, to remedy immediately)
+// AND a hard abort at the limit. The only "soft, keep going" action left is
+// context compaction on escalate1/escalate2 — never on abort.
+//
+// Two orthogonal gates are preserved from the old model because they are
+// about context hygiene, not spend:
+//   - compact_max_turns: force a compact every N turns regardless of cost,
+//     so a chatty session's re-sent prefix stays bounded. Independent of
+//     the ladder; it compacts but never warns or aborts.
+//   - cacheDiscount: no longer used for a weighted token gate. Cost is now
+//     priced (cache-aware) by the provider and tokens are counted at FULL
+//     weight, so there is no need to hand-tune a cache weight.
+//
+// Config flows through the SAME budget JSON (tenant default_budget_overrides
+// merged with the worker's budget_overrides) as the limits, so no DB schema
+// or proto change is required. The `warnings` key (optional) carries the
+// ladder thresholds and the exact message text for every stage:
+//
+//	{
+//	  "tokens": 500000, "cost_usd": 0.50, "tool_call_count": 100,
+//	  "wall_clock_seconds": 3600, "compact_max_turns": 12,
+//	  "warnings": {
+//	    "fractions": {
+//	      "tokens": [0.5, 0.75, 0.9],
+//	      "cost_usd": [0.5, 0.75, 0.9],
+//	      "tool_call_count": [0.5, 0.75, 0.9],
+//	      "wall_clock_seconds": [0.5, 0.75, 0.9]
+//	    },
+//	    "messages": {
+//	      "tokens": ["warn msg", "esc1 msg", "esc2 msg"],
+//	      "cost_usd": ["warn msg", "esc1 msg", "esc2 msg"],
+//	      "tool_call_count": ["warn msg", "esc1 msg", "esc2 msg"],
+//	      "wall_clock_seconds": ["warn msg", "esc1 msg", "esc2 msg"]
+//	    }
+//   }
+//	}
+//
+// Any sub-key may be omitted to fall back to the built-in defaults
+// (defaultWarnFracs / defaultWarnMsgs). An empty messages slot falls back
+// per-stage to the built-in copy. This keeps a fresh tenant's budget
+// legible while letting an operator override any or all of the text and
+// thresholds from the Settings GUI.
 
-// budgetSpec is the parsed merged per-execution budget
-// (budget_overrides after tenant-default merge, docs/05 §8). It captures
-// the live gates the adapter consults:
-//
-//   - wallClockSeconds: the hard per-execution deadline (enforced via
-//     context.WithDeadline; a HARD abort).
-//   - costUSD: the PRIMARY compaction gate (accumulated cache-aware cost;
-//     SOFT — compacts and continues).
-//   - tokens: the SECONDARY compaction gate (raw fresh tokens, with cache
-//     reads weighted by the cache-discount factor; SOFT).
-//   - compactMaxTurns: the turn-count compaction gate (fires regardless of
-//     cost once this many turns have elapsed since the last compact; SOFT).
-//   - toolCallCount: the per-execution tool-call ceiling; a HARD abort
-//     (checkToolCallLimit in session_run.go) — unlike the compaction gates,
-//     there is no meaningful way to "compact away" tool calls already made.
-//
-// nil in a field means "unset" — for wallClockSeconds and toolCallCount
-// that resolves to a real built-in default (mirrors wallClockDeadline's
-// existing 0/wall_clock_seconds=disabled convention); for costUSD/tokens
-// see effectiveCostBudget/effectiveTokenBudget. cacheDiscount is the
-// cache-read weight used only by the token fallback.
+// budgetDimension enumerates the four dimensions of the escalation ladder.
+type budgetDimension int
+
+const (
+	dimTokens budgetDimension = 0 // raw token volume (all tokens full weight)
+	dimCost   budgetDimension = 1 // cache-aware priced cost
+	dimTools  budgetDimension = 2 // tool-call count
+	dimTime   budgetDimension = 3 // wall-clock elapsed
+	dimCount  budgetDimension = 4
+)
+
+func dimName(d budgetDimension) string {
+	switch d {
+	case dimTokens:
+		return "tokens"
+	case dimCost:
+		return "cost_usd"
+	case dimTools:
+		return "tool_call_count"
+	case dimTime:
+		return "wall_clock_seconds"
+	}
+	return "?"
+}
+
+// warnLevel is a stage in the unified ladder. abort is terminal — the
+// session is killed. The three warning stages each produce a message;
+// escalate1 and escalate2 additionally compact the session.
+type warnLevel int
+
+const (
+	levelNone     warnLevel = 0 // under every threshold
+	levelWarn     warnLevel = 1
+	levelEscalate warnLevel = 2
+	levelFinal    warnLevel = 3 // escalate2 / FINAL warning
+	levelAbort    warnLevel = 4 // hard kill
+)
+
+// levelIndex maps a warnLevel to a 0..2 index into the warning arrays
+// (warn=0, escalate=1, final=2). abort has no message (the session is
+// killed outright).
+func levelIndex(l warnLevel) int {
+	switch l {
+	case levelWarn:
+		return 0
+	case levelEscalate:
+		return 1
+	case levelFinal:
+		return 2
+	}
+	return 0
+}
+
+// budgetSpec is the parsed merged per-execution budget. Each dimension's
+// *float64 limit is nil when unset (→ built-in default) or points at a
+// user-configured ceiling. warnFracs[d][0..2] are the fractions of the
+// limit that trip warn/escalate/final; warnMsgs[d][0..2] are the injected
+// messages at each stage.
 type budgetSpec struct {
 	wallClockSeconds *float64
 	costUSD          *float64
 	tokens           *float64
 	compactMaxTurns  *float64
 	toolCallCount    *float64
-	cacheDiscount    float64
+
+	warnFracs [dimCount][3]float64
+	warnMsgs  [dimCount][3]string
 }
 
-// budgetAccumulator tallies cumulative cache-aware spend for one execution.
-// It is fed on each step_finish from the SAME token/cost unpacking the
-// adapter already performs for recordUsage — the gate never builds a second
-// pricing formula. The primary signal is costUSD (opencode's own
-// provider-discounted, cache-aware per-step cost); the fresh + cache token
-// buckets are kept so the token fallback can run without a cost signal.
+// budgetAccumulator tallies cumulative spend for one execution. It is fed
+// on each step_finish from the SAME token/cost unpacking the adapter already
+// performs for recordUsage — the gate never builds a second pricing formula.
+// Tokens are counted at FULL weight (prompt+completion+reasoning+cacheRead);
+// cost is the provider-discounted cache-aware dollar figure.
 type budgetAccumulator struct {
 	costUSD    float64
 	prompt     float64
@@ -80,10 +149,7 @@ type budgetAccumulator struct {
 	steps      int
 }
 
-// add folds one step_finish's tokens + cost into the accumulator. `tokens`
-// is the opencode `part.tokens` map; `cost` is `part.cost` (the runtime's
-// provider-discounted float). Reuses toInt64/cacheToken so bucket semantics
-// match recordUsage exactly.
+// add folds one step_finish's tokens + cost into the accumulator.
 func (a *budgetAccumulator) add(tokens map[string]any, cost float64) {
 	a.costUSD += cost
 	a.prompt += float64(toInt64(tokens["input"]))
@@ -93,53 +159,22 @@ func (a *budgetAccumulator) add(tokens map[string]any, cost float64) {
 	a.steps++
 }
 
-// budgetBreached reports whether the accumulated spend has crossed the
-// effective budget. Primary gate: cache-aware cost_usd. Secondary: fresh
-// input+output+reasoning PLUS cache_read weighted by the cache-discount
-// factor, so cheap-cache providers (DeepSeek) do not fire early on cache
-// bloat while paid-cache providers (Claude) count the real money. Both
-// gates resolve through effectiveCostBudget/effectiveTokenBudget, so an
-// unset field is NOT "no gate" — it is the built-in default (defaultCompactCostUSD
-// / defaultCompactTokens, calibrated from real usage telemetry — see the
-// constants' doc comments). Settings has long described an empty field as
-// falling back to a built-in default; that description was previously
-// aspirational (nothing enforced it), this makes it real. A worker or
-// tenant can still opt all the way out of a dimension with an explicit 0
-// (mirrors wallClockDeadline's 0-disables convention).
-func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
-	if acc == nil {
-		return false
-	}
-	if costUSD, ok := effectiveCostBudget(spec); ok && acc.costUSD >= costUSD {
-		return true
-	}
-	if tokens, ok := effectiveTokenBudget(spec); ok {
-		budgeted := acc.prompt + acc.completion + acc.reasoning + acc.cacheRead*spec.cacheDiscount
-		if budgeted >= tokens {
-			return true
-		}
-	}
-	return false
+// totalTokens returns the FULL token count (no cache discount).
+func (a *budgetAccumulator) totalTokens() float64 {
+	return a.prompt + a.completion + a.reasoning + a.cacheRead
 }
 
-// effectiveCostBudget resolves the cost_usd gate: unset → the built-in
-// default (defaultCompactCostUSD, $0.50 — matches Settings' "Empty =
-// built-in default ($0.50)" copy); an explicit value <= 0 disables the gate
-// entirely (ok=false).
-func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
-	if spec.costUSD == nil {
-		return defaultCompactCostUSD, true
-	}
-	if *spec.costUSD <= 0 {
-		return 0, false
-	}
-	return *spec.costUSD, true
+// elapsedSecs is a small helper to keep the dimension readout uniform.
+func elapsedSecsToFloat(elapsed time.Duration) float64 {
+	return elapsed.Seconds()
 }
+
+// ─── effective limits ─────────────────────────────────────────────────────
 
 // effectiveTokenBudget resolves the tokens gate: unset → the built-in
-// default (defaultCompactTokens, 500,000 — matches Settings' "Empty =
-// built-in default (500,000)" copy); an explicit value <= 0 disables the
-// gate entirely (ok=false).
+// default (defaultCompactTokens, 500,000); an explicit value <= 0 disables
+// the gate entirely (ok=false). Tokens are the FULL raw count (no cache
+// discount) — the operator's "count ALL tokens including cache" model.
 func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	if spec.tokens == nil {
 		return defaultCompactTokens, true
@@ -150,26 +185,26 @@ func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	return *spec.tokens, true
 }
 
-// effectiveCompactMaxTurns resolves the turn-count gate (compact_max_turns
-// in the budget JSON): unset → the built-in default (defaultCompactMaxTurns,
-// 8 turns); an explicit value <= 0 disables the turn-count trigger entirely
-// (ok=false), leaving cost/tokens as the only compaction signals.
-func effectiveCompactMaxTurns(spec budgetSpec) (turns int, ok bool) {
-	if spec.compactMaxTurns == nil {
-		return defaultCompactMaxTurns, true
+// effectiveCostBudget resolves the cost_usd gate: unset → the built-in
+// default (defaultCompactCostUSD, $0.50); an explicit value <= 0 disables
+// the gate entirely (ok=false). Cost is priced (cache-aware) by the
+// provider, so it is a SEPARATE gate from tokens, not a token fallback.
+func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
+	if spec.costUSD == nil {
+		return defaultCompactCostUSD, true
 	}
-	if *spec.compactMaxTurns <= 0 {
+	if *spec.costUSD <= 0 {
 		return 0, false
 	}
-	return int(*spec.compactMaxTurns), true
+	return *spec.costUSD, true
 }
 
 // effectiveToolCallLimit resolves the tool_call_count HARD-abort gate:
-// unset → the built-in default (defaultToolCallLimit, 100 — matches
-// Settings' "Empty = built-in default (100)" copy); an explicit value <= 0
-// disables the limit entirely (ok=false). Unlike the compaction gates
-// above, this is consulted by checkToolCallLimit (session_run.go), not
-// maybeCompact — a tool-call ceiling has no "compact and continue" option.
+// unset → the built-in default (defaultToolCallLimit, 100); an explicit
+// value <= 0 disables the gate entirely (ok=false). Unlike the spend
+// gates, a tool call already made cannot be "compacted away", so this is
+// the dimension with the most obvious hard-abort semantics — but it still
+// follows the SAME warn→escalate→abort ladder as the others.
 func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	if spec.toolCallCount == nil {
 		return defaultToolCallLimit, true
@@ -180,14 +215,211 @@ func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	return int(*spec.toolCallCount), true
 }
 
-// parseBudgetSpec parses the merged budget JSON (wall_clock_seconds,
-// cost_usd, tokens). Empty or unparseable budgets yield a spec with all-nil
-// gate fields (the built-in defaults apply — the caller decides the
-// wall-clock backstop), mirroring wallClockDeadline's "unparseable → default"
-// behaviour. cacheDiscount is always set from the environment so the token
-// fallback can run regardless.
+// effectiveWallClockBudget resolves the wall_clock_seconds gate: unset →
+// the built-in default (defaultWallClockSeconds, 3600); an explicit value
+// <= 0 disables the gate entirely (ok=false). Mirrors wallClockDeadline's
+// "0 disables" convention.
+func effectiveWallClockBudget(spec budgetSpec) (sec float64, ok bool) {
+	if spec.wallClockSeconds == nil {
+		return defaultWallClockSeconds, true
+	}
+	if *spec.wallClockSeconds <= 0 {
+		return 0, false
+	}
+	return *spec.wallClockSeconds, true
+}
+
+// effectiveCompactMaxTurns resolves the turn-count gate (compact_max_turns):
+// unset → the built-in default (defaultCompactMaxTurns, 12); an explicit
+// value <= 0 disables the turn-count trigger entirely (ok=false). This is
+// the ORTHOGONAL context-hygiene compact, not a ladder stage.
+func effectiveCompactMaxTurns(spec budgetSpec) (turns int, ok bool) {
+	if spec.compactMaxTurns == nil {
+		return defaultCompactMaxTurns, true
+	}
+	if *spec.compactMaxTurns <= 0 {
+		return 0, false
+	}
+	return int(*spec.compactMaxTurns), true
+}
+
+// limit returns the effective ceiling for a dimension. ok=false when the
+// gate is explicitly disabled.
+func (s budgetSpec) limit(d budgetDimension) (limit float64, ok bool) {
+	switch d {
+	case dimTokens:
+		return effectiveTokenBudget(s)
+	case dimCost:
+		return effectiveCostBudget(s)
+	case dimTools:
+		l, ok := effectiveToolCallLimit(s)
+		return float64(l), ok
+	case dimTime:
+		return effectiveWallClockBudget(s)
+	}
+	return 0, false
+}
+
+// fraction returns the current spend for a dimension as a fraction of its
+// configured limit (>=1.0 when at/over the ceiling). Returns -1 when the
+// dimension has no effective limit.
+func (s budgetSpec) fraction(d budgetDimension, acc *budgetAccumulator, elapsed time.Duration, toolUses int) float64 {
+	limit, ok := s.limit(d)
+	if !ok {
+		return -1
+	}
+	var used float64
+	switch d {
+	case dimTokens:
+		used = acc.totalTokens()
+	case dimCost:
+		used = acc.costUSD
+	case dimTools:
+		used = float64(toolUses)
+	case dimTime:
+		used = elapsedSecsToFloat(elapsed)
+	}
+	if limit <= 0 {
+		return -1
+	}
+	return used / limit
+}
+
+// warnFracsFor returns the ladder thresholds for a dimension, falling back
+// to the built-in fractions when the spec was constructed without them (a
+// direct budgetSpec literal, e.g. in tests, has all-zero arrays).
+func (s budgetSpec) warnFracsFor(d budgetDimension) [3]float64 {
+	if s.warnFracs[d][0] > 0 || s.warnFracs[d][1] > 0 || s.warnFracs[d][2] > 0 {
+		return s.warnFracs[d]
+	}
+	return defaultWarnFracs()[d]
+}
+
+// levelFor computes the warn ladder stage for a dimension from its fraction
+// of the limit. abort fires at >= 1.0; the three warning tiers at the
+// configured thresholds.
+func (s budgetSpec) levelFor(d budgetDimension, frac float64) warnLevel {
+	if frac < 0 {
+		return levelNone
+	}
+	thr := s.warnFracsFor(d)
+	switch {
+	case frac >= 1.0:
+		return levelAbort
+	case frac >= thr[2]:
+		return levelFinal
+	case frac >= thr[1]:
+		return levelEscalate
+	case frac >= thr[0]:
+		return levelWarn
+	}
+	return levelNone
+}
+
+// message returns the configured message for a warn-tier of a dimension,
+// falling back to the built-in copy when the slot is empty. Substitutes
+// {pct} with the percent used (abort has no message).
+func (s budgetSpec) message(d budgetDimension, l warnLevel, frac float64) string {
+	if l == levelAbort {
+		return ""
+	}
+	idx := levelIndex(l)
+	raw := s.warnMsgs[d][idx]
+	if strings.TrimSpace(raw) == "" {
+		raw = defaultWarnMsgs()[d][idx]
+	}
+	pct := "?"
+	if frac >= 0 {
+		pct = fmt.Sprintf("%d", int(frac*100))
+	}
+	return strings.ReplaceAll(raw, "{pct}", pct)
+}
+
+// budgetBreached reports whether the accumulated spend has crossed the
+// abort limit on EITHER spend dimension (cost or tokens, both full-weight).
+// Used by callers that need a single "at/over the ceiling" boolean (the
+// ladder's levelAbort). Disabled dimensions never breach.
+func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
+	if acc == nil {
+		return false
+	}
+	if costUSD, ok := effectiveCostBudget(spec); ok && acc.costUSD >= costUSD {
+		return true
+	}
+	if tokens, ok := effectiveTokenBudget(spec); ok && acc.totalTokens() >= tokens {
+		return true
+	}
+	return false
+}
+
+// ─── parsing ─────────────────────────────────────────────────────────────
+
+// defaultWarnFracs returns the built-in ladder thresholds.
+func defaultWarnFracs() [dimCount][3]float64 {
+	return [dimCount][3]float64{
+		{0.5, 0.75, 0.9}, // tokens
+		{0.5, 0.75, 0.9}, // cost
+		{0.5, 0.75, 0.9}, // tools
+		{0.5, 0.75, 0.9}, // time
+	}
+}
+
+// defaultWarnMsgs returns the built-in escalating messages per dimension.
+func defaultWarnMsgs() [dimCount][3]string {
+	return [dimCount][3]string{
+		// tokens
+		{
+			"WARNING: You have used {pct}% of your token budget. Your output is too large and you are spending too many tokens. " +
+				"STOP expanding the work. Tighten your approach: batch your tool calls, stop narrating, and deliver only the minimal delta. " +
+				"If you do not reduce your token spend immediately, your session will be KILLED.",
+			"CRITICAL: You have used {pct}% of your token budget. You are burning through tokens dangerously fast. " +
+				"Consolidate EVERY remaining tool call into a single batch and finish the deliverable NOW. " +
+				"Your session will be KILLED if you keep spending at this rate.",
+			"FINAL WARNING: You have used {pct}% of your token budget. This is your last chance. " +
+				"You must complete your work in the next minimal number of tool calls or your session will be KILLED. " +
+				"Stop all exploration. Finish now.",
+		},
+		// cost
+		{
+			"WARNING: You have used {pct}% of your cost budget. You are spending too much money. " +
+				"STOP the expensive work and consolidate. Batch tool calls. Deliver the minimum. " +
+				"Reduce your spend immediately or your session will be KILLED.",
+			"CRITICAL: You have used {pct}% of your cost budget. You are on pace to blow past it. " +
+				"Use only the cheapest possible tool calls, do not re-derive anything, and finish NOW. " +
+				"Your session will be KILLED if you keep spending.",
+			"FINAL WARNING: You have used {pct}% of your cost budget. This is your last warning. " +
+				"Complete your work in the next minimal tool calls or your session will be KILLED.",
+		},
+		// tools
+		{
+			"WARNING: YOU ARE CALLING TOOLS TOO OFTEN. BATCH YOUR TOOL CALLS TOGETHER OR YOU WILL RISK YOUR SESSION BEING KILLED.",
+			"CRITICAL: YOU ARE STILL CALLING TOOLS TOO OFTEN. STOP the micro tool calls. You MUST batch them together " +
+				"into a single round-trip. Your session will be KILLED if you keep splitting your calls.",
+			"FINAL WARNING: YOUR TOOL CALL LIMIT IS ALMOST REACHED. YOU HAVE ONLY A HANDFUL OF TOOL CALLS LEFT. " +
+				"You MUST finish your work in the next tool calls or your session WILL BE KILLED. " +
+				"Batch everything. Finish now.",
+		},
+		// time
+		{
+			"WARNING: IT HAS BEEN {pct}% OF YOUR TIME BUDGET. YOU NEED TO WORK QUICKLY AND FINISH YOUR WORK TO AVOID EXCEEDING BUDGET — YOUR SESSION WILL BE KILLED.",
+			"CRITICAL: YOU ARE RUNNING OUT OF TIME ({pct}% ELAPSED). STOP the slow path: batch your remaining tool calls and finish NOW. " +
+				"Your session will be KILLED if you do not finish quickly.",
+			"FINAL WARNING: {pct}% OF YOUR TIME IS GONE. You have almost no time left. " +
+				"Complete your work in the next tool calls. Your session will be KILLED at the time limit.",
+		},
+	}
+}
+
+// parseBudgetSpec parses the merged budget JSON. It reads the five gate
+// limits AND the optional `warnings` ladder (fractions + messages). Empty
+// or unparseable budgets yield a spec with all-nil gates (built-in defaults
+// apply — the caller decides the wall-clock backstop) and the default
+// warning schedule.
 func parseBudgetSpec(budgets []byte) budgetSpec {
-	spec := budgetSpec{cacheDiscount: compactCacheDiscount()}
+	spec := budgetSpec{
+		warnFracs: defaultWarnFracs(),
+		warnMsgs:  defaultWarnMsgs(),
+	}
 	if len(budgets) == 0 {
 		return spec
 	}
@@ -197,6 +429,10 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 		Tokens           *float64 `json:"tokens"`
 		CompactMaxTurns  *float64 `json:"compact_max_turns"`
 		ToolCallCount    *float64 `json:"tool_call_count"`
+		Warnings         struct {
+			Fractions map[string][3]float64 `json:"fractions"`
+			Messages  map[string][3]string  `json:"messages"`
+		} `json:"warnings"`
 	}
 	if err := json.Unmarshal(budgets, &raw); err != nil {
 		return spec
@@ -206,91 +442,53 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 	spec.tokens = raw.Tokens
 	spec.compactMaxTurns = raw.CompactMaxTurns
 	spec.toolCallCount = raw.ToolCallCount
+
+	for d := budgetDimension(0); d < dimCount; d++ {
+		name := dimName(d)
+		if fr, ok := raw.Warnings.Fractions[name]; ok {
+			for i := 0; i < 3; i++ {
+				if fr[i] >= 0 && fr[i] <= 1 {
+					spec.warnFracs[d][i] = fr[i]
+				}
+			}
+		}
+		if ms, ok := raw.Warnings.Messages[name]; ok {
+			for i := 0; i < 3; i++ {
+				spec.warnMsgs[d][i] = ms[i]
+			}
+		}
+	}
 	return spec
 }
 
-// Compact env knobs (docs/06 budget §8 adjacent). Defaults are safe.
+// ── built-in defaults ────────────────────────────────────────────────────
 const (
-	// defaultCompactCacheDiscount weights cache.read in the token fallback
-	// (≈ a cheap provider's cache-read rate). Conservative: it under-counts
-	// paid-cache providers (Claude ≈ 30%), but the cost_usd gate is the
-	// primary for those.
-	defaultCompactCacheDiscount = 0.1
-	// defaultCompactCostUSD is the built-in cost_usd gate applied when a
-	// worker/tenant budget omits the field. First calibration pass (2026-08-23)
-	// used the full 1,350-execution/~1-month usage_records history and landed
-	// on $2 — WRONG: cache_read_tokens/cost_usd only started being computed
-	// at all as of the 20260828000000_usage_cache_tokens migration
-	// (2026-08-22T22:04:23Z, same day), so ~55k of ~58k rows in that sample
-	// predate the instrumentation and read as cost_usd≈0/cache_read=0 not
-	// because nothing happened but because nothing was measuring it — the
-	// "94% of executions never touch cache" conclusion was an artifact of
-	// that, not a real finding. Recalibrated on the 110 executions whose
-	// entire usage_records set falls AFTER that cutoff (~20h clean window):
-	// median cost/execution $0.0126 (unchanged — sane even before), p95
-	// $0.0335, MAX OBSERVED $0.0508. $0.50 is ~10x that clean max — more
-	// margin than the first pass used, deliberately, given the clean sample
-	// is narrow (single model, 20h) and less trustworthy as "the true tail"
-	// than a full month would be. Raise per-worker for materially costlier
-	// providers (e.g. Claude) once real telemetry exists for those.
+	// defaultWallClockSeconds is the built-in per-execution deadline applied
+	// when a budget omits wall_clock_seconds. Matches wallClockDeadline's
+	// existing 3600s backstop.
+	defaultWallClockSeconds = 3600.0
+	// defaultCompactCostUSD is the built-in cost_usd abort gate applied when
+	// a worker/tenant budget omits the field. Calibration is documented on
+	// the old constant it replaces (see git history); $0.50 is ~10x the
+	// clean max observed on a narrow DeepSeek sample, with the intent that
+	// per-worker budgets are raised for materially costlier providers.
 	defaultCompactCostUSD = 0.50
-	// defaultCompactTokens is the built-in tokens fallback gate applied
-	// when a worker/tenant budget omits the field. Same recalibration as
-	// defaultCompactCostUSD above and same reason (the original 1,000,000
-	// was set against a token-accounting history that also predates the
-	// cache-token instrumentation and was not trustworthy). Clean-sample
-	// fresh-token (prompt+completion+reasoning) usage per execution: p50
-	// 54.8k (matches the ~56k "active tokens" figure that started this
-	// whole investigation), p75 74.6k, p90 98.6k, p99 168k, MAX 172k.
-	// 500,000 is ~3x the clean max — real headroom without being 6x
-	// oversized like the previous number was relative to this evidence.
+	// defaultCompactTokens is the built-in tokens gate (FULL weight) applied
+	// when a budget omits tokens. 500,000 is ~3x the clean max observed —
+	// real headroom without being oversized.
 	defaultCompactTokens = 500_000.0
-	// defaultCompactMaxTurns is the built-in turn-count gate: compact at
-	// least once every N turns regardless of cost, so a chatty session
-	// (many internal opencode steps re-sending the full cached prefix) is
-	// bounded even when spend per-turn is individually cheap (e.g. a
-	// DeepSeek-backed worker whose cumulative cache-read count still climbs
-	// into the millions across dozens of turns). Independent of, and
-	// evaluated alongside, the cost/token gates in maybeCompact.
-	//
-	// Raised 8 -> 12 (2026-08-23): at 8 the gate fired more often than a
-	// deep-design worker finishes a unit of work, and each mid-flight
-	// compact ended with the completion probe interjecting at the next turn
-	// boundary ("your response appears cut off"), which is disruptive
-	// noise for long single-goal steps. 12 keeps the chatty-session bound
-	// while giving the turn cadence real headroom (minus the min-turn
-	// floor guarding the compact loop).
+	// defaultCompactMaxTurns is the orthogonal turn-count context-hygiene
+	// compact gate (see file header). 12 keeps a chatty session bounded
+	// without the disruptive mid-flight compaction of the original 8.
 	defaultCompactMaxTurns = 12
-	// defaultCompactMinTurns is the minimum completed turns before the gate
-	// is armed — never at start, and re-arms only after this floor elapses
-	// across normal forward progress (prevents the compact loop).
+	// defaultCompactMinTurns is the minimum completed turns before the
+	// turn-count gate is armed (never at start; prevents the compact loop).
 	defaultCompactMinTurns = 2
-	// defaultCompactMax bounds how many compacts fire per execution. Raised
-	// from the original 1 (one-shot) now that compaction is expected to run
-	// periodically over a long session (the turn-count gate re-arms every
-	// defaultCompactMaxTurns turns) rather than only once on a cost breach
-	// that then stays permanently tripped. The min-turn re-arm floor above
-	// is what actually prevents the compact/step loop; this cap is now a
-	// coarse safety ceiling, not the primary loop guard.
+	// defaultCompactMax bounds how many compacts fire per execution.
 	defaultCompactMax = 10
-	// defaultToolCallLimit is the built-in tool_call_count HARD-abort gate
-	// applied when a worker/tenant budget omits the field. Matches
-	// Settings' "Empty = built-in default (100)" copy — this was
-	// previously accepted in the budget JSON and displayed in Settings but
-	// never actually enforced by anything.
+	// defaultToolCallLimit is the built-in tool_call_count gate.
 	defaultToolCallLimit = 100
 )
-
-// compactCacheDiscount returns the cache-discount factor for the token
-// fallback gate (ORCHICON_COMPACT_CACHE_DISCOUNT).
-func compactCacheDiscount() float64 {
-	if v := os.Getenv("ORCHICON_COMPACT_CACHE_DISCOUNT"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
-			return f
-		}
-	}
-	return defaultCompactCacheDiscount
-}
 
 // compactMinTurns returns the minimum-turn floor before the gate is armed
 // (ORCHICON_COMPACT_MIN_TURNS).
