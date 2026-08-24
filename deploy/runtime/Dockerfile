@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # Orchicon workflow-runtime base image.
 #
 # One container per active workflow run (Azure Pipelines self-hosted
@@ -43,8 +41,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # System toolchain — the "quick and efficient" baseline so workers don't
 # reinstall common tools. Everything apt-provided is baked at build time
 # (dpkg cannot run as the non-root runtime user).
-RUN --mount=type=cache,target=/var/cache/apt \
- apt-get update \
+RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git gnupg gh \
       build-essential pkg-config \

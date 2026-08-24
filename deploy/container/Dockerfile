@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # Orchicon single-container image.
 #
 # Build:   make build        # produce bin/orchicon (frontend embedded)
@@ -36,8 +34,7 @@ FROM postgres:16 AS runtime
 # uid). curl installs the opencode runtime. git + gh are required for
 # coding workers (the DevOps Engineer creates PRs and merges); without
 # them the agent cannot run git/GitHub commands and may fabricate success.
-RUN --mount=type=cache,target=/var/cache/apt \
- groupmod -g 70 postgres \
+RUN groupmod -g 70 postgres \
  && usermod -u 70 -g 70 postgres \
  && chown -R postgres:postgres /var/lib/postgresql \
  && chown postgres:postgres /usr/lib/postgresql \
