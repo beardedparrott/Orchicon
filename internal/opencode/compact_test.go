@@ -158,8 +158,8 @@ func TestParseBudgetSpecWarnings(t *testing.T) {
 	if spec.warnFracs[dimTools][1] != 0.5 {
 		t.Fatalf("tools escalate fraction = %v, want 0.5", spec.warnFracs[dimTools][1])
 	}
-	if spec.warnFracs[dimCost][0] != 0.5 {
-		t.Fatalf("cost warn fraction = %v, want default 0.5", spec.warnFracs[dimCost][0])
+	if spec.warnFracs[dimCost][0] != 0.25 {
+		t.Fatalf("cost warn fraction = %v, want default 0.25", spec.warnFracs[dimCost][0])
 	}
 	// messages override for tokens; cost falls back to built-in.
 	if spec.warnMsgs[dimTokens][0] != "warn" || spec.warnMsgs[dimTokens][2] != "final" {
@@ -173,18 +173,18 @@ func TestParseBudgetSpecWarnings(t *testing.T) {
 // TestLevelForAndMessage verifies the ladder tier computation and the
 // built-in message copy with {pct} substitution.
 func TestLevelForAndMessage(t *testing.T) {
-	spec := parseBudgetSpec(nil) // default thresholds 0.5/0.75/0.9
-	if lvl := spec.levelFor(dimTokens, 0.49); lvl != levelNone {
-		t.Fatalf("0.49 frac → %d, want levelNone", lvl)
+	spec := parseBudgetSpec(nil) // default thresholds 0.25/0.5/0.75
+	if lvl := spec.levelFor(dimTokens, 0.24); lvl != levelNone {
+		t.Fatalf("0.24 frac → %d, want levelNone", lvl)
 	}
-	if lvl := spec.levelFor(dimTokens, 0.5); lvl != levelWarn {
-		t.Fatalf("0.5 frac → %d, want levelWarn", lvl)
+	if lvl := spec.levelFor(dimTokens, 0.25); lvl != levelWarn {
+		t.Fatalf("0.25 frac → %d, want levelWarn", lvl)
 	}
-	if lvl := spec.levelFor(dimTokens, 0.75); lvl != levelEscalate {
-		t.Fatalf("0.75 frac → %d, want levelEscalate", lvl)
+	if lvl := spec.levelFor(dimTokens, 0.5); lvl != levelEscalate {
+		t.Fatalf("0.5 frac → %d, want levelEscalate", lvl)
 	}
-	if lvl := spec.levelFor(dimTokens, 0.9); lvl != levelFinal {
-		t.Fatalf("0.9 frac → %d, want levelFinal", lvl)
+	if lvl := spec.levelFor(dimTokens, 0.75); lvl != levelFinal {
+		t.Fatalf("0.75 frac → %d, want levelFinal", lvl)
 	}
 	if lvl := spec.levelFor(dimTokens, 1.0); lvl != levelAbort {
 		t.Fatalf("1.0 frac → %d, want levelAbort", lvl)
@@ -673,14 +673,16 @@ func TestLadderNilBudgetNoop(t *testing.T) {
 }
 
 // TestLadderTokenWarnThenEscalateCompacts verifies the unified ladder
-// enforcement for the token dimension: at warn the session receives a scary
-// message but does NOT compact; at escalate it receives a harsher message
-// AND compacts; at abort it kills. Each tier fires once (latched).
+// enforcement for the token dimension with the front-loaded 25/50/75 ladder:
+// every non-abort tier (warn/escalate/final) injects a warning message AND
+// compacts — re-sent context is the dominant cost driver, so the earliest
+// warning must already shrink the working set. Each tier fires once (latched).
 func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
-	// tokens limit 1000 → warn at 500, escalate at 750, final at 900.
+	// tokens limit 1000, front-loaded ladder → warn at 250, escalate at 500,
+	// final at 750. Every non-abort tier injects AND compacts.
 	r := &sessionRun{
 		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
 		parentCtx:  context.Background(),
@@ -697,33 +699,28 @@ func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "3")
 
-	// 50% → warn: injects a message, no compact.
-	r.budget.prompt = 500
+	// 25% → warn: injects a message AND compacts (summarize).
+	r.budget.prompt = 250
 	r.maybeEnforceLadder(dimTokens)
-	if rec.count() != 1 || !strings.HasSuffix(rec.lastCall().path, "/prompt_async") {
-		t.Fatalf("warn should send one prompt_async, got %d calls", rec.count())
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("warn tier should compact the session (summarize), summarize=%d", rec.summarizeCount())
+	}
+	if rec.count() < 2 {
+		t.Fatalf("warn tier should inject a warning message, calls=%d", rec.count())
 	}
 	// Re-entering the same tier must not re-fire (latched).
+	before := rec.count()
 	r.maybeEnforceLadder(dimTokens)
-	if rec.count() != 1 {
-		t.Fatalf("warn should latch (no re-send), got %d calls", rec.count())
+	if rec.count() != before {
+		t.Fatalf("warn should latch (no re-send), calls %d->%d", before, rec.count())
 	}
 
-	// 90% → final: inject + compact (summarize). 3 calls total now
-	// (1 warn message + 1 final message + 1 compact) + the post-compact
-	// reminder prompt_async.
-	r.budget.prompt = 900
+	// 75% → final: inject + compact again.
+	r.budget.prompt = 750
 	r.budget.steps = 2
 	r.maybeEnforceLadder(dimTokens)
-	// 900/1000 >= 0.9 → final. final compacts (summarize).
-	hasCompact := false
-	for _, c := range rec.calls {
-		if strings.HasSuffix(c.path, "/summarize") {
-			hasCompact = true
-		}
-	}
-	if !hasCompact {
-		t.Fatalf("final tier should compact the session (summarize), calls=%d", rec.summarizeCount())
+	if rec.summarizeCount() != 2 {
+		t.Fatalf("final tier should compact again (summarize), summarize=%d", rec.summarizeCount())
 	}
 }
 

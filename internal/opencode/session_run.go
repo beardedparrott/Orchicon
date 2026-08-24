@@ -906,16 +906,19 @@ func (r *sessionRun) sendAfterCompactReminder(steps int) {
 // one dimension (tokens/cost/time on a step boundary; tool-calls on a tool
 // use). It is the single enforcement point for every budget dimension:
 //
-//	levelWarn     → inject the warning message once (no compact)
+//	levelWarn     → inject the warning message once + compact the session
 //	levelEscalate → inject the message once + compact the session
 //	levelFinal    → inject the FINAL message once + compact the session
 //	levelAbort    → KILL the session and fail the execution (HARD)
 //
-// Each warning tier is latched in firedWarn so it fires exactly once per
-// execution (a dimension that crosses 50% then 75% then 90% sends all three,
-// but never re-sends one). abort is terminal and recovers via the same path
-// onStall's fatal branch uses (finish() first, THEN Abort, so the true
-// reason survives the serve's session.error echo).
+// Every non-abort tier compacts (not just escalate/final): the dominant
+// cost driver is re-sent context (cache reads) that grows each turn, so the
+// earliest warning must already shrink the working set before the worker is
+// well into budget. Each warning tier is latched in firedWarn so it fires
+// exactly once per execution (a dimension that crosses 25% then 50% then 75%
+// sends all three, but never re-sends one). abort is terminal and recovers
+// via the same path onStall's fatal branch uses (finish() first, THEN Abort,
+// so the true reason survives the serve's session.error echo).
 func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	r.mu.Lock()
 	if r.finished || r.budget == nil {
@@ -940,12 +943,15 @@ func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	}
 	r.firedWarn[d][idx] = true
 	msg := r.budgetSpec.message(d, level, frac)
-	compact := level == levelEscalate || level == levelFinal
+	// Compact at EVERY non-abort tier (warn/escalate/final), not just the
+	// escalate/final tiers: re-sent context is the dominant cost driver, so
+	// the first warning must already shrink the working set.
+	compact := true
 	r.mu.Unlock()
 
 	r.injectBudgetWarning(d, level, msg)
 	if compact {
-		r.doCompact(r.budget.steps, "budget_escalate:" + dimName(d))
+		r.doCompact(r.budget.steps, "budget_ladder:"+dimName(d))
 	}
 }
 

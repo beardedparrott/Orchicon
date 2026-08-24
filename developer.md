@@ -1,6 +1,6 @@
-# AGENTS.developer.md — Orchicon Development Guide
+# developer.md — Orchicon Development Guide
 
-Read on demand by agents working directly with the human developer (and by human contributors). Orchicon workers read `AGENTS.worker.md` instead — their instructions live in their system prompt.
+Read on demand by agents working directly with the human developer (and by human contributors). Orchicon workers read `worker.md` instead — their instructions live in their system prompt (and `worker.md` is injected into their session).
 
 - **Repo**: https://github.com/beardedparrott/Orchicon.git
 - **Language**: Go (control plane) + TypeScript (frontend)
