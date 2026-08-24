@@ -116,6 +116,9 @@ runtime_image_needs_rebuild() {
 }
 
 build_image() {
+  # BuildKit gives us layer caching + --mount=type=cache (persisted apt/package
+  # caches across builds) so a rebuild does NOT re-download every package.
+  export DOCKER_BUILDKIT=1
   log_dim "Building $IMAGE from $DOCKERFILE…"
   if [ ! -f "$PROJECT_ROOT/bin/orchicon" ]; then
     log_err "bin/orchicon not found — run 'make build' first (builds the frontend-embedded binary)"
