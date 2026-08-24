@@ -33,8 +33,12 @@ import (
 //     so a chatty session's re-sent prefix stays bounded. Independent of
 //     the ladder; it compacts but never warns or aborts.
 //   - cacheDiscount: no longer used for a weighted token gate. Cost is now
-//     priced (cache-aware) by the provider and tokens are counted at FULL
-//     weight, so there is no need to hand-tune a cache weight.
+//     priced (cache-aware) by the provider, and the token gate counts FRESH
+//     tokens only (prompt+completion+reasoning), excluding cache reads —
+//     which are re-sends of already-counted context and must not be able to
+//     trip the token abort on their own. Cache reads still govern spend via
+//     the cost gate (they are discounted but not free); there is no separate
+//     hand-tuned cache weight.
 //
 // Config flows through the SAME budget JSON (tenant default_budget_overrides
 // merged with the worker's budget_overrides) as the limits, so no DB schema
@@ -70,7 +74,7 @@ import (
 type budgetDimension int
 
 const (
-	dimTokens budgetDimension = 0 // raw token volume (all tokens full weight)
+	dimTokens budgetDimension = 0 // fresh token volume (prompt+completion+reasoning; cache reads excluded)
 	dimCost   budgetDimension = 1 // cache-aware priced cost
 	dimTools  budgetDimension = 2 // tool-call count
 	dimTime   budgetDimension = 3 // wall-clock elapsed
@@ -152,8 +156,14 @@ type budgetSpec struct {
 // budgetAccumulator tallies cumulative spend for one execution. It is fed
 // on each step_finish from the SAME token/cost unpacking the adapter already
 // performs for recordUsage — the gate never builds a second pricing formula.
-// Tokens are counted at FULL weight (prompt+completion+reasoning+cacheRead);
-// cost is the provider-discounted cache-aware dollar figure.
+//
+// The TOKEN gate counts only FRESH tokens (prompt+completion+reasoning) —
+// cache reads are the re-send figure and are excluded from the budget check,
+// because a long-context code worker can burn its budget re-sending context
+// it already holds without doing any real work. Cost, by contrast, is the
+// provider-discounted cache-aware dollar figure and still counts cache reads
+// at their (discounted) price — cache reads cost real money, so they must
+// still gate spend, just not the raw-token ceiling.
 type budgetAccumulator struct {
 	costUSD    float64
 	prompt     float64
@@ -173,9 +183,22 @@ func (a *budgetAccumulator) add(tokens map[string]any, cost float64) {
 	a.steps++
 }
 
-// totalTokens returns the FULL token count (no cache discount).
+// totalTokens returns the FULL token count (no cache discount). This is the
+// raw transport figure the worker pushed to the provider — cache reads
+// included. It is used for reporting/troubleshooting; the budget gate keys
+// off freshTokens() instead so a worker that merely re-sends context can't
+// spend its token budget without doing work.
 func (a *budgetAccumulator) totalTokens() float64 {
 	return a.prompt + a.completion + a.reasoning + a.cacheRead
+}
+
+// freshTokens returns only the tokens that represent actual work for the
+// execution: fresh input (prompt) + output (completion) + reasoning. Cache
+// reads are excluded — they are re-sends of tokens already counted, so a
+// cache-heavy session (e.g. a code worker re-loading a large tree) must not
+// be able to hit the token abort by re-sending context it already holds.
+func (a *budgetAccumulator) freshTokens() float64 {
+	return a.prompt + a.completion + a.reasoning
 }
 
 // elapsedSecs is a small helper to keep the dimension readout uniform.
@@ -187,8 +210,10 @@ func elapsedSecsToFloat(elapsed time.Duration) float64 {
 
 // effectiveTokenBudget resolves the tokens gate: unset → the built-in
 // default (defaultCompactTokens, 500,000); an explicit value <= 0 disables
-// the gate entirely (ok=false). Tokens are the FULL raw count (no cache
-// discount) — the operator's "count ALL tokens including cache" model.
+// the gate entirely (ok=false). The gate keys off FRESH tokens
+// (prompt+completion+reasoning) — cache reads are excluded (they re-send
+// already-counted context) — so the ceiling bounds real work, not transport.
+// Cache reads still factor into cost, which remains the other spend gate.
 func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	if spec.tokens == nil {
 		return defaultCompactTokens, true
@@ -285,7 +310,10 @@ func (s budgetSpec) fraction(d budgetDimension, acc *budgetAccumulator, elapsed 
 	var used float64
 	switch d {
 	case dimTokens:
-		used = acc.totalTokens()
+		// The token gate counts FRESH tokens only (no cache re-sends) — see
+		// freshTokens. Cache reads are cheap re-sends of already-counted
+		// context and must not be able to trip the abort on their own.
+		used = acc.freshTokens()
 	case dimCost:
 		used = acc.costUSD
 	case dimTools:
@@ -360,7 +388,7 @@ func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
 	if costUSD, ok := effectiveCostBudget(spec); ok && acc.costUSD >= costUSD {
 		return true
 	}
-	if tokens, ok := effectiveTokenBudget(spec); ok && acc.totalTokens() >= tokens {
+	if tokens, ok := effectiveTokenBudget(spec); ok && acc.freshTokens() >= tokens {
 		return true
 	}
 	return false
@@ -516,9 +544,10 @@ const (
 	// clean max observed on a narrow DeepSeek sample, with the intent that
 	// per-worker budgets are raised for materially costlier providers.
 	defaultCompactCostUSD = 0.50
-	// defaultCompactTokens is the built-in tokens gate (FULL weight) applied
-	// when a budget omits tokens. 500,000 is ~3x the clean max observed —
-	// real headroom without being oversized.
+	// defaultCompactTokens is the built-in tokens gate (FRESH tokens:
+	// prompt+completion+reasoning, cache reads excluded) applied when a
+	// budget omits tokens. 500,000 is ~3x the clean max observed — real
+	// headroom without being oversized.
 	defaultCompactTokens = 500_000.0
 	// defaultCompactMaxTurns is the orthogonal turn-count context-hygiene
 	// compact gate (see file header). 12 keeps a chatty session bounded
