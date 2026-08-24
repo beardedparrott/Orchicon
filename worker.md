@@ -1,6 +1,8 @@
-# AGENTS.worker.md — Orchicon Worker Rules
+# worker.md — Orchicon Worker Rules
 
-Read on demand by Orchicon workers. Your role, task, acceptance criteria, and the ORCHICON WORKER SUMMARY contract are already in your system prompt. This file holds the cross-cutting rules every worker must follow; when in doubt, follow your system prompt.
+This file is injected into every Orchicon worker session. Your role, task, acceptance criteria, and the ORCHICON WORKER SUMMARY contract are already in your system prompt. This file holds the cross-cutting rules every worker must follow; when in doubt, follow your system prompt.
+
+**You are an Orchicon worker — do NOT read `developer.md`.** That file is for the human developer and Ask Orchicon, not for worker sessions. Follow only this file and your system prompt; never load `developer.md` into your context.
 
 ## Rule 0 — Work within your provisioned worktree
 

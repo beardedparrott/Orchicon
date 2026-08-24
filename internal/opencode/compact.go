@@ -354,58 +354,70 @@ func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
 
 // ─── parsing ─────────────────────────────────────────────────────────────
 
-// defaultWarnFracs returns the built-in ladder thresholds.
+// defaultWarnFracs returns the built-in ladder thresholds. Deliberately
+// front-loaded (25/50/75 rather than 50/75/90): the ladder injects + compacts
+// at every tier, so warning early lets a worker correct its context handling
+// before it is well into the budget — the burn is dominated by re-sent context
+// (cache reads) that grows each turn, not by late output.
 func defaultWarnFracs() [dimCount][3]float64 {
 	return [dimCount][3]float64{
-		{0.5, 0.75, 0.9}, // tokens
-		{0.5, 0.75, 0.9}, // cost
-		{0.5, 0.75, 0.9}, // tools
-		{0.5, 0.75, 0.9}, // time
+		{0.25, 0.5, 0.75}, // tokens
+		{0.25, 0.5, 0.75}, // cost
+		{0.25, 0.5, 0.75}, // tools
+		{0.25, 0.5, 0.75}, // time
 	}
 }
 
 // defaultWarnMsgs returns the built-in escalating messages per dimension.
+// These are stricter than a nudge and front-loaded (fired at 25/50/75): they
+// explicitly call out CONTEXT as the driver (the burn is re-sent context /
+// fresh input, not output volume) and tell the worker to stop and reconsider
+// how it is handling context, re-focus on the todo list, and deliver the
+// minimal delta rather than continue exploring.
 func defaultWarnMsgs() [dimCount][3]string {
 	return [dimCount][3]string{
 		// tokens
 		{
-			"WARNING: You have used {pct}% of your token budget. Your output is too large and you are spending too many tokens. " +
-				"STOP expanding the work. Tighten your approach: batch your tool calls, stop narrating, and deliver only the minimal delta. " +
-				"If you do not reduce your token spend immediately, your session will be KILLED.",
-			"CRITICAL: You have used {pct}% of your token budget. You are burning through tokens dangerously fast. " +
-				"Consolidate EVERY remaining tool call into a single batch and finish the deliverable NOW. " +
+			"WARNING: You have used {pct}% of your token budget. STOP and reconsider how you are handling context — you are re-sending too much on every turn. " +
+				"Stick to your todo list and ensure you are moving forward efficiently. " +
+				"Empty your todo, consolidate EVERY remaining read/probe into ONE batched tool call, and deliver only the minimal delta. " +
+				"Reduce context churn immediately or your session will be KILLED.",
+			"CRITICAL: You have used {pct}% of your token budget. Your session context is too large and every turn re-sends it. " +
+				"STOP re-reading and exploring. Consolidate EVERY remaining tool call into a single batch, stick to your todo list, and finish the deliverable NOW. " +
 				"Your session will be KILLED if you keep spending at this rate.",
 			"FINAL WARNING: You have used {pct}% of your token budget. This is your last chance. " +
-				"You must complete your work in the next minimal number of tool calls or your session will be KILLED. " +
-				"Stop all exploration. Finish now.",
+				"Stop all exploration. Finish your work in the next minimal number of tool calls or your session will be KILLED. " +
+				"Stick to your todo list and move forward efficiently. Deliver now.",
 		},
 		// cost
 		{
-			"WARNING: You have used {pct}% of your cost budget. You are spending too much money. " +
-				"STOP the expensive work and consolidate. Batch tool calls. Deliver the minimum. " +
+			"WARNING: You have used {pct}% of your cost budget. STOP and reconsider how you are handling context — you are re-sending too much on every turn. " +
+				"Stick to your todo list, consolidate your remaining tool calls into ONE batch, and deliver the minimum. " +
 				"Reduce your spend immediately or your session will be KILLED.",
 			"CRITICAL: You have used {pct}% of your cost budget. You are on pace to blow past it. " +
-				"Use only the cheapest possible tool calls, do not re-derive anything, and finish NOW. " +
+				"Use only the cheapest possible tool calls, do not re-derive anything, stick to your todo list, and finish NOW. " +
 				"Your session will be KILLED if you keep spending.",
 			"FINAL WARNING: You have used {pct}% of your cost budget. This is your last warning. " +
-				"Complete your work in the next minimal tool calls or your session will be KILLED.",
+				"Complete your work in the next minimal tool calls or your session will be KILLED. Deliver now.",
 		},
 		// tools
 		{
-			"WARNING: YOU ARE CALLING TOOLS TOO OFTEN. BATCH YOUR TOOL CALLS TOGETHER OR YOU WILL RISK YOUR SESSION BEING KILLED.",
+			"WARNING: YOU ARE CALLING TOOLS TOO OFTEN. STOP and batch your tool calls together into a single round-trip, " +
+				"stick to your todo list, and move forward efficiently — or you will risk your session being KILLED.",
 			"CRITICAL: YOU ARE STILL CALLING TOOLS TOO OFTEN. STOP the micro tool calls. You MUST batch them together " +
-				"into a single round-trip. Your session will be KILLED if you keep splitting your calls.",
+				"into a single round-trip and focus on completing the todo list. Your session will be KILLED if you keep splitting your calls.",
 			"FINAL WARNING: YOUR TOOL CALL LIMIT IS ALMOST REACHED. YOU HAVE ONLY A HANDFUL OF TOOL CALLS LEFT. " +
 				"You MUST finish your work in the next tool calls or your session WILL BE KILLED. " +
-				"Batch everything. Finish now.",
+				"Batch everything. Stick to the todo list. Finish now.",
 		},
 		// time
 		{
-			"WARNING: IT HAS BEEN {pct}% OF YOUR TIME BUDGET. YOU NEED TO WORK QUICKLY AND FINISH YOUR WORK TO AVOID EXCEEDING BUDGET — YOUR SESSION WILL BE KILLED.",
-			"CRITICAL: YOU ARE RUNNING OUT OF TIME ({pct}% ELAPSED). STOP the slow path: batch your remaining tool calls and finish NOW. " +
-				"Your session will be KILLED if you do not finish quickly.",
+			"WARNING: IT HAS BEEN {pct}% OF YOUR TIME BUDGET. STOP and work efficiently: batch your remaining tool calls, " +
+				"stick to your todo list, and finish your work to avoid exceeding budget — YOUR SESSION WILL BE KILLED.",
+			"CRITICAL: YOU ARE RUNNING OUT OF TIME ({pct}% ELAPSED). STOP the slow path: batch your remaining tool calls, " +
+				"stick to your todo list, and finish NOW. Your session will be KILLED if you do not finish quickly.",
 			"FINAL WARNING: {pct}% OF YOUR TIME IS GONE. You have almost no time left. " +
-				"Complete your work in the next tool calls. Your session will be KILLED at the time limit.",
+				"Complete your work in the next tool calls. Stick to your todo list. Your session will be KILLED at the time limit.",
 		},
 	}
 }

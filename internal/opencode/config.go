@@ -343,9 +343,9 @@ func permissionRules() map[string]any {
 	}
 	return map[string]any{
 		"external_directory": map[string]any{
-			"*":                     "deny",
-			ScratchDir + "/**":      "allow",
-			orchidsRunDirPattern:    "allow",
+			"*":                  "deny",
+			ScratchDir + "/**":   "allow",
+			orchidsRunDirPattern: "allow",
 		},
 		"bash": rules,
 		// Deny the subagent tool (see taskToolDeny).
@@ -436,6 +436,17 @@ func BuildConfigContent(o ConfigOptions) string {
 	if o.DefaultAgent != "" {
 		cfg["default_agent"] = o.DefaultAgent
 	}
+	// Inject the worker's cross-cutting rule file (worker.md) as dedicated
+	// instructions rather than letting the model discover/read it on demand.
+	// opencode combines these with the auto-loaded AGENTS.md router, so a
+	// worker gets the correct rules deterministically and never needs to (and
+	// is told not to) read developer.md — closing the gap where a worker
+	// self-classified as a "developer" and pulled the wrong file. The path is
+	// resolved relative to the session cwd (the worktree), where worker.md is
+	// tracked. Ask Orchicon uses a separate session path and is unaffected.
+	if o.DefaultAgent == workerAgent {
+		cfg["instructions"] = []string{"worker.md"}
+	}
 
 	// Merge MCP servers: the user's own opencode-config servers first,
 	// then the built-in Orchicon MCP (unless the user already defines one
@@ -472,6 +483,26 @@ func BuildConfigContent(o ConfigOptions) string {
 	// `auto` compaction, left at opencode's default). Enabling `prune`
 	// directly cuts the accumulated-output token cost across a step.
 	cfg["compaction"] = map[string]any{"prune": true}
+
+	// Let a worker ingest a large file in ONE `read` instead of being forced
+	// to chunk it across many small calls. opencode's default tool-output cap
+	// (~50KB) truncates big `read`/`bash` results, so a model that needs a
+	// large file keeps re-issuing small reads over many turns — and every
+	// extra turn re-sends the whole accumulated context (the dominant cost).
+	// Raising the cap trades one big context append for many re-sends.
+	// Orchicon's own capToolOutput (maxToolOutputBytes, default 128k) still
+	// bounds the DURABLE transcript persisted for recovery/follow-ups, so the
+	// two caps are independent: opencode controls what the model per-turn
+	// sees, Orchicon controls what is stored.
+	cfg["tool_output"] = map[string]any{"max_bytes": 512000, "max_lines": 5000}
+
+	// Ask opencode to batch independent tool calls into a single assistant
+	// turn rather than emit them one at a time. Being explicit about batching
+	// (rather than only prompting for it) collapses the number of model
+	// round-trips, which is the main per-turn cost lever for a context-heavy
+	// task. Experimental in opencode; harmless if the provider/model cannot
+	// batch (it falls back to sequential calls).
+	cfg["experimental"] = map[string]any{"batch_tool": true}
 
 	b, err := json.Marshal(cfg)
 	if err != nil {
@@ -655,4 +686,3 @@ func contains(slice []string, s string) bool {
 	}
 	return false
 }
-
