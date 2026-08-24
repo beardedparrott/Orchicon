@@ -23,6 +23,7 @@ import type { TodoItem } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { TodoStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { TodoPriority } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { useGetExecutionSession, useGetExecutionTodos } from "@/api/executions";
+import { useListOpenCodeModels } from "@/api/aigateway";
 import { cn } from "@/lib/utils";
 
 const EXEC_STATUS_LABELS: Record<number, string> = {
@@ -62,10 +63,11 @@ interface ExecutionContextSidebarProps {
   exec: WorkerExecution;
   events: StreamExecutionEventsResponse[];
   usage: UsageRecord[];
-  /** Approximate context window size. We don't have this from the
-   *  worker definition yet — picked conservatively so the progress
-   *  bar shows useful info even on free models. v0.2 can read
-   *  context_window from the model discovery endpoint. */
+  /** Optional override for the model's context window. When omitted, the
+   *  panel resolves the real window from the model that actually ran (usage
+   *  records' provider+model → model discovery limits.context). If it can't
+   *  be resolved, the panel shows the working set without a fabricated
+   *  percentage/denominator rather than guessing. */
   contextWindow?: number;
   streamStatus?: string;
   /** Execution id — used to backfill tool/message counts from the durable
@@ -89,7 +91,7 @@ export function ExecutionContextSidebar({
   exec,
   events,
   usage,
-  contextWindow = 200_000,
+  contextWindow,
   streamStatus,
   executionId,
 }: ExecutionContextSidebarProps) {
@@ -194,81 +196,114 @@ export function ExecutionContextSidebar({
     return s;
   }, [events, transcript]);
 
+  // Resolve the REAL model context window from the model that actually ran.
+  // The usage records carry provider+model; we match that against model
+  // discovery's opencode model and take limits.context. When the panel
+  // received an explicit contextWindow prop (or the model can't be
+  // resolved), fall back to that / unknown rather than fabricating a window.
+  const { data: models } = useListOpenCodeModels();
+  const resolvedContextWindow = useMemo(() => {
+    if (contextWindow && contextWindow > 0) return contextWindow;
+    if (!models || models.length === 0) return 0;
+    // Pick the model from the most recent usage record (provider+model).
+    const latest = usage[usage.length - 1];
+    if (!latest?.provider || !latest?.model) return 0;
+    const ref = `${latest.provider}/${latest.model}`;
+    const found =
+      models.find((m) => m.modelRef === ref) ??
+      models.find((m) => m.id === latest.model);
+    const ctx = found?.limits?.context ? Number(found.limits.context) : 0;
+    return ctx > 0 ? ctx : 0;
+  }, [contextWindow, models, usage]);
+
   // Token usage breakdown from usage_records (AI Gateway dual-write).
-  // `total` is the CUMULATIVE re-send sum (each usage_records row is the
-  // full per-step_finish request size, so the sum grows with every model
-  // call — a transport/spend figure, NOT the model's working set).
-  // `peak` is the LARGEST single-step total_tokens — the actual
-  // current/peak context window used by the model. The Context card and
-  // its % bar key off `peak` (bounded, interpretable); the cumulative
-  // figure is surfaced separately and labelled as cumulative.
+  // `workingSet` is the PEAK single-step FRESH token count
+  // (prompt+completion+reasoning, cache EXCLUDED) — the largest working set
+  // the model actually held in a single step. It is bounded and
+  // interpretable, and it is what the Context % bar is measured against the
+  // (real) context window. Cache reads are re-sends of already-counted
+  // tokens, so they are deliberately NOT part of the working set — they live
+  // in the cumulative cache-transport section instead.
   //
-  // The Messages token bars ALSO key off `peak`: they show the per-bucket
-  // composition OF the peak row (the single step with the largest working
-  // set), so Input/Output/Cache-read/Cache-write are slices of the same
-  // number the Context card shows — not cumulative sums that dwarf it
-  // (743k cache-read next to a 54k working set was cumulative-vs-peak,
-  // not a bug in either). Cumulative totals stay available under
-  // `cum.*` for the labelled footer.
+  // `entered` is the CUMULATIVE re-send sum (each usage_records row is the
+  // full per-step_finish request size, so the sum grows with every model
+  // call — a transport/spend figure, NOT the model's working set). It is
+  // surfaced separately as the cumulative billed footer.
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
     let cacheRead = 0;
     let cacheWrite = 0;
     let reasoning = 0;
-    let total = 0;
-    let peak = 0;
+    let entered = 0;
+    let workingSet = 0;
     let cost = 0;
     let cumCacheRead = 0;
+    let cumCacheWrite = 0;
     let cumPrompt = 0;
     let peakPrompt = 0;
     let peakCompletion = 0;
-    let peakCacheRead = 0;
-    let peakCacheWrite = 0;
     let peakReasoning = 0;
     for (const r of usage) {
-      prompt += Number(r.promptTokens);
-      completion += Number(r.completionTokens);
-      cacheRead += Number(r.cacheReadTokens) || 0;
-      cacheWrite += Number(r.cacheWriteTokens) || 0;
-      reasoning += Number(r.reasoningTokens) || 0;
-      total += Number(r.totalTokens);
-      const row = Number(r.totalTokens);
-      if (row > peak) {
-        peak = row;
-        peakCacheRead = Number(r.cacheReadTokens) || 0;
-        peakCacheWrite = Number(r.cacheWriteTokens) || 0;
-        peakReasoning = Number(r.reasoningTokens) || 0;
-        peakPrompt = Number(r.promptTokens);
-        peakCompletion = Number(r.completionTokens);
-      }
-      // Cumulative numerators only what's meaningful for a hit-rate
-      // footer (cumulative reads vs cumulative new input).
-      cumCacheRead += Number(r.cacheReadTokens) || 0;
-      cumPrompt += Number(r.promptTokens);
+      const p = Number(r.promptTokens) || 0;
+      const c = Number(r.completionTokens) || 0;
+      const rsn = Number(r.reasoningTokens) || 0;
+      const cr = Number(r.cacheReadTokens) || 0;
+      const cw = Number(r.cacheWriteTokens) || 0;
+      prompt += p;
+      completion += c;
+      cacheRead += cr;
+      cacheWrite += cw;
+      reasoning += rsn;
+      entered += Number(r.totalTokens) || 0;
       cost += Number(r.costUsd);
+      cumCacheRead += cr;
+      cumCacheWrite += cw;
+      cumPrompt += p;
+      // Fresh working set excludes cache reads (re-sends), matching the
+      // budget gate semantics — the model really held p+c+rsn distinct
+      // tokens in this step.
+      const fresh = p + c + rsn;
+      if (fresh > workingSet) {
+        workingSet = fresh;
+        peakPrompt = p;
+        peakCompletion = c;
+        peakReasoning = rsn;
+      }
     }
-    // Peak-row buckets (coherent with `peak`).
+    // Peak-row FRESH buckets (coherent with `workingSet`).
     const peakBuckets = {
       prompt: peakPrompt,
       completion: peakCompletion,
-      cacheRead: peakCacheRead,
-      cacheWrite: peakCacheWrite,
       reasoning: peakReasoning,
     };
-    return { prompt, completion, cacheRead, cacheWrite, reasoning, total, peak, cost, peakBuckets, cumCacheRead, cumPrompt };
+    return { prompt, completion, cacheRead, cacheWrite, reasoning, entered, workingSet, cost, peakBuckets, cumCacheRead, cumCacheWrite, cumPrompt };
   }, [usage]);
 
-  // Context %: the PEAK single-step total_tokens (the model's working set)
-  // vs the context window. Falls back to exec.tokenUsage when no usage
-  // records exist. This is what makes a long-lived worker never show
-  // "context > window" from cumulative re-sends.
-  const totalTokens = usageBreakdown.peak || Number(exec.tokenUsage) || 0;
+  // Cache hit-rate: fraction of new input that was served from cache
+  // (cumulative reads vs cumulative fresh input). A real, interpretable
+  // figure for the cache-transport bar.
+  const cacheHitRate =
+    usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt > 0
+      ? Math.round(
+          (usageBreakdown.cumCacheRead /
+            (usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt)) *
+            100,
+        )
+      : 0;
+
+  // Working set is the PEAK FRESH single-step token count. Falls back to
+  // exec.tokenUsage when no usage records exist (a legacy single number).
+  const totalTokens = usageBreakdown.workingSet || Number(exec.tokenUsage) || 0;
   const cost =
     usageBreakdown.cost > 0 ? usageBreakdown.cost : Number(exec.costUsd);
+  // The % bar only exists when the RESOLVED context window is known. When
+  // it isn't, we show the working set with a "window unknown" label instead
+  // of a fabricated percentage.
+  const effectiveContextWindow = resolvedContextWindow;
   const contextPct =
-    contextWindow > 0
-      ? Math.min(100, Math.round((totalTokens / contextWindow) * 100))
+    effectiveContextWindow > 0
+      ? Math.min(100, Math.round((totalTokens / effectiveContextWindow) * 100))
       : 0;
 
   const statusLabel = EXEC_STATUS_LABELS[exec.status] ?? "unknown";
@@ -287,9 +322,11 @@ export function ExecutionContextSidebar({
       : stats.lastAssistantText
     : "—";
 
-  // Token % bars key off the PEAK-row buckets (same basis as the Context
-  // card's working-set %) so the Messages breakdown is slices of the same
-  // number, not cumulative sums that dwarf it.
+  // Token % bars for the working-set mix key off the PEAK FRESH row buckets
+  // (prompt+completion+reasoning, cache excluded) — the same basis as the
+  // Context card's working-set %, so the Messages breakdown is slices of the
+  // same number the Context card shows. Cache reads/writes are NOT baked in;
+  // they're shown separately in the cumulative cache-transport section.
   const peakBuckets = usageBreakdown.peakBuckets;
   const peakRolePct = (n: number) =>
     totalTokens > 0 ? Math.round((n / totalTokens) * 100) : 0;
@@ -303,7 +340,7 @@ export function ExecutionContextSidebar({
             Context
           </h3>
           <span className="text-xs font-medium text-muted-foreground">
-            {contextPct}%
+            {effectiveContextWindow > 0 ? `${contextPct}%` : "—"}
           </span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -321,14 +358,22 @@ export function ExecutionContextSidebar({
         </div>
         <div className="mt-1 flex items-baseline justify-between text-xs text-muted-foreground">
           <span className="font-mono">{fmtNum(totalTokens)} tokens</span>
-          <span>peak working set / {fmtNum(contextWindow)} window</span>
+          <span>
+            {effectiveContextWindow > 0 ? (
+              <>
+                peak working set / {fmtNum(effectiveContextWindow)} window
+              </>
+            ) : (
+              "working set (model window unknown)"
+            )}
+          </span>
         </div>
-        {usageBreakdown.total > totalTokens && (
+        {usageBreakdown.entered > totalTokens && (
           <div className="mt-1.5 border-t pt-1 text-[10px] text-muted-foreground">
             <div>
               Cumulative billed:{" "}
               <span className="font-mono">
-                {fmtNum(usageBreakdown.total)} tokens · ${cost.toFixed(4)}
+                {fmtNum(usageBreakdown.entered)} tokens · ${cost.toFixed(4)}
               </span>
             </div>
             <div>
@@ -336,8 +381,8 @@ export function ExecutionContextSidebar({
               <span className="font-mono">
                 {fmtNum(usageBreakdown.cacheRead)}
               </span>{" "}
-              cache-read re-sent each turn — the provider bills this
-              cumulative total, not the working set above)
+              cache-read re-sent each turn — that's transport, not the{" "}
+              {fmtNum(totalTokens)}-token working set above)
             </div>
           </div>
         )}
@@ -408,10 +453,11 @@ export function ExecutionContextSidebar({
             color="bg-amber-500"
           />
         </div>
-        {usageBreakdown.total > 0 && (
+        {usageBreakdown.entered > 0 && (
           <div className="mt-3 space-y-1">
             <div className="text-[10px] text-muted-foreground">
-              Token mix at peak context (of {fmtNum(totalTokens)})
+              Token mix at peak working set (of {fmtNum(totalTokens)}, cache
+              excluded)
             </div>
             <TokenBar
               label="Input"
@@ -425,22 +471,6 @@ export function ExecutionContextSidebar({
               pct={peakRolePct(peakBuckets.completion)}
               color="bg-violet-500"
             />
-            {peakBuckets.cacheRead > 0 && (
-              <TokenBar
-                label="Cache read"
-                count={peakBuckets.cacheRead}
-                pct={peakRolePct(peakBuckets.cacheRead)}
-                color="bg-emerald-500"
-              />
-            )}
-            {peakBuckets.cacheWrite > 0 && (
-              <TokenBar
-                label="Cache write"
-                count={peakBuckets.cacheWrite}
-                pct={peakRolePct(peakBuckets.cacheWrite)}
-                color="bg-teal-500"
-              />
-            )}
             {peakBuckets.reasoning > 0 && (
               <TokenBar
                 label="Reasoning"
@@ -449,19 +479,52 @@ export function ExecutionContextSidebar({
                 color="bg-amber-500"
               />
             )}
-            {usageBreakdown.cumCacheRead > 0 && (
-              <div className="mt-2 text-[10px] font-medium text-emerald-600">
-                Cumulative cache hit{" "}
-                {Math.round(
-                  (usageBreakdown.cumCacheRead /
-                    (usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt)) *
-                    100,
+            {/* Cache transport is a SEPARATE figure from the working set —
+                it's cumulative re-sends of already-counted tokens, so it
+                gets its own bar + hit-rate %, not a slice of the mix. */}
+            {(usageBreakdown.cumCacheRead > 0 || usageBreakdown.cumCacheWrite > 0) && (
+              <div className="mt-2 border-t border-dashed pt-1.5">
+                <div className="mb-1 flex items-center justify-between text-[10px]">
+                  <span className="font-medium uppercase tracking-wider text-muted-foreground">
+                    Cache transport (cumulative)
+                  </span>
+                  {cacheHitRate > 0 && (
+                    <span className="font-mono font-medium text-emerald-600">
+                      {cacheHitRate}% hit rate
+                    </span>
+                  )}
+                </div>
+                {usageBreakdown.cumCacheRead > 0 && (
+                  <TokenBar
+                    label="Cache read (re-sent)"
+                    count={usageBreakdown.cumCacheRead}
+                    pct={cacheHitRate}
+                    color="bg-emerald-500"
+                  />
                 )}
-                %
+                {usageBreakdown.cumCacheWrite > 0 && (
+                  <TokenBar
+                    label="Cache write"
+                    count={usageBreakdown.cumCacheWrite}
+                    pct={
+                      usageBreakdown.cumCacheWrite +
+                        usageBreakdown.cumPrompt >
+                      0
+                        ? Math.round(
+                            (usageBreakdown.cumCacheWrite /
+                              (usageBreakdown.cumCacheWrite +
+                                usageBreakdown.cumPrompt)) *
+                              100,
+                          )
+                        : 0
+                    }
+                    color="bg-teal-500"
+                  />
+                )}
               </div>
             )}
             <div className="mt-1 border-t pt-1 text-[10px] text-muted-foreground">
-              Cumulative (transport): {fmtNum(usageBreakdown.prompt)} input ·{" "}
+              Cumulative (billed): {fmtNum(usageBreakdown.prompt)} input ·{" "}
               {fmtNum(usageBreakdown.cacheRead)} cache read ·{" "}
               {fmtNum(usageBreakdown.completion)} output
             </div>

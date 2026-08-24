@@ -39,24 +39,34 @@ func TestBudgetBreachedCostGate(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedTokenFullWeight verifies the token gate counts ALL
-// tokens at full weight (prompt+completion+reasoning+cache_read) with NO
-// cache discount — the operator's "count everything" model. Cache reads are
-// real tokens the worker consumed and must be counted at full value.
-func TestBudgetBreachedTokenFullWeight(t *testing.T) {
-	// 100 input + 50 output + 10 reasoning + 40 cache = 200 budgeted.
+// TestBudgetBreachedTokenFreshWeight verifies the token gate counts FRESH
+// tokens only (prompt+completion+reasoning) and EXCLUDES cache reads. Cache
+// reads re-send already-counted context, so a cache-heavy code worker must
+// not be able to trip the token abort by re-sending context it already holds
+// — that path is instead governed by the cost gate, which still prices cache
+// reads (at the provider's discounted rate).
+func TestBudgetBreachedTokenFreshWeight(t *testing.T) {
+	// 100 input + 50 output + 10 reasoning = 160 fresh; cache 40 is excluded.
 	acc := &budgetAccumulator{prompt: 100, completion: 50, reasoning: 10, cacheRead: 40}
-	if budgetBreached(budgetSpec{tokens: float64Ptr(300)}, acc) {
-		t.Fatal("expected no breach: 260 budgeted < 300 token budget")
+	if budgetBreached(budgetSpec{tokens: float64Ptr(200)}, acc) {
+		t.Fatal("expected no breach: 160 fresh < 200 token budget (cache excluded)")
 	}
-	if !budgetBreached(budgetSpec{tokens: float64Ptr(200)}, acc) {
-		t.Fatal("expected breach once full token count reaches the token budget")
+	if !budgetBreached(budgetSpec{tokens: float64Ptr(160)}, acc) {
+		t.Fatal("expected breach once fresh token count reaches the token budget")
 	}
-	// A cache-heavy session counts its cache reads in full — no discount.
-	// 5k prompt + 2k completion + 100 reasoning + 1.1M cache = ~1.107M.
-	if !budgetBreached(budgetSpec{tokens: float64Ptr(200_000)},
+	// A cache-heavy session with LOTS of cache reads but small fresh tokens
+	// must NOT breach by cache alone. 5k prompt + 2k completion + 100
+	// reasoning = 7.1k fresh, 1.1M cache — the cache reads are excluded.
+	if budgetBreached(budgetSpec{tokens: float64Ptr(200_000)},
 		&budgetAccumulator{prompt: 5_000, completion: 2_000, reasoning: 100, cacheRead: 1_100_000}) {
-		t.Fatal("expected cache reads to count in full toward the token budget")
+		t.Fatal("expected cache reads to be excluded from the token budget")
+	}
+	// But a cache-heavy session can still breach via the COST gate, which
+	// prices cache reads (cheap but not free). $200k tokens of cache read is
+	// real money; a tiny cost ceiling must trip.
+	if !budgetBreached(budgetSpec{costUSD: float64Ptr(0.01), tokens: float64Ptr(200_000)},
+		&budgetAccumulator{prompt: 5_000, completion: 2_000, reasoning: 100, cacheRead: 1_100_000, costUSD: 0.02}) {
+		t.Fatal("expected cache-heavy session to breach the cost gate")
 	}
 }
 
@@ -814,13 +824,13 @@ func TestLadderCompactReArm(t *testing.T) {
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
 	r := &sessionRun{
-		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
-		parentCtx:  context.Background(),
-		execRow:    db.ExecutionRow{ID: "exec-ladder-rearm", TenantID: "tnt_dev"},
-		client:     NewSessionClient(srv.URL, "", ""),
-		sessionID:  "sess-1",
-		modelRef:   "opencode/deepseek-v4-flash-free",
-		budget:     &budgetAccumulator{},
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-ladder-rearm", TenantID: "tnt_dev"},
+		client:    NewSessionClient(srv.URL, "", ""),
+		sessionID: "sess-1",
+		modelRef:  "opencode/deepseek-v4-flash-free",
+		budget:    &budgetAccumulator{},
 		// All tiers compact, so the re-arm latch is the only thing gating.
 		budgetSpec: parseBudgetSpec([]byte(`{"tokens":1000,"tool_call_count":100,"compact_tiers":[true,true,true]}`)),
 		startedAt:  time.Now(),
@@ -859,7 +869,7 @@ func TestLadderCompactReArm(t *testing.T) {
 }
 
 // TestLadderTokenAbortAtLimit verifies the token dimension hard-aborts once
-// full token count reaches the configured limit (100% → budget_abort:tokens).
+// FRESH token count reaches the configured limit (100% → budget_abort:tokens).
 func TestLadderTokenAbortAtLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
@@ -877,7 +887,7 @@ func TestLadderTokenAbortAtLimit(t *testing.T) {
 		done:       make(chan struct{}),
 		stats:      &execStreamState{},
 	}
-	r.budget.cacheRead = 1000 // full token count reaches the limit
+	r.budget.prompt = 1000 // fresh token count reaches the limit (cache excluded)
 	r.maybeEnforceLadder(dimTokens)
 	r.mu.Lock()
 	fin, ok, resultErr := r.finished, r.resultOk, r.resultErr

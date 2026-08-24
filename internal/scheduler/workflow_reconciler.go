@@ -516,9 +516,28 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	passes := 0
 	for {
 		if passes >= maxDAGPasses {
-			r.log.Warn("workflow DAG pass limit reached — aborting pass",
+			// The pass made no forward progress across maxDAGPasses
+			// iterations — a pathological run that flips a step's status
+			// every pass (e.g. a loop_decision runaway). Do NOT return an
+			// error here: returning would trigger the deferred Rollback,
+			// which would silently discard every write this pass already
+			// made — the `recovering` transition and the appended
+			// `recoveryTriggers` from a genuinely-failed step (e.g. a
+			// budget-aborted execution configured for summarize_restart).
+			// Those recovery writes are the whole point of the failure
+			// path: dropping them is what "swallowed step-recovery and left
+			// the run dead in the tracks" (workflow run 01M0TJYNMEG95...).
+			// Instead, break out of the loop so the pass's accumulated
+			// progress + staged recovery triggers are COMMITTED (and the
+			// deferred fire loop below actually runs them). The bound still
+			// holds: we break after maxDAGPasses iterations, so no single
+			// reconcile call can pin a goroutine. A run left 'running' is
+			// re-scanned every heartbeat (ListPendingWorkflowRuns includes
+			// 'running'), so it resumes where it left off — each pass is
+			// still bounded.
+			r.log.Warn("workflow DAG pass limit reached — committing pass progress",
 				"run", runID, "passes", passes)
-			return fmt.Errorf("workflow run %s: DAG pass limit (%d) exceeded — possible stuck run", runID, maxDAGPasses)
+			break
 		}
 		passes++
 		madeProgress := false
