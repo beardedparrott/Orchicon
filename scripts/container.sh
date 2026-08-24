@@ -116,6 +116,15 @@ runtime_image_needs_rebuild() {
 }
 
 build_image() {
+  # The image Dockerfiles use BuildKit cache mounts (--mount=type=cache) so
+  # rebuilt layers don't re-download apt packages. Require docker-buildx and
+  # enable BuildKit; fail with a clear hint when it's missing.
+  if ! docker buildx version >/dev/null 2>&1; then
+    log_err "docker-buildx (BuildKit) is required to build the images — the Dockerfiles use --mount=type=cache for apt caching."
+    log_err "Install it:  paru -S docker-buildx  (Arch)  |  sudo apt install docker-buildx  (Debian)  |  docker buildx install"
+    return 1
+  fi
+  export DOCKER_BUILDKIT=1
   log_dim "Building $IMAGE from $DOCKERFILE…"
   if [ ! -f "$PROJECT_ROOT/bin/orchicon" ]; then
     log_err "bin/orchicon not found — run 'make build' first (builds the frontend-embedded binary)"
