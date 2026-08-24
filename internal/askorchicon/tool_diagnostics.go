@@ -153,7 +153,14 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 	defer ttx.Rollback(ctx)
-	settings, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, db.TenantSettingsRow{
+
+	// The typed budget columns are written unconditionally on upsert, so
+	// preserve the current ladder/gates and overlay the client's budget JSON.
+	cur, err := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	inRow := db.TenantSettingsRow{
 		DefaultWorkerModel:               params.DefaultWorkerModel,
 		DefaultAskOrchiconModel:          params.DefaultAskOrchiconModel,
 		StallNoProgressWindowSeconds:     params.StallNoProgressWindowSeconds,
@@ -169,7 +176,13 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,
 		SessionAccessTokenTtlSeconds:     params.SessionAccessTokenTtlSeconds,
 		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
-	})
+	}
+	inRow.Budget = cur.Budget
+	if err := inRow.ApplyBudgetJSON(budget); err != nil {
+		return nil, fmt.Errorf("invalid default_budget_overrides: %w", err)
+	}
+
+	settings, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, inRow)
 	if err != nil {
 		return nil, err
 	}
