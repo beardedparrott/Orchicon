@@ -115,6 +115,35 @@ runtime_image_needs_rebuild() {
   [ "$current" != "$ver" ]
 }
 
+# buildkit_available reports whether the host docker can run BuildKit
+# builds (the docker-buildx plugin resolves). We use BuildKit apt cache
+# mounts ONLY when it does; a missing buildx falls back to the classic
+# builder, which needs no plugin and already caches an apt layer that
+# precedes the changing COPY — so the build never fails over a missing
+# cache mount.
+buildkit_available() {
+  docker buildx version >/dev/null 2>&1
+}
+
+# cached_dockerfile writes a transient copy of the given Dockerfile that
+# pushes the apt layer onto a persistent BuildKit cache mount
+# (--mount=type=cache,target=/var/cache/apt) and echoes the path. It is
+# only called when buildkit_available is true; the stock Dockerfile stays
+# classic-builder-safe, so a missing buildx degrades to a plain build. The
+# apt chains in the shipped Dockerfiles open with `RUN groupmod -g 70
+# postgres` (container) or `RUN apt-get update` (runtime) — those are the
+# lines the mount is added to. The generated file lives in /tmp and is
+# removed by the caller.
+cached_dockerfile() {
+  local srcfile="$1" tmp
+  tmp="$(mktemp)"
+  sed -E \
+    -e '1i # syntax=docker/dockerfile:1' \
+    -e 's/^RUN (groupmod -g 70 postgres|apt-get update) \\$/RUN --mount=type=cache,target=\/var\/cache\/apt \1 \\/' \
+    "$srcfile" > "$tmp"
+  printf '%s' "$tmp"
+}
+
 build_image() {
   log_dim "Building $IMAGE from $DOCKERFILE…"
   if [ ! -f "$PROJECT_ROOT/bin/orchicon" ]; then
@@ -122,8 +151,21 @@ build_image() {
     return 1
   fi
   cp "$PROJECT_ROOT/bin/orchicon" "$CONTEXT/orchicon"
-  docker build -f "$DOCKERFILE" -t "$IMAGE" "$CONTEXT"
+
+  # BuildKit apt cache mounts when the host has buildx; otherwise build the
+  # stock Dockerfile with the classic builder. Never hard-require buildx —
+  # a missing plugin just means a plain (still layer-cached) build.
+  local BUILDX=0
+  local MAIN_DF="$DOCKERFILE"
+  if buildkit_available; then
+    BUILDX=1
+    export DOCKER_BUILDKIT=1
+    MAIN_DF="$(cached_dockerfile "$DOCKERFILE")"
+    log_dim "buildx available — building with BuildKit apt cache mounts"
+  fi
+  docker build -f "$MAIN_DF" -t "$IMAGE" "$CONTEXT"
   log_ok "Image $IMAGE built (run 'scripts/container.sh up' to start an instance)"
+  [ "$BUILDX" = "1" ] && rm -f "$MAIN_DF"
 
   # Workflow runtime base image (one short-lived container per active
   # workflow run — see DOCUMENTATION.md §Workflow Runtime Containers).
@@ -140,9 +182,12 @@ build_image() {
   RT_BASE_VERSION="$(runtime_image_version "$RT_DOCKERFILE" "$APP_VERSION")"
 
   if runtime_image_needs_rebuild "$RUNTIME_IMAGE" "$RT_BASE_VERSION"; then
+    local RT_DF="$RT_DOCKERFILE"
+    [ "$BUILDX" = "1" ] && RT_DF="$(cached_dockerfile "$RT_DOCKERFILE")"
     log_dim "Building $RUNTIME_IMAGE from $RT_DOCKERFILE (runtime v$RT_BASE_VERSION)…"
-    docker build --label "org.orchicon.runtime.version=$RT_BASE_VERSION" -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
+    docker build --label "org.orchicon.runtime.version=$RT_BASE_VERSION" -f "$RT_DF" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
     log_ok "Runtime image $RUNTIME_IMAGE built"
+    [ "$BUILDX" = "1" ] && rm -f "$RT_DF"
   else
     log_dim "Runtime image $RUNTIME_IMAGE up to date (runtime v$RT_BASE_VERSION) — skipping"
   fi

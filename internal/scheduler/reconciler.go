@@ -989,7 +989,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeMax = s.StallNudgeMax
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
-				defaultBudgetOverrides = s.DefaultBudgetOverrides
+				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
 		}
@@ -2186,18 +2186,18 @@ func extractIssuesLine(output string, results map[string]any) {
 //
 // Rules:
 //
-// - Last occurrence of each line wins (final state is authoritative).
-// - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
-//   stripped before matching — exactly as extractIssuesLine does.
-// - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
-//   an absolute http:// or https:// URL (net/url parse + scheme check).
-// - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
-//   open, merged, draft, closed, none. Unknown values are ignored.
-// - Lines are case-sensitive uppercase (consistent with
-//   ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
-// - Extraction is not gated on execution success: a PR URL is a fact.
-// - Only non-empty fields are written, per-key: a URL-only report must
-//   not clobber a previously recorded state, and vice versa.
+//   - Last occurrence of each line wins (final state is authoritative).
+//   - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
+//     stripped before matching — exactly as extractIssuesLine does.
+//   - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
+//     an absolute http:// or https:// URL (net/url parse + scheme check).
+//   - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
+//     open, merged, draft, closed, none. Unknown values are ignored.
+//   - Lines are case-sensitive uppercase (consistent with
+//     ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
+//   - Extraction is not gated on execution success: a PR URL is a fact.
+//   - Only non-empty fields are written, per-key: a URL-only report must
+//     not clobber a previously recorded state, and vice versa.
 //
 // Returns ("", "") when no valid lines are found.
 func extractPRFields(output string) (prURL, prState string) {

@@ -71,15 +71,31 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	row, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, settingsProtoToRow(req.Msg.Settings))
+
+	// The typed budget columns are written unconditionally on upsert, so
+	// begin from the current row and overlay the client's budget JSON on top.
+	// Absent JSON keys therefore leave the current ladder/gates untouched
+	// (partial update); present keys (including an explicit 0 to disable a
+	// gate) are applied.
+	cur, err := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("settings: get current for budget merge: %w", err))
+	}
+	inRow := settingsProtoToRow(req.Msg.Settings)
+	inRow.Budget = cur.Budget
+	if err := inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("settings: invalid default_budget_overrides: %w", err))
+	}
+
+	row, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, inRow)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
 		nil, audit.Snapshot(map[string]any{
-			"default_worker_model":             row.DefaultWorkerModel,
-			"default_ask_orchicon_model":       row.DefaultAskOrchiconModel,
-			"session_access_token_ttl_seconds": row.SessionAccessTokenTtlSeconds,
+			"default_worker_model":              row.DefaultWorkerModel,
+			"default_ask_orchicon_model":        row.DefaultAskOrchiconModel,
+			"session_access_token_ttl_seconds":  row.SessionAccessTokenTtlSeconds,
 			"session_refresh_token_ttl_seconds": row.SessionRefreshTokenTtlSeconds,
 		})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
@@ -163,7 +179,7 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		StallNudgeMax:                    r.StallNudgeMax,
 		StallNudgeReplyWindowSeconds:     r.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        r.StallNudgeCooldownSeconds,
-		DefaultBudgetOverrides:           string(r.DefaultBudgetOverrides),
+		DefaultBudgetOverrides:           string(r.BudgetJSON()),
 		ExecutionReapGraceSeconds:        r.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: r.ExecutionReapConsecutiveFailures,
 		BackupSchedule:                   r.BackupSchedule,
@@ -327,8 +343,8 @@ func containsPathSeparator(s string) bool {
 // Session TTL validation constants.
 const (
 	minSessionAccessTokenTTLSeconds  int64 = 30
-	maxSessionAccessTokenTTLSeconds  int64 = 86400  // 24 hours
-	minSessionRefreshTokenTTLSeconds int64 = 300    // 5 minutes
+	maxSessionAccessTokenTTLSeconds  int64 = 86400    // 24 hours
+	minSessionRefreshTokenTTLSeconds int64 = 300      // 5 minutes
 	maxSessionRefreshTokenTTLSeconds int64 = 31536000 // 1 year
 )
 

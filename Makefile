@@ -191,6 +191,34 @@ container-logs: ## Tail the dev container instance logs
 container-ps: ## List orchicon container instances
 	scripts/container.sh ps
 
+# --- Full rebuild (one command) --------------------------------------------
+# A single command that runs everything needed before/for an instance rebuild:
+#   1. all checks/tests          (make ci:  lint gen vet test rls-check)
+#   2. migration hash sync       (make migrate-hash — keeps db/migrations/atlas.sum
+#                                 in sync so the Atlas CLI path stays happy)
+#   3. frontend + binary + image (container-build force-fe=1 — the frontend is
+#                                 built and embedded into the binary via go:embed)
+#   4. stop/restart the instance (down then up; the container boots with
+#                                 MigrateOnBoot=true, which applies any pending
+#                                 embedded migrations — so step 2 is the repo
+#                                 hash sync and step 4 surfaces the DB migration)
+#
+# The DB migration itself is applied by the container at boot (migrate.Run), so
+# there is no separate `make migrate` needed here — running it against the
+# instance's Postgres would conflict with the container-owned DB.
+.PHONY: full-rebuild rebuild-dev rebuild-prod
+full-rebuild: ## One command: all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
+	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
+	$(MAKE) ci
+	$(MAKE) migrate-hash
+	$(MAKE) container-rebuild instance=$(instance)
+
+rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
+	$(MAKE) full-rebuild instance=dev
+
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
+	$(MAKE) full-rebuild instance=prod
+
 # --- Install ---------------------------------------------------------------
 .PHONY: install-dry-run install-uninstall
 install-dry-run: ## Dry-run the install script (no changes made)

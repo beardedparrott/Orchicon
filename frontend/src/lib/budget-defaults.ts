@@ -2,14 +2,14 @@
 //
 // The Go execution engine applies a unified warn → escalate → abort ladder
 // per budget dimension (tokens / cost / tool-call / time). Each dimension
-// has three thresholds plus three escalating message templates. When a
-// budget entry omits `warnings.messages` (or leaves a slot blank), the
-// backend falls back to its built-in copy — defaultWarnMsgs() in
-// internal/opencode/compact.go.
+// has three thresholds plus three escalating message templates.
 //
-// The Settings GUI needs to SHOW the operator exactly what will be sent, so
-// it seeds blank message slots with the built-in copy below. KEEP THIS IN
-// SYNC with defaultWarnMsgs() in internal/opencode/compact.go.
+// The thresholds and messages are now DATABASE settings (the typed
+// budget_ladder columns on tenant_settings), not code constants. The Settings
+// API returns the effective ladder on the default_budget_overrides field, and
+// the form below reads/writes those values directly — there is no hardcoded
+// message copy here, so the UI can never drift from what the backend/DB
+// actually sends.
 
 export interface DimWarnings {
   fracs: [string, string, string]; // warn / escalate / final thresholds (0..1)
@@ -22,45 +22,6 @@ export interface BudgetWarnings {
   toolCallCount: DimWarnings;
   wallClockSeconds: DimWarnings;
 }
-
-export const DEFAULT_WARN_MSGS: Record<keyof BudgetWarnings, [string, string, string]> = {
-  tokens: [
-    "WARNING: You have used {pct}% of your token budget. Your output is too large and you are spending too many tokens. " +
-      "STOP expanding the work. Tighten your approach: batch your tool calls, stop narrating, and deliver only the minimal delta. " +
-      "If you do not reduce your token spend immediately, your session will be KILLED.",
-    "CRITICAL: You have used {pct}% of your token budget. You are burning through tokens dangerously fast. " +
-      "Consolidate EVERY remaining tool call into a single batch and finish the deliverable NOW. " +
-      "Your session will be KILLED if you keep spending at this rate.",
-    "FINAL WARNING: You have used {pct}% of your token budget. This is your last chance. " +
-      "You must complete your work in the next minimal number of tool calls or your session will be KILLED. " +
-      "Stop all exploration. Finish now.",
-  ],
-  costUsd: [
-    "WARNING: You have used {pct}% of your cost budget. You are spending too much money. " +
-      "STOP the expensive work and consolidate. Batch tool calls. Deliver the minimum. " +
-      "Reduce your spend immediately or your session will be KILLED.",
-    "CRITICAL: You have used {pct}% of your cost budget. You are on pace to blow past it. " +
-      "Use only the cheapest possible tool calls, do not re-derive anything, and finish NOW. " +
-      "Your session will be KILLED if you keep spending.",
-    "FINAL WARNING: You have used {pct}% of your cost budget. This is your last warning. " +
-      "Complete your work in the next minimal tool calls or your session will be KILLED.",
-  ],
-  toolCallCount: [
-    "WARNING: YOU ARE CALLING TOOLS TOO OFTEN. BATCH YOUR TOOL CALLS TOGETHER OR YOU WILL RISK YOUR SESSION BEING KILLED.",
-    "CRITICAL: YOU ARE STILL CALLING TOOLS TOO OFTEN. STOP the micro tool calls. You MUST batch them together " +
-      "into a single round-trip. Your session will be KILLED if you keep splitting your calls.",
-    "FINAL WARNING: YOUR TOOL CALL LIMIT IS ALMOST REACHED. YOU HAVE ONLY A HANDFUL OF TOOL CALLS LEFT. " +
-      "You MUST finish your work in the next tool calls or your session WILL BE KILLED. " +
-      "Batch everything. Finish now.",
-  ],
-  wallClockSeconds: [
-    "WARNING: IT HAS BEEN {pct}% OF YOUR TIME BUDGET. YOU NEED TO WORK QUICKLY AND FINISH YOUR WORK TO AVOID EXCEEDING BUDGET — YOUR SESSION WILL BE KILLED.",
-    "CRITICAL: YOU ARE RUNNING OUT OF TIME ({pct}% ELAPSED). STOP the slow path: batch your remaining tool calls and finish NOW. " +
-      "Your session will be KILLED if you do not finish quickly.",
-    "FINAL WARNING: {pct}% OF YOUR TIME IS GONE. You have almost no time left. " +
-      "Complete your work in the next tool calls. Your session will be KILLED at the time limit.",
-  ],
-};
 
 // Dimension key → the JSON key used in the stored budget (snake_case).
 const DIM_JSON_KEY: Record<keyof BudgetWarnings, string> = {
@@ -77,18 +38,6 @@ export const emptyWarnings: BudgetWarnings = {
   wallClockSeconds: { fracs: ["", "", ""], msgs: ["", "", ""] },
 };
 
-// warnings seeded with the built-in message copy (blank thresholds so the
-// backend keeps its default fractions). Used when the stored budget is
-// empty/unparseable so the GUI never shows a wall of blanks.
-function defaultWarningsWithMessages(): BudgetWarnings {
-  return {
-    tokens: { fracs: ["", "", ""], msgs: [...DEFAULT_WARN_MSGS.tokens] },
-    costUsd: { fracs: ["", "", ""], msgs: [...DEFAULT_WARN_MSGS.costUsd] },
-    toolCallCount: { fracs: ["", "", ""], msgs: [...DEFAULT_WARN_MSGS.toolCallCount] },
-    wallClockSeconds: { fracs: ["", "", ""], msgs: [...DEFAULT_WARN_MSGS.wallClockSeconds] },
-  };
-}
-
 export interface BudgetDefaultsForm {
   tokens: string;
   costUsd: string;
@@ -99,8 +48,8 @@ export interface BudgetDefaultsForm {
 }
 
 // Parse the tenant default_budget_overrides JSON into form strings + warning
-// config. Blank message slots are seeded with the built-in copy so the
-// operator sees the message that will actually be sent.
+// config. Every value comes straight from the API payload (which is built from
+// the DB columns) — no hardcoded fallback copy.
 export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
   const empty: BudgetDefaultsForm = {
     tokens: "",
@@ -108,7 +57,7 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     wallClockSeconds: "",
     toolCallCount: "",
     compactMaxTurns: "",
-    warnings: defaultWarningsWithMessages(),
+    warnings: emptyWarnings,
   };
   if (!raw) return empty;
   try {
@@ -118,7 +67,6 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
       const key = DIM_JSON_KEY[dim];
       const f = w.fractions?.[key];
       const ms = w.messages?.[key];
-      const defaults = DEFAULT_WARN_MSGS[dim];
       return {
         fracs: [
           f?.[0] != null ? String(f[0]) : "",
@@ -126,9 +74,9 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
           f?.[2] != null ? String(f[2]) : "",
         ],
         msgs: [
-          ms?.[0] != null && ms[0] !== "" ? String(ms[0]) : defaults[0],
-          ms?.[1] != null && ms[1] !== "" ? String(ms[1]) : defaults[1],
-          ms?.[2] != null && ms[2] !== "" ? String(ms[2]) : defaults[2],
+          ms?.[0] != null ? String(ms[0]) : "",
+          ms?.[1] != null ? String(ms[1]) : "",
+          ms?.[2] != null ? String(ms[2]) : "",
         ],
       };
     };

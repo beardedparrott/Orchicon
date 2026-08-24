@@ -1,4 +1,4 @@
-h1:f5JbuFMzDkZTFWIp+pO1PNX/zZc9PEvtEkL7yNP9Eoc=
+h1:e2G89hqCF33SZIutm72gPPT3g6H1ntt5IEVeRFMF4ZM=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -111,3 +111,7 @@ h1:f5JbuFMzDkZTFWIp+pO1PNX/zZc9PEvtEkL7yNP9Eoc=
 20260826000000_work_items_archived_down.sql h1:0sNXcfwGHuzuMMbDBRmCWLR06V0brn/IzcQeUdIi2LA=
 20260827000000_stall_nudge_settings.sql h1:mzb4pEnLNPpjjOi4EJ86c8bQ6jPMJjFSffvS1OBfZWo=
 20260827000000_stall_nudge_settings_down.sql h1:JoYpUKTlg9WXo5QE6kSQ9I1bDOE4FBUcOTRXldHIvAM=
+20260828000000_usage_cache_tokens.sql h1:Hj7WLUBVz5+6rpCVn/Z6Ff3d9IytAZLaTozMJsT38go=
+20260828000000_usage_cache_tokens_down.sql h1:QO1uEE82snAuwuVA2gWYnWZeYzrkdmHzTZPE0dGgrnM=
+20260829000000_typed_budget_ladder.sql h1:fTNSXgc/wJO9zq1JnRABEqQxKyH5cFCr5BZ7M5BW5iM=
+20260829000000_typed_budget_ladder_down.sql h1:TIs6Dpo/ie74DhsveV2QP5f+gmLkqHAp9Xg0FeyUN0Q=
