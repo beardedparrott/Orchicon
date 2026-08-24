@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -38,34 +39,24 @@ func TestBudgetBreachedCostGate(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedTokenFallback verifies the token fallback (used when no
-// cost_usd is configured) counts fresh input+output+reasoning PLUS cache_read
-// weighted by the cache-discount factor — so cache is never excluded from the
-// estimate, but cheap-cache providers do not false-fire on cache bloat.
-func TestBudgetBreachedTokenFallback(t *testing.T) {
-	spec := budgetSpec{tokens: float64Ptr(300), cacheDiscount: 0.1}
-	// 100 input + 50 output + 10 reasoning + 1000 cache*0.1 = 260 budgeted.
-	acc := &budgetAccumulator{prompt: 100, completion: 50, reasoning: 10, cacheRead: 1000}
-	if budgetBreached(spec, acc) {
+// TestBudgetBreachedTokenFullWeight verifies the token gate counts ALL
+// tokens at full weight (prompt+completion+reasoning+cache_read) with NO
+// cache discount — the operator's "count everything" model. Cache reads are
+// real tokens the worker consumed and must be counted at full value.
+func TestBudgetBreachedTokenFullWeight(t *testing.T) {
+	// 100 input + 50 output + 10 reasoning + 40 cache = 200 budgeted.
+	acc := &budgetAccumulator{prompt: 100, completion: 50, reasoning: 10, cacheRead: 40}
+	if budgetBreached(budgetSpec{tokens: float64Ptr(300)}, acc) {
 		t.Fatal("expected no breach: 260 budgeted < 300 token budget")
 	}
-	// The cache IS discounted money: without the discount the same sample
-	// would count 1160 and breach — the discount keeps cheap cache under.
-	if !budgetBreached(budgetSpec{tokens: float64Ptr(250), cacheDiscount: 0.1}, acc) {
-		t.Fatal("expected breach once budgeted spend reaches the token budget")
+	if !budgetBreached(budgetSpec{tokens: float64Ptr(200)}, acc) {
+		t.Fatal("expected breach once full token count reaches the token budget")
 	}
-	// A DeepSeek cache-heavy session (1.1M cache read) with a large token
-	// budget must NOT fire early.
-	if budgetBreached(budgetSpec{tokens: float64Ptr(200_000), cacheDiscount: 0.1},
+	// A cache-heavy session counts its cache reads in full — no discount.
+	// 5k prompt + 2k completion + 100 reasoning + 1.1M cache = ~1.107M.
+	if !budgetBreached(budgetSpec{tokens: float64Ptr(200_000)},
 		&budgetAccumulator{prompt: 5_000, completion: 2_000, reasoning: 100, cacheRead: 1_100_000}) {
-		t.Fatal("expected no false-fire on cheap cache bloat")
-	}
-	// A paid-cache model resending a big prefix accrues real fresh + cache
-	// cost and should count toward the budget exactly. Using the higher
-	// Claude-style cache-discount (0.3): 80k + 10k + 90k*0.3 = 117k ≥ 100k.
-	paid := &budgetAccumulator{prompt: 80_000, completion: 10_000, reasoning: 0, cacheRead: 90_000}
-	if !budgetBreached(budgetSpec{tokens: float64Ptr(100_000), cacheDiscount: 0.3}, paid) {
-		t.Fatal("expected paid-cache resend to trip the token budget")
+		t.Fatal("expected cache reads to count in full toward the token budget")
 	}
 }
 
@@ -122,8 +113,9 @@ func TestBudgetAccumulatorAdd(t *testing.T) {
 }
 
 // TestParseBudgetSpec verifies the single merged-budget parse yields the
-// cost + token + wall-clock gates, with empty/unparseable budgets yielding
-// no gate (built-in defaults apply downstream).
+// cost + token + wall-clock gates AND the optional warning ladder
+// (fractions + messages), with empty/unparseable budgets yielding no gate
+// (built-in defaults apply downstream).
 func TestParseBudgetSpec(t *testing.T) {
 	spec := parseBudgetSpec([]byte(`{"cost_usd":0.5,"tokens":1000,"wall_clock_seconds":3600}`))
 	if spec.costUSD == nil || *spec.costUSD != 0.5 {
@@ -144,6 +136,71 @@ func TestParseBudgetSpec(t *testing.T) {
 	bad := parseBudgetSpec([]byte(`not-json`))
 	if bad.costUSD != nil || bad.tokens != nil || bad.wallClockSeconds != nil {
 		t.Fatalf("unparseable budgets must yield no gate fields, got %+v", bad)
+	}
+}
+
+// TestParseBudgetSpecWarnings verifies the optional `warnings` block is
+// parsed into the ladder thresholds + message templates, with defaults
+// falling back to the built-in schedule.
+func TestParseBudgetSpecWarnings(t *testing.T) {
+	spec := parseBudgetSpec([]byte(`{
+	  "tokens": 1000,
+	  "warnings": {
+	    "fractions": {"tokens": [0.4, 0.6, 0.8], "tool_call_count": [0.3, 0.5, 0.7]},
+	    "messages": {"tokens": ["warn", "esc", "final"]}
+	  }
+	}`))
+	// tokens fractions overridden.
+	if spec.warnFracs[dimTokens][0] != 0.4 || spec.warnFracs[dimTokens][2] != 0.8 {
+		t.Fatalf("tokens fractions = %v, want [0.4, 0.6, 0.8]", spec.warnFracs[dimTokens])
+	}
+	// tools fractions overridden; cost/time remain default.
+	if spec.warnFracs[dimTools][1] != 0.5 {
+		t.Fatalf("tools escalate fraction = %v, want 0.5", spec.warnFracs[dimTools][1])
+	}
+	if spec.warnFracs[dimCost][0] != 0.5 {
+		t.Fatalf("cost warn fraction = %v, want default 0.5", spec.warnFracs[dimCost][0])
+	}
+	// messages override for tokens; cost falls back to built-in.
+	if spec.warnMsgs[dimTokens][0] != "warn" || spec.warnMsgs[dimTokens][2] != "final" {
+		t.Fatalf("tokens messages = %v, want [warn, esc, final]", spec.warnMsgs[dimTokens])
+	}
+	if !strings.Contains(spec.warnMsgs[dimCost][0], "cost budget") {
+		t.Fatalf("cost message should fall back to the built-in default, got %q", spec.warnMsgs[dimCost][0])
+	}
+}
+
+// TestLevelForAndMessage verifies the ladder tier computation and the
+// built-in message copy with {pct} substitution.
+func TestLevelForAndMessage(t *testing.T) {
+	spec := parseBudgetSpec(nil) // default thresholds 0.5/0.75/0.9
+	if lvl := spec.levelFor(dimTokens, 0.49); lvl != levelNone {
+		t.Fatalf("0.49 frac → %d, want levelNone", lvl)
+	}
+	if lvl := spec.levelFor(dimTokens, 0.5); lvl != levelWarn {
+		t.Fatalf("0.5 frac → %d, want levelWarn", lvl)
+	}
+	if lvl := spec.levelFor(dimTokens, 0.75); lvl != levelEscalate {
+		t.Fatalf("0.75 frac → %d, want levelEscalate", lvl)
+	}
+	if lvl := spec.levelFor(dimTokens, 0.9); lvl != levelFinal {
+		t.Fatalf("0.9 frac → %d, want levelFinal", lvl)
+	}
+	if lvl := spec.levelFor(dimTokens, 1.0); lvl != levelAbort {
+		t.Fatalf("1.0 frac → %d, want levelAbort", lvl)
+	}
+	// Disabled dimension (0 limit) → fraction -1 → levelNone.
+	disabled := budgetSpec{tokens: float64Ptr(0)}
+	if lvl := disabled.levelFor(dimTokens, disabled.fraction(dimTokens, &budgetAccumulator{}, 0, 0)); lvl != levelNone {
+		t.Fatalf("disabled dim → %d, want levelNone", lvl)
+	}
+	// Message substitution: {pct} is replaced with the percent used.
+	msg := spec.message(dimTokens, levelWarn, 0.6)
+	if !strings.Contains(msg, "60%") {
+		t.Fatalf("warning message missing {pct} substitution, got %q", msg)
+	}
+	if !strings.Contains(msg, "WARNING") {
+		t.Fatalf("warning message should be demanding (WARNING), got %q", msg)
 	}
 }
 
@@ -173,6 +230,13 @@ func (c *compactRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.calls = append(c.calls, compactCall{path: r.URL.Path, body: body})
 		c.mu.Unlock()
 	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompt_async") {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		c.mu.Lock()
+		c.calls = append(c.calls, compactCall{path: r.URL.Path, body: body})
+		c.mu.Unlock()
+	}
 	w.WriteHeader(c.status)
 }
 
@@ -182,6 +246,20 @@ func (c *compactRecorder) count() int {
 	return len(c.calls)
 }
 
+// summarizeCount returns how many /summarize (compact) calls were recorded,
+// excluding the post-compact reminder prompt_async messages.
+func (c *compactRecorder) summarizeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, call := range c.calls {
+		if strings.HasSuffix(call.path, "/summarize") {
+			n++
+		}
+	}
+	return n
+}
+
 func (c *compactRecorder) lastCall() compactCall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -189,6 +267,19 @@ func (c *compactRecorder) lastCall() compactCall {
 		return compactCall{}
 	}
 	return c.calls[len(c.calls)-1]
+}
+
+// lastSummarizeCall returns the last /summarize (compact) call, ignoring the
+// post-compact reminder prompt_async messages.
+func (c *compactRecorder) lastSummarizeCall() compactCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.calls) - 1; i >= 0; i-- {
+		if strings.HasSuffix(c.calls[i].path, "/summarize") {
+			return c.calls[i]
+		}
+	}
+	return compactCall{}
 }
 
 // TestSessionClientCompact verifies Compact POSTs /session/{id}/summarize with
@@ -236,21 +327,21 @@ func TestMaybeCompactMinTurnFloor(t *testing.T) {
 		client:     NewSessionClient(srv.URL, "", ""),
 		sessionID:  "sess-1",
 		modelRef:   "opencode/deepseek-v4-flash-free",
-		budget:     &budgetAccumulator{costUSD: 5.0, steps: 1},
-		budgetSpec: budgetSpec{costUSD: float64Ptr(4.0)},
+		budget:     &budgetAccumulator{steps: 1},
+		budgetSpec: budgetSpec{compactMaxTurns: float64Ptr(2)},
 		done:       make(chan struct{}),
 	}
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "2")
 	t.Setenv("ORCHICON_COMPACT_MAX", "1")
 	r.maybeCompact()
-	if rec.count() != 0 {
-		t.Fatalf("expected no compact below the min-turn floor, got %d", rec.count())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("expected no compact below the min-turn floor, got %d", rec.summarizeCount())
 	}
 }
 
-// TestMaybeCompactFiresOncePerExecution verifies a budget breach after the
-// floor compacts once, and the per-execution cap (default 1) prevents a
-// compact loop even though cumulative spend stays tripped.
+// TestMaybeCompactFiresOncePerExecution verifies the turn-count gate
+// compacts once, and the per-execution cap (default 1) prevents a compact
+// loop even though the cadence keeps tripping.
 func TestMaybeCompactFiresOncePerExecution(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -263,21 +354,21 @@ func TestMaybeCompactFiresOncePerExecution(t *testing.T) {
 		client:     NewSessionClient(srv.URL, "", ""),
 		sessionID:  "sess-1",
 		modelRef:   "opencode/deepseek-v4-flash-free",
-		budget:     &budgetAccumulator{costUSD: 5.0, steps: 2},
-		budgetSpec: budgetSpec{costUSD: float64Ptr(4.0)},
+		budget:     &budgetAccumulator{steps: 1},
+		budgetSpec: budgetSpec{compactMaxTurns: float64Ptr(2)},
 		done:       make(chan struct{}),
 	}
 	// Note: parseEvent feeds budget.steps; here we set it directly. Advance
-	// the accumulator to simulate a session that stays over budget for many
-	// steps (cumulative spend) — the cap must hold it to a single compact.
+	// the accumulator to simulate a session that stays over the turn cadence
+	// for many steps — the cap must hold it to a single compact.
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "1")
 	for r.budget.steps < 8 {
 		r.maybeCompact()
 		r.budget.steps++
 	}
-	if rec.count() != 1 {
-		t.Fatalf("expected exactly 1 compact (per-execution cap), got %d", rec.count())
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("expected exactly 1 compact (per-execution cap), got %d", rec.summarizeCount())
 	}
 }
 
@@ -297,40 +388,40 @@ func TestMaybeCompactReArmsAcrossForwardProgress(t *testing.T) {
 		client:     NewSessionClient(srv.URL, "", ""),
 		sessionID:  "sess-1",
 		modelRef:   "opencode/deepseek-v4-flash-free",
-		budget:     &budgetAccumulator{costUSD: 5.0, steps: 1},
-		budgetSpec: budgetSpec{costUSD: float64Ptr(4.0)},
+		budget:     &budgetAccumulator{steps: 1},
+		budgetSpec: budgetSpec{compactMaxTurns: float64Ptr(2)},
 		done:       make(chan struct{}),
 	}
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "2")
 	t.Setenv("ORCHICON_COMPACT_MAX", "5")
 	r.maybeCompact() // steps=1 < 2 → no compact (floor)
-	if rec.count() != 0 {
-		t.Fatalf("expected no compact at step 1 (floor), got %d", rec.count())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("expected no compact at step 1 (floor), got %d", rec.summarizeCount())
 	}
 	r.budget.steps = 2
-	r.maybeCompact() // floor met, breach → compact #1
-	if rec.count() != 1 {
-		t.Fatalf("expected compact #1 at step 2, got %d", rec.count())
+	r.maybeCompact() // floor met, turn cadence reached → compact #1
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("expected compact #1 at step 2, got %d", rec.summarizeCount())
 	}
 	r.budget.steps = 3
 	r.maybeCompact() // within re-arm window (2+2) → no compact
-	if rec.count() != 1 {
-		t.Fatalf("expected no compact at step 3 (re-arm window), got %d", rec.count())
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("expected no compact at step 3 (re-arm window), got %d", rec.summarizeCount())
 	}
 	r.budget.steps = 4
 	r.maybeCompact() // re-armed (>= 4) → compact #2
-	if rec.count() != 2 {
-		t.Fatalf("expected compact #2 at step 4 (re-armed), got %d", rec.count())
+	if rec.summarizeCount() != 2 {
+		t.Fatalf("expected compact #2 at step 4 (re-armed), got %d", rec.summarizeCount())
 	}
 	// Verify the compact resolved the model ref and used the session id.
-	call := rec.lastCall()
+	call := rec.lastSummarizeCall()
 	if call.body["providerID"] != "opencode" || call.body["modelID"] != "deepseek-v4-flash-free" {
 		t.Fatalf("compact called with wrong provider/model: %v", call.body)
 	}
 }
 
-// TestMaybeCompactNoBreach verifies no compact fires when spend is under the
-// budget.
+// TestMaybeCompactNoBreach verifies no compact fires when the turn cadence
+// has not been reached (spend is irrelevant to the turn-count gate).
 func TestMaybeCompactNoBreach(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -343,15 +434,15 @@ func TestMaybeCompactNoBreach(t *testing.T) {
 		client:     NewSessionClient(srv.URL, "", ""),
 		sessionID:  "sess-1",
 		modelRef:   "opencode/deepseek-v4-flash-free",
-		budget:     &budgetAccumulator{costUSD: 2.0, prompt: 100, completion: 10, steps: 3},
-		budgetSpec: budgetSpec{costUSD: float64Ptr(4.0)},
+		budget:     &budgetAccumulator{steps: 3},
+		budgetSpec: budgetSpec{compactMaxTurns: float64Ptr(6)},
 		done:       make(chan struct{}),
 	}
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "1")
 	r.maybeCompact()
-	if rec.count() != 0 {
-		t.Fatalf("expected no compact under budget, got %d", rec.count())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("expected no compact below the turn cadence, got %d", rec.summarizeCount())
 	}
 }
 
@@ -376,8 +467,8 @@ func TestMaybeCompactMalformedModelRef(t *testing.T) {
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "1")
 	r.maybeCompact()
-	if rec.count() != 0 {
-		t.Fatalf("expected no compact on a malformed model ref, got %d", rec.count())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("expected no compact on a malformed model ref, got %d", rec.summarizeCount())
 	}
 }
 
@@ -415,8 +506,8 @@ func TestMaybeCompactTurnCountTriggerWithNoBudgetBreach(t *testing.T) {
 	// Turns 5-7: within the re-arm window of the NEXT floor, but the
 	// turn-count gate re-checks turnsSinceLastCompact every call, so it
 	// re-fires once turnsSinceLastCompact reaches 4 again at turn 8.
-	if rec.count() != 2 {
-		t.Fatalf("expected 2 turn-count-triggered compacts over 9 steps (cap=4), got %d", rec.count())
+	if rec.summarizeCount() != 2 {
+		t.Fatalf("expected 2 turn-count-triggered compacts over 9 steps (cap=4), got %d", rec.summarizeCount())
 	}
 	firstCall := rec.calls[0]
 	if firstCall.body["providerID"] != "opencode" || firstCall.body["modelID"] != "deepseek-v4-flash-free" {
@@ -452,8 +543,8 @@ func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
 		r.budget.steps = step
 		r.maybeCompact()
 	}
-	if rec.count() != 0 {
-		t.Fatalf("expected no compacts with all gates explicitly disabled, got %d", rec.count())
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("expected no compacts with all gates explicitly disabled, got %d", rec.summarizeCount())
 	}
 }
 
@@ -493,24 +584,26 @@ func TestEffectiveToolCallLimit(t *testing.T) {
 	}
 }
 
-// TestCheckToolCallLimitAbortsAtBuiltInDefault verifies checkToolCallLimit
-// hard-aborts the execution once stats.toolUses reaches the built-in
-// default (100) when no tool_call_count is configured — making Settings'
-// long-standing "Empty = built-in default (100)" claim actually true.
-func TestCheckToolCallLimitAbortsAtBuiltInDefault(t *testing.T) {
+// TestLadderToolCallAbortsAtLimit verifies the tool-call dimension hard-
+// aborts once stats.toolUses reaches the built-in default (100) — the
+// abort tier of the unified ladder (reason budget_abort:tool_call_count).
+func TestLadderToolCallAbortsAtLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
 	r := &sessionRun{
-		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
-		parentCtx: context.Background(),
-		execRow:   db.ExecutionRow{ID: "exec-toolcall-default", TenantID: "tnt_dev"},
-		callbacks: &liveCallbacks{},
-		client:    NewSessionClient(srv.URL, "", ""),
-		sessionID: "sess-1",
-		done:      make(chan struct{}),
-		stats:     &execStreamState{toolUses: defaultToolCallLimit - 1},
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-toolcall-default", TenantID: "tnt_dev"},
+		callbacks:  &liveCallbacks{},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		done:       make(chan struct{}),
+		stats:      &execStreamState{toolUses: defaultToolCallLimit - 1},
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec(nil),
+		startedAt:  time.Now(),
 	}
-	r.checkToolCallLimit() // 99 < 100 → no abort
+	r.maybeEnforceLadder(dimTools) // 99 < 100 → no abort
 	r.mu.Lock()
 	fin := r.finished
 	r.mu.Unlock()
@@ -518,7 +611,7 @@ func TestCheckToolCallLimitAbortsAtBuiltInDefault(t *testing.T) {
 		t.Fatal("expected no abort below the built-in tool-call default")
 	}
 	r.stats.toolUses = defaultToolCallLimit
-	r.checkToolCallLimit() // 100 >= 100 → abort
+	r.maybeEnforceLadder(dimTools) // 100 >= 100 → abort
 	r.mu.Lock()
 	fin, ok, resultErr := r.finished, r.resultOk, r.resultErr
 	r.mu.Unlock()
@@ -528,14 +621,15 @@ func TestCheckToolCallLimitAbortsAtBuiltInDefault(t *testing.T) {
 	if ok {
 		t.Fatal("a tool-call limit breach must fail the execution")
 	}
-	if resultErr != "tool_call_limit_exceeded" {
-		t.Fatalf("resultErr = %q, want tool_call_limit_exceeded", resultErr)
+	if resultErr != "budget_abort:tool_call_count" {
+		t.Fatalf("resultErr = %q, want budget_abort:tool_call_count", resultErr)
 	}
 }
 
-// TestCheckToolCallLimitDisabled verifies an explicit 0 for tool_call_count
-// disables the hard-abort gate entirely, even with a huge tool-call count.
-func TestCheckToolCallLimitDisabled(t *testing.T) {
+// TestLadderToolCallDisabled verifies an explicit 0 for tool_call_count
+// disables the tool-call dimension entirely (fraction -1 → levelNone), even
+// with a huge tool-call count.
+func TestLadderToolCallDisabled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
 	r := &sessionRun{
@@ -547,9 +641,11 @@ func TestCheckToolCallLimitDisabled(t *testing.T) {
 		sessionID:  "sess-1",
 		done:       make(chan struct{}),
 		stats:      &execStreamState{toolUses: 10_000},
+		budget:     &budgetAccumulator{},
 		budgetSpec: budgetSpec{toolCallCount: float64Ptr(0)},
+		startedAt:  time.Now(),
 	}
-	r.checkToolCallLimit()
+	r.maybeEnforceLadder(dimTools)
 	r.mu.Lock()
 	fin := r.finished
 	r.mu.Unlock()
@@ -558,23 +654,108 @@ func TestCheckToolCallLimitDisabled(t *testing.T) {
 	}
 }
 
-// TestCheckToolCallLimitNilStatsNoop verifies a nil stats pointer (should
-// never happen in production — adapter.go always initializes it — but
-// matches maybeCompact's defensive nil-budget guard) is a safe no-op rather
-// than a panic.
-func TestCheckToolCallLimitNilStatsNoop(t *testing.T) {
+// TestLadderNilBudgetNoop verifies a nil budget pointer is a safe no-op
+// rather than a panic.
+func TestLadderNilBudgetNoop(t *testing.T) {
 	r := &sessionRun{
 		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
 		parentCtx: context.Background(),
 		execRow:   db.ExecutionRow{ID: "exec-toolcall-nilstats", TenantID: "tnt_dev"},
 		done:      make(chan struct{}),
 	}
-	r.checkToolCallLimit()
+	r.maybeEnforceLadder(dimTools)
 	r.mu.Lock()
 	fin := r.finished
 	r.mu.Unlock()
 	if fin {
-		t.Fatal("expected a no-op with nil stats, not a finish")
+		t.Fatal("expected a no-op with nil budget, not a finish")
+	}
+}
+
+// TestLadderTokenWarnThenEscalateCompacts verifies the unified ladder
+// enforcement for the token dimension: at warn the session receives a scary
+// message but does NOT compact; at escalate it receives a harsher message
+// AND compacts; at abort it kills. Each tier fires once (latched).
+func TestLadderTokenWarnThenEscalateCompacts(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	// tokens limit 1000 → warn at 500, escalate at 750, final at 900.
+	r := &sessionRun{
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-ladder-tokens", TenantID: "tnt_dev"},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		modelRef:   "opencode/deepseek-v4-flash-free",
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec([]byte(`{"tokens":1000}`)),
+		startedAt:  time.Now(),
+		done:       make(chan struct{}),
+		stats:      &execStreamState{},
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
+	t.Setenv("ORCHICON_COMPACT_MAX", "3")
+
+	// 50% → warn: injects a message, no compact.
+	r.budget.prompt = 500
+	r.maybeEnforceLadder(dimTokens)
+	if rec.count() != 1 || !strings.HasSuffix(rec.lastCall().path, "/prompt_async") {
+		t.Fatalf("warn should send one prompt_async, got %d calls", rec.count())
+	}
+	// Re-entering the same tier must not re-fire (latched).
+	r.maybeEnforceLadder(dimTokens)
+	if rec.count() != 1 {
+		t.Fatalf("warn should latch (no re-send), got %d calls", rec.count())
+	}
+
+	// 90% → final: inject + compact (summarize). 3 calls total now
+	// (1 warn message + 1 final message + 1 compact) + the post-compact
+	// reminder prompt_async.
+	r.budget.prompt = 900
+	r.budget.steps = 2
+	r.maybeEnforceLadder(dimTokens)
+	// 900/1000 >= 0.9 → final. final compacts (summarize).
+	hasCompact := false
+	for _, c := range rec.calls {
+		if strings.HasSuffix(c.path, "/summarize") {
+			hasCompact = true
+		}
+	}
+	if !hasCompact {
+		t.Fatalf("final tier should compact the session (summarize), calls=%d", rec.summarizeCount())
+	}
+}
+
+// TestLadderTokenAbortAtLimit verifies the token dimension hard-aborts once
+// full token count reaches the configured limit (100% → budget_abort:tokens).
+func TestLadderTokenAbortAtLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	r := &sessionRun{
+		a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx:  context.Background(),
+		execRow:    db.ExecutionRow{ID: "exec-ladder-token-abort", TenantID: "tnt_dev"},
+		callbacks:  &liveCallbacks{},
+		client:     NewSessionClient(srv.URL, "", ""),
+		sessionID:  "sess-1",
+		modelRef:   "opencode/deepseek-v4-flash-free",
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec([]byte(`{"tokens":1000}`)),
+		startedAt:  time.Now(),
+		done:       make(chan struct{}),
+		stats:      &execStreamState{},
+	}
+	r.budget.cacheRead = 1000 // full token count reaches the limit
+	r.maybeEnforceLadder(dimTokens)
+	r.mu.Lock()
+	fin, ok, resultErr := r.finished, r.resultOk, r.resultErr
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatalf("expected a failed abort, got fin=%v ok=%v", fin, ok)
+	}
+	if resultErr != "budget_abort:tokens" {
+		t.Fatalf("resultErr = %q, want budget_abort:tokens", resultErr)
 	}
 }
 

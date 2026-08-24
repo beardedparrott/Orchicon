@@ -199,7 +199,7 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 		"## Safety rules (HARD limits)",
 		"## Efficiency — minimize tool output and tool calls",
 		"Minimize tool output.",
-		"Batch your tool calls.",
+		"Batch your tool calls — split calls are FORBIDDEN.",
 		"## Runtime environment",
 	} {
 		if !strings.Contains(prefix, want) {
@@ -274,8 +274,8 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 		"git status --short",
 		"git log --oneline -5",
 		"`grep` `touched_files`",
-		"Batch your tool calls.",
-		"fewer, larger calls are dramatically cheaper",
+		"Batch your tool calls — split calls are FORBIDDEN.",
+		"every split call multiplies cost",
 		"you MUST verify state with actual tool calls and never fabricate output",
 	} {
 		if !strings.Contains(out, want) {

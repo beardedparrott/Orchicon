@@ -361,6 +361,12 @@ type ConfigOptions struct {
 	// AgentPrompt is the system prompt text for that agent (empty = no
 	// custom agent; opencode uses its default agent).
 	AgentPrompt string
+	// DefaultAgent names the primary agent sessions fall back to when none
+	// is specified. Orchicon registers a minimal `orchicon-worker` prompt
+	// and sets this so every session uses it instead of opencode's built-in
+	// `build` agent (whose large default prompt is redundant with Orchicon's
+	// own per-message system prompt). Empty = opencode's default (`build`).
+	DefaultAgent string
 	// ModelRef is the model reference the agent runs with.
 	ModelRef string
 	// TenantID scopes the built-in Orchicon MCP server to a tenant. It
@@ -421,6 +427,14 @@ func BuildConfigContent(o ConfigOptions) string {
 				"model":  o.ModelRef,
 			},
 		}
+	}
+	// Default the session to the registered agent (e.g. orchicon-worker) so
+	// workers do NOT run under opencode's built-in `build` agent prompt.
+	// The worker's real system prompt still rides the per-message `system`
+	// field; the default agent is a MINIMAL tool-guideline shell that
+	// replaces opencode's large built-in prompt (a big per-turn token win).
+	if o.DefaultAgent != "" {
+		cfg["default_agent"] = o.DefaultAgent
 	}
 
 	// Merge MCP servers: the user's own opencode-config servers first,
