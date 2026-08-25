@@ -1649,7 +1649,8 @@ branch off `develop`, PR into `develop`, and merge into `develop` — never
 
 1. Never commit to `main` or `develop` — the pre-commit hook enforces this
 2. Branch off `develop`: `git switch -c <type>/<short-description> develop`
-3. Before starting work: `git tag -a v0.1.<next> -m "v0.1.<next>"` then bump version
+3. The version tag is bumped automatically on each merge to `develop`
+   (`.github/workflows/develop-bump.yml`); `git fetch --tags` before rebuilding
 4. Commit early and often with clear present-tense messages
 5. Before PR: update `UPDATES.md` (leave README.md's "Last Release Changes"
    section alone — it only changes when the human cuts a release)
