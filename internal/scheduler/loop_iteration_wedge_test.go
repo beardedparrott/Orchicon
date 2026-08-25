@@ -41,14 +41,38 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 		{ID: "review", Name: "PR Reviewer", Kind: "task", DependsOn: []string{}},
 		{ID: "loop", Name: "Loop Decision", Kind: "loop_decision", DependsOn: []string{"review"},
 			Config: `{"loop_branch":"review","success_branch":"qa","max_iterations":6,"max_reask":2}`},
-		{ID: "qa", Name: "QA", Kind: "task", DependsOn: []string{"loop"}},
-		{ID: "approve", Name: "Approve", Kind: "approval", DependsOn: []string{"qa"}},
-		{ID: "merge", Name: "Merge", Kind: "task", DependsOn: []string{"approve"}},
+		{ID: "qa", Name: "QA", Kind: "task", DependsOn: []string{"loop"}, Ref: "w_se_qa_engineer"},
+		{ID: "approve", Name: "Approve", Kind: "approval", DependsOn: []string{"qa"},
+			Config: `{"reviewer":"worker","worker_ref":"w_se_code_approver","max_iterations":3}`},
+		{ID: "merge", Name: "Merge", Kind: "task", DependsOn: []string{"approve"}, Ref: "w_se_qa_engineer"},
 	}
 	stepsJSON, _ := json.Marshal(steps)
 	wfID := seedPublishedWorkflowSteps(t, pool, proj.ID, string(stepsJSON))
 
 	ctx := context.Background()
+
+	// The downstream QA task step needs a bound work item to dispatch
+	// against (dispatchStep resolves the work item from run.WorkItemID
+	// when there is no WORK_ITEM marker upstream). Without it QA fails
+	// "no upstream work_item" and the run is marked failed — which is
+	// independent of the same-created_at tie this test exercises. Give
+	// the run a ticket so the DAG can progress through the loop.
+	ttxSeed, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := db.CreateWorkItem(ctx, ttxSeed.Tx, db.WorkItemRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		ProjectID: proj.ID, Kind: domain.WorkItemKindTask,
+		Title: "the ticket", Description: "t", AcceptanceCriteria: "t",
+		Status: domain.WorkItemRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttxSeed.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	rc := NewWorkflowReconciler(pool, logger, nil, nil, nil, nil)
 
@@ -62,7 +86,7 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		WorkflowID: wfID, WorkflowVersion: 1,
 		ProjectID: proj.ID, Status: domain.WorkflowRunRunning,
-		RunContext: []byte("{}"),
+		RunContext: []byte("{}"), WorkItemID: ticket.ID,
 	})
 	if err != nil {
 		t.Fatal(err)

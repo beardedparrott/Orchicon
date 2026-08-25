@@ -42,6 +42,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/audit"
@@ -308,12 +309,20 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		}
 	}
 
-	// Idempotency (docs/06 §9): one active recovery per failing step run
-	// (per failed execution), not per ticket — two steps failing on the
-	// same shared ticket in the same window each get their own recovery.
+	// Idempotency (docs/06 §9): one recovery per failing step run (per
+	// failed execution), not per ticket — two steps failing on the same
+	// shared ticket in the same window each get their own recovery. R6: the
+	// dedup is keyed on (task, failed_execution_id) and covers TERMINAL rows
+	// too — a second failure event for the SAME dead execution whose
+	// recovery already reached `resumed`/`failed`/`cancelled`/`escalated`
+	// must not silently re-seed a fresh L1 recovery (a duplicate
+	// recovery/summarize path on one dead run). GetLatestRecoveryForExecution
+	// (any status) backs that: a row still pending/running holds; a row that
+	// already went terminal is a no-op, not a re-trigger.
 	if stepRun != nil {
-		if existing, err := db.GetActiveRecoveryForExecution(ctx, ttx.Tx, tenantID, taskID, failedExecID); err == nil {
-			e.log.Info("recovery already active for execution", "task", taskID, "execution", failedExecID, "recovery", existing.ID)
+		if existing, err := db.GetLatestRecoveryForExecution(ctx, ttx.Tx, tenantID, taskID, failedExecID); err == nil {
+			e.log.Info("recovery already recorded for execution (idempotent)",
+				"task", taskID, "execution", failedExecID, "recovery", existing.ID, "status", existing.Status)
 			return nil
 		}
 	} else {
@@ -672,8 +681,67 @@ func (r *Reconciler) scanRecoveries(ctx context.Context, tenantID string) error 
 	for _, rec := range pending {
 		if err := r.progressRecovery(ctx, tenantID, rec.ID); err != nil {
 			r.log.Warn("recovery reconcile failed", "recovery", rec.ID, "error", err)
+			// RC3 — isolate a poisoned-tx recovery (SQLSTATE 25P01/25P02, or
+			// any "current transaction is aborted" error), which would
+			// otherwise be re-read + re-retried on the SAME static recovery id
+			// every scan, flooding the log (~20/s) and pinning the sequential
+			// scan (scanRecoveries proceeds one id at a time). Mark it
+			// terminal-failed so ListPendingRecoveries stops returning it; a
+			// genuinely transient error is re-triggered by the next failure,
+			// bounded rather than a permanent wedge.
+			if isPoisonedRecoveryTx(err) {
+				if merr := r.quarantineRecovery(ctx, tenantID, rec.ID, err); merr != nil {
+					r.log.Warn("recovery reconcile: quarantine failed", "recovery", rec.ID, "error", merr)
+				}
+			}
 		}
 	}
+	return nil
+}
+
+// isPoisonedRecoveryTx reports whether a progressRecovery error is a
+// PostgreSQL tx-abort / failed-transaction-commit error that poisons the
+// tx and will deterministically re-fail on the same row next scan.
+func isPoisonedRecoveryTx(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "current transaction is aborted") ||
+		strings.Contains(msg, "SQLSTATE 25P01") ||
+		strings.Contains(msg, "SQLSTATE 25P02")
+}
+
+// quarantineRecovery terminally fails a recovery that hit a poisoned tx so
+// it drops out of the pending scan. Only a non-terminal recovery is
+// touched; terminal rows are left alone (idempotent, and never resurrected
+// into a re-trigger by R6 dedup).
+func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryID string, cause error) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+	rec, err := db.GetRecoveryExecution(ctx, ttx.Tx, tenantID, recoveryID)
+	if err != nil {
+		return fmt.Errorf("get recovery: %w", err)
+	}
+	switch rec.Status {
+	case domain.RecoveryResumed, domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
+		return nil
+	}
+	now := time.Now().UTC()
+	status := domain.RecoveryFailed
+	if _, err := db.UpdateRecoveryExecution(ctx, ttx.Tx, tenantID, recoveryID, rec.Version, db.UpdateRecoveryExecutionFields{
+		Status:  &status,
+		EndedAt: &now,
+	}); err != nil {
+		return fmt.Errorf("quarantine update: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("quarantine commit: %w", err)
+	}
+	r.log.Warn("recovery quarantined (poisoned tx)", "recovery", recoveryID, "cause", cause.Error())
 	return nil
 }
 

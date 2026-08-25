@@ -43,6 +43,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -497,6 +498,15 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// post-commit (like inline dispatch) removes the cycle.
 	var recoveryTriggers []recoveryTriggerReq
 
+	// D3 rule 3 — scan-scoped create-once guard. Records the loop_decision
+	// step IDs for which THIS reconcile pass already (co)spawned a recovery
+	// iteration, so a second evaluation of the same still-failed upstream
+	// within one transaction cannot spawn a duplicate. Together with the
+	// iteration-field rule (only Iteration==0 spawns) and the hold-at-PENDING
+	// rule it guarantees at most one recovering/loop iteration per
+	// failed-upstream reconcile scan — no runaway, no same-pass flood.
+	loopIterationCreated := map[string]bool{}
+
 	// DAG progression loop: repeat pending→ready, dispatch, and poll
 	// until no step makes progress in a full pass. This ensures that
 	// when a task step is polled terminal, downstream pending steps
@@ -515,7 +525,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	progressed := false
 	passes := 0
 	for {
-		if passes >= maxDAGPasses {
+		if passes >= maxDAGPasses() {
 			// The pass made no forward progress across maxDAGPasses
 			// iterations — a pathological run that flips a step's status
 			// every pass (e.g. a loop_decision runaway). Do NOT return an
@@ -692,6 +702,20 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				continue
 			}
 			r.log.Debug("DEBUG: checking deps satisfied", "stepID", sr.StepID)
+			// D3 rule 4 — hold-at-PENDING. A SPAWNED loop_decision
+			// iteration (Iteration > 0, created by the recovery path) whose
+			// upstream dep is STILL terminal-failed is held at PENDING. It
+			// must not flip to READY (which would set madeProgress=true and
+			// re-dispatch it, re-evaluating the still-failed upstream and
+			// spawning yet another iteration). Holding leaves madeProgress
+			// false so the scan exits on !madeProgress and the recovery
+			// cycle drives the re-dispatch instead of the DAG loop.
+			if step.Kind == domain.StepKindLoopDecision && sr.Iteration > 0 &&
+				r.loopDecisionUpstreamFailed(step, runByID) {
+				r.log.Debug("DEBUG: holding spawned loop_decision iteration (upstream failed)",
+					"stepID", sr.StepID, "iteration", sr.Iteration)
+				continue
+			}
 			if r.depsSatisfied(step, runByID) {
 				r.log.Debug("DEBUG: about to update step run",
 					"stepID", sr.StepID,
@@ -827,7 +851,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					continue
 				}
 				var stepDispatches []dispatchReq
-				if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepDispatches, &recoveryTriggers); err != nil {
+				if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepDispatches, &recoveryTriggers, loopIterationCreated); err != nil {
 					return err
 				}
 				madeProgress = true
@@ -1635,6 +1659,20 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 	return true
 }
 
+// loopDecisionUpstreamFailed reports whether ANY upstream dependency of a
+// loop_decision step is terminal-FAILED. Used by the D3 hold-at-PENDING
+// rule: a spawned loop_decision iteration (Iteration>0) is held at PENDING
+// while an upstream is still failed so it does not re-flip to READY and
+// re-spawn within the same scan.
+func (r *WorkflowReconciler) loopDecisionUpstreamFailed(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
+	for _, dep := range step.DependsOn {
+		if up, ok := runs[dep]; ok && up.SupersededBy == "" && up.Status == domain.StepRunFailed {
+			return true
+		}
+	}
+	return false
+}
+
 // evaluateGate evaluates the step's gate_policy_ref (docs/02 §2.5 Tier
 // 1). Phase 7: the Rego Policy Engine evaluates the gate; if no policy
 // is referenced or no PolicyEvaluator is wired, the gate is a pass-
@@ -1680,7 +1718,7 @@ func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.Ste
 //     assigned_worker_ref — docs/03 §8 invariant #1).
 //   - The step run tracks the primary work item id under
 //     _work_item_id in result JSON so pollTaskStep can poll.
-func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedSteps *[]dispatchReq, recoveryTriggers *[]recoveryTriggerReq) error {
+func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedSteps *[]dispatchReq, recoveryTriggers *[]recoveryTriggerReq, loopIterationCreated map[string]bool) error {
 	now := time.Now().UTC()
 	switch step.Kind {
 	case domain.StepKindProject:
@@ -1972,31 +2010,57 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		}
 		if anyFailed {
-			// Guard against runaway iteration generation: when an upstream
-			// reviewer is FAILED, depsSatisfied treats the failed upstream as
-			// satisfied for THIS loop decision, so the freshly-created pending
-			// iteration re-dispatches on the next DAG pass and (upstream still
-			// failed) spawns ANOTHER iteration — all within one reconcile
-			// transaction. That floods workflow_step_runs with same-transaction
-			// rows (identical created_at → the "last row wins" ordering hazard
-			// that wedged the DAG in the field). If an ACTIVE (non-superseded)
-			// pending loop-decision iteration already exists for this step, the
-			// recovery re-dispatches the reviewer and re-evaluates when it
-			// lands — don't create a duplicate.
-			hasPendingIter := false
+			// D3 — anti-flood guard. An upstream failed → loop back and
+			// create a new loop_decision iteration so downstream steps block
+			// until the recovery cycle completes and the re-dispatched
+			// reviewer produces a fresh decision. Without a guard,
+			// depsSatisfied treats the failed upstream as satisfied for THIS
+			// loop decision, so the freshly-created pending iteration
+			// re-dispatches on the next DAG pass and (upstream still failed)
+			// spawns ANOTHER iteration — all within one reconcile
+			// transaction (the observed runaway + maxDAGPasses rollback).
+			// Three rules close it:
+			//
+			//   Rule 1 (iteration field): only the ORIGINAL run
+			//     (Iteration == 0) may create the recovery iteration. A
+			//     spawned iteration (Iteration > 0) never spawns again — it
+			//     waits for the recovery to land and re-evaluate.
+			//   Rule 2 (broadened in-flight): wait if ANY other
+			//     non-superseded, non-terminal iteration exists for this
+			//     step — not just `pending` (the status=pending-only guard
+			//     was the bug: a concurrent class of rows in
+			//     READY/RUNNING/RECOVERING was invisible to it).
+			//   Rule 3 (scan-scoped create-once): loopIterationCreated
+			//     records that THIS pass already spawned for this step, so a
+			//     second evaluation of the same failed upstream within one
+			//     transaction is a no-op.
+			//
+			// The hold-at-PENDING rule (pending→ready phase) keeps the
+			// spawned iteration at PENDING while any upstream dep is still
+			// terminal-failed, so madeProgress stays false and the scan
+			// exits on !madeProgress instead of looping.
+			if sr.Iteration > 0 || loopIterationCreated[step.ID] {
+				r.log.Info("loop_decision: upstream failed, iteration already spawned this pass — waiting",
+					"run", run.ID, "step", step.ID, "iteration", sr.Iteration)
+				break
+			}
+			hasActiveIter := false
 			if iterRuns, ierr := listStepRunsByStepID(ctx, tx, tenantID, run.ID, step.ID); ierr == nil {
 				for _, prev := range iterRuns {
-					if prev.SupersededBy == "" && prev.ID != sr.ID && prev.Status == domain.StepRunPending {
-						hasPendingIter = true
+					if prev.SupersededBy == "" && prev.ID != sr.ID && prev.Iteration > 0 &&
+						prev.Status != domain.StepRunSucceeded && prev.Status != domain.StepRunFailed &&
+						prev.Status != domain.StepRunSkipped {
+						hasActiveIter = true
 						break
 					}
 				}
 			}
-			if hasPendingIter {
-				r.log.Info("loop_decision: upstream failed, pending iteration exists — waiting",
+			if hasActiveIter {
+				r.log.Info("loop_decision: upstream failed, active non-terminal iteration exists — waiting",
 					"run", run.ID, "step", step.ID)
 				break
 			}
+			loopIterationCreated[step.ID] = true
 			nextIter := currentLoopIteration(runs, step.ID) + 1
 			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"recovered"}`); err != nil {
 				return err
@@ -3533,6 +3597,11 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 		"_work_item_id":        workItemID,
 		"_failed_execution_id": failedExecID,
 		"_recovery_strategy":   strategy,
+		// RC2 — bound the stalled-recovering guard on WHEN this step entered
+		// recovering, never on run age. The recoveringStallTimeout cap reads
+		// this to decide whether a recovering step is genuinely stuck vs.
+		// merely waiting for its deferred recovery trigger to land.
+		"_recovering_since": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if len(prevResult) > 0 {
 		var prev map[string]any
@@ -3573,6 +3642,7 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 		RecoveryExecID   string `json:"_recovery_execution_id"`
 		RecoveryStrategy string `json:"_recovery_strategy"`
 		WorkerID         string `json:"_worker_id"`
+		FailedWorkerID   string `json:"_failed_worker_id"`
 	}
 	if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.WorkItemID == "" {
 		// No ticket recorded — cannot gate; dispatchStep/failStep will
@@ -3645,6 +3715,21 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 		return false, nil
 	}
 
+	// R7 — fail fast when the dead-execution worker no longer matches the
+	// currently-assigned worker. The seed resolver requires
+	// FailedWorkerID == dispatching worker (the seed file is written for
+	// that exact worker), so a mismatch would otherwise make the seed never
+	// resolvable → an indefinite hold (the old deadline'd only by
+	// holdRecoveringStep, with a misleading message). Reassigning a step, or
+	// deleting/version-bumping a worker, between the execute-fail and the
+	// resume-dispatch cannot reuse the dead worker's seed — fail the step
+	// loud so retry/fail-fast re-arbitrates rather than wedging.
+	if meta.FailedWorkerID != "" && meta.WorkerID != "" && meta.FailedWorkerID != meta.WorkerID {
+		return false, fmt.Errorf(
+			"step recovery worker changed: dead execution ran on %s but step %s is now assigned to %s — manual re-arbitration required",
+			meta.FailedWorkerID, sr.StepID, meta.WorkerID)
+	}
+
 	// 3. A seed must be resolvable for the exact dispatching worker
 	//    (step-run keys, or the recovery-row fallback). nil → hold: the
 	//    engine publishes the keys atomically with terminal-resumed, so
@@ -3698,12 +3783,40 @@ func recoveringStallTimeout() time.Duration {
 // "running" forever.
 func (r *WorkflowReconciler) holdRecoveringStep(run db.WorkflowRunRow, sr db.WorkflowStepRunRow, waitReason string) (bool, error) {
 	wait := recoveringStallTimeout()
-	if wait <= 0 || run.StartedAt == nil || time.Since(*run.StartedAt) < wait {
+	if wait <= 0 {
+		return false, nil
+	}
+	// RC2 — bound the stall by WHEN THIS STEP entered recovering, never the
+	// run's age. A LONG-RUNNING run (run.StartedAt far past the window)
+	// whose recovery trigger has not landed yet must HOLD, not fail the step
+	// the instant the run crosses the stall window — the trigger is deferred
+	// to post-commit and may land a few hundred ms after the step flipped
+	// recovering (the race-aged FAIL that wedged the run in the field).
+	// A recovering row with no `_recovering_since` (pre-deploy) is treated as
+	// "just recovering" → hold, never fail on run age.
+	since := recoveringSinceTime(sr)
+	if since.IsZero() || time.Since(since) < wait {
 		return false, nil
 	}
 	r.log.Warn("recovering step stalled past limit — failing step terminal",
-		"run", run.ID, "step", sr.StepID, "reason", waitReason, "wait", wait.String())
+		"run", run.ID, "step", sr.StepID, "reason", waitReason, "wait", wait.String(),
+		"recovering_since", since.Format(time.RFC3339))
 	return true, fmt.Errorf("step stuck recovering for %s (%s) — failing step", wait, waitReason)
+}
+
+// recoveringSinceTime extracts the `_recovering_since` timestamp stamped at
+// the step→recovering transition. Zero when absent (legacy/pre-deploy row).
+func recoveringSinceTime(sr db.WorkflowStepRunRow) time.Time {
+	var m map[string]any
+	if json.Unmarshal(sr.Result, &m) != nil {
+		return time.Time{}
+	}
+	if v, ok := m["_recovering_since"].(string); ok && v != "" {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // maxDAGPasses bounds the per-run DAG progression loop. A well-behaved
@@ -3714,7 +3827,20 @@ func (r *WorkflowReconciler) holdRecoveringStep(run db.WorkflowRunRow, sr db.Wor
 // reconciler's advisory lock never renewed). The bound converts the
 // pathology into a single errored pass; the manager requeues the run and
 // a later pass (or the stuck-run re-drive) retries it.
-const maxDAGPasses = 100
+//
+// Overridable via ORCHICON_MAX_DAG_PASSES (default 100) so the
+// no-silent-rollback regression test (maxDAGPasses must break+COMMIT a
+// pass that already produced recovering/recovery writes, never
+// `return err` which would roll them back) can drive the bound
+// deterministically without forging 100 pathological passes.
+func maxDAGPasses() int {
+	if v := os.Getenv("ORCHICON_MAX_DAG_PASSES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 100
+}
 
 // pollTaskStep checks the WorkItem linked to a running task step. Returns
 // (terminal, failed, error). The WorkItem id is stored in the step run's
