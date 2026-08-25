@@ -847,8 +847,15 @@ func (x *DependencyIds) GetIds() []string {
 }
 
 type UpdateWorkItemResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkItem      *WorkItem              `protobuf:"bytes,1,opt,name=work_item,json=workItem,proto3" json:"work_item,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	WorkItem *WorkItem              `protobuf:"bytes,1,opt,name=work_item,json=workItem,proto3" json:"work_item,omitempty"`
+	// Populated when the request explicitly asked auto_start_workflow=true
+	// but the server declined to start (the item's status is not one of
+	// pending/scheduled/ready/assigned — e.g. cancelled or already
+	// finished). The edit itself IS saved; this warning only explains why
+	// no run was started. Empty = auto-start was applied (or was never
+	// requested).
+	Warning       string `protobuf:"bytes,2,opt,name=warning,proto3" json:"warning,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -888,6 +895,13 @@ func (x *UpdateWorkItemResponse) GetWorkItem() *WorkItem {
 		return x.WorkItem
 	}
 	return nil
+}
+
+func (x *UpdateWorkItemResponse) GetWarning() string {
+	if x != nil {
+		return x.Warning
+	}
+	return ""
 }
 
 type DeleteWorkItemRequest struct {
@@ -2037,9 +2051,10 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x13_recurring_scheduleB\r\n" +
 	"\v_depends_on\"!\n" +
 	"\rDependencyIds\x12\x10\n" +
-	"\x03ids\x18\x01 \x03(\tR\x03ids\"P\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\"j\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"'\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\x12\x18\n" +
+	"\awarning\x18\x02 \x01(\tR\awarning\"'\n" +
 	"\x15DeleteWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"P\n" +
 	"\x16DeleteWorkItemResponse\x126\n" +

@@ -237,6 +237,41 @@ func IsActiveRunStatus(status string) bool {
 	}
 }
 
+// IsStartableForAutoStart reports whether UPDATE-path auto-start may fire
+// for a work item in this status. Only pre-run statuses may be armed by an
+// edit: pending, scheduled, ready, assigned. Every other status (running,
+// checkpointing, recovering, succeeded, failed, cancelled, skipped,
+// recurring, blocked, archived) is declined — an edit must never resurrect
+// or duplicate work, no matter what stored auto_start_workflow flag says.
+//
+// This is the primary fix for stale legacy rows carrying
+// auto_start_workflow=true (created before migration
+// 20260807120000_work_item_auto_start_default_false.sql): with this gate,
+// such a row is behaviorally inert on the update path even when the edit
+// touches workflow_id. Exported so the Ask Orchicon MCP update tool applies
+// the identical precondition (AGENTS.md: the tool and the service cannot
+// drift). The CREATE path needs no gate — new items always start pending.
+func IsStartableForAutoStart(status string) bool {
+	switch status {
+	case domain.WorkItemPending, domain.WorkItemScheduled,
+		domain.WorkItemReady, domain.WorkItemAssigned:
+		return true
+	default:
+		return false
+	}
+}
+
+// AutoStartDeclinedWarning returns the user-facing explanation carried by
+// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result
+// when an EXPLICIT auto_start_workflow=true was declined because the
+// item's status is not startable. Shared verbatim so the two surfaces
+// never drift.
+func AutoStartDeclinedWarning(status string) string {
+	return fmt.Sprintf("Auto-start was NOT applied: this item's status is %q. "+
+		"Start-immediately-on-save requires the item to be pending, scheduled, ready, or assigned. "+
+		"Your changes were saved.", status)
+}
+
 // validateDependencyType returns the domain type for a proto enum.
 func validateDependencyType(t apiv1.DependencyType) (string, error) {
 	switch t {

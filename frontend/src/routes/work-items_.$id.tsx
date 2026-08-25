@@ -22,6 +22,7 @@ import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
+import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -63,6 +64,7 @@ function WorkItemDetailPage() {
   const addDependency = useAddDependency(item?.projectId ?? "");
   const removeDependency = useRemoveDependency(item?.projectId ?? "");
   const createWorkItem = useCreateWorkItem();
+  const toast = useToast();
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
   const { data: projects } = useListProjects();
   const navigate = useNavigate();
@@ -982,7 +984,22 @@ function WorkItemDetailPage() {
                       ? new RecurringSchedule()
                       : editRecurringSchedule,
                 },
-                { onSuccess: () => setEditing(false) },
+                {
+                  onSuccess: ({ warning }) => {
+                    setEditing(false);
+                    // The server saved the edit but declined an explicit
+                    // auto-start (item status not startable). Surface the
+                    // server's explanation verbatim so "save with
+                    // auto-start on a non-startable item" reads as an
+                    // intentional, explained no-op — not as breakage.
+                    if (warning) {
+                      toast.error(warning, {
+                        title: "Auto-start not applied",
+                        duration: 9000,
+                      });
+                    }
+                  },
+                },
               );
             }}
             disabled={updateWorkItem.isPending || !title.trim()}

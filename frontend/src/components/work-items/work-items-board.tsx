@@ -246,7 +246,7 @@ export function WorkItemsBoard({
     updateStatus.mutate(
       { id: item.id, status: targetStatus as WorkItemStatus },
       {
-        onSuccess: (updated) => {
+        onSuccess: ({ workItem: updated }) => {
           // Server confirms — update with the real server data
           qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
             if (!old) return old;

@@ -140,15 +140,21 @@ export function useCreateWorkItem() {
 }
 
 // useUpdateWorkItem updates a work item (partial, optimistic concurrency
-// handled server-side via version CAS).
+// handled server-side via version CAS). Returns the saved item plus the
+// server's auto-start warning: when the request explicitly asked
+// auto_start_workflow=true but the item's status is not startable
+// (pending/scheduled/ready/assigned), the edit IS saved but no run is
+// started and `warning` explains why — surface it so a save with
+// auto-start on a non-startable item reads as an intentional, explained
+// no-op.
 export function useUpdateWorkItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: PartialMessage<UpdateWorkItemRequest>) => {
       const res = await workItemClient.updateWorkItem(input);
-      return res.workItem as WorkItem;
+      return { workItem: res.workItem as WorkItem, warning: res.warning || "" };
     },
-    onSuccess: (item) => {
+    onSuccess: ({ workItem: item }) => {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
       qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
