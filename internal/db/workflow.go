@@ -1352,6 +1352,108 @@ func ListTerminalStepRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tena
 	return out, rows.Err()
 }
 
+// ListTerminalRunsWithPrunedBranchesInclusive returns terminal
+// workflow runs (completed/failed/aborted) whose worktree was already
+// pruned but that still record a worktree branch, FILTERED to the
+// reclaimable window: a run is reclaimable when it is completed (always)
+// or when it is failed/aborted and the bound work item is terminal
+// non-replayable (succeeded/skipped/cancelled/archived) or the run has
+// no bound work item at all. Non-reclaimable failed/aborted rows (active
+// work item) are excluded so the sweep's ORDER BY ... LIMIT page never
+// pins on them (stuck-page fix). Keeps the original completed-only
+// func for audit; this is the sweep's inclusive window.
+func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
+		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
+			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
+		FROM workflow_runs r
+		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
+		WHERE r.tenant_id = $1 AND r.status IN ('completed', 'failed', 'aborted')
+		  AND r.worktree_status = 'pruned' AND r.worktree_branch <> ''
+		  AND (r.status = 'completed' OR r.work_item_id IS NULL OR r.work_item_id = '' OR wi.id IS NULL OR wi.status IN ('succeeded', 'skipped', 'cancelled', 'archived'))
+		ORDER BY r.created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal runs with pruned branches (inclusive): %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal run (pruned branch inclusive): %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListTerminalStepRunsWithPrunedBranchesInclusive returns workflow step
+// runs whose branch worktree was already pruned but that still record a
+// worktree branch, belonging to a terminal run (completed/failed/aborted),
+// FILTERED to the reclaimable window: the parent run is completed (always
+// reclaimable) or failed/aborted with a terminal non-replayable work item
+// (or no bound work item). Excludes non-reclaimable failed/aborted rows
+// so the sweep page advances. Mirror of the run inclusive query.
+func ListTerminalStepRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT s.id, s.tenant_id, s.workflow_run_id, s.step_id, s.step_name,
+		s.step_kind, s.status, s.attempt, s.result, s.worker_execution_id,
+		s.iteration, s.superseded_by, s.worktree_status, s.worktree_path, s.worktree_branch,
+		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
+		FROM workflow_step_runs s
+		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
+		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
+		WHERE s.tenant_id = $1 AND r.status IN ('completed', 'failed', 'aborted')
+		  AND s.worktree_status = 'pruned' AND s.worktree_branch <> ''
+		  AND (r.status = 'completed' OR r.work_item_id IS NULL OR r.work_item_id = '' OR wi.id IS NULL OR wi.status IN ('succeeded', 'skipped', 'cancelled', 'archived'))
+		ORDER BY s.created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal step runs with pruned branches (inclusive): %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowStepRunRow
+	for rows.Next() {
+		var s WorkflowStepRunRow
+		var supBy *string
+		if err := rows.Scan(
+			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
+			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
+			&s.WorkerExecutionID,
+			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+			&s.StartedAt, &s.EndedAt, &s.Version,
+			&s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal step run (pruned branch inclusive): %w", err)
+		}
+		if supBy != nil {
+			s.SupersededBy = *supBy
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ListBackfillPRRuns returns git-backed terminal workflow runs whose
 // run_context has no pr_url yet — the one-shot PR backfill target set
 // (architecture-notes/backfill-real-pr-urls-on-completed-runs-link-only-to-the-actual-pr.md).
