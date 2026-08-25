@@ -70,3 +70,6 @@ site/install.ps1
 deploy/container/orchicon
 deploy/runtime/orchicon
 .playwright-mcp/
+
+# Orchicon: ignore nested step worktrees (parallel-branch children)
+01*/

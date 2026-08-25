@@ -555,8 +555,13 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			r.ensureRunWorktreeStepIgnore(ctx, run.WorktreePath)
 			return nil
 		}
-	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
-		// Recorded decisions are respected: a skipped, failed or pruned run
+	case domain.WorktreePruned:
+		if isTerminalRun(run) {
+			return nil
+		}
+		// non-terminal pruned → re-provision (retry after prune)
+	case domain.WorktreeSkipped, domain.WorktreeFailed:
+		// Recorded decisions are respected: a skipped or failed run
 		// is never re-provisioned by the loop. (A human may reset the row.)
 		return nil
 	}
@@ -717,8 +722,13 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 			}
 			return nil
 		}
-	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
-		// Recorded decisions are respected: a skipped, failed or pruned
+	case domain.WorktreePruned:
+		if isTerminalStepRun(sr) || isTerminalRun(run) {
+			return nil
+		}
+		// non-terminal pruned → re-provision (retry after prune)
+	case domain.WorktreeSkipped, domain.WorktreeFailed:
+		// Recorded decisions are respected: a skipped or failed
 		// step run is never re-provisioned by the loop.
 		return nil
 	}

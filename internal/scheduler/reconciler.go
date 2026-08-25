@@ -692,6 +692,19 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			}
 		}
 	}
+	// Guard: workflow-bound dispatches must have a ready or skipped worktree.
+	// A pending/pruned/failed worktree must be re-provisioned — never create
+	// an execution that would run in the project dir (silent fallback).
+	if workflowRunID != "" && worktreeStatus != nil {
+		switch *worktreeStatus {
+		case domain.WorktreePending, domain.WorktreePruned:
+			r.log.Info("holding dispatch: worktree not ready, will re-provision", "task", task.ID, "run", workflowRunID, "status", *worktreeStatus)
+			return nil
+		case domain.WorktreeFailed:
+			r.log.Warn("worktree provisioning failed — holding dispatch", "task", task.ID, "run", workflowRunID, "status", *worktreeStatus)
+			return nil
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -892,11 +905,29 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	}
 	// The execution working directory is the provisioned worktree path when
 	// the run has one (the worker starts already checked out on its branch
-	// inside the worktree), else the project dir. Only worktree_status='ready'
-	// switches the cwd; skipped/failed/pending runs keep the project dir.
+	// inside the worktree), else the project dir. Only `ready` and `skipped`
+	// (intentionally in-place) are allowed to dispatch without a worktree
+	// path; `pending`/`pruned`/`failed` must be re-provisioned and never
+	// silently fall back to the project dir (the observed project-dir
+	// fallback broke branch/PR invariants).
 	execCwd := projectDir
 	if worktreePath != "" {
 		execCwd = worktreePath
+	} else if exec.WorkflowRunID != "" {
+		// Workflow-bound dispatch without a worktree path.
+		switch worktreeStatus {
+		case domain.WorktreePending, domain.WorktreePruned:
+			r.log.Info("holding dispatch: worktree not ready, will re-provision", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		case domain.WorktreeFailed:
+			r.log.Warn("worktree provisioning failed — failing dispatch", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		case domain.WorktreeSkipped, "":
+			// intentionally in-place (non-repo) or undetermined — allow projectDir
+		default:
+			r.log.Warn("holding dispatch: unexpected worktree status without path", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		}
 	}
 	// The system prompt is the full context the model sees on every
 	// turn. The WorkflowReconciler builds the composite per step and

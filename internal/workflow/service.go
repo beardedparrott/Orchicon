@@ -1262,14 +1262,24 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		}
 		emptyResult := []byte("{}")
 		attempt := 0
-		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		fields := db.UpdateWorkflowStepRunFields{
 			Status:            strPtr(domain.StepRunPending),
 			Result:            &emptyResult,
 			WorkerExecutionID: strPtr(""),
 			Attempt:           &attempt,
 			StartedAt:         &now,
 			ClearEndedAt:      true,
-		})
+		}
+		// Re-provision pruned worktrees on retry: keep the branch for
+		// re-attach but reset status to pending and clear the stale path
+		// so the WorktreeReconciler re-creates the worktree before dispatch.
+		if sr.WorktreeStatus == domain.WorktreePruned {
+			pending := domain.WorktreePending
+			emptyPath := ""
+			fields.WorktreeStatus = &pending
+			fields.WorktreePath = &emptyPath
+		}
+		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, fields)
 		if err != nil {
 			return nil, mapDBError(err)
 		}
@@ -1285,10 +1295,21 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 
 	// Flip the run back to pending so the reconciler's pending→running block
 	// re-resolves the runtime image and re-creates the (reaped) container.
-	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+	// If the run's worktree was pruned, reset it to pending (keep branch)
+	// so the WorktreeReconciler re-provisions the worktree before any
+	// re-dispatched step runs. Without this the re-armed steps would fall
+	// back to the project dir.
+	runFields := db.UpdateWorkflowRunFields{
 		Status:       strPtr(domain.WorkflowRunPending),
 		ClearEndedAt: true,
-	})
+	}
+	if run.WorktreeStatus == domain.WorktreePruned {
+		pending := domain.WorktreePending
+		emptyPath := ""
+		runFields.WorktreeStatus = &pending
+		runFields.WorktreePath = &emptyPath
+	}
+	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, runFields)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
