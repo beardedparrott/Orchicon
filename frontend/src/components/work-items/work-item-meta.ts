@@ -24,7 +24,7 @@ import {
   type WorkItem,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
-export { DependencyType };
+export { DependencyType, type WorkItem };
 
 // ---------------------------------------------------------------------------
 // Kinds (enum values from work_item.proto — do not re-invent)
