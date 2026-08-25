@@ -163,7 +163,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -205,7 +205,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag string) string {
+func RuntimeServeConfig(imageTag, projectDir string) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  workerAgentPrompt,
@@ -222,6 +222,27 @@ func RuntimeServeConfig(imageTag string) string {
 		// runtime container) — the plane's own executable path, which
 		// builds this config, is not necessarily present there.
 		opts.MCPBinaryPath = runtimeContainerBinaryPath
+
+		// Composite worktree tools (batch_read / batch_grep / batch_write)
+		// are LIVE for dev runtime images. The worker is handed the batch
+		// tools and opencode's built-in read/grep are denied (see config.go
+		// permissionRules), so it is forced onto the batch tools — the whole
+		// point: fewer turns, less re-sent context. WorktreeDir is the
+		// in-container project dir (the runtime daemon starts the serve with
+		// cwd == project dir); ORCHICON_WORKTREE_DIR overrides it, and the
+		// serve process cwd is the last-resort fallback. CompositeTools is
+		// only set when a worktree dir resolves, so the batch MCP is always
+		// registered whenever the read/grep deny is applied (no lockout).
+		opts.WorktreeDir = projectDir
+		if opts.WorktreeDir == "" {
+			opts.WorktreeDir = os.Getenv("ORCHICON_WORKTREE_DIR")
+		}
+		if opts.WorktreeDir == "" {
+			if wd, werr := os.Getwd(); werr == nil {
+				opts.WorktreeDir = wd
+			}
+		}
+		opts.CompositeTools = opts.WorktreeDir != ""
 	}
 	return BuildConfigContent(opts)
 }
@@ -321,10 +342,13 @@ const workerAgent = "orchicon-worker"
 // verbosity.
 const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
 	"Tools you have:\n" +
-	"- `read` — read file contents\n" +
-	"- `write` — create or overwrite a file\n" +
+	"- `batch_read` — read several files (or a directory) in ONE call; prefer it over many single `read`s\n" +
+	"- `batch_grep` — search several patterns across the tree in ONE call; prefer it over many `grep`s\n" +
+	"- `batch_write` — apply several create/edit/append writes in ONE atomic call; prefer it over a long chain of `write`/`edit`s\n" +
+	"- `read` — read one file (fallback when batch_read is unavailable)\n" +
+	"- `write` — create or overwrite a file (fallback when batch_write is unavailable)\n" +
 	"- `edit` — targeted string replacement in a file\n" +
-	"- `grep` — regex-search file contents\n" +
+	"- `grep` — regex-search file contents (fallback when batch_grep is unavailable)\n" +
 	"- `glob` — find files by pattern\n" +
 	"- `bash` — run a shell command in the project\n" +
 	"- `todowrite` — maintain the live task-progress list (emit it every turn)\n" +
@@ -335,6 +359,8 @@ const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
 	"Discipline — read carefully:\n" +
 	"- Batch tool calls: combine independent operations into ONE round-trip. " +
 	"NEVER split related work across many micro tool calls — each call re-sends the whole conversation to the model.\n" +
+	"- Prefer the batch tools: one `batch_read`/`batch_grep`/`batch_write` beats several single calls. " +
+	"Once a file is in context, NEVER re-read it. Do not call `batch_grep` for something you already saw.\n" +
 	"- Prefer the fewest tool calls that complete the task."
 
 // runtimeContainerBinaryPath is where the runtime daemon bind-mounts its

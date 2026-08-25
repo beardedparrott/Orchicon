@@ -29,10 +29,14 @@ type Lifecycle struct {
 	pool   *db.Pool
 	log    *slog.Logger
 	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
-	// container serve from its runtime image tag. The Orchicon MCP is
-	// registered only for dev images (which boot the sandbox plane against
-	// a sandbox DB); base/gui images get a config identical to today.
-	serveConfigFor func(image string) string
+	// container serve from its runtime image tag and in-container project dir.
+	// The Orchicon MCP is registered only for dev images (which boot the
+	// sandbox plane against a sandbox DB); base/gui images get a config
+	// identical to today. The project dir is threaded through because the
+	// composite worktree batch tools (batch_read/grep/write) need a base
+	// directory to resolve against — the project is mounted in-container at
+	// the same absolute path.
+	serveConfigFor func(image, projectDir string) string
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
@@ -41,7 +45,7 @@ type Lifecycle struct {
 // the run's runtime image tag (permission rules only for base/gui images,
 // plus the sandbox-scoped Orchicon MCP for dev images — built by the
 // opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image string) string) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir string) string) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor}
 }
 
@@ -57,37 +61,39 @@ func (l *Lifecycle) Enabled() bool { return l.client != nil }
 // dispatch. Shared by EnsureForRun and EnsureServing.
 func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRow) (CreateRequest, error) {
 	req := CreateRequest{
-		WorkflowID:  run.ID,
-		Image:       run.RuntimeImage,
-		ServeConfig: l.serveConfigFor(run.RuntimeImage),
+		WorkflowID: run.ID,
+		Image:      run.RuntimeImage,
 	}
-	if run.ProjectID == "" {
-		return req, nil
-	}
-	ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
-	if err != nil {
-		return CreateRequest{}, fmt.Errorf("ensure runtime: begin tx: %w", err)
-	}
-	project, gerr := db.GetProject(ctx, ttx.Tx, run.TenantID, run.ProjectID)
-	if gerr == nil {
-		projectDir := project.ProjectDir
-		if projectDir != "" {
-			req.Mounts = append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir})
-			req.ProjectDir = projectDir
+	var projectDir string
+	if run.ProjectID != "" {
+		ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
+		if err != nil {
+			return CreateRequest{}, fmt.Errorf("ensure runtime: begin tx: %w", err)
 		}
-		// Project context files/directories outside project_dir.
-		req.Mounts = append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...)
-		// The run's bound work item's context files/directories.
-		if run.WorkItemID != "" {
-			if wi, werr := db.GetWorkItem(ctx, ttx.Tx, run.TenantID, run.WorkItemID); werr == nil {
-				req.Mounts = append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...)
+		project, gerr := db.GetProject(ctx, ttx.Tx, run.TenantID, run.ProjectID)
+		if gerr == nil {
+			projectDir = project.ProjectDir
+			if projectDir != "" {
+				req.Mounts = append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir})
+				req.ProjectDir = projectDir
+			}
+			// Project context files/directories outside project_dir.
+			req.Mounts = append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...)
+			// The run's bound work item's context files/directories.
+			if run.WorkItemID != "" {
+				if wi, werr := db.GetWorkItem(ctx, ttx.Tx, run.TenantID, run.WorkItemID); werr == nil {
+					req.Mounts = append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...)
+				}
 			}
 		}
+		_ = ttx.Rollback(ctx)
+		if gerr != nil && gerr != db.ErrNotFound {
+			return CreateRequest{}, fmt.Errorf("ensure runtime: get project: %w", gerr)
+		}
 	}
-	_ = ttx.Rollback(ctx)
-	if gerr != nil && gerr != db.ErrNotFound {
-		return CreateRequest{}, fmt.Errorf("ensure runtime: get project: %w", gerr)
-	}
+	// Serve config is built last so the in-container project dir is available
+	// for the composite worktree batch tools (batch_read/grep/write).
+	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir)
 	return req, nil
 }
 

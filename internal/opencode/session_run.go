@@ -948,12 +948,14 @@ func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	r.firedWarn[d][idx] = true
 	msg := r.budgetSpec.message(d, level, frac)
 	// Whether this tier ALSO compacts is gated on the operator's per-tier
-	// compact_tiers policy AND the shared re-arm latch. A tier ALWAYS injects
-	// its warning message when crossed; compaction is the lossy,
+	// compact_tiers policy, the per-dimension compact_dims policy (so e.g. a
+	// tool-call-budget warning never triggers a lossy collapse that would
+	// force yet more tool calls), AND the shared re-arm latch. A tier ALWAYS
+	// injects its warning message when crossed; compaction is the lossy,
 	// mid-flight-interrupting action. canCompactNow takes r.mu itself, so it
 	// must run AFTER the unlock below — otherwise it deadlocks re-locking the
 	// mutex the caller already holds.
-	compactPolicy := r.budgetSpec.compactsAt(level)
+	compactPolicy := r.budgetSpec.compactsAt(level) && r.budgetSpec.compactsDim(d)
 	r.mu.Unlock()
 
 	r.injectBudgetWarning(d, level, msg)

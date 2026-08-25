@@ -277,6 +277,21 @@ the container's PID-1 supervisor.
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
+	// Worktree-only mode: a worker's composite file tools (batch_read /
+	// batch_grep / batch_write) run against a base directory and need no
+	// Postgres or valid plane config. The control plane sets
+	// ORCHICON_MCP_WORKTREE_DIR when it wires this sidecar into a worker's
+	// opencode config, so the sidecar can run inside a DB-less runtime.
+	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
+		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd))
+		log.Info("mcp server started (worktree tools, stdio transport)", "worktree", wd)
+		if err := mcpSrv.Run(ctx); err != nil {
+			log.Error("mcp server", "error", err)
+			return 1
+		}
+		return 0
+	}
+
 	cfg := config.Default()
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid configuration", "error", err)
