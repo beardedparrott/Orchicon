@@ -219,6 +219,32 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 // and are gated on branch-worktree readiness before dispatch. Single
 // source of truth shared by the WorkflowReconciler (dispatch gate) and the
 // WorktreeReconciler (branch provisioning scan).
+// requiresPRStep reports whether a step is expected to produce a PR.
+// The canonical DevOps/PR step is `step-devops-pr` (w_se_devops_engineer).
+// A step with `requires_pr:true` in its config is also required to have
+// PrURL on success; success without a PR is treated as failure.
+func requiresPRStep(stepID, config string) bool {
+	if stepID == "step-devops-pr" {
+		return true
+	}
+	if config == "" {
+		return false
+	}
+	var cfg struct {
+		RequiresPR *bool `json:"requires_pr"`
+		RequiresPr *bool `json:"requiresPr"`
+	}
+	if err := json.Unmarshal([]byte(config), &cfg); err == nil {
+		if cfg.RequiresPR != nil && *cfg.RequiresPR {
+			return true
+		}
+		if cfg.RequiresPr != nil && *cfg.RequiresPr {
+			return true
+		}
+	}
+	return false
+}
+
 func parallelBranchChildIDs(steps []workflow.StepWire) map[string]bool {
 	parallel := make(map[string]bool, len(steps))
 	for _, s := range steps {
@@ -816,13 +842,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				//               run's cwd (there is no worktree concept).
 				//   'failed'  → provisioning error: fail the step (mirrors
 				//               the run-worktree failed path).
-				//   'ready'/'pruned' → dispatch normally (pruned = a step run
-				//               re-armed after its branch was reaped; it runs
-				//               in the run's cwd).
+				//   'ready' → dispatch normally
+				//   'pruned'/'pending' → hold + re-provision (retry after prune)
+				//   'skipped' → non-git project: run in run's cwd
+				//   'failed' → provisioning error: fail the step
 				if branchChild[sr.StepID] {
 					switch sr.WorktreeStatus {
-					case domain.WorktreePending, "":
+					case domain.WorktreePending, domain.WorktreePruned, "":
 						branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
+						if r.worktreeNotifier != nil {
+							r.worktreeNotifier(context.Background(), run.ID+":"+sr.ID)
+						}
 						continue
 					case domain.WorktreeFailed:
 						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
@@ -830,6 +860,30 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 							return ferr
 						}
 						madeProgress = true
+						continue
+					}
+				}
+				// Non-branch steps: gate on the RUN worktree (they execute in
+				// the run's worktree). A pruned/pending run worktree for a
+				// git-backed project must be re-provisioned before dispatch;
+				// never fall back to the project dir.
+				if !branchChild[sr.StepID] {
+					switch run.WorktreeStatus {
+					case domain.WorktreeReady, domain.WorktreeSkipped:
+						// ready to dispatch
+					case domain.WorktreeFailed:
+						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+							fmt.Errorf("worktree provisioning failed for run %s — step %q cannot dispatch", run.ID, step.Name)); ferr != nil {
+							return ferr
+						}
+						madeProgress = true
+						continue
+					case domain.WorktreePending, domain.WorktreePruned, "":
+						if run.ProjectID != "" {
+							if r.worktreeNotifier != nil {
+								r.worktreeNotifier(context.Background(), run.ID)
+							}
+						}
 						continue
 					}
 				}
@@ -3934,6 +3988,14 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		} else {
 			switch exec.Status {
 			case domain.ExecutionSucceeded:
+				// Guard rail: PR-producing steps must have a PR URL on success.
+				if requiresPRStep(sr.StepID, stepConfig) {
+					prURL, _ := db.PrFromRunContext(run.RunContext)
+					if prURL == "" {
+						r.log.Warn("PR step succeeded without pr_url — failing step", "run", run.ID, "step", sr.StepID)
+						return true, true, nil
+					}
+				}
 				return true, false, nil
 			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
 				// fall through to the recovery block below.
