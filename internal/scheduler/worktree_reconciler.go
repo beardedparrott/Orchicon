@@ -305,13 +305,17 @@ const orphanBranchSweepLimit = 32
 // actually completed. A branch still attached to a live worktree is left to
 // the prune pass (never swept while in use).
 func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string) {
-	// Completed runs whose worktree was pruned but branch still recorded.
+	// Runs whose worktree was pruned but branch still recorded — inclusive
+	// window (completed always reclaimable; failed/aborted reclaimable only
+	// when the bound work item is terminal non-replayable or absent). The
+	// inclusive query LEFT JOINs work_items so non-reclaimable rows never
+	// pin the ORDER BY ... LIMIT page.
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		r.log.Warn("worktree: orphan sweep begin tx failed", "error", err)
 		return
 	}
-	runs, err := db.ListTerminalRunsWithPrunedBranches(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
+	runs, err := db.ListTerminalRunsWithPrunedBranchesInclusive(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
 	ttx.Rollback(ctx)
 	if err != nil {
 		r.log.Warn("worktree: orphan sweep list runs failed", "error", err)
@@ -324,13 +328,13 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 		}
 	}
 
-	// Step runs (parallel-branch children) of completed runs, same class.
+	// Step runs (parallel-branch children) of reclaimable runs, same class.
 	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		r.log.Warn("worktree: orphan sweep begin tx (step) failed", "error", err)
 		return
 	}
-	steps, err := db.ListTerminalStepRunsWithPrunedBranches(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
+	steps, err := db.ListTerminalStepRunsWithPrunedBranchesInclusive(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
 	ttx.Rollback(ctx)
 	if err != nil {
 		r.log.Warn("worktree: orphan sweep list step runs failed", "error", err)
@@ -344,19 +348,25 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 	}
 }
 
-// sweepOrphanRun attempts to reclaim a pruned-run branch. It reuses the
-// DELETE gate (deleteBranch) so it is safe by construction: provably ours
-// (the deterministic name on the row), not protected, not current, no live
-// worktree, and provably merged. The call only succeeds for a COMPLETED
-// run (the query guarantees it) — a failed/aborted run's branch is never
-// swept because a retry must re-attach to it.
+// sweepOrphanRun attempts to reclaim a pruned-run branch. Two gates:
+//
+//   Gate A (completed): same proof-deletion gate as pruneOne (deleteBranch →
+//   branchProvablyMerged). Never deletes unmerged work.
+//
+//   Gate B (failed/aborted with terminal work item or no item):
+//   work-item-terminal proof — bypasses branchProvablyMerged but still
+//   enforces provably-ours / not-protected / not-current / not-attached /
+//   exists. Failed with an active work item is retained for retry.
+//
+// The inclusive query guarantees only reclaimable rows reach here; the
+// Go-level reclaimability check is the defense-in-depth policy.
 func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
 	if run.WorktreeBranch == "" {
 		return nil
 	}
 	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
 	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
-		return nil // can't verify merge state — never delete on uncertainty
+		return nil // can't verify — never delete on uncertainty
 	}
 	// A branch still attached to a live worktree is in use — leave it to
 	// the prune pass (which deletes it at prune time).
@@ -365,21 +375,32 @@ func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string
 	} else if attached {
 		return nil
 	}
-	_, prState := db.PrFromRunContext(run.RunContext)
-	// Reclaim the branch. deleteBranch returns nil for a branch that is
-	// already gone (idempotent no-op) AND for a branch that was skipped
-	// (not provably merged, protected, current, or attached — those must
-	// stay). Distinguish the two by re-checking existence AFTER the call:
-	// a branch that no longer exists was provably reclaimed and is safe to
-	// drop from the orphan window; a branch that still exists was skipped
-	// and must be retried on a later scan.
-	if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
-		return err
+	switch run.Status {
+	case domain.WorkflowRunCompleted:
+		_, prState := db.PrFromRunContext(run.RunContext)
+		// Gate A — provably merged.
+		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
+			return err
+		}
+		if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
+			return r.clearSweptRunBranch(ctx, tenantID, run)
+		}
+		return nil
+	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
+		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
+			return nil // retry target — keep
+		}
+		// Gate B — work-item-terminal proof (no merged check).
+		if err := r.deleteDeadBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
+			return err
+		}
+		if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
+			return r.clearSweptRunBranch(ctx, tenantID, run)
+		}
+		return nil
+	default:
+		return nil
 	}
-	if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
-		return r.clearSweptRunBranch(ctx, tenantID, run)
-	}
-	return nil
 }
 
 // clearSweptRunBranch clears the worktree_branch on a COMPLETED run whose
@@ -414,9 +435,8 @@ func (r *WorktreeReconciler) clearSweptRunBranch(ctx context.Context, tenantID s
 }
 
 // sweepOrphanStepBranch is sweepOrphanRun for a parallel-branch child step
-// run: same proof gate, driven from the step run's recorded branch. The
-// step run is guaranteed to belong to a COMPLETED run (the query JOINs on
-// it), so a merged step branch is safely reclaimed.
+// run. Gate A (completed) uses the merged proof; Gate B (failed/aborted
+// with terminal work item or no item) uses work-item-terminal proof.
 func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
 	if sr.WorktreeBranch == "" {
 		return nil
@@ -434,17 +454,30 @@ func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID
 	} else if attached {
 		return nil
 	}
-	_, prState := db.PrFromRunContext(run.RunContext)
-	if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
-		return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
+	switch run.Status {
+	case domain.WorkflowRunCompleted:
+		_, prState := db.PrFromRunContext(run.RunContext)
+		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
+			return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
+		}
+		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
+			return r.clearSweptStepBranch(ctx, tenantID, sr)
+		}
+		return nil
+	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
+		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
+			return nil
+		}
+		if err := r.deleteDeadBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
+			return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
+		}
+		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
+			return r.clearSweptStepBranch(ctx, tenantID, sr)
+		}
+		return nil
+	default:
+		return nil
 	}
-	// Same post-reclaim check as sweepOrphanRun: only clear the orphan row
-	// when the branch is provably gone, so the sweep advances past already
-	// swept rows and reaches newer orphans.
-	if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
-		return r.clearSweptStepBranch(ctx, tenantID, sr)
-	}
-	return nil
 }
 
 // clearSweptStepBranch clears the worktree_branch on a completed step run
@@ -844,17 +877,19 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 			"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
 	}
 
-	// AC: on run SUCCESS only, delete the branch the reconciler provably
-	// created for this step run. Never on failure/cancellation — a failed
-	// run keeps its step branches so a retry re-attaches to them. Gated on
-	// the branch being provably merged into the base (squash-aware: the
-	// run's pr_state is the authoritative merged signal), never the current
-	// branch, and never main/develop.
+	// Branch deletion — Gate A (completed: merged) or Gate B (failed/aborted with terminal item).
 	if run.Status == domain.WorkflowRunCompleted {
 		_, prState := db.PrFromRunContext(run.RunContext)
 		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
 			r.log.Warn("worktree: branch worktree branch deletion failed",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
+		}
+	} else if run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
+		if r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
+			if err := r.deleteDeadBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
+				r.log.Warn("worktree: dead step branch deletion failed",
+					"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
+			}
 		}
 	}
 
@@ -986,16 +1021,19 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 		r.log.Warn("worktree: git worktree prune failed", "run", run.ID, "error", err)
 	}
 
-	// AC: on SUCCESS only, delete the branch the reconciler provably created
-	// for this run. The branch is never deleted on failure/cancellation — a
-	// failed run keeps its branch so a retry re-attaches to it (carry-over of
-	// partial work). Deletion is gated on the branch being provably merged
-	// into the base (squash-aware: the run's pr_state is the authoritative
-	// merged signal), never the current branch, and never main/develop.
+	// Branch deletion — two gates:
+	// Gate A (completed): provably merged (squash-aware).
+	// Gate B (failed/aborted with terminal work item or no item): work-item-terminal proof.
 	if run.Status == domain.WorkflowRunCompleted {
 		_, prState := db.PrFromRunContext(run.RunContext)
 		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
 			r.log.Warn("worktree: branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
+		}
+	} else if run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
+		if r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
+			if err := r.deleteDeadBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
+				r.log.Warn("worktree: dead branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
+			}
 		}
 	}
 
@@ -1697,6 +1735,63 @@ func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDi
 		}
 	}
 	return false
+}
+
+// isWorkItemReclaimable reports whether a failed/aborted run's branch is
+// reclaimable: the run has no bound work item, the work item no longer
+// exists, or the work item is terminal non-replayable (succeeded/skipped/
+// cancelled/archived). A failed run with an active work item is a retry
+// target and must be retained.
+func (r *WorktreeReconciler) isWorkItemReclaimable(ctx context.Context, tenantID, workItemID string) bool {
+	if workItemID == "" {
+		return true
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: isWorkItemReclaimable begin tx failed", "error", err)
+		return false
+	}
+	defer ttx.Rollback(ctx)
+	wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, workItemID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return true
+		}
+		r.log.Warn("worktree: isWorkItemReclaimable get work item failed", "work_item", workItemID, "error", err)
+		return false
+	}
+	_ = ttx.Commit(ctx)
+	return domain.WorkItemIsTerminalNonReplayable(wi.Status)
+}
+
+// deleteDeadBranch deletes a branch for a dead (failed/aborted) run whose
+// work item is terminal. It bypasses branchProvablyMerged but still
+// enforces every other safety gate: provably ours (recorded name),
+// not protected, not current/HEAD, not attached to a live worktree, and
+// exists. Logs with reason "work-item-terminal" so it is auditable
+// separately from the merged proof.
+func (r *WorktreeReconciler) deleteDeadBranch(ctx context.Context, projectDir, branch string) error {
+	if branch == "" || isProtectedBranch(branch) {
+		return nil
+	}
+	if cur := r.currentBranch(ctx, projectDir); cur != "" && cur == branch {
+		r.log.Warn("worktree: refusing to delete the current branch", "branch", branch)
+		return nil
+	}
+	if !r.branchExists(ctx, projectDir, branch) {
+		return nil
+	}
+	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, branch); err != nil {
+		return err
+	} else if attached {
+		r.log.Warn("worktree: refusing to delete branch still attached to a worktree", "branch", branch)
+		return nil
+	}
+	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("git branch -D %s: %w", branch, err)
+	}
+	r.log.Info("worktree: deleted dead branch", "branch", branch, "reason", "work-item-terminal")
+	return nil
 }
 
 // deleteBranch deletes a branch ref after a successful run, gated on the

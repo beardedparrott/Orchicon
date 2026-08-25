@@ -193,6 +193,23 @@ func WorkItemIsTerminalSuccess(status string) bool {
 	return status == WorkItemSucceeded || status == WorkItemSkipped
 }
 
+// WorkItemIsTerminalNonReplayable reports whether a work item is in a
+// terminal state that can never be re-played via a retry or fresh run
+// re-attachment. A dead run branch is safe to reclaim only when the
+// bound work item (if any) is in this set — or when the run has no
+// bound work item at all. The set is exactly succeeded | skipped |
+// cancelled | archived. Failed and active states (pending/ready/assigned
+// /running/...) are deliberately NOT reclaimable: a failed run with an
+// active item is a retry target.
+func WorkItemIsTerminalNonReplayable(status string) bool {
+	switch status {
+	case WorkItemSucceeded, WorkItemSkipped, WorkItemCancelled, WorkItemArchived:
+		return true
+	default:
+		return false
+	}
+}
+
 // Dependency types — edges in the work DAG
 // (docs/02_Domain_Model.md §2.2).
 const (

@@ -1759,3 +1759,312 @@ func TestWorktreeSweepSkipsFailedRunBranch(t *testing.T) {
 		t.Fatalf("failed run's branch %q was swept — success-only deletion violated", branch)
 	}
 }
+
+// TestWorktreeSweepReclaimsAbortedRunBranch verifies Gate B: an ABORTED
+// run whose bound work item is terminal (succeeded) has its orphaned
+// branch reclaimed even though the branch is NOT provably merged. Aborted
+// runs have no retry path (RetryFailedWorkflowRun rejects non-failed), so
+// the branch is dead and work-item-terminal is proof enough (still gated
+// on not-protected/not-current/not-attached/exists).
+func TestWorktreeSweepReclaimsAbortedRunBranch(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+	if branch == "" {
+		t.Fatal("run recorded no worktree_branch")
+	}
+	// Make the branch unmerged (a commit not on develop) so Gate A would
+	// refuse to delete it — Gate B must bypass the merged check.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "aborted-unmerged.txt"), []byte("aborted\n"), 0o644); err != nil {
+		t.Fatalf("write unmerged file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "aborted unmerged commit")
+
+	// Mark work item terminal succeeded — aborted branch becomes reclaimable.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	wi, err := db.GetWorkItem(ctx, ttx.Tx, approvalTestTenant, env.itemID)
+	if err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("get work item: %v", err)
+	}
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, approvalTestTenant, env.itemID, wi.Version, db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemSucceeded)}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("update work item to succeeded: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit work item update: %v", err)
+	}
+
+	run = env.getRun(t)
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunAborted),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run aborted+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	if strings.Contains(gitRun(t, env.repo, "worktree", "list"), env.expectedPath()) {
+		t.Fatalf("worktree still listed after remove")
+	}
+	// Branch is unmerged (not ancestor of develop) — Gate A would keep it.
+	// Gate B must delete it because work item is terminal.
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("branch %q missing before sweep", branch)
+	}
+
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("aborted run branch %q was NOT swept (Gate B terminal work item)", branch)
+	}
+	final := env.getRun(t)
+	if final.WorktreeBranch != "" {
+		t.Fatalf("run worktree_branch = %q after sweep, want \"\" (cleared)", final.WorktreeBranch)
+	}
+}
+
+// TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded verifies Gate B
+// for failed runs: a FAILED run whose work item is terminal succeeded has
+// its orphaned branch reclaimed even when not merged. The inclusive query
+// must return it and the sweep must clear worktree_branch so the page advances.
+func TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "failed-unmerged.txt"), []byte("failed\n"), 0o644); err != nil {
+		t.Fatalf("write unmerged file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "failed unmerged commit")
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	wi, err := db.GetWorkItem(ctx, ttx.Tx, approvalTestTenant, env.itemID)
+	if err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("get work item: %v", err)
+	}
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, approvalTestTenant, env.itemID, wi.Version, db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemSucceeded)}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("update work item to succeeded: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit work item update: %v", err)
+	}
+
+	run = env.getRun(t)
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunFailed),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run failed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("branch %q missing before sweep", branch)
+	}
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("failed+succeeded run branch %q was NOT swept", branch)
+	}
+	final := env.getRun(t)
+	if final.WorktreeBranch != "" {
+		t.Fatalf("run worktree_branch = %q after sweep, want \"\"", final.WorktreeBranch)
+	}
+}
+
+// TestWorktreeSweepRetainsFailedRunBranchWhenItemActive verifies that a
+// FAILED run with an active work item (running) is NOT swept — it is a
+// retry target. The inclusive query LEFT JOIN must exclude it so the sweep
+// page does not pin.
+func TestWorktreeSweepRetainsFailedRunBranchWhenItemActive(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+
+	// Work item stays at running (active) — do not transition it.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunFailed),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run failed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	gitRun(t, env.repo, "branch", "-f", branch, "develop")
+
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("failed+active run branch %q was swept — must be retained for retry", branch)
+	}
+	// The orphan query must NOT return the row (filtered by LEFT JOIN), so a
+	// later sweep can advance to newer orphans — the stuck-page fix.
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	rows, qerr := db.ListTerminalRunsWithPrunedBranchesInclusive(ctx, ttx.Tx, approvalTestTenant, 10)
+	_ = ttx.Rollback(ctx)
+	if qerr != nil {
+		t.Fatalf("list inclusive: %v", qerr)
+	}
+	for _, r := range rows {
+		if r.ID == env.run.ID {
+			t.Fatalf("failed+active run still returned by inclusive orphan query (must be filtered)")
+		}
+	}
+}
+
+// TestWorktreeSweepReclaimsRunWithNoWorkItem verifies a run with no bound
+// work item (work_item_id IS NULL/empty) is reclaimable even when failed.
+// Its branch is dead — no retry re-attachment target — and Gate B must
+// reclaim it even when unmerged.
+func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Create a second run with no bound work item, using the same project.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	noItemRun, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowID: "wf-worktree-test", WorkflowVersion: 1,
+		ProjectID: env.proj.ID, Status: domain.WorkflowRunPending,
+		RunContext: []byte("{}"),
+		// WorkItemID left empty — no bound work item.
+	})
+	if err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("create no-item run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit no-item run: %v", err)
+	}
+	if res := env.rec.Reconcile(ctx, noItemRun.ID); res.Error != nil {
+		t.Fatalf("reconcile no-item run (provision): %v", res.Error)
+	}
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, noItemRun.ID)
+	_ = ttx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("get no-item run: %v", err)
+	}
+	branch := cur.WorktreeBranch
+	if branch == "" {
+		t.Fatal("no-item run recorded no worktree_branch")
+	}
+	path := filepath.Join(env.repo, worktreeDirName, noItemRun.ID)
+	gitRun(t, path, "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, path, "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(path, "noitem-unmerged.txt"), []byte("noitem\n"), 0o644); err != nil {
+		t.Fatalf("write unmerged file: %v", err)
+	}
+	gitRun(t, path, "add", ".")
+	gitRun(t, path, "commit", "-m", "no-item unmerged commit")
+
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, noItemRun.ID, cur.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunFailed),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark no-item run failed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", path)
+
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("no-item branch %q missing before sweep", branch)
+	}
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan: %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("no-item failed branch %q was NOT swept", branch)
+	}
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	final, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, noItemRun.ID)
+	_ = ttx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("get final no-item run: %v", err)
+	}
+	if final.WorktreeBranch != "" {
+		t.Fatalf("no-item run worktree_branch = %q after sweep, want \"\"", final.WorktreeBranch)
+	}
+}
+
