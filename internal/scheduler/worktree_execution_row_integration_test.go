@@ -42,11 +42,11 @@ func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	// The step run carries the worker pin + work item ref the TaskReconciler
 	// needs to dispatch (reconciler.go workerVersionForStepRun).
 	result, _ := json.Marshal(map[string]any{
-		"_work_item_id":    env.itemID,
-		"_worker_id":       "w_se_devops_engineer",
-		"_worker_version":  1,
-		"_prompt":          "test prompt",
-		"_decision":        "",
+		"_work_item_id":   env.itemID,
+		"_worker_id":      "w_se_devops_engineer",
+		"_worker_version": 1,
+		"_prompt":         "test prompt",
+		"_decision":       "",
 	})
 	stx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
