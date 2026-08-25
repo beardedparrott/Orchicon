@@ -64,6 +64,34 @@ type BudgetLadder struct {
 	FinalMsgTime    string
 }
 
+// budgetIsZero reports whether a BudgetLadder carries no meaningful values —
+// every gate nil, all tier toggles false, all fractions 0, all messages empty.
+// It is used to detect a caller that did not intend to change the budget, so
+// the write path can preserve the current ladder instead of clobbering it with
+// zeros (see UpdateTenantSettings).
+func budgetIsZero(l BudgetLadder) bool {
+	if l.Tokens != nil || l.CostUSD != nil || l.ToolCallCount != nil ||
+		l.WallClockSecs != nil || l.CompactMaxTurns != nil {
+		return false
+	}
+	if l.CompactWarnTier || l.CompactEscalTier || l.CompactFinalTier {
+		return false
+	}
+	if l.WarnFracTokens != 0 || l.EscFracTokens != 0 || l.FinalFracTokens != 0 ||
+		l.WarnFracCostUSD != 0 || l.EscFracCostUSD != 0 || l.FinalFracCostUSD != 0 ||
+		l.WarnFracTools != 0 || l.EscFracTools != 0 || l.FinalFracTools != 0 ||
+		l.WarnFracTime != 0 || l.EscFracTime != 0 || l.FinalFracTime != 0 {
+		return false
+	}
+	if l.WarnMsgTokens != "" || l.EscMsgTokens != "" || l.FinalMsgTokens != "" ||
+		l.WarnMsgCostUSD != "" || l.EscMsgCostUSD != "" || l.FinalMsgCostUSD != "" ||
+		l.WarnMsgTools != "" || l.EscMsgTools != "" || l.FinalMsgTools != "" ||
+		l.WarnMsgTime != "" || l.EscMsgTime != "" || l.FinalMsgTime != "" {
+		return false
+	}
+	return true
+}
+
 // ladderDims maps the four budget dimensions to their JSON key names, in
 // the same order parseBudgetSpec reads them.
 var ladderDims = []struct {

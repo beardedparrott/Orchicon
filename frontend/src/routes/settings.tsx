@@ -709,10 +709,10 @@ function DefaultsTab() {
               />
               <StallField
                 label="Compact interval (turns)"
-                description="Force a context compact at least every N turns, regardless of cost — bounds cumulative cache-read resend on long chatty sessions even when per-turn spend stays cheap. Empty = built-in default (12). Set 0 to rely on the cost/token gates only."
+                description="Force a context compact at least every N turns, regardless of cost — bounds cumulative cache-read resend on long chatty sessions even when per-turn spend stays cheap. Empty = built-in default (30). Set 0 to rely on the cost/token gates only."
                 value={draftCompactMaxTurns}
                 onChange={setDraftCompactMaxTurns}
-                placeholder="8"
+                placeholder="30"
               />
             </div>
 
