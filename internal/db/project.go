@@ -51,6 +51,12 @@ type ProjectRow struct {
 // maps it to connect.CodeNotFound.
 var ErrNotFound = errors.New("db: not found")
 
+// ErrVersionConflict is returned when an optimistic-concurrency UPDATE
+// matches no row because the version is stale but the row still exists.
+// It is distinct from ErrNotFound so callers can retry or map the error
+// without the misleading "db: not found" for an existing item.
+var ErrVersionConflict = errors.New("db: version conflict")
+
 // CreateProject inserts a new project row within the given tenant
 // transaction. The caller controls the transaction so the outbox row can
 // be enqueued in the same atomic unit (docs/09 §6). Optimistic

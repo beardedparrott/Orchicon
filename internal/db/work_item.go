@@ -606,10 +606,48 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if isWorkItemVersionConflict(ctx, tx, tenantID, id) {
+			return WorkItemRow{}, ErrVersionConflict
+		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: update work item: %w", err)
+	}
+	return w, nil
+}
+
+// isWorkItemVersionConflict probes whether a work item row exists but the
+// version did not match. Used to distinguish a stale version (ErrVersionConflict)
+// from a genuinely missing row (ErrNotFound) inside the same transaction.
+func isWorkItemVersionConflict(ctx context.Context, tx pgx.Tx, tenantID, id string) bool {
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_items WHERE tenant_id=$1 AND id=$2 AND archived_at IS NULL)`, tenantID, id).Scan(&exists)
+	return err == nil && exists
+}
+
+// ParkWorkItem parks a work item unconditionally (no version check). It is
+// the tolerant fallback for STOP's optimistic-lock race: parking
+// (status → pending/recurring, schedule cleared, run binding cleared) is
+// idempotent, so an unconditional UPDATE is safe when a bounded retry of
+// the versioned path still races. The caller guards succeeded/skipped at
+// the scheduler layer so this never overwrites terminal-success.
+func ParkWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
+	const q = `UPDATE work_items
+		SET status = CASE WHEN recurring_schedule IS NOT NULL THEN 'recurring' ELSE 'pending' END,
+			scheduled_start_at = NULL,
+			workflow_run_id = '',
+			updated_at = now(),
+			version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND archived_at IS NULL
+		RETURNING ` + WorkItemSelectCols
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, tenantID, id).Scan(WorkItemScanPtrs(&w)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkItemRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: park work item: %w", err)
 	}
 	return w, nil
 }
@@ -629,6 +667,9 @@ func ArchiveWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if isWorkItemVersionConflict(ctx, tx, tenantID, id) {
+			return WorkItemRow{}, ErrVersionConflict
+		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {
@@ -651,6 +692,12 @@ func RestoreWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Restoring an archived row: probe the archived partition distinctly
+		var exists bool
+		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_items WHERE tenant_id=$1 AND id=$2)`, tenantID, id).Scan(&exists)
+		if exists {
+			return WorkItemRow{}, ErrVersionConflict
+		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {
