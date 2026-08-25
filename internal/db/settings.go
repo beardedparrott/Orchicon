@@ -128,6 +128,17 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 	if len(in.DefaultBudgetOverrides) == 0 {
 		in.DefaultBudgetOverrides = []byte("{}")
 	}
+	// The typed budget columns are written unconditionally on the ON CONFLICT
+	// DO UPDATE branch below, unlike every other field which is CASE-guarded
+	// to preserve the existing value. Guard against a caller that did NOT
+	// intend to change the budget (zero-value Budget + empty '{}' payload):
+	// overlay the current ladder/gates so a partial settings update (e.g. only
+	// editing log management) can never clobber a healthy budget with zeros.
+	if budgetIsZero(in.Budget) {
+		if cur, err := GetTenantSettings(ctx, tx, tenantID); err == nil {
+			in.Budget = cur.Budget
+		}
+	}
 	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,

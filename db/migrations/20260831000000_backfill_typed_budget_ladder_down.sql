@@ -1,0 +1,13 @@
+-- Reverses 20260831000000_backfill_typed_budget_ladder.sql.
+--
+-- This is a forward-only data backfill: it re-derives the typed budget
+-- columns from the legacy jsonb and introduces no structural change, so
+-- there is nothing to revert structurally. The typed columns remain and the
+-- operator's configured values stay in place; rolling back the binary does
+-- not require undoing this backfill. Kept as a documented no-op so the
+-- migration pair (down file) is always present for RunDown/atlas tooling.
+--
+-- To restore the pre-backfill typed values, re-apply the column DEFAULTs
+-- (0.25/0.5/0.75 fractions, the named messages, and compact tiers
+-- {warn:false, escalate:true, final:true}) — but note this would discard the
+-- operator's configured ladder, so it is deliberately NOT done here.
