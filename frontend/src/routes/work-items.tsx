@@ -26,6 +26,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
+import { useBatchRunWorkItems } from "@/components/work-items/batch-run";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
   KIND_FILTER_OPTIONS,
@@ -83,6 +84,7 @@ function WorkItemsPage() {
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
+  const runWorkItems = useBatchRunWorkItems(projectId);
   const toast = useToast();
   const reorder = useReorderWorkItems();
   const restoreWorkItem = useRestoreWorkItem(projectId);
@@ -212,9 +214,33 @@ function WorkItemsPage() {
   // multi-move, sharing the exact gates + mutation path with board
   // multi-drag.
   const itemsById = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
+
+  // Ids that have at least one direct child — used to detect sequence
+  // parents (a task/subtask with children runs its children in chain order)
+  // so the Run button can start them without a workflow binding.
+  const parentIdSet = useMemo(
+    () => new Set((items ?? []).filter((i) => i.parentId !== "").map((i) => i.parentId)),
+    [items],
+  );
+
   const handleMoveSelected = (targetStatus: number) => {
     if (selected.size === 0) return;
     void moveItems(Array.from(selected), targetStatus, { itemsById, blockState });
+  };
+
+  // Bulk "Run" (ADR-WI-9): act on the visible-selected set only — the header
+  // select-all and parent cascade can mark filtered-out descendants, but Run
+  // must only touch the currently-visible rows (AC-3). The label uses the
+  // visible-selected count so it never over-promises (AC-1).
+  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
+  const visibleSelectedCount = useMemo(
+    () => [...selected].filter((id) => visibleIdsSet.has(id)).length,
+    [selected, visibleIdsSet],
+  );
+  const handleRunSelected = () => {
+    if (selected.size === 0) return;
+    const runIds = [...selected].filter((id) => visibleIdsSet.has(id));
+    void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
   };
 
   // A filter is "active" only when the selection differs from the full
@@ -303,6 +329,9 @@ function WorkItemsPage() {
         deletePending={batchDelete.isPending}
         onMoveSelected={handleMoveSelected}
         movePending={movePending}
+        onRunSelected={handleRunSelected}
+        runPending={runWorkItems.isPending}
+        visibleSelectedCount={visibleSelectedCount}
       />
 
       {!hasProjects && (
