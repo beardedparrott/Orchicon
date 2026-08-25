@@ -294,6 +294,12 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if len(files) == 0 {
+		if len(skipped) > 0 {
+			return fmt.Sprintf("batch_grep: no files to search (all %d path(s) skipped: %s)", len(skipped), strings.Join(skipped, "; ")), nil
+		}
+		return fmt.Sprintf("batch_grep: no files to search (no matching files for paths: %s)", strings.Join(paths, ", ")), nil
+	}
 
 	var b bytes.Buffer
 	matched := 0
@@ -414,10 +420,10 @@ func BatchWrite(base string, args WriteArgs) (string, error) {
 
 	var ops []writeOp
 	var invalid []string
-	for _, w := range args.Writes {
+	for i, w := range args.Writes {
 		abs, err := safeResolve(base, w.Path)
 		if err != nil {
-			return "", fmt.Errorf("batch_write aborted (path traversal): %s", w.Path)
+			return "", fmt.Errorf("batch_write aborted (path traversal) op %d (%s): %v", i, w.Path, err)
 		}
 		// Determine the current virtual state for this path.
 		curContent, curExist := stateContent[abs], stateExists[abs]
@@ -446,7 +452,7 @@ func BatchWrite(base string, args WriteArgs) (string, error) {
 		switch w.Mode {
 		case "create":
 			if curExist {
-				invalid = append(invalid, w.Path+" exists (use overwrite/edit)")
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): exists (use overwrite/edit)", i, w.Path))
 				continue
 			}
 			next = w.Content
@@ -456,20 +462,24 @@ func BatchWrite(base string, args WriteArgs) (string, error) {
 			next = curContent + w.Content
 		case "edit":
 			if !curExist {
-				invalid = append(invalid, w.Path+" does not exist (use create)")
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): does not exist (use create)", i, w.Path))
 				continue
 			}
 			if w.Old == "" {
-				invalid = append(invalid, w.Path+" edit requires old")
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): edit requires old", i, w.Path))
 				continue
 			}
 			if !strings.Contains(curContent, w.Old) {
-				invalid = append(invalid, w.Path+" does not contain the old substring")
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): does not contain the old substring (anchor mismatch)", i, w.Path))
 				continue
 			}
 			next = strings.ReplaceAll(curContent, w.Old, w.New)
 		default:
-			invalid = append(invalid, w.Path+" unknown mode "+w.Mode)
+			if w.Mode == "" {
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): missing mode (expected create|overwrite|edit|append)", i, w.Path))
+			} else {
+				invalid = append(invalid, fmt.Sprintf("op %d (%s): unknown mode %s", i, w.Path, w.Mode))
+			}
 			continue
 		}
 
@@ -478,7 +488,7 @@ func BatchWrite(base string, args WriteArgs) (string, error) {
 		ops = append(ops, writeOp{w: w, abs: abs, next: next, orig: origContent[abs], exist: origExists[abs]})
 	}
 	if len(invalid) > 0 {
-		return "", fmt.Errorf("batch_write aborted (nothing written): %s", strings.Join(invalid, "; "))
+		return "", fmt.Errorf("batch_write aborted (nothing written) %d of %d ops invalid: %s", len(invalid), len(args.Writes), strings.Join(invalid, "; "))
 	}
 
 	// Pass 2: apply in order; on failure roll back every applied path.

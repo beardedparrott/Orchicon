@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/workitem"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
 // RecurringFireReconciler scans for work items with status 'recurring' and
@@ -105,7 +105,7 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 		// Defensive guard: skip items currently in an active run state.
 		// Redundant with the status='recurring' scan predicate (recurring
 		// items are never running/checkpointing/recovering while due), but
-	// protects against races where the status flips between scan and fire.
+		// protects against races where the status flips between scan and fire.
 		if ref.hasChildren {
 			if r.sequence == nil {
 				r.log.Warn("recurring_fire: sequence parent fired but no sequence starter wired",

@@ -2067,4 +2067,3 @@ func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
 		t.Fatalf("no-item run worktree_branch = %q after sweep, want \"\"", final.WorktreeBranch)
 	}
 }
-

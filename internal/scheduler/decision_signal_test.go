@@ -48,7 +48,7 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want:   "",
 		},
 		{
-			name:   "placeholder marker echo is not a decision",
+			name: "placeholder marker echo is not a decision",
 			output: "The worker ends its plan with the contract example:\n" +
 				"ORCHICON WORKER SUMMARY: success — <summary>",
 			want: "",

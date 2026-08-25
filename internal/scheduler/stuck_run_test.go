@@ -38,7 +38,7 @@ func seedPublishedWorkflowSteps(t *testing.T, pool *db.Pool, projID string, step
 	defer ttx.Rollback(ctx)
 	wf, err := db.CreateWorkflow(ctx, ttx.Tx, db.WorkflowRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: projID,
-		Name: "stuck-wf-" + strings.ToLower(db.NewID())[:8],
+		Name:           "stuck-wf-" + strings.ToLower(db.NewID())[:8],
 		CurrentVersion: 0, Status: domain.WorkflowDraft, Type: domain.WorkflowTypeTemplate,
 	})
 	if err != nil {
