@@ -20,10 +20,12 @@ GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # Version tag resolution. An explicit override wins (e.g. `make build VERSION=v0.1.183`);
 # otherwise the nearest reachable tag is used. `git pull` does NOT fetch tags, and the
-# auto-release workflow creates the canonical release tag on GitHub at merge time, so a
-# stale local tag view would embed an older version (a rebuild could report v0.1.181 for
-# merged v0.1.183 code). Recursive (`=` + `?=`) so the tag is resolved at recipe time,
-# AFTER the fetch-tags prerequisite has synced the local tags.
+# develop-bump + auto-release workflows create the canonical tags on GitHub at merge time
+# (develop-bump: one v0.1.x tag per merge to develop; auto-release: the release tag when
+# the human merges develop → main with the release label), so a stale local tag view would
+# embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
+# Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
+# prerequisite has synced the local tags.
 VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
                -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(VERSION) \

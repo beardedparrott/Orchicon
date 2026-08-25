@@ -25,7 +25,7 @@ A **worker running inside Orchicon** operates autonomously: it PRs into `develop
 - `develop` is the integration branch; `main` is release-only and managed by the human. Workers and agents branch off `develop` and PR into `develop` — never `main`.
 - ALWAYS create a new branch before starting work. Never commit to `main` or `develop` (a local pre-commit hook rejects direct commits there; re-create it if missing).
 - Branch naming: `<type>/<short-description>` (`feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`).
-- Before starting work on a new branch, bump the version tag (`git tag -a v0.1.<next> -m "v0.1.<next>"`) so local builds report the current version. `git fetch --tags` before rebuilding after a release merge.
+- The version tag (`v0.1.<n>`) is bumped automatically on every merge to `develop` (`.github/workflows/develop-bump.yml`), so local builds report the current version. `git fetch --tags` before rebuilding to pick up the latest tag — `git pull` does not fetch tags.
 - PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. PRs must NOT carry the `release` label (that label belongs only on the human's `develop` → `main` release PR).
 - Commit early and often on your branch. Write clear present-tense messages (`Add project CRUD service and data-access layer`). Stage only the files relevant to the commit.
 - Before starting work, `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
