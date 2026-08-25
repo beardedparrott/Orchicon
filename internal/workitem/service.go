@@ -836,26 +836,50 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// with children wins: it runs as a SEQUENCE even if it still carries a
 	// workflow binding (children each run their own workflows — the subtree
 	// was validated in-tx). Only a workflow-bound LEAF starts its own run.
-	if updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchInFlight && !userExplicitlyAutoStarts) {
-		if s.itemHasChildren(ctx, tenantID, updated.ID) {
-			s.maybeStartSequence(ctx, tenantID, updated)
-		} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {
-			// A previous run must be terminal (completed/failed/aborted) —
-			// active runs are not duplicated.
-			shouldStart := true
-			if updated.WorkflowRunID != "" {
-				var runStatus string
-				if err := s.pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
-					if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
-						shouldStart = false
+	//
+	// Precondition (architecture-notes/fix-update-path-auto-start-…): the
+	// item's status must be startable BOTH before this edit and after it.
+	// Any other status (cancelled, failed, succeeded, skipped, recovering,
+	// checkpointing, running, recurring, …) is NEVER re-armed by an edit,
+	// no matter what the stored auto_start_workflow flag says — legacy rows
+	// created before migration 20260807120000 carry exactly such a stale
+	// flag. A stale flag declines silently (log only); an EXPLICIT
+	// auto_start_workflow=true in this request declines with a warning on
+	// the response. Either way the edit itself is saved.
+	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
+	autoStartWarning := ""
+	if wouldAutoStart {
+		effectiveStatus := current.Status
+		if fields.Status != nil {
+			effectiveStatus = *fields.Status
+		}
+		if IsStartableForAutoStart(current.Status) && IsStartableForAutoStart(effectiveStatus) {
+			if s.itemHasChildren(ctx, tenantID, updated.ID) {
+				s.maybeStartSequence(ctx, tenantID, updated)
+			} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {
+				// A previous run must be terminal (completed/failed/aborted) —
+				// active runs are not duplicated.
+				shouldStart := true
+				if updated.WorkflowRunID != "" {
+					var runStatus string
+					if err := s.pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
+						if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
+							shouldStart = false
+						}
+					}
+				}
+				if shouldStart {
+					if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+						s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
 					}
 				}
 			}
-			if shouldStart {
-				if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
-					s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
-				}
-			}
+		} else if userExplicitlyAutoStarts {
+			autoStartWarning = AutoStartDeclinedWarning(effectiveStatus)
+		} else {
+			s.log.Info("auto-start declined: item not in a startable status",
+				"work_item", updated.ID, "status", effectiveStatus)
 		}
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
@@ -865,7 +889,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ContextFiles != nil {
 		project.NotifyProjectChanged()
 	}
-	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto}), nil
+	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto, Warning: autoStartWarning}), nil
 }
 
 // DeleteWorkItem soft-deletes a work item by setting status to cancelled.

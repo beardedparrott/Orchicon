@@ -578,23 +578,50 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	// Auto-start workflow after commit, with the same guard the Connect
 	// Update handler applies: bound, no scheduled time, auto-start true,
-	// not a kind-switch (unless the user explicitly asked), and any prior
-	// run is terminal.
-	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchInFlight && !userExplicitlyAutoStarts) {
-		shouldStart := true
-		if updated.WorkflowRunID != "" {
-			var runStatus string
-			if err := pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
-				if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
-					shouldStart = false
+	// not a kind-switch (unless the user explicitly asked), any prior run
+	// is terminal, AND the item's status is startable both before this
+	// edit and after it (architecture-notes/fix-update-path-auto-start-…).
+	// A cancelled/terminal/in-flight item is never re-armed by an edit: a
+	// stale stored flag declines silently; an explicit auto_start_workflow
+	// request declines with an explicit warning carried in the tool result.
+	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
+	autoStartWarning := ""
+	if wouldAutoStart {
+		effectiveStatus := current.Status
+		if update.Status != nil {
+			effectiveStatus = *update.Status
+		}
+		if workitem.IsStartableForAutoStart(current.Status) && workitem.IsStartableForAutoStart(effectiveStatus) {
+			shouldStart := true
+			if updated.WorkflowRunID != "" {
+				var runStatus string
+				if err := pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
+					if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
+						shouldStart = false
+					}
 				}
 			}
-		}
-		if shouldStart {
-			if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
-				toolLogger.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+			if shouldStart {
+				if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+					toolLogger.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+				}
 			}
+		} else if userExplicitlyAutoStarts {
+			autoStartWarning = workitem.AutoStartDeclinedWarning(effectiveStatus)
+		} else {
+			toolLogger.Info("auto-start declined: item not in a startable status",
+				"work_item", updated.ID, "status", effectiveStatus)
 		}
+	}
+	// The tool result is raw JSON (no proto response), so an explicit
+	// auto-start decline must carry its warning as a sibling field of the
+	// item — MCP parity with UpdateWorkItemResponse.warning.
+	if autoStartWarning != "" {
+		return json.Marshal(struct {
+			db.WorkItemRow
+			Warning string `json:"warning"`
+		}{WorkItemRow: updated, Warning: autoStartWarning})
 	}
 	return json.Marshal(updated)
 }

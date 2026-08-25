@@ -726,6 +726,18 @@ export class UpdateWorkItemResponse extends Message<UpdateWorkItemResponse> {
    */
   workItem?: WorkItem;
 
+  /**
+   * Populated when the request explicitly asked auto_start_workflow=true
+   * but the server declined to start (the item's status is not one of
+   * pending/scheduled/ready/assigned — e.g. cancelled or already
+   * finished). The edit itself IS saved; this warning only explains why
+   * no run was started. Empty = auto-start was applied (or was never
+   * requested).
+   *
+   * @generated from field: string warning = 2;
+   */
+  warning = "";
+
   constructor(data?: PartialMessage<UpdateWorkItemResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -735,6 +747,7 @@ export class UpdateWorkItemResponse extends Message<UpdateWorkItemResponse> {
   static readonly typeName = "orchicon.api.v1.UpdateWorkItemResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "work_item", kind: "message", T: WorkItem },
+    { no: 2, name: "warning", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemResponse {
