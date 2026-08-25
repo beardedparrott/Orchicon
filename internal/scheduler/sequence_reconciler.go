@@ -656,16 +656,25 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 	// Abort any in-flight bound run on this item (a leaf task with a live
 	// run, or a bound container). Idempotent: terminal runs are skipped.
 	// The bound work item is left PENDING so it can be re-run standalone.
+	// A bound run id that no longer exists (stale binding, or a run that
+	// was already cleaned up) is tolerated — there is nothing to abort, and
+	// the binding is cleared below when the item is parked.
 	if item.WorkflowRunID != "" {
 		aborted, err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
 			domain.WorkItemPending)
-		if err != nil {
+		switch {
+		case err == nil:
+			// The executions are now terminal; the sequence reconciler runs on
+			// the dispatch path, so session abort happens asynchronously via
+			// the terminal-execution handling. The IDs are returned for
+			// completeness.
+			_ = aborted
+		case errors.Is(err, db.ErrNotFound):
+			// The run row is gone — nothing in flight to abort. Fall through
+			// and park the item (clearing the stale binding).
+		default:
 			return fmt.Errorf("abort bound run %s: %w", item.WorkflowRunID, err)
 		}
-		// The executions are now terminal; the sequence reconciler runs on the
-		// dispatch path, so session abort happens asynchronously via the
-		// terminal-execution handling. The IDs are returned for completeness.
-		_ = aborted
 	}
 	// Recurse into children (a parent IS a sequence container).
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, itemID)
@@ -680,13 +689,20 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 
 	// Park this item: pending (a RECURRING item keeps its cadence armed),
 	// schedule cleared, stale run binding cleared so a later START/RESUME
-	// can dispatch fresh.
+	// can dispatch fresh. Re-read for a FRESH version: aborting a bound run
+	// on THIS very item (AbortRunInTx) updated its status and bumped its
+	// version, so the version captured at the top of this function is
+	// stale — updating with it would fail the optimistic concurrency check.
 	status := domain.WorkItemPending
 	if len(item.RecurringSchedule) > 0 {
 		status = domain.WorkItemRecurring
 	}
+	fresh, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
+	if err != nil {
+		return err
+	}
 	empty := ""
-	if _, err := db.UpdateWorkItem(ctx, tx, tenantID, itemID, item.Version, db.UpdateWorkItemFields{
+	if _, err := db.UpdateWorkItem(ctx, tx, tenantID, itemID, fresh.Version, db.UpdateWorkItemFields{
 		Status:                &status,
 		ClearScheduledStartAt: true,
 		WorkflowRunID:         &empty,

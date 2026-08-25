@@ -85,8 +85,8 @@ func TestBuildStandaloneCompositeWorkItemContextDB(t *testing.T) {
 		"# Worker",
 		"# Task",
 		"# Work item context",
-		"(directory)",
-		`Do NOT attempt to open the directory path itself as a file`,
+		"(directory — read on demand)",
+		"read on demand",
 		"a.go",
 		"# note",
 	} {

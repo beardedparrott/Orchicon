@@ -1245,10 +1245,12 @@ func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWor
 // every descendant → pending, scheduled starts cleared, stale run bindings
 // cleared, and any in-flight workflow run bound to a descendant is ABORTED
 // (run → aborted, step runs → failed, linked executions → terminated).
-// This test seeds a parent with a running child (real workflow run) and a
-// running grandchild, stops the parent, and asserts:
-//   - the child's bound run is aborted and its work item parked to pending,
-//   - the grandchild is parked to pending,
+//
+// The subtree is a nested sequence: parent(running) → container(running) →
+// leaf(running) whose leaf holds a REAL bound run. Stopping the parent
+// parks every level and aborts the leaf's in-flight run. This test asserts:
+//   - the leaf's bound run is aborted and its work item parked to pending,
+//   - the container and parent are also parked (recursion to depth 2),
 //   - no member of the subtree is running or failed (so the scan and the
 //     auto-revive path have nothing to pick up).
 func TestStopSequenceCascadesAndAborts(t *testing.T) {
@@ -1257,25 +1259,34 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 
 	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
-	child := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child", &parent.ID, &wf)
-	grandchild := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Grandchild", &child.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{child.ID})
-	reorder(t, env.pool, env.proj.ID, child.ID, []string{grandchild.ID})
+	container := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindFeature, "Container", &parent.ID, nil)
+	leaf := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Leaf", &container.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{container.ID})
+	reorder(t, env.pool, env.proj.ID, container.ID, []string{leaf.ID})
 
-	// Fire the child's REAL workflow so it has an in-flight bound run, then
-	// give the grandchild a live run to prove recursion aborts deeper nodes.
+	// Arm the leaf's REAL workflow so it holds an in-flight bound run, and
+	// arm the container + parent as sequence runs so the subtree is a live
+	// nested chain: parent(running) → container(running) → leaf(running).
 	realStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), tenantID, workflowID, projectID, workItemID)
 	}
-	if err := StartSequence(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), approvalTestTenant, parent.ID, realStart); err != nil {
-		t.Fatalf("StartSequence: %v", err)
+	if err := realStart(ctx, approvalTestTenant, wf, env.proj.ID, leaf.ID); err != nil {
+		t.Fatalf("start leaf workflow: %v", err)
 	}
-	setField(t, env.pool, grandchild.ID, func(f *db.UpdateWorkItemFields) {
-		runID := db.NewID()
-		f.WorkflowRunID = &runID
+	setField(t, env.pool, container.ID, func(f *db.UpdateWorkItemFields) {
 		status := domain.WorkItemRunning
 		f.Status = &status
 	})
+	setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemRunning
+		f.Status = &status
+	})
+	// Capture the leaf's real bound run now — StopSequence clears the
+	// binding when it parks the subtree, so it can't be read back after.
+	leafRunID := mustGet(t, env.pool, leaf.ID).WorkflowRunID
+	if leafRunID == "" {
+		t.Fatal("precondition: leaf should have a bound run after start")
+	}
 
 	// Stop the PARENT — must cascade to the whole subtree and abort runs.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -1284,9 +1295,9 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	}
 
 	for name, id := range map[string]string{
-		"parent":     parent.ID,
-		"child":      child.ID,
-		"grandchild": grandchild.ID,
+		"parent":    parent.ID,
+		"container": container.ID,
+		"leaf":      leaf.ID,
 	} {
 		got := mustGet(t, env.pool, id)
 		if got.Status == domain.WorkItemRunning || got.Status == domain.WorkItemFailed {
@@ -1297,18 +1308,18 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 		}
 	}
 
-	// The child's bound run must be ABORTED.
+	// The leaf's bound run must be ABORTED.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	childRun, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, child.WorkflowRunID)
+	leafRun, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, leafRunID)
 	ttx.Rollback(ctx)
 	if err != nil {
-		t.Fatalf("get child run after stop: %v", err)
+		t.Fatalf("get leaf run after stop: %v", err)
 	}
-	if childRun.Status != domain.WorkflowRunAborted {
-		t.Errorf("child run status = %s after stop, want aborted", childRun.Status)
+	if leafRun.Status != domain.WorkflowRunAborted {
+		t.Errorf("leaf run status = %s after stop, want aborted", leafRun.Status)
 	}
 
 	// A stopped chain must NOT auto-revive on a reconcile pass: the scan
@@ -1734,8 +1745,10 @@ func TestResumeSequenceHaltedContainerChild(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceNoChildren: resume/stop on a leaf (no children) is
-// rejected — only sequence parents can be controlled.
+// TestResumeSequenceNoChildren: resume on a leaf (no children) is
+// rejected — only a sequence parent can be resumed. (STOP on a leaf is a
+// valid individual halt — see TestStopLeafIsIndividual — so it is not
+// rejected here.)
 func TestResumeSequenceNoChildren(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1744,9 +1757,6 @@ func TestResumeSequenceNoChildren(t *testing.T) {
 
 	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID, env.startFn()); err == nil {
 		t.Error("ResumeSequence on a leaf should fail (no children)")
-	}
-	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID); err == nil {
-		t.Error("StopSequence on a leaf should fail (no children)")
 	}
 }
 

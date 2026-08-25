@@ -11,8 +11,8 @@ import (
 )
 
 // E2E: a project whose context_files contains a DIRECTORY renders the
-// directory listing with the not-a-file instruction in the workflow
-// composite prompt (AC: workers can view/scan directories in executions).
+// directory as a read-on-demand manifest in the workflow composite prompt
+// (AC: workers can view/scan directories in executions).
 func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -61,8 +61,8 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 	}
 	for _, want := range []string{
 		"You are an autonomous worker running inside the Orchicon orchestration platform.",
-		"srcdir (directory)",
-		"Do NOT attempt to open the directory path itself as a file",
+		"srcdir (directory — read on demand)",
+		"read on demand",
 		"a.go",
 		"b.txt",
 	} {
@@ -118,8 +118,8 @@ func TestE2EWorkItemContextFilesInPrompt(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# Work item context",
-		"widir (directory)",
-		"Do NOT attempt to open the directory path itself as a file",
+		"widir (directory — read on demand)",
+		"read on demand",
 		"w.go",
 		"## wi note",
 	} {
