@@ -53,26 +53,68 @@ func TestExecutionDir(t *testing.T) {
 	}
 }
 
-// TestExecutionSystemPrompt verifies the batch-tool discipline is appended
-// only when the execution runs in a runtime container with a project dir
-// (composite worktree tools active), and is absent on the host-serve path.
+// TestExecutionSystemPrompt verifies the run-prelude notes are appended only
+// under the right conditions: the worktree-path discipline note only when the
+// run has a provisioned worktree (WorktreePath != ""), and the batch-tool
+// discipline only for a runtime-container run with a project dir. It also
+// checks the base system prompt is always preserved.
 func TestExecutionSystemPrompt(t *testing.T) {
 	base := "You are an autonomous coding agent."
-	containers := []struct {
-		name     string
-		manifest scheduler.ExecutionManifest
-		want     bool // true = batch discipline should be present
+	cases := []struct {
+		name         string
+		manifest     scheduler.ExecutionManifest
+		wantWorktree bool // true = worktree-path discipline note present
+		wantBatch    bool // true = batch-tool discipline present
 	}{
-		{name: "runtime container + project dir", manifest: scheduler.ExecutionManifest{SystemPrompt: base, RuntimeWorkflowID: "run-1", ProjectDir: "/p"}, want: true},
-		{name: "runtime container, no project dir", manifest: scheduler.ExecutionManifest{SystemPrompt: base, RuntimeWorkflowID: "run-1"}, want: false},
-		{name: "host serve (no runtime container)", manifest: scheduler.ExecutionManifest{SystemPrompt: base, ProjectDir: "/p"}, want: false},
+		{
+			name:         "runtime container + project dir",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base, RuntimeWorkflowID: "run-1", ProjectDir: "/p"},
+			wantWorktree: false, // no provisioned worktree on this manifest
+			wantBatch:    true,
+		},
+		{
+			name:         "runtime container, no project dir",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base, RuntimeWorkflowID: "run-1"},
+			wantWorktree: false,
+			wantBatch:    false,
+		},
+		{
+			name:         "host serve (no runtime container)",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base, ProjectDir: "/p"},
+			wantWorktree: false,
+			wantBatch:    false,
+		},
+		{
+			name:         "worktree run (provisioned worktree, no runtime container)",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base, WorktreePath: "/srv/proj/.orchicon-worktrees/run1"},
+			wantWorktree: true,
+			wantBatch:    false,
+		},
+		{
+			name:         "worktree run + runtime container",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base, WorktreePath: "/srv/proj/.orchicon-worktrees/run1", RuntimeWorkflowID: "run-1", ProjectDir: "/p"},
+			wantWorktree: true,
+			wantBatch:    true,
+		},
+		{
+			name:         "empty manifest (no worktree, no runtime)",
+			manifest:     scheduler.ExecutionManifest{SystemPrompt: base},
+			wantWorktree: false,
+			wantBatch:    false,
+		},
 	}
-	for _, tc := range containers {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := executionSystemPrompt(tc.manifest)
-			has := strings.Contains(got, "batch_read")
-			if has != tc.want {
-				t.Errorf("executionSystemPrompt() batch discipline present = %v, want %v; prompt=%q", has, tc.want, got)
+			// The worktree-path discipline note is present only under a
+			// provisioned worktree. Reference the const directly so the test
+			// and the source cannot drift apart.
+			if hasWorktree := strings.Contains(got, worktreePathDiscipline); hasWorktree != tc.wantWorktree {
+				t.Errorf("executionSystemPrompt() worktree note present = %v, want %v; prompt=%q", hasWorktree, tc.wantWorktree, got)
+			}
+			hasBatch := strings.Contains(got, "batch_read")
+			if hasBatch != tc.wantBatch {
+				t.Errorf("executionSystemPrompt() batch discipline present = %v, want %v; prompt=%q", hasBatch, tc.wantBatch, got)
 			}
 			// The base system prompt must always be preserved.
 			if !strings.Contains(got, base) {

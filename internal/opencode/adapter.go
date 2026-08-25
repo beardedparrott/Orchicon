@@ -314,6 +314,9 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 // empty) have no composite tools and get the bare worker system prompt.
 func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
 	sp := manifest.SystemPrompt
+	if manifest.WorktreePath != "" {
+		sp += worktreePathDiscipline
+	}
 	if manifest.RuntimeWorkflowID != "" && manifest.ProjectDir != "" {
 		sp += batchToolsDiscipline
 	}
@@ -325,6 +328,8 @@ func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
 // runtime does not expose them falls back to the built-ins without error, and
 // it explicitly forbids the granular tools so the model does not keep reaching
 // for read/grep in batches (the conflicting behaviour the old guidance caused).
+const worktreePathDiscipline = "\n\nAll file reads/writes must use paths relative to the current worktree; the main checkout is not accessible.\n"
+
 const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n" +
 	"Use the composite file tools for ALL file access:\n" +
 	"- `batch_read` reads several files or a whole directory in ONE call.\n" +
