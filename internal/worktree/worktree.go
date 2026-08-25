@@ -81,24 +81,48 @@ type WriteArgs struct {
 
 // --- path safety ----------------------------------------------------------
 
+// allowedTempRoot returns an additional root the batch tools may operate
+// within, alongside the worktree base. The runtime container's /tmp is a
+// private, exec-capable tmpfs (wiped at run end) that workers legitimately use
+// for Go build-cache/tmp and scratch work, so the file tools must be able to
+// read/write there — not just the project root.
+func allowedTempRoot() string { return os.TempDir() }
+
 // safeResolve resolves a worker-supplied path against the worktree base and
 // rejects anything that escapes it. It is the single enforcement point for
-// every composite tool.
+// every composite tool. Absolute paths are permitted only under an allowed
+// root (the worktree base or the temp dir), so the worker can reach the
+// mounted /tmp scratch without being able to traverse anywhere else.
 func safeResolve(base, rel string) (string, error) {
 	if strings.TrimSpace(rel) == "" {
 		return "", fmt.Errorf("empty path")
 	}
+	roots := []string{filepath.Clean(base)}
+	if tmp := allowedTempRoot(); tmp != "" {
+		roots = append(roots, tmp)
+	}
+	under := func(p string) bool {
+		for _, r := range roots {
+			if p == r || strings.HasPrefix(p, r+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
 	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("absolute paths are not allowed (path traversal)")
+		clean := filepath.Clean(rel)
+		if under(clean) {
+			return clean, nil
+		}
+		return "", fmt.Errorf("absolute path is outside the allowed roots (worktree or tmp)")
 	}
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path escapes the worktree (..)")
 	}
 	p := filepath.Join(base, clean)
-	bp := filepath.Clean(base)
-	if p != bp && !strings.HasPrefix(p, bp+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes the worktree")
+	if !under(p) {
+		return "", fmt.Errorf("path escapes the workspace")
 	}
 	return p, nil
 }

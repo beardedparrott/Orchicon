@@ -40,6 +40,13 @@ type Service struct {
 	log        *slog.Logger
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedWorkflowServiceHandler
+
+	// abortSession stops a terminated execution's live opencode session when a
+	// run is aborted (wired to the opencode adapter's AbortExecution). Without
+	// it, aborting a run leaves every in-flight worker session generating in
+	// the background — the "terminated but still active" token burn. Nil =
+	// abort only marks the executions terminal.
+	abortSession func(ctx context.Context, execID, reason string) error
 }
 
 // Compile-time assertion that Service satisfies the handler interface.
@@ -48,6 +55,13 @@ var _ apiv1connect.WorkflowServiceHandler = (*Service)(nil)
 // New constructs a WorkflowService handler.
 func New(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
 	return &Service{pool: pool, log: log, subscriber: sub}
+}
+
+// SetAbortExecution injects the live-session abort hook (the opencode
+// adapter's AbortExecution). Nil = aborting a run only marks its executions
+// terminal.
+func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
+	s.abortSession = fn
 }
 
 // CreateWorkflow validates input, inserts the workflow header + its first
@@ -733,7 +747,8 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("run is already terminal (status=%s)", current.Status))
 	}
-	if err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled); err != nil {
+	abortedExecs, err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled)
+	if err != nil {
 		return nil, mapDBError(err)
 	}
 	updated, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
@@ -751,6 +766,16 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	// The executions are now terminal in the DB. Abort their live opencode
+	// sessions so the model stops generating — without this, aborting a run
+	// leaves every in-flight worker session turning in the background.
+	if s.abortSession != nil {
+		for _, eid := range abortedExecs {
+			if aerr := s.abortSession(ctx, eid, "workflow run aborted"); aerr != nil {
+				s.log.Warn("abort live session on run abort failed", "execution", eid, "error", aerr)
+			}
+		}
+	}
 	s.log.Info("workflow run aborted", "run_id", updated.ID, "reason", reason)
 	return connect.NewResponse(&apiv1.AbortWorkflowResponse{Run: runRowToProto(updated)}), nil
 }
@@ -763,33 +788,39 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 // by the AbortWorkflow RPC and the sequence engine's StopSequence — a
 // single abort path so behavior can't drift. It is intentionally NOT a
 // method: the sequence reconciler calls it inside its own transaction.
-func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) error {
+// AbortRunInTx aborts a workflow run: the run → aborted, in-flight step runs
+// → failed, and linked running/dispatching worker executions → terminated. It
+// returns the IDs of the executions it terminated so the caller can abort
+// their live sessions (a terminated execution's opencode session would
+// otherwise keep generating — the "terminated but still active" bug).
+func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) ([]string, error) {
 	now := time.Now().UTC()
 	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
-		return nil // already terminal — nothing to abort
+		return nil, nil // already terminal — nothing to abort
 	}
 	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, runID, current.Version, db.UpdateWorkflowRunFields{
 		Status:  strPtr(domain.WorkflowRunAborted),
 		EndedAt: &now,
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	// Cancel any in-flight step runs and terminate linked worker executions.
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, runID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var abortedExecs []string
 	for _, sr := range stepRuns {
 		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady || sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunApprovalPending {
 			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunFailed),
 				EndedAt: &now,
 			}); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		// Terminate linked worker executions.
@@ -804,8 +835,9 @@ func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatu
 						EndedAt:      &now,
 						ErrorMessage: strPtr("workflow run aborted"),
 					}); err != nil {
-						return err
+						return nil, err
 					}
+					abortedExecs = append(abortedExecs, exec.ID)
 				}
 			}
 		}
@@ -818,7 +850,7 @@ func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatu
 			})
 		}
 	}
-	return nil
+	return abortedExecs, nil
 }
 
 // GetWorkflowRun returns a single WorkflowRun by id.

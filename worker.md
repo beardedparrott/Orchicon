@@ -21,6 +21,7 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 ## Token discipline
 
 - Prefer compact tool output: `git status --short`, `git log --oneline -5`, `git branch --list`, single-line `gh` queries. When reading `.orchicon/<run>/` files, read `summary`, `facts_learned`, and `issues` in full, but only `grep` `touched_files` for paths relevant to your task.
+- **File access: use the composite batch tools.** When `batch_read` / `batch_grep` / `batch_write` are available, use them for every file read, search, and write — never repeated single `read`/`grep`/`write`/`edit` calls, and never re-read a file whose content is already in context.
 - Batch tool calls — each call re-sends the whole conversation to the model, so fewer, larger calls are dramatically cheaper.
 - Compact commands are still real commands: verify state with actual tool calls and never fabricate output. Batching combines commands, never results.
 

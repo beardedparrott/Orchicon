@@ -68,7 +68,25 @@ func TestBatchReadRejectsTraversal(t *testing.T) {
 		t.Fatal("expected a path-traversal error for ../")
 	}
 	if _, err := BatchRead(base, ReadArgs{Paths: []string{"/etc/passwd"}}); err == nil {
-		t.Fatal("expected a path-traversal error for absolute path")
+		t.Fatal("expected a path-traversal error for absolute path outside the allowed roots")
+	}
+}
+
+func TestBatchReadAllowsTempDir(t *testing.T) {
+	base := t.TempDir()
+	// The runtime container's /tmp is a legitimate scratch the worker reaches
+	// with absolute paths (Go build/tmp work); the tools must allow it.
+	tmpFile := filepath.Join(os.TempDir(), "orchicon-batch-test-"+filepath.Base(t.TempDir())+".txt")
+	if err := os.WriteFile(tmpFile, []byte("tmp-content"), 0o644); err != nil {
+		t.Skipf("cannot write temp file: %v", err)
+	}
+	defer os.Remove(tmpFile)
+	out, err := BatchRead(base, ReadArgs{Paths: []string{tmpFile}})
+	if err != nil {
+		t.Fatalf("batch_read on a /tmp absolute path should be allowed: %v", err)
+	}
+	if !strings.Contains(out, "tmp-content") {
+		t.Fatalf("expected temp file content, got: %s", out)
 	}
 }
 

@@ -129,6 +129,29 @@ func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 	if grep, _ := perm[grepToolDeny].(map[string]any); grep["*"] != "deny" {
 		t.Fatalf("dev config must deny grep (live composite), got %#v", perm[grepToolDeny])
 	}
+
+	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
+	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
+	// DB MCP (`orchicon`) stays dev-only.
+	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree")
+	var bcfg map[string]any
+	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
+		t.Fatalf("base config not valid JSON: %v", err)
+	}
+	bmcp, ok := bcfg["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp block on base config (composite worktree), got: %s", base)
+	}
+	if _, ok := bmcp["orchicon-worktree"]; !ok {
+		t.Fatalf("expected orchicon-worktree MCP on base config (composite live), got: %s", base)
+	}
+	if _, ok := bmcp["orchicon"]; ok {
+		t.Fatalf("sandbox DB MCP (`orchicon`) must stay dev-only, got on base: %s", base)
+	}
+	bperm, _ := bcfg["permission"].(map[string]any)
+	if bperm[readToolDeny] == nil {
+		t.Fatalf("base config must deny read (composite live), got: %s", base)
+	}
 }
 
 func TestBuildConfigContentSkipsOrchiconMCP(t *testing.T) {
