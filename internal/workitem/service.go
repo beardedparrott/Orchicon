@@ -1628,6 +1628,12 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 		}
 		if err := s.sequenceStopFn(ctx, tenantID, msg.Id); err != nil {
+			if errors.Is(err, db.ErrVersionConflict) {
+				return nil, connect.NewError(connect.CodeAborted, fmt.Errorf("version conflict: %w", err))
+			}
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
+			}
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 	}
@@ -2070,6 +2076,9 @@ func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID s
 // check ran against stale state) is FailedPrecondition with the trigger's
 // message naming the offending edge; everything else is Internal.
 func mapDBError(err error) error {
+	if errors.Is(err, db.ErrVersionConflict) {
+		return connect.NewError(connect.CodeAborted, fmt.Errorf("version conflict: %w", err))
+	}
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}

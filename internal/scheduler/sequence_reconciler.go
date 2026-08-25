@@ -914,26 +914,60 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 		}
 	}
 
-	// Park this item: pending (a RECURRING item keeps its cadence armed),
-	// schedule cleared, stale run binding cleared so a later START/RESUME
-	// can dispatch fresh. Re-read for a FRESH version: aborting a bound run
-	// on THIS very item (AbortRunInTx) updated its status and bumped its
-	// version, so the version captured at the top of this function is
-	// stale — updating with it would fail the optimistic concurrency check.
-	status := domain.WorkItemPending
-	if len(item.RecurringSchedule) > 0 {
-		status = domain.WorkItemRecurring
+	// Park this item concurrency-resilient: bounded re-read retry on
+	// version conflict, then tolerant fallback. Parking is idempotent
+	// (pending/recurring, schedule and run binding cleared) and
+	// succeeded/skipped are guarded at the top of haltWorkItem.
+	return parkWorkItemResilient(ctx, tx, tenantID, itemID)
+}
+
+// parkWorkItemResilient parks a single item with bounded optimistic-lock
+// retry and an unconditional fallback. It re-reads the fresh row on each
+// attempt so a concurrent sequence-engine bump does not abort the whole
+// STOP transaction with a misleading "db: not found".
+func parkWorkItemResilient(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error {
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		fresh, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
+		if err != nil {
+			return err
+		}
+		if domain.WorkItemIsTerminalSuccess(fresh.Status) {
+			return nil
+		}
+		status := domain.WorkItemPending
+		if len(fresh.RecurringSchedule) > 0 {
+			status = domain.WorkItemRecurring
+		}
+		empty := ""
+		_, err = db.UpdateWorkItem(ctx, tx, tenantID, itemID, fresh.Version, db.UpdateWorkItemFields{
+			Status:                &status,
+			ClearScheduledStartAt: true,
+			WorkflowRunID:         &empty,
+		})
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, db.ErrVersionConflict) {
+			continue
+		}
+		if errors.Is(err, db.ErrNotFound) {
+			return err
+		}
+		return fmt.Errorf("park work item %s: %w", itemID, err)
 	}
+	// Fallback: unconditional park without version (tolerant path).
 	fresh, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	empty := ""
-	if _, err := db.UpdateWorkItem(ctx, tx, tenantID, itemID, fresh.Version, db.UpdateWorkItemFields{
-		Status:                &status,
-		ClearScheduledStartAt: true,
-		WorkflowRunID:         &empty,
-	}); err != nil {
+	if domain.WorkItemIsTerminalSuccess(fresh.Status) {
+		return nil
+	}
+	if _, err := db.ParkWorkItem(ctx, tx, tenantID, itemID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return err
+		}
 		return fmt.Errorf("park work item %s: %w", itemID, err)
 	}
 	return nil
@@ -985,6 +1019,9 @@ func resetArmedChild(ctx context.Context, pool *db.Pool, tenantID, childID strin
 // reIsCASConflict reports whether err is an optimistic-concurrency version conflict
 // (db.ErrNotFound from UpdateWorkItem version check or the explicit revive CAS string).
 func reIsCASConflict(err error) bool {
+	if errors.Is(err, db.ErrVersionConflict) {
+		return true
+	}
 	if errors.Is(err, db.ErrNotFound) {
 		return true
 	}
