@@ -11,7 +11,7 @@
 // (design-notes/visual-and-functional-tweaks-to-work-items-page.md,
 // ADR-WI-2/ADR-WI-6): OR within a group, AND across groups, empty = all.
 
-import { Archive as ArchiveIcon, ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Search, Trash2 } from "lucide-react";
+import { Archive as ArchiveIcon, ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Play, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
@@ -65,6 +65,11 @@ export interface WorkItemsFilterBarProps {
   /** Bulk "Move to…" — operates on the selected set (ADR-WI-5). */
   onMoveSelected: (targetStatus: number) => void;
   movePending: boolean;
+  /** Bulk "Run" (ADR-WI-9): start the visible-selected set. */
+  onRunSelected: () => void;
+  runPending: boolean;
+  /** Count of selected items that are currently visible (the button label). */
+  visibleSelectedCount: number;
 }
 
 export function WorkItemsFilterBar({
@@ -96,6 +101,9 @@ export function WorkItemsFilterBar({
   deletePending,
   onMoveSelected,
   movePending,
+  onRunSelected,
+  runPending,
+  visibleSelectedCount,
 }: WorkItemsFilterBarProps) {
   const selectClass =
     "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring";
@@ -288,6 +296,16 @@ export function WorkItemsFilterBar({
                 </option>
               ))}
             </select>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onRunSelected}
+              disabled={runPending}
+              title="Start all selected work items"
+            >
+              <Play className="mr-1 h-3.5 w-3.5" />
+              Run {visibleSelectedCount}
+            </Button>
             <Button
               variant="destructive"
               size="sm"
