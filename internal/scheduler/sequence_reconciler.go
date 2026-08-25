@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -119,8 +120,15 @@ func (r *SequenceReconciler) scan(ctx context.Context, tenantID string) reconcil
 		err := r.reconcileOne(pCtx, tenantID, p.ID)
 		cancel()
 		if err != nil {
-			r.log.Warn("sequence: reconcile parent failed", "parent", p.ID, "error", err)
-			r.recordScanError(ctx, tenantID, p.ID, err)
+			if r.log != nil {
+				r.log.Warn("sequence: reconcile parent failed", "parent", p.ID, "error", err)
+			}
+			// Version-conflict / CAS races are transient and must not count as wedge heartbeat.
+			if !errors.Is(err, db.ErrNotFound) && !reIsCASConflict(err) {
+				r.recordScanError(ctx, tenantID, p.ID, err)
+			} else if r.log != nil {
+				r.log.Warn("sequence: transient reconcile conflict, not counting as wedge", "parent", p.ID, "error", err)
+			}
 		} else {
 			r.clearScanError(ctx, tenantID, p.ID)
 		}
@@ -202,16 +210,29 @@ func (r *SequenceReconciler) clearScanError(ctx context.Context, tenantID, paren
 func (r *SequenceReconciler) checkStalledParents(ctx context.Context, tenantID string, parents []db.WorkItemRow) {
 	now := time.Now().UTC()
 	for _, p := range parents {
-		// Only running parents with no progress for threshold.
-		lastProg := p.SequenceLastProgressAt
-		ref := p.UpdatedAt
+		// Re-read fresh snapshot: the scan's parents slice is stale by the time
+		// per-parent reconciles ran, so threshold + status must be evaluated on
+		// fresh row (review fix: stale snapshot).
+		freshSnap, err := func() (db.WorkItemRow, error) {
+			ttx2, err := r.pool.BeginTenantTx(ctx, tenantID)
+			if err != nil {
+				return db.WorkItemRow{}, err
+			}
+			defer ttx2.Rollback(ctx)
+			return db.GetWorkItem(ctx, ttx2.Tx, tenantID, p.ID)
+		}()
+		if err != nil {
+			continue
+		}
+		lastProg := freshSnap.SequenceLastProgressAt
+		ref := freshSnap.UpdatedAt
 		if lastProg != nil {
 			ref = *lastProg
 		}
 		if now.Sub(ref) < sequenceStallThreshold {
 			continue
 		}
-		if p.Status != domain.WorkItemRunning {
+		if freshSnap.Status != domain.WorkItemRunning {
 			continue
 		}
 		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
@@ -289,8 +310,10 @@ func (r *SequenceReconciler) reconcileOne(ctx context.Context, tenantID, parentI
 	}
 	for _, s := range starts {
 		if err := r.start(ctx, s.tenantID, s.workflowID, s.projectID, s.itemID); err != nil {
-			r.log.Error("sequence: start child workflow failed",
-				"child", s.itemID, "workflow", s.workflowID, "error", err)
+			if r.log != nil {
+				r.log.Error("sequence: start child workflow failed",
+					"child", s.itemID, "workflow", s.workflowID, "error", err)
+			}
 			// Self-heal: the child was flipped to running in the committed
 			// tx; a failed start must not strand it as running-with-no-run
 			// (the derived cursor would wait on it forever). Reset to
@@ -460,33 +483,33 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 			// In flight (or human-managed): wait for the current child.
 			continue
 		case domain.WorkItemPending, domain.WorkItemBlocked:
-			// Backoff gate (P1): a child that recently failed start is gated until backoff expires.
+			// Backoff gate (P1): cap check BEFORE backoff gate so halt is not delayed by ~80s (review fix).
+			if c.SequenceAttempts >= sequenceMaxAttempts {
+				// Cap exceeded → mark child failed so chain halts visibly (no backoff delay).
+				reason := fmt.Sprintf("start failed %d times", c.SequenceAttempts)
+				results := c.Results
+				if len(results) == 0 {
+					results = []byte("{}")
+				}
+				var m map[string]any
+				_ = json.Unmarshal(results, &m)
+				if m == nil {
+					m = map[string]any{}
+				}
+				m["sequence_failure_reason"] = reason
+				b, _ := json.Marshal(m)
+				status := domain.WorkItemFailed
+				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{Status: &status, Results: &b}); err != nil {
+					return nil, fmt.Errorf("cap child failed: %w", err)
+				}
+				if err := failSequenceChain(ctx, tx, tenantID, c); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
 			if c.SequenceAttempts > 0 && c.SequenceLastAttemptAt != nil {
 				if time.Since(*c.SequenceLastAttemptAt) < sequenceBackoff(c.SequenceAttempts) {
 					continue
-				}
-				if c.SequenceAttempts >= sequenceMaxAttempts {
-					// Cap exceeded → mark child failed so chain halts visibly.
-					reason := fmt.Sprintf("start failed %d times", c.SequenceAttempts)
-					results := c.Results
-					if len(results) == 0 {
-						results = []byte("{}")
-					}
-					var m map[string]any
-					_ = json.Unmarshal(results, &m)
-					if m == nil {
-						m = map[string]any{}
-					}
-					m["sequence_failure_reason"] = reason
-					b, _ := json.Marshal(m)
-					status := domain.WorkItemFailed
-					if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{Status: &status, Results: &b}); err != nil {
-						return nil, fmt.Errorf("cap child failed: %w", err)
-					}
-					if err := failSequenceChain(ctx, tx, tenantID, c); err != nil {
-						return nil, err
-					}
-					return nil, nil
 				}
 			}
 			// Chain gate (strict children only): the child's position in
@@ -923,8 +946,10 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 func fireLeafStarts(ctx context.Context, pool *db.Pool, log *slog.Logger, starts []leafStart, start StartWorkflowFn) {
 	for _, s := range starts {
 		if err := start(ctx, s.tenantID, s.workflowID, s.projectID, s.itemID); err != nil {
-			log.Warn("sequence: start child workflow failed",
-				"child", s.itemID, "workflow", s.workflowID, "error", err)
+			if log != nil {
+				log.Warn("sequence: start child workflow failed",
+					"child", s.itemID, "workflow", s.workflowID, "error", err)
+			}
 			// Self-heal (same rationale as the reconciler path): a failed
 			// start must not strand the child as running-with-no-run.
 			resetArmedChild(ctx, pool, s.tenantID, s.itemID)
@@ -955,4 +980,14 @@ func resetArmedChild(ctx context.Context, pool *db.Pool, tenantID, childID strin
 	now := time.Now().UTC()
 	_, _ = ttx.Tx.Exec(ctx, `UPDATE work_items SET status='pending', sequence_attempts=sequence_attempts+1, sequence_last_attempt_at=$1, updated_at=now(), version=version+1 WHERE id=$2 AND tenant_id=$3 AND status='running' AND workflow_run_id=''`, now, childID, tenantID)
 	_ = ttx.Commit(ctx)
+}
+
+// reIsCASConflict reports whether err is an optimistic-concurrency version conflict
+// (db.ErrNotFound from UpdateWorkItem version check or the explicit revive CAS string).
+func reIsCASConflict(err error) bool {
+	if errors.Is(err, db.ErrNotFound) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "CAS conflict") || strings.Contains(s, "version") && strings.Contains(s, "concurrency")
 }
