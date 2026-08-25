@@ -24,9 +24,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
-	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/recovery"
@@ -42,7 +42,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// 	Dependencies bundles the resources the API layer needs. Constructed
+//	Dependencies bundles the resources the API layer needs. Constructed
+//
 // once by the server and passed to Mount.
 type Dependencies struct {
 	Pool           *db.Pool
@@ -60,12 +61,12 @@ type Dependencies struct {
 	// every mode: api.Mount resolves identity through it, so a plane
 	// without one is a programming error (config validation requires an
 	// IdP in every mode and auth.NewHandler never returns nil).
-	AuthHandler          *auth.Handler
-	WebhookDispatcher    *webhook.Dispatcher
-	Mode                 config.DeploymentMode
+	AuthHandler       *auth.Handler
+	WebhookDispatcher *webhook.Dispatcher
+	Mode              config.DeploymentMode
 	// ModelDiscoverer enumerates models from opencode CLI.
-	ModelDiscoverer   *aigateway.ModelDiscoverer
-	MCPDiscoverer     *aigateway.MCPDiscoverer
+	ModelDiscoverer *aigateway.ModelDiscoverer
+	MCPDiscoverer   *aigateway.MCPDiscoverer
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
 	// PostgresDSN is the Postgres connection string for backup/restore.
@@ -82,6 +83,11 @@ type Dependencies struct {
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
 	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	// AbortExecution stops a live execution's opencode session when a human
+	// cancels it, so the model stops generating immediately (prevents the
+	// "terminated but still active" token burn). Nil when the session
+	// transport is unavailable.
+	AbortExecution func(ctx context.Context, execID, reason string) error
 	// HostServe is the always-on host opencode serve. Ask Orchicon
 	// conversation turns run as persistent sessions on it (first message
 	// CreateSession, follow-ups prompt_async on the same session). Nil when
@@ -127,6 +133,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
 	// so the WorkItemService can wire the StartWorkflowStarter.
 	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
+	if deps.AbortExecution != nil {
+		workflowSvc.SetAbortExecution(deps.AbortExecution)
+	}
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc, interceptorOpt))
 
 	// WorkItemService (docs/07 §3.2).
@@ -176,6 +185,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	}
 	if deps.ContinueSession != nil {
 		execSvc.SetContinueSession(deps.ContinueSession)
+	}
+	if deps.AbortExecution != nil {
+		execSvc.SetAbortExecution(deps.AbortExecution)
 	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 

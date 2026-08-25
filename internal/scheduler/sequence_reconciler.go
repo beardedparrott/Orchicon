@@ -657,10 +657,15 @@ func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error
 	// run, or a bound container). Idempotent: terminal runs are skipped.
 	// The bound work item is left PENDING so it can be re-run standalone.
 	if item.WorkflowRunID != "" {
-		if err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
-			domain.WorkItemPending); err != nil {
+		aborted, err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
+			domain.WorkItemPending)
+		if err != nil {
 			return fmt.Errorf("abort bound run %s: %w", item.WorkflowRunID, err)
 		}
+		// The executions are now terminal; the sequence reconciler runs on the
+		// dispatch path, so session abort happens asynchronously via the
+		// terminal-execution handling. The IDs are returned for completeness.
+		_ = aborted
 	}
 	// Recurse into children (a parent IS a sequence container).
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, itemID)

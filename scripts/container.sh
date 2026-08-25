@@ -517,8 +517,16 @@ case "${1:-}" in
     # The pattern is unique enough not to match this script's own command
     # line (which never contains "orchicon runtime-daemon").
     pid=$(pgrep -f "orchicon runtime-daemon" | head -1)
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null && log_ok "runtime daemon stopped"
-    [ -z "$pid" ] && log_dim "runtime daemon not running"
+    if [ -n "$pid" ]; then
+      # Idempotent: a daemon that already exited (or a lost kill) is still a
+      # successful "stopped" — stop commands must return 0 so `make
+      # runtime-stop && make runtime-daemon` chains (the previous trailing
+      # `[ -z "$pid" ]` evaluated false on the stopped path and returned 1).
+      kill "$pid" 2>/dev/null || true
+      log_ok "runtime daemon stopped"
+    else
+      log_dim "runtime daemon not running"
+    fi
     ;;
   ps)
     docker ps -a --filter label=orchicon-instance --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

@@ -205,6 +205,35 @@ func TestParseBudgetSpecCompactTiers(t *testing.T) {
 	}
 }
 
+// TestParseBudgetSpecCompactDims verifies the per-dimension compaction
+// policy: absent → built-in default (tokens + cost compact; tools + time do
+// not), while a present `compact_dims` array is the COMPLETE allowed set.
+func TestParseBudgetSpecCompactDims(t *testing.T) {
+	def := parseBudgetSpec([]byte(`{"tokens":1000}`))
+	if def.compactDims != [dimCount]bool{true, true, false, false} {
+		t.Fatalf("default compactDims = %v, want [tokens,cost] only", def.compactDims)
+	}
+	if !def.compactsDim(dimTokens) || !def.compactsDim(dimCost) {
+		t.Fatal("default must permit compaction on tokens + cost")
+	}
+	if def.compactsDim(dimTools) || def.compactsDim(dimTime) {
+		t.Fatal("default must NOT permit compaction on tools or time")
+	}
+	// An explicit array is the complete allowed set.
+	spec := parseBudgetSpec([]byte(`{"tokens":1000,"compact_dims":["tokens","cost_usd","tool_call_count"]}`))
+	if !spec.compactsDim(dimTools) {
+		t.Fatal("explicit compact_dims should permit tool_call_count")
+	}
+	if spec.compactsDim(dimTime) {
+		t.Fatal("wall_clock must stay out of an explicit compact_dims set")
+	}
+	// Unknown names are ignored → a present array with no valid dims disables all.
+	spec2 := parseBudgetSpec([]byte(`{"compact_dims":["bogus"]}`))
+	if spec2.compactsDim(dimTokens) || spec2.compactsDim(dimCost) {
+		t.Fatal("a present compact_dims set with only unknown names must disable compaction everywhere")
+	}
+}
+
 // TestLevelForAndMessage verifies the ladder tier computation and the
 // built-in message copy with {pct} substitution.
 func TestLevelForAndMessage(t *testing.T) {
@@ -865,6 +894,55 @@ func TestLadderCompactReArm(t *testing.T) {
 	r.maybeEnforceLadder(dimTokens)
 	if rec.summarizeCount() != 2 {
 		t.Fatalf("tokens final after the re-arm window should compact, summarize=%d", rec.summarizeCount())
+	}
+}
+
+// TestLadderToolDimensionNeverCompacts verifies the per-dimension compaction
+// gate: a budget that crosses the tool-call escalate tier is warned but NEVER
+// compacts, even with compact_tiers all-on and outside the re-arm window —
+// because a tool call already made cannot be compacted away, and the lossy
+// collapse would force the worker to re-derive state (more tool calls). Cost,
+// by contrast, still compacts at escalate.
+func TestLadderToolDimensionNeverCompacts(t *testing.T) {
+	rec := newCompactRecorder(http.StatusOK)
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	r := &sessionRun{
+		a:         &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		parentCtx: context.Background(),
+		execRow:   db.ExecutionRow{ID: "exec-tool-nocompact", TenantID: "tnt_dev"},
+		client:    NewSessionClient(srv.URL, "", ""),
+		sessionID: "sess-1",
+		modelRef:  "opencode/deepseek-v4-flash-free",
+		budget:    &budgetAccumulator{},
+		// All tiers compact on, so the ONLY thing gating tools here is the
+		// per-dimension policy.
+		budgetSpec: parseBudgetSpec([]byte(`{"tool_call_count":100,"cost_usd":1.0,"compact_tiers":[true,true,true]}`)),
+		startedAt:  time.Now(),
+		done:       make(chan struct{}),
+		stats:      &execStreamState{},
+	}
+	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
+	t.Setenv("ORCHICON_COMPACT_MAX", "5")
+
+	// tools at escalate (50% of 100) → warn, NEVER compact.
+	r.stats.toolUses = 50
+	r.budget.steps = 1
+	r.maybeEnforceLadder(dimTools)
+	if rec.summarizeCount() != 0 {
+		t.Fatalf("tool-call escalate must NOT compact (dimension-gated), summarize=%d", rec.summarizeCount())
+	}
+	if rec.count() != 1 {
+		t.Fatalf("tool-call escalate should still inject its warning, calls=%d", rec.count())
+	}
+
+	// cost at escalate (50% of 1.0) on the next step → compacts (cost is a
+	// compact-permitted dimension).
+	r.budget.costUSD = 0.5
+	r.budget.steps = 2
+	r.maybeEnforceLadder(dimCost)
+	if rec.summarizeCount() != 1 {
+		t.Fatalf("cost escalate should compact, summarize=%d", rec.summarizeCount())
 	}
 }
 

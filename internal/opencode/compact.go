@@ -25,7 +25,11 @@ import (
 // kept climbing. Now every dimension has both a warning schedule (so the
 // worker is told, in escalating and demanding terms, to remedy immediately)
 // AND a hard abort at the limit. The only "soft, keep going" action left is
-// context compaction on escalate1/escalate2 — never on abort.
+// context compaction on escalate1/escalate2 — never on abort. Compaction is
+// additionally gated PER DIMENSION (see defaultCompactDims): it only fires on
+// dimensions it can actually relieve (cost, fresh tokens), so a worker that
+// is merely over its tool-call or wall-clock budget is warned but never
+// interrupted by a lossy collapse that would force yet more tool calls.
 //
 // Two orthogonal gates are preserved from the old model because they are
 // about context hygiene, not spend:
@@ -47,7 +51,8 @@ import (
 //
 //	{
 //	  "tokens": 500000, "cost_usd": 0.50, "tool_call_count": 100,
-//	  "wall_clock_seconds": 3600, "compact_max_turns": 12,
+//	  "wall_clock_seconds": 3600, "compact_max_turns": 30,
+//	  "compact_dims": ["tokens","cost_usd"],
 //	  "warnings": {
 //	    "fractions": {
 //	      "tokens": [0.5, 0.75, 0.9],
@@ -151,6 +156,19 @@ type budgetSpec struct {
 	// compaction cadence is an explicit operator decision, not a hidden
 	// side effect of the spend ladder.
 	compactTiers [3]bool
+
+	// compactDims is the per-dimension compaction policy: which budget
+	// dimensions are permitted to trigger a context compaction at all.
+	// Compaction is only worthwhile on a dimension it can actually relieve.
+	// cost and tokens both grow with re-sent context, so shrinking the
+	// context buys real headroom there. tool_call_count and wall_clock are
+	// NOT relievable by compacting — a tool call already made cannot be
+	// compacted away, and the lossy collapse forces the worker to re-read /
+	// re-derive the collapsed working detail, which is itself MORE tool
+	// calls and more re-sent context — so they warn but never compact by
+	// default. Operators can override per dimension via the budget JSON
+	// `compact_dims` key (e.g. ["tokens","cost_usd"]).
+	compactDims [dimCount]bool
 }
 
 // budgetAccumulator tallies cumulative spend for one execution. It is fed
@@ -455,6 +473,44 @@ func defaultWarnMsgs() [dimCount][3]string {
 // budget JSON `compact_tiers` key.
 func defaultCompactTiers() [3]bool { return [3]bool{false, true, true} }
 
+// defaultCompactDims returns the built-in per-dimension compaction policy.
+// Compaction is a lossy, mid-flight-interrupting collapse that buys headroom
+// ONLY on a dimension driven by re-sent context — cost and fresh tokens. For
+// tool_call_count and wall_clock it is actively counterproductive: a tool
+// call already made cannot be compacted away (see the budgetAccumulator
+// doc), and the collapse forces the worker to re-read/re-derive the
+// collapsed working detail, which is itself MORE tool calls and more
+// re-sent context. So the default compacts on tokens + cost and merely
+// warns on tools + time. Operators override per dimension via the budget
+// JSON `compact_dims` key (e.g. ["tokens","cost_usd"]).
+func defaultCompactDims() [dimCount]bool {
+	return [dimCount]bool{true, true, false, false} // tokens, cost only
+}
+
+// compactsDim reports whether a budget dimension is permitted to trigger a
+// context compaction at all (independent of the per-tier policy). Combined
+// with compactsAt, a tier compacts only when BOTH the tier and the dimension
+// permit it — e.g. cost at escalate compacts, but tool_call_count at
+// escalate warns without compacting.
+func (s budgetSpec) compactsDim(d budgetDimension) bool {
+	return s.compactDims[d]
+}
+
+// dimFromName maps a budget-JSON dimension name to its dimension.
+func dimFromName(name string) (budgetDimension, bool) {
+	switch name {
+	case "tokens":
+		return dimTokens, true
+	case "cost_usd":
+		return dimCost, true
+	case "tool_call_count":
+		return dimTools, true
+	case "wall_clock_seconds":
+		return dimTime, true
+	}
+	return 0, false
+}
+
 // compactsAt reports whether a ladder tier triggers a context compaction
 // (independent of whether it always injects its warning message). abort is
 // terminal and never compacts.
@@ -480,6 +536,7 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 		warnFracs:    defaultWarnFracs(),
 		warnMsgs:     defaultWarnMsgs(),
 		compactTiers: defaultCompactTiers(),
+		compactDims:  defaultCompactDims(),
 	}
 	if len(budgets) == 0 {
 		return spec
@@ -491,6 +548,7 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 		CompactMaxTurns  *float64 `json:"compact_max_turns"`
 		ToolCallCount    *float64 `json:"tool_call_count"`
 		CompactTiers     []bool   `json:"compact_tiers"`
+		CompactDims      []string `json:"compact_dims"`
 		Warnings         struct {
 			Fractions map[string][3]float64 `json:"fractions"`
 			Messages  map[string][3]string  `json:"messages"`
@@ -511,6 +569,23 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 	if len(raw.CompactTiers) == 3 {
 		for i := 0; i < 3; i++ {
 			spec.compactTiers[i] = raw.CompactTiers[i]
+		}
+	}
+
+	// Per-dimension compaction policy: a `compact_dims` array of dimension
+	// names (e.g. ["tokens","cost_usd"]). A present array is the COMPLETE
+	// set of compact-allowed dimensions — any dimension not listed never
+	// compacts (it only warns). Absent → the built-in default (tokens +
+	// cost). This lets an operator force compaction on tool_call_count if
+	// they choose, but by default tool/time never compact.
+	if raw.CompactDims != nil {
+		for i := range spec.compactDims {
+			spec.compactDims[i] = false
+		}
+		for _, name := range raw.CompactDims {
+			if d, ok := dimFromName(name); ok {
+				spec.compactDims[d] = true
+			}
 		}
 	}
 
@@ -550,9 +625,15 @@ const (
 	// headroom without being oversized.
 	defaultCompactTokens = 500_000.0
 	// defaultCompactMaxTurns is the orthogonal turn-count context-hygiene
-	// compact gate (see file header). 12 keeps a chatty session bounded
-	// without the disruptive mid-flight compaction of the original 8.
-	defaultCompactMaxTurns = 12
+	// compact gate (see file header). 30 keeps a chatty session bounded
+	// without the disruptive mid-flight compaction of the original 12: the
+	// spend ladder now handles budget, so the turn-count gate only needs to
+	// cap a genuinely chatty session's re-sent prefix, not interrupt one that
+	// is comfortably within its token/cost budget. Tuned to the observed
+	// SSE/SDLC worker cadence where a healthy implementation step runs
+	// ~30-50 turns; a compact every ~30 turns bounds the prefix without
+	// forcing an expensive fresh re-send every dozen turns.
+	defaultCompactMaxTurns = 30
 	// defaultCompactMinTurns is the minimum completed turns before the
 	// turn-count gate is armed (never at start; prevents the compact loop).
 	defaultCompactMinTurns = 2

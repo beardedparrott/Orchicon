@@ -262,6 +262,18 @@ const orchidsRunDirPattern = "**/.orchicon/**"
 // "*" catch-all so no subagent plan can be approved.
 const taskToolDeny = "task"
 
+// readGrepDeny doubles as the composite-tool carve-out: when orchicon's
+// worktree batch tools are enabled (ConfigOptions.CompositeTools), the
+// built-in `read` and `grep` tools are denied so the worker MUST use the
+// composite batch_read / batch_grep — which is what collapses the turn count
+// and the re-sent-context cost. Denying the built-in tools here is safe
+// because the composite MCP sidecar is registered alongside, so a worker
+// always has a working read/grep path.
+const (
+	readToolDeny = "read"
+	grepToolDeny = "grep"
+)
+
 // permissionRules builds the opencode `permission` config injected into every
 // worker execution. Rules with an explicit "deny" are enforced even when the
 // adapter spawns opencode with --auto (auto-approval only affects "ask"), so a
@@ -293,7 +305,7 @@ const taskToolDeny = "task"
 // There is intentionally no catch-all "*" rule here: unmatched commands fall
 // back to opencode's default (ask, which --auto approves) instead of letting a
 // broad allow rule win by ordering.
-func permissionRules() map[string]any {
+func permissionRules(compositeTools bool) map[string]any {
 	bashDeny := []string{
 		// rm family — target-scoped. In-project cleanup (`rm -rf build/`,
 		// `node_modules`, `.next`) is legitimate and no longer denied (the
@@ -341,7 +353,7 @@ func permissionRules() map[string]any {
 	for _, p := range bashDeny {
 		rules[p] = "deny"
 	}
-	return map[string]any{
+	perm := map[string]any{
 		"external_directory": map[string]any{
 			"*":                  "deny",
 			ScratchDir + "/**":   "allow",
@@ -351,6 +363,15 @@ func permissionRules() map[string]any {
 		// Deny the subagent tool (see taskToolDeny).
 		taskToolDeny: map[string]any{"*": "deny"},
 	}
+	if compositeTools {
+		// Force the worker onto the composite batch_read/batch_grep tools by
+		// denying the granular built-ins. The composite MCP sidecar is always
+		// registered alongside (see BuildConfigContent), so a worker still has
+		// a working read/grep path — it just batching in one call.
+		perm[readToolDeny] = map[string]any{"*": "deny"}
+		perm[grepToolDeny] = map[string]any{"*": "deny"}
+	}
+	return perm
 }
 
 // ConfigOptions configures the opencode config document injected via
@@ -402,6 +423,19 @@ type ConfigOptions struct {
 	// the published port never answers. (The removed one-shot `opencode
 	// run` path tolerated MCP failures; a serve cannot.)
 	SkipUserMCP bool
+	// CompositeTools registers the Orchicon worktree MCP server
+	// (`orchicon-worktree`, spawning this binary's `mcp` subcommand with
+	// ORCHICON_MCP_WORKTREE_DIR set) so a worker can call the composite
+	// context-efficient file tools (batch_read / batch_grep / batch_write)
+	// instead of opencode's granular read/grep/write tools. It also denies
+	// the built-in `read` and `grep` tools (see permissionRules), so the
+	// worker is forced onto the batch tools — which is what collapses the
+	// number of turns. Only set alongside WorktreeDir.
+	CompositeTools bool
+	// WorktreeDir is the base directory the composite worktree MCP server
+	// resolves its paths against: the worker's project/worktree directory. It
+	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
+	WorktreeDir string
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -465,13 +499,23 @@ func BuildConfigContent(o ConfigOptions) string {
 			mcp["orchicon"] = orchiconMCPServer(o.TenantID, o.MCPEnv, o.MCPBinaryPath)
 		}
 	}
+	if o.CompositeTools && o.WorktreeDir != "" {
+		if _, exists := mcp["orchicon-worktree"]; !exists {
+			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.MCPBinaryPath)
+		}
+	}
 	if len(mcp) > 0 {
 		cfg["mcp"] = mcp
 	}
 
 	// Inject the hard permission deny rules so every worker execution is
-	// sandboxed to its project directory regardless of --auto mode.
-	cfg["permission"] = permissionRules()
+	// sandboxed to its project directory regardless of --auto mode. When the
+	// composite worktree tools are enabled AND a worktree dir resolved, the
+	// built-in read/grep are denied too so the worker is forced onto
+	// batch_read/batch_grep. The WorktreeDir guard guarantees the deny is
+	// only applied alongside a registered worktree MCP — so a worker never
+	// loses file access with no batch tool to fall back on.
+	cfg["permission"] = permissionRules(o.CompositeTools && o.WorktreeDir != "")
 
 	// Enable context compaction pruning for every worker session. `prune`
 	// trims OLD tool outputs (accumulating command/file-read results) from
@@ -532,7 +576,7 @@ func BuildConfigContent(o ConfigOptions) string {
 		if len(mcp) > 0 {
 			fallback["mcp"] = mcp
 		}
-		fallback["permission"] = permissionRules()
+		fallback["permission"] = permissionRules(o.CompositeTools && o.WorktreeDir != "")
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)
@@ -571,6 +615,27 @@ func orchiconMCPServer(tenantID string, extraEnv map[string]string, binaryPath s
 		"environment": env,
 		"enabled":     true,
 		"timeout":     15000,
+	}
+}
+
+// worktreeMCPServer builds the opencode MCP config entry for the composite
+// worktree tools (batch_read / batch_grep / batch_write). It spawns this
+// binary's `mcp` subcommand with ORCHICON_MCP_WORKTREE_DIR set, which makes
+// runMCP select the worktree registry (no Postgres needed) bound to the
+// worker's project/worktree directory. binaryPath overrides the orchicon
+// binary used as the command (the runtime container forces the daemon mount).
+func worktreeMCPServer(dir, binaryPath string) map[string]any {
+	if binaryPath == "" {
+		binaryPath = orchiconBinaryPath()
+	}
+	return map[string]any{
+		"type":    "local",
+		"command": []string{binaryPath, "mcp"},
+		"environment": map[string]string{
+			"ORCHICON_MCP_WORKTREE_DIR": dir,
+		},
+		"enabled": true,
+		"timeout": 15000,
 	}
 }
 
