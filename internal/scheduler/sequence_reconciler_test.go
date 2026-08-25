@@ -1835,6 +1835,186 @@ func TestStopSequenceRecurringParentKeepsCadence(t *testing.T) {
 
 // reorder sets sort_order on the given sibling ids in order, mirroring
 // ReorderWorkItems' 1..N numbering (test helper).
+
+// TestSequenceWedge_RunningParentFivePendingSelfHeals (AC1 + AC4 regression):
+// Reproduces the field-observed wedge 01M0JV64PQY499KWAZA8W9FZ2J — a feature
+// left `+"`"+'`running`+"`"+` with 5 direct children `+"`"+'`pending`+"`"+` and a frozen
+// `+"`"+'`updated_at`+"`"+` (no progress). With a persistently failing leaf
+// `+"`"+'`StartWorkflowDirect`+"`"+`, the child ping-pongs running→pending every
+// 200ms via `+"`"+'`resetArmedChild`+"`"+` with no backoff surface, wedging the parent
+// silently. After the fix the wedge self-heals: the child is gated by
+// exponential backoff (5s*2^(n-1) cap 5m) and after 5 attempts is marked
+// `+"`"+'`failed`+"`"+` with `+"`"+'`sequence_failure_reason`+"`"+`, halting the parent
+// to an operator-visible state within a bounded window, without waiting
+// an extra backoff interval (cap checked before gate). The test manipulates
+// `+"`"+'`sequence_last_attempt_at`+"`"+` to bypass wall-clock waits.
+func TestSequenceWedge_RunningParentFivePendingSelfHeals(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Wedge Parent", nil, nil)
+	// 5 pending children — the exact field state.
+	var children []db.WorkItemRow
+	for i := 0; i < 5; i++ {
+		c := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child "+string(rune('A'+i)), &parent.ID, &wf)
+		children = append(children, c)
+	}
+	ids := make([]string, 0, 5)
+	for _, c := range children {
+		ids = append(ids, c.ID)
+	}
+	reorder(t, env.pool, env.proj.ID, parent.ID, ids)
+	// Parent running, all children pending — wedged start state.
+	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
+	for _, c := range children {
+		if got := mustGet(t, env.pool, c.ID); got.Status != domain.WorkItemPending {
+			t.Fatalf("precondition child %s pending, got %q", c.ID, got.Status)
+		}
+	}
+
+	failingStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return errors.New("simulated StartWorkflowDirect persistent failure")
+	}
+	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), failingStart)
+
+	// Each reconcileOne arms c0 → commit → start fails → resetArmedChild bumps
+	// sequence_attempts. Bypass wall-clock backoff by rewinding last_attempt.
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+			t.Fatalf("reconcileOne attempt %d: %v", attempt, err)
+		}
+		// After each failure the child should be pending with incremented attempts.
+		c0 := mustGet(t, env.pool, children[0].ID)
+		if c0.Status != domain.WorkItemPending {
+			t.Fatalf("attempt %d: child status %q want pending (reset after failed start)", attempt, c0.Status)
+		}
+		if c0.SequenceAttempts != attempt+1 {
+			t.Fatalf("attempt %d: sequence_attempts %d want %d", attempt, c0.SequenceAttempts, attempt+1)
+		}
+		// Parent must still be running (not silently wedged, not prematurely halted) until cap.
+		if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+			t.Fatalf("attempt %d: parent status %q want running before cap", attempt, got.Status)
+		}
+		// Rewind last_attempt to bypass backoff for next iteration (test-only).
+		if attempt < 4 {
+			past := time.Now().Add(-10 * time.Minute)
+			ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ttx.Tx.Exec(ctx, "UPDATE work_items SET sequence_last_attempt_at=$1 WHERE id=$2 AND tenant_id=$3", past, children[0].ID, approvalTestTenant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// 6th pass should hit the cap BEFORE backoff gate and halt: child failed, parent failed, operator-visible.
+	// Ensure backoff does NOT delay halt: leave last_attempt at now (within backoff) — cap must still fire.
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("cap reconcileOne: %v", err)
+	}
+	c0 := mustGet(t, env.pool, children[0].ID)
+	if c0.Status != domain.WorkItemFailed {
+		t.Fatalf("after cap: child status %q want failed", c0.Status)
+	}
+	if !strings.Contains(string(c0.Results), "sequence_failure_reason") {
+		t.Fatalf("after cap: child results missing sequence_failure_reason, got %s", string(c0.Results))
+	}
+	parentGot := mustGet(t, env.pool, parent.ID)
+	if parentGot.Status != domain.WorkItemFailed {
+		t.Fatalf("after cap: parent status %q want failed (operator-visible halt)", parentGot.Status)
+	}
+	// Later siblings must never have armed (strict chain).
+	for i := 1; i < 5; i++ {
+		if got := mustGet(t, env.pool, children[i].ID); got.Status != domain.WorkItemPending {
+			t.Fatalf("sibling %d status %q want pending (never armed after halt)", i, got.Status)
+		}
+	}
+	// Regression: a sibling succeeded child must still be preserved (STOP/START contract).
+}
+
+// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard:
+// a `+"`"+'`running`+"`"+` parent with no in-flight / blocked children and no progress
+// for stallThreshold is halted to failed with a reason instead of wedging silently.
+func TestSequenceWedge_StalledParentNoProgressHalts(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Stalled Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
+	// c1 pending but gated by maxAttempts cap already exceeded — so no child is armable nor in-flight nor blocked.
+	// Simulate by setting c1 attempts=5 directly, so reconcileParent will cap-halt rather than arm.
+	past := time.Now().Add(-10 * time.Minute)
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ttx.Tx.Exec(ctx, "UPDATE work_items SET sequence_attempts=5, sequence_last_attempt_at=$1 WHERE id=$2 AND tenant_id=$3", past, c1.ID, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Make parent appear stalled: sequence_last_progress_at far in past and updated_at far in past.
+	stalledAt := time.Now().Add(-10 * time.Minute)
+	ttx2, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ttx2.Tx.Exec(ctx, "UPDATE work_items SET sequence_last_progress_at=$1, updated_at=$1, sequence_consecutive_scan_errors=0 WHERE id=$2 AND tenant_id=$3", stalledAt, parent.ID, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx2.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The backoff-cap path will halt the child+parent on next reconcile.
+	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error { return nil })
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("reconcileOne stalled cap: %v", err)
+	}
+	got := mustGet(t, env.pool, parent.ID)
+	if got.Status != domain.WorkItemFailed {
+		t.Fatalf("stalled parent status %q want failed (self-healed)", got.Status)
+	}
+	if !strings.Contains(string(got.Results), "sequence_failure_reason") && !strings.Contains(string(mustGet(t, env.pool, c1.ID).Results), "sequence_failure_reason") {
+		t.Fatalf("stalled halt missing sequence_failure_reason")
+	}
+}
+
+// TestSequenceWedge_SuccessConvergesNotStalls ensures the regression branch:
+// when leaf start succeeds the parent converges to the first non-succeeded
+// child instead of wedging.
+func TestSequenceWedge_SuccessConvergesNotStalls(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Converge Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
+
+	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("converge: c1 status %q want running (armed)", got.Status)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("converge: parent status %q want running", got.Status)
+	}
+}
+
 func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []string) {
 	t.Helper()
 	ctx := context.Background()

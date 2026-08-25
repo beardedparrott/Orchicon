@@ -86,6 +86,14 @@ type WorkItemRow struct {
 	// archived. RestoreWorkItem returns the item to this status (not
 	// pending). NULL = never archived.
 	ArchivedFromStatus *string
+	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
+	SequenceAttempts int
+	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
+	SequenceLastAttemptAt *time.Time
+	// SequenceConsecutiveScanErrors is consecutive reconcile errors as a parent (P2 heartbeat).
+	SequenceConsecutiveScanErrors int
+	// SequenceLastProgressAt is last time this parent made forward progress (child armed/completed/failed).
+	SequenceLastProgressAt *time.Time
 	Version            int
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -114,13 +122,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
 		 recurring_schedule, next_run_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-			workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		recurring_schedule, next_run_at,
-		version, created_at, updated_at`
+		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
@@ -129,16 +131,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt,
-	).Scan(
-		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
-		&row.Description, &row.AcceptanceCriteria, &row.AcceptanceReview, &row.Status, &row.AssignedWorkerRef,
-		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
-		&row.Priority, &row.Budgets, &row.ContextWindow, &row.SortOrder, &row.Results,
-		&row.PromptContext,
-		&row.ScheduledStartAt, &row.AutoStartWorkflow, &row.RuntimeImage, &row.ContextFiles,
-		&row.RecurringSchedule, &row.NextRunAt,
-		&row.Version, &row.CreatedAt, &row.UpdatedAt,
-	)
+	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
 	}
@@ -156,6 +149,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
 	recurring_schedule, next_run_at,
 	archived_at, archived_from_status,
+	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
 	version, created_at, updated_at`
 
 // WorkItemScanPtrs returns a slice of Scan pointers matching
@@ -171,6 +165,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt,
 		&w.ArchivedAt, &w.ArchivedFromStatus,
+		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	}
 }
@@ -323,13 +318,7 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 // a retried child (the derived cursor's next sibling) can revive the
 // chain automatically.
 func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
-	const q = `SELECT w.id, w.tenant_id, w.project_id, w.parent_id, w.kind, w.title, description,
-		acceptance_criteria, acceptance_review, w.status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		recurring_schedule, next_run_at,
-		version, created_at, updated_at
+	const q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items w
 		WHERE w.tenant_id = $1
 		  AND w.status IN ('running', 'failed')
