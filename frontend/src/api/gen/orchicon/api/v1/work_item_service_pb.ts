@@ -58,6 +58,50 @@ proto3.util.setEnumType(SequenceAction, "orchicon.api.v1.SequenceAction", [
 ]);
 
 /**
+ * RecurringFilter scopes ListWorkItems to recurring vs non-recurring items.
+ * recurring_schedule IS NOT NULL is the canonical is-recurring signal
+ * (status is derived). This is the split for Automation → Recurring Items.
+ *
+ * @generated from enum orchicon.api.v1.RecurringFilter
+ */
+export enum RecurringFilter {
+  /**
+   * legacy default: EXCLUDE for normal callers
+   *
+   * @generated from enum value: RECURRING_FILTER_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * unfiltered (internal/Schedules merge if needed)
+   *
+   * @generated from enum value: RECURRING_FILTER_ALL = 1;
+   */
+  ALL = 1,
+
+  /**
+   * normal Work Items page
+   *
+   * @generated from enum value: RECURRING_FILTER_EXCLUDE_RECURRING = 2;
+   */
+  EXCLUDE_RECURRING = 2,
+
+  /**
+   * Recurring Items page
+   *
+   * @generated from enum value: RECURRING_FILTER_ONLY_RECURRING = 3;
+   */
+  ONLY_RECURRING = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(RecurringFilter)
+proto3.util.setEnumType(RecurringFilter, "orchicon.api.v1.RecurringFilter", [
+  { no: 0, name: "RECURRING_FILTER_UNSPECIFIED" },
+  { no: 1, name: "RECURRING_FILTER_ALL" },
+  { no: 2, name: "RECURRING_FILTER_EXCLUDE_RECURRING" },
+  { no: 3, name: "RECURRING_FILTER_ONLY_RECURRING" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
  */
 export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
@@ -406,6 +450,11 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
    */
   includeArchived = false;
 
+  /**
+   * @generated from field: orchicon.api.v1.RecurringFilter recurring_filter = 11;
+   */
+  recurringFilter = RecurringFilter.UNSPECIFIED;
+
   constructor(data?: PartialMessage<ListWorkItemsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -424,6 +473,7 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 8, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "include_archived", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 11, name: "recurring_filter", kind: "enum", T: proto3.getEnumType(RecurringFilter) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {

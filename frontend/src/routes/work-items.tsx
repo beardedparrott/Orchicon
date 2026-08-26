@@ -47,6 +47,7 @@ import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
+import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -133,6 +134,7 @@ function WorkItemsPage() {
     // every active view (tree/board) leaves this false so archived items
     // never surface in them.
     includeArchived: view === "archive",
+    recurringFilter: RecurringFilter.EXCLUDE_RECURRING,
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 

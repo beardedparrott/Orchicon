@@ -15,7 +15,7 @@ import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
-import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { RecurringFilter, SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -35,7 +35,7 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean) => {
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean, recurringFilter?: RecurringFilter) => {
     const key: unknown[] = [...workItemKeys.all, "list", projectId];
     if (parentId !== undefined) key.push(parentId);
     if (status !== undefined) key.push(status);
@@ -43,6 +43,7 @@ export const workItemKeys = {
     // Archive partition is part of the key so the active list and the
     // archive view never share a cache entry (same projectId).
     if (includeArchived === true) key.push("archived");
+    if (recurringFilter !== undefined) key.push(recurringFilter);
     return key;
   },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
@@ -55,13 +56,13 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean; recurringFilter?: RecurringFilter },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
   const listOpts = { search: opts?.search, sortBy: opts?.sortBy, sortOrder: opts?.sortOrder };
   return useQuery({
-    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived),
+    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived, opts?.recurringFilter),
     queryFn: async () => {
       const res = await workItemClient.listWorkItems({
         projectId,
@@ -72,6 +73,7 @@ export function useListWorkItems(
         sortOrder: opts?.sortOrder || "",
         pageSize: 1000,
         includeArchived: opts?.includeArchived ?? false,
+        recurringFilter: opts?.recurringFilter,
       });
       return res.workItems as WorkItem[];
     },

@@ -375,6 +375,19 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		SortOrder:       req.Msg.SortOrder,
 		IncludeArchived: req.Msg.IncludeArchived,
 	}
+	switch req.Msg.RecurringFilter {
+	case apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING:
+		f.RecurringFilter = "exclude"
+	case apiv1.RecurringFilter_RECURRING_FILTER_ONLY_RECURRING:
+		f.RecurringFilter = "only"
+	case apiv1.RecurringFilter_RECURRING_FILTER_ALL:
+		f.RecurringFilter = "all"
+	default:
+		// UNSPECIFIED legacy: exclude recurring so normal Work Items callers
+		// that pre-date the field do not leak recurring rows. The explicit
+		// ALL value is required to get the old unfiltered behavior.
+		f.RecurringFilter = "exclude"
+	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
 		f.ParentID = &pid
