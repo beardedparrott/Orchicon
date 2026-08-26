@@ -35,7 +35,7 @@ const createWorkflowSchema = z.object({
   gitStrategy: z.enum(["inherit", "local", "pr", "none"]).default("inherit"),
 });
 
-type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
+type CreateWorkflowForm = z.input<typeof createWorkflowSchema>;
 
 function NewWorkflowPage() {
   const navigate = useNavigate();
