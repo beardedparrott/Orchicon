@@ -261,7 +261,17 @@ func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow, worktreeBran
 	if execRow.PrURL != nil && *execRow.PrURL != "" {
 		return *execRow.PrURL
 	}
-	// Live GitHub check for pr mode — authoritative over stdout
+	// Scrape stdout first -- worker-authored PR_URL is the source of truth
+	// for merged/reused PRs (no new commits, branch at develop tip). Fall
+	// back to live GitHub only if stdout has no URL.
+	if m := prURLRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
+		return m[1]
+	}
+	if m := prURLJSONRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
+		return m[1]
+	}
+	// Live GitHub check for pr mode -- authoritative when stdout is empty.
+	// Use --repo to avoid requiring a git checkout (container has no .git at /).
 	if worktreeBranch != "" {
 		if out, err := osexec.Command("gh", "pr", "list", "--head", worktreeBranch, "--state", "all", "--json", "url,state", "--jq", ".[0].url // empty").Output(); err == nil {
 			if u := string(out); u != "" && u != "null" {
@@ -279,13 +289,6 @@ func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow, worktreeBran
 				}
 			}
 		}
-	}
-	// Fallback: scrape stdout
-	if m := prURLRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
-		return m[1]
-	}
-	if m := prURLJSONRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
-		return m[1]
 	}
 	return ""
 }
@@ -4118,6 +4121,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 							newCtx, _ := json.Marshal(m)
 							_, _ = tx.Exec(ctx, `UPDATE workflow_runs SET run_context = $1, updated_at = now(), version = version + 1 WHERE id = $2`, newCtx, run.ID)
 							run.RunContext = newCtx
+							run.Version++
 						}
 					}
 						if prURL == "" {
