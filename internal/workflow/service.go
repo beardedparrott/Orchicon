@@ -18,6 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -122,6 +123,22 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 			workflowType = domain.WorkflowTypeOneShot
 		}
 	}
+	var gitStrategy *string
+	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
+		enumVal := msg.ProtoReflect().Get(fd).Enum()
+		var s string
+		switch enumVal {
+		case 1:
+			s = "local"
+		case 2:
+			s = "pr"
+		case 3:
+			s = "none"
+		}
+		if s != "" {
+			gitStrategy = &s
+		}
+	}
 	workflowRow := db.WorkflowRow{
 		ID:             workflowID,
 		TenantID:       tenantID,
@@ -130,6 +147,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 		Type:           workflowType,
 		Status:         domain.WorkflowDraft,
 		CurrentVersion: 0,
+		GitStrategy:    gitStrategy,
 	}
 	created, err := db.CreateWorkflow(ctx, ttx.Tx, workflowRow)
 	if err != nil {
@@ -576,11 +594,6 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if req.Msg.WorkflowId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
 	}
-	name, err := validateName(req.Msg.Name)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -591,10 +604,45 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	updated, err := db.UpdateWorkflowName(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, name)
-	if err != nil {
-		return nil, mapDBError(err)
+	updated := current
+	// Handle git_strategy override if present (optional enum). Use reflection so old generated code still compiles.
+	if fd := req.Msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && req.Msg.ProtoReflect().Has(fd) {
+		enumVal := req.Msg.ProtoReflect().Get(fd).Enum()
+		var gs *string
+		switch enumVal {
+		case 1:
+			s := "local"
+			gs = &s
+		case 2:
+			s := "pr"
+			gs = &s
+		case 3:
+			s := "none"
+			gs = &s
+		default:
+			gs = nil
+		}
+		var err2 error
+		updated, err2 = db.UpdateWorkflowGitStrategy(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, updated.Version, gs)
+		if err2 != nil {
+			return nil, mapDBError(err2)
+		}
 	}
+	if req.Msg.Name != "" {
+		name, err := validateName(req.Msg.Name)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		var err2 error
+		updated, err2 = db.UpdateWorkflowName(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, updated.Version, name)
+		if err2 != nil {
+			return nil, mapDBError(err2)
+		}
+	}
+	if updated.ID == current.ID && updated.Version == current.Version {
+		updated = current
+	}
+
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.updated", "workflow", updated.ID,
 		audit.Snapshot(workflowAuditSnapshot(current)), audit.Snapshot(workflowAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.updated: %w", err))
@@ -1841,7 +1889,7 @@ func stepRunStatusToProto(status string) apiv1.StepRunStatus {
 }
 
 func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
-	return &apiv1.Workflow{
+	wf := &apiv1.Workflow{
 		Id:             w.ID,
 		TenantId:       w.TenantID,
 		ProjectId:      w.ProjectID,
@@ -1853,6 +1901,24 @@ func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
 		CreatedAt:      timestamppb.New(w.CreatedAt),
 		UpdatedAt:      timestamppb.New(w.UpdatedAt),
 	}
+	if w.GitStrategy != nil {
+		fd := wf.ProtoReflect().Descriptor().Fields().ByName("git_strategy")
+		if fd != nil {
+			var v protoreflect.EnumNumber
+			switch *w.GitStrategy {
+			case "local":
+				v = 1
+			case "pr":
+				v = 2
+			case "none":
+				v = 3
+			default:
+				v = 0
+			}
+			wf.ProtoReflect().Set(fd, protoreflect.ValueOfEnum(v))
+		}
+	}
+	return wf
 }
 
 func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {

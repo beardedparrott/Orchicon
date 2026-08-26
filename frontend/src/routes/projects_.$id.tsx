@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { FileBrowser } from "@/components/FileBrowser";
+import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
 
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -59,6 +60,8 @@ function ProjectDetailPage() {
   // container must be restarted before the mount takes effect.
   const [dirChanged, setDirChanged] = useState(false);
   const [draftMaxRuns, setDraftMaxRuns] = useState("");
+  const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy>("local");
+  const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
@@ -69,6 +72,14 @@ function ProjectDetailPage() {
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
+    const raw = (project as any)?.gitStrategy ?? (project as any)?.git_strategy ?? (() => {
+      try {
+        const g = JSON.parse((project as any)?.goals ?? "{}");
+        return g.__git_strategy;
+      } catch { return undefined; }
+    })();
+    if (raw === "local" || raw === "pr" || raw === "none") setDraftGitStrategy(raw);
+    else setDraftGitStrategy("local");
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -365,6 +376,51 @@ function ProjectDetailPage() {
           initialSelectedFiles={project.contextFiles || []}
           readOnly={!editing}
         />
+      )}
+
+      {/* Git strategy — how worktrees materialize */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Git strategy</CardTitle>
+            <CardDescription>
+              How worktrees materialize after success. Worktrees are always
+              provisioned for isolation — this only controls branch handling.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {editing ? (
+              <>
+                <GitStrategySelect value={draftGitStrategy} onValueChange={setDraftGitStrategy} />
+                <Button
+                  variant="outline"
+                  disabled={savingGitStrategy}
+                  onClick={() => {
+                    setSavingGitStrategy(true);
+                    (updateProject.mutate as any)(
+                      { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
+                      { onSettled: () => setSavingGitStrategy(false) },
+                    );
+                  }}
+                >
+                  {savingGitStrategy ? "Saving…" : "Save strategy"}
+                </Button>
+              </>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Current strategy:</span>
+                  <span className="rounded bg-muted px-2 py-1 font-mono text-xs">{draftGitStrategy}</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {draftGitStrategy === "local" && "Push branch only — branch remains on origin for manual review. No PR."}
+                  {draftGitStrategy === "pr" && "Push + PR — auto-creates a PR to remote (GitHub). Requires branch protection."}
+                  {draftGitStrategy === "none" && "Ephemeral — no push. Work vanishes after success; only Results remain."}
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Concurrency guard: per-project max-concurrent-runs + current vs limit */}

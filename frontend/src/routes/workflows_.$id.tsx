@@ -61,6 +61,8 @@ import {
   type StepData,
 } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
+import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
+import { useGetProject } from "@/api/projects";
 import { Route as rootRoute } from "@/routes/__root";
 
 import "reactflow/dist/style.css";
@@ -136,6 +138,14 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const [dropActive, setDropActive] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState("");
+  const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy | "inherit">("inherit");
+  const [savingGitStrategy, setSavingGitStrategy] = useState(false);
+
+  useEffect(() => {
+    const raw = (data?.workflow as any)?.gitStrategy ?? (data?.workflow as any)?.git_strategy;
+    if (raw === "local" || raw === "pr" || raw === "none") setDraftGitStrategy(raw);
+    else setDraftGitStrategy("inherit");
+  }, [data?.workflow]);
 
   // Resolve project from canvas PROJECT connector nodes. Must be before
   // the early returns (hooks cannot be conditional).
@@ -685,6 +695,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   // back to the workflow-level projectId for compatibility with
   // existing workflows that set it at creation time.
   const effectiveProjectId = resolvedProjectId || wf.projectId;
+  const { data: projectForGit } = useGetProject(effectiveProjectId);
+  
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -738,6 +750,39 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 {effectiveProjectId ? `project: ${effectiveProjectId.slice(0, 12)}…` : "tenant template"} ·
                 {" "}v{wf.currentVersion || "—"} · status:{" "}
                 {WORKFLOW_STATUS_LABELS[wf.status]}
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Git strategy:</span>
+                <select
+                  value={draftGitStrategy}
+                  onChange={(e) => setDraftGitStrategy(e.target.value as any)}
+                  className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  <option value="inherit">Inherit {projectForGit ? `(${(projectForGit as any).gitStrategy ?? (projectForGit as any).git_strategy ?? "local"})` : "(project default)"}</option>
+                  <option value="local">Local — push branch only</option>
+                  <option value="pr">PR — push + PR</option>
+                  <option value="none">Ephemeral — no push</option>
+                </select>
+                {draftGitStrategy !== ((wf as any).gitStrategy ?? (wf as any).git_strategy ?? "inherit") && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    disabled={savingGitStrategy}
+                    onClick={() => {
+                      setSavingGitStrategy(true);
+                      (updateWorkflow.mutate as any)({ workflowId: wf.id, gitStrategy: draftGitStrategy === "inherit" ? undefined : draftGitStrategy, git_strategy: draftGitStrategy === "inherit" ? undefined : draftGitStrategy }, { onSettled: () => setSavingGitStrategy(false) });
+                    }}
+                  >
+                    {savingGitStrategy ? "Saving…" : "Save"}
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {draftGitStrategy === "inherit" && "Uses the project's git strategy — worktree always isolated."}
+                {draftGitStrategy === "local" && "Push branch only — branch remains on origin for manual review."}
+                {draftGitStrategy === "pr" && "Push + PR — auto-creates a PR to remote (GitHub)."}
+                {draftGitStrategy === "none" && "Ephemeral — no push. Work vanishes after success."}
               </p>
             </div>
           </div>

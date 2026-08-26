@@ -58,6 +58,7 @@ message Project {
   // Used to derive deterministic per-branch PR links without a provider
   // call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
   string repo_slug = 13;
+  GitStrategy git_strategy = 14;
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -84,6 +85,19 @@ enum ProjectStatus {
   PROJECT_STATUS_DELETED = 5;
 }
 
+// GitStrategy controls how worktrees materialize changes.
+// Worktrees are always provisioned for isolation; this selects the
+// post-success materialization:
+//   - local: commit in worktree → push branch to origin (no PR)
+//   - pr:    push branch + create PR (requires remote/GitHub)
+//   - none:  don't push at all — worktree pruned, no branch retained
+enum GitStrategy {
+  GIT_STRATEGY_UNSPECIFIED = 0;
+  GIT_STRATEGY_LOCAL = 1;
+  GIT_STRATEGY_PR = 2;
+  GIT_STRATEGY_NONE = 3;
+}
+
 // Request/response messages for ProjectService (docs/07 §3.1).
 message CreateProjectRequest {
   string tenant_id = 1;
@@ -91,6 +105,7 @@ message CreateProjectRequest {
   string slug = 3;
   repeated GoalField goals = 4; // converted to JSON by the server
   string request_id = 5; // idempotency key (docs/07 §5.5)
+  GitStrategy git_strategy = 6;
 }
 
 message GetProjectRequest {
@@ -124,6 +139,7 @@ message UpdateProjectRequest {
   // Per-project max-concurrent-runs override (0 = no additional
   // restriction).
   optional int32 max_concurrent_runs = 8;
+  optional GitStrategy git_strategy = 9;
 }
 
 message ListProjectFilesRequest {

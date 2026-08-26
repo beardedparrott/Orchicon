@@ -4008,17 +4008,39 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				return false, false, nil
 			}
 		} else {
-			switch exec.Status {
+						switch exec.Status {
 			case domain.ExecutionSucceeded:
-				// Guard rail: PR-producing steps must have a PR URL on success.
-				if requiresPRStep(sr.StepID, stepConfig) {
-					prURL, _ := db.PrFromRunContext(run.RunContext)
-					if prURL == "" {
-						r.log.Warn("PR step succeeded without pr_url — failing step", "run", run.ID, "step", sr.StepID)
-						return true, true, nil
+				// Guard rail: PR-producing steps must have a PR URL on success — but only when
+				// the effective git strategy is "pr". Worktrees are always provisioned; for
+				// "local" (push branch only) and "none" (ephemeral) a PR is not required and
+				// success without pr_url is still success. This restores pre-worktree
+				// "onWorkerSuccess" semantics for non-PR workflows.
+				shouldRequirePR := requiresPRStep(sr.StepID, stepConfig)
+				if shouldRequirePR {
+					effectiveGitStrategy := "local"
+					if run.WorkflowID != "" {
+						if wf, err := db.GetWorkflow(ctx, tx, tenantID, run.WorkflowID); err == nil && wf.GitStrategy != nil && *wf.GitStrategy != "" {
+							effectiveGitStrategy = *wf.GitStrategy
+						} else if run.ProjectID != "" {
+							if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil && proj.GitStrategy != "" {
+								effectiveGitStrategy = proj.GitStrategy
+							}
+						}
+					} else if run.ProjectID != "" {
+						if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil && proj.GitStrategy != "" {
+							effectiveGitStrategy = proj.GitStrategy
+						}
+					}
+					if effectiveGitStrategy == "pr" {
+						prURL, _ := db.PrFromRunContext(run.RunContext)
+						if prURL == "" {
+							r.log.Warn("PR step succeeded without pr_url — failing step (git_strategy=pr)", "run", run.ID, "step", sr.StepID)
+							return true, true, nil
+						}
 					}
 				}
 				return true, false, nil
+
 			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
 				// fall through to the recovery block below.
 			default:

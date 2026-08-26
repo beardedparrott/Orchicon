@@ -152,6 +152,7 @@ message CreateWorkflowRequest {
   string version_note = 8;
   string request_id = 9; // idempotency (docs/07 §5.5)
   string type = 10; // "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
+  GitStrategy git_strategy = 11;
 }
 
 message CreateWorkflowResponse {
@@ -250,6 +251,7 @@ message UpdateWorkflowVersionResponse {
 message UpdateWorkflowRequest {
   string workflow_id = 1;
   string name = 2; // new workflow name (trimmed, non-empty, max 500 chars)
+  optional GitStrategy git_strategy = 3;
 }
 
 message UpdateWorkflowResponse {

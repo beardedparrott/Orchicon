@@ -188,6 +188,12 @@ table "projects" {
     null = true
     comment = "Cached git origin owner/repo of project_dir; used for deterministic per-branch PR links"
   }
+  column "git_strategy" {
+    type = text
+    null = false
+    default = "local"
+    comment = "How worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral"
+  }
   column "version" {
     type = integer
     null = false
@@ -1003,6 +1009,11 @@ table "workflows" {
     type = integer
     null = false
     default = 1
+  }
+  column "git_strategy" {
+    type = text
+    null = true
+    comment = "Override: local|pr|none, NULL=inherit project git_strategy"
   }
   column "created_at" {
     type = timestamptz

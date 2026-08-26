@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -31,6 +32,7 @@ const createWorkflowSchema = z.object({
   type: z.enum(["one-shot", "repeatable-template"]),
   projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
+  gitStrategy: z.enum(["inherit", "local", "pr", "none"]).default("inherit"),
 });
 
 type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
@@ -42,16 +44,19 @@ function NewWorkflowPage() {
   const {
     register,
     watch,
+    setValue,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkflowForm>({
     resolver: zodResolver(createWorkflowSchema),
-    defaultValues: { name: "", type: "one-shot", versionNote: "" },
+    defaultValues: { name: "", type: "one-shot", versionNote: "", gitStrategy: "inherit" },
   });
   const workflowType = watch("type");
+  const gitStrategy = watch("gitStrategy");
 
   const onSubmit = async (values: CreateWorkflowForm) => {
-    const res = await createWorkflow.mutateAsync({
+    const gitStrategyPayload = values.gitStrategy === "inherit" ? undefined : values.gitStrategy;
+    const res = await (createWorkflow.mutateAsync as any)({
       name: values.name,
       projectId: values.type === "one-shot" ? (values.projectId ?? "") : "",
       type: values.type === "repeatable-template" ? "template" : "one_shot",
@@ -59,6 +64,8 @@ function NewWorkflowPage() {
       inputs: "{}",
       outputs: "{}",
       versionNote: values.versionNote ?? "",
+      gitStrategy: gitStrategyPayload,
+      git_strategy: gitStrategyPayload,
     });
     navigate({ to: "/workflows/$id", params: { id: res.workflow.id } });
   };
@@ -137,6 +144,20 @@ function NewWorkflowPage() {
               </div>
             )}
 
+            <GitStrategySelect
+              value={gitStrategy as any}
+              onValueChange={(v) => setValue("gitStrategy", v as any)}
+              includeInherit
+              inheritDescription={
+                workflowType === "one-shot"
+                  ? "Inherit from the selected project — uses the project's git strategy (local / PR / ephemeral). One-shot runs are still worktree-isolated. Recommended for most project workflows."
+                  : "Inherit from the work item's project at run time — the worker will use whatever git strategy the bound project is configured to use. Works for both one-shot and scheduled template runs."
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              One-shot and template workflows both support this override. Canvas placement is still TBD — see discussion below.
+            </p>
+
             <div className="space-y-2">
               <Label htmlFor="versionNote">Version note (optional)</Label>
               <Input
@@ -164,6 +185,24 @@ function NewWorkflowPage() {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-dashed">
+        <CardHeader>
+          <CardTitle className="text-sm">Canvas placement — discussion</CardTitle>
+          <CardDescription>
+            Where should the workflow-level override live in the visual editor?
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="text-xs text-muted-foreground space-y-2">
+          <p>Options under consideration:</p>
+          <ul className="list-disc pl-4 space-y-1">
+            <li><span className="font-medium">Workflow header bar</span> — next to the workflow name / type, as a persistent badge + dropdown (always visible).</li>
+            <li><span className="font-medium">Settings pane</span> — in the canvas right-hand properties panel when no step is selected.</li>
+            <li><span className="font-medium">Start node</span> — as a property of the implicit Start node, so the canvas graph shows the strategy at the entry point.</li>
+          </ul>
+          <p>All three keep worktrees always-on; the UI just controls branch materialization. Feedback welcome — header bar is the current favorite for discoverability.</p>
         </CardContent>
       </Card>
     </div>

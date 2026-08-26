@@ -49,6 +49,8 @@ export function useUpdateProject() {
       slug?: string;
       goals?: { fields: GoalField[] };
       maxConcurrentRuns?: number;
+      gitStrategy?: string;
+      git_strategy?: string;
     }) => {
       const res = await projectClient.updateProject(input);
       return res.project as Project;
@@ -91,7 +93,7 @@ export function useGetProject(id: string) {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[] }) => {
+    mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[]; gitStrategy?: string; git_strategy?: string }) => {
       const res = await projectClient.createProject(input);
       return res.project as Project;
     },
