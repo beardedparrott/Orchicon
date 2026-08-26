@@ -408,6 +408,21 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		}
 	}
 
+	// --- 0.8 Validate attachments (size/count caps — server is authoritative) ---
+	if len(attachments) > 5 {
+		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
+	}
+	var totalBytes int
+	for _, a := range attachments {
+		if len(a.Data) > 10*1024*1024 {
+			return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
+		}
+		totalBytes += len(a.Data)
+	}
+	if totalBytes > 20*1024*1024 {
+		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
+	}
+
 	// --- 1. Register the turn. ---
 	// The turn is registered BEFORE the user message is persisted so a
 	// rejected second send (one turn per conversation) never orphans a
@@ -433,6 +448,13 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
+	// Persist attachments as JSON so history + recreation carries them.
+	attachmentsJSON := []byte("[]")
+	if len(attachments) > 0 {
+		if j, err := json.Marshal(attachments); err == nil {
+			attachmentsJSON = j
+		}
+	}
 	userMsg := db.MessageRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -441,7 +463,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		Content:        msg,
 		ToolCalls:      []byte("[]"),
 		ToolResults:    []byte("[]"),
-		Attachments:    []byte("[]"),
+		Attachments:    attachmentsJSON,
 		Metadata:       []byte("{}"),
 		Reasoning:      []string{},
 	}
@@ -552,6 +574,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				seedSystem:     seedSystem,
 				reuseSystem:    reuseSystem,
 				userMsg:        msg,
+				attachments:    attachments,
 				onStreamEvent:  onStreamEvent,
 			})
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
@@ -649,7 +672,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
 // Orchicon agent. It carries the mode's identity block (BuildSystemPrompt),
 // the enabled-projects context, the tools list, and this message's
-// attachments. mode selects the persona (brainstorm | orchicon); it is the
+// attachments. mode selects the persona (brainstorm only — orchicon removed); it is the
 // conversation's persisted mode read at turn-dispatch time.
 //
 // When includeHistory is true the DB conversation history is ALSO injected
@@ -693,11 +716,20 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 
 	if len(attachments) > 0 {
 		b.WriteString("## Attachments\n")
+		imageCount := 0
 		for _, a := range attachments {
+			if strings.HasPrefix(a.MimeType, "image/") {
+				imageCount++
+				b.WriteString(fmt.Sprintf("- Image: %s (%s, %d bytes) — forwarded as vision input to the model\n", a.Name, a.MimeType, len(a.Data)))
+				continue
+			}
 			b.WriteString(fmt.Sprintf("File: %s (%s, %d bytes)\n", a.Name, a.MimeType, len(a.Data)))
 			if strings.HasPrefix(a.MimeType, "text/") || strings.HasPrefix(a.MimeType, "application/json") || strings.HasSuffix(a.Name, ".md") {
 				b.WriteString("```\n" + string(a.Data) + "\n```\n")
 			}
+		}
+		if imageCount > 0 {
+			b.WriteString(fmt.Sprintf("(%d image(s) sent as vision parts to the model)\n", imageCount))
 		}
 		b.WriteString("\n")
 	}
@@ -781,24 +813,14 @@ type turnCollectOpts struct {
 	client   sessionTurnClient
 	tenantID string
 	convID   string
-	// token is this turn's registry token, carried so the collector's
-	// deferred remove(convID, token) can never clobber a replacement turn
-	// (token-guarded removal — the supersede race is eliminated by
-	// construction).
 	token          uint64
 	assistantMsgID string
-	// sessionID is the persisted opencode session id (empty on a first
-	// message, recreated on serve loss when the serve no longer knows it).
 	sessionID string
 	modelRef  string
-	// seedSystem is the system prompt for a fresh session (DB history
-	// included); reuseSystem is the steady-state follow-up system (no
-	// history — it already lives in the session).
 	seedSystem  string
 	reuseSystem string
 	userMsg     string
-	// onStreamEvent is called for each streaming text/reasoning chunk
-	// from the bus. Safe for concurrent use (non-blocking send).
+	attachments []*apiv1.AttachmentInput
 	onStreamEvent func(*apiv1.ChatStreamResponse)
 }
 
@@ -964,8 +986,23 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// and ignored.
 	sendCh := make(chan error, 1)
 	go func() {
-		if err := c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg); err != nil {
-			sendCh <- err
+		var sendErr error
+		// If attachments contain images/files, use the extended sender when available.
+		if len(c.attachments) > 0 {
+			if sc, ok := c.client.(*opencode.SessionClient); ok {
+				parts := make([]opencode.AttachmentPart, 0, len(c.attachments))
+				for _, a := range c.attachments {
+					parts = append(parts, opencode.AttachmentPart{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
+				}
+				sendErr = sc.SendMessageWithAttachments(subCtx, sid, system, c.modelRef, c.userMsg, parts)
+			} else {
+				sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
+			}
+		} else {
+			sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
+		}
+		if sendErr != nil {
+			sendCh <- sendErr
 			return
 		}
 		sendCh <- nil

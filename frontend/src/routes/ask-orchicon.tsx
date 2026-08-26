@@ -7,7 +7,6 @@ import {
   Mic,
   Square,
   RefreshCw,
-  Settings2,
   Brain,
   Pencil,
   FolderPlus,
@@ -899,17 +898,10 @@ function AskOrchiconPage() {
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
-                {localMode === ConversationMode.BRAINSTORM ? (
-                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
-                    <Brain className="h-2.5 w-2.5" />
-                    Brainstorm
-                  </span>
-                ) : (
-                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
-                    <Settings2 className="h-2.5 w-2.5" />
-                    Orchicon
-                  </span>
-                )}
+                <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                  <Brain className="h-2.5 w-2.5" />
+                  Brainstorm
+                </span>
                 {/* The model answering this conversation — surfaced so a
                     silent fallback to the free model is never invisible. */}
                 <span
@@ -1355,18 +1347,95 @@ function ChatInputField({
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const input = new AttachmentInput();
-        input.name = file.name;
-        input.mimeType = file.type;
-        input.data = new Uint8Array(reader.result as ArrayBuffer);
-        setAttachments((prev) => [...prev, input]);
-      };
-      reader.readAsArrayBuffer(file);
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+      for (const file of Array.from(files)) {
+        if (file.size > 10 * 1024 * 1024) {
+          useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const input = new AttachmentInput();
+          input.name = file.name;
+          input.mimeType = file.type;
+          input.data = new Uint8Array(reader.result as ArrayBuffer);
+          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+        };
+        reader.readAsArrayBuffer(file);
+      }
       e.target.value = "";
+    },
+    [],
+  );
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length === 0) return;
+      e.preventDefault();
+      for (const file of imageFiles) {
+        if (file.size > 10 * 1024 * 1024) {
+          useToastStore.getState().push({ kind: "error", message: `Image too large (max 10MB): ${file.name || "pasted image"}` });
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const input = new AttachmentInput();
+          input.name = file.name || `pasted-image-${Date.now()}.png`;
+          input.mimeType = file.type || "image/png";
+          input.data = new Uint8Array(reader.result as ArrayBuffer);
+          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+        };
+        reader.readAsArrayBuffer(file);
+      }
+    },
+    [],
+  );
+
+  const [dragOver, setDragOver] = useState(false);
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  }, []);
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const files = e.dataTransfer?.files;
+      if (!files) return;
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/") && !file.type.startsWith("text/") && !file.type.includes("json")) {
+          // accept images + text-like files
+          if (!file.type.startsWith("image/")) continue;
+        }
+        if (file.size > 10 * 1024 * 1024) {
+          useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const input = new AttachmentInput();
+          input.name = file.name;
+          input.mimeType = file.type;
+          input.data = new Uint8Array(reader.result as ArrayBuffer);
+          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+        };
+        reader.readAsArrayBuffer(file);
+      }
     },
     [],
   );
@@ -1475,28 +1544,50 @@ function ChatInputField({
     <div className="p-4">
       {attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
-          {attachments.map((a, i) => (
-            <span
-              key={i}
-              className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
-            >
-              <Paperclip className="h-3 w-3" />
-              {a.name}
-              <button
-                onClick={() =>
-                  setAttachments((prev) =>
-                    prev.filter((_, j) => j !== i),
-                  )
-                }
-                className="ml-1 text-muted-foreground hover:text-foreground"
+          {attachments.map((a, i) => {
+            const isImage = a.mimeType?.startsWith("image/");
+            let previewUrl: string | undefined;
+            try {
+              if (isImage && a.data && a.data.length > 0) {
+                // Use data URL (no object URL leak) — small preview, auto-revoked on remove
+                let binary = "";
+                const bytes = a.data as unknown as Uint8Array;
+                for (let k = 0; k < bytes.length; k++) binary += String.fromCharCode(bytes[k]);
+                // chunk to avoid stack overflow on large images
+                previewUrl = `data:${a.mimeType};base64,${btoa(binary)}`;
+              }
+            } catch {}
+            return (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
               >
-                ×
-              </button>
-            </span>
-          ))}
+                {isImage && previewUrl ? (
+                  <img src={previewUrl} alt={a.name} className="h-8 w-8 rounded object-cover" />
+                ) : (
+                  <Paperclip className="h-3 w-3" />
+                )}
+                <span className="max-w-[120px] truncate">{a.name}</span>
+                <span className="text-muted-foreground">{a.data ? `${(a.data.length / 1024).toFixed(1)}KB` : ""}</span>
+                <button
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  className="ml-1 text-muted-foreground hover:text-foreground"
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
-      <div className="rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 overflow-hidden">
+      <div
+        className={`rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 overflow-hidden ${dragOver ? "ring-2 ring-violet-400 border-dashed" : ""}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {/* Textarea area */}
         <div className="flex items-end gap-1 px-3 pt-3 pb-1">
           <button
@@ -1511,6 +1602,7 @@ function ChatInputField({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={placeholder}
             rows={1}
             className="flex-1 resize-none bg-transparent px-1 py-0 text-sm leading-6 outline-none placeholder:text-muted-foreground min-h-[24px] max-h-[192px]"

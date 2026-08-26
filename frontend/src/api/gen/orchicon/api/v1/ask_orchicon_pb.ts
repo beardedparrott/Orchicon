@@ -36,22 +36,11 @@ export enum ConversationMode {
    * @generated from enum value: CONVERSATION_MODE_BRAINSTORM = 1;
    */
   BRAINSTORM = 1,
-
-  /**
-   * ORCHICON is the strictly-governed platform expert persona: it answers
-   * questions about Orchicon and operates on the user's Orchicon data, and
-   * refuses general coding help, personal conversation, or non-Orchicon
-   * topics.
-   *
-   * @generated from enum value: CONVERSATION_MODE_ORCHICON = 2;
-   */
-  ORCHICON = 2,
 }
 // Retrieve enum metadata with: proto3.getEnumType(ConversationMode)
 proto3.util.setEnumType(ConversationMode, "orchicon.api.v1.ConversationMode", [
   { no: 0, name: "CONVERSATION_MODE_UNSPECIFIED" },
   { no: 1, name: "CONVERSATION_MODE_BRAINSTORM" },
-  { no: 2, name: "CONVERSATION_MODE_ORCHICON" },
 ]);
 
 /**

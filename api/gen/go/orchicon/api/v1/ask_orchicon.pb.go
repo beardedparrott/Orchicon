@@ -42,11 +42,6 @@ const (
 	// the user create. General design, coding, and brainstorming are in scope;
 	// the Orchicon MCP tool surface is shared with ORCHICON mode.
 	ConversationMode_CONVERSATION_MODE_BRAINSTORM ConversationMode = 1
-	// ORCHICON is the strictly-governed platform expert persona: it answers
-	// questions about Orchicon and operates on the user's Orchicon data, and
-	// refuses general coding help, personal conversation, or non-Orchicon
-	// topics.
-	ConversationMode_CONVERSATION_MODE_ORCHICON ConversationMode = 2
 )
 
 // Enum value maps for ConversationMode.
@@ -54,12 +49,10 @@ var (
 	ConversationMode_name = map[int32]string{
 		0: "CONVERSATION_MODE_UNSPECIFIED",
 		1: "CONVERSATION_MODE_BRAINSTORM",
-		2: "CONVERSATION_MODE_ORCHICON",
 	}
 	ConversationMode_value = map[string]int32{
 		"CONVERSATION_MODE_UNSPECIFIED": 0,
 		"CONVERSATION_MODE_BRAINSTORM":  1,
-		"CONVERSATION_MODE_ORCHICON":    2,
 	}
 )
 
@@ -1280,11 +1273,10 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x0fAttachmentInput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data*w\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data*W\n" +
 	"\x10ConversationMode\x12!\n" +
 	"\x1dCONVERSATION_MODE_UNSPECIFIED\x10\x00\x12 \n" +
-	"\x1cCONVERSATION_MODE_BRAINSTORM\x10\x01\x12\x1e\n" +
-	"\x1aCONVERSATION_MODE_ORCHICON\x10\x02B\xca\x01\n" +
+	"\x1cCONVERSATION_MODE_BRAINSTORM\x10\x01B\xca\x01\n" +
 	"\x13com.orchicon.api.v1B\x10AskOrchiconProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (

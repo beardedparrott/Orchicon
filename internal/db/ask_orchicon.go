@@ -17,7 +17,7 @@ type ConversationRow struct {
 	ModelRef  string
 	SessionID string
 	// Mode is the per-conversation persona: 'brainstorm' (default, open
-	// systems-thinking partner) or 'orchicon' (governed platform expert).
+	// systems-thinking partner) — brainstorm is the sole mode since 2026-08-26.
 	// Read at turn-dispatch time and applied per message via the opencode
 	// per-turn system prompt.
 	Mode      string
