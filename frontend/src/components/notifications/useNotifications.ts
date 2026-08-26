@@ -1,11 +1,13 @@
 import { useMemo, useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession } from "@/auth/auth";
-import { authClient, executionClient, workflowClient } from "@/api/clients";
+import { authClient, executionClient, workflowClient, projectClient, workItemClient } from "@/api/clients";
 import { useNotificationCursor } from "./useNotificationCursor";
 import type { AuditEvent } from "@/api/gen/orchicon/api/v1/auth_service_pb";
 import { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { ExecutionStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 export type NotificationKind =
   | "workflow.kicked"
@@ -51,7 +53,7 @@ function humanizeAction(action: string): string {
   return action.replace(/[_\.]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function mapKind(event: AuditEvent): NotificationKind {
+export function mapKind(event: AuditEvent): NotificationKind {
   const a = event.action;
   const t = event.targetType;
   if (a === "workflow.run_started") return "workflow.kicked";
@@ -76,10 +78,11 @@ function mapKind(event: AuditEvent): NotificationKind {
   if (t === "approval") return "approval.requires_action";
   if (a.includes("schedule") || a.includes("recurring") || t.includes("schedule")) return "schedule.started";
   if (t === "work_item" && a === "work_item.started") return "schedule.started";
+  if (t === "work_item" && a === "work_item.sequence_started") return "schedule.started";
   return "generic";
 }
 
-function buildTitle(event: AuditEvent, kind: NotificationKind): string {
+export function buildTitle(event: AuditEvent, kind: NotificationKind): string {
   const a = event.action;
   let afterName = "";
   try {
@@ -110,7 +113,7 @@ function buildTitle(event: AuditEvent, kind: NotificationKind): string {
   }
 }
 
-function buildHref(event: AuditEvent, kind: NotificationKind): string {
+export function buildHref(event: AuditEvent, kind: NotificationKind): string {
   const tid = event.targetId;
   const ttype = event.targetType;
   switch (kind) {
@@ -129,6 +132,7 @@ function buildHref(event: AuditEvent, kind: NotificationKind): string {
     case "approval.requires_action":
       return "/approvals";
     case "schedule.started":
+      if (tid) return `/recurring-items/${tid}`;
       return "/recurring-items";
     default:
       if (ttype === "work_item" && tid) return `/work-items/${tid}`;
@@ -149,7 +153,7 @@ function buildHref(event: AuditEvent, kind: NotificationKind): string {
   }
 }
 
-function toDate(ts: AuditEvent["occurredAt"]): Date {
+export function toDate(ts: AuditEvent["occurredAt"]): Date {
   if (!ts) return new Date(0);
   const anyTs = ts as unknown as { seconds: bigint | number; nanos: number };
   const sec = Number(anyTs.seconds ?? 0);
@@ -157,7 +161,7 @@ function toDate(ts: AuditEvent["occurredAt"]): Date {
   return new Date(sec * 1000 + nanos / 1_000_000);
 }
 
-function toDateAny(ts: unknown): Date {
+export function toDateAny(ts: unknown): Date {
   if (!ts) return new Date(0);
   const anyTs = ts as { seconds?: bigint | number; nanos?: number };
   if (anyTs.seconds !== undefined) {
@@ -187,7 +191,7 @@ export function auditEventToNotification(event: AuditEvent, lastReadAt: Date | n
   };
 }
 
-function workflowRunToNotification(run: any, lastReadAt: Date | null): NotificationItem | null {
+export function workflowRunToNotification(run: any, lastReadAt: Date | null): NotificationItem | null {
   const status: number = run.status;
   let kind: NotificationKind | null = null;
   let title = "";
@@ -218,7 +222,7 @@ function workflowRunToNotification(run: any, lastReadAt: Date | null): Notificat
   };
 }
 
-function executionToNotification(exec: any, lastReadAt: Date | null): NotificationItem | null {
+export function executionToNotification(exec: any, lastReadAt: Date | null): NotificationItem | null {
   const status: number = exec.status;
   let kind: NotificationKind | null = null;
   let title = "";
@@ -253,6 +257,63 @@ function executionToNotification(exec: any, lastReadAt: Date | null): Notificati
     targetId: exec.id,
     raw: exec,
   };
+}
+
+export function recurringItemToNotification(item: WorkItem, lastReadAt: Date | null): NotificationItem | null {
+  const hasSchedule = Boolean((item as any).recurringSchedule ?? (item as any).recurring_schedule);
+  if (!hasSchedule) return null;
+  const occurredAt = toDateAny((item as any).updatedAt ?? (item as any).updated_at ?? (item as any).createdAt ?? (item as any).created_at);
+  if (occurredAt.getTime() === 0) return null;
+  const unread = lastReadAt ? occurredAt.getTime() > lastReadAt.getTime() : true;
+  const title = item.title ? `Recurring schedule started — ${item.title}` : "Recurring schedule started";
+  return {
+    id: `syn:rec:${item.id}`,
+    kind: "schedule.started",
+    title,
+    occurredAt,
+    href: `/recurring-items/${item.id}`,
+    unread,
+    action: "work_item.recurring_created",
+    targetType: "work_item",
+    targetId: item.id,
+    raw: item,
+  };
+}
+
+export function mergeNotifications(
+  auditEvents: AuditEvent[],
+  workflowRuns: unknown[],
+  executions: unknown[],
+  recurringItems: WorkItem[],
+  lastReadAt: Date | null,
+): NotificationItem[] {
+  const mapped = auditEvents.slice(0, 50).map((e) => auditEventToNotification(e, lastReadAt));
+  const wrSynthetic: NotificationItem[] = [];
+  for (const r of workflowRuns ?? []) {
+    const n = workflowRunToNotification(r as any, lastReadAt);
+    if (n) wrSynthetic.push(n);
+  }
+  const execSynthetic: NotificationItem[] = [];
+  for (const ex of executions ?? []) {
+    const n = executionToNotification(ex as any, lastReadAt);
+    if (n) execSynthetic.push(n);
+  }
+  const recSynthetic: NotificationItem[] = [];
+  for (const it of recurringItems ?? []) {
+    const n = recurringItemToNotification(it as WorkItem, lastReadAt);
+    if (n) recSynthetic.push(n);
+  }
+  const all = [...mapped, ...wrSynthetic, ...execSynthetic, ...recSynthetic];
+  all.sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  const seen = new Set<string>();
+  const deduped: NotificationItem[] = [];
+  for (const it of all) {
+    if (seen.has(it.id)) continue;
+    seen.add(it.id);
+    deduped.push(it);
+    if (deduped.length >= 50) break;
+  }
+  return deduped;
 }
 
 export function useNotifications(opts?: { enabled?: boolean }) {
@@ -302,6 +363,55 @@ export function useNotifications(opts?: { enabled?: boolean }) {
     retry: 1,
   });
 
+  const projectsQuery = useQuery({
+    queryKey: ["notifications", "projects", session.tenant_id ?? ""],
+    queryFn: async () => {
+      const res = await projectClient.listProjects({ pageSize: 20 });
+      return (res.projects ?? []) as { id: string }[];
+    },
+    enabled,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+
+  const recurringQuery = useQuery({
+    queryKey: ["notifications", "recurring", session.tenant_id ?? "", (projectsQuery.data ?? []).map((p) => p.id).join(",")],
+    queryFn: async () => {
+      const projects = projectsQuery.data ?? [];
+      if (projects.length === 0) return [] as WorkItem[];
+      const all: WorkItem[] = [];
+      await Promise.all(
+        projects.map(async (p) => {
+          try {
+            const res = await workItemClient.listWorkItems({
+              projectId: p.id,
+              recurringFilter: RecurringFilter.ONLY_RECURRING,
+              pageSize: 20,
+              sortBy: "updated_at",
+              sortOrder: "desc",
+            });
+            all.push(...((res.workItems ?? []) as WorkItem[]));
+          } catch {}
+        }),
+      );
+      all.sort((a: any, b: any) => {
+        const at = (a.updatedAt ?? (a as any).updated_at ?? a.createdAt) as unknown;
+        const bt = (b.updatedAt ?? (b as any).updated_at ?? b.createdAt) as unknown;
+        return toDateAny(bt).getTime() - toDateAny(at).getTime();
+      });
+      return all.slice(0, 20);
+    },
+    enabled: enabled && !!projectsQuery.data && projectsQuery.data.length > 0,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
+    retry: 1,
+  });
+
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((x) => x + 1), 30_000);
@@ -309,30 +419,14 @@ export function useNotifications(opts?: { enabled?: boolean }) {
   }, []);
 
   const items: NotificationItem[] = useMemo(() => {
-    const auditEvents = auditQuery.data ?? [];
-    const mapped = auditEvents.slice(0, 50).map((e) => auditEventToNotification(e, lastReadAt));
-    const wrSynthetic: NotificationItem[] = [];
-    for (const r of (workflowRunsQuery.data ?? []) as any[]) {
-      const n = workflowRunToNotification(r, lastReadAt);
-      if (n) wrSynthetic.push(n);
-    }
-    const execSynthetic: NotificationItem[] = [];
-    for (const ex of (executionsQuery.data ?? []) as any[]) {
-      const n = executionToNotification(ex, lastReadAt);
-      if (n) execSynthetic.push(n);
-    }
-    const all = [...mapped, ...wrSynthetic, ...execSynthetic];
-    all.sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
-    const seen = new Set<string>();
-    const deduped: NotificationItem[] = [];
-    for (const it of all) {
-      if (seen.has(it.id)) continue;
-      seen.add(it.id);
-      deduped.push(it);
-      if (deduped.length >= 50) break;
-    }
-    return deduped;
-  }, [auditQuery.data, workflowRunsQuery.data, executionsQuery.data, lastReadAt]);
+    return mergeNotifications(
+      (auditQuery.data ?? []) as AuditEvent[],
+      (workflowRunsQuery.data ?? []) as unknown[],
+      (executionsQuery.data ?? []) as unknown[],
+      (recurringQuery.data ?? []) as WorkItem[],
+      lastReadAt,
+    );
+  }, [auditQuery.data, workflowRunsQuery.data, executionsQuery.data, recurringQuery.data, lastReadAt]);
 
   const unreadCount = useMemo(() => items.filter((i) => i.unread).length, [items]);
   const maxOccurredAt = useMemo(() => {
@@ -364,6 +458,8 @@ export function useNotifications(opts?: { enabled?: boolean }) {
       auditQuery.refetch();
       workflowRunsQuery.refetch();
       executionsQuery.refetch();
+      projectsQuery.refetch();
+      recurringQuery.refetch();
     },
     markItemRead,
     markAllRead,
