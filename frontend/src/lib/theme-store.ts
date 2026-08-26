@@ -1,18 +1,13 @@
 import { create } from "zustand";
 import { type Theme, getTheme } from "@/lib/themes";
 
-// Separate light/dark theme slots so the theme toggle actually switches
-// between a light theme and a dark theme. Previously a single theme id was
-// kept across mode changes, so toggling mode left a light theme applied in
-// dark mode (and vice versa), which produced a broken high-contrast look.
 const STORAGE_THEME_LIGHT_KEY = "orchicon_theme_light";
 const STORAGE_THEME_DARK_KEY = "orchicon_theme_dark";
 const STORAGE_MODE_KEY = "orchicon_mode";
-// Legacy single-theme key (pre-slots); read only for migration.
 const STORAGE_THEME_LEGACY_KEY = "orchicon_theme";
 
-const DEFAULT_LIGHT_THEME = "zinc";
-const DEFAULT_DARK_THEME = "midnight";
+const DEFAULT_LIGHT_THEME = "orchicon-light";
+const DEFAULT_DARK_THEME = "orchicon-dark";
 
 function loadMode(): "light" | "dark" {
   try {
@@ -28,17 +23,20 @@ function loadThemeSlots(): { light: string; dark: string } {
   let light = DEFAULT_LIGHT_THEME;
   let dark = DEFAULT_DARK_THEME;
   try {
-    // Migrate the legacy single theme key into the slot matching its own mode.
     const legacy = localStorage.getItem(STORAGE_THEME_LEGACY_KEY);
-    if (legacy) {
+    if (legacy && !getTheme(legacy)) {
+      // Unknown legacy id — fall back to defaults
+    } else if (legacy) {
       const def = getTheme(legacy);
       if (def?.mode === "light") light = legacy;
       else if (def?.mode === "dark") dark = legacy;
     }
-    const storedLight = localStorage.getItem(STORAGE_THEME_LIGHT_KEY);
-    if (storedLight && getTheme(storedLight)) light = storedLight;
-    const storedDark = localStorage.getItem(STORAGE_THEME_DARK_KEY);
-    if (storedDark && getTheme(storedDark)) dark = storedDark;
+    const sl = localStorage.getItem(STORAGE_THEME_LIGHT_KEY);
+    if (sl && getTheme(sl)) light = sl;
+    else if (sl && !getTheme(sl)) light = DEFAULT_LIGHT_THEME;
+    const sd = localStorage.getItem(STORAGE_THEME_DARK_KEY);
+    if (sd && getTheme(sd)) dark = sd;
+    else if (sd && !getTheme(sd)) dark = DEFAULT_DARK_THEME;
   } catch {
     /* ignore */
   }
@@ -46,7 +44,6 @@ function loadThemeSlots(): { light: string; dark: string } {
 }
 
 export type ThemeState = {
-  /** Theme id active for the current mode. */
   theme: string;
   lightTheme: string;
   darkTheme: string;
@@ -59,11 +56,8 @@ export type ThemeState = {
 
 function apply(theme: string, mode: "light" | "dark") {
   const root = document.documentElement;
-  if (mode === "dark") {
-    root.classList.add("dark");
-  } else {
-    root.classList.remove("dark");
-  }
+  if (mode === "dark") root.classList.add("dark");
+  else root.classList.remove("dark");
   root.setAttribute("data-theme", theme);
 }
 
@@ -98,12 +92,7 @@ export const useThemeStore = create<ThemeState>((set, get) => {
       const active = state.mode === "dark" ? dark : light;
       apply(active, state.mode);
       persist(light, dark);
-      set({
-        theme: active,
-        lightTheme: light,
-        darkTheme: dark,
-        resolvedTheme: getTheme(active),
-      });
+      set({ theme: active, lightTheme: light, darkTheme: dark, resolvedTheme: getTheme(active) });
     },
 
     setMode: (m) => {

@@ -114,7 +114,7 @@ export function ModeToggle({
         onClick={() => setOpen((v) => !v)}
         onKeyDown={handleKeyDown}
         className={cn(
-          "inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs font-medium transition-colors",
+          "inline-flex items-center gap-1 rounded-md glass-input px-2 py-1.5 text-xs font-medium transition-colors",
           "hover:bg-accent hover:text-accent-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           "disabled:opacity-50 disabled:pointer-events-none",
@@ -136,7 +136,7 @@ export function ModeToggle({
             role="listbox"
             aria-label="Select mode"
             style={menuStyle}
-            className="z-50 min-w-[140px] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
+            className="z-50 min-w-[140px] overflow-hidden rounded-xl glass-menu text-popover-foreground animate-in fade-in-0 zoom-in-95"
           >
             {options.map((opt) => {
               const active = mode === opt.value;
