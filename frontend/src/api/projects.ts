@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
 import type { GoalField, Project, ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
+import { gitStrategyToProto } from "@/components/GitStrategySelect";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof. New project-scoped queries extend this tree.
@@ -49,8 +50,14 @@ export function useUpdateProject() {
       slug?: string;
       goals?: { fields: GoalField[] };
       maxConcurrentRuns?: number;
+      gitStrategy?: string;
+      git_strategy?: string;
     }) => {
-      const res = await projectClient.updateProject(input);
+      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
+      const payload: any = { ...input };
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const res = await projectClient.updateProject(payload);
       return res.project as Project;
     },
     onSuccess: (project) => {
@@ -91,8 +98,12 @@ export function useGetProject(id: string) {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[] }) => {
-      const res = await projectClient.createProject(input);
+    mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[]; gitStrategy?: string; git_strategy?: string }) => {
+      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
+      const payload: any = { ...input };
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const res = await projectClient.createProject(payload);
       return res.project as Project;
     },
     onSuccess: () => {

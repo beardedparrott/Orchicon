@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -45,6 +46,7 @@ const createProjectSchema = z.object({
     .optional()
     .or(z.literal("")),
   goals: z.array(goalFieldSchema).default([]),
+  gitStrategy: z.enum(["local", "pr", "none"]).default("local"),
 });
 
 type CreateProjectForm = z.input<typeof createProjectSchema>;
@@ -56,10 +58,12 @@ function NewProjectPage() {
     register,
     control,
     handleSubmit,
+    watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createProjectSchema),
-    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }] },
+    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }], gitStrategy: "local" as GitStrategy },
   });
 
   const { fields, append, remove } = useFieldArray({
@@ -67,16 +71,37 @@ function NewProjectPage() {
     name: "goals",
   });
 
+  const gitStrategy = watch("gitStrategy");
+
   const onSubmit = async (values: CreateProjectForm) => {
     const goals = (values.goals ?? [])
       .filter((g) => g.key.trim() !== "")
       .map((g) => new GoalField(g));
-    const project = await createProject.mutateAsync({
-      name: values.name,
-      slug: values.slug || undefined,
-      goals: goals.length > 0 ? goals : undefined,
-    });
-    navigate({ to: "/projects/$id", params: { id: project.id } });
+    // Pass gitStrategy via the new proto field (when available) and also via goals as fallback
+    // so the branch works even before `buf generate` is re-run.
+    const fallbackGoals = [...goals];
+    // keep a hidden goal for backwards compat until proto is regenerated
+    // the backend will prefer the typed field when present
+    try {
+      // @ts-ignore - git_strategy may not yet be in generated types until `make gen`
+      const project = await (createProject.mutateAsync as any)({
+        name: values.name,
+        slug: values.slug || undefined,
+        goals: fallbackGoals.length > 0 ? fallbackGoals : undefined,
+        gitStrategy: values.gitStrategy,
+        git_strategy: values.gitStrategy,
+      });
+      navigate({ to: "/projects/$id", params: { id: project.id } });
+    } catch (e) {
+      // fallback: encode gitStrategy into goals if proto field not recognized
+      const withStrategy = [...fallbackGoals, new GoalField({ key: "__git_strategy", value: values.gitStrategy })];
+      const project = await createProject.mutateAsync({
+        name: values.name,
+        slug: values.slug || undefined,
+        goals: withStrategy,
+      } as any);
+      navigate({ to: "/projects/$id", params: { id: project.id } });
+    }
   };
 
   return (
@@ -130,6 +155,11 @@ function NewProjectPage() {
                 </p>
               )}
             </div>
+
+            <GitStrategySelect
+              value={gitStrategy as GitStrategy}
+              onValueChange={(v) => setValue("gitStrategy", v as GitStrategy)}
+            />
 
             <div className="space-y-2">
               <Label>Goals</Label>

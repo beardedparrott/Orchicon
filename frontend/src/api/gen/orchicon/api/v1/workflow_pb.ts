@@ -19,13 +19,9 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { GitStrategy } from "./project_pb.js";
 
 /**
- * Workflow lifecycle states (docs/02 §2.4):
- * draft → published → running → completed | failed | aborted.
- * A workflow is "running" while any run is in progress; the header
- * status reflects the published template, not individual runs.
- *
  * @generated from enum orchicon.api.v1.WorkflowStatus
  */
 export enum WorkflowStatus {
@@ -368,6 +364,11 @@ export class Workflow extends Message<Workflow> {
   type = "";
 
   /**
+   * @generated from field: orchicon.api.v1.GitStrategy git_strategy = 11;
+   */
+  gitStrategy = GitStrategy.UNSPECIFIED;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 8;
    */
   createdAt?: Timestamp;
@@ -393,6 +394,7 @@ export class Workflow extends Message<Workflow> {
     { no: 6, name: "current_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 7, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
     { no: 8, name: "created_at", kind: "message", T: Timestamp },
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
   ]);

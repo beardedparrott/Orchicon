@@ -29,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -355,7 +356,7 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 // rowToProto maps a db.ProjectRow to the generated proto Project type.
 // Timestamps are converted to timestamppb.
 func rowToProto(p db.ProjectRow) *apiv1.Project {
-	return &apiv1.Project{
+	proj := &apiv1.Project{
 		Id:                p.ID,
 		TenantId:          p.TenantID,
 		Name:              p.Name,
@@ -370,7 +371,25 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 		MaxConcurrentRuns: int32(p.MaxConcurrentRuns),
 		RepoSlug:          stringOrEmpty(p.RepoSlug),
 	}
+	if p.GitStrategy != "" {
+		if fd := proj.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil {
+			var v protoreflect.EnumNumber
+			switch p.GitStrategy {
+			case "local":
+				v = 1
+			case "pr":
+				v = 2
+			case "none":
+				v = 3
+			default:
+				v = 0
+			}
+			proj.ProtoReflect().Set(fd, protoreflect.ValueOfEnum(v))
+		}
+	}
+	return proj
 }
+
 
 // stringOrEmpty dereferences a nullable string, returning "" for nil.
 func stringOrEmpty(s *string) string {

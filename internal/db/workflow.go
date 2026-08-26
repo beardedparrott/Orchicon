@@ -23,6 +23,7 @@ type WorkflowRow struct {
 	CurrentVersion int
 	Status         string
 	Type           string // "one_shot" or "template"
+	GitStrategy  *string // nil=inherit, values local|pr|none
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -133,16 +134,16 @@ type WorkflowStepRunRow struct {
 // starts at 1; current_version starts at 0 (no published versions yet).
 func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow, error) {
 	const q = `INSERT INTO workflows
-		(id, tenant_id, project_id, name, current_version, status, type)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, tenant_id, project_id, name, current_version, status, type,
+		(id, tenant_id, project_id, name, current_version, status, type, git_strategy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 			version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
-		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type,
+		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type, w.GitStrategy,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.Name, &row.CurrentVersion,
-		&row.Status, &row.Type, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.Status, &row.Type, &row.GitStrategy, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return WorkflowRow{}, fmt.Errorf("db: create workflow: %w", err)
@@ -152,13 +153,13 @@ func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow,
 
 // GetWorkflow fetches a single workflow by id within the tenant scope.
 func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRow, error) {
-	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type,
+	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 		version, created_at, updated_at
 		FROM workflows WHERE id = $1 AND tenant_id = $2`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -230,7 +231,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type,
+	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 		version, created_at, updated_at
 		FROM workflows
 		WHERE %s
@@ -246,7 +247,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		var w WorkflowRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-			&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow: %w", err)
 		}
@@ -287,12 +288,12 @@ func UpdateWorkflowStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, e
 	const q = `UPDATE workflows
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -308,12 +309,12 @@ func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 	const q = `UPDATE workflows
 		SET name = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, name).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -326,16 +327,36 @@ func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 
 // UpdateWorkflowCurrentVersion bumps the current_version pointer to the
 // newly published version. Uses optimistic concurrency on the header.
+func UpdateWorkflowGitStrategy(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, gitStrategy *string) (WorkflowRow, error) {
+	const q = `UPDATE workflows
+		SET git_strategy = $4, updated_at = now(), version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
+		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+			version, created_at, updated_at`
+	var w WorkflowRow
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, gitStrategy).Scan(
+		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
+		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkflowRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkflowRow{}, fmt.Errorf("db: update workflow git_strategy: %w", err)
+	}
+	return w, nil
+}
+
 func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion, newVersion int) (WorkflowRow, error) {
 	const q = `UPDATE workflows
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
