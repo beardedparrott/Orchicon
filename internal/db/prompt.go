@@ -165,3 +165,17 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir string) string 
 	return "\n## Git discipline\n" +
 		"- This run has no git branch or worktree. Do not create branches, commit, push, or open pull requests; work in place.\n\n"
 }
+
+// WorkItemAttachmentsManifest returns a markdown block listing work item attachments for the worker prompt.
+// It is the Channel B visibility (file-materialized + manifest line) per ADR-4.
+func WorkItemAttachmentsManifest(attachments []WorkItemAttachmentRow, workItemID string) string {
+    if len(attachments)==0 { return "" }
+    var b strings.Builder
+    b.WriteString("## Work item attachments\n")
+    for _, a := range attachments {
+        b.WriteString(fmt.Sprintf("- %s (%s, %d bytes) at .orchicon/work-item-attachments/%s/%s\n", a.Name, a.MimeType, a.SizeBytes, workItemID, a.Name))
+    }
+    b.WriteString("\n")
+    return b.String()
+}
+

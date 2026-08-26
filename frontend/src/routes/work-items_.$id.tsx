@@ -1,5 +1,5 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArrowLeft, Link2 } from "lucide-react";
 
 import {
@@ -111,6 +111,36 @@ function WorkItemDetailPage() {
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
+
+  // Paste image into description/acceptance: inline as markdown data URL (persisted via updateWorkItem description field)
+  const handlePasteImage = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>, setter: (v: string) => void, current: string) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (!file) continue;
+          if (file.size > 10 * 1024 * 1024) {
+            toast.error(`Image too large (max 10MB): ${file.name || "pasted image"}`);
+            continue;
+          }
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(",")[1] || "";
+            const dataUrl = `data:${file.type || "image/png"};base64,${base64}`;
+            const markdown = `![${file.name || "pasted-image"}](${dataUrl})`;
+            setter(current ? `${current}\n\n${markdown}` : markdown);
+          };
+          reader.readAsDataURL(file);
+          break;
+        }
+      }
+    },
+    [toast],
+  );
 
   // Quick lookup for dependency display
   const itemsById = useMemo(
@@ -803,7 +833,9 @@ function WorkItemDetailPage() {
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              onPaste={(e) => handlePasteImage(e, setDescription, description)}
               className="min-h-[80px]"
+              placeholder="Paste images directly (Ctrl+V) — they will be embedded as markdown"
             />
           ) : (
             <Markdown>{item.description}</Markdown>
@@ -821,7 +853,9 @@ function WorkItemDetailPage() {
             <Textarea
               value={acceptanceCriteria}
               onChange={(e) => setAcceptanceCriteria(e.target.value)}
+              onPaste={(e) => handlePasteImage(e, setAcceptanceCriteria, acceptanceCriteria)}
               className="min-h-[80px]"
+              placeholder="Paste images directly (Ctrl+V)"
             />
           ) : (
             <Markdown>{item.acceptanceCriteria}</Markdown>

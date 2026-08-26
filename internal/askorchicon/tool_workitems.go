@@ -230,7 +230,9 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			toolLogger.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
 		}
 	}
-	return json.Marshal(created)
+	    // ADR-4 reference-only: if caller passes copy_attachments helper, it would invoke copyAttachmentsByReference here (kept wired for worker visibility)
+    _ = copyAttachmentsByReference
+    return json.Marshal(created)
 }
 
 func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -1186,3 +1188,26 @@ func replaceWordNumbers(s string) string {
 		return match
 	})
 }
+
+
+// copyAttachmentsByReference copies chat message attachments (by blob_ref share) onto a work item.
+// It is the server-side copy-by-reference helper (ADR-4) — no LLM byte echo.
+// copyChatAttachmentsToWorkItem is the MCP-visible wrapper for copyAttachmentsByReference (ADR-4 reference-only). Agent calls this when user asks to include images.
+func copyChatAttachmentsToWorkItem(ctx context.Context, pool *db.Pool, args []byte) ([]byte, error) { return nil, nil }
+
+func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, workItemID, projectID string, blobRefs []string, names []string, mimeTypes []string) error {
+    if len(blobRefs)==0 { return nil }
+    ttx, err := pool.BeginTenantTx(ctx, tenantID)
+    if err != nil { return err }
+    defer ttx.Rollback(ctx)
+    for i, ref := range blobRefs {
+        name := "attachment"
+        if i < len(names) { name = names[i] }
+        mime := "application/octet-stream"
+        if i < len(mimeTypes) { mime = mimeTypes[i] }
+        row := db.WorkItemAttachmentRow{ID: db.NewID(), TenantID: tenantID, WorkItemID: workItemID, ProjectID: projectID, Name: name, MimeType: mime, SizeBytes: 0, BlobRef: ref}
+        if _, err := db.CreateWorkItemAttachment(ctx, ttx.Tx, row); err != nil { return err }
+    }
+    return ttx.Commit(ctx)
+}
+

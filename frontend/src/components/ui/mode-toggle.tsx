@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Brain, Settings2, ChevronDown } from "lucide-react";
+import { Brain, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
@@ -13,7 +13,6 @@ interface ModeToggleProps {
 
 const options = [
   { value: ConversationMode.BRAINSTORM, label: "Brainstorm", icon: Brain },
-  { value: ConversationMode.ORCHICON, label: "Orchicon", icon: Settings2 },
 ] as const;
 
 export function ModeToggle({
@@ -48,8 +47,7 @@ export function ModeToggle({
     (next: ConversationMode) => {
       if (next === mode || disabled) return;
       onModeChange(next);
-      const label =
-        next === ConversationMode.BRAINSTORM ? "Brainstorm" : "Orchicon";
+      const label = "Brainstorm";
       setAnnouncement(`Switched to ${label} mode`);
       setOpen(false);
     },

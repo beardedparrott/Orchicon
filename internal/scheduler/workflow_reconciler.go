@@ -2599,6 +2599,13 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 
+	// 3b. Work item attachments — Channel B visibility (file-materialized + manifest line per ADR-4).
+	if tx != nil {
+		if atts, err := db.ListWorkItemAttachments(ctx, tx, tenantID, wi.ID); err == nil && len(atts) > 0 {
+			sb.WriteString(db.WorkItemAttachmentsManifest(atts, wi.ID))
+		}
+	}
+
 	// 4. Instructions.
 	sb.WriteString("# Instructions\n\n")
 

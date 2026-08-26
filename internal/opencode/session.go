@@ -31,6 +31,7 @@ package opencode
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,10 +165,38 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 // must be sent with every message). modelRef is "provider/model" (empty =
 // the session's current model).
 func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
+	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
+}
+
+// SendMessageWithAttachments appends a user message with optional image/file parts.
+// Text is always first; image parts are added as base64 data URLs for vision models.
+func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	parts := []map[string]any{}
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	for _, a := range attachments {
+		if a.MimeType == "" {
+			a.MimeType = "application/octet-stream"
+		}
+		// Opencode serve accepts file/image parts as data URLs; use image type for images.
+		if len(a.Data) > 0 {
+			b64 := base64.StdEncoding.EncodeToString(a.Data)
+			dataURL := "data:" + a.MimeType + ";base64," + b64
+			if isImageMime(a.MimeType) {
+				parts = append(parts, map[string]any{"type": "image", "mimeType": a.MimeType, "data": b64, "url": dataURL})
+			} else {
+				parts = append(parts, map[string]any{"type": "file", "mimeType": a.MimeType, "url": dataURL, "filename": a.Name})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
 	body := map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": text}},
+		"parts": parts,
 	}
 	if system != "" {
 		body["system"] = system
@@ -177,11 +206,21 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 			body["model"] = map[string]any{"providerID": provider, "modelID": model}
 		}
 	}
-	// 204 No Content on success.
 	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/prompt_async", body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
+}
+
+// AttachmentPart is a single attachment forwarded to the session.
+type AttachmentPart struct {
+	Name     string
+	MimeType string
+	Data     []byte
+}
+
+func isImageMime(m string) bool {
+	return len(m) >= 6 && m[:6] == "image/"
 }
 
 // Abort cancels the session's running turn. The session (and its history)

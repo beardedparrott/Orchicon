@@ -595,11 +595,9 @@ func (s *Service) turnStatus(convID string) (bool, string) {
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'
-// default, 'orchicon'). They are the single source of truth for the mode
-// strings used across the DB layer and the per-mode prompt dispatch.
+// default). Orchicon mode removed 2026-08-26 — only brainstorm remains.
 const (
 	modeBrainstorm = "brainstorm"
-	modeOrchicon   = "orchicon"
 )
 
 // conversationModeFromProto validates + normalizes a proto ConversationMode
@@ -611,8 +609,6 @@ func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
 		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
 		return modeBrainstorm, nil
-	case apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON:
-		return modeOrchicon, nil
 	default:
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unknown conversation mode value %d", int32(m)))
@@ -626,8 +622,6 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 	switch mode {
 	case modeBrainstorm:
 		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
-	case modeOrchicon:
-		return apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON
 	default:
 		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
 	}
