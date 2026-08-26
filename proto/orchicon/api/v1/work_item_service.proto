@@ -95,6 +95,16 @@ enum SequenceAction {
   SEQUENCE_ACTION_STOP = 3; // park the chain (parent → pending, schedule cleared)
 }
 
+// RecurringFilter scopes ListWorkItems to recurring vs non-recurring items.
+// recurring_schedule IS NOT NULL is the canonical is-recurring signal
+// (status is derived). This is the split for Automation → Recurring Items.
+enum RecurringFilter {
+  RECURRING_FILTER_UNSPECIFIED = 0; // legacy default: EXCLUDE for normal callers
+  RECURRING_FILTER_ALL = 1; // unfiltered (internal/Schedules merge if needed)
+  RECURRING_FILTER_EXCLUDE_RECURRING = 2; // normal Work Items page
+  RECURRING_FILTER_ONLY_RECURRING = 3; // Recurring Items page
+}
+
 message CreateWorkItemRequest {
   string tenant_id = 1;
   string project_id = 2;
@@ -152,6 +162,7 @@ message ListWorkItemsRequest {
   // the dedicated archive view sets it. Additive/regression-free: current
   // data has no archived rows, so the default path is byte-for-byte unchanged.
   bool include_archived = 10;
+  RecurringFilter recurring_filter = 11;
 }
 
 message ListWorkItemsResponse {

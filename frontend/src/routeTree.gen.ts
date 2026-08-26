@@ -43,6 +43,8 @@ import { Route as WorkItemsNewRouteImport } from './routes/work-items_.new'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items_.$id'
 import { Route as RuntimeImagesNewRouteImport } from './routes/runtime-images_.new'
 import { Route as RuntimeImagesIdRouteImport } from './routes/runtime-images_.$id'
+import { Route as RecurringItemsNewRouteImport } from './routes/recurring-items_.new'
+import { Route as RecurringItemsIdRouteImport } from './routes/recurring-items_.$id'
 import { Route as RecoveryIdRouteImport } from './routes/recovery_.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects_.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects_.$id'
@@ -222,6 +224,16 @@ const RuntimeImagesIdRoute = RuntimeImagesIdRouteImport.update({
   path: '/runtime-images/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecurringItemsNewRoute = RecurringItemsNewRouteImport.update({
+  id: '/recurring-items_/new',
+  path: '/recurring-items/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecurringItemsIdRoute = RecurringItemsIdRouteImport.update({
+  id: '/recurring-items_/$id',
+  path: '/recurring-items/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RecoveryIdRoute = RecoveryIdRouteImport.update({
   id: '/recovery_/$id',
   path: '/recovery/$id',
@@ -297,6 +309,8 @@ export interface FileRoutesByFullPath {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/recurring-items/$id': typeof RecurringItemsIdRoute
+  '/recurring-items/new': typeof RecurringItemsNewRoute
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -341,6 +355,8 @@ export interface FileRoutesByTo {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/recurring-items/$id': typeof RecurringItemsIdRoute
+  '/recurring-items/new': typeof RecurringItemsNewRoute
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -386,6 +402,8 @@ export interface FileRoutesById {
   '/projects_/$id': typeof ProjectsIdRoute
   '/projects_/new': typeof ProjectsNewRoute
   '/recovery_/$id': typeof RecoveryIdRoute
+  '/recurring-items_/$id': typeof RecurringItemsIdRoute
+  '/recurring-items_/new': typeof RecurringItemsNewRoute
   '/runtime-images_/$id': typeof RuntimeImagesIdRoute
   '/runtime-images_/new': typeof RuntimeImagesNewRoute
   '/work-items_/$id': typeof WorkItemsIdRoute
@@ -432,6 +450,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/recurring-items/$id'
+    | '/recurring-items/new'
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
@@ -476,6 +496,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/recurring-items/$id'
+    | '/recurring-items/new'
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
@@ -520,6 +542,8 @@ export interface FileRouteTypes {
     | '/projects_/$id'
     | '/projects_/new'
     | '/recovery_/$id'
+    | '/recurring-items_/$id'
+    | '/recurring-items_/new'
     | '/runtime-images_/$id'
     | '/runtime-images_/new'
     | '/work-items_/$id'
@@ -565,6 +589,8 @@ export interface RootRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsNewRoute: typeof ProjectsNewRoute
   RecoveryIdRoute: typeof RecoveryIdRoute
+  RecurringItemsIdRoute: typeof RecurringItemsIdRoute
+  RecurringItemsNewRoute: typeof RecurringItemsNewRoute
   RuntimeImagesIdRoute: typeof RuntimeImagesIdRoute
   RuntimeImagesNewRoute: typeof RuntimeImagesNewRoute
   WorkItemsIdRoute: typeof WorkItemsIdRoute
@@ -816,6 +842,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RuntimeImagesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recurring-items_/new': {
+      id: '/recurring-items_/new'
+      path: '/recurring-items/new'
+      fullPath: '/recurring-items/new'
+      preLoaderRoute: typeof RecurringItemsNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/recurring-items_/$id': {
+      id: '/recurring-items_/$id'
+      path: '/recurring-items/$id'
+      fullPath: '/recurring-items/$id'
+      preLoaderRoute: typeof RecurringItemsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/recovery_/$id': {
       id: '/recovery_/$id'
       path: '/recovery/$id'
@@ -909,6 +949,8 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsIdRoute: ProjectsIdRoute,
   ProjectsNewRoute: ProjectsNewRoute,
   RecoveryIdRoute: RecoveryIdRoute,
+  RecurringItemsIdRoute: RecurringItemsIdRoute,
+  RecurringItemsNewRoute: RecurringItemsNewRoute,
   RuntimeImagesIdRoute: RuntimeImagesIdRoute,
   RuntimeImagesNewRoute: RuntimeImagesNewRoute,
   WorkItemsIdRoute: WorkItemsIdRoute,

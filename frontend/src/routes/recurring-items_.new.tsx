@@ -9,8 +9,9 @@ import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
-import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { RecurringSchedule, WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -30,8 +31,8 @@ import { Route as rootRoute } from "@/routes/__root";
 // (internal/workitem/validate.go).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/work-items/new",
-  component: NewWorkItemPage,
+  path: "/recurring-items/new",
+  component: NewRecurringItemPage,
   validateSearch: (search: Record<string, unknown>) => ({
     projectId: (search.projectId as string) ?? "",
     parentId: (search.parentId as string) ?? "",
@@ -64,9 +65,9 @@ const KIND_TO_PROTO: Record<string, number> = {
   subtask: WorkItemKind.SUBTASK,
 };
 
-function NewWorkItemPage() {
+function NewRecurringItemPage() {
   const navigate = useNavigate();
-  const search = useSearch({ from: "/work-items_/new" });
+  const search = useSearch({ from: "/recurring-items_/new" });
   const [selectedProjectId, setSelectedProjectId] = useState(search.projectId || "");
   const parentId = search.parentId || "";
   const createWorkItem = useCreateWorkItem();
@@ -108,6 +109,7 @@ function NewWorkItemPage() {
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
   const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
 
   // Changing the kind can invalidate the previously chosen parent: epics
@@ -143,9 +145,10 @@ function NewWorkItemPage() {
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
+      recurringSchedule: recurringSchedule,
     });
     navigate({
-      to: "/work-items/$id",
+      to: "/recurring-items/$id",
       params: { id: workItem.id },
     });
   };
@@ -153,9 +156,9 @@ function NewWorkItemPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">New Work Item</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">New Recurring Item</h1>
         <p className="text-sm text-muted-foreground">
-          Create an item in the work hierarchy. Epics are top-level; features,
+          Create a recurring item — it will fire on schedule and appear under Automation → Recurring Items. Epics are top-level; features,
           tasks, and subtasks nest under any shallower kind.
         </p>
       </div>
@@ -288,6 +291,11 @@ function NewWorkItemPage() {
               </p>
             )}
 
+            <RecurringScheduleForm
+              value={recurringSchedule}
+              onChange={setRecurringSchedule}
+            />
+
             <div className="space-y-2">
               <Label htmlFor="description">Description (optional)</Label>
               <Textarea
@@ -328,7 +336,7 @@ function NewWorkItemPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => navigate({ to: "/work-items" })}
+                onClick={() => navigate({ to: "/recurring-items" })}
               >
                 Cancel
               </Button>

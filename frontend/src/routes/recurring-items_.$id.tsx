@@ -21,7 +21,7 @@ import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
-import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
+import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,7 +49,7 @@ import { Route as rootRoute } from "@/routes/__root";
 // server-side via recursive CTE).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/work-items/$id",
+  path: "/recurring-items/$id",
   component: WorkItemDetailPage,
 });
 
@@ -86,6 +86,7 @@ function WorkItemDetailPage() {
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
   const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
+  const [editRecurringSchedule, setEditRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -191,7 +192,7 @@ function WorkItemDetailPage() {
       )
     ) {
       hardDeleteWorkItem.mutate(id, {
-        onSuccess: () => navigate({ to: "/work-items" }),
+        onSuccess: () => navigate({ to: "/recurring-items" }),
       });
     }
   };
@@ -257,7 +258,7 @@ function WorkItemDetailPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate({ to: "/work-items" })}
+            onClick={() => navigate({ to: "/recurring-items" })}
             className="shrink-0"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -318,6 +319,11 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
+                setEditRecurringSchedule(
+                  item.recurringSchedule
+                    ? new RecurringSchedule(item.recurringSchedule)
+                    : undefined,
+                );
                 setEditing(true);
               }}
             >
@@ -507,7 +513,7 @@ function WorkItemDetailPage() {
               priority: item.priority,
               contextWindow: item.contextWindow,
             });
-            navigate({ to: `/work-items/${result.id}` });
+            navigate({ to: `/recurring-items/${result.id}` });
           }}
           cloneDisabled={createWorkItem.isPending}
         />
@@ -549,7 +555,23 @@ function WorkItemDetailPage() {
         </Card>
       )}
 
-
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recurring schedule</CardTitle>
+            <CardDescription>
+              Set a recurrence pattern. Setting this flips the item to
+              recurring status; clearing it resets to non-recurring.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RecurringScheduleForm
+              value={editRecurringSchedule}
+              onChange={setEditRecurringSchedule}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -562,6 +584,10 @@ function WorkItemDetailPage() {
                   onChange={(e) => {
                     const next = Number(e.target.value);
                     setStatus(next);
+                    // Switching away from recurring clears the schedule
+                    if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
+                      setEditRecurringSchedule(undefined);
+                    }
                   }}
                   className="rounded-md border bg-background px-2 py-1 text-sm"
                 >
@@ -653,7 +679,7 @@ function WorkItemDetailPage() {
                   />
                 ) : parentItem ? (
                   <Link
-                    to="/work-items/$id"
+                    to="/recurring-items/$id"
                     params={{ id: item.parentId }}
                     className="inline-flex min-w-0 max-w-full items-center gap-2 font-medium hover:underline"
                     title={parentItem.title}
@@ -987,9 +1013,10 @@ function WorkItemDetailPage() {
                   parentId: editParentId || undefined,
                   kind: kindChanging ? editKind : undefined,
                   contextFiles: { files: editContextFiles },
-                  recurringSchedule: kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
+                  recurringSchedule:
+                    kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
                       ? new RecurringSchedule()
-                      : undefined,
+                      : editRecurringSchedule,
                 },
                 {
                   onSuccess: ({ warning }) => {
@@ -1043,7 +1070,7 @@ function WorkItemDetailPage() {
                 {item.blockedBy.map((b) => (
                   <li key={b.id} className="flex items-center gap-2 text-xs">
                     <Link
-                      to="/work-items/$id"
+                      to="/recurring-items/$id"
                       params={{ id: b.id }}
                       className="min-w-0 flex-1 truncate font-medium hover:underline"
                     >
@@ -1131,7 +1158,7 @@ function WorkItemDetailPage() {
                             {kindMeta(fromItem.kind).shortLabel}
                           </span>
                           <Link
-                            to="/work-items/$id"
+                            to="/recurring-items/$id"
                             params={{ id: dep.fromId }}
                             className="min-w-0 flex-1 truncate font-medium hover:underline"
                           >
@@ -1193,7 +1220,7 @@ function WorkItemDetailPage() {
                             {kindMeta(toItem.kind).shortLabel}
                           </span>
                           <Link
-                            to="/work-items/$id"
+                            to="/recurring-items/$id"
                             params={{ id: dep.toId }}
                             className="min-w-0 flex-1 truncate font-medium hover:underline"
                           >

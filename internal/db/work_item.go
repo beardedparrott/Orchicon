@@ -203,6 +203,10 @@ type ListWorkItemsFilter struct {
 	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
 	//     archive view.
 	IncludeArchived bool
+	// RecurringFilter scopes the recurring split: ""/"all" = no filter,
+	// "exclude" = only non-recurring (recurring_schedule IS NULL),
+	// "only" = only recurring (recurring_schedule IS NOT NULL).
+	RecurringFilter string
 }
 
 // ListWorkItems returns a page of work items for a project, ordered by
@@ -222,6 +226,12 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		q += ` AND archived_at IS NOT NULL`
 	} else {
 		q += ` AND archived_at IS NULL`
+	}
+	switch f.RecurringFilter {
+	case "only":
+		q += ` AND recurring_schedule IS NOT NULL`
+	case "exclude":
+		q += ` AND recurring_schedule IS NULL`
 	}
 	if f.ParentID != nil {
 		if *f.ParentID == "" {

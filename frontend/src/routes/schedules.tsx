@@ -44,7 +44,8 @@ import {
   useDeleteWorkItem,
   useListWorkItems,
   useRemoveSchedule,
-} from "@/api/workItems";
+} from "@/api/workItems"
+import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { useListProjects } from "@/api/projects";
 import {
   useListWorkflowRuns,
@@ -411,6 +412,7 @@ function UpcomingView({
     status: WorkItemStatus.SCHEDULED,
     search: search || undefined,
     refetchInterval: 5_000,
+    recurringFilter: RecurringFilter.EXCLUDE_RECURRING,
   });
   const {
     data: recurring,
@@ -457,15 +459,14 @@ function UpcomingView({
     const scheduledFiltered = kindFilter
       ? (scheduled ?? []).filter((i) => i.kind === Number(kindFilter))
       : (scheduled ?? []);
-    const recurringFiltered = kindFilter
-      ? (recurring ?? []).filter((i) => i.kind === Number(kindFilter))
-      : (recurring ?? []);
-    const all = [...scheduledFiltered, ...recurringFiltered];
+    // recurring items are now on Automation → Recurring Items (not Upcoming)
+    void recurring;
+    const all = [...scheduledFiltered];
     const sorted = [...all].sort(
       (a, b) => upcomingSortTime(a) - upcomingSortTime(b),
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
-  }, [scheduled, recurring, kindFilter, sortOrder]);
+  }, [scheduled, kindFilter, sortOrder]);
 
   const isLoading = scheduledLoading || recurringLoading;
   const loadError = scheduledError || recurringError;
