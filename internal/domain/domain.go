@@ -307,6 +307,7 @@ const (
 	StepKindWorkItem     = "work_item"
 	StepKindProject      = "project"
 	StepKindLoopDecision = "loop_decision"
+	StepKindEnd          = "end"
 )
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):

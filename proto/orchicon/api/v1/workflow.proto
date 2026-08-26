@@ -167,6 +167,7 @@ enum WorkflowVersionStatus {
 //   - project: a passive marker for the project that scopes the
 //     downstream work items. Sets the workflow's project_id on the
 //     first reconcile pass.
+//   - end: terminal sink, always succeeds when deps satisfied
 enum StepKind {
   STEP_KIND_UNSPECIFIED = 0;
   STEP_KIND_TASK = 1;
@@ -177,6 +178,7 @@ enum StepKind {
   STEP_KIND_WORK_ITEM = 6;
   STEP_KIND_PROJECT = 7;
   STEP_KIND_LOOP_DECISION = 8; // loop decision: inspect upstream result, branch to loop or success
+  STEP_KIND_END = 9; // end: terminal sink, always succeeds when deps satisfied
 }
 
 // WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):
