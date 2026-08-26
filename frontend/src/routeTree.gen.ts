@@ -17,15 +17,15 @@ import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SchedulesRouteImport } from './routes/schedules'
-import { Route as RecurringItemsRouteImport } from './routes/recurring-items'
-import { Route as CostExplorerRouteImport } from './routes/cost-explorer'
 import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
+import { Route as RecurringItemsRouteImport } from './routes/recurring-items'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExecutionsRouteImport } from './routes/executions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CostExplorerRouteImport } from './routes/cost-explorer'
 import { Route as AskOrchiconRouteImport } from './routes/ask-orchicon'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -88,19 +88,14 @@ const SchedulesRoute = SchedulesRouteImport.update({
   path: '/schedules',
   getParentRoute: () => rootRouteImport,
 } as any)
-const RecurringItemsRoute = RecurringItemsRouteImport.update({
-  id: '/recurring-items',
-  path: '/recurring-items',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CostExplorerRoute = CostExplorerRouteImport.update({
-  id: '/cost-explorer',
-  path: '/cost-explorer',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const RuntimeImagesRoute = RuntimeImagesRouteImport.update({
   id: '/runtime-images',
   path: '/runtime-images',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecurringItemsRoute = RecurringItemsRouteImport.update({
+  id: '/recurring-items',
+  path: '/recurring-items',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RecoveryRoute = RecoveryRouteImport.update({
@@ -131,6 +126,11 @@ const ExecutionsRoute = ExecutionsRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CostExplorerRoute = CostExplorerRouteImport.update({
+  id: '/cost-explorer',
+  path: '/cost-explorer',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AskOrchiconRoute = AskOrchiconRouteImport.update({
@@ -245,12 +245,14 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
@@ -283,12 +285,14 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
@@ -322,12 +326,14 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
@@ -362,12 +368,14 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
@@ -400,12 +408,14 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
@@ -438,12 +448,14 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
@@ -477,12 +489,14 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ApprovalsRoute: typeof ApprovalsRoute
   AskOrchiconRoute: typeof AskOrchiconRoute
+  CostExplorerRoute: typeof CostExplorerRoute
   DashboardRoute: typeof DashboardRoute
   ExecutionsRoute: typeof ExecutionsRoute
   LoginRoute: typeof LoginRoute
   PoliciesRoute: typeof PoliciesRoute
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
+  RecurringItemsRoute: typeof RecurringItemsRoute
   RuntimeImagesRoute: typeof RuntimeImagesRoute
   SchedulesRoute: typeof SchedulesRoute
   SettingsRoute: typeof SettingsRoute
@@ -568,25 +582,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SchedulesRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/recurring-items': {
-      id: '/recurring-items'
-      path: '/recurring-items'
-      fullPath: '/recurring-items'
-      preLoaderRoute: typeof RecurringItemsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/cost-explorer': {
-      id: '/cost-explorer'
-      path: '/cost-explorer'
-      fullPath: '/cost-explorer'
-      preLoaderRoute: typeof CostExplorerRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/runtime-images': {
       id: '/runtime-images'
       path: '/runtime-images'
       fullPath: '/runtime-images'
       preLoaderRoute: typeof RuntimeImagesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/recurring-items': {
+      id: '/recurring-items'
+      path: '/recurring-items'
+      fullPath: '/recurring-items'
+      preLoaderRoute: typeof RecurringItemsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/recovery': {
@@ -629,6 +636,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cost-explorer': {
+      id: '/cost-explorer'
+      path: '/cost-explorer'
+      fullPath: '/cost-explorer'
+      preLoaderRoute: typeof CostExplorerRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ask-orchicon': {
@@ -787,16 +801,16 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   ApprovalsRoute: ApprovalsRoute,
   AskOrchiconRoute: AskOrchiconRoute,
+  CostExplorerRoute: CostExplorerRoute,
   DashboardRoute: DashboardRoute,
   ExecutionsRoute: ExecutionsRoute,
   LoginRoute: LoginRoute,
   PoliciesRoute: PoliciesRoute,
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
+  RecurringItemsRoute: RecurringItemsRoute,
   RuntimeImagesRoute: RuntimeImagesRoute,
   SchedulesRoute: SchedulesRoute,
-  RecurringItemsRoute: RecurringItemsRoute,
-  CostExplorerRoute: CostExplorerRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   TelemetryRoute: TelemetryRoute,
