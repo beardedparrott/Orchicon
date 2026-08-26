@@ -291,7 +291,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	runByID := map[string]db.WorkflowStepRunRow{env.step.ID: runningSR}
 	var triggers []recoveryTriggerReq
 	terminal, failed, err := env.reconciler.pollTaskStep(ctx, ttx.Tx, approvalTestTenant,
-		env.run, runningSR, "", runByID, &triggers)
+		&env.run, runningSR, "", runByID, &triggers)
 	if err != nil {
 		t.Fatalf("pollTaskStep: %v", err)
 	}
