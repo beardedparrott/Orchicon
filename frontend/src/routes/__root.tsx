@@ -1,35 +1,43 @@
-import { Outlet, createRootRoute, useRouterState } from "@tanstack/react-router";
-
+import { Outlet, createRootRoute, useRouterState, Link } from "@tanstack/react-router";
 import { PUBLIC_PATHS, requireAuth } from "@/auth/route-guard";
 import { useSessionStore } from "@/auth/session";
 import { AppShell } from "@/components/app-shell";
 import { ForcePasswordGate } from "@/components/force-password-gate";
-
-// Root route — owns the application layout shell (docs/10 §5).
-// Child routes render into the shell's <Outlet/>. The beforeLoad auth
-// guard runs before any route (including children) renders, redirecting
-// unauthenticated visitors to /login (docs/10 §7).
 export const Route = createRootRoute({
   beforeLoad: requireAuth,
   component: RootComponent,
+  notFoundComponent: NotFound,
 });
-
 function RootComponent() {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const session = useSessionStore((s) => s.session);
   if (session.authenticated && session.force_password_change) {
-    // The signed-in credential is flagged for a forced password change:
-    // the gate renders in place of the app content (ADR-6) — no app route
-    // is reachable until the change completes.
     return <ForcePasswordGate />;
   }
   if (PUBLIC_PATHS.has(path)) {
-    // Auth pages already render a full-viewport centered card — no shell needed.
     return <Outlet />;
   }
   return (
     <AppShell>
       <Outlet />
     </AppShell>
+  );
+}
+function NotFound() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 space-y-4 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">Page not found</h1>
+      <p className="text-sm text-muted-foreground max-w-md">
+        The page you requested does not exist. It may have been moved or you may have followed an outdated link.
+      </p>
+      <div className="flex gap-2">
+        <Link to="/dashboard" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          Go to Dashboard
+        </Link>
+        <Link to="/ask-orchicon" search={{ conversationId: null } as never} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent">
+          Ask Orchicon
+        </Link>
+      </div>
+    </div>
   );
 }

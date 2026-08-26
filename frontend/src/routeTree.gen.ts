@@ -13,6 +13,7 @@ import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
+import { Route as UsageRouteImport } from './routes/usage'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -22,10 +23,13 @@ import { Route as RecurringItemsRouteImport } from './routes/recurring-items'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
+import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as HomeRouteImport } from './routes/home'
 import { Route as ExecutionsRouteImport } from './routes/executions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CostExplorerRouteImport } from './routes/cost-explorer'
+import { Route as ConversationsRouteImport } from './routes/conversations'
 import { Route as AskOrchiconRouteImport } from './routes/ask-orchicon'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -66,6 +70,11 @@ const WorkItemsRoute = WorkItemsRouteImport.update({
 const WebhooksRoute = WebhooksRouteImport.update({
   id: '/webhooks',
   path: '/webhooks',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UsageRoute = UsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TelemetryRoute = TelemetryRouteImport.update({
@@ -113,9 +122,19 @@ const PoliciesRoute = PoliciesRouteImport.update({
   path: '/policies',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OverviewRoute = OverviewRouteImport.update({
+  id: '/overview',
+  path: '/overview',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HomeRoute = HomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExecutionsRoute = ExecutionsRouteImport.update({
@@ -131,6 +150,11 @@ const DashboardRoute = DashboardRouteImport.update({
 const CostExplorerRoute = CostExplorerRouteImport.update({
   id: '/cost-explorer',
   path: '/cost-explorer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConversationsRoute = ConversationsRouteImport.update({
+  id: '/conversations',
+  path: '/conversations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AskOrchiconRoute = AskOrchiconRouteImport.update({
@@ -245,10 +269,13 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
   '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
@@ -258,6 +285,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -285,10 +313,13 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
   '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
@@ -298,6 +329,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -326,10 +358,13 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
   '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
@@ -339,6 +374,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -368,10 +404,13 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
     | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
@@ -381,6 +420,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -408,10 +448,13 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
     | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
@@ -421,6 +464,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -448,10 +492,13 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
     | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
@@ -461,6 +508,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -489,10 +537,13 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ApprovalsRoute: typeof ApprovalsRoute
   AskOrchiconRoute: typeof AskOrchiconRoute
+  ConversationsRoute: typeof ConversationsRoute
   CostExplorerRoute: typeof CostExplorerRoute
   DashboardRoute: typeof DashboardRoute
   ExecutionsRoute: typeof ExecutionsRoute
+  HomeRoute: typeof HomeRoute
   LoginRoute: typeof LoginRoute
+  OverviewRoute: typeof OverviewRoute
   PoliciesRoute: typeof PoliciesRoute
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
@@ -502,6 +553,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   TelemetryRoute: typeof TelemetryRoute
+  UsageRoute: typeof UsageRoute
   WebhooksRoute: typeof WebhooksRoute
   WorkItemsRoute: typeof WorkItemsRoute
   WorkersRoute: typeof WorkersRoute
@@ -552,6 +604,13 @@ declare module '@tanstack/react-router' {
       path: '/webhooks'
       fullPath: '/webhooks'
       preLoaderRoute: typeof WebhooksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/usage': {
+      id: '/usage'
+      path: '/usage'
+      fullPath: '/usage'
+      preLoaderRoute: typeof UsageRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/telemetry': {
@@ -617,11 +676,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PoliciesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/overview': {
+      id: '/overview'
+      path: '/overview'
+      fullPath: '/overview'
+      preLoaderRoute: typeof OverviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/home': {
+      id: '/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof HomeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/executions': {
@@ -643,6 +716,13 @@ declare module '@tanstack/react-router' {
       path: '/cost-explorer'
       fullPath: '/cost-explorer'
       preLoaderRoute: typeof CostExplorerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/conversations': {
+      id: '/conversations'
+      path: '/conversations'
+      fullPath: '/conversations'
+      preLoaderRoute: typeof ConversationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ask-orchicon': {
@@ -801,10 +881,13 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   ApprovalsRoute: ApprovalsRoute,
   AskOrchiconRoute: AskOrchiconRoute,
+  ConversationsRoute: ConversationsRoute,
   CostExplorerRoute: CostExplorerRoute,
   DashboardRoute: DashboardRoute,
   ExecutionsRoute: ExecutionsRoute,
+  HomeRoute: HomeRoute,
   LoginRoute: LoginRoute,
+  OverviewRoute: OverviewRoute,
   PoliciesRoute: PoliciesRoute,
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
@@ -814,6 +897,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   TelemetryRoute: TelemetryRoute,
+  UsageRoute: UsageRoute,
   WebhooksRoute: WebhooksRoute,
   WorkItemsRoute: WorkItemsRoute,
   WorkersRoute: WorkersRoute,
