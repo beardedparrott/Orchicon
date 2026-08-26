@@ -2228,6 +2228,26 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 
 		default:
+			// No decision field found. For the terminal PR loop (devops -> end) an empty decision
+			// means the PR step succeeded without an explicit review signal - this is success, not a re-ask.
+			// The general re-ask path would infinitely loop for step-3rplua0d/step-e75nato1 which depends
+			// only on step-devops-pr. Treat it as success to avoid the wedge that required force_progress.
+			if cfg.LoopBranch == "step-devops-pr" && (cfg.SuccessBranch == "step-l32ezp4b" || cfg.SuccessBranch == "step-end") {
+				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:    strPtr(domain.StepRunSucceeded),
+					StartedAt: &now,
+					EndedAt:   &now,
+				})
+				if err != nil {
+					return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+				}
+				runs[step.ID] = updated
+				if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+					return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
+				}
+				r.log.Info("loop_decision: terminal devops success (no decision) -> accepted", "run", run.ID, "step", step.ID)
+				break
+			}
 			// No decision field found. Re-ask the reviewer.
 			reviewerStepID := ""
 			for _, dep := range step.DependsOn {
@@ -4084,7 +4104,18 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 							prState := ""
 							if exec.PrState != nil { prState = *exec.PrState }
 							if prState == "" { prState = "open" }
-							newCtx, _ := json.Marshal(map[string]string{"pr_url": prURL, "pr_state": prState})
+							// Merge into existing run_context instead of replacing - preserves worktree_branch and other keys
+							merged := run.RunContext
+							var m map[string]any
+							if len(merged) > 0 {
+								_ = json.Unmarshal(merged, &m)
+							}
+							if m == nil {
+								m = map[string]any{}
+							}
+							m["pr_url"] = prURL
+							m["pr_state"] = prState
+							newCtx, _ := json.Marshal(m)
 							_, _ = tx.Exec(ctx, `UPDATE workflow_runs SET run_context = $1, updated_at = now(), version = version + 1 WHERE id = $2`, newCtx, run.ID)
 							run.RunContext = newCtx
 						}
