@@ -17,6 +17,8 @@ import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SchedulesRouteImport } from './routes/schedules'
+import { Route as RecurringItemsRouteImport } from './routes/recurring-items'
+import { Route as CostExplorerRouteImport } from './routes/cost-explorer'
 import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
@@ -84,6 +86,16 @@ const SettingsRoute = SettingsRouteImport.update({
 const SchedulesRoute = SchedulesRouteImport.update({
   id: '/schedules',
   path: '/schedules',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecurringItemsRoute = RecurringItemsRouteImport.update({
+  id: '/recurring-items',
+  path: '/recurring-items',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CostExplorerRoute = CostExplorerRouteImport.update({
+  id: '/cost-explorer',
+  path: '/cost-explorer',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RuntimeImagesRoute = RuntimeImagesRouteImport.update({
@@ -556,6 +568,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SchedulesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recurring-items': {
+      id: '/recurring-items'
+      path: '/recurring-items'
+      fullPath: '/recurring-items'
+      preLoaderRoute: typeof RecurringItemsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cost-explorer': {
+      id: '/cost-explorer'
+      path: '/cost-explorer'
+      fullPath: '/cost-explorer'
+      preLoaderRoute: typeof CostExplorerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/runtime-images': {
       id: '/runtime-images'
       path: '/runtime-images'
@@ -769,6 +795,8 @@ const rootRouteChildren: RootRouteChildren = {
   RecoveryRoute: RecoveryRoute,
   RuntimeImagesRoute: RuntimeImagesRoute,
   SchedulesRoute: SchedulesRoute,
+  RecurringItemsRoute: RecurringItemsRoute,
+  CostExplorerRoute: CostExplorerRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   TelemetryRoute: TelemetryRoute,
