@@ -6,7 +6,7 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/ask-orchicon" });
+    throw redirect({ to: "/ask-orchicon", search: { conversationId: null } } as never);
   },
   component: () => null,
 });
