@@ -32,7 +32,7 @@ const createWorkflowSchema = z.object({
   type: z.enum(["one-shot", "repeatable-template"]),
   projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
-  gitStrategy: z.enum(["inherit", "local", "pr", "none"]).optional().default("inherit"),
+  gitStrategy: z.enum(["inherit", "local", "pr", "none"]).default("inherit"),
 });
 
 type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;

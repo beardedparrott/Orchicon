@@ -53,7 +53,11 @@ export function useUpdateProject() {
       gitStrategy?: string;
       git_strategy?: string;
     }) => {
-      const res = await projectClient.updateProject(input);
+      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
+      const payload: any = { ...input };
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const res = await projectClient.updateProject(payload);
       return res.project as Project;
     },
     onSuccess: (project) => {
@@ -95,7 +99,11 @@ export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[]; gitStrategy?: string; git_strategy?: string }) => {
-      const res = await projectClient.createProject(input);
+      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
+      const payload: any = { ...input };
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const res = await projectClient.createProject(payload);
       return res.project as Project;
     },
     onSuccess: () => {
