@@ -35,7 +35,8 @@ var cannedWorkflows = []cannedWorkflow{
 			{"id":"step-q4xlbg6v","name":"Principal Software Architect","kind":"task","ref":"w_se_principal_architect","worker_version":0,"depends_on":[],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":-370.21653077813266,"position_y":-346.6528223715784},
 			{"id":"step-i64wso0x","name":"Design Approver","kind":"approval","ref":"w_se_design_approver","worker_version":0,"depends_on":["step-q4xlbg6v"],"gate_policy_ref":"","config":"{\"reviewer\":\"worker\",\"max_iterations\":6,\"success_branch\":\"step-sse\",\"loop_branch\":\"step-q4xlbg6v\"}","position_x":-333.41658002439067,"position_y":-196.35081675232993},
 			{"id":"step-rrcz490q","name":"Parallel","kind":"parallel","ref":"","worker_version":0,"depends_on":["step-sse"],"gate_policy_ref":"","config":"{}","position_x":-308.0277894023609,"position_y":89.43532397943022},
-			{"id":"step-3rplua0d","name":"Loop Decision","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-devops-pr"],"gate_policy_ref":"","config":"{\"max_iterations\":6,\"conflict_value\":\"conflict\",\"exhausted_review\":\"\",\"loop_branch\":\"step-devops-pr\"}","position_x":257.5411926158563,"position_y":820.5813876295093}
+			{"id":"step-3rplua0d","name":"Loop Decision","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-devops-pr"],"gate_policy_ref":"","config":"{\"max_iterations\":6,\"conflict_value\":\"conflict\",\"exhausted_review\":\"\",\"loop_branch\":\"step-devops-pr\",\"success_branch\":\"step-end\"}","position_x":257.5411926158563,"position_y":820.5813876295093},
+			{"id":"step-end","name":"End","kind":"end","ref":"","worker_version":0,"depends_on":["step-3rplua0d"],"gate_policy_ref":"","config":"{}","position_x":400,"position_y":950}
 		]`,
 	},
 	{
@@ -53,7 +54,8 @@ var cannedWorkflows = []cannedWorkflow{
 			{"id":"step-q4xlbg6v","name":"Principal Software Architect","kind":"task","ref":"w_se_principal_architect","worker_version":0,"depends_on":[],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","position_x":-370.21653077813266,"position_y":-346.6528223715784},
 			{"id":"step-i64wso0x","name":"Design Approver","kind":"approval","ref":"w_se_design_approver","worker_version":0,"depends_on":["step-q4xlbg6v"],"gate_policy_ref":"","config":"{\"reviewer\":\"worker\",\"max_iterations\":6,\"success_branch\":\"step-sse\",\"loop_branch\":\"step-q4xlbg6v\"}","position_x":-333.41658002439067,"position_y":-196.35081675232993},
 			{"id":"step-09zk5l01","name":"Parallel","kind":"parallel","ref":"","worker_version":0,"depends_on":["step-sse"],"gate_policy_ref":"","config":"{}","position_x":-306.7399649338158,"position_y":81.10492023910098},
-			{"id":"step-e75nato1","name":"Loop Decision","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-devops-pr"],"gate_policy_ref":"","config":"{\"max_iterations\":6,\"conflict_value\":\"conflict\",\"exhausted_review\":\"\",\"loop_branch\":\"step-devops-pr\"}","position_x":257.5411926158563,"position_y":820.5813876295093}
+			{"id":"step-e75nato1","name":"Loop Decision","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-devops-pr"],"gate_policy_ref":"","config":"{\"max_iterations\":6,\"conflict_value\":\"conflict\",\"exhausted_review\":\"\",\"loop_branch\":\"step-devops-pr\",\"success_branch\":\"step-end\"}","position_x":257.5411926158563,"position_y":820.5813876295093},
+			{"id":"step-end","name":"End","kind":"end","ref":"","worker_version":0,"depends_on":["step-e75nato1"],"gate_policy_ref":"","config":"{}","position_x":400,"position_y":950}
 		]`,
 	},
 }

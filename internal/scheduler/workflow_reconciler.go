@@ -2234,6 +2234,21 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		}
 
+	case domain.StepKindEnd:
+		// End: terminal sink, always succeeds when deps satisfied. No dispatch.
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+			Status:    strPtr(domain.StepRunSucceeded),
+			StartedAt: &now,
+			EndedAt:   &now,
+		})
+		if err != nil {
+			return fmt.Errorf("mark end step succeeded: %w", err)
+		}
+		runs[step.ID] = updated
+		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+			return fmt.Errorf("enqueue end step_succeeded: %w", err)
+		}
+
 	case domain.StepKindParallel:
 		// Fan-out: mark succeeded; downstream steps that depend on this
 		// one become ready on the next pass (their deps are now
