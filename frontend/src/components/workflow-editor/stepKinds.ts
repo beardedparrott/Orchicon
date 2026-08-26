@@ -1,6 +1,7 @@
 import {
   Bot,
   FileText,
+  Flag,
   GitBranch,
   GitFork,
   LifeBuoy,
@@ -77,7 +78,8 @@ export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
   6: StepKind.WORK_ITEM,
   7: StepKind.PROJECT,
   8: StepKind.LOOP_DECISION,
-  10: StepKind.TASK,
+  9: StepKind.APPROVAL,
+  10: StepKind.END,
 };
 
 export const STR_TO_KIND: Record<string, number> = {
@@ -105,7 +107,7 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   7: FileText,
   8: Repeat2,
   9: ShieldCheck,
-  10: GitBranch,
+  10: Flag,
 };
 
 export const KIND_ACCENT: Record<number, string> = {
