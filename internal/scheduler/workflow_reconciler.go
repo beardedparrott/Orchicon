@@ -4082,7 +4082,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 					if prURL != "" {
 						if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
 							prState := ""
-							if execRow.PrState != nil { prState = *execRow.PrState }
+							if exec.PrState != nil { prState = *exec.PrState }
 							if prState == "" { prState = "open" }
 							newCtx, _ := json.Marshal(map[string]string{"pr_url": prURL, "pr_state": prState})
 							_, _ = tx.Exec(ctx, `UPDATE workflow_runs SET run_context = $1, updated_at = now(), version = version + 1 WHERE id = $2`, newCtx, run.ID)
