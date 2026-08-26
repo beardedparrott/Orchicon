@@ -1,4 +1,4 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   Plus,
@@ -12,8 +12,14 @@ import {
   FolderPlus,
   ChevronRight,
   GripVertical,
+  MessageSquare,
+  PanelRight,
+  PanelRightClose,
+  History,
+  Sparkles,
 } from "lucide-react";
 
+import { Link } from "@tanstack/react-router";
 import { Route as rootRoute } from "@/routes/__root";
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -65,6 +71,9 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/ask-orchicon",
+  validateSearch: (search: Record<string, unknown>) => ({
+    conversationId: (search.conversationId as string | undefined) ?? null,
+  }),
   component: AskOrchiconPage,
 });
 
@@ -183,7 +192,18 @@ const EMPTY_STREAM: ConvStream = {
 const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
 
 function AskOrchiconPage() {
-  const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const search = Route.useSearch() as { conversationId: string | null };
+  const navigate = useNavigate();
+  const activeConvId = search.conversationId ?? null;
+  const setActiveConvId = useCallback(
+    (id: string | null) => {
+      navigate({
+        to: "/ask-orchicon",
+        search: { conversationId: id ?? undefined } as never,
+      });
+    },
+    [navigate],
+  );
   const toast = useToast();
   // Mode state — defaults to BRAINSTORM; synced from activeConv when available.
   const [localMode, setLocalMode] = useState<ConversationMode>(
@@ -242,8 +262,24 @@ function AskOrchiconPage() {
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [overFolderId, setOverFolderId] = useState<string | null>(null);
 
-  // Category preferences for conversations (no auto-seed)
-  const convPrefs = useCategoryPreferences("conversations", { noSeed: true });
+  // Category preferences for conversations (seed into Software Development once)
+  const convPrefs = useCategoryPreferences("conversations");
+  const [panelCollapsed, setPanelCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("orchicon_conversation_panel_collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const togglePanel = useCallback(() => {
+    setPanelCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("orchicon_conversation_panel_collapsed", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
@@ -820,6 +856,13 @@ function AskOrchiconPage() {
     return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
   }, [conversations, convPrefs.state]);
 
+  // Seed existing conversations into "Software Development" once on first load
+  useEffect(() => {
+    if (conversations && conversations.length > 0) {
+      convPrefs.ensureSeeded(conversations.map((c) => c.id));
+    }
+  }, [conversations]);
+
   // Map for quick lookup of conversations by id. Carries the server-reported
   // turn state so the sidebar can show which conversations are busy.
   const convById = useMemo(() => {
@@ -850,12 +893,18 @@ function AskOrchiconPage() {
           <div className="flex flex-1 items-center justify-center px-4">
             <div className="w-full max-w-2xl space-y-8">
               <div className="text-center space-y-4">
-                <h1 className="text-4xl font-extrabold tracking-tight text-foreground md:text-5xl">
-                  What would you like to create today?
+                <div className="flex justify-center">
+                  <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    Intelligent Orchestration
+                  </span>
+                </div>
+                <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
+                  <span className="text-foreground">Orchestrate </span>
+                  <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">with intention</span>
                 </h1>
-                <p className="text-base text-muted-foreground max-w-lg mx-auto md:text-lg">
-                  Ask Orchicon anything — create projects, manage work items,
-                  brainstorm ideas, or get help with your codebase.
+                <p className="text-lg text-slate-400 max-w-2xl mx-auto font-light leading-relaxed text-balance">
+                  Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control.
                 </p>
               </div>
                <ChatInputField
@@ -883,7 +932,7 @@ function AskOrchiconPage() {
                 }}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
-                placeholder="Ask Orchicon anything..."
+                placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
               />
@@ -1053,7 +1102,7 @@ function AskOrchiconPage() {
                 onSend={handleSendMessage}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
-                placeholder="Ask Orchicon anything..."
+                placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
@@ -1064,29 +1113,44 @@ function AskOrchiconPage() {
         )}
       </div>
 
-      {/* Right sidebar — conversations panel (w-80 per ADR-001) */}
-      <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l bg-card overflow-y-auto">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <span className="text-sm font-medium">Conversations</span>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setFolderDialogOpen(true)}
-              title="New folder"
-            >
-              <FolderPlus className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleNewChat}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
+      {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
+      {!panelCollapsed ? (
+        <aside className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
+          <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
+            <div className="flex items-center space-x-2 text-slate-300">
+              <MessageSquare className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
+            </div>
+            <div className="flex items-center space-x-1">
+              <button
+                onClick={() => setFolderDialogOpen(true)}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                title="New folder"
+                aria-label="New folder"
+              >
+                <FolderPlus className="w-4 h-4" />
+              </button>
+              <Link
+                to="/ask-orchicon"
+                search={{ conversationId: undefined } as never}
+                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                title="New Chat"
+                aria-label="New conversation"
+              >
+                <Plus className="w-4 h-4" />
+              </Link>
+              <button
+                onClick={togglePanel}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                title="Collapse Panel"
+                aria-label="Collapse conversation panel"
+              >
+                <PanelRightClose className="w-4 h-4" />
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {convsLoading && (
             <p className="text-xs text-center text-muted-foreground py-4">
               Loading...
@@ -1179,14 +1243,33 @@ function AskOrchiconPage() {
             </DragOverlay>
           </DndContext>
         </div>
-      </aside>
+          <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
+            <button
+              onClick={handleNewChat}
+              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
+            >
+              <History className="w-3.5 h-3.5 text-slate-400" />
+              <span>View All History</span>
+            </button>
+          </div>
+        </aside>
+      ) : (
+        <button
+          onClick={togglePanel}
+          aria-label="Expand conversation panel"
+          title="Expand Conversations"
+          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start"
+        >
+          <PanelRight className="h-4 w-4" />
+        </button>
+      )}
 
       {/* Create Category Dialog */}
       <CreateCategoryDialog
         open={folderDialogOpen}
         onOpenChange={setFolderDialogOpen}
-        onCreate={(name) => {
-          convPrefs.createCategory(name);
+        onCreate={(name, description) => {
+          convPrefs.createCategory(name, description);
           setFolderDialogOpen(false);
         }}
         existingNames={convPrefs.state.categories.map((c) => c.name)}
@@ -1583,13 +1666,14 @@ function ChatInputField({
         </div>
       )}
       <div
-        className={`rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 overflow-hidden ${dragOver ? "ring-2 ring-violet-400 border-dashed" : ""}`}
+        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-violet-400 border-dashed" : ""}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {/* Textarea area */}
-        <div className="flex items-end gap-1 px-3 pt-3 pb-1">
+        <div className="flex items-end gap-2 px-1 pb-1">
+          <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
           <button
             onClick={() => fileInputRef.current?.click()}
             className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent"
@@ -1629,6 +1713,7 @@ function ChatInputField({
                   onClick={handleSubmit}
                   disabled={!text.trim() && attachments.length === 0}
                   size="sm"
+                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
                   title="Send interrupts the current reply and redirects the model"
                 >
                   Send
@@ -1643,6 +1728,7 @@ function ChatInputField({
                 onClick={handleSubmit}
                 disabled={!text.trim() && attachments.length === 0}
                 size="sm"
+                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
               >
                 Send
               </Button>
@@ -1726,10 +1812,10 @@ function ConversationItem({
       <button
         onClick={onSelect}
         className={cn(
-          "w-full text-left rounded-md px-3 py-2 text-sm transition-colors",
+          "w-full text-left rounded-xl p-2.5 text-sm transition border",
           isActive
-            ? "bg-accent text-accent-foreground"
-            : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+            ? "bg-cyan-500/10 border-cyan-500/30 text-white"
+            : "border-transparent text-slate-300 hover:bg-white/5 hover:border-white/5 hover:text-white",
         )}
       >
         <div className="flex items-start gap-2">
