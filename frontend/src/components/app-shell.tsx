@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Layers,
@@ -25,13 +25,8 @@ import {
   UserCog,
   Bell,
   LogOut,
-  MessageSquare,
-  Plus,
-  PanelRight,
-  PanelRightClose,
   Menu,
   X,
-  History,
   Moon,
   Sun,
 } from "lucide-react";
@@ -40,7 +35,6 @@ import { cn } from "@/lib/utils";
 import { useSession, logout } from "@/auth/auth";
 import { setupProactiveRefreshHook, useSessionStore } from "@/auth/session";
 import { useThemeStore } from "@/lib/theme-store";
-import { useListConversations } from "@/api/askOrchicon";
 
 type NavItem = {
   label: string;
@@ -131,24 +125,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     navigate({ to: "/login" });
   }, [loading, session.authenticated, path, navigate]);
 
-  const [panelCollapsed, setPanelCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("orchicon_conversation_panel_collapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const togglePanel = useCallback(() => {
-    setPanelCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("orchicon_conversation_panel_collapsed", String(next));
-      } catch {}
-      return next;
-    });
-  }, []);
-
   return (
     <div className="flex min-h-screen flex-col bg-mesh">
       <TopHeader />
@@ -156,19 +132,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className={cn("flex-1 min-w-0 overflow-auto flex flex-col")}>
           <div className={cn(isAskOrchicon ? "flex-1 flex flex-col" : "flex-1 p-6 lg:p-8")}>{children}</div>
         </main>
-        {session.authenticated && !panelCollapsed && (
-          <ConversationPanel onCollapse={togglePanel} />
-        )}
-        {session.authenticated && panelCollapsed && (
-          <button
-            onClick={togglePanel}
-            aria-label="Expand conversation panel"
-            title="Expand Conversations"
-            className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start"
-          >
-            <PanelRight className="h-4 w-4" />
-          </button>
-        )}
       </div>
     </div>
   );
@@ -186,7 +149,7 @@ function TopHeader() {
   return (
     <header className="p-4 pb-0 z-50">
       <div className="max-w-[1920px] mx-auto glass-panel rounded-2xl px-4 py-2 flex items-center justify-between shadow-2xl gap-2">
-        <Link to={session.authenticated ? "/ask-orchicon" : "/login"} className="flex items-center space-x-3 pr-4 border-r border-white/10 shrink-0">
+        <Link to={session.authenticated ? "/ask-orchicon" : "/login"} search={session.authenticated ? { conversationId: null } as never : undefined} className="flex items-center space-x-3 pr-4 border-r border-white/10 shrink-0">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center shadow-lg shadow-cyan-500/30 shrink-0">
             <Layers className="w-5 h-5 text-white" />
           </div>
@@ -196,6 +159,7 @@ function TopHeader() {
         <nav className="hidden lg:flex items-center space-x-1 text-sm font-medium flex-1 justify-center min-w-0">
           <Link
             to={ASK_ORCHICON.to}
+            search={{ conversationId: null } as never}
             className="flex items-center space-x-2 px-3.5 py-2 rounded-xl text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition shrink-0"
           >
             <Sparkles className="w-4 h-4" />
@@ -482,105 +446,6 @@ function AvatarBubble() {
   );
 }
 
-function ConversationPanel({ onCollapse }: { onCollapse: () => void }) {
-  const { data: conversations } = useListConversations();
-  const items = conversations ?? [];
-
-  return (
-    <aside className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
-      <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
-        <div className="flex items-center space-x-2 text-slate-300">
-          <MessageSquare className="w-4 h-4 text-cyan-400" />
-          <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
-        </div>
-        <div className="flex items-center space-x-1">
-          <Link
-            to="/ask-orchicon"
-            className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
-            title="New Chat"
-            aria-label="New conversation"
-          >
-            <Plus className="w-4 h-4" />
-          </Link>
-          <button
-            onClick={onCollapse}
-            className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
-            title="Collapse Panel"
-            aria-label="Collapse conversation panel"
-          >
-            <PanelRightClose className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {items.length === 0 ? (
-          <>
-            <Link to="/ask-orchicon" className="group flex items-start justify-between p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-white transition">
-              <div className="space-y-0.5 truncate">
-                <div className="flex items-center space-x-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                  <p className="text-xs font-medium truncate text-cyan-200">Start a conversation</p>
-                </div>
-                <p className="text-[11px] text-slate-400 truncate pl-3.5">Ask Orchicon anything…</p>
-              </div>
-              <span className="text-[10px] text-slate-500 shrink-0">Now</span>
-            </Link>
-            <div className="pt-3 pb-1 px-2.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Uncategorized</span>
-            </div>
-            <div className="p-2.5 rounded-xl border border-transparent text-slate-400 text-xs">No history yet. Conversations will appear here.</div>
-          </>
-        ) : (
-          items.slice(0, 20).map((conv, idx) => {
-            const isActive = idx === 0;
-            const raw = conv as unknown as { id: string; title?: string; lastMessagePreview?: string };
-            const title = raw.title || `Conversation ${raw.id?.slice(-6) ?? idx}`;
-            const preview = raw.lastMessagePreview ?? "—";
-            return (
-              <Link
-                key={raw.id ?? idx}
-                to="/ask-orchicon"
-                search={{ conversationId: raw.id } as unknown as Record<string, unknown>}
-                className={cn(
-                  "group flex items-start justify-between p-2.5 rounded-xl border transition",
-                  isActive
-                    ? "bg-cyan-500/10 border-cyan-500/30 text-white"
-                    : "hover:bg-white/5 border-transparent hover:border-white/5 text-slate-300"
-                )}
-              >
-                <div className="space-y-0.5 truncate">
-                  <div className="flex items-center space-x-2">
-                    <span className={cn("w-1.5 h-1.5 rounded-full", isActive ? "bg-cyan-400" : "bg-slate-600 group-hover:bg-slate-400")} />
-                    <p className={cn("text-xs font-medium truncate", isActive ? "text-cyan-200" : "group-hover:text-white")}>{title}</p>
-                  </div>
-                  <p className="text-[11px] text-slate-400 truncate pl-3.5">{preview}</p>
-                </div>
-                <span className="text-[10px] text-slate-500 shrink-0">Now</span>
-              </Link>
-            );
-          })
-        )}
-        {items.length > 0 && (
-          <div className="pt-3 pb-1 px-2.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Uncategorized</span>
-          </div>
-        )}
-      </div>
-
-      <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
-        <Link
-          to="/ask-orchicon"
-          className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
-        >
-          <History className="w-3.5 h-3.5 text-slate-400" />
-          <span>View All History</span>
-        </Link>
-      </div>
-    </aside>
-  );
-}
-
 function MobileDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const session = useSession();
@@ -618,6 +483,7 @@ function MobileDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: (v:
         <nav className="flex-1 p-3 space-y-4 overflow-y-auto">
           <Link
             to={ASK_ORCHICON.to}
+            search={{ conversationId: null } as never}
             onClick={() => onOpenChange(false)}
             className={cn(
               "flex items-center space-x-2.5 px-3 py-2.5 rounded-lg font-medium transition",
