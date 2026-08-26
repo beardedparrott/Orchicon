@@ -77,3 +77,11 @@ export function gitStrategyToProto(v: GitStrategy | GitStrategyNullable): number
     default: return undefined;
   }
 }
+
+export function protoToGitStrategy(v: number | string | undefined): GitStrategy | undefined {
+  if (v === 1 || v === "local" || v === "LOCAL") return "local";
+  if (v === 2 || v === "pr" || v === "PR") return "pr";
+  if (v === 3 || v === "none" || v === "NONE") return "none";
+  if (typeof v === "string" && (v === "local" || v === "pr" || v === "none")) return v as GitStrategy;
+  return undefined;
+}

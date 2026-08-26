@@ -62,7 +62,7 @@ import {
 } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import type { GitStrategy } from "@/components/GitStrategySelect";
-import { gitStrategyToProto } from "@/components/GitStrategySelect";
+import { gitStrategyToProto, protoToGitStrategy } from "@/components/GitStrategySelect";
 import { useGetProject } from "@/api/projects";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -144,7 +144,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   useEffect(() => {
     const raw = (data?.workflow as any)?.gitStrategy ?? (data?.workflow as any)?.git_strategy;
-    if (raw === "local" || raw === "pr" || raw === "none") setDraftGitStrategy(raw);
+    const mapped = protoToGitStrategy(raw as any);
+    if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("inherit");
   }, [data?.workflow]);
 
@@ -759,7 +760,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                   onChange={(e) => setDraftGitStrategy(e.target.value as any)}
                   className="h-7 rounded-md border border-input bg-background px-2 text-xs"
                 >
-                  <option value="inherit">Inherit {projectForGit ? `(${(projectForGit as any).gitStrategy ?? (projectForGit as any).git_strategy ?? "local"})` : "(project default)"}</option>
+                  <option value="inherit">Inherit {projectForGit ? `(${protoToGitStrategy((projectForGit as any).gitStrategy ?? (projectForGit as any).git_strategy as any) ?? "local"})` : "(project default)"}</option>
                   <option value="local">Local — push branch only</option>
                   <option value="pr">PR — push + PR</option>
                   <option value="none">Ephemeral — no push</option>

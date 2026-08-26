@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { FileBrowser } from "@/components/FileBrowser";
-import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
+import { GitStrategySelect, type GitStrategy, protoToGitStrategy } from "@/components/GitStrategySelect";
 
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -78,7 +78,8 @@ function ProjectDetailPage() {
         return g.__git_strategy;
       } catch { return undefined; }
     })();
-    if (raw === "local" || raw === "pr" || raw === "none") setDraftGitStrategy(raw);
+    const mapped = protoToGitStrategy(raw as any);
+    if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("local");
   }, [project]);
 
