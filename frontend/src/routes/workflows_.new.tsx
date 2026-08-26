@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GitStrategySelect } from "@/components/GitStrategySelect";
+import { GitStrategySelect, gitStrategyToProto } from "@/components/GitStrategySelect";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -55,7 +55,8 @@ function NewWorkflowPage() {
   const gitStrategy = watch("gitStrategy");
 
   const onSubmit = async (values: CreateWorkflowForm) => {
-    const gitStrategyPayload = values.gitStrategy === "inherit" ? undefined : values.gitStrategy;
+    const rawPayload = values.gitStrategy === "inherit" ? undefined : values.gitStrategy;
+    const gitStrategyPayload = rawPayload ? gitStrategyToProto(rawPayload as any) : undefined;
     const res = await (createWorkflow.mutateAsync as any)({
       name: values.name,
       projectId: values.type === "one-shot" ? (values.projectId ?? "") : "",

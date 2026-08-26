@@ -62,6 +62,7 @@ import {
 } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import type { GitStrategy } from "@/components/GitStrategySelect";
+import { gitStrategyToProto } from "@/components/GitStrategySelect";
 import { useGetProject } from "@/api/projects";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -160,6 +161,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     }
     return "";
   }, [nodes]);
+  const { data: projectForGit } = useGetProject(resolvedProjectId || data?.workflow?.projectId || "");
 
   // PR D: listen for delete events from StepNode's hover-× button.
   // The node dispatches a CustomEvent on window; we remove the node
@@ -695,7 +697,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   // back to the workflow-level projectId for compatibility with
   // existing workflows that set it at creation time.
   const effectiveProjectId = resolvedProjectId || wf.projectId;
-  const { data: projectForGit } = useGetProject(effectiveProjectId);
   
 
   return (
@@ -771,7 +772,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     disabled={savingGitStrategy}
                     onClick={() => {
                       setSavingGitStrategy(true);
-                      (updateWorkflow.mutate as any)({ workflowId: wf.id, gitStrategy: draftGitStrategy === "inherit" ? undefined : draftGitStrategy, git_strategy: draftGitStrategy === "inherit" ? undefined : draftGitStrategy }, { onSettled: () => setSavingGitStrategy(false) });
+                      (updateWorkflow.mutate as any)({ workflowId: wf.id, gitStrategy: draftGitStrategy === "inherit" ? undefined : gitStrategyToProto(draftGitStrategy as any), git_strategy: draftGitStrategy === "inherit" ? undefined : gitStrategyToProto(draftGitStrategy as any) }, { onSettled: () => setSavingGitStrategy(false) });
                     }}
                   >
                     {savingGitStrategy ? "Saving…" : "Save"}
