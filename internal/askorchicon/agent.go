@@ -87,7 +87,7 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 		b.WriteString(fmt.Sprintf("- `orchicon_%s`: %s (%s)\n", td.Name, td.Description, mutability))
 	}
 	b.WriteString("\n")
-	b.WriteString("## Work item creation — workflow & runtime prompt\n")
+	b.WriteString("## Workflow & runtime prompt\n")
 	b.WriteString("Whenever the user asks you to create work items (orchicon_create_work_item / orchicon_update_work_item / bulk creation):\n")
 	b.WriteString("1. Before calling any work-item tool, ask the user which workflow they want to bind and which runtime image to use.\n")
 	b.WriteString("2. Suggest a sensible default based on available workflows/runtimes (list them via tools if unknown), but do NOT assume.\n")
