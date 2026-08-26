@@ -66,7 +66,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [loading, session.authenticated, path, navigate]);
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-screen bg-mesh">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
@@ -91,9 +91,9 @@ function NavLinks() {
             key={item.to}
             to={item.to}
             className={cn(
-              "flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex items-center rounded-lg px-3 py-2 text-sm font-medium transition-colors",
               active
-                ? "bg-accent text-accent-foreground"
+                ? "bg-white/10 text-foreground border border-[hsla(var(--glass-panel-border)/var(--glass-panel-border-a))]"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
           >
@@ -107,8 +107,8 @@ function NavLinks() {
 
 function Sidebar() {
   return (
-    <aside className="hidden w-60 shrink-0 border-r bg-card md:block">
-      <div className="flex h-14 items-center gap-2 border-b px-5">
+    <aside className="hidden w-60 shrink-0 border-r glass-panel md:block">
+      <div className="flex h-14 items-center gap-2 border-b border-[hsla(var(--glass-panel-border)/var(--glass-panel-border-a))] px-5">
         <span className="text-lg font-semibold tracking-tight">Orchicon</span>
       </div>
       <nav className="space-y-1 p-3">
@@ -162,7 +162,7 @@ function MobileNav({ open, onOpenChange }: { open: boolean; onOpenChange: (open:
             onClick={() => onOpenChange(false)}
             aria-hidden="true"
           />
-          <div className="absolute inset-y-0 left-0 w-60 border-r bg-card shadow-lg">
+          <div className="absolute inset-y-0 left-0 w-60 border-r glass-menu shadow-lg">
             <div className="flex h-14 items-center gap-2 border-b px-5">
               <span className="text-lg font-semibold tracking-tight">Orchicon</span>
             </div>
@@ -184,7 +184,7 @@ function TopBar() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   if (!session.authenticated) {
     return (
-      <header className="flex h-14 items-center justify-between border-b px-6">
+      <header className="flex h-14 items-center justify-between border-b border-[hsla(var(--glass-panel-border)/var(--glass-panel-border-a))] glass-panel mx-2 mt-2 rounded-2xl px-6">
         <div className="flex items-center gap-2">
           <MobileNav open={mobileNavOpen} onOpenChange={setMobileNavOpen} />
           <div className="text-sm text-muted-foreground">
@@ -204,7 +204,7 @@ function TopBar() {
     );
   }
   return (
-    <header className="flex h-14 items-center justify-between border-b px-6">
+    <header className="flex h-14 items-center justify-between border-b border-[hsla(var(--glass-panel-border)/var(--glass-panel-border-a))] glass-panel mx-2 mt-2 rounded-2xl px-6">
       <div className="flex items-center gap-2">
         <MobileNav open={mobileNavOpen} onOpenChange={setMobileNavOpen} />
         <div className="text-sm text-muted-foreground">

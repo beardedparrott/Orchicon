@@ -69,7 +69,7 @@ export function MultiSelect<T extends string | number>({
           type="button"
           aria-label={label}
           className={cn(
-            "inline-flex h-9 max-w-[16rem] items-center gap-1.5 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
+            "inline-flex h-9 max-w-[16rem] items-center gap-1.5 rounded-md glass-input px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
         >
@@ -85,7 +85,7 @@ export function MultiSelect<T extends string | number>({
           align="start"
           side="bottom"
           sideOffset={4}
-          className="z-50 max-h-[320px] w-56 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          className="z-50 max-h-[320px] w-56 overflow-y-auto rounded-xl glass-menu p-1 text-popover-foreground"
         >
           <DropdownMenuPrimitive.Label className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {label}
