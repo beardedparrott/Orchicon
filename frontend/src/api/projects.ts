@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
 import type { GoalField, Project, ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
+import { gitStrategyToProto } from "@/components/GitStrategySelect";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof. New project-scoped queries extend this tree.

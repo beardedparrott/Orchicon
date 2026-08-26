@@ -391,7 +391,7 @@ function ProjectDetailPage() {
           <CardContent className="space-y-3">
             {editing ? (
               <>
-                <GitStrategySelect value={draftGitStrategy} onValueChange={setDraftGitStrategy} />
+                <GitStrategySelect value={draftGitStrategy} onValueChange={(v) => setDraftGitStrategy(v as GitStrategy)} />
                 <Button
                   variant="outline"
                   disabled={savingGitStrategy}

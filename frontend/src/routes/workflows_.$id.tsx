@@ -61,7 +61,7 @@ import {
   type StepData,
 } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
-import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
+import type { GitStrategy } from "@/components/GitStrategySelect";
 import { useGetProject } from "@/api/projects";
 import { Route as rootRoute } from "@/routes/__root";
 

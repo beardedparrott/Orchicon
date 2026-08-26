@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GitStrategySelect, type GitStrategy } from "@/components/GitStrategySelect";
+import { GitStrategySelect } from "@/components/GitStrategySelect";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -32,7 +32,7 @@ const createWorkflowSchema = z.object({
   type: z.enum(["one-shot", "repeatable-template"]),
   projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
-  gitStrategy: z.enum(["inherit", "local", "pr", "none"]).default("inherit"),
+  gitStrategy: z.enum(["inherit", "local", "pr", "none"]).optional().default("inherit"),
 });
 
 type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
@@ -89,7 +89,7 @@ function NewWorkflowPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input

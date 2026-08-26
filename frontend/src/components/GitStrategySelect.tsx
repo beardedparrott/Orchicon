@@ -67,3 +67,13 @@ export function GitStrategySelect({
     </div>
   );
 }
+
+export function gitStrategyToProto(v: GitStrategy | GitStrategyNullable): number | undefined {
+  switch (v) {
+    case "local": return 1; // GIT_STRATEGY_LOCAL
+    case "pr": return 2; // GIT_STRATEGY_PR
+    case "none": return 3; // GIT_STRATEGY_NONE
+    case "inherit": return undefined;
+    default: return undefined;
+  }
+}

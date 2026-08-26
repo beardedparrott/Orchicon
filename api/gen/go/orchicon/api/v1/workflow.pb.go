@@ -36,10 +36,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Workflow lifecycle states (docs/02 §2.4):
-// draft → published → running → completed | failed | aborted.
-// A workflow is "running" while any run is in progress; the header
-// status reflects the published template, not individual runs.
 type WorkflowStatus int32
 
 const (
@@ -377,6 +373,7 @@ type Workflow struct {
 	CurrentVersion int32                  `protobuf:"varint,6,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"` // latest version number
 	Version        int32                  `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`                                     // optimistic concurrency (docs/09 §5)
 	Type           string                 `protobuf:"bytes,10,opt,name=type,proto3" json:"type,omitempty"`                                           // "template" or "one_shot" (docs/11 §2.1)
+	GitStrategy    GitStrategy            `protobuf:"varint,11,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -467,6 +464,13 @@ func (x *Workflow) GetType() string {
 		return x.Type
 	}
 	return ""
+}
+
+func (x *Workflow) GetGitStrategy() GitStrategy {
+	if x != nil {
+		return x.GitStrategy
+	}
+	return GitStrategy_GIT_STRATEGY_UNSPECIFIED
 }
 
 func (x *Workflow) GetCreatedAt() *timestamppb.Timestamp {
@@ -1243,7 +1247,7 @@ var File_orchicon_api_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/workflow.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf0\x02\n" +
+	"\x1eorchicon/api/v1/workflow.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dorchicon/api/v1/project.proto\"\xb1\x03\n" +
 	"\bWorkflow\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1254,7 +1258,8 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x0fcurrent_version\x18\x06 \x01(\x05R\x0ecurrentVersion\x12\x18\n" +
 	"\aversion\x18\a \x01(\x05R\aversion\x12\x12\n" +
 	"\x04type\x18\n" +
-	" \x01(\tR\x04type\x129\n" +
+	" \x01(\tR\x04type\x12?\n" +
+	"\fgit_strategy\x18\v \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
@@ -1424,35 +1429,37 @@ var file_orchicon_api_v1_workflow_proto_goTypes = []any{
 	(*WorkflowRun)(nil),           // 8: orchicon.api.v1.WorkflowRun
 	(*WorkflowStepRun)(nil),       // 9: orchicon.api.v1.WorkflowStepRun
 	(*WorkflowEvent)(nil),         // 10: orchicon.api.v1.WorkflowEvent
-	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(GitStrategy)(0),              // 11: orchicon.api.v1.GitStrategy
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_workflow_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.Workflow.status:type_name -> orchicon.api.v1.WorkflowStatus
-	11, // 1: orchicon.api.v1.Workflow.created_at:type_name -> google.protobuf.Timestamp
-	11, // 2: orchicon.api.v1.Workflow.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 3: orchicon.api.v1.WorkflowVersion.status:type_name -> orchicon.api.v1.WorkflowVersionStatus
-	11, // 4: orchicon.api.v1.WorkflowVersion.published_at:type_name -> google.protobuf.Timestamp
-	11, // 5: orchicon.api.v1.WorkflowVersion.created_at:type_name -> google.protobuf.Timestamp
-	2,  // 6: orchicon.api.v1.Step.kind:type_name -> orchicon.api.v1.StepKind
-	3,  // 7: orchicon.api.v1.WorkflowRun.status:type_name -> orchicon.api.v1.WorkflowRunStatus
-	11, // 8: orchicon.api.v1.WorkflowRun.started_at:type_name -> google.protobuf.Timestamp
-	11, // 9: orchicon.api.v1.WorkflowRun.ended_at:type_name -> google.protobuf.Timestamp
-	11, // 10: orchicon.api.v1.WorkflowRun.created_at:type_name -> google.protobuf.Timestamp
-	11, // 11: orchicon.api.v1.WorkflowRun.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 12: orchicon.api.v1.WorkflowStepRun.step_kind:type_name -> orchicon.api.v1.StepKind
-	4,  // 13: orchicon.api.v1.WorkflowStepRun.status:type_name -> orchicon.api.v1.StepRunStatus
-	11, // 14: orchicon.api.v1.WorkflowStepRun.started_at:type_name -> google.protobuf.Timestamp
-	11, // 15: orchicon.api.v1.WorkflowStepRun.ended_at:type_name -> google.protobuf.Timestamp
-	11, // 16: orchicon.api.v1.WorkflowStepRun.created_at:type_name -> google.protobuf.Timestamp
-	11, // 17: orchicon.api.v1.WorkflowStepRun.updated_at:type_name -> google.protobuf.Timestamp
-	3,  // 18: orchicon.api.v1.WorkflowEvent.run_status:type_name -> orchicon.api.v1.WorkflowRunStatus
-	4,  // 19: orchicon.api.v1.WorkflowEvent.step_status:type_name -> orchicon.api.v1.StepRunStatus
-	11, // 20: orchicon.api.v1.WorkflowEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	11, // 1: orchicon.api.v1.Workflow.git_strategy:type_name -> orchicon.api.v1.GitStrategy
+	12, // 2: orchicon.api.v1.Workflow.created_at:type_name -> google.protobuf.Timestamp
+	12, // 3: orchicon.api.v1.Workflow.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 4: orchicon.api.v1.WorkflowVersion.status:type_name -> orchicon.api.v1.WorkflowVersionStatus
+	12, // 5: orchicon.api.v1.WorkflowVersion.published_at:type_name -> google.protobuf.Timestamp
+	12, // 6: orchicon.api.v1.WorkflowVersion.created_at:type_name -> google.protobuf.Timestamp
+	2,  // 7: orchicon.api.v1.Step.kind:type_name -> orchicon.api.v1.StepKind
+	3,  // 8: orchicon.api.v1.WorkflowRun.status:type_name -> orchicon.api.v1.WorkflowRunStatus
+	12, // 9: orchicon.api.v1.WorkflowRun.started_at:type_name -> google.protobuf.Timestamp
+	12, // 10: orchicon.api.v1.WorkflowRun.ended_at:type_name -> google.protobuf.Timestamp
+	12, // 11: orchicon.api.v1.WorkflowRun.created_at:type_name -> google.protobuf.Timestamp
+	12, // 12: orchicon.api.v1.WorkflowRun.updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 13: orchicon.api.v1.WorkflowStepRun.step_kind:type_name -> orchicon.api.v1.StepKind
+	4,  // 14: orchicon.api.v1.WorkflowStepRun.status:type_name -> orchicon.api.v1.StepRunStatus
+	12, // 15: orchicon.api.v1.WorkflowStepRun.started_at:type_name -> google.protobuf.Timestamp
+	12, // 16: orchicon.api.v1.WorkflowStepRun.ended_at:type_name -> google.protobuf.Timestamp
+	12, // 17: orchicon.api.v1.WorkflowStepRun.created_at:type_name -> google.protobuf.Timestamp
+	12, // 18: orchicon.api.v1.WorkflowStepRun.updated_at:type_name -> google.protobuf.Timestamp
+	3,  // 19: orchicon.api.v1.WorkflowEvent.run_status:type_name -> orchicon.api.v1.WorkflowRunStatus
+	4,  // 20: orchicon.api.v1.WorkflowEvent.step_status:type_name -> orchicon.api.v1.StepRunStatus
+	12, // 21: orchicon.api.v1.WorkflowEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_workflow_proto_init() }
@@ -1460,6 +1467,7 @@ func file_orchicon_api_v1_workflow_proto_init() {
 	if File_orchicon_api_v1_workflow_proto != nil {
 		return
 	}
+	file_orchicon_api_v1_project_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
