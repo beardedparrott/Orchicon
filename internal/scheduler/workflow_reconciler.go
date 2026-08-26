@@ -978,7 +978,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if s, ok := stepByID[sr.StepID]; ok {
 				stepCfg = s.Config
 			}
-			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr, stepCfg, runByID, &recoveryTriggers)
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, &run, sr, stepCfg, runByID, &recoveryTriggers)
 			if err != nil {
 				return err
 			}
@@ -4006,7 +4006,7 @@ func maxDAGPasses() int {
 //
 // Terminal failure only occurs after all attempts are exhausted,
 // regardless of strategy.
-func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
+func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
 	}
@@ -4101,7 +4101,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 						}
 					}
 					if effectiveGitStrategy == "pr" {
-						prURL := effectivePRURL(run, exec, run.WorktreeBranch)
+						prURL := effectivePRURL(*run, exec, run.WorktreeBranch)
 					if prURL != "" {
 						if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
 							prState := ""
@@ -4119,9 +4119,23 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 							m["pr_url"] = prURL
 							m["pr_state"] = prState
 							newCtx, _ := json.Marshal(m)
-							_, _ = tx.Exec(ctx, `UPDATE workflow_runs SET run_context = $1, updated_at = now(), version = version + 1 WHERE id = $2`, newCtx, run.ID)
-							run.RunContext = newCtx
-							run.Version++
+							// Route the run_context write through the data-access
+							// layer (optimistic CAS on run.Version) instead of a raw
+							// `version = version + 1` Exec: the raw bump updated the
+							// DB but left the caller's in-memory run.Version stale, so
+							// the later `mark run completed` CAS failed with
+							// db: not found and the whole transaction rolled back —
+							// version pinned forever (the infinite loop_decision
+							// accepted wedge). UpdateWorkflowRun returns the fresh
+							// row; assigning it back via the run pointer keeps the
+							// caller's version in sync.
+							updatedRun, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+								RunContext: &newCtx,
+							})
+							if err != nil {
+								return false, false, fmt.Errorf("merge pr_url into run_context: %w", err)
+							}
+							*run = updatedRun
 						}
 					}
 						if prURL == "" {

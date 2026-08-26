@@ -242,7 +242,7 @@ func TestPollTaskStepFailsOnDeletedWorkItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ptx.Rollback(ctx)
-	terminal, failed, err := rc.pollTaskStep(ctx, ptx.Tx, approvalTestTenant, run, sr, step.Config,
+	terminal, failed, err := rc.pollTaskStep(ctx, ptx.Tx, approvalTestTenant, &run, sr, step.Config,
 		map[string]db.WorkflowStepRunRow{step.ID: sr}, nil)
 	if err != nil {
 		t.Fatalf("pollTaskStep: %v", err)
@@ -312,7 +312,7 @@ func TestPollTaskStepRecoversOnDeletedExecution(t *testing.T) {
 	defer ptx.Rollback(ctx)
 	runByID := map[string]db.WorkflowStepRunRow{step.ID: sr}
 	var recoveryTriggers []recoveryTriggerReq
-	terminal, failed, err := rc.pollTaskStep(ctx, ptx.Tx, approvalTestTenant, run, sr, step.Config, runByID, &recoveryTriggers)
+	terminal, failed, err := rc.pollTaskStep(ctx, ptx.Tx, approvalTestTenant, &run, sr, step.Config, runByID, &recoveryTriggers)
 	if err != nil {
 		t.Fatalf("pollTaskStep: %v", err)
 	}
