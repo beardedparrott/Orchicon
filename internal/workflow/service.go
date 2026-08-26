@@ -650,7 +650,7 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("workflow updated", "id", updated.ID, "name", name)
+	s.log.Info("workflow updated", "id", updated.ID, "name", updated.Name)
 	return connect.NewResponse(&apiv1.UpdateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
 }
 
