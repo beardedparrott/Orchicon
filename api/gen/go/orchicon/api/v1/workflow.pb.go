@@ -160,6 +160,7 @@ func (WorkflowVersionStatus) EnumDescriptor() ([]byte, []int) {
 //   - project: a passive marker for the project that scopes the
 //     downstream work items. Sets the workflow's project_id on the
 //     first reconcile pass.
+//   - end: terminal sink, always succeeds when deps satisfied
 type StepKind int32
 
 const (
@@ -172,6 +173,7 @@ const (
 	StepKind_STEP_KIND_WORK_ITEM     StepKind = 6
 	StepKind_STEP_KIND_PROJECT       StepKind = 7
 	StepKind_STEP_KIND_LOOP_DECISION StepKind = 8 // loop decision: inspect upstream result, branch to loop or success
+	StepKind_STEP_KIND_END           StepKind = 9 // end: terminal sink, always succeeds when deps satisfied
 )
 
 // Enum value maps for StepKind.
@@ -186,6 +188,7 @@ var (
 		6: "STEP_KIND_WORK_ITEM",
 		7: "STEP_KIND_PROJECT",
 		8: "STEP_KIND_LOOP_DECISION",
+		9: "STEP_KIND_END",
 	}
 	StepKind_value = map[string]int32{
 		"STEP_KIND_UNSPECIFIED":   0,
@@ -197,6 +200,7 @@ var (
 		"STEP_KIND_WORK_ITEM":     6,
 		"STEP_KIND_PROJECT":       7,
 		"STEP_KIND_LOOP_DECISION": 8,
+		"STEP_KIND_END":           9,
 	}
 )
 
@@ -1362,7 +1366,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"#WORKFLOW_VERSION_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dWORKFLOW_VERSION_STATUS_DRAFT\x10\x01\x12%\n" +
 	"!WORKFLOW_VERSION_STATUS_PUBLISHED\x10\x02\x12&\n" +
-	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\xe5\x01\n" +
+	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\xf8\x01\n" +
 	"\bStepKind\x12\x19\n" +
 	"\x15STEP_KIND_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTEP_KIND_TASK\x10\x01\x12\x16\n" +
@@ -1372,7 +1376,8 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x11STEP_KIND_RECOVER\x10\x05\x12\x17\n" +
 	"\x13STEP_KIND_WORK_ITEM\x10\x06\x12\x15\n" +
 	"\x11STEP_KIND_PROJECT\x10\a\x12\x1b\n" +
-	"\x17STEP_KIND_LOOP_DECISION\x10\b*\xfe\x01\n" +
+	"\x17STEP_KIND_LOOP_DECISION\x10\b\x12\x11\n" +
+	"\rSTEP_KIND_END\x10\t*\xfe\x01\n" +
 	"\x11WorkflowRunStatus\x12#\n" +
 	"\x1fWORKFLOW_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bWORKFLOW_RUN_STATUS_PENDING\x10\x01\x12\x1f\n" +
