@@ -16,6 +16,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "orchicon/api/v1/workflow.proto";
+import "orchicon/api/v1/project.proto";
 import "orchicon/api/v1/worker.proto";
 
 service WorkflowService {

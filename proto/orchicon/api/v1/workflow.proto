@@ -16,6 +16,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
+import "orchicon/api/v1/project.proto";
 
 // Workflow is the immutable header row for a composable execution plan
 // (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
@@ -138,12 +139,6 @@ message WorkflowStepRun {
 // draft → published → running → completed | failed | aborted.
 // A workflow is "running" while any run is in progress; the header
 // status reflects the published template, not individual runs.
-enum GitStrategy {
-  GIT_STRATEGY_UNSPECIFIED = 0;
-  GIT_STRATEGY_LOCAL = 1;
-  GIT_STRATEGY_PR = 2;
-  GIT_STRATEGY_NONE = 3;
-}
 
 enum WorkflowStatus {
   WORKFLOW_STATUS_UNSPECIFIED = 0;
