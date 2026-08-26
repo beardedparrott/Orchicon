@@ -107,6 +107,7 @@ proto3.util.setEnumType(WorkflowVersionStatus, "orchicon.api.v1.WorkflowVersionS
  *   - project: a passive marker for the project that scopes the
  *     downstream work items. Sets the workflow's project_id on the
  *     first reconcile pass.
+ *   - end: terminal sink, always succeeds when deps satisfied
  *
  * @generated from enum orchicon.api.v1.StepKind
  */
@@ -157,6 +158,13 @@ export enum StepKind {
    * @generated from enum value: STEP_KIND_LOOP_DECISION = 8;
    */
   LOOP_DECISION = 8,
+
+  /**
+   * end: terminal sink, always succeeds when deps satisfied
+   *
+   * @generated from enum value: STEP_KIND_END = 9;
+   */
+  END = 9,
 }
 // Retrieve enum metadata with: proto3.getEnumType(StepKind)
 proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
@@ -169,6 +177,7 @@ proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
   { no: 6, name: "STEP_KIND_WORK_ITEM" },
   { no: 7, name: "STEP_KIND_PROJECT" },
   { no: 8, name: "STEP_KIND_LOOP_DECISION" },
+  { no: 9, name: "STEP_KIND_END" },
 ]);
 
 /**
