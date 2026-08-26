@@ -25,6 +25,8 @@ export const stepKindClasses: Record<number, string> = {
     "border-amber-400/70 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100",
   [STEP_KIND.LOOP_DECISION]:
     "border-cyan-400/70 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/40 dark:text-cyan-100",
+  [STEP_KIND.END]:
+    "border-emerald-500/80 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/50 dark:text-emerald-100",
 };
 
 export function StepNode({ data, selected }: NodeProps<StepData>) {
@@ -49,7 +51,9 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   const needsBinding =
     kind !== STEP_KIND.DECISION &&
     kind !== STEP_KIND.APPROVAL &&
-    kind !== STEP_KIND.PARALLEL;
+    kind !== STEP_KIND.PARALLEL &&
+    kind !== STEP_KIND.END &&
+    kind !== STEP_KIND.LOOP_DECISION;
 
   return (
     <div

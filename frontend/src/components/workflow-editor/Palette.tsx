@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Flag,
   GitBranch,
   GitFork,
   Info,
@@ -115,6 +116,17 @@ export function Palette({ readOnly, mode = "full" }: { readOnly: boolean; mode?:
           kindAccent="cyan"
           payload={{ kind: STEP_KIND.LOOP_DECISION, name: "Loop Decision" }}
           description="Inspects the upstream step result. On success, continues forward. On failure, loops back to a prior step (up to max_iterations). After exhausting attempts, the run fails and recovery engages."
+          readOnly={readOnly}
+        />
+      </Section>
+      <Section title="Completion" icon={Flag} subtitle="Terminate the run">
+        <DraggableTile
+          label="End"
+          sublabel="Terminal sink"
+          icon={Flag}
+          kindAccent="emerald"
+          payload={{ kind: STEP_KIND.END, name: "End" }}
+          description="Terminal sink. Depends on upstream; always succeeds when dependencies are satisfied. The run completes when End fires."
           readOnly={readOnly}
         />
       </Section>
