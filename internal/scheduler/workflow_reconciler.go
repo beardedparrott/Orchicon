@@ -35,6 +35,8 @@
 package scheduler
 
 import (
+	osexec "os/exec"
+	"regexp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -244,6 +246,50 @@ func requiresPRStep(stepID, config string) bool {
 	}
 	return false
 }
+
+
+// effectivePRURL returns the PR URL for a run, trying typed fields first,
+// then live GitHub via gh, then stdout scraping. Used only for pr-strategy
+// runs to make `pr` worker-proof.
+var prURLRe = regexp.MustCompile(`PR_URL:\s*(https://github\.com/[^\s"]+/pull/\d+)`)
+var prURLJSONRe = regexp.MustCompile(`"pr_url"\s*:\s*"(https://[^"]+)"`)
+
+func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow, worktreeBranch string) string {
+	if u, _ := db.PrFromRunContext(run.RunContext); u != "" {
+		return u
+	}
+	if execRow.PrURL != nil && *execRow.PrURL != "" {
+		return *execRow.PrURL
+	}
+	// Live GitHub check for pr mode — authoritative over stdout
+	if worktreeBranch != "" {
+		if out, err := osexec.Command("gh", "pr", "list", "--head", worktreeBranch, "--state", "all", "--json", "url,state", "--jq", ".[0].url // empty").Output(); err == nil {
+			if u := string(out); u != "" && u != "null" {
+				u = regexp.MustCompile(`\s+`).ReplaceAllString(u, "")
+				if u != "" {
+					return u
+				}
+			}
+		}
+		if out, err := osexec.Command("gh", "pr", "view", worktreeBranch, "--json", "url", "--jq", ".url").Output(); err == nil {
+			if u := string(out); u != "" && u != "null" {
+				u = regexp.MustCompile(`\s+`).ReplaceAllString(u, "")
+				if u != "" {
+					return u
+				}
+			}
+		}
+	}
+	// Fallback: scrape stdout
+	if m := prURLRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
+		return m[1]
+	}
+	if m := prURLJSONRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
 
 func parallelBranchChildIDs(steps []workflow.StepWire) map[string]bool {
 	parallel := make(map[string]bool, len(steps))
@@ -4032,7 +4078,17 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 						}
 					}
 					if effectiveGitStrategy == "pr" {
-						prURL, _ := db.PrFromRunContext(run.RunContext)
+						prURL := effectivePRURL(run, exec, run.WorktreeBranch)
+					if prURL != "" {
+						if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
+							prState := ""
+							if execRow.PrState != nil { prState = *execRow.PrState }
+							if prState == "" { prState = "open" }
+							newCtx, _ := json.Marshal(map[string]string{"pr_url": prURL, "pr_state": prState})
+							_, _ = tx.Exec(ctx, `UPDATE workflow_runs SET run_context = $1, updated_at = now(), version = version + 1 WHERE id = $2`, newCtx, run.ID)
+							run.RunContext = newCtx
+						}
+					}
 						if prURL == "" {
 							r.log.Warn("PR step succeeded without pr_url — failing step (git_strategy=pr)", "run", run.ID, "step", sr.StepID)
 							return true, true, nil
