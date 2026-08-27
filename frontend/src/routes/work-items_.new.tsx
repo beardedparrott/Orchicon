@@ -174,7 +174,7 @@ function NewWorkItemPage() {
               <Label htmlFor="project">Project</Label>
               <select
                 id="project"
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
               >
@@ -209,7 +209,7 @@ function NewWorkItemPage() {
                 <Label htmlFor="kind">Kind</Label>
                 <select
                   id="kind"
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                  className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
                   {...kindRegister}
                   onChange={(e) => {
                     void kindRegister.onChange(e);

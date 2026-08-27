@@ -180,7 +180,7 @@ function WorkersPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Workers</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-cyan-400 animate-pulse motion-reduce:animate-none" /> Workers</h1>
           <p className="text-sm text-muted-foreground">
             Reusable, versioned execution profiles. A Worker declares what is
             permitted; the adapter advertises what is possible.
@@ -191,7 +191,7 @@ function WorkersPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search workers…"
           value={search}
@@ -201,7 +201,7 @@ function WorkersPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Draft</option>
@@ -212,7 +212,7 @@ function WorkersPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -221,7 +221,7 @@ function WorkersPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>

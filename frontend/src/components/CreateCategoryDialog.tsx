@@ -78,7 +78,7 @@ export function CreateCategoryDialog({
       ref={dialogRef}
       onClose={handleClose}
       className={cn(
-        "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+        "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
         "w-full max-w-md",
       )}
       onClick={(e) => {
@@ -125,7 +125,7 @@ export function CreateCategoryDialog({
               placeholder="What kind of items go in this category?"
               maxLength={256}
               rows={3}
-              className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="w-full rounded-xl glass-input px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
         </div>

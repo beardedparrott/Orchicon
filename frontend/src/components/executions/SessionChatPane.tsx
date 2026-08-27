@@ -749,7 +749,7 @@ export function SessionChatPane({
   );
 
   return (
-    <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card/50 shadow-sm">
+    <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl glass-panel shadow-sm">
       {/* header */}
       <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
         <span

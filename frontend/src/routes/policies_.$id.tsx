@@ -130,7 +130,7 @@ function PolicyDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {policy.status === 2 && (
             <Button
               variant="outline"
@@ -219,7 +219,7 @@ function PolicyDetailPage() {
                 {evaluatePolicy.isPending ? "Evaluating…" : "Evaluate"}
               </Button>
               {evalResult && (
-                <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-xs">
+                <div className="space-y-2 rounded-2xl glass-panel p-3 text-xs">
                   <div>
                     <span className="text-muted-foreground">Effect: </span>
                     <span className="font-medium">

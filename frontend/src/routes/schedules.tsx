@@ -193,7 +193,7 @@ function SchedulesPage() {
       </div>
 
       {/* View toggle + filter bar (AGENTS.md UI-consistency rule). */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <div className="flex rounded-md border" role="group" aria-label="View">
           <button
             type="button"
@@ -247,7 +247,7 @@ function SchedulesPage() {
           value={projectId}
           onChange={(e) => goProject(e.target.value)}
           disabled={!projects || projects.length === 0}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All projects</option>
           {projects && projects.length > 0 ? (
@@ -266,7 +266,7 @@ function SchedulesPage() {
         <select
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All kinds</option>
           {SCHEDULABLE_KINDS.map((k) => (
@@ -278,7 +278,7 @@ function SchedulesPage() {
 
         <select
           value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           aria-label="Sort by"
         >
           <option value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}>
@@ -293,7 +293,7 @@ function SchedulesPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           aria-label="Sort order"
         >
           <option value="asc">Asc</option>
@@ -1328,7 +1328,7 @@ function LiveClock({ now }: { now: number }) {
     <div
       role="timer"
       aria-label="Current time"
-      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+      className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
     >
       <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none" />
       <span className="font-mono text-sm font-medium tabular-nums text-foreground">
@@ -1350,7 +1350,7 @@ function StatsStrip({ items, now }: { items: WorkItemProto[]; now: number }) {
     isSameLocalDay(upcomingSortTime(i), now),
   ).length;
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border bg-card px-4 py-2.5 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl glass-panel px-4 py-2.5 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full bg-primary/70" />
         {items.length} upcoming

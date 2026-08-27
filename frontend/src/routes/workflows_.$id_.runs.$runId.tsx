@@ -361,14 +361,14 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       </div>
 
       {run.startedAt && (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-1.5">
+        <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-1.5 border border-white/10">
           <LiveDuration startedAt={run.startedAt} endedAt={run.endedAt} />
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
 
       {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             <span>Worktree</span>
             {run && (
@@ -390,7 +390,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       )}
 
       {/* run canvas with live step transitions */}
-      <div className="h-[600px] rounded-lg border bg-card">
+      <div className="h-[600px] rounded-2xl glass-panel">
         <ReactFlow
           nodes={nodes}
           edges={edges}

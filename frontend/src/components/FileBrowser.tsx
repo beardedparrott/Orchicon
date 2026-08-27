@@ -192,7 +192,7 @@ export function FileBrowser({
             {/* Read-only: just list the selected files */}
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground shrink-0">Root:</span>
-              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+              <span className="flex-1 truncate rounded-xl glass-panel px-2 py-1 font-mono text-xs text-muted-foreground border border-white/10">
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
             </div>
@@ -233,7 +233,7 @@ export function FileBrowser({
                 placeholder="Search files and folders…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+                className="w-full rounded-xl glass-input pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
               {searchQuery && (
                 <button
@@ -254,7 +254,7 @@ export function FileBrowser({
             {/* Directory bar */}
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground shrink-0">Root:</span>
-              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+              <span className="flex-1 truncate rounded-xl glass-panel px-2 py-1 font-mono text-xs text-muted-foreground border border-white/10">
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
               {/* Only a project may change its root directory (and thereby

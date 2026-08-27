@@ -100,7 +100,7 @@ export function RecurringScheduleForm({
       )}
 
       {enabled && value && (
-        <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+        <div className="space-y-3 rounded-2xl glass-panel p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label htmlFor="recurringFrequency">Frequency</Label>
@@ -109,7 +109,7 @@ export function RecurringScheduleForm({
                 value={frequency}
                 onChange={(e) => emit({ frequency: e.target.value })}
                 disabled={disabled}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
               >
                 {FREQUENCIES.map((f) => (
                   <option key={f.value} value={f.value}>

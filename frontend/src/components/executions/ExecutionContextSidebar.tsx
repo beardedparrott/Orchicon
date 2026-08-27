@@ -334,7 +334,7 @@ export function ExecutionContextSidebar({
   return (
     <aside className="space-y-3 lg:sticky lg:top-4">
       {/* Context usage card */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Context
@@ -389,7 +389,7 @@ export function ExecutionContextSidebar({
       </div>
 
       {/* Status card */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="flex items-center justify-between">
           <span
             className={cn(
@@ -432,7 +432,7 @@ export function ExecutionContextSidebar({
       </div>
 
       {/* Message counts */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Messages
@@ -541,7 +541,7 @@ export function ExecutionContextSidebar({
 
       {/* Last assistant message preview */}
       {stats.lastAssistantAt && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Last assistant message
           </h3>
@@ -556,7 +556,7 @@ export function ExecutionContextSidebar({
 
       {/* Last tool used */}
       {stats.lastToolName && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Last tool
           </h3>
@@ -573,7 +573,7 @@ export function ExecutionContextSidebar({
 
       {/* Raw events timeline (compact) */}
       {stats.recentTypes.length > 0 && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Raw events
           </h3>
@@ -616,7 +616,7 @@ function TodoListCard({ todos }: { todos: TodoItem[] }) {
   const total = todos.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl glass-panel p-4">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Todo List

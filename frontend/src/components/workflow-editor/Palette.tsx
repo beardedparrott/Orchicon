@@ -150,7 +150,7 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-md border bg-card/40">
+    <div className="rounded-2xl glass-panel">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -222,7 +222,7 @@ function DraggableTile({
             draggable={!readOnly}
             onDragStart={readOnly ? undefined : setData}
             className={cn(
-              "group flex cursor-grab items-start gap-2 rounded-md border bg-background p-2 text-xs shadow-sm transition-colors",
+              "group flex cursor-grab items-start gap-2 rounded-xl glass-input p-2 text-xs shadow-sm transition-colors",
               "hover:border-foreground/30 hover:bg-accent/40 active:cursor-grabbing",
               readOnly && "cursor-not-allowed opacity-50",
               ACCENT_BORDER[kindAccent],
