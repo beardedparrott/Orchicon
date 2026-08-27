@@ -78,6 +78,29 @@ func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(item)
 }
 
+func toolGetWorkItemRunHistory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkItemID string `json:"work_item_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkItemID == "" {
+		return nil, fmt.Errorf("work_item_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, tenantID, params.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(entries)
+}
+
 func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID          string   `json:"project_id"`
@@ -230,9 +253,9 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			toolLogger.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
 		}
 	}
-	    // ADR-4 reference-only: if caller passes copy_attachments helper, it would invoke copyAttachmentsByReference here (kept wired for worker visibility)
-    _ = copyAttachmentsByReference
-    return json.Marshal(created)
+	// ADR-4 reference-only: if caller passes copy_attachments helper, it would invoke copyAttachmentsByReference here (kept wired for worker visibility)
+	_ = copyAttachmentsByReference
+	return json.Marshal(created)
 }
 
 func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -240,20 +263,20 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// explicit zero/empty value, exactly like the proto optional fields
 	// the Connect Update handler reads.
 	var params struct {
-		ID                 string  `json:"id"`
-		Title              *string `json:"title"`
-		Description        *string `json:"description"`
-		AcceptanceCriteria *string `json:"acceptance_criteria"`
-		AcceptanceReview   *string `json:"acceptance_review"`
-		Status             *string `json:"status"`
-		Priority           *int    `json:"priority"`
-		Budgets            *string `json:"budgets"`
-		ContextWindow      *int    `json:"context_window"`
-		ProjectID          *string `json:"project_id"`
-		WorkflowID         *string `json:"workflow_id"`
-		ParentID           *string `json:"parent_id"`
-		ScheduledStartAt   *string `json:"scheduled_start_at"`
-		AutoStartWorkflow  *bool   `json:"auto_start_workflow"`
+		ID                 string    `json:"id"`
+		Title              *string   `json:"title"`
+		Description        *string   `json:"description"`
+		AcceptanceCriteria *string   `json:"acceptance_criteria"`
+		AcceptanceReview   *string   `json:"acceptance_review"`
+		Status             *string   `json:"status"`
+		Priority           *int      `json:"priority"`
+		Budgets            *string   `json:"budgets"`
+		ContextWindow      *int      `json:"context_window"`
+		ProjectID          *string   `json:"project_id"`
+		WorkflowID         *string   `json:"workflow_id"`
+		ParentID           *string   `json:"parent_id"`
+		ScheduledStartAt   *string   `json:"scheduled_start_at"`
+		AutoStartWorkflow  *bool     `json:"auto_start_workflow"`
 		WorkflowRunID      *string   `json:"workflow_run_id"`
 		RuntimeImage       *string   `json:"runtime_image"`
 		Kind               *string   `json:"kind"`
@@ -902,10 +925,10 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"status":           "scheduled",
-		"work_item_id":     params.ID,
-		"work_item_title":  current.Title,
-		"scheduled_start":  params.ScheduledTime,
+		"status":          "scheduled",
+		"work_item_id":    params.ID,
+		"work_item_title": current.Title,
+		"scheduled_start": params.ScheduledTime,
 	})
 }
 
@@ -1189,25 +1212,35 @@ func replaceWordNumbers(s string) string {
 	})
 }
 
-
 // copyAttachmentsByReference copies chat message attachments (by blob_ref share) onto a work item.
 // It is the server-side copy-by-reference helper (ADR-4) — no LLM byte echo.
 // copyChatAttachmentsToWorkItem is the MCP-visible wrapper for copyAttachmentsByReference (ADR-4 reference-only). Agent calls this when user asks to include images.
-func copyChatAttachmentsToWorkItem(ctx context.Context, pool *db.Pool, args []byte) ([]byte, error) { return nil, nil }
-
-func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, workItemID, projectID string, blobRefs []string, names []string, mimeTypes []string) error {
-    if len(blobRefs)==0 { return nil }
-    ttx, err := pool.BeginTenantTx(ctx, tenantID)
-    if err != nil { return err }
-    defer ttx.Rollback(ctx)
-    for i, ref := range blobRefs {
-        name := "attachment"
-        if i < len(names) { name = names[i] }
-        mime := "application/octet-stream"
-        if i < len(mimeTypes) { mime = mimeTypes[i] }
-        row := db.WorkItemAttachmentRow{ID: db.NewID(), TenantID: tenantID, WorkItemID: workItemID, ProjectID: projectID, Name: name, MimeType: mime, SizeBytes: 0, BlobRef: ref}
-        if _, err := db.CreateWorkItemAttachment(ctx, ttx.Tx, row); err != nil { return err }
-    }
-    return ttx.Commit(ctx)
+func copyChatAttachmentsToWorkItem(ctx context.Context, pool *db.Pool, args []byte) ([]byte, error) {
+	return nil, nil
 }
 
+func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, workItemID, projectID string, blobRefs []string, names []string, mimeTypes []string) error {
+	if len(blobRefs) == 0 {
+		return nil
+	}
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	for i, ref := range blobRefs {
+		name := "attachment"
+		if i < len(names) {
+			name = names[i]
+		}
+		mime := "application/octet-stream"
+		if i < len(mimeTypes) {
+			mime = mimeTypes[i]
+		}
+		row := db.WorkItemAttachmentRow{ID: db.NewID(), TenantID: tenantID, WorkItemID: workItemID, ProjectID: projectID, Name: name, MimeType: mime, SizeBytes: 0, BlobRef: ref}
+		if _, err := db.CreateWorkItemAttachment(ctx, ttx.Tx, row); err != nil {
+			return err
+		}
+	}
+	return ttx.Commit(ctx)
+}

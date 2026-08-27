@@ -680,9 +680,13 @@ type UpdateWorkItemRequest struct {
 	// an empty ids list clears all edges, an absent field leaves them
 	// unchanged. Validated: same project, target exists, no self-dependency,
 	// no cycle. Edges are independent of parent_id/sort_order.
-	DependsOn     *DependencyIds `protobuf:"bytes,25,opt,name=depends_on,json=dependsOn,proto3,oneof" json:"depends_on,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DependsOn *DependencyIds `protobuf:"bytes,25,opt,name=depends_on,json=dependsOn,proto3,oneof" json:"depends_on,omitempty"`
+	// recurring_enabled pauses/resumes a recurring work item. false = paused:
+	// keeps the recurring_schedule + next_run_at (resume re-arms) but the item
+	// is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
+	RecurringEnabled *bool `protobuf:"varint,26,opt,name=recurring_enabled,json=recurringEnabled,proto3,oneof" json:"recurring_enabled,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UpdateWorkItemRequest) Reset() {
@@ -860,6 +864,13 @@ func (x *UpdateWorkItemRequest) GetDependsOn() *DependencyIds {
 		return x.DependsOn
 	}
 	return nil
+}
+
+func (x *UpdateWorkItemRequest) GetRecurringEnabled() bool {
+	if x != nil && x.RecurringEnabled != nil {
+		return *x.RecurringEnabled
+	}
+	return false
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for
@@ -2004,6 +2015,294 @@ func (x *RestoreWorkItemResponse) GetWorkItem() *WorkItem {
 	return nil
 }
 
+// GetWorkItemRunHistoryRequest asks for a recurring item's per-fire history.
+type GetWorkItemRunHistoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // the recurring work item id
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkItemRunHistoryRequest) Reset() {
+	*x = GetWorkItemRunHistoryRequest{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkItemRunHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkItemRunHistoryRequest) ProtoMessage() {}
+
+func (x *GetWorkItemRunHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkItemRunHistoryRequest.ProtoReflect.Descriptor instead.
+func (*GetWorkItemRunHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *GetWorkItemRunHistoryRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// RecurringRunExecution is one worker execution produced by a fire's run.
+type RecurringRunExecution struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	StepId        string                 `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	EndedAt       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	Output        string                 `protobuf:"bytes,6,opt,name=output,proto3" json:"output,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecurringRunExecution) Reset() {
+	*x = RecurringRunExecution{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecurringRunExecution) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecurringRunExecution) ProtoMessage() {}
+
+func (x *RecurringRunExecution) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecurringRunExecution.ProtoReflect.Descriptor instead.
+func (*RecurringRunExecution) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RecurringRunExecution) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RecurringRunExecution) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RecurringRunExecution) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *RecurringRunExecution) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *RecurringRunExecution) GetEndedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndedAt
+	}
+	return nil
+}
+
+func (x *RecurringRunExecution) GetOutput() string {
+	if x != nil {
+		return x.Output
+	}
+	return ""
+}
+
+// RecurringRunHistoryEntry is a fire's ledger row joined to its run graph.
+// Status is the fire dispatch outcome ('fired' | 'failed'); run_status is the
+// bound run's status ("" when no run was produced, e.g. a fire that failed
+// before dispatch — its error carries the failure reason).
+type RecurringRunHistoryEntry struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Id            string                   `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	FireAt        *timestamppb.Timestamp   `protobuf:"bytes,2,opt,name=fire_at,json=fireAt,proto3" json:"fire_at,omitempty"`
+	Status        string                   `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`                                      // 'fired' | 'failed'
+	WorkflowRunId string                   `protobuf:"bytes,4,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"` // set when the fire produced a run; "" otherwise
+	RunStatus     string                   `protobuf:"bytes,5,opt,name=run_status,json=runStatus,proto3" json:"run_status,omitempty"`               // bound run's status; "" when no run was produced
+	RunStartedAt  *timestamppb.Timestamp   `protobuf:"bytes,6,opt,name=run_started_at,json=runStartedAt,proto3" json:"run_started_at,omitempty"`
+	RunEndedAt    *timestamppb.Timestamp   `protobuf:"bytes,7,opt,name=run_ended_at,json=runEndedAt,proto3" json:"run_ended_at,omitempty"`
+	Error         string                   `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"` // set on a failed fire (dispatch error)
+	Executions    []*RecurringRunExecution `protobuf:"bytes,9,rep,name=executions,proto3" json:"executions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecurringRunHistoryEntry) Reset() {
+	*x = RecurringRunHistoryEntry{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecurringRunHistoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecurringRunHistoryEntry) ProtoMessage() {}
+
+func (x *RecurringRunHistoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecurringRunHistoryEntry.ProtoReflect.Descriptor instead.
+func (*RecurringRunHistoryEntry) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RecurringRunHistoryEntry) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RecurringRunHistoryEntry) GetFireAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FireAt
+	}
+	return nil
+}
+
+func (x *RecurringRunHistoryEntry) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RecurringRunHistoryEntry) GetWorkflowRunId() string {
+	if x != nil {
+		return x.WorkflowRunId
+	}
+	return ""
+}
+
+func (x *RecurringRunHistoryEntry) GetRunStatus() string {
+	if x != nil {
+		return x.RunStatus
+	}
+	return ""
+}
+
+func (x *RecurringRunHistoryEntry) GetRunStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RunStartedAt
+	}
+	return nil
+}
+
+func (x *RecurringRunHistoryEntry) GetRunEndedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RunEndedAt
+	}
+	return nil
+}
+
+func (x *RecurringRunHistoryEntry) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *RecurringRunHistoryEntry) GetExecutions() []*RecurringRunExecution {
+	if x != nil {
+		return x.Executions
+	}
+	return nil
+}
+
+// GetWorkItemRunHistoryResponse carries the recurring item's fire history,
+// newest first.
+type GetWorkItemRunHistoryResponse struct {
+	state         protoimpl.MessageState      `protogen:"open.v1"`
+	Entries       []*RecurringRunHistoryEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkItemRunHistoryResponse) Reset() {
+	*x = GetWorkItemRunHistoryResponse{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkItemRunHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkItemRunHistoryResponse) ProtoMessage() {}
+
+func (x *GetWorkItemRunHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkItemRunHistoryResponse.ProtoReflect.Descriptor instead.
+func (*GetWorkItemRunHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *GetWorkItemRunHistoryResponse) GetEntries() []*RecurringRunHistoryEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
 var File_orchicon_api_v1_work_item_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
@@ -2063,8 +2362,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xc0\n" +
-	"\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x88\v\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -2092,7 +2390,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x11acceptance_review\x18\x17 \x01(\tH\x10R\x10acceptanceReview\x88\x01\x01\x12V\n" +
 	"\x12recurring_schedule\x18\x18 \x01(\v2\".orchicon.api.v1.RecurringScheduleH\x11R\x11recurringSchedule\x88\x01\x01\x12B\n" +
 	"\n" +
-	"depends_on\x18\x19 \x01(\v2\x1e.orchicon.api.v1.DependencyIdsH\x12R\tdependsOn\x88\x01\x01B\b\n" +
+	"depends_on\x18\x19 \x01(\v2\x1e.orchicon.api.v1.DependencyIdsH\x12R\tdependsOn\x88\x01\x01\x120\n" +
+	"\x11recurring_enabled\x18\x1a \x01(\bH\x13R\x10recurringEnabled\x88\x01\x01B\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_descriptionB\x16\n" +
 	"\x14_acceptance_criteriaB\t\n" +
@@ -2113,7 +2412,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x0e_context_filesB\x14\n" +
 	"\x12_acceptance_reviewB\x15\n" +
 	"\x13_recurring_scheduleB\r\n" +
-	"\v_depends_on\"!\n" +
+	"\v_depends_onB\x14\n" +
+	"\x12_recurring_enabled\"!\n" +
 	"\rDependencyIds\x12\x10\n" +
 	"\x03ids\x18\x01 \x03(\tR\x03ids\"j\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
@@ -2178,7 +2478,33 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x16RestoreWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"Q\n" +
 	"\x17RestoreWorkItemResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem*\x82\x01\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\".\n" +
+	"\x1cGetWorkItemRunHistoryRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xe2\x01\n" +
+	"\x15RecurringRunExecution\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x17\n" +
+	"\astep_id\x18\x03 \x01(\tR\x06stepId\x129\n" +
+	"\n" +
+	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
+	"\bended_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12\x16\n" +
+	"\x06output\x18\x06 \x01(\tR\x06output\"\x9c\x03\n" +
+	"\x18RecurringRunHistoryEntry\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x123\n" +
+	"\afire_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06fireAt\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12&\n" +
+	"\x0fworkflow_run_id\x18\x04 \x01(\tR\rworkflowRunId\x12\x1d\n" +
+	"\n" +
+	"run_status\x18\x05 \x01(\tR\trunStatus\x12@\n" +
+	"\x0erun_started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\frunStartedAt\x12<\n" +
+	"\frun_ended_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"runEndedAt\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x12F\n" +
+	"\n" +
+	"executions\x18\t \x03(\v2&.orchicon.api.v1.RecurringRunExecutionR\n" +
+	"executions\"d\n" +
+	"\x1dGetWorkItemRunHistoryResponse\x12C\n" +
+	"\aentries\x18\x01 \x03(\v2).orchicon.api.v1.RecurringRunHistoryEntryR\aentries*\x82\x01\n" +
 	"\x0eSequenceAction\x12\x1f\n" +
 	"\x1bSEQUENCE_ACTION_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SEQUENCE_ACTION_START\x10\x01\x12\x1a\n" +
@@ -2188,10 +2514,11 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x1cRECURRING_FILTER_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14RECURRING_FILTER_ALL\x10\x01\x12&\n" +
 	"\"RECURRING_FILTER_EXCLUDE_RECURRING\x10\x02\x12#\n" +
-	"\x1fRECURRING_FILTER_ONLY_RECURRING\x10\x032\xf6\v\n" +
+	"\x1fRECURRING_FILTER_ONLY_RECURRING\x10\x032\xee\f\n" +
 	"\x0fWorkItemService\x12a\n" +
 	"\x0eCreateWorkItem\x12&.orchicon.api.v1.CreateWorkItemRequest\x1a'.orchicon.api.v1.CreateWorkItemResponse\x12X\n" +
-	"\vGetWorkItem\x12#.orchicon.api.v1.GetWorkItemRequest\x1a$.orchicon.api.v1.GetWorkItemResponse\x12^\n" +
+	"\vGetWorkItem\x12#.orchicon.api.v1.GetWorkItemRequest\x1a$.orchicon.api.v1.GetWorkItemResponse\x12v\n" +
+	"\x15GetWorkItemRunHistory\x12-.orchicon.api.v1.GetWorkItemRunHistoryRequest\x1a..orchicon.api.v1.GetWorkItemRunHistoryResponse\x12^\n" +
 	"\rListWorkItems\x12%.orchicon.api.v1.ListWorkItemsRequest\x1a&.orchicon.api.v1.ListWorkItemsResponse\x12a\n" +
 	"\x0eUpdateWorkItem\x12&.orchicon.api.v1.UpdateWorkItemRequest\x1a'.orchicon.api.v1.UpdateWorkItemResponse\x12a\n" +
 	"\x0eDeleteWorkItem\x12&.orchicon.api.v1.DeleteWorkItemRequest\x1a'.orchicon.api.v1.DeleteWorkItemResponse\x12m\n" +
@@ -2220,113 +2547,126 @@ func file_orchicon_api_v1_work_item_service_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_work_item_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_orchicon_api_v1_work_item_service_proto_goTypes = []any{
-	(SequenceAction)(0),                // 0: orchicon.api.v1.SequenceAction
-	(RecurringFilter)(0),               // 1: orchicon.api.v1.RecurringFilter
-	(*CreateWorkItemRequest)(nil),      // 2: orchicon.api.v1.CreateWorkItemRequest
-	(*CreateWorkItemResponse)(nil),     // 3: orchicon.api.v1.CreateWorkItemResponse
-	(*GetWorkItemRequest)(nil),         // 4: orchicon.api.v1.GetWorkItemRequest
-	(*GetWorkItemResponse)(nil),        // 5: orchicon.api.v1.GetWorkItemResponse
-	(*ListWorkItemsRequest)(nil),       // 6: orchicon.api.v1.ListWorkItemsRequest
-	(*ListWorkItemsResponse)(nil),      // 7: orchicon.api.v1.ListWorkItemsResponse
-	(*UpdateWorkItemRequest)(nil),      // 8: orchicon.api.v1.UpdateWorkItemRequest
-	(*DependencyIds)(nil),              // 9: orchicon.api.v1.DependencyIds
-	(*UpdateWorkItemResponse)(nil),     // 10: orchicon.api.v1.UpdateWorkItemResponse
-	(*DeleteWorkItemRequest)(nil),      // 11: orchicon.api.v1.DeleteWorkItemRequest
-	(*DeleteWorkItemResponse)(nil),     // 12: orchicon.api.v1.DeleteWorkItemResponse
-	(*HardDeleteWorkItemRequest)(nil),  // 13: orchicon.api.v1.HardDeleteWorkItemRequest
-	(*HardDeleteWorkItemResponse)(nil), // 14: orchicon.api.v1.HardDeleteWorkItemResponse
-	(*AddDependencyRequest)(nil),       // 15: orchicon.api.v1.AddDependencyRequest
-	(*AddDependencyResponse)(nil),      // 16: orchicon.api.v1.AddDependencyResponse
-	(*RemoveDependencyRequest)(nil),    // 17: orchicon.api.v1.RemoveDependencyRequest
-	(*RemoveDependencyResponse)(nil),   // 18: orchicon.api.v1.RemoveDependencyResponse
-	(*GetDependencyGraphRequest)(nil),  // 19: orchicon.api.v1.GetDependencyGraphRequest
-	(*GetDependencyGraphResponse)(nil), // 20: orchicon.api.v1.GetDependencyGraphResponse
-	(*AssignWorkerRequest)(nil),        // 21: orchicon.api.v1.AssignWorkerRequest
-	(*AssignWorkerResponse)(nil),       // 22: orchicon.api.v1.AssignWorkerResponse
-	(*UnassignWorkerRequest)(nil),      // 23: orchicon.api.v1.UnassignWorkerRequest
-	(*UnassignWorkerResponse)(nil),     // 24: orchicon.api.v1.UnassignWorkerResponse
-	(*ReorderWorkItemsRequest)(nil),    // 25: orchicon.api.v1.ReorderWorkItemsRequest
-	(*ReorderWorkItemsResponse)(nil),   // 26: orchicon.api.v1.ReorderWorkItemsResponse
-	(*ControlSequenceRequest)(nil),     // 27: orchicon.api.v1.ControlSequenceRequest
-	(*ControlSequenceResponse)(nil),    // 28: orchicon.api.v1.ControlSequenceResponse
-	(*ArchiveWorkItemRequest)(nil),     // 29: orchicon.api.v1.ArchiveWorkItemRequest
-	(*ArchiveWorkItemResponse)(nil),    // 30: orchicon.api.v1.ArchiveWorkItemResponse
-	(*RestoreWorkItemRequest)(nil),     // 31: orchicon.api.v1.RestoreWorkItemRequest
-	(*RestoreWorkItemResponse)(nil),    // 32: orchicon.api.v1.RestoreWorkItemResponse
-	(WorkItemKind)(0),                  // 33: orchicon.api.v1.WorkItemKind
-	(*timestamppb.Timestamp)(nil),      // 34: google.protobuf.Timestamp
-	(*RecurringSchedule)(nil),          // 35: orchicon.api.v1.RecurringSchedule
-	(*WorkItem)(nil),                   // 36: orchicon.api.v1.WorkItem
-	(WorkItemStatus)(0),                // 37: orchicon.api.v1.WorkItemStatus
-	(*ContextFiles)(nil),               // 38: orchicon.api.v1.ContextFiles
-	(DependencyType)(0),                // 39: orchicon.api.v1.DependencyType
-	(*WorkItemDependency)(nil),         // 40: orchicon.api.v1.WorkItemDependency
-	(*DependencyGraph)(nil),            // 41: orchicon.api.v1.DependencyGraph
+	(SequenceAction)(0),                   // 0: orchicon.api.v1.SequenceAction
+	(RecurringFilter)(0),                  // 1: orchicon.api.v1.RecurringFilter
+	(*CreateWorkItemRequest)(nil),         // 2: orchicon.api.v1.CreateWorkItemRequest
+	(*CreateWorkItemResponse)(nil),        // 3: orchicon.api.v1.CreateWorkItemResponse
+	(*GetWorkItemRequest)(nil),            // 4: orchicon.api.v1.GetWorkItemRequest
+	(*GetWorkItemResponse)(nil),           // 5: orchicon.api.v1.GetWorkItemResponse
+	(*ListWorkItemsRequest)(nil),          // 6: orchicon.api.v1.ListWorkItemsRequest
+	(*ListWorkItemsResponse)(nil),         // 7: orchicon.api.v1.ListWorkItemsResponse
+	(*UpdateWorkItemRequest)(nil),         // 8: orchicon.api.v1.UpdateWorkItemRequest
+	(*DependencyIds)(nil),                 // 9: orchicon.api.v1.DependencyIds
+	(*UpdateWorkItemResponse)(nil),        // 10: orchicon.api.v1.UpdateWorkItemResponse
+	(*DeleteWorkItemRequest)(nil),         // 11: orchicon.api.v1.DeleteWorkItemRequest
+	(*DeleteWorkItemResponse)(nil),        // 12: orchicon.api.v1.DeleteWorkItemResponse
+	(*HardDeleteWorkItemRequest)(nil),     // 13: orchicon.api.v1.HardDeleteWorkItemRequest
+	(*HardDeleteWorkItemResponse)(nil),    // 14: orchicon.api.v1.HardDeleteWorkItemResponse
+	(*AddDependencyRequest)(nil),          // 15: orchicon.api.v1.AddDependencyRequest
+	(*AddDependencyResponse)(nil),         // 16: orchicon.api.v1.AddDependencyResponse
+	(*RemoveDependencyRequest)(nil),       // 17: orchicon.api.v1.RemoveDependencyRequest
+	(*RemoveDependencyResponse)(nil),      // 18: orchicon.api.v1.RemoveDependencyResponse
+	(*GetDependencyGraphRequest)(nil),     // 19: orchicon.api.v1.GetDependencyGraphRequest
+	(*GetDependencyGraphResponse)(nil),    // 20: orchicon.api.v1.GetDependencyGraphResponse
+	(*AssignWorkerRequest)(nil),           // 21: orchicon.api.v1.AssignWorkerRequest
+	(*AssignWorkerResponse)(nil),          // 22: orchicon.api.v1.AssignWorkerResponse
+	(*UnassignWorkerRequest)(nil),         // 23: orchicon.api.v1.UnassignWorkerRequest
+	(*UnassignWorkerResponse)(nil),        // 24: orchicon.api.v1.UnassignWorkerResponse
+	(*ReorderWorkItemsRequest)(nil),       // 25: orchicon.api.v1.ReorderWorkItemsRequest
+	(*ReorderWorkItemsResponse)(nil),      // 26: orchicon.api.v1.ReorderWorkItemsResponse
+	(*ControlSequenceRequest)(nil),        // 27: orchicon.api.v1.ControlSequenceRequest
+	(*ControlSequenceResponse)(nil),       // 28: orchicon.api.v1.ControlSequenceResponse
+	(*ArchiveWorkItemRequest)(nil),        // 29: orchicon.api.v1.ArchiveWorkItemRequest
+	(*ArchiveWorkItemResponse)(nil),       // 30: orchicon.api.v1.ArchiveWorkItemResponse
+	(*RestoreWorkItemRequest)(nil),        // 31: orchicon.api.v1.RestoreWorkItemRequest
+	(*RestoreWorkItemResponse)(nil),       // 32: orchicon.api.v1.RestoreWorkItemResponse
+	(*GetWorkItemRunHistoryRequest)(nil),  // 33: orchicon.api.v1.GetWorkItemRunHistoryRequest
+	(*RecurringRunExecution)(nil),         // 34: orchicon.api.v1.RecurringRunExecution
+	(*RecurringRunHistoryEntry)(nil),      // 35: orchicon.api.v1.RecurringRunHistoryEntry
+	(*GetWorkItemRunHistoryResponse)(nil), // 36: orchicon.api.v1.GetWorkItemRunHistoryResponse
+	(WorkItemKind)(0),                     // 37: orchicon.api.v1.WorkItemKind
+	(*timestamppb.Timestamp)(nil),         // 38: google.protobuf.Timestamp
+	(*RecurringSchedule)(nil),             // 39: orchicon.api.v1.RecurringSchedule
+	(*WorkItem)(nil),                      // 40: orchicon.api.v1.WorkItem
+	(WorkItemStatus)(0),                   // 41: orchicon.api.v1.WorkItemStatus
+	(*ContextFiles)(nil),                  // 42: orchicon.api.v1.ContextFiles
+	(DependencyType)(0),                   // 43: orchicon.api.v1.DependencyType
+	(*WorkItemDependency)(nil),            // 44: orchicon.api.v1.WorkItemDependency
+	(*DependencyGraph)(nil),               // 45: orchicon.api.v1.DependencyGraph
 }
 var file_orchicon_api_v1_work_item_service_proto_depIdxs = []int32{
-	33, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
-	34, // 1: orchicon.api.v1.CreateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	35, // 2: orchicon.api.v1.CreateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
-	36, // 3: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 4: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	37, // 5: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	37, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
+	38, // 1: orchicon.api.v1.CreateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	39, // 2: orchicon.api.v1.CreateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	40, // 3: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 4: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	41, // 5: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
 	1,  // 6: orchicon.api.v1.ListWorkItemsRequest.recurring_filter:type_name -> orchicon.api.v1.RecurringFilter
-	36, // 7: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
-	37, // 8: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
-	34, // 9: orchicon.api.v1.UpdateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	33, // 10: orchicon.api.v1.UpdateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
-	38, // 11: orchicon.api.v1.UpdateWorkItemRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
-	35, // 12: orchicon.api.v1.UpdateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	40, // 7: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
+	41, // 8: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	38, // 9: orchicon.api.v1.UpdateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	37, // 10: orchicon.api.v1.UpdateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
+	42, // 11: orchicon.api.v1.UpdateWorkItemRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
+	39, // 12: orchicon.api.v1.UpdateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
 	9,  // 13: orchicon.api.v1.UpdateWorkItemRequest.depends_on:type_name -> orchicon.api.v1.DependencyIds
-	36, // 14: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 15: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	39, // 16: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
-	40, // 17: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
-	41, // 18: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
-	36, // 19: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 20: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 21: orchicon.api.v1.ReorderWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
+	40, // 14: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 15: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	43, // 16: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
+	44, // 17: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
+	45, // 18: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
+	40, // 19: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 20: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 21: orchicon.api.v1.ReorderWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
 	0,  // 22: orchicon.api.v1.ControlSequenceRequest.action:type_name -> orchicon.api.v1.SequenceAction
-	36, // 23: orchicon.api.v1.ControlSequenceResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 24: orchicon.api.v1.ArchiveWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	36, // 25: orchicon.api.v1.RestoreWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	2,  // 26: orchicon.api.v1.WorkItemService.CreateWorkItem:input_type -> orchicon.api.v1.CreateWorkItemRequest
-	4,  // 27: orchicon.api.v1.WorkItemService.GetWorkItem:input_type -> orchicon.api.v1.GetWorkItemRequest
-	6,  // 28: orchicon.api.v1.WorkItemService.ListWorkItems:input_type -> orchicon.api.v1.ListWorkItemsRequest
-	8,  // 29: orchicon.api.v1.WorkItemService.UpdateWorkItem:input_type -> orchicon.api.v1.UpdateWorkItemRequest
-	11, // 30: orchicon.api.v1.WorkItemService.DeleteWorkItem:input_type -> orchicon.api.v1.DeleteWorkItemRequest
-	13, // 31: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:input_type -> orchicon.api.v1.HardDeleteWorkItemRequest
-	15, // 32: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
-	17, // 33: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
-	19, // 34: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
-	21, // 35: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
-	23, // 36: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
-	25, // 37: orchicon.api.v1.WorkItemService.ReorderWorkItems:input_type -> orchicon.api.v1.ReorderWorkItemsRequest
-	29, // 38: orchicon.api.v1.WorkItemService.ArchiveWorkItem:input_type -> orchicon.api.v1.ArchiveWorkItemRequest
-	31, // 39: orchicon.api.v1.WorkItemService.RestoreWorkItem:input_type -> orchicon.api.v1.RestoreWorkItemRequest
-	27, // 40: orchicon.api.v1.WorkItemService.ControlSequence:input_type -> orchicon.api.v1.ControlSequenceRequest
-	3,  // 41: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
-	5,  // 42: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
-	7,  // 43: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
-	10, // 44: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
-	12, // 45: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
-	14, // 46: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:output_type -> orchicon.api.v1.HardDeleteWorkItemResponse
-	16, // 47: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
-	18, // 48: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
-	20, // 49: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
-	22, // 50: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
-	24, // 51: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
-	26, // 52: orchicon.api.v1.WorkItemService.ReorderWorkItems:output_type -> orchicon.api.v1.ReorderWorkItemsResponse
-	30, // 53: orchicon.api.v1.WorkItemService.ArchiveWorkItem:output_type -> orchicon.api.v1.ArchiveWorkItemResponse
-	32, // 54: orchicon.api.v1.WorkItemService.RestoreWorkItem:output_type -> orchicon.api.v1.RestoreWorkItemResponse
-	28, // 55: orchicon.api.v1.WorkItemService.ControlSequence:output_type -> orchicon.api.v1.ControlSequenceResponse
-	41, // [41:56] is the sub-list for method output_type
-	26, // [26:41] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	40, // 23: orchicon.api.v1.ControlSequenceResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 24: orchicon.api.v1.ArchiveWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	40, // 25: orchicon.api.v1.RestoreWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	38, // 26: orchicon.api.v1.RecurringRunExecution.started_at:type_name -> google.protobuf.Timestamp
+	38, // 27: orchicon.api.v1.RecurringRunExecution.ended_at:type_name -> google.protobuf.Timestamp
+	38, // 28: orchicon.api.v1.RecurringRunHistoryEntry.fire_at:type_name -> google.protobuf.Timestamp
+	38, // 29: orchicon.api.v1.RecurringRunHistoryEntry.run_started_at:type_name -> google.protobuf.Timestamp
+	38, // 30: orchicon.api.v1.RecurringRunHistoryEntry.run_ended_at:type_name -> google.protobuf.Timestamp
+	34, // 31: orchicon.api.v1.RecurringRunHistoryEntry.executions:type_name -> orchicon.api.v1.RecurringRunExecution
+	35, // 32: orchicon.api.v1.GetWorkItemRunHistoryResponse.entries:type_name -> orchicon.api.v1.RecurringRunHistoryEntry
+	2,  // 33: orchicon.api.v1.WorkItemService.CreateWorkItem:input_type -> orchicon.api.v1.CreateWorkItemRequest
+	4,  // 34: orchicon.api.v1.WorkItemService.GetWorkItem:input_type -> orchicon.api.v1.GetWorkItemRequest
+	33, // 35: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:input_type -> orchicon.api.v1.GetWorkItemRunHistoryRequest
+	6,  // 36: orchicon.api.v1.WorkItemService.ListWorkItems:input_type -> orchicon.api.v1.ListWorkItemsRequest
+	8,  // 37: orchicon.api.v1.WorkItemService.UpdateWorkItem:input_type -> orchicon.api.v1.UpdateWorkItemRequest
+	11, // 38: orchicon.api.v1.WorkItemService.DeleteWorkItem:input_type -> orchicon.api.v1.DeleteWorkItemRequest
+	13, // 39: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:input_type -> orchicon.api.v1.HardDeleteWorkItemRequest
+	15, // 40: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
+	17, // 41: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
+	19, // 42: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
+	21, // 43: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
+	23, // 44: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
+	25, // 45: orchicon.api.v1.WorkItemService.ReorderWorkItems:input_type -> orchicon.api.v1.ReorderWorkItemsRequest
+	29, // 46: orchicon.api.v1.WorkItemService.ArchiveWorkItem:input_type -> orchicon.api.v1.ArchiveWorkItemRequest
+	31, // 47: orchicon.api.v1.WorkItemService.RestoreWorkItem:input_type -> orchicon.api.v1.RestoreWorkItemRequest
+	27, // 48: orchicon.api.v1.WorkItemService.ControlSequence:input_type -> orchicon.api.v1.ControlSequenceRequest
+	3,  // 49: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
+	5,  // 50: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
+	36, // 51: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:output_type -> orchicon.api.v1.GetWorkItemRunHistoryResponse
+	7,  // 52: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
+	10, // 53: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
+	12, // 54: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
+	14, // 55: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:output_type -> orchicon.api.v1.HardDeleteWorkItemResponse
+	16, // 56: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
+	18, // 57: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
+	20, // 58: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
+	22, // 59: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
+	24, // 60: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
+	26, // 61: orchicon.api.v1.WorkItemService.ReorderWorkItems:output_type -> orchicon.api.v1.ReorderWorkItemsResponse
+	30, // 62: orchicon.api.v1.WorkItemService.ArchiveWorkItem:output_type -> orchicon.api.v1.ArchiveWorkItemResponse
+	32, // 63: orchicon.api.v1.WorkItemService.RestoreWorkItem:output_type -> orchicon.api.v1.RestoreWorkItemResponse
+	28, // 64: orchicon.api.v1.WorkItemService.ControlSequence:output_type -> orchicon.api.v1.ControlSequenceResponse
+	49, // [49:65] is the sub-list for method output_type
+	33, // [33:49] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_service_proto_init() }
@@ -2345,7 +2685,7 @@ func file_orchicon_api_v1_work_item_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_work_item_service_proto_rawDesc), len(file_orchicon_api_v1_work_item_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   31,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

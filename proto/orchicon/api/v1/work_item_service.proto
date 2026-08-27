@@ -22,6 +22,11 @@ service WorkItemService {
   // GetWorkItem returns a single work item by id.
   rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
 
+  // GetWorkItemRunHistory returns the per-fire run-history ledger for a
+  // recurring work item, newest first (fire status, start/end, execution
+  // ids, outputs). Used by the recurring-item detail view (4.3) and API.
+  rpc GetWorkItemRunHistory(GetWorkItemRunHistoryRequest) returns (GetWorkItemRunHistoryResponse);
+
   // ListWorkItems returns a page of work items for a project, optionally
   // filtered by parent (tree) or status (Kanban).
   rpc ListWorkItems(ListWorkItemsRequest) returns (ListWorkItemsResponse);
@@ -210,6 +215,10 @@ message UpdateWorkItemRequest {
   // unchanged. Validated: same project, target exists, no self-dependency,
   // no cycle. Edges are independent of parent_id/sort_order.
   optional DependencyIds depends_on = 25;
+  // recurring_enabled pauses/resumes a recurring work item. false = paused:
+  // keeps the recurring_schedule + next_run_at (resume re-arms) but the item
+  // is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
+  optional bool recurring_enabled = 26;
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for
@@ -327,4 +336,41 @@ message RestoreWorkItemRequest {
 
 message RestoreWorkItemResponse {
   WorkItem work_item = 1; // the restored item, server-confirmed
+}
+
+// GetWorkItemRunHistoryRequest asks for a recurring item's per-fire history.
+message GetWorkItemRunHistoryRequest {
+  string id = 1; // the recurring work item id
+}
+
+// RecurringRunExecution is one worker execution produced by a fire's run.
+message RecurringRunExecution {
+  string id = 1;
+  string status = 2;
+  string step_id = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  string output = 6;
+}
+
+// RecurringRunHistoryEntry is a fire's ledger row joined to its run graph.
+// Status is the fire dispatch outcome ('fired' | 'failed'); run_status is the
+// bound run's status ("" when no run was produced, e.g. a fire that failed
+// before dispatch — its error carries the failure reason).
+message RecurringRunHistoryEntry {
+  string id = 1;
+  google.protobuf.Timestamp fire_at = 2;
+  string status = 3; // 'fired' | 'failed'
+  string workflow_run_id = 4; // set when the fire produced a run; "" otherwise
+  string run_status = 5; // bound run's status; "" when no run was produced
+  google.protobuf.Timestamp run_started_at = 6;
+  google.protobuf.Timestamp run_ended_at = 7;
+  string error = 8; // set on a failed fire (dispatch error)
+  repeated RecurringRunExecution executions = 9;
+}
+
+// GetWorkItemRunHistoryResponse carries the recurring item's fire history,
+// newest first.
+message GetWorkItemRunHistoryResponse {
+  repeated RecurringRunHistoryEntry entries = 1;
 }

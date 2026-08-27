@@ -346,8 +346,13 @@ type WorkItem struct {
 	// archived_from_status is the terminal status the item had when archived;
 	// RestoreWorkItem returns the item to this status (not pending).
 	ArchivedFromStatus string `protobuf:"bytes,34,opt,name=archived_from_status,json=archivedFromStatus,proto3" json:"archived_from_status,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// recurring_enabled is the enable/pause flag for a recurring work item.
+	// true = firing (the scheduler due-scan will dispatch it); false = paused
+	// (keeps the recurring_schedule + next_run_at so resume re-arms, but the
+	// scheduler excludes it from the due-scan). Defaults to true.
+	RecurringEnabled bool `protobuf:"varint,35,opt,name=recurring_enabled,json=recurringEnabled,proto3" json:"recurring_enabled,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -609,6 +614,13 @@ func (x *WorkItem) GetArchivedFromStatus() string {
 		return x.ArchivedFromStatus
 	}
 	return ""
+}
+
+func (x *WorkItem) GetRecurringEnabled() bool {
+	if x != nil {
+		return x.RecurringEnabled
+	}
+	return false
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
@@ -906,7 +918,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc0\v\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xed\v\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -949,7 +961,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"blocked_by\x18  \x03(\v2 .orchicon.api.v1.WorkItemBlockerR\tblockedBy\x12;\n" +
 	"\varchived_at\x18! \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"archivedAt\x120\n" +
-	"\x14archived_from_status\x18\" \x01(\tR\x12archivedFromStatusB\x16\n" +
+	"\x14archived_from_status\x18\" \x01(\tR\x12archivedFromStatus\x12+\n" +
+	"\x11recurring_enabled\x18# \x01(\bR\x10recurringEnabledB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
 	"\x13_recurring_schedule\"O\n" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +

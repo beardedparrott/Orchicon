@@ -1,4 +1,4 @@
-h1:aldTqE+JpiKKrJJtxofGlbzabfW/q9FY/EydulX9RCU=
+h1:fA8SE41EehIahke4dehtLwmNkP3hce8ioJm9KaSHtAM=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -127,3 +127,7 @@ h1:aldTqE+JpiKKrJJtxofGlbzabfW/q9FY/EydulX9RCU=
 20260901000001_backfill_orchicon_mode_down.sql h1:SrToRSI8PbcR3g95IDZI7/I3voYJzVnbKzhcGe3QUHI=
 20260910000000_add_git_strategy.sql h1:xh7/OCGnEne7YEYy/Ms8gIgdftN55y9y3xBmfzrs0VM=
 20260910000000_add_git_strategy_down.sql h1:GlIQe8CbgtsCvOiUfJWJ0gpYRjgS80rITYBZd9cthk4=
+20260911000000_work_items_recurring_enabled.sql h1:akRcpjYOZjHF25I1xAhpz4tZFNCjPNmlVZHPZ3gOKdM=
+20260911000000_work_items_recurring_enabled_down.sql h1:Muo2l29VwB0r8gTJeyJ9y15zxP/YFLc7qMdlQ6vi0PI=
+20260911010000_recurring_run_history.sql h1:ig2uUqmLeZEpLoGSwSSx75yJKK6xOuANIt8bd1KWxJI=
+20260911010000_recurring_run_history_down.sql h1:XLkfo+/3ATI8ojcyFIkEXDYS0KQKQBROFlDA7kQqyaw=

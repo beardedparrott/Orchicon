@@ -63,6 +63,7 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 	                WHERE c.tenant_id = w.tenant_id AND c.parent_id = w.id) AS has_children
 	       FROM work_items w
 	     WHERE w.status = 'recurring'
+	       AND w.recurring_enabled
 	       AND w.next_run_at IS NOT NULL
 	       AND w.next_run_at BETWEEN now() - interval '5 minutes' AND now()
 	     LIMIT 100`
@@ -123,9 +124,12 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 			if err := r.sequence(ctx, ref.tenantID, ref.id); err != nil {
 				r.log.Error("recurring_fire: start sequence failed",
 					"work_item", ref.id, "error", err)
+				r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", err.Error())
 			} else {
 				r.log.Info("recurring_fire: sequence started",
 					"work_item", ref.id)
+				r.recordFire(ctx, ref.tenantID, ref.id, "fired",
+					r.fireWorkflowRunID(ctx, ref.tenantID, ref.id), "")
 			}
 			continue
 		}
@@ -145,9 +149,12 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {
 			r.log.Error("recurring_fire: start workflow failed",
 				"work_item", ref.id, "workflow", *ref.workflowID, "error", err)
+			r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", err.Error())
 		} else {
 			r.log.Info("recurring_fire: workflow started",
 				"work_item", ref.id, "workflow", *ref.workflowID)
+			r.recordFire(ctx, ref.tenantID, ref.id, "fired",
+				r.fireWorkflowRunID(ctx, ref.tenantID, ref.id), "")
 		}
 	}
 
@@ -177,6 +184,62 @@ func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 		return err // version mismatch → already fired; harmless
 	}
 	return ttx.Commit(ctx)
+}
+
+// recordFire writes one recurring_run_history ledger row for a fired item in
+// its own short transaction (independent of the dispatch tx). Best-effort: on
+// a ledger write failure the fire outcome is still consistent (next_run_at was
+// already advanced) and the error is logged — it must never wedge the pass.
+func (r *RecurringFireReconciler) recordFire(ctx context.Context,
+	tenantID, itemID, status, workflowRunID, errMsg string) {
+
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Error("recurring_fire: record fire: begin tx",
+			"work_item", itemID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+
+	var runID *string
+	if workflowRunID != "" {
+		runID = &workflowRunID
+	}
+	if _, err := db.CreateRecurringRunHistory(ctx, ttx.Tx, db.RecurringRunHistoryRow{
+		ID:            db.NewID(),
+		TenantID:      tenantID,
+		WorkItemID:    itemID,
+		FireAt:        time.Now().UTC(),
+		Status:        status,
+		WorkflowRunID: runID,
+		Error:         errMsg,
+	}); err != nil {
+		r.log.Error("recurring_fire: record fire failed",
+			"work_item", itemID, "status", status, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("recurring_fire: record fire commit",
+			"work_item", itemID, "error", err)
+	}
+}
+
+// fireWorkflowRunID reads back the workflow_run_id the just-started run bound
+// to the item (StartWorkflowDirect sets it on the item at dispatch). For a
+// sequence parent StartSequence clears the parent's workflow binding (children
+// each run their own workflows) so this returns "" — the ledger still records
+// the fire fact; the run graph join is per-child.
+func (r *RecurringFireReconciler) fireWorkflowRunID(ctx context.Context, tenantID, itemID string) string {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	w, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, itemID)
+	if err != nil {
+		return ""
+	}
+	return w.WorkflowRunID
 }
 
 // computeRecurringNextRunAt parses a raw recurring_schedule JSONB value and

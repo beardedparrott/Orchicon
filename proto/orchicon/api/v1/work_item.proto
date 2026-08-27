@@ -117,6 +117,11 @@ message WorkItem {
   // archived_from_status is the terminal status the item had when archived;
   // RestoreWorkItem returns the item to this status (not pending).
   string archived_from_status = 34;
+  // recurring_enabled is the enable/pause flag for a recurring work item.
+  // true = firing (the scheduler due-scan will dispatch it); false = paused
+  // (keeps the recurring_schedule + next_run_at so resume re-arms, but the
+  // scheduler excludes it from the due-scan). Defaults to true.
+  bool recurring_enabled = 35;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
