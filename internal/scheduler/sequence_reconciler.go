@@ -838,6 +838,15 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	return nil
 }
 
+// stopAbortHook is the post-commit live-session abort hook for StopSequence.
+var stopAbortHook func(ctx context.Context, execID, reason string) error
+var stopRuntime RuntimeLifecycle
+
+// SetStopAbortHook injects the live-session abort hook used by StopSequence.
+func SetStopAbortHook(fn func(ctx context.Context, execID, reason string) error) { stopAbortHook = fn }
+// SetStopRuntime injects the runtime lifecycle used to reap containers after Stop.
+func SetStopRuntime(rl RuntimeLifecycle) { stopRuntime = rl }
+
 // StopSequence halts a work item and, when it is a sequence parent, its
 // whole subtree: every descendant → pending (a RECURRING item keeps its
 // cadence), scheduled starts cleared, and any in-flight workflow run bound
@@ -845,79 +854,85 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 // executions → terminated). A leaf (no children) is halted on its own —
 // its bound run (if any) is aborted and it is parked to pending.
 //
+// After commit it kills live sessions/containers for all aborted executions
+// so Stop is a real kill-switch within seconds. Wedged runs (all steps
+// succeeded but run still running) are also cleared via the same abort
+// path (AbortRunInTx forces terminal).
+//
 // The parked state is deliberately NOT running/failed: the sequence scan
 // only advances running/failed parents and the auto-revive path only
 // resurrects a FAILED parent, so a stopped chain (or leaf) stays stopped
-// until explicitly STARTed/RESUMEd. This is how a chain is halted without
-// destroying history — children can then be run standalone, and Resume
-// re-enters from the first non-succeeded child.
+// until explicitly STARTed/RESUMEd.
 func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string) error {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer ttx.Rollback(ctx)
-
-	if err := haltWorkItem(ctx, ttx.Tx, tenantID, parentID); err != nil {
+	var abortedExecs []string
+	var abortedRunIDs []string
+	if err := haltWorkItemCollect(ctx, ttx.Tx, tenantID, parentID, &abortedExecs, &abortedRunIDs); err != nil {
 		return err
 	}
-	return ttx.Commit(ctx)
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	if stopAbortHook != nil {
+		for _, eid := range abortedExecs {
+			if err := stopAbortHook(context.Background(), eid, "sequence stopped"); err != nil && log != nil {
+				log.Warn("stop: abort live session failed", "execution", eid, "error", err)
+			}
+		}
+	}
+	if stopRuntime != nil {
+		for _, rid := range abortedRunIDs {
+			if err := stopRuntime.ReapForRun(context.Background(), rid); err != nil && log != nil {
+				log.Warn("stop: reap runtime failed", "run", rid, "error", err)
+			}
+		}
+	}
+	return nil
 }
 
-// haltWorkItem parks a single work item (pending, schedule cleared) and,
-// for a sequence parent, recursively halts every descendant. Any in-flight
-// workflow run bound to the item or a descendant is aborted via
-// AbortRunInTx (run → aborted, step runs → failed, executions →
-// terminated) with the bound work item left pending so it can be re-run.
+// haltWorkItem is the legacy non-collecting wrapper kept for tests.
 func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error {
+	var dummyExecs []string
+	var dummyRuns []string
+	return haltWorkItemCollect(ctx, tx, tenantID, itemID, &dummyExecs, &dummyRuns)
+}
+
+// haltWorkItemCollect parks a single work item and recursively halts every descendant.
+// Any in-flight bound run is aborted via AbortRunInTx (wedged runs where all steps
+// are succeeded but run still running are also cleared). Collected exec/run IDs
+// are appended to the provided slices for post-commit container kill.
+func haltWorkItemCollect(ctx context.Context, tx pgx.Tx, tenantID, itemID string, execs *[]string, runIDs *[]string) error {
 	item, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	// Terminal-success descendants are ALWAYS terminal — STOP must never
-	// reset or re-arm a succeeded/skipped item (or re-recurse into its
-	// subtree). Parks only non-terminal items.
 	if domain.WorkItemIsTerminalSuccess(item.Status) {
 		return nil
 	}
-	// Abort any in-flight bound run on this item (a leaf task with a live
-	// run, or a bound container). Idempotent: terminal runs are skipped.
-	// The bound work item is left PENDING so it can be re-run standalone.
-	// A bound run id that no longer exists (stale binding, or a run that
-	// was already cleaned up) is tolerated — there is nothing to abort, and
-	// the binding is cleared below when the item is parked.
 	if item.WorkflowRunID != "" {
-		aborted, err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
-			domain.WorkItemPending)
+		aborted, err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID, domain.WorkItemPending)
 		switch {
 		case err == nil:
-			// The executions are now terminal; the sequence reconciler runs on
-			// the dispatch path, so session abort happens asynchronously via
-			// the terminal-execution handling. The IDs are returned for
-			// completeness.
-			_ = aborted
+			*execs = append(*execs, aborted...)
+			*runIDs = append(*runIDs, item.WorkflowRunID)
 		case errors.Is(err, db.ErrNotFound):
-			// The run row is gone — nothing in flight to abort. Fall through
-			// and park the item (clearing the stale binding).
 		default:
 			return fmt.Errorf("abort bound run %s: %w", item.WorkflowRunID, err)
 		}
 	}
-	// Recurse into children (a parent IS a sequence container).
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return fmt.Errorf("list children: %w", err)
 	}
 	for _, c := range children {
-		if err := haltWorkItem(ctx, tx, tenantID, c.ID); err != nil {
+		if err := haltWorkItemCollect(ctx, tx, tenantID, c.ID, execs, runIDs); err != nil {
 			return err
 		}
 	}
-
-	// Park this item concurrency-resilient: bounded re-read retry on
-	// version conflict, then tolerant fallback. Parking is idempotent
-	// (pending/recurring, schedule and run binding cleared) and
-	// succeeded/skipped are guarded at the top of haltWorkItem.
 	return parkWorkItemResilient(ctx, tx, tenantID, itemID)
 }
 

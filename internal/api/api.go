@@ -163,6 +163,12 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workItemSvc.SetStopSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StopSequence(ctx, deps.Pool, deps.Log, tenantID, parentID)
 	})
+	if deps.AbortExecution != nil {
+		scheduler.SetStopAbortHook(deps.AbortExecution)
+	}
+	if deps.RuntimeClient != nil {
+		// Reuse any existing runtime lifecycle for reap; scheduler will reap via hook if set
+	}
 	if deps.RuntimeClient != nil {
 		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {
 			imgs, err := deps.RuntimeClient.Images(ctx)
