@@ -139,7 +139,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }
 
   return (
-    <div className="relative space-y-2">
+    <div className={showDropdown ? "relative space-y-2 z-10" : "relative space-y-2"}>
       {selectedModel ? (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">Selected model:</span>
@@ -183,7 +183,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           {showDropdown && (
             <div
               ref={dropdownRef}
-              className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md"
+              className="absolute z-[100] mt-1 w-full rounded-md border bg-popover shadow-md"
               style={{ maxHeight: "400px", overflow: "hidden", display: "flex", flexDirection: "column" }}
             >
               {/* Provider filter bar */}

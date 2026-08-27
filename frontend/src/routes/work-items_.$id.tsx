@@ -324,6 +324,83 @@ function WorkItemDetailPage() {
               Edit
             </Button>
           )}
+          {editing && (
+            <>
+              <Button
+                onClick={() => {
+                  const kindChanging = editKind !== item.kind;
+                  if (kindChanging && editKind !== 1 && !editParentId) {
+                    window.alert(
+                      `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
+                    );
+                    return;
+                  }
+                  if (kindChanging) {
+                    const moving = directChildren.filter(
+                      (c) => depthForKind(c.kind) <= depthForKind(editKind),
+                    );
+                    const lines = [
+                      `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
+                    ];
+                    if (moving.length > 0) {
+                      lines.push(
+                        `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
+                        moving.map((c) => `  • ${c.title}`).join("\n"),
+                      );
+                    }
+                    if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
+                      lines.push(
+                        "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
+                      );
+                    }
+                    if (!window.confirm(lines.join("\n"))) return;
+                  }
+                  updateWorkItem.mutate(
+                    {
+                      id,
+                      title,
+                      description,
+                      acceptanceCriteria,
+                      acceptanceReview,
+                      priority,
+                      contextWindow,
+                      status,
+                      projectId: editProjectId,
+                      workflowId: editWorkflowId,
+                      runtimeImage: editRuntimeImage || undefined,
+                      scheduledStartAt: editScheduledStartAt
+                        ? Timestamp.fromDate(new Date(editScheduledStartAt))
+                        : undefined,
+                      autoStartWorkflow: editAutoStartWorkflow,
+                      parentId: editParentId || undefined,
+                      kind: kindChanging ? editKind : undefined,
+                      contextFiles: { files: editContextFiles },
+                      recurringSchedule: kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
+                          ? new RecurringSchedule()
+                          : undefined,
+                    },
+                    {
+                      onSuccess: ({ warning }) => {
+                        setEditing(false);
+                        if (warning) {
+                          toast.error(warning, {
+                            title: "Auto-start not applied",
+                            duration: 9000,
+                          });
+                        }
+                      },
+                    },
+                  );
+                }}
+                disabled={updateWorkItem.isPending || !title.trim()}
+              >
+                {updateWorkItem.isPending ? "Saving…" : "Save changes"}
+              </Button>
+              <Button variant="outline" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </>
+          )}
           <Button
             variant="outline"
             onClick={handleSoftDelete}
@@ -929,95 +1006,7 @@ function WorkItemDetailPage() {
         </Card>
       )}
 
-      {/* Edit save/cancel */}
-      {editing && (
-        <div className="flex gap-2">
-          <Button
-            onClick={() => {
-              const kindChanging = editKind !== item.kind;
-              // Epic → non-epic without a parent: force the pick before
-              // enabling Save (ADR-WIT-1 — the server requires it too).
-              if (kindChanging && editKind !== 1 && !editParentId) {
-                window.alert(
-                  `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
-                );
-                return;
-              }
-              if (kindChanging) {
-                // Describe the automatic resolution before confirming
-                // (ADR-WIT-2): children that can no longer sit under the
-                // item move to its parent; non-schedulable kinds clear
-                // worker/schedule/status.
-                const moving = directChildren.filter(
-                  (c) => depthForKind(c.kind) <= depthForKind(editKind),
-                );
-                const lines = [
-                  `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
-                ];
-                if (moving.length > 0) {
-                  lines.push(
-                    `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
-                    moving.map((c) => `  • ${c.title}`).join("\n"),
-                  );
-                }
-                if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
-                  lines.push(
-                    "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
-                  );
-                }
-                if (!window.confirm(lines.join("\n"))) return;
-              }
-              updateWorkItem.mutate(
-                {
-                  id,
-                  title,
-                  description,
-                  acceptanceCriteria,
-                  acceptanceReview,
-                  priority,
-                  contextWindow,
-                  status,
-                  projectId: editProjectId,
-                  workflowId: editWorkflowId,
-                  runtimeImage: editRuntimeImage || undefined,
-                  scheduledStartAt: editScheduledStartAt
-                    ? Timestamp.fromDate(new Date(editScheduledStartAt))
-                    : undefined,
-                  autoStartWorkflow: editAutoStartWorkflow,
-                  parentId: editParentId || undefined,
-                  kind: kindChanging ? editKind : undefined,
-                  contextFiles: { files: editContextFiles },
-                  recurringSchedule: kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
-                      ? new RecurringSchedule()
-                      : undefined,
-                },
-                {
-                  onSuccess: ({ warning }) => {
-                    setEditing(false);
-                    // The server saved the edit but declined an explicit
-                    // auto-start (item status not startable). Surface the
-                    // server's explanation verbatim so "save with
-                    // auto-start on a non-startable item" reads as an
-                    // intentional, explained no-op — not as breakage.
-                    if (warning) {
-                      toast.error(warning, {
-                        title: "Auto-start not applied",
-                        duration: 9000,
-                      });
-                    }
-                  },
-                },
-              );
-            }}
-            disabled={updateWorkItem.isPending || !title.trim()}
-          >
-            {updateWorkItem.isPending ? "Saving…" : "Save changes"}
-          </Button>
-          <Button variant="outline" onClick={() => setEditing(false)}>
-            Cancel
-          </Button>
-        </div>
-      )}
+
 
       {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
       <Card>
