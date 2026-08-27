@@ -200,7 +200,7 @@ function WorkflowsPage() {
           size="sm"
           onClick={() => setShowCreateCategory(true)}
         >
-          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          <FolderPlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
           New Category
         </Button>
         {selected.size > 0 && (
@@ -210,7 +210,7 @@ function WorkflowsPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -227,7 +227,7 @@ function WorkflowsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No workflows yet
             </CardTitle>
             <CardDescription>
@@ -350,7 +350,7 @@ function WorkflowRow({
         aria-label={`Drag ${workflow.name} to a category`}
         className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical aria-hidden="true" className="h-4 w-4" />
       </span>
       <input
         type="checkbox"

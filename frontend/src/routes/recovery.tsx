@@ -79,7 +79,7 @@ function RecoveryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><RotateCcw className="h-6 w-6 text-rose-400" /> Recovery</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><RotateCcw aria-hidden="true" className="h-6 w-6 text-rose-400" /> Recovery</h1>
           <p className="text-sm text-muted-foreground">
             Recovery workflow executions. When a task fails, recovery runs
             automatically. Open one to see the full narrative.
@@ -115,7 +115,7 @@ function RecoveryPage() {
             onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
             className="flex h-9 items-center gap-1 rounded-xl glass-input px-3 text-sm hover:bg-white/5"
           >
-            <ArrowUpDown className="h-3 w-3" />
+            <ArrowUpDown aria-hidden="true" className="h-3 w-3" />
             {sortOrder === "desc" ? "Newest" : "Oldest"}
           </button>
         </div>
@@ -158,7 +158,7 @@ function RecoveryPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No recoveries yet
             </CardTitle>
             <CardDescription>

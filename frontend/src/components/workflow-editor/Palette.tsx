@@ -158,11 +158,11 @@ function Section({
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-muted-foreground" aria-hidden />
+          <ChevronDown aria-hidden="true" className="h-3 w-3 text-muted-foreground"  />
         ) : (
-          <ChevronRight className="h-3 w-3 text-muted-foreground" aria-hidden />
+          <ChevronRight aria-hidden="true" className="h-3 w-3 text-muted-foreground"  />
         )}
-        <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+        <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <span className="text-xs font-semibold uppercase tracking-wide text-foreground">
           {title}
         </span>
@@ -236,7 +236,7 @@ function DraggableTile({
                 "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded",
                 ACCENT_BG[kindAccent],
               )}
-              aria-hidden
+              aria-hidden="true"
             >
               <Icon className="h-3 w-3" />
             </span>
@@ -264,7 +264,7 @@ function DraggableTile({
 function PaletteFooter() {
   return (
     <p className="flex items-start gap-1.5 px-1 pt-1 text-[10px] leading-snug text-muted-foreground">
-      <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+      <Info aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0"  />
       <span>
         Draw an edge <span className="font-mono">A → B</span> to make{" "}
         <span className="font-mono">B</span> depend on{" "}

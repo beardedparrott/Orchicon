@@ -98,7 +98,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         }}
         className="absolute -right-2 -top-2 hidden h-5 w-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm hover:bg-rose-100 hover:text-rose-700 group-hover:flex dark:hover:bg-rose-950/60"
       >
-        <X className="h-3 w-3" />
+        <X aria-hidden="true" className="h-3 w-3" />
       </button>
 
       <div className="flex items-center justify-between gap-2">

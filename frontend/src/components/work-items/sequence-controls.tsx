@@ -178,9 +178,9 @@ export function SequenceControls({
             )}
           >
             {isPending ? (
-              <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
+              <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
             ) : (
-              <Icon aria-hidden className="h-3 w-3" />
+              <Icon aria-hidden="true" className="h-3 w-3" />
             )}
             {confirming === action ? "Confirm?" : meta.label}
           </button>

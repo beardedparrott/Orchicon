@@ -895,7 +895,7 @@ function AskOrchiconPage() {
               <div className="text-center space-y-4">
                 <div className="flex justify-center">
                   <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-300">
-                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
                     Intelligent Orchestration
                   </span>
                 </div>
@@ -948,7 +948,7 @@ function AskOrchiconPage() {
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
                 <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
-                  <Brain className="h-2.5 w-2.5" />
+                  <Brain aria-hidden="true" className="h-2.5 w-2.5" />
                   Brainstorm
                 </span>
                 {/* The model answering this conversation — surfaced so a
@@ -970,7 +970,7 @@ function AskOrchiconPage() {
                 </span>
               </div>
               <Button variant="ghost" size="sm" onClick={handleNewChat}>
-                <Plus className="h-4 w-4" />
+                <Plus aria-hidden="true" className="h-4 w-4" />
               </Button>
             </div>
 
@@ -981,7 +981,7 @@ function AskOrchiconPage() {
                 actionable "your model config is missing". */}
             {isUsingFallbackModel && (
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-                <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
+                <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
                   No Ask Orchicon model is configured — answering with the free
                   fallback model (<span className="font-mono">{effectiveModel}</span>),
@@ -1063,7 +1063,7 @@ function AskOrchiconPage() {
                   <div className="flex justify-start">
                     <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
-                        <span className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
                         <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                           Orchicon is thinking
                           {isUsingFallbackModel && (
@@ -1115,10 +1115,10 @@ function AskOrchiconPage() {
 
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
-        <aside className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
+        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
           <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
             <div className="flex items-center space-x-2 text-slate-300">
-              <MessageSquare className="w-4 h-4 text-cyan-400" />
+              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
               <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
             </div>
             <div className="flex items-center space-x-1">
@@ -1128,7 +1128,7 @@ function AskOrchiconPage() {
                 title="New folder"
                 aria-label="New folder"
               >
-                <FolderPlus className="w-4 h-4" />
+                <FolderPlus aria-hidden="true" className="w-4 h-4" />
               </button>
               <Link
                 to="/ask-orchicon"
@@ -1138,15 +1138,17 @@ function AskOrchiconPage() {
                 title="New Chat"
                 aria-label="New conversation"
               >
-                <Plus className="w-4 h-4" />
+                <Plus aria-hidden="true" className="w-4 h-4" />
               </Link>
               <button
                 onClick={togglePanel}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                aria-expanded={!panelCollapsed}
+                aria-controls="conversation-history-panel"
+                aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
                 title="Collapse Panel"
-                aria-label="Collapse conversation panel"
               >
-                <PanelRightClose className="w-4 h-4" />
+                <PanelRightClose aria-hidden="true" className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -1248,7 +1250,7 @@ function AskOrchiconPage() {
               onClick={handleNewChat}
               className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
             >
-              <History className="w-3.5 h-3.5 text-slate-400" />
+              <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
               <span>View All History</span>
             </button>
           </div>
@@ -1256,11 +1258,13 @@ function AskOrchiconPage() {
       ) : (
         <button
           onClick={togglePanel}
-          aria-label="Expand conversation panel"
+          aria-expanded={!panelCollapsed}
+          aria-controls="conversation-history-panel"
+          aria-label="Expand conversation history"
           title="Expand Conversations"
-          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start"
+          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
         >
-          <PanelRight className="h-4 w-4" />
+          <PanelRight aria-hidden="true" className="h-4 w-4" />
         </button>
       )}
 
@@ -1314,7 +1318,7 @@ function MessageBubble({
           )}
           {onRetry && (
             <Button variant="outline" size="sm" onClick={onRetry} className="mt-2">
-              <RefreshCw className="h-3.5 w-3.5 mr-1" />
+              <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
               Retry
             </Button>
           )}
@@ -1783,7 +1787,7 @@ function ChatInputField({
                 {isImage && previewUrl ? (
                   <img src={previewUrl} alt={a.name} className="h-8 w-8 rounded object-cover" />
                 ) : (
-                  <Paperclip className="h-3 w-3" />
+                  <Paperclip aria-hidden="true" className="h-3 w-3" />
                 )}
                 <span className="max-w-[120px] truncate">{a.name}</span>
                 <span className="text-muted-foreground">{a.data ? `${(a.data.length / 1024).toFixed(1)}KB` : ""}</span>
@@ -1808,7 +1812,7 @@ function ChatInputField({
       >
         {/* Textarea area */}
         <div className="flex items-end gap-2 px-1 pb-1">
-          <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
+          <Sparkles aria-hidden="true" className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1816,7 +1820,7 @@ function ChatInputField({
             title="Attach file"
             aria-label="Attach file"
           >
-            <Paperclip className="h-4 w-4" />
+            <Paperclip aria-hidden="true" className="h-4 w-4" />
           </button>
           <textarea
             ref={inputRef}
@@ -1838,7 +1842,7 @@ function ChatInputField({
             )}
             title={isRecording ? "Stop recording" : "Voice input"}
           >
-            <Mic className="h-4 w-4" />
+            <Mic aria-hidden="true" className="h-4 w-4" />
           </button>
         </div>
         {/* Bottom toolbar — send/stop on left, mode dropdown on the right */}
@@ -1856,7 +1860,7 @@ function ChatInputField({
                   Send
                 </Button>
                 <Button onClick={onStop} variant="destructive" size="sm">
-                  <Square className="h-3.5 w-3.5 mr-1" />
+                  <Square aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
                   Stop
                 </Button>
               </>
@@ -1967,7 +1971,7 @@ function ConversationItem({
             {...listeners}
             className="shrink-0 mt-0.5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 text-muted-foreground"
           >
-            <GripVertical className="h-3 w-3" />
+            <GripVertical aria-hidden="true" className="h-3 w-3" />
           </span>
           <div className="flex-1 min-w-0">
             {isRenaming ? (
@@ -1990,7 +1994,7 @@ function ConversationItem({
                     className="shrink-0 relative flex h-1.5 w-1.5"
                     title="Reply in progress"
                   >
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
+                    <span aria-hidden="true" className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
                     <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500" />
                   </span>
                 )}
@@ -2015,7 +2019,7 @@ function ConversationItem({
                     className="shrink-0 cursor-pointer text-destructive hover:text-destructive-foreground"
                     title="Stop this reply"
                   >
-                    <Square className="h-3 w-3 fill-current" />
+                    <Square aria-hidden="true" className="h-3 w-3 fill-current" />
                   </span>
                 )}
               </div>
@@ -2033,14 +2037,14 @@ function ConversationItem({
                 className="text-muted-foreground hover:text-foreground"
                 title="Rename"
               >
-                <Pencil className="h-3 w-3" />
+                <Pencil aria-hidden="true" className="h-3 w-3" />
               </button>
               <button
                 onClick={onDelete}
                 className="text-muted-foreground hover:text-destructive"
                 title="Delete"
               >
-                <Trash2 className="h-3 w-3" />
+                <Trash2 aria-hidden="true" className="h-3 w-3" />
               </button>
             </span>
           )}
@@ -2126,7 +2130,7 @@ function FolderItem({
           className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground"
         >
           <ChevronRight
-            className={cn(
+            aria-hidden="true" className={cn(
               "h-3 w-3 transition-transform",
               !isCollapsed && "rotate-90",
             )}
@@ -2154,14 +2158,14 @@ function FolderItem({
               className="text-muted-foreground hover:text-foreground"
               title="Rename folder"
             >
-              <Pencil className="h-3 w-3" />
+              <Pencil aria-hidden="true" className="h-3 w-3" />
             </button>
             <button
               onClick={onDelete}
               className="text-muted-foreground hover:text-destructive"
               title="Delete folder"
             >
-              <Trash2 className="h-3 w-3" />
+              <Trash2 aria-hidden="true" className="h-3 w-3" />
             </button>
           </span>
         )}

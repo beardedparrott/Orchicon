@@ -68,7 +68,7 @@ export function BlockedChip({
               className,
             )}
           >
-            <Link2 aria-hidden className="h-3 w-3" />
+            <Link2 aria-hidden="true" className="h-3 w-3" />
             {serverBlockers.length}
           </span>
         </TooltipTrigger>
@@ -93,7 +93,7 @@ export function BlockedChip({
               className,
             )}
           >
-            <Link2 aria-hidden className="h-3 w-3" />
+            <Link2 aria-hidden="true" className="h-3 w-3" />
             {blockers.length}
           </span>
         </TooltipTrigger>
@@ -114,7 +114,7 @@ export function BlockedChip({
               className,
             )}
           >
-            <Link2 aria-hidden className="h-3 w-3" />
+            <Link2 aria-hidden="true" className="h-3 w-3" />
           </span>
         </TooltipTrigger>
         <TooltipContent>Has dependencies (none blocking)</TooltipContent>
@@ -143,7 +143,7 @@ export function PrLinkChip({ run }: { run: PrRun }) {
         "bg-primary/10 text-primary hover:bg-primary/15",
       )}
     >
-      <ExternalLink className="h-3 w-3" aria-hidden />
+      <ExternalLink aria-hidden="true" className="h-3 w-3"  />
       {link.label}
     </a>
   );
@@ -172,7 +172,7 @@ export function RunFooter({ runs }: { runs?: PrRun[] }) {
         <span key={r.worktreeBranch || r.prUrl || i} className="inline-flex min-w-0 items-center gap-1.5">
           {r.worktreeBranch && (
             <span className="inline-flex shrink-0 items-center gap-1 font-mono text-muted-foreground">
-              <GitBranch className="h-3 w-3 shrink-0" aria-hidden />
+              <GitBranch aria-hidden="true" className="h-3 w-3 shrink-0"  />
               <span className="max-w-[9rem] truncate" title={r.worktreeBranch}>
                 {r.worktreeBranch}
               </span>
@@ -248,7 +248,7 @@ export function WorkItemCard({
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <BlockedChip item={item} blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
           {moving ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
           ) : (
             <StatusPill status={item.status} />
           )}
@@ -264,7 +264,7 @@ export function WorkItemCard({
       {(priority || age || actions) && (
         <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           {priority && <span className="shrink-0 font-mono tabular-nums">{priority}</span>}
-          {priority && age && <span aria-hidden className="shrink-0">·</span>}
+          {priority && age && <span aria-hidden="true" className="shrink-0">·</span>}
           {age && <span className="min-w-0 truncate">{age}</span>}
           {actions && <span className="ml-auto shrink-0">{actions}</span>}
         </div>

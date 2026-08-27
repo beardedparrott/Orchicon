@@ -260,7 +260,7 @@ function WorkItemDetailPage() {
             onClick={() => navigate({ to: "/work-items" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -1036,7 +1036,7 @@ function WorkItemDetailPage() {
           {item.blockedBy.length > 0 && (
             <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
               <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
-                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                <Link2 aria-hidden="true" className="h-3.5 w-3.5"  />
                 Blocked by
               </h4>
               <ul className="mt-2 space-y-1.5">

@@ -28,7 +28,7 @@ export function ToolCard({ tool, className }: ToolCardProps) {
           onClick={() => setOpen((v) => !v)}
           className="flex w-full items-center gap-2 px-3 py-2 text-left"
         >
-          <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <TerminalSquare aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="font-mono text-sm font-medium">{tool.toolName}</span>
           {hasOutput && (
             <span className="ml-auto shrink-0 rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">

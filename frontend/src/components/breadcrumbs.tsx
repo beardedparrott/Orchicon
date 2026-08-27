@@ -12,7 +12,7 @@ export function Breadcrumbs({ detail }: BreadcrumbsProps) {
         const isLast = idx === all.length - 1;
         return (
           <span key={`${c.label}-${idx}`} className="flex items-center gap-1">
-            {idx > 0 && <span aria-hidden className="text-muted-foreground/60">›</span>}
+            {idx > 0 && <span aria-hidden="true" className="text-muted-foreground/60">›</span>}
             {c.to && !isLast ? <Link to={c.to} className="hover:text-foreground hover:underline">{c.label}</Link> : isLast ? <span className="text-foreground font-medium">{c.label}</span> : <span>{c.label}</span>}
           </span>
         );

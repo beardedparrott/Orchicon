@@ -75,7 +75,7 @@ export function MultiSelect<T extends string | number>({
         >
           <span className="truncate text-foreground">{summary}</span>
           <ChevronDown
-            aria-hidden
+            aria-hidden="true"
             className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground"
           />
         </button>
@@ -111,7 +111,7 @@ export function MultiSelect<T extends string | number>({
                   selected.has(option.value) && "border-primary bg-primary text-primary-foreground",
                 )}
               >
-                {selected.has(option.value) && <Check aria-hidden className="h-3 w-3" />}
+                {selected.has(option.value) && <Check aria-hidden="true" className="h-3 w-3" />}
               </span>
               <span className="truncate">{option.label}</span>
             </DropdownMenuPrimitive.CheckboxItem>

@@ -847,7 +847,7 @@ function CopyButton({ text }: { text: string }) {
       {copied ? (
         <span className="text-emerald-600 dark:text-emerald-400">Copied!</span>
       ) : (
-        <Copy className="h-3 w-3" />
+        <Copy aria-hidden="true" className="h-3 w-3" />
       )}
     </button>
   );

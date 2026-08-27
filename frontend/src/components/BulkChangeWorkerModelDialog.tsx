@@ -97,7 +97,7 @@ export function BulkChangeWorkerModelDialog({
     >
       <form onSubmit={handleSubmit} className="p-6">
         <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
-          <PencilLine className="h-4 w-4" />
+          <PencilLine aria-hidden="true" className="h-4 w-4" />
           Change model for {selectedIds.length} selected worker
           {selectedIds.length === 1 ? "" : "s"}
         </h2>
@@ -124,7 +124,7 @@ export function BulkChangeWorkerModelDialog({
 
             <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:bg-amber-950/20 dark:border-amber-900/60 p-3 text-xs text-muted-foreground">
               <div className="flex items-start gap-2">
-                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
                 <div className="space-y-1">
                   <p className="font-medium text-foreground">
                     Dispatch-time resolution
@@ -195,7 +195,7 @@ export function BulkChangeWorkerModelDialog({
               <Button type="submit" disabled={!canApply}>
                 {isPending ? (
                   <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    <Loader2 aria-hidden="true" className="mr-1 h-3.5 w-3.5 animate-spin" />
                     Applying…
                   </>
                 ) : (
@@ -247,7 +247,7 @@ function BulkResultSummary({
                   key={r.workerId}
                   className="flex items-start gap-2 px-3 py-2 text-xs"
                 >
-                  <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
+                  <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium truncate">{name}</p>
                     <p className="text-muted-foreground">
@@ -265,7 +265,7 @@ function BulkResultSummary({
                   key={r.workerId}
                   className="flex items-start gap-2 px-3 py-2 text-xs"
                 >
-                  <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600" />
+                  <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600" />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium truncate">{name}</p>
                     <p className="text-muted-foreground">
@@ -282,7 +282,7 @@ function BulkResultSummary({
                   key={r.workerId}
                   className="flex items-start gap-2 px-3 py-2 text-xs"
                 >
-                  <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-destructive" />
+                  <XCircle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-destructive" />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium truncate">{name}</p>
                     <p className="text-destructive">
