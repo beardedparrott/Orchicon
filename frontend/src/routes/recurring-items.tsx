@@ -180,18 +180,14 @@ function WorkItemsPage() {
     [items, kinds, statuses, debouncedSearch],
   );
 
-  // Selection (design §5.1): cascade selection uses the FULL items list
-  // so checking/unchecking a parent always affects ALL its children
-  // regardless of active filters. The `childrenOf` callback must walk
-  // the complete hierarchy (not just filtered treeItems) so that
-  // cascade toggles reach descendants that may be hidden by the current
-  // kind/status/search filter.
-  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
-  const childrenOf = useCallback(
-    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
-    [items],
-  );
-  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
+  // A filter is "active" only when the selection differs from the full
+  // option list (the default = show everything) or a search is typed. An
+  // all-selected type/status filter is NOT a query: it must not dim rows,
+  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
+  const hasQuery =
+    debouncedSearch !== "" ||
+    kinds.length !== KIND_FILTER_OPTIONS.length ||
+    statuses.length !== STATUS_FILTER_OPTIONS.length;
 
   // The header select-all + count operate over the MATCHES (the items
   // that actually pass the filters), never the dimmed ancestor container
@@ -199,6 +195,18 @@ function WorkItemsPage() {
   // filtered-out epics/features for bulk delete.
   const visibleItems = view === "tree" ? treeData.matches : filteredItems;
   const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
+  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
+
+  // Selection (design §5.1): cascade selection — when a filter is active
+  // the parent toggle is scoped to the currently-viewable descendants
+  // only (visibleIdsSet + hasQuery), so hidden items are never selected.
+  // With no filter, the full subtree is used (AC5).
+  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
+  const childrenOf = useCallback(
+    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
+    [items],
+  );
+  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, visibleIdsSet, hasQuery, resetKey);
   const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
 
   const handleToggleAll = () => toggleAll(visibleIds);
@@ -234,7 +242,6 @@ function WorkItemsPage() {
   // select-all and parent cascade can mark filtered-out descendants, but Run
   // must only touch the currently-visible rows (AC-3). The label uses the
   // visible-selected count so it never over-promises (AC-1).
-  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
   const visibleSelectedCount = useMemo(
     () => [...selected].filter((id) => visibleIdsSet.has(id)).length,
     [selected, visibleIdsSet],
@@ -245,14 +252,7 @@ function WorkItemsPage() {
     void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
   };
 
-  // A filter is "active" only when the selection differs from the full
-  // option list (the default = show everything) or a search is typed. An
-  // all-selected type/status filter is NOT a query: it must not dim rows,
-  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
-  const hasQuery =
-    debouncedSearch !== "" ||
-    kinds.length !== KIND_FILTER_OPTIONS.length ||
-    statuses.length !== STATUS_FILTER_OPTIONS.length;
+
 
   // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
   // items list (not the filtered set) so collapsing a filtered-out
