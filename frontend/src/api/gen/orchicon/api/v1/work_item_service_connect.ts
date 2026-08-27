@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, GetWorkItemRunHistoryRequest, GetWorkItemRunHistoryResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -42,6 +42,19 @@ export const WorkItemService = {
       name: "GetWorkItem",
       I: GetWorkItemRequest,
       O: GetWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetWorkItemRunHistory returns the per-fire run-history ledger for a
+     * recurring work item, newest first (fire status, start/end, execution
+     * ids, outputs). Used by the recurring-item detail view (4.3) and API.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.GetWorkItemRunHistory
+     */
+    getWorkItemRunHistory: {
+      name: "GetWorkItemRunHistory",
+      I: GetWorkItemRunHistoryRequest,
+      O: GetWorkItemRunHistoryResponse,
       kind: MethodKind.Unary,
     },
     /**

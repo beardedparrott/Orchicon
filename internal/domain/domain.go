@@ -165,6 +165,13 @@ const (
 	// has no children. Reversible via RestoreWorkItem, which returns the
 	// item to the terminal status recorded in archived_from_status.
 	WorkItemArchived = "archived"
+	// WorkItemIdea is a system-managed status set only by the automation
+	// spawn path (a recurring fire with outputs_mode=idea) and by Idea
+	// Cloud promotion (feature 5). An idea is an automation-produced item
+	// awaiting triage; it is excluded from every normal work-item view
+	// (board/tree/list/sequence/workflows/counts). Never user-assignable —
+	// it mirrors WorkItemBlocked/WorkItemSkipped's system-managed rule.
+	WorkItemIdea = "idea"
 )
 
 // WorkItemIsTerminalArchivable reports whether a work item may be
@@ -207,6 +214,45 @@ func WorkItemIsTerminalNonReplayable(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// Recurring outputs_mode values (feature 4.1, D4). Stored inside the
+// recurring_schedule JSONB (no dedicated column).
+const (
+	// RecurringOutputsStandard (the default) spawns items in their normal
+	// status with automation provenance stamped.
+	RecurringOutputsStandard = "standard"
+	// RecurringOutputsIdea spawns items in IDEA state (hidden from every
+	// normal work-item list) with automation provenance stamped.
+	RecurringOutputsIdea = "idea"
+	// RecurringOutputsNone spawns no new work items; the fire runs for
+	// side effects only.
+	RecurringOutputsNone = "none"
+)
+
+// IdeaScope values for ListWorkItems (feature 4.1, D5).
+const (
+	// IdeaScopeExclude (the default) hides idea-state items from the
+	// normal Work Items list.
+	IdeaScopeExclude = "exclude"
+	// IdeaScopeOnly returns only idea-state items (the Idea Cloud view,
+	// with provenance carried).
+	IdeaScopeOnly = "only"
+)
+
+// NormalizeRecurringOutputsMode maps an arbitrary outputs_mode string to a
+// canonical value: empty/invalid -> "standard". Exported so the Ask
+// Orchicon tools share the API's boundary normalization (AGENTS.md
+// Ask-Orchicon-sync rule).
+func NormalizeRecurringOutputsMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case RecurringOutputsIdea:
+		return RecurringOutputsIdea
+	case RecurringOutputsNone:
+		return RecurringOutputsNone
+	default:
+		return RecurringOutputsStandard
 	}
 }
 

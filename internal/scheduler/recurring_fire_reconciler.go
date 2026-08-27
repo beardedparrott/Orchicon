@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
@@ -24,8 +25,14 @@ type RecurringFireReconciler struct {
 	pool     *db.Pool
 	log      *slog.Logger
 	start    StartWorkflowFn
-	sequence StartSequenceFn // optional: fires sequence parents with children
+	startCtx StartWorkflowRunContextFn // optional: stamps automation provenance into the run context
+	sequence StartSequenceFn           // optional: fires sequence parents with children
 }
+
+// StartWorkflowRunContextFn starts a workflow run for a bound work item and
+// carries an extra run_context map the recurring fire uses to stamp
+// automation provenance into the run (feature 4.1, D3).
+type StartWorkflowRunContextFn func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, runContext map[string]any) error
 
 // NewRecurringFireReconciler creates a new RecurringFireReconciler.
 func NewRecurringFireReconciler(pool *db.Pool, log *slog.Logger, start StartWorkflowFn) *RecurringFireReconciler {
@@ -36,6 +43,11 @@ func NewRecurringFireReconciler(pool *db.Pool, log *slog.Logger, start StartWork
 // work item has children and no bound workflow. Optional — without it a
 // sequence parent is skipped with a warning.
 func (r *RecurringFireReconciler) SetSequenceStarter(fn StartSequenceFn) { r.sequence = fn }
+
+// SetRunContextStarter injects the provenance-aware fire path. Optional —
+// without it the reconciler falls back to the plain start (no provenance
+// block written into the run context).
+func (r *RecurringFireReconciler) SetRunContextStarter(fn StartWorkflowRunContextFn) { r.startCtx = fn }
 
 func (r *RecurringFireReconciler) Kind() string { return "recurring_fire" }
 
@@ -146,10 +158,24 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 				"work_item", ref.id, "error", err)
 			continue
 		}
-		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {
+		// Stamp automation provenance into the run_context so any work item
+		// created during this run is tagged spawned_by (this recurring item)
+		// + the run id and, when outputs_mode=idea, lands in IDEA state
+		// (feature 4.1, D3). Falls back to a plain start when the
+		// provenance-aware starter is not wired.
+		var fireErr error
+		if r.startCtx != nil {
+			fireErr = r.startCtx(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id, map[string]any{
+				"spawned_by":   ref.id,
+				"outputs_mode": recurringOutputsMode(ref.recurringSchedule),
+			})
+		} else {
+			fireErr = r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id)
+		}
+		if fireErr != nil {
 			r.log.Error("recurring_fire: start workflow failed",
-				"work_item", ref.id, "workflow", *ref.workflowID, "error", err)
-			r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", err.Error())
+				"work_item", ref.id, "workflow", *ref.workflowID, "error", fireErr)
+			r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", fireErr.Error())
 		} else {
 			r.log.Info("recurring_fire: workflow started",
 				"work_item", ref.id, "workflow", *ref.workflowID)
@@ -266,4 +292,20 @@ func ensureRecurringNextRun(scheduleJSON []byte, nextRunAt *time.Time, now time.
 		return nil
 	}
 	return computeRecurringNextRunAt(scheduleJSON, now)
+}
+
+// recurringOutputsMode extracts the outputs_mode from a recurring_schedule JSONB
+// value. Missing/invalid values normalize to the default "standard".
+func recurringOutputsMode(scheduleJSON []byte) string {
+	if len(scheduleJSON) == 0 {
+		return domain.RecurringOutputsStandard
+	}
+	var m map[string]any
+	if err := json.Unmarshal(scheduleJSON, &m); err != nil {
+		return domain.RecurringOutputsStandard
+	}
+	if v, ok := m["outputs_mode"].(string); ok {
+		return domain.NormalizeRecurringOutputsMode(v)
+	}
+	return domain.RecurringOutputsStandard
 }

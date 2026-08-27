@@ -117,6 +117,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
 		RuntimeImage       string   `json:"runtime_image"`
 		ContextFiles       []string `json:"context_files"`
+		// run_context is the calling workflow run's run_context JSONB (feature
+		// 4.1, AC2): a recurring fire writes the provenance block into it, and a
+		// create issued from inside a recurring fire's run carries it so the
+		// created item is stamped with automation provenance.
+		RunContext string `json:"run_context"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -234,6 +239,16 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
+	// Stamp automation provenance (feature 4.1, AC2): a create inside a
+	// recurring fire's run carries the run_context (passed on the call or
+	// injected into the context by the sandbox Orchicon MCP from the run's
+	// run_context), so the created item is stamped spawned_by /
+	// spawned_by_run_id and, when outputs_mode=idea, lands in IDEA state.
+	rc := []byte(params.RunContext)
+	if len(rc) == 0 {
+		rc = workitem.RunContextFrom(ctx)
+	}
+	workitem.ApplyAutomationProvenance(&row, rc)
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, row)
 	if err != nil {
 		return nil, err
@@ -473,12 +488,16 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// a parent. When a kind switch is in flight, the explicit parent was
 	// already validated against the NEW kind inside ResolveKindSwitch, so
 	// this block is skipped (the old kind's rules no longer apply).
+	// Flat-recurring exemption (D1 parity with the Connect Update path): a
+	// recurring item is a flat top-level task, so hierarchy validation for
+	// the top-level (empty parent) case is skipped.
+	itemIsRecurring := current.RecurringSchedule != nil
 	if params.ParentID != nil && kindSwitchPlan == nil {
 		effectiveProject := current.ProjectID
 		if update.ProjectID != nil && *update.ProjectID != "" {
 			effectiveProject = *update.ProjectID
 		}
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject, itemIsRecurring); err != nil {
 			return nil, err
 		}
 	} else if params.ParentID == nil && update.ProjectID != nil && *update.ProjectID != "" && *update.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -488,7 +507,7 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID, itemIsRecurring); err != nil {
 			return nil, err
 		}
 	}

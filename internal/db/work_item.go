@@ -91,6 +91,13 @@ type WorkItemRow struct {
 	// archived. RestoreWorkItem returns the item to this status (not
 	// pending). NULL = never archived.
 	ArchivedFromStatus *string
+	// SpawnedByWorkItemID is the recurring item id that produced this
+	// work item (empty = not an automation spawn). Server-stamped from
+	// the recurring fire's run_context; never client-supplied (feature 4.1).
+	SpawnedByWorkItemID *string
+	// SpawnedByRunID is the workflow run id of the recurring fire's run
+	// that produced this work item (empty = not an automation spawn).
+	SpawnedByRunID *string
 	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
 	SequenceAttempts int
 	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
@@ -128,8 +135,8 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, recurring_enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -139,6 +146,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
+		w.SpawnedByWorkItemID, w.SpawnedByRunID,
 	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
@@ -158,6 +166,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	recurring_schedule, next_run_at, recurring_enabled,
 	archived_at, archived_from_status,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
+	spawned_by_work_item_id, spawned_by_run_id,
 	version, created_at, updated_at`
 
 // WorkItemScanPtrs returns a slice of Scan pointers matching
@@ -174,6 +183,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
 		&w.ArchivedAt, &w.ArchivedFromStatus,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
+		&w.SpawnedByWorkItemID, &w.SpawnedByRunID,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	}
 }
@@ -211,6 +221,10 @@ type ListWorkItemsFilter struct {
 	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
 	//     archive view.
 	IncludeArchived bool
+	// IdeaScope scopes the idea-state split (feature 4.1): ""/"exclude" =
+	// exclude idea-state items from the normal list; "only" = Idea Cloud
+	// view (status='idea', provenance carried).
+	IdeaScope string
 	// RecurringFilter scopes the recurring split: ""/"all" = no filter,
 	// "exclude" = only non-recurring (recurring_schedule IS NULL),
 	// "only" = only recurring (recurring_schedule IS NOT NULL).
@@ -240,6 +254,14 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		q += ` AND recurring_schedule IS NOT NULL`
 	case "exclude":
 		q += ` AND recurring_schedule IS NULL`
+	}
+	// Idea-state gate: the normal list excludes idea items; the Idea Cloud
+	// view opts in with "only". 'idea' is a literal status (not interpolated).
+	switch f.IdeaScope {
+	case "only":
+		q += ` AND status = 'idea'`
+	default:
+		q += ` AND status <> 'idea'`
 	}
 	if f.ParentID != nil {
 		if *f.ParentID == "" {
@@ -474,6 +496,11 @@ type UpdateWorkItemFields struct {
 	// (field-mask semantics). Setting false pauses the recurrence while
 	// preserving the schedule + next_run_at; setting true resumes it.
 	RecurringEnabled *bool
+	// SpawnedByWorkItemID and SpawnedByRunID stamp automation provenance
+	// (feature 4.1). Set only by the spawn path; never via the generic
+	// update (nil = unchanged).
+	SpawnedByWorkItemID *string
+	SpawnedByRunID      *string
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -626,6 +653,16 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.RecurringEnabled != nil {
 		q += fmt.Sprintf(`, recurring_enabled = $%d`, setIdx)
 		args = append(args, *f.RecurringEnabled)
+		setIdx++
+	}
+	if f.SpawnedByWorkItemID != nil {
+		q += fmt.Sprintf(`, spawned_by_work_item_id = $%d`, setIdx)
+		args = append(args, *f.SpawnedByWorkItemID)
+		setIdx++
+	}
+	if f.SpawnedByRunID != nil {
+		q += fmt.Sprintf(`, spawned_by_run_id = $%d`, setIdx)
+		args = append(args, *f.SpawnedByRunID)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`

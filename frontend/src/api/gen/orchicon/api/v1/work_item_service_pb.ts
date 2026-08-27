@@ -102,6 +102,43 @@ proto3.util.setEnumType(RecurringFilter, "orchicon.api.v1.RecurringFilter", [
 ]);
 
 /**
+ * IdeaScope scopes ListWorkItems to idea-state items produced by
+ * automations. status = 'idea' is the signal; idea items are excluded from
+ * the normal Work Items list by default (the Idea Cloud surfaces them via
+ * IDEA_SCOPE_ONLY_IDEA).
+ *
+ * @generated from enum orchicon.api.v1.IdeaScope
+ */
+export enum IdeaScope {
+  /**
+   * legacy default: EXCLUDE idea items
+   *
+   * @generated from enum value: IDEA_SCOPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * normal Work Items page (default)
+   *
+   * @generated from enum value: IDEA_SCOPE_EXCLUDE_IDEA = 1;
+   */
+  EXCLUDE_IDEA = 1,
+
+  /**
+   * Idea Cloud: idea-state items with provenance
+   *
+   * @generated from enum value: IDEA_SCOPE_ONLY_IDEA = 2;
+   */
+  ONLY_IDEA = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(IdeaScope)
+proto3.util.setEnumType(IdeaScope, "orchicon.api.v1.IdeaScope", [
+  { no: 0, name: "IDEA_SCOPE_UNSPECIFIED" },
+  { no: 1, name: "IDEA_SCOPE_EXCLUDE_IDEA" },
+  { no: 2, name: "IDEA_SCOPE_ONLY_IDEA" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
  */
 export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
@@ -224,6 +261,18 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   dependsOn: string[] = [];
 
+  /**
+   * run_context is the calling workflow run's run_context JSONB (feature 4.1,
+   * AC2). A recurring fire writes the automation provenance block into the run
+   * context; a create issued from inside a recurring fire's run carries it so
+   * the created item is stamped spawned_by / spawned_by_run_id and, when the
+   * fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
+   * creates leave it empty (backward compatible).
+   *
+   * @generated from field: string run_context = 19;
+   */
+  runContext = "";
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -250,6 +299,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 19, name: "run_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -455,6 +505,15 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
    */
   recurringFilter = RecurringFilter.UNSPECIFIED;
 
+  /**
+   * idea_scope filters idea-state items: EXCLUDE (default, matches the
+   * legacy UNSPECIFIED) hides automation-produced ideas from every normal
+   * view; ONLY returns them (the Idea Cloud surface, with provenance).
+   *
+   * @generated from field: orchicon.api.v1.IdeaScope idea_scope = 12;
+   */
+  ideaScope = IdeaScope.UNSPECIFIED;
+
   constructor(data?: PartialMessage<ListWorkItemsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -474,6 +533,7 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "include_archived", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 11, name: "recurring_filter", kind: "enum", T: proto3.getEnumType(RecurringFilter) },
+    { no: 12, name: "idea_scope", kind: "enum", T: proto3.getEnumType(IdeaScope) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {
@@ -678,6 +738,15 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   dependsOn?: DependencyIds;
 
+  /**
+   * recurring_enabled pauses/resumes a recurring work item. false = paused:
+   * keeps the recurring_schedule + next_run_at (resume re-arms) but the item
+   * is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
+   *
+   * @generated from field: optional bool recurring_enabled = 26;
+   */
+  recurringEnabled?: boolean;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -707,6 +776,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 24, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 25, name: "depends_on", kind: "message", T: DependencyIds, opt: true },
+    { no: 26, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
@@ -1707,6 +1777,254 @@ export class RestoreWorkItemResponse extends Message<RestoreWorkItemResponse> {
 
   static equals(a: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined, b: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined): boolean {
     return proto3.util.equals(RestoreWorkItemResponse, a, b);
+  }
+}
+
+/**
+ * GetWorkItemRunHistoryRequest asks for a recurring item's per-fire history.
+ *
+ * @generated from message orchicon.api.v1.GetWorkItemRunHistoryRequest
+ */
+export class GetWorkItemRunHistoryRequest extends Message<GetWorkItemRunHistoryRequest> {
+  /**
+   * the recurring work item id
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<GetWorkItemRunHistoryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkItemRunHistoryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkItemRunHistoryRequest {
+    return new GetWorkItemRunHistoryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkItemRunHistoryRequest {
+    return new GetWorkItemRunHistoryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkItemRunHistoryRequest {
+    return new GetWorkItemRunHistoryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkItemRunHistoryRequest | PlainMessage<GetWorkItemRunHistoryRequest> | undefined, b: GetWorkItemRunHistoryRequest | PlainMessage<GetWorkItemRunHistoryRequest> | undefined): boolean {
+    return proto3.util.equals(GetWorkItemRunHistoryRequest, a, b);
+  }
+}
+
+/**
+ * RecurringRunExecution is one worker execution produced by a fire's run.
+ *
+ * @generated from message orchicon.api.v1.RecurringRunExecution
+ */
+export class RecurringRunExecution extends Message<RecurringRunExecution> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string status = 2;
+   */
+  status = "";
+
+  /**
+   * @generated from field: string step_id = 3;
+   */
+  stepId = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp started_at = 4;
+   */
+  startedAt?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp ended_at = 5;
+   */
+  endedAt?: Timestamp;
+
+  /**
+   * @generated from field: string output = 6;
+   */
+  output = "";
+
+  constructor(data?: PartialMessage<RecurringRunExecution>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RecurringRunExecution";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "started_at", kind: "message", T: Timestamp },
+    { no: 5, name: "ended_at", kind: "message", T: Timestamp },
+    { no: 6, name: "output", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringRunExecution {
+    return new RecurringRunExecution().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RecurringRunExecution {
+    return new RecurringRunExecution().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RecurringRunExecution {
+    return new RecurringRunExecution().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RecurringRunExecution | PlainMessage<RecurringRunExecution> | undefined, b: RecurringRunExecution | PlainMessage<RecurringRunExecution> | undefined): boolean {
+    return proto3.util.equals(RecurringRunExecution, a, b);
+  }
+}
+
+/**
+ * RecurringRunHistoryEntry is a fire's ledger row joined to its run graph.
+ * Status is the fire dispatch outcome ('fired' | 'failed'); run_status is the
+ * bound run's status ("" when no run was produced, e.g. a fire that failed
+ * before dispatch — its error carries the failure reason).
+ *
+ * @generated from message orchicon.api.v1.RecurringRunHistoryEntry
+ */
+export class RecurringRunHistoryEntry extends Message<RecurringRunHistoryEntry> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp fire_at = 2;
+   */
+  fireAt?: Timestamp;
+
+  /**
+   * 'fired' | 'failed'
+   *
+   * @generated from field: string status = 3;
+   */
+  status = "";
+
+  /**
+   * set when the fire produced a run; "" otherwise
+   *
+   * @generated from field: string workflow_run_id = 4;
+   */
+  workflowRunId = "";
+
+  /**
+   * bound run's status; "" when no run was produced
+   *
+   * @generated from field: string run_status = 5;
+   */
+  runStatus = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp run_started_at = 6;
+   */
+  runStartedAt?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp run_ended_at = 7;
+   */
+  runEndedAt?: Timestamp;
+
+  /**
+   * set on a failed fire (dispatch error)
+   *
+   * @generated from field: string error = 8;
+   */
+  error = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.RecurringRunExecution executions = 9;
+   */
+  executions: RecurringRunExecution[] = [];
+
+  constructor(data?: PartialMessage<RecurringRunHistoryEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RecurringRunHistoryEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "fire_at", kind: "message", T: Timestamp },
+    { no: 3, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "run_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "run_started_at", kind: "message", T: Timestamp },
+    { no: 7, name: "run_ended_at", kind: "message", T: Timestamp },
+    { no: 8, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "executions", kind: "message", T: RecurringRunExecution, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringRunHistoryEntry {
+    return new RecurringRunHistoryEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RecurringRunHistoryEntry {
+    return new RecurringRunHistoryEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RecurringRunHistoryEntry {
+    return new RecurringRunHistoryEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RecurringRunHistoryEntry | PlainMessage<RecurringRunHistoryEntry> | undefined, b: RecurringRunHistoryEntry | PlainMessage<RecurringRunHistoryEntry> | undefined): boolean {
+    return proto3.util.equals(RecurringRunHistoryEntry, a, b);
+  }
+}
+
+/**
+ * GetWorkItemRunHistoryResponse carries the recurring item's fire history,
+ * newest first.
+ *
+ * @generated from message orchicon.api.v1.GetWorkItemRunHistoryResponse
+ */
+export class GetWorkItemRunHistoryResponse extends Message<GetWorkItemRunHistoryResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.RecurringRunHistoryEntry entries = 1;
+   */
+  entries: RecurringRunHistoryEntry[] = [];
+
+  constructor(data?: PartialMessage<GetWorkItemRunHistoryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkItemRunHistoryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "entries", kind: "message", T: RecurringRunHistoryEntry, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkItemRunHistoryResponse {
+    return new GetWorkItemRunHistoryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkItemRunHistoryResponse {
+    return new GetWorkItemRunHistoryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkItemRunHistoryResponse {
+    return new GetWorkItemRunHistoryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkItemRunHistoryResponse | PlainMessage<GetWorkItemRunHistoryResponse> | undefined, b: GetWorkItemRunHistoryResponse | PlainMessage<GetWorkItemRunHistoryResponse> | undefined): boolean {
+    return proto3.util.equals(GetWorkItemRunHistoryResponse, a, b);
   }
 }
 

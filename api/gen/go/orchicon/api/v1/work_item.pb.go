@@ -149,6 +149,11 @@ const (
 	// item has no children. Reversible via RestoreWorkItem, which returns the
 	// item to its archived_from_status.
 	WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED WorkItemStatus = 14
+	// System-managed: set only by the automation spawn path (a recurring fire
+	// with outputs_mode=idea) and by Idea Cloud promotion. An idea is an
+	// automation-produced item awaiting triage; it is excluded from every
+	// normal work-item view. Never user-assignable.
+	WorkItemStatus_WORK_ITEM_STATUS_IDEA WorkItemStatus = 15
 )
 
 // Enum value maps for WorkItemStatus.
@@ -169,6 +174,7 @@ var (
 		12: "WORK_ITEM_STATUS_BLOCKED",
 		13: "WORK_ITEM_STATUS_SKIPPED",
 		14: "WORK_ITEM_STATUS_ARCHIVED",
+		15: "WORK_ITEM_STATUS_IDEA",
 	}
 	WorkItemStatus_value = map[string]int32{
 		"WORK_ITEM_STATUS_UNSPECIFIED":   0,
@@ -186,6 +192,7 @@ var (
 		"WORK_ITEM_STATUS_BLOCKED":       12,
 		"WORK_ITEM_STATUS_SKIPPED":       13,
 		"WORK_ITEM_STATUS_ARCHIVED":      14,
+		"WORK_ITEM_STATUS_IDEA":          15,
 	}
 )
 
@@ -346,11 +353,19 @@ type WorkItem struct {
 	// archived_from_status is the terminal status the item had when archived;
 	// RestoreWorkItem returns the item to this status (not pending).
 	ArchivedFromStatus string `protobuf:"bytes,34,opt,name=archived_from_status,json=archivedFromStatus,proto3" json:"archived_from_status,omitempty"`
+	// spawned_by is the recurring item id that produced this work item
+	// (empty = not an automation spawn). Server-stamped from the recurring
+	// fire's run_context; never client-supplied.
+	SpawnedBy string `protobuf:"bytes,35,opt,name=spawned_by,json=spawnedBy,proto3" json:"spawned_by,omitempty"`
+	// spawned_by_run_id is the workflow run id of the recurring fire's run
+	// that produced this work item (empty = not an automation spawn).
+	// Server-stamped alongside spawned_by.
+	SpawnedByRunId string `protobuf:"bytes,36,opt,name=spawned_by_run_id,json=spawnedByRunId,proto3" json:"spawned_by_run_id,omitempty"`
 	// recurring_enabled is the enable/pause flag for a recurring work item.
 	// true = firing (the scheduler due-scan will dispatch it); false = paused
 	// (keeps the recurring_schedule + next_run_at so resume re-arms, but the
 	// scheduler excludes it from the due-scan). Defaults to true.
-	RecurringEnabled bool `protobuf:"varint,35,opt,name=recurring_enabled,json=recurringEnabled,proto3" json:"recurring_enabled,omitempty"`
+	RecurringEnabled bool `protobuf:"varint,37,opt,name=recurring_enabled,json=recurringEnabled,proto3" json:"recurring_enabled,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -616,6 +631,20 @@ func (x *WorkItem) GetArchivedFromStatus() string {
 	return ""
 }
 
+func (x *WorkItem) GetSpawnedBy() string {
+	if x != nil {
+		return x.SpawnedBy
+	}
+	return ""
+}
+
+func (x *WorkItem) GetSpawnedByRunId() string {
+	if x != nil {
+		return x.SpawnedByRunId
+	}
+	return ""
+}
+
 func (x *WorkItem) GetRecurringEnabled() bool {
 	if x != nil {
 		return x.RecurringEnabled
@@ -689,12 +718,22 @@ func (x *WorkItemBlocker) GetStatus() string {
 // RecurringSchedule defines the recurrence pattern for a recurring work item.
 // Stored as JSONB in the recurring_schedule column. NULL = not recurring.
 type RecurringSchedule struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Frequency     string                 `protobuf:"bytes,1,opt,name=frequency,proto3" json:"frequency,omitempty"`                  // minute | hourly | daily | weekly | monthly
-	Interval      int32                  `protobuf:"varint,2,opt,name=interval,proto3" json:"interval,omitempty"`                   // >= 1 (e.g. every 2 hours)
-	Days          []string               `protobuf:"bytes,3,rep,name=days,proto3" json:"days,omitempty"`                            // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
-	StartDate     string                 `protobuf:"bytes,4,opt,name=start_date,json=startDate,proto3" json:"start_date,omitempty"` // YYYY-MM-DD (first occurrence date)
-	StartTime     string                 `protobuf:"bytes,5,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"` // HH:MM (time of day for occurrences)
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Frequency string                 `protobuf:"bytes,1,opt,name=frequency,proto3" json:"frequency,omitempty"`                  // minute | hourly | daily | weekly | monthly
+	Interval  int32                  `protobuf:"varint,2,opt,name=interval,proto3" json:"interval,omitempty"`                   // >= 1 (e.g. every 2 hours)
+	Days      []string               `protobuf:"bytes,3,rep,name=days,proto3" json:"days,omitempty"`                            // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+	StartDate string                 `protobuf:"bytes,4,opt,name=start_date,json=startDate,proto3" json:"start_date,omitempty"` // YYYY-MM-DD (first occurrence date)
+	StartTime string                 `protobuf:"bytes,5,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"` // HH:MM (time of day for occurrences)
+	// outputs_mode controls what the recurring fire's run produces:
+	//
+	//	standard (default): spawned items land in their normal status with
+	//	  provenance stamped.
+	//	idea: spawned items land in IDEA state (hidden from every normal
+	//	  work-item list) with provenance stamped.
+	//	none: the fire spawns no new work items.
+	//
+	// Stored as a key inside the recurring_schedule JSONB (no new column).
+	OutputsMode   string `protobuf:"bytes,6,opt,name=outputs_mode,json=outputsMode,proto3" json:"outputs_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -760,6 +799,13 @@ func (x *RecurringSchedule) GetStartDate() string {
 func (x *RecurringSchedule) GetStartTime() string {
 	if x != nil {
 		return x.StartTime
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetOutputsMode() string {
+	if x != nil {
+		return x.OutputsMode
 	}
 	return ""
 }
@@ -918,7 +964,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xed\v\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb7\f\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -961,14 +1007,17 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"blocked_by\x18  \x03(\v2 .orchicon.api.v1.WorkItemBlockerR\tblockedBy\x12;\n" +
 	"\varchived_at\x18! \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"archivedAt\x120\n" +
-	"\x14archived_from_status\x18\" \x01(\tR\x12archivedFromStatus\x12+\n" +
-	"\x11recurring_enabled\x18# \x01(\bR\x10recurringEnabledB\x16\n" +
+	"\x14archived_from_status\x18\" \x01(\tR\x12archivedFromStatus\x12\x1d\n" +
+	"\n" +
+	"spawned_by\x18# \x01(\tR\tspawnedBy\x12)\n" +
+	"\x11spawned_by_run_id\x18$ \x01(\tR\x0espawnedByRunId\x12+\n" +
+	"\x11recurring_enabled\x18% \x01(\bR\x10recurringEnabledB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
 	"\x13_recurring_schedule\"O\n" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status\"\x9f\x01\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"\xc2\x01\n" +
 	"\x11RecurringSchedule\x12\x1c\n" +
 	"\tfrequency\x18\x01 \x01(\tR\tfrequency\x12\x1a\n" +
 	"\binterval\x18\x02 \x01(\x05R\binterval\x12\x12\n" +
@@ -976,7 +1025,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
 	"start_date\x18\x04 \x01(\tR\tstartDate\x12\x1d\n" +
 	"\n" +
-	"start_time\x18\x05 \x01(\tR\tstartTime\"\xfe\x01\n" +
+	"start_time\x18\x05 \x01(\tR\tstartTime\x12!\n" +
+	"\foutputs_mode\x18\x06 \x01(\tR\voutputsMode\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -999,7 +1049,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1cWORK_ITEM_KIND_RECOVERY_STOP\x10\x05\x12-\n" +
 	")WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART\x10\x06\x12,\n" +
 	"(WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION\x10\a\x12#\n" +
-	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\xe6\x03\n" +
+	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\x81\x04\n" +
 	"\x0eWorkItemStatus\x12 \n" +
 	"\x1cWORK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_PENDING\x10\x01\x12\x1a\n" +
@@ -1016,7 +1066,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1aWORK_ITEM_STATUS_RECURRING\x10\v\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_BLOCKED\x10\f\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_SKIPPED\x10\r\x12\x1d\n" +
-	"\x19WORK_ITEM_STATUS_ARCHIVED\x10\x0e*\x8d\x01\n" +
+	"\x19WORK_ITEM_STATUS_ARCHIVED\x10\x0e\x12\x19\n" +
+	"\x15WORK_ITEM_STATUS_IDEA\x10\x0f*\x8d\x01\n" +
 	"\x0eDependencyType\x12\x1f\n" +
 	"\x1bDEPENDENCY_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16DEPENDENCY_TYPE_BLOCKS\x10\x01\x12\x1e\n" +

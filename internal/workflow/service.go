@@ -2026,3 +2026,49 @@ func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, t
 	_, err := s.StartWorkflow(ctx, req)
 	return err
 }
+
+// StartWorkflowDirectWithContext starts a workflow run for a bound work item
+// and stamps the given extra run_context into the run's run_context. It is
+// the provenance-aware variant used by the recurring fire so that any work
+// item created during the run is tagged with spawned_by / spawned_by_run_id /
+// outputs_mode (feature 4.1, D3). The run id is only known after creation, so
+// it is merged back into the run_context post-create (best-effort).
+func StartWorkflowDirectWithContext(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string, extra map[string]any) error {
+	rc := "{}"
+	if len(extra) > 0 {
+		if b, err := json.Marshal(extra); err == nil {
+			rc = string(b)
+		}
+	}
+	s := New(pool, log, nil)
+	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
+		WorkflowId: workflowID,
+		ProjectId:  projectID,
+		WorkItemId: workItemID,
+		RunContext: rc,
+	})
+	ctx = tenant.WithID(ctx, tenantID)
+	resp, err := s.StartWorkflow(ctx, req)
+	if err != nil {
+		return err
+	}
+	run := resp.Msg.GetRun()
+	if run == nil || run.GetId() == "" {
+		return nil
+	}
+	// Merge the (now-known) run id into the run_context for provenance.
+	ttx, terr := pool.BeginTenantTx(ctx, tenantID)
+	if terr != nil {
+		return nil // best-effort: provenance isn't worth failing the fire
+	}
+	defer ttx.Rollback(ctx)
+	if r, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, run.GetId()); gerr == nil {
+		merged, ok := db.MergeRunContext(r.RunContext, map[string]any{"spawned_by_run_id": run.GetId()})
+		if ok {
+			if _, uerr := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.GetId(), r.Version, db.UpdateWorkflowRunFields{RunContext: &merged}); uerr == nil {
+				_ = ttx.Commit(ctx)
+			}
+		}
+	}
+	return nil
+}

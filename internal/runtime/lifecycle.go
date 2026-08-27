@@ -36,7 +36,7 @@ type Lifecycle struct {
 	// composite worktree batch tools (batch_read/grep/write) need a base
 	// directory to resolve against — the project is mounted in-container at
 	// the same absolute path.
-	serveConfigFor func(image, projectDir string) string
+	serveConfigFor func(image, projectDir, workflowRunID string) string
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
@@ -45,7 +45,7 @@ type Lifecycle struct {
 // the run's runtime image tag (permission rules only for base/gui images,
 // plus the sandbox-scoped Orchicon MCP for dev images — built by the
 // opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir string) string) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string) string) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor}
 }
 
@@ -93,7 +93,7 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	}
 	// Serve config is built last so the in-container project dir is available
 	// for the composite worktree batch tools (batch_read/grep/write).
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir)
+	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID)
 	return req, nil
 }
 
