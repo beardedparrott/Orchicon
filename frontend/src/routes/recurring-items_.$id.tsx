@@ -28,6 +28,7 @@ import { FileBrowser } from "@/components/FileBrowser";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
+import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -145,6 +146,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
   const workflowName = workflows?.find((w) => w.id === item.workflowId)?.name;
 
   const ideaOutputs = item.recurringSchedule?.outputsMode === "idea";
+  const isDark = useDarkPalette();
 
   return (
     <div className="space-y-6">
@@ -351,14 +353,23 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                   className={cn(
                     "rounded-full px-2 py-0.5 text-xs font-medium",
                     enabled
-                      ? "bg-emerald-100 text-emerald-800"
+                      ? isDark
+                        ? "bg-emerald-950/60 text-emerald-200"
+                        : "bg-emerald-100 text-emerald-800"
                       : "bg-muted text-muted-foreground",
                   )}
                 >
                   {enabled ? "Active" : "Paused"}
                 </span>
                 {ideaOutputs && (
-                  <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-fuchsia-500/15 text-fuchsia-800">
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-xs font-medium",
+                      isDark
+                        ? "bg-fuchsia-500/15 text-fuchsia-300"
+                        : "bg-fuchsia-500/15 text-fuchsia-800",
+                    )}
+                  >
                     Outputs: ideas
                   </span>
                 )}
@@ -453,6 +464,7 @@ function RunHistoryRow({
   entry: RecurringRunHistoryEntry;
   workflowId: string;
 }) {
+  const isDark = useDarkPalette();
   const fired = entry.status === "fired";
   return (
     <li className="rounded-xl border border-border/60 p-3">
@@ -464,8 +476,12 @@ function RunHistoryRow({
           className={cn(
             "rounded-full px-2 py-0.5 text-[10px] font-medium",
             fired
-              ? "bg-emerald-100 text-emerald-800"
-              : "bg-rose-100 text-rose-800",
+              ? isDark
+                ? "bg-emerald-950/60 text-emerald-200"
+                : "bg-emerald-100 text-emerald-800"
+              : isDark
+                ? "bg-rose-950/60 text-rose-200"
+                : "bg-rose-100 text-rose-800",
           )}
         >
           {entry.status}

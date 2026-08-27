@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
+import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 import { cn } from "@/lib/utils";
 import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { type RecurringSchedule, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -402,6 +403,7 @@ function countdownAria(target: number, now: number): string {
 
 /** Live countdown chip (from Schedules' CountdownChip). */
 function CountdownChip({ target, now }: { target: number; now: number }) {
+  const isDark = useDarkPalette();
   const diff = target - now;
   const text = diff <= 0 ? "now" : formatCountdown(target, now);
   return (
@@ -411,7 +413,9 @@ function CountdownChip({ target, now }: { target: number; now: number }) {
       className={cn(
         "rounded-full px-2 py-0.5 text-xs font-medium",
         diff <= 0
-          ? "bg-emerald-100 text-emerald-800"
+          ? isDark
+            ? "bg-emerald-950/60 text-emerald-200"
+            : "bg-emerald-100 text-emerald-800"
           : "bg-muted text-muted-foreground",
       )}
     >
