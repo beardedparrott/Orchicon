@@ -74,7 +74,7 @@ export function DeletableEdge({
               );
             }}
           >
-            <X className="h-3 w-3" />
+            <X aria-hidden="true" className="h-3 w-3" />
           </button>
         </div>
       </EdgeLabelRenderer>

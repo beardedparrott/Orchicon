@@ -123,7 +123,7 @@ export function ModeToggle({
         <CurrentIcon className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="hidden sm:inline">{current.label}</span>
         <ChevronDown
-          className={cn(
+          aria-hidden="true" className={cn(
             "h-3 w-3 text-muted-foreground transition-transform",
             open && "rotate-180",
           )}

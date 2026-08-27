@@ -231,7 +231,7 @@ function WorkersPage() {
           size="sm"
           onClick={() => setShowCreateCategory(true)}
         >
-          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          <FolderPlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
           New Category
         </Button>
         {selected.size > 0 && (
@@ -241,7 +241,7 @@ function WorkersPage() {
               size="sm"
               onClick={handleChangeModelOpen}
             >
-              <PencilLine className="mr-1 h-3.5 w-3.5" />
+              <PencilLine aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Change model…
             </Button>
             <Button
@@ -250,7 +250,7 @@ function WorkersPage() {
               onClick={handleBatchDelete}
               disabled={batchDelete.isPending}
             >
-              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Delete {selected.size} selected
             </Button>
           </>
@@ -268,7 +268,7 @@ function WorkersPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No workers yet
             </CardTitle>
             <CardDescription>
@@ -405,7 +405,7 @@ function WorkerRow({
         aria-label={`Drag ${worker.name} to a category`}
         className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical aria-hidden="true" className="h-4 w-4" />
       </span>
       <input
         type="checkbox"

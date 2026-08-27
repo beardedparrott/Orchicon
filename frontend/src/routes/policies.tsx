@@ -87,7 +87,7 @@ function PoliciesPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No policies yet
             </CardTitle>
             <CardDescription>

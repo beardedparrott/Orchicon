@@ -227,7 +227,7 @@ function ApprovalsPage() {
               onClick={() => handleBulkAction(true)}
               disabled={approveMutation.isPending}
             >
-              <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              <CheckCircle2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Approve {selected.size} selected
             </Button>
             <Button
@@ -236,7 +236,7 @@ function ApprovalsPage() {
               onClick={() => handleBulkAction(false)}
               disabled={approveMutation.isPending}
             >
-              <XCircle className="mr-1 h-3.5 w-3.5" />
+              <XCircle aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Reject {selected.size} selected
             </Button>
           </>
@@ -336,7 +336,7 @@ function ApprovalsPage() {
                       params={{ id: item.workflowId, runId: item.workflowRunId }}
                     >
                       <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <ExternalLink className="h-4 w-4" />
+                        <ExternalLink aria-hidden="true" className="h-4 w-4" />
                       </Button>
                     </Link>
                   </div>
@@ -393,7 +393,7 @@ function ApprovalsPage() {
                         type="button"
                         onClick={() => fileInputs.current[item.stepRunId]?.click()}
                       >
-                        <Paperclip className="mr-1 h-3.5 w-3.5" />
+                        <Paperclip aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
                         Attach files
                       </Button>
                       <span className="text-xs text-muted-foreground">
@@ -424,7 +424,7 @@ function ApprovalsPage() {
                                 className="h-10 w-16 rounded object-cover"
                               />
                             ) : (
-                              <ImagePlus className="h-3.5 w-3.5 text-muted-foreground" />
+                              <ImagePlus aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
                             )}
                             <span className="max-w-40 truncate">{d.att.filename}</span>
                             <button
@@ -433,7 +433,7 @@ function ApprovalsPage() {
                               className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                               aria-label={`Remove ${d.att.filename}`}
                             >
-                              <X className="h-3 w-3" />
+                              <X aria-hidden="true" className="h-3 w-3" />
                             </button>
                           </div>
                         ))}
@@ -446,7 +446,7 @@ function ApprovalsPage() {
                         onClick={() => handleApprove(item.stepRunId, true)}
                         disabled={approveMutation.isPending}
                       >
-                        <CheckCircle2 className="mr-1 h-4 w-4" />
+                        <CheckCircle2 aria-hidden="true" className="mr-1 h-4 w-4" />
                         Approve
                       </Button>
                       <Button
@@ -455,7 +455,7 @@ function ApprovalsPage() {
                         onClick={() => handleApprove(item.stepRunId, false)}
                         disabled={approveMutation.isPending}
                       >
-                        <XCircle className="mr-1 h-4 w-4" />
+                        <XCircle aria-hidden="true" className="mr-1 h-4 w-4" />
                         Reject
                       </Button>
                     </div>

@@ -165,7 +165,7 @@ function RuntimeImageDetailPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={() => navigate({ to: "/runtime-images" })}>
-            <ArrowLeft className="mr-1 h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="mr-1 h-4 w-4" />
             Back
           </Button>
           <div>
@@ -188,11 +188,11 @@ function RuntimeImageDetailPage() {
                 Edit
               </Button>
               <Button onClick={handleBuild} disabled={deploying || img.status === 2}>
-                <Hammer className="mr-1 h-4 w-4" />
+                <Hammer aria-hidden="true" className="mr-1 h-4 w-4" />
                 {deploying ? "Building…" : "Deploy"}
               </Button>
               <Button variant="destructive" onClick={handleDelete} disabled={deleteImage.isPending}>
-                <Trash2 className="mr-1 h-4 w-4" />
+                <Trash2 aria-hidden="true" className="mr-1 h-4 w-4" />
                 Delete
               </Button>
             </>
@@ -305,7 +305,7 @@ function RuntimeImageDetailPage() {
               )}
               <div className="flex gap-2">
                 <Button onClick={handleSave} disabled={updateImage.isPending}>
-                  <Save className="mr-1 h-4 w-4" />
+                  <Save aria-hidden="true" className="mr-1 h-4 w-4" />
                   Save
                 </Button>
                 <Button variant="outline" onClick={() => setEditMode(false)}>

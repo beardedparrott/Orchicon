@@ -44,7 +44,7 @@ function CostExplorerPage() {
     <div className="space-y-6">
       <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground flex items-center gap-1">
         <Link to="/dashboard" className="hover:text-foreground hover:underline">Overview</Link>
-        <span aria-hidden>›</span>
+        <span aria-hidden="true">›</span>
         <span className="text-foreground font-medium">Cost Explorer</span>
       </nav>
       <div>

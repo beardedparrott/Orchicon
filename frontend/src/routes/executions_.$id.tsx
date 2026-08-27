@@ -114,7 +114,7 @@ function ExecutionDetailPage() {
             onClick={() => navigate({ to: "/executions" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">

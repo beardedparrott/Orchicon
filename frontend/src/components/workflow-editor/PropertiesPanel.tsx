@@ -98,7 +98,7 @@ export function PropertiesPanel({
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-muted-foreground" />
+          <Icon aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
           <CardTitle className="text-base">
             {STEP_KIND_DISPLAY_LABELS[d.kind] ?? "Step"} properties
           </CardTitle>
@@ -544,7 +544,7 @@ function Field({
       {children}
       {hint && (
         <p className="flex items-start gap-1 text-[10px] leading-snug text-muted-foreground">
-          <Info className="mt-0.5 h-2.5 w-2.5 shrink-0" />
+          <Info aria-hidden="true" className="mt-0.5 h-2.5 w-2.5 shrink-0" />
           {hint}
         </p>
       )}

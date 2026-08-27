@@ -53,7 +53,7 @@ export function WorkItemsArchiveView({
   if (archived.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-16 text-center text-muted-foreground">
-        <ArchiveIcon aria-hidden className="h-8 w-8" />
+        <ArchiveIcon aria-hidden="true" className="h-8 w-8" />
         <p className="text-sm">No archived work items.</p>
       </div>
     );
@@ -90,7 +90,7 @@ export function WorkItemsArchiveView({
               disabled={restorePending}
               title="Restore this work item to the active views"
             >
-              <RotateCcw className="mr-1 h-3.5 w-3.5" />
+              <RotateCcw aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Restore
             </Button>
           </div>

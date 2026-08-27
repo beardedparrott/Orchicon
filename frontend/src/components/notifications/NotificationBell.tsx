@@ -57,12 +57,13 @@ export function NotificationBell() {
         onClick={handleToggle}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls="notification-panel"
         aria-label={unreadCount > 0 ? `Notifications — ${unreadCount} unread` : "Notifications"}
         title="Notifications"
         data-testid="notification-bell"
-        className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition relative focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+        className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition relative focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
       >
-        <Bell className="w-4 h-4" />
+        <Bell aria-hidden="true" className="w-4 h-4" />
         {unreadCount > 0 && (
           <span
             data-testid="notification-pulsing-dot"
