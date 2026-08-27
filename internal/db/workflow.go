@@ -22,8 +22,8 @@ type WorkflowRow struct {
 	Name           string
 	CurrentVersion int
 	Status         string
-	Type           string // "one_shot" or "template"
-	GitStrategy  *string // nil=inherit, values local|pr|none
+	Type           string  // "one_shot" or "template"
+	GitStrategy    *string // nil=inherit, values local|pr|none
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -35,17 +35,17 @@ type WorkflowRow struct {
 // changes create a new version. The steps field is a JSON array of Step
 // messages (validated at the API boundary).
 type WorkflowVersionRow struct {
-	ID                 string
-	TenantID           string
-	WorkflowID         string
-	Version            int
-	VersionNote        string
-	Status             string
-	Steps              []byte // jsonb: array of Step messages
-	Inputs             []byte // jsonb
-	Outputs            []byte // jsonb
-	PublishedAt        *time.Time
-	CreatedAt          time.Time
+	ID          string
+	TenantID    string
+	WorkflowID  string
+	Version     int
+	VersionNote string
+	Status      string
+	Steps       []byte // jsonb: array of Step messages
+	Inputs      []byte // jsonb
+	Outputs     []byte // jsonb
+	PublishedAt *time.Time
+	CreatedAt   time.Time
 }
 
 // WorkflowRunRow is the data-access shape of a workflow_runs table row
@@ -1491,7 +1491,15 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
 		  AND worktree_status IN ('ready', 'pruned') AND worktree_branch <> ''
-		  AND (run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
+		  AND (
+			(run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
+			OR EXISTS (
+				SELECT 1 FROM worker_executions e
+				WHERE e.workflow_run_id = workflow_runs.id
+				  AND e.tenant_id = workflow_runs.tenant_id
+				  AND (e.pr_url IS NULL OR e.pr_url = '')
+			)
+		  )
 		ORDER BY created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {

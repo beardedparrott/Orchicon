@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -1418,8 +1419,20 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// and execution detail page). The PR is a fact — extracted regardless
 	// of execution success, so a PR that was created but not merged still
 	// surfaces (the worker may have failed after creating it).
-	prURL, prState := extractPRFields(output)
+	var prURL, prState string
+	if r.skipPRMarkerStamp(ctx, ttx.Tx, exec, succeeded) {
+		// Change 2: for a succeeded PR-requiring git_strategy=pr workflow
+		// step, the WorkflowReconciler's step-success path is the single
+		// authoritative writer of pr_url/pr_state (the deterministic gh
+		// check). Demote the worker-marker parse to a fallback here so it
+		// does not race the verified write. Keep extraction for failed PR
+		// steps (a created-but-unmerged PR is still a fact), standalone
+		// executions, and local/none-strategy steps.
+	} else {
+		prURL, prState = extractPRFields(output)
+	}
 	if exec.WorkflowRunID != "" && (prURL != "" || prState != "") {
+
 		run, err := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
 		if err != nil {
 			if err == db.ErrNotFound {
@@ -1553,6 +1566,57 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 // tracks the run as a whole — individual step executions succeed/fail
 // while the run continues, so they must not flip the item to a terminal
 // state until the run itself ends.
+// skipPRMarkerStamp reports whether the worker-marker PR capture
+// (extractPRFields) should be SKIPPED for this execution. It is true only
+// for a succeeded WORKFLOW-BOUND execution whose step is PR-requiring
+// (requires_pr) and whose run's effective git strategy is "pr": for that
+// case the WorkflowReconciler's step-success path is the single
+// authoritative writer of pr_url/pr_state (the deterministic gh check), so
+// the marker parse is demoted to a fallback and must not race it.
+// Determination is fail-open: any read/parse error or missing config falls
+// back to extraction (never regress standalone or failed-step capture).
+func (r *TaskReconciler) skipPRMarkerStamp(ctx context.Context, tx pgx.Tx, exec db.ExecutionRow, succeeded bool) bool {
+	if !succeeded || exec.WorkflowRunID == "" || exec.WorkflowStepID == "" {
+		return false
+	}
+	run, err := db.GetWorkflowRun(ctx, tx, "tnt_dev", exec.WorkflowRunID)
+	if err != nil {
+		return false // fail-open: keep extraction
+	}
+	// Effective git strategy: workflow-level wins, else project-level.
+	strategy := ""
+	if run.WorkflowID != "" {
+		if wf, werr := db.GetWorkflow(ctx, tx, "tnt_dev", run.WorkflowID); werr == nil && wf.GitStrategy != nil && *wf.GitStrategy != "" {
+			strategy = *wf.GitStrategy
+		}
+	}
+	if strategy == "" && run.ProjectID != "" {
+		if proj, perr := db.GetProject(ctx, tx, "tnt_dev", run.ProjectID); perr == nil && proj.GitStrategy != "" {
+			strategy = proj.GitStrategy
+		}
+	}
+	if strategy != "pr" {
+		return false
+	}
+	// Find the step's config in the published workflow version so
+	// requiresPRStep sees the same requires_pr flag the WorkflowReconciler
+	// uses at step-success.
+	config := ""
+	if run.WorkflowID != "" {
+		if ver, verr := db.GetWorkflowVersion(ctx, tx, "tnt_dev", run.WorkflowID, run.WorkflowVersion); verr == nil {
+			if steps, perr := workflow.ParseSteps(ver.Steps); perr == nil {
+				for _, s := range steps {
+					if s.ID == exec.WorkflowStepID {
+						config = s.Config
+						break
+					}
+				}
+			}
+		}
+	}
+	return requiresPRStep(exec.WorkflowStepID, config)
+}
+
 func (r *TaskReconciler) boundToActiveRun(ctx context.Context, tx pgx.Tx, wi db.WorkItemRow) bool {
 	if wi.WorkflowRunID == "" {
 		return false
@@ -2269,6 +2333,25 @@ func extractPRFields(output string) (prURL, prState string) {
 			state := strings.ToLower(raw)
 			if validStates[state] {
 				prState = state
+			}
+		}
+	}
+	// Change 3: inline-marker fallback. The line-anchored pass above is the
+	// primary path; when it finds nothing, scan the WHOLE output with a
+	// non-anchored regex so a PR_URL:/PR_STATE: marker glued mid-sentence
+	// (the 4.2 case) is still captured. Last match wins.
+	if prURL == "" {
+		if ms := prURLRe.FindAllStringSubmatch(output, -1); len(ms) > 0 {
+			raw := ms[len(ms)-1][1]
+			if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+				prURL = raw
+			}
+		}
+	}
+	if prState == "" {
+		if ms := prStateMarkerRe.FindAllStringSubmatch(output, -1); len(ms) > 0 {
+			if st := strings.ToLower(ms[len(ms)-1][1]); validStates[st] {
+				prState = st
 			}
 		}
 	}

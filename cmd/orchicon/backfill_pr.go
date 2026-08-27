@@ -21,8 +21,10 @@ import (
 // execution detail page).
 //
 // It runs out-of-band (not from the request path) and is safe to re-run: it
-// only fills runs that have no pr_url yet, so already-populated runs are
-// untouched. Runs whose branch resolves to no PR are left without a PR link.
+// fills runs that have no pr_url in run_context and runs whose worker
+// execution rows carry no pr_url yet (even when run_context already has a
+// gh-verified PR), so already-complete runs are untouched. Runs whose branch
+// resolves to no PR are left without a PR link.
 //
 // Usage: orchicon backfill-pr [--dry-run]
 func runBackfillPR(args []string, log *slog.Logger) int {
@@ -78,20 +80,26 @@ func runBackfillPR(args []string, log *slog.Logger) int {
 				repoSlug = *p.RepoSlug
 			}
 		}
-		if repoSlug == "" {
-			log.Warn("backfill-pr: run has no resolvable repo slug; leaving PR-less", "run", run.ID, "branch", run.WorktreeBranch)
-			unresolved++
-			continue
+		prURL, prState := "", ""
+		resolved := false
+		if repoSlug != "" {
+			if u, s, rerr := resolvePR(ctx, repoSlug, run.WorktreeBranch); rerr == nil && u != "" {
+				prURL, prState = u, s
+				resolved = true
+			}
 		}
-
-		prURL, prState, err := resolvePR(ctx, repoSlug, run.WorktreeBranch)
-		if err != nil {
-			log.Warn("backfill-pr: gh resolve failed; leaving run PR-less", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
-			unresolved++
-			continue
+		if !resolved {
+			// Fall back to the run's already-verified run_context URL: a
+			// run selected because its execution columns are null but whose
+			// run_context already carries a gh-verified PR needs only the
+			// exec-row stamp, which does not require gh to be available.
+			if u, s := db.PrFromRunContext(run.RunContext); u != "" {
+				prURL, prState = u, s
+				resolved = true
+			}
 		}
-		if prURL == "" {
-			log.Info("backfill-pr: no PR found for branch; leaving run PR-less", "run", run.ID, "branch", run.WorktreeBranch)
+		if !resolved {
+			log.Warn("backfill-pr: no PR resolvable for run; leaving PR-less", "run", run.ID, "branch", run.WorktreeBranch)
 			unresolved++
 			continue
 		}
