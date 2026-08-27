@@ -22,7 +22,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => { setupProactiveRefreshHook(); }, []);
   useEffect(() => { if (loading || session.authenticated) return; if (path === "/login" || path === "/signup" || path === "/auth/callback") return; navigate({ to: "/login" }); }, [loading, session.authenticated, path, navigate]);
   const showBreadcrumbs = path !== "/login" && path !== "/signup" && path !== "/auth/callback" && path !== "/" && !isAskOrchicon;
-  return (<div className="flex min-h-screen flex-col bg-mesh"><TopHeader /><div className="flex flex-1 overflow-hidden p-3 sm:p-4 gap-4"><main className={cn("flex-1 min-w-0 overflow-auto flex flex-col")}><div className={cn(isAskOrchicon ? "flex-1 flex flex-col min-w-0" : "flex-1 min-w-0 p-4 sm:p-6 lg:p-8")}>{showBreadcrumbs && (<div className="mb-4"><Breadcrumbs /></div>)}{children}</div></main></div></div>);
+  return (<div className="flex min-h-screen flex-col bg-mesh"><TopHeader /><div className="flex flex-1 overflow-hidden p-3 sm:p-4 gap-4"><main className={cn("flex-1 min-w-0 flex flex-col", isAskOrchicon ? "overflow-hidden" : "overflow-auto")}><div className={cn(isAskOrchicon ? "flex-1 flex flex-col min-h-0 min-w-0" : "flex-1 min-w-0 p-4 sm:p-6 lg:p-8")}>{showBreadcrumbs && (<div className="mb-4"><Breadcrumbs /></div>)}{children}</div></main></div></div>);
 }
 function TopHeader() {
   const session = useSession(); const [mobileOpen, setMobileOpen] = useState(false); const [openGroup, setOpenGroup] = useState<string | null>(null); const path = useRouterState({ select: (s) => s.location.pathname }); const isAskOrchicon = isPathActive(path, ASK_ORCHICON.to); useEffect(() => { setOpenGroup(null); }, [path]);

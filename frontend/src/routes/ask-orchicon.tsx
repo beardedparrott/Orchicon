@@ -895,9 +895,9 @@ function AskOrchiconPage() {
   }, [messages, isStreaming, groupedStream]);
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] gap-0 min-w-0 overflow-hidden">
+    <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
       {/* Main chat area — centered column */}
-      <div className="flex flex-1 flex-col min-w-0">
+      <div className="flex flex-1 flex-col min-h-0 min-w-0">
         {!activeConvId ? (
           /* --- Greeting state: centered vertical + horizontal --- */
           <div className="flex flex-1 items-center justify-center px-4 pb-2">
@@ -1134,7 +1134,7 @@ function AskOrchiconPage() {
 
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
-        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
+        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
           <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
             <div className="flex items-center space-x-2 text-slate-300">
               <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
