@@ -930,7 +930,7 @@ function AskOrchiconPage() {
                 onClick={openMobileSheet}
                 aria-label="Conversations"
                 data-testid="ask-conversation-sheet-trigger-greeting"
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-500 dark:text-slate-300 hover:text-white lg:hidden shrink-0"
               >
                 <PanelRight aria-hidden="true" className="h-5 w-5" />
               </button>
@@ -939,7 +939,7 @@ function AskOrchiconPage() {
             <div className="w-full max-w-2xl space-y-8">
               <div className="text-center space-y-4">
                 <div className="flex justify-center">
-                  <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-300">
+                  <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
                     <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
                     Intelligent Orchestration
                   </span>
@@ -948,7 +948,7 @@ function AskOrchiconPage() {
                   <span className="text-foreground">Orchestrate </span>
                   <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">with intention</span>
                 </h1>
-                <p className="text-lg text-slate-400 max-w-2xl mx-auto font-light leading-relaxed text-balance">
+                <p className="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto font-light leading-relaxed text-balance">
                   Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control.
                 </p>
               </div>
@@ -995,7 +995,7 @@ function AskOrchiconPage() {
                   onClick={openMobileSheet}
                   aria-label="Conversations"
                   data-testid="ask-conversation-sheet-trigger"
-                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
+                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-500 dark:text-slate-300 hover:text-white lg:hidden shrink-0"
                 >
                   <PanelRight aria-hidden="true" className="h-5 w-5" />
                 </button>
@@ -1172,14 +1172,14 @@ function AskOrchiconPage() {
       {!panelCollapsed ? (
         <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
           <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
-            <div className="flex items-center space-x-2 text-slate-300">
-              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
+            <div className="flex items-center space-x-2 text-slate-500 dark:text-slate-300">
+              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
               <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
             </div>
             <div className="flex items-center space-x-1">
               <button
                 onClick={() => setFolderDialogOpen(true)}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New folder"
                 aria-label="New folder"
               >
@@ -1189,7 +1189,7 @@ function AskOrchiconPage() {
                 to="/ask-orchicon"
                 search={{ conversationId: undefined } as never}
                 onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New Chat"
                 aria-label="New conversation"
               >
@@ -1200,7 +1200,7 @@ function AskOrchiconPage() {
                 aria-expanded={!panelCollapsed}
                 aria-controls="conversation-history-panel"
                 aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+                className="p-1 text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
                 title="Collapse Panel"
               >
                 <PanelRightClose aria-hidden="true" className="w-4 h-4" />
@@ -1303,9 +1303,9 @@ function AskOrchiconPage() {
           <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
             <button
               onClick={handleNewChat}
-              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
+              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
             >
-              <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
+              <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
               <span>View All History</span>
             </button>
           </div>
@@ -1317,7 +1317,7 @@ function AskOrchiconPage() {
           aria-controls="conversation-history-panel"
           aria-label="Expand conversation history"
           title="Expand Conversations"
-          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
         >
           <PanelRight aria-hidden="true" className="h-4 w-4" />
         </button>
@@ -1329,14 +1329,14 @@ function AskOrchiconPage() {
           <div className="absolute inset-0 bg-black/50" onClick={closeMobileSheet} aria-hidden="true" />
           <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] h-[100dvh] max-h-[100dvh] pb-[env(safe-area-inset-bottom,0px)] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
             <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
-              <div className="flex items-center space-x-2 text-slate-300">
-                <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
+              <div className="flex items-center space-x-2 text-slate-500 dark:text-slate-300">
+                <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
                 <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
               </div>
               <div className="flex items-center space-x-1">
-                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -1361,8 +1361,8 @@ function AskOrchiconPage() {
               </DndContext>
             </div>
             <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
-              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5 min-h-[44px]">
-                <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
+              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-white text-xs font-medium transition border border-white/5 min-h-[44px]">
+                <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
                 <span>View All History</span>
               </button>
             </div>
@@ -1914,11 +1914,11 @@ function ChatInputField({
       >
         {/* Textarea area */}
         <div className="flex items-end gap-2 px-1 pb-1">
-          <Sparkles aria-hidden="true" className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
+          <Sparkles aria-hidden="true" className="h-4 w-4 text-cyan-700 dark:text-cyan-400 shrink-0 mb-1.5" />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 rounded-md border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 p-1.5 text-muted-foreground hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+            className="shrink-0 rounded-md border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 p-1.5 text-muted-foreground hover:text-cyan-700 dark:hover:text-cyan-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
             title="Attach file"
             aria-label="Attach file"
           >
@@ -2063,7 +2063,7 @@ function ConversationItem({
           "w-full text-left rounded-xl p-2.5 text-sm transition border",
           isActive
             ? "bg-cyan-500/10 border-cyan-500/30 text-white"
-            : "border-transparent text-slate-300 hover:bg-white/5 hover:border-white/5 hover:text-white",
+            : "border-transparent text-slate-500 dark:text-slate-300 hover:bg-white/5 hover:border-white/5 hover:text-white",
         )}
       >
         <div className="flex items-start gap-2">

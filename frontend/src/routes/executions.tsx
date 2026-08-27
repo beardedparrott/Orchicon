@@ -106,7 +106,7 @@ function ExecutionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><PlayCircle aria-hidden="true" className="h-6 w-6 text-emerald-400" /><span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" /> Executions</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><PlayCircle aria-hidden="true" className="h-6 w-6 text-emerald-700 dark:text-emerald-400" /><span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" /> Executions</h1>
           <p className="text-sm text-muted-foreground">
             Worker executions — concrete invocations of a Worker against a
             Task on a runtime adapter.
@@ -326,10 +326,10 @@ function HealthBadge({ health, status }: { health: number; status: number }) {
     4: "terminating",
   };
   const styles: Record<number, string> = {
-    1: "text-green-600",
-    2: "text-yellow-600",
+    1: "text-green-700 dark:text-green-600",
+    2: "text-yellow-700 dark:text-yellow-600",
     3: "text-red-600",
-    4: "text-orange-600",
+    4: "text-orange-700 dark:text-orange-600",
   };
   return <span className={cn("text-xs font-medium", styles[health] ?? "")}>● {labels[health] ?? "unknown"}</span>;
 }

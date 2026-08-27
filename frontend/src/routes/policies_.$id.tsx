@@ -331,8 +331,8 @@ const STATUS_LABELS: Record<number, string> = {
 };
 const STATUS_STYLES: Record<number, string> = {
   1: "text-blue-600",
-  2: "text-green-600",
-  3: "text-yellow-600",
+  2: "text-green-700 dark:text-green-600",
+  3: "text-yellow-700 dark:text-yellow-600",
 };
 
 const EFFECT_LABELS: Record<number, string> = {

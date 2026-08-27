@@ -489,7 +489,7 @@ export function ExecutionContextSidebar({
                     Cache transport (cumulative)
                   </span>
                   {cacheHitRate > 0 && (
-                    <span className="font-mono font-medium text-emerald-600">
+                    <span className="font-mono font-medium text-emerald-700 dark:text-emerald-600">
                       {cacheHitRate}% hit rate
                     </span>
                   )}

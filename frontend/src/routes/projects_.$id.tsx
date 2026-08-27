@@ -336,7 +336,7 @@ function ProjectDetailPage() {
           <CardContent className="space-y-3">
             {project.projectDir ? (
               <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
-                <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-500" />
                 <span className="flex-1 truncate">{project.projectDir}</span>
               </div>
             ) : (
@@ -563,9 +563,9 @@ function ProjectDetailPage() {
 function StreamStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     idle: "text-muted-foreground",
-    connecting: "text-yellow-600",
-    open: "text-green-600",
-    reconnecting: "text-yellow-600",
+    connecting: "text-yellow-700 dark:text-yellow-600",
+    open: "text-green-700 dark:text-green-600",
+    reconnecting: "text-yellow-700 dark:text-yellow-600",
     closed: "text-muted-foreground",
     error: "text-destructive",
   };
@@ -637,7 +637,7 @@ function ProjectDirBrowser({ currentDir, onSelect, isSaving }: { currentDir: str
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
-        <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-500" />
         <span className="flex-1 truncate">{currentDir || "No directory set"}</span>
         <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => setShowBrowser(!showBrowser)}>
           {showBrowser ? "Cancel" : currentDir ? "Change" : "Set directory"}
@@ -671,7 +671,7 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
       {dirs.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>}
       {dirs.map((entry: any) => (
         <div key={entry.path} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0">
-          <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span className="flex-1 truncate" onClick={() => onNavigate(entry.path)}>{entry.name}/</span>
           <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => onSelect(entry.path)} disabled={isSaving}>
             {isSaving ? "Saving…" : "Select"}

@@ -7,7 +7,7 @@ const STORAGE_MODE_KEY = "orchicon_mode";
 const STORAGE_THEME_LEGACY_KEY = "orchicon_theme";
 
 const DEFAULT_LIGHT_THEME = "orchicon-light";
-const DEFAULT_DARK_THEME = "orchicon-dark";
+const DEFAULT_DARK_THEME = "orchicon-dark-forest";
 
 function loadMode(): "light" | "dark" {
   try {

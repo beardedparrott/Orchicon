@@ -287,10 +287,10 @@ function ApprovalsPage() {
           const isRejected = item.status === "rejected";
 
           let StatusIcon = Clock;
-          let statusColor = "text-amber-600 bg-amber-50 dark:bg-amber-950/40";
+          let statusColor = "text-amber-700 dark:text-amber-600 bg-amber-50 dark:bg-amber-950/40";
           if (isApproved) {
             StatusIcon = CheckCircle2;
-            statusColor = "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40";
+            statusColor = "text-emerald-700 dark:text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40";
           } else if (isRejected) {
             StatusIcon = XCircle;
             statusColor = "text-red-600 bg-red-50 dark:bg-red-950/40";
