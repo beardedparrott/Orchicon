@@ -511,3 +511,50 @@ func TestExtractPRFieldsHTTPSAndHTTP(t *testing.T) {
 		t.Errorf("HTTP prURL = %q, want %q", prURL, "http://github.com/OWNER/REPO/pull/42")
 	}
 }
+
+// TestParsePRLine verifies the tab-separated output parser for the
+// deterministic gh-based PR branch check (deterministicPRForBranch). The
+// platform queries GitHub itself — it does not rely on the worker's
+// self-reported PR_URL marker to decide a PR step's success.
+func TestParsePRLine(t *testing.T) {
+	// Happy path: url<TAB>state as emitted by `gh ... --jq '@tsv'`.
+	if u, s := parsePRLine("https://github.com/OWNER/REPO/pull/42\tMERGED"); u != "https://github.com/OWNER/REPO/pull/42" || s != "merged" {
+		t.Errorf("parsePRLine happy = (%q, %q), want (%q, %q)", u, s, "https://github.com/OWNER/REPO/pull/42", "merged")
+	}
+	// State lowercased (compatible with the platform PR state vocabulary).
+	if _, s := parsePRLine("https://github.com/OWNER/REPO/pull/9\tOPEN"); s != "open" {
+		t.Errorf("state = %q, want open", s)
+	}
+	// Missing state defaults to open.
+	if _, s := parsePRLine("https://github.com/OWNER/REPO/pull/9"); s != "open" {
+		t.Errorf("missing state = %q, want open", s)
+	}
+	// Empty/null output (gh found no PR) must yield ("", "").
+	if u, s := parsePRLine(""); u != "" || s != "" {
+		t.Errorf("empty line = (%q, %q), want empty", u, s)
+	}
+	if u, s := parsePRLine("null"); u != "" || s != "" {
+		t.Errorf("null line = (%q, %q), want empty", u, s)
+	}
+	// Non-URL junk is rejected.
+	if u, _ := parsePRLine("not-a-url\tmerged"); u != "" {
+		t.Errorf("junk url = %q, want empty", u)
+	}
+	// Whitespace tolerance (gh output often carries a trailing newline).
+	if u, s := parsePRLine("https://github.com/OWNER/REPO/pull/42\tMERGED\n"); u != "https://github.com/OWNER/REPO/pull/42" || s != "merged" {
+		t.Errorf("trailing-newline line = (%q, %q), want (%q, merged)", u, s, "https://github.com/OWNER/REPO/pull/42")
+	}
+}
+
+// TestDeterministicPRForBranchUnverifiable verifies the deterministic PR
+// check returns verified=false (never a false "no PR") when it cannot run —
+// missing repo slug or branch. In that case the step gate degrades to
+// recorded sources instead of failing a possibly-valid run.
+func TestDeterministicPRForBranchUnverifiable(t *testing.T) {
+	if u, s, v := deterministicPRForBranch("", "some-branch"); u != "" || s != "" || v {
+		t.Errorf("empty repo slug: got (%q, %q, %v), want (\"\", \"\", false)", u, s, v)
+	}
+	if u, s, v := deterministicPRForBranch("OWNER/REPO", ""); u != "" || s != "" || v {
+		t.Errorf("empty branch: got (%q, %q, %v), want (\"\", \"\", false)", u, s, v)
+	}
+}

@@ -35,15 +35,15 @@
 package scheduler
 
 import (
-	osexec "os/exec"
-	"regexp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,52 +267,89 @@ func requiresPRStep(stepID, config string) bool {
 	return false
 }
 
-
-// effectivePRURL returns the PR URL for a run, trying typed fields first,
-// then live GitHub via gh, then stdout scraping. Used only for pr-strategy
-// runs to make `pr` worker-proof.
+// effectivePRURL returns a PR URL for a run from platform-recorded and
+// worker-authored sources, in order: run_context, the execution's typed
+// PrURL, then the worker's stdout PR_URL marker. Used only as the fallback
+// when the deterministic branch check cannot run (gh unavailable / no repo
+// slug). The authoritative source of truth for pr-git-strategy steps is
+// deterministicPRForBranch — the platform verifies, it does not trust the
+// worker's self-reported marker for the pass/fail decision.
 var prURLRe = regexp.MustCompile(`PR_URL:\s*(https://github\.com/[^\s"]+/pull/\d+)`)
 var prURLJSONRe = regexp.MustCompile(`"pr_url"\s*:\s*"(https://[^"]+)"`)
 
-func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow, worktreeBranch string) string {
+func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow) string {
 	if u, _ := db.PrFromRunContext(run.RunContext); u != "" {
 		return u
 	}
 	if execRow.PrURL != nil && *execRow.PrURL != "" {
 		return *execRow.PrURL
 	}
-	// Scrape stdout first -- worker-authored PR_URL is the source of truth
-	// for merged/reused PRs (no new commits, branch at develop tip). Fall
-	// back to live GitHub only if stdout has no URL.
 	if m := prURLRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
 		return m[1]
 	}
 	if m := prURLJSONRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
 		return m[1]
 	}
-	// Live GitHub check for pr mode -- authoritative when stdout is empty.
-	// Use --repo to avoid requiring a git checkout (container has no .git at /).
-	if worktreeBranch != "" {
-		if out, err := osexec.Command("gh", "pr", "list", "--head", worktreeBranch, "--state", "all", "--json", "url,state", "--jq", ".[0].url // empty").Output(); err == nil {
-			if u := string(out); u != "" && u != "null" {
-				u = regexp.MustCompile(`\s+`).ReplaceAllString(u, "")
-				if u != "" {
-					return u
-				}
-			}
-		}
-		if out, err := osexec.Command("gh", "pr", "view", worktreeBranch, "--json", "url", "--jq", ".url").Output(); err == nil {
-			if u := string(out); u != "" && u != "null" {
-				u = regexp.MustCompile(`\s+`).ReplaceAllString(u, "")
-				if u != "" {
-					return u
-				}
-			}
-		}
-	}
 	return ""
 }
 
+// deterministicPRForBranch queries GitHub for a PR whose head is the given
+// branch in the given repo ("owner/repo"). It is the platform's
+// authoritative check for whether a PR-producing step actually produced a
+// PR — it does NOT rely on the worker's self-reported PR_URL marker (a
+// worker can succeed and merge without emitting the marker, and the step
+// must still pass when the PR genuinely exists). Both gh invocations pass
+// --repo so they resolve from any working directory (the previous fallback
+// omitted --repo and therefore always failed outside a git checkout).
+//
+// Returns (prURL, prState, verified): verified=false means the check could
+// not be performed (gh unavailable, no repo slug, or no branch recorded) —
+// callers degrade to recorded sources instead of failing a possibly-valid
+// run; verified=true with prURL=="" means GitHub confirms no PR exists for
+// the branch, which is a deterministic failure.
+func deterministicPRForBranch(repoSlug, branch string) (prURL, prState string, verified bool) {
+	if repoSlug == "" || branch == "" {
+		return "", "", false
+	}
+	// gh pr list --head <branch> --state all --repo OWNER/REPO --json url,state
+	// The jq filter must not error on an empty result set: `length > 0`
+	// selects the first PR only when one exists, otherwise emits nothing and
+	// exits 0, so "no PR found" is distinguishable from "gh failed".
+	if out, err := osexec.Command("gh", "pr", "list", "--head", branch, "--state", "all",
+		"--repo", repoSlug, "--json", "url,state",
+		"--jq", `if length > 0 then .[0] | [.url, .state] | @tsv else empty end`).Output(); err == nil {
+		if url, state := parsePRLine(string(out)); url != "" {
+			return url, state, true
+		}
+		// gh ran and returned no PR for the branch.
+		return "", "", true
+	}
+	// Fallback: gh pr view <branch> --repo OWNER/REPO
+	if out, err := osexec.Command("gh", "pr", "view", branch,
+		"--repo", repoSlug, "--json", "url,state",
+		"--jq", `[.url, .state] | @tsv`).Output(); err == nil {
+		if url, state := parsePRLine(string(out)); url != "" {
+			return url, state, true
+		}
+		return "", "", true
+	}
+	return "", "", false
+}
+
+// parsePRLine parses a tab-separated "url\tstate" line emitted by
+// `gh ... --json url,state --jq '... | @tsv'`. State is lowercased for
+// compatibility with the platform's PR state vocabulary.
+func parsePRLine(out string) (string, string) {
+	fields := strings.Split(strings.TrimSpace(out), "\t")
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "https://") {
+		return "", ""
+	}
+	state := "open"
+	if len(fields) >= 2 && fields[1] != "" {
+		state = strings.ToLower(fields[1])
+	}
+	return fields[0], state
+}
 
 func parallelBranchChildIDs(steps []workflow.StepWire) map[string]bool {
 	parallel := make(map[string]bool, len(steps))
@@ -4102,7 +4139,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				return false, false, nil
 			}
 		} else {
-						switch exec.Status {
+			switch exec.Status {
 			case domain.ExecutionSucceeded:
 				// Guard rail: PR-producing steps must have a PR URL on success — but only when
 				// the effective git strategy is "pr". Worktrees are always provisioned; for
@@ -4112,59 +4149,83 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				shouldRequirePR := requiresPRStep(sr.StepID, stepConfig)
 				if shouldRequirePR {
 					effectiveGitStrategy := "local"
+					workflowStrategy := ""
+					repoSlug := ""
 					if run.WorkflowID != "" {
 						if wf, err := db.GetWorkflow(ctx, tx, tenantID, run.WorkflowID); err == nil && wf.GitStrategy != nil && *wf.GitStrategy != "" {
-							effectiveGitStrategy = *wf.GitStrategy
-						} else if run.ProjectID != "" {
-							if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil && proj.GitStrategy != "" {
+							workflowStrategy = *wf.GitStrategy
+							effectiveGitStrategy = workflowStrategy
+						}
+					}
+					// The project is always consulted for the repo slug (needed
+					// by the deterministic PR check) even when a workflow-level
+					// git strategy wins; its strategy is only a fallback when
+					// the workflow does not specify one.
+					if run.ProjectID != "" {
+						if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil {
+							if workflowStrategy == "" && proj.GitStrategy != "" {
 								effectiveGitStrategy = proj.GitStrategy
 							}
-						}
-					} else if run.ProjectID != "" {
-						if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil && proj.GitStrategy != "" {
-							effectiveGitStrategy = proj.GitStrategy
+							if proj.RepoSlug != nil {
+								repoSlug = *proj.RepoSlug
+							}
 						}
 					}
 					if effectiveGitStrategy == "pr" {
-						prURL := effectivePRURL(*run, exec, run.WorktreeBranch)
-					if prURL != "" {
-						if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
-							prState := ""
-							if exec.PrState != nil { prState = *exec.PrState }
-							if prState == "" { prState = "open" }
-							// Merge into existing run_context instead of replacing - preserves worktree_branch and other keys
-							merged := run.RunContext
-							var m map[string]any
-							if len(merged) > 0 {
-								_ = json.Unmarshal(merged, &m)
+						// Deterministic PR verification (D-PR): the platform
+						// itself checks GitHub for a valid PR whose head is the
+						// branch created for this run. Step success no longer
+						// depends on the worker's self-reported PR_URL marker —
+						// the platform verifies the PR exists (see
+						// deterministicPRForBranch).
+						prURL, prState, verified := deterministicPRForBranch(repoSlug, run.WorktreeBranch)
+						if !verified {
+							// gh unavailable / no repo slug / no branch recorded:
+							// degrade to recorded sources (run_context, exec
+							// PrURL, worker stdout) rather than fail a
+							// possibly-valid run.
+							prURL = effectivePRURL(*run, exec)
+							if exec.PrState != nil {
+								prState = *exec.PrState
 							}
-							if m == nil {
-								m = map[string]any{}
-							}
-							m["pr_url"] = prURL
-							m["pr_state"] = prState
-							newCtx, _ := json.Marshal(m)
-							// Route the run_context write through the data-access
-							// layer (optimistic CAS on run.Version) instead of a raw
-							// `version = version + 1` Exec: the raw bump updated the
-							// DB but left the caller's in-memory run.Version stale, so
-							// the later `mark run completed` CAS failed with
-							// db: not found and the whole transaction rolled back —
-							// version pinned forever (the infinite loop_decision
-							// accepted wedge). UpdateWorkflowRun returns the fresh
-							// row; assigning it back via the run pointer keeps the
-							// caller's version in sync.
-							updatedRun, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
-								RunContext: &newCtx,
-							})
-							if err != nil {
-								return false, false, fmt.Errorf("merge pr_url into run_context: %w", err)
-							}
-							*run = updatedRun
 						}
-					}
-						if prURL == "" {
-							r.log.Warn("PR step succeeded without pr_url — failing step (git_strategy=pr)", "run", run.ID, "step", sr.StepID)
+						if prURL != "" {
+							if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
+								if prState == "" {
+									prState = "open"
+								}
+								// Merge into existing run_context instead of replacing - preserves worktree_branch and other keys
+								merged := run.RunContext
+								var m map[string]any
+								if len(merged) > 0 {
+									_ = json.Unmarshal(merged, &m)
+								}
+								if m == nil {
+									m = map[string]any{}
+								}
+								m["pr_url"] = prURL
+								m["pr_state"] = prState
+								newCtx, _ := json.Marshal(m)
+								// Route the run_context write through the data-access
+								// layer (optimistic CAS on run.Version) instead of a raw
+								// `version = version + 1` Exec: the raw bump updated the
+								// DB but left the caller's in-memory run.Version stale, so
+								// the later `mark run completed` CAS failed with
+								// db: not found and the whole transaction rolled back —
+								// version pinned forever (the infinite loop_decision
+								// accepted wedge). UpdateWorkflowRun returns the fresh
+								// row; assigning it back via the run pointer keeps the
+								// caller's version in sync.
+								updatedRun, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+									RunContext: &newCtx,
+								})
+								if err != nil {
+									return false, false, fmt.Errorf("merge pr_url into run_context: %w", err)
+								}
+								*run = updatedRun
+							}
+						} else {
+							r.log.Warn("PR step succeeded but no valid PR exists for the run's branch (git_strategy=pr) — failing step", "run", run.ID, "step", sr.StepID, "branch", run.WorktreeBranch, "repo", repoSlug)
 							return true, true, nil
 						}
 					}
