@@ -1,443 +1,136 @@
-// Work items page (design-notes/complete-ui-and-functionality-overhaul-of-work-item-page.md).
-// Thin route shell: owns filter state, the shared selection, and the
-// list/graph queries; delegates rendering to the shared work-items
-// module. Provides the Tree view (Epic → Feature → Task → Subtask
-// hierarchy with cascade selection) and the Kanban board (dnd-kit drag &
-// drop, server-confirmed status transitions).
+// Recurring Items page (feature 4.3) — a dedicated FLAT card list, NOT the
+// Work Items tree/board/filterbar. Recurring items are first-class
+// automations: cadence + next-run are the primary identity (not kind/status),
+// the identity is fuchsia/repeat, and each card exposes an enable/pause
+// toggle that persists the item's `recurring_enabled` flag (never a
+// destructive clear of the schedule).
 //
-// Auto-refresh (design §5.5): the list + graph queries poll every 5s,
-// pause while the tab is hidden (TanStack default
-// refetchIntervalInBackground=false), refetch on window focus, and the
-// LiveRefreshIndicator in the header makes it visible.
+// The page owns exactly one list query: `useListWorkItems(ONLY_RECURRING)`.
+// Per-item last-run status comes from a single project-scoped
+// `useListWorkflowRuns` grouped by work item (one query, no N+1).
 
 import { createRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarClock, Pause, Play, Repeat } from "lucide-react";
 
-import {
-  useBatchArchiveWorkItems,
-  useBatchDeleteWorkItems,
-  useGetDependencyGraph,
-  useListWorkItems,
-  useReorderWorkItems,
-  useRestoreWorkItem,
-} from "@/api/workItems";
+import { useListWorkItems, useUpdateWorkItem } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
-import { useListExecutions } from "@/api/executions";
+import { useListWorkflowRuns } from "@/api/workflows";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
-import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
-import { useBatchRunWorkItems } from "@/components/work-items/batch-run";
-import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
-import {
-  KIND_FILTER_OPTIONS,
-  STATUS_FILTER_OPTIONS,
-} from "@/components/work-items/work-item-meta";
-import {
-  useWorkItemSelection,
-  visibleSelectionState,
-} from "@/components/work-items/use-work-item-selection";
-import {
-  WorkItemsBoard,
-} from "@/components/work-items/work-items-board";
-import {
-  WorkItemsFilterBar,
-} from "@/components/work-items/work-items-filter-bar";
-import { WorkItemsArchiveView } from "@/components/work-items/work-items-archive-view";
-import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
-import { WorkItemsTree } from "@/components/work-items/work-items-tree";
-import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
+import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
+import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 import { cn } from "@/lib/utils";
 import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
-import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
+import { type RecurringSchedule, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/recurring-items",
-  component: WorkItemsPage,
+  component: RecurringItemsPage,
 });
 
-function WorkItemsPage() {
+function RecurringItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
 
-  // Persisted view preferences (ADR-WI-1/ADR-WI-3/ADR-WI-6): the last
-  // default view, per-project filters, and per-project expand sets all
-  // survive navigation and reload via localStorage.
-  const {
-    view,
-    setView,
-    filters,
-    setFilters,
-    treeExpanded,
-    toggleTreeExpanded,
-    treeCollapsed,
-    toggleTreeCollapsed,
-    boardCollapsed,
-    toggleBoardCollapsed,
-    expandAll,
-    collapseAll,
-  } = useWorkItemsPreferences(projectId);
-
-  const debouncedSearch = useDebouncedValue(filters.search, 300);
-  const { statuses, kinds, sortBy, sortOrder } = filters;
-
-  const hasProjects = projects && projects.length > 0;
-  const batchDelete = useBatchDeleteWorkItems();
-  const batchArchive = useBatchArchiveWorkItems();
-  const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
-  const runWorkItems = useBatchRunWorkItems(projectId);
-  const toast = useToast();
-  const reorder = useReorderWorkItems();
-  const restoreWorkItem = useRestoreWorkItem(projectId);
-  const handleRestore = (id: string) => {
-    restoreWorkItem.mutate(id, {
-      onSuccess: (item) => {
-        toast.success(`Restored "${item.title}" to the active views.`);
-      },
-      onError: (e) => {
-        toast.error(`Failed to restore: ${String(e)}`);
-      },
-    });
-  };
-  const handleReorder = (parentId: string, childIds: string[]) => {
-    // The RPC requires the siblings' project — derive it from the items
-    // themselves so reorder works in the "All projects" view too (the
-    // page's projectId is empty there).
-    const sibling = (items ?? []).find((i) => i.id === childIds[0]);
-    const pid = sibling?.projectId ?? projectId;
-    if (!pid) {
-      toast.error("Cannot reorder: the work item has no project.");
-      return;
-    }
-    reorder.mutate({ projectId: pid, parentId, childIds });
-  };
-
-  // Server state (design §3): list + DAG, both auto-refreshed. The shell
-  // owns the queries so the filter bar's select-all/count and the shared
-  // selection see exactly the same data as the active view.
-  //
-  // Search is intentionally NOT sent to the server: a server-side search
-  // returns only the matching rows, orphaning a searched task's epic and
-  // leaving an empty tree. We fetch the full page (pageSize 1000) and
-  // apply search + kind + status client-side (design §5.4) so filtered
-  // results keep their ancestors (file-explorer behavior).
-  const {
-    data: items,
-    isLoading,
-    error,
-    dataUpdatedAt,
-    isFetching,
-  } = useListWorkItems(projectId, {
-    sortBy: sortBy || undefined,
-    sortOrder: sortOrder || undefined,
-    // The archive view is the ONLY caller that opts in to archived items;
-    // every active view (tree/board) leaves this false so archived items
-    // never surface in them.
-    includeArchived: view === "archive",
+  // The ONE list query the page owns: recurring items only, auto-refreshed.
+  const { data: items, isLoading, error } = useListWorkItems(projectId, {
     recurringFilter: RecurringFilter.ONLY_RECURRING,
+    refetchInterval: 5_000,
   });
-  const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
-  // Run/PR visibility (parallel board view): executions carry the run's
-  // branch/worktree and PR surface (mirrored at dispatch), so group them by
-  // work item (taskId) to render a per-run footer on the board/list cards.
-  // Reuses useListExecutions (MVP path) — no new RPC. Polling matches the
-  // board's 5s rhythm so concurrent runs stay fresh.
-  const { data: executions } = useListExecutions({
+  // One project-scoped run query, grouped by work item for per-card last-run
+  // status (newest run per item; avoids N+1 per-card useListWorkflowRuns).
+  const { data: runs } = useListWorkflowRuns({
     projectId: projectId || undefined,
+    sortBy: "started_at",
+    sortOrder: "desc",
   });
-  const runsByItem = useMemo(() => {
-    const m = new Map<string, PrRun[]>();
-    for (const e of executions ?? []) {
-      if (!e.taskId) continue;
-      const pr: PrRun = {
-        prUrl: e.prUrl || undefined,
-        prState: e.prState || undefined,
-        worktreeBranch: e.worktreeBranch || undefined,
-        completed: isTerminalExecutionStatus(e.status),
-      };
-      const list = m.get(e.taskId);
-      if (list) list.push(pr);
-      else m.set(e.taskId, [pr]);
+  const lastRunByItem = useMemo(() => {
+    const m = new Map<string, WorkflowRun>();
+    for (const run of runs ?? []) {
+      if (!run.workItemId) continue;
+      if (!m.has(run.workItemId)) m.set(run.workItemId, run);
     }
     return m;
-  }, [executions]);
+  }, [runs]);
 
-  const blockState = useMemo(
-    () => computeBlockState(graph?.nodes, graph?.edges),
-    [graph],
-  );
-
-  // Client-side filtering (design §5.4): kind + status + search compose
-  // over the full fetched set so the tree hierarchy stays intact. OR
-  // within kind/status groups, AND across groups, empty = all (ADR-WI-6).
-  const filteredItems = useMemo(
-    () => filterItemsByKindStatus(items, kinds, statuses, debouncedSearch),
-    [items, kinds, statuses, debouncedSearch],
-  );
-  const treeData = useMemo(
-    () => buildTreeData(items, kinds, statuses, debouncedSearch),
-    [items, kinds, statuses, debouncedSearch],
-  );
-
-  // A filter is "active" only when the selection differs from the full
-  // option list (the default = show everything) or a search is typed. An
-  // all-selected type/status filter is NOT a query: it must not dim rows,
-  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
-  const hasQuery =
-    debouncedSearch !== "" ||
-    kinds.length !== KIND_FILTER_OPTIONS.length ||
-    statuses.length !== STATUS_FILTER_OPTIONS.length;
-
-  // The header select-all + count operate over the MATCHES (the items
-  // that actually pass the filters), never the dimmed ancestor container
-  // rows — otherwise "select all" under a type filter would mark
-  // filtered-out epics/features for bulk delete.
-  const visibleItems = view === "tree" ? treeData.matches : filteredItems;
-  const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
-  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
-
-  // Selection (design §5.1): cascade selection — when a filter is active
-  // the parent toggle is scoped to the currently-viewable descendants
-  // only (visibleIdsSet + hasQuery), so hidden items are never selected.
-  // With no filter, the full subtree is used (AC5).
-  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
-  const childrenOf = useCallback(
-    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
-    [items],
-  );
-  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, visibleIdsSet, hasQuery, resetKey);
-  const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
-
-  const handleToggleAll = () => toggleAll(visibleIds);
-
-  const handleBatchDelete = () => {
-    if (selected.size === 0) return;
-    const count = selected.size;
-    if (!window.confirm(`Permanently delete ${count} work item${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
-    batchDelete.mutate(Array.from(selected), {
-      onSuccess: () => setSelected(new Set()),
-    });
-  };
-
-  // Bulk "Archive" (mirrors handleBatchDelete): confirm naming the count,
-  // fan out the archive fan-out, clear the selection on completion, and
-  // report the archived/skipped split. The server is authoritative for the
-  // two gates (terminal-only, no children), so skipped items are the ones
-  // the server rejected — reported as one generic bucket.
-  const handleBatchArchive = () => {
-    if (selected.size === 0) return;
-    const count = selected.size;
-    if (
-      !window.confirm(
-        `Archive ${count} work item${count === 1 ? "" : "s"}? Only terminal items without children can be archived; the rest are skipped.`,
-      )
-    ) return;
-    batchArchive.mutate(Array.from(selected), {
-      onSuccess: (res) => {
-        setSelected(new Set());
-        if (res.skipped > 0) {
-          toast.success(
-            `Archived ${res.archived}, skipped ${res.skipped} (non-terminal or has children)`,
-          );
-        } else {
-          toast.success(`Archived ${res.archived}`);
-        }
-      },
-    });
-  };
-
-  // Bulk "Move to…" (ADR-WI-5): the selection toolbar's keyboard path for
-  // multi-move, sharing the exact gates + mutation path with board
-  // multi-drag.
-  const itemsById = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
-
-  // Ids that have at least one direct child — used to detect sequence
-  // parents (a task/subtask with children runs its children in chain order)
-  // so the Run button can start them without a workflow binding.
-  const parentIdSet = useMemo(
-    () => new Set((items ?? []).filter((i) => i.parentId !== "").map((i) => i.parentId)),
-    [items],
-  );
-
-  const handleMoveSelected = (targetStatus: number) => {
-    if (selected.size === 0) return;
-    void moveItems(Array.from(selected), targetStatus, { itemsById, blockState });
-  };
-
-  // Bulk "Run" (ADR-WI-9): act on the visible-selected set only — the header
-  // select-all and parent cascade can mark filtered-out descendants, but Run
-  // must only touch the currently-visible rows (AC-3). The label uses the
-  // visible-selected count so it never over-promises (AC-1).
-  const visibleSelectedCount = useMemo(
-    () => [...selected].filter((id) => visibleIdsSet.has(id)).length,
-    [selected, visibleIdsSet],
-  );
-  const handleRunSelected = () => {
-    if (selected.size === 0) return;
-    const runIds = [...selected].filter((id) => visibleIdsSet.has(id));
-    void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
-  };
-
-
-
-  // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
-  // items list (not the filtered set) so collapsing a filtered-out
-  // ancestor is harmless. The buttons are disabled when the action is
-  // already the default state for the active view.
-  const parentIDs = useMemo(() => parentIds(items ?? []), [items]);
-  const hasParents = parentIDs.length > 0;
-  const expandAllDisabled =
-    !hasParents ||
-    (view === "board"
-      ? boardCollapsed.size === 0
-      : hasQuery
-        ? treeCollapsed.size === 0
-        : parentIDs.every((p) => treeExpanded.has(p)));
-  const collapseAllDisabled =
-    !hasParents ||
-    (view === "board"
-      ? false
-      : hasQuery
-        ? parentIDs.every((p) => treeCollapsed.has(p))
-        : treeExpanded.size === 0);
-  const handleExpandAll = () => expandAll(view, hasQuery, parentIDs);
-  const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
+  const now = useNow(1000);
 
   return (
-    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
-      <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Recurring Items</h1>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <Repeat aria-hidden="true" className="h-6 w-6 text-fuchsia-500" />
+            Recurring Items
+          </h1>
           <p className="text-sm text-muted-foreground">
-            The work hierarchy: Project → Epic → Feature → Task → Subtask.
-            Dependencies form a DAG between items.
+            Automations that fire on a cadence. Each item runs its bound
+            workflow on schedule and records a per-fire history.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <LiveRefreshIndicator lastUpdated={dataUpdatedAt} isFetching={isFetching} />
+          {!isLoading && <LiveRefreshIndicator />}
           <Button asChild>
-            <Link to="/recurring-items/new" search={{ projectId: projectId ?? "", parentId: "" }}>
-              New Work Item
+            <Link to="/recurring-items/new" search={{ projectId: projectId ?? "" }}>
+              New Recurring Item
             </Link>
           </Button>
         </div>
       </div>
 
-      <WorkItemsFilterBar
-        projects={projects}
-        projectId={projectId}
-        onProjectChange={setProjectId}
-        search={filters.search}
-        onSearchChange={(value) => setFilters({ search: value })}
-        statuses={statuses}
-        onStatusFilterChange={(next) => setFilters({ statuses: next })}
-        kinds={kinds}
-        onKindFilterChange={(next) => setFilters({ kinds: next })}
-        sortBy={sortBy}
-        onSortByChange={(value) =>
-          // Chain order ("") is always ascending — reset a leftover desc
-          // direction so the server's `ORDER BY sort_order NULLS LAST,
-          // created_at ASC` (not a reversed chain) applies.
-          setFilters(value === "" ? { sortBy: value, sortOrder: "asc" } : { sortBy: value })
-        }
-        sortOrder={sortOrder}
-        onSortOrderChange={(value) => setFilters({ sortOrder: value })}
-        view={view}
-        onViewChange={setView}
-        onExpandAll={handleExpandAll}
-        onCollapseAll={handleCollapseAll}
-        expandAllDisabled={expandAllDisabled}
-        collapseAllDisabled={collapseAllDisabled}
-        visibleCount={visibleItems.length}
-        selectedCount={selected.size}
-        allChecked={allChecked}
-        allIndeterminate={allIndeterminate}
-        onToggleAll={handleToggleAll}
-        onDeleteSelected={handleBatchDelete}
-        deletePending={batchDelete.isPending}
-        onArchiveSelected={handleBatchArchive}
-        archivePending={batchArchive.isPending}
-        onMoveSelected={handleMoveSelected}
-        movePending={movePending}
-        onRunSelected={handleRunSelected}
-        runPending={runWorkItems.isPending}
-        visibleSelectedCount={visibleSelectedCount}
-      />
+      {/* Project selector — empty = all projects, matching Work Items. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="recurringProject"
+          className="text-sm font-medium text-muted-foreground"
+        >
+          Project
+        </label>
+        <select
+          id="recurringProject"
+          className="flex h-11 min-h-[44px] w-full max-w-xs rounded-xl glass-input px-3 py-1 text-sm sm:h-9"
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+        >
+          <option value="">All projects</option>
+          {(projects ?? []).map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
-      {!hasProjects && (
-        <Card>
-          <CardHeader>
-            <CardTitle>No project selected</CardTitle>
-            <CardDescription>
-              Create a project first to start adding work items.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {hasProjects && (
-        <div className="flex flex-1 min-h-0 flex-col">
-          {!projectId && (
-            <p className="text-xs text-muted-foreground shrink-0">
-              Dependency state (blocked/blocking chips) is per-project — select a
-              project above to see it.
-            </p>
-          )}
-          <TooltipProvider delayDuration={200}>
-            {view === "archive" ? (
-              <WorkItemsArchiveView
-                items={items}
-                isLoading={isLoading}
-                error={error}
-                onRestore={handleRestore}
-                restorePending={restoreWorkItem.isPending}
-              />
-            ) : view === "tree" ? (
-              <WorkItemsTree
-                treeItems={treeData.treeItems}
-                allItems={items}
-                matchIds={new Set(treeData.matches.map((i) => i.id))}
-                ancestorIds={treeData.ancestorIds}
-                filterActive={hasQuery}
-                expandedIds={treeExpanded}
-                onToggleExpand={toggleTreeExpanded}
-                collapsedIds={treeCollapsed}
-                onToggleCollapse={toggleTreeCollapsed}
-                blockState={blockState}
-                selected={selected}
-                onToggleSelect={toggle}
-                onReorder={handleReorder}
-                isLoading={isLoading}
-                error={error}
-                hasQuery={hasQuery}
-                runsByItem={runsByItem}
-              />
-            ) : (
-              <WorkItemsBoard
-                projectId={projectId}
-                items={filteredItems}
-                allItems={items}
-                blockState={blockState}
-                selected={selected}
-                onToggleSelect={toggle}
-                collapsedIds={boardCollapsed}
-                onToggleCollapse={toggleBoardCollapsed}
-                isLoading={isLoading}
-                error={error}
-                hasQuery={hasQuery}
-                runsByItem={runsByItem}
-              />
-            )}
-          </TooltipProvider>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : error ? (
+        <p className="text-sm text-destructive">
+          Failed to load recurring items: {String(error)}
+        </p>
+      ) : (items ?? []).length === 0 ? (
+        <EmptyState />
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {(items ?? []).map((item) => (
+            <RecurringItemCard
+              key={item.id}
+              item={item}
+              now={now}
+              lastRun={lastRunByItem.get(item.id)}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -445,22 +138,166 @@ function WorkItemsPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Live refresh indicator (design §4/§5.5 — reuse of the Schedules
-// LiveClock pattern): pulsing dot + last-refresh time, paused while the
-// tab is hidden (the same visibilitychange logic the Schedules page
-// uses for its ticker).
+// RecurringItemCard — the flat-list row. Fuchsia/repeat identity, cadence,
+// live next-run countdown, last-run status, and a persisted enable/pause
+// toggle. Never renders the work-item KindBadge/status pill as the primary
+// identity — "recurring automation" wins.
 // ---------------------------------------------------------------------------
 
-function LiveRefreshIndicator({
-  lastUpdated,
-  isFetching,
+function RecurringItemCard({
+  item,
+  now,
+  lastRun,
 }: {
-  lastUpdated?: number;
-  isFetching: boolean;
+  item: WorkItem;
+  now: number;
+  lastRun?: WorkflowRun;
 }) {
+  const updateWorkItem = useUpdateWorkItem(item.projectId);
+  const toast = useToast();
+  // `recurring_enabled` defaults to true; treat an unset legacy row as active.
+  const enabled = item.recurringEnabled !== false;
+
+  const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
+  const nextMs = nextRunTs ? Number(nextRunTs.seconds) * 1000 : 0;
+
+  const cadence = humanCadence(item.recurringSchedule);
+
+  const handleToggle = () => {
+    updateWorkItem.mutate(
+      { id: item.id, recurringEnabled: !enabled },
+      {
+        onSuccess: () =>
+          toast.success(
+            enabled ? `Paused "${item.title}"` : `Resumed "${item.title}"`,
+          ),
+        onError: (e) => toast.error(`Failed to update: ${String(e)}`),
+      },
+    );
+  };
+
+  return (
+    <Card className="group border-l-2 border-l-fuchsia-500 transition-colors hover:border-l-fuchsia-600">
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="flex min-w-0 items-center gap-2 text-base">
+            <Repeat
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-fuchsia-500"
+            />
+            <Link
+              to="/recurring-items/$id"
+              params={{ id: item.id }}
+              className="min-w-0 truncate [overflow-wrap:anywhere] hover:underline"
+            >
+              {item.title}
+            </Link>
+          </CardTitle>
+          <RecurringBadge />
+        </div>
+          <CardDescription className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1">
+            <span className="inline-flex items-center gap-1 font-medium text-foreground">
+              <CalendarClock aria-hidden="true" className="h-3.5 w-3.5" />
+              {cadence}
+            </span>
+            {!enabled && (
+              <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
+                Paused
+              </span>
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm">
+              {enabled && nextMs > 0 ? (
+                <>
+                  <span className="text-xs text-muted-foreground">Next run</span>
+                  <CountdownChip target={nextMs} now={now} />
+                </>
+              ) : enabled ? (
+                <span className="text-xs italic text-muted-foreground/70">
+                  Next run not scheduled
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  Paused — no active next run
+                </span>
+              )}
+            </div>
+            {/* Enable/pause — persisted via recurring_enabled, never a
+                destructive schedule clear. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleToggle}
+              disabled={updateWorkItem.isPending}
+            >
+              {enabled ? (
+                <>
+                  <Pause aria-hidden="true" className="h-3.5 w-3.5" />
+                  Pause
+                </>
+              ) : (
+                <>
+                  <Play aria-hidden="true" className="h-3.5 w-3.5" />
+                  Resume
+                </>
+              )}
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2 border-t border-border/60 pt-2 text-xs">
+            <span className="text-muted-foreground">Last run</span>
+            {lastRun ? (
+              <>
+                <RunStatusBadge status={lastRun.status} />
+                <span className="text-muted-foreground">
+                  {formatTimestamp(lastRun.startedAt)}
+                </span>
+              </>
+            ) : (
+              <span className="italic text-muted-foreground/70">Never</span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+  );
+}
+
+function EmptyState() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Repeat aria-hidden="true" className="h-5 w-5 text-fuchsia-500" />
+          No recurring items yet
+        </CardTitle>
+        <CardDescription>
+          A recurring item is a first-class automation: pick a cadence and a
+          workflow, and Orchicon fires the workflow on schedule, recording a
+          per-fire history. Create one to get started.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button asChild>
+          <Link to="/recurring-items/new" search={{ projectId: "" }}>
+            Create your first recurring item
+          </Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live refresh indicator — mirrors the Schedules LiveClock pattern: a pulsing
+// dot + "Live" chip driven by the same page-level `now` ticker.
+// ---------------------------------------------------------------------------
+
+function LiveRefreshIndicator() {
   const now = useNow(1000);
-  const d = new Date(lastUpdated ?? now);
-  const time = d.toLocaleTimeString([], {
+  const time = new Date(now).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -472,12 +309,7 @@ function LiveRefreshIndicator({
       aria-label={`Auto-refreshes every 5 seconds. Last refreshed at ${time}`}
       className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
     >
-      <span
-        className={cn(
-          "h-2 w-2 animate-pulse rounded-full motion-reduce:animate-none",
-          isFetching ? "bg-sky-500" : "bg-emerald-500",
-        )}
-      />
+      <span className="h-2 w-2 animate-pulse rounded-full bg-fuchsia-500 motion-reduce:animate-none" />
       <span className="font-mono text-xs font-medium tabular-nums text-foreground">
         Live {time}
       </span>
@@ -485,9 +317,115 @@ function LiveRefreshIndicator({
   );
 }
 
-// One page-level `now` ticker for the live indicator; pauses when the tab
-// is hidden (browsers throttle background timers anyway; this makes it
-// explicit and cheap). Mirrors Schedules' useNow.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function tsToMs(ts?: { seconds: bigint | number; nanos?: number }): number {
+  if (!ts) return 0;
+  return Number(ts.seconds) * 1000;
+}
+
+function formatTimestamp(ts?: { seconds: bigint | number; nanos?: number }): string {
+  const ms = tsToMs(ts);
+  if (!ms) return "";
+  return new Date(ms).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+/** Human cadence: "Every 2 hours", "Every day", "Every week (Mon, Wed)". */
+function humanCadence(s: RecurringSchedule | undefined): string {
+  if (!s || (!s.frequency && !s.interval && s.days.length === 0)) {
+    return "One-time";
+  }
+  const f = s.frequency || "daily";
+  const i = s.interval || 1;
+  const unit =
+    f === "minute"
+      ? i > 1
+        ? "minutes"
+        : "minute"
+      : f === "hourly"
+        ? i > 1
+          ? "hours"
+          : "hour"
+        : f === "daily"
+          ? i > 1
+            ? "days"
+            : "day"
+          : f === "weekly"
+            ? i > 1
+              ? "weeks"
+              : "week"
+            : i > 1
+              ? "months"
+              : "month";
+  const base = `Every ${i > 1 ? `${i} ` : ""}${unit}`;
+  if (f === "weekly" && s.days.length > 0) return `${base} (${s.days.join(", ")})`;
+  return base;
+}
+
+function formatCountdown(target: number, now: number): string {
+  const diff = target - now;
+  if (diff <= 0) return "now";
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "in <1m";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours < 24) {
+    return remMinutes > 0 ? `in ${hours}h ${remMinutes}m` : `in ${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `in ${days}d ${remHours}h` : `in ${days}d`;
+}
+
+function countdownAria(target: number, now: number): string {
+  const diff = target - now;
+  if (diff <= 0) return "Next run now";
+  const totalMinutes = Math.max(1, Math.round(diff / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days} day${days === 1 ? "" : "s"}`);
+  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
+  if (minutes > 0 || parts.length === 0)
+    parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  return `Next run in ${parts.join(" ")}`;
+}
+
+/** Live countdown chip (from Schedules' CountdownChip). */
+function CountdownChip({ target, now }: { target: number; now: number }) {
+  const isDark = useDarkPalette();
+  const diff = target - now;
+  const text = diff <= 0 ? "now" : formatCountdown(target, now);
+  return (
+    <span
+      aria-label={countdownAria(target, now)}
+      title={countdownAria(target, now)}
+      className={cn(
+        "rounded-full px-2 py-0.5 text-xs font-medium",
+        diff <= 0
+          ? isDark
+            ? "bg-emerald-950/60 text-emerald-200"
+            : "bg-emerald-100 text-emerald-800"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {text}
+    </span>
+  );
+}
+
+// One page-level `now` ticker (pauses when the tab is hidden), mirroring the
+// Schedules page's useNow — drives the live countdown + the live indicator.
 function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
