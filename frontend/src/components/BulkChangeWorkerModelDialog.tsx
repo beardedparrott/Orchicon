@@ -124,7 +124,7 @@ export function BulkChangeWorkerModelDialog({
 
             <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:bg-amber-950/20 dark:border-amber-900/60 p-3 text-xs text-muted-foreground">
               <div className="flex items-start gap-2">
-                <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-700 dark:text-amber-400" />
                 <div className="space-y-1">
                   <p className="font-medium text-foreground">
                     Dispatch-time resolution
@@ -247,7 +247,7 @@ function BulkResultSummary({
                   key={r.workerId}
                   className="flex items-start gap-2 px-3 py-2 text-xs"
                 >
-                  <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
+                  <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-700 dark:text-green-600" />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium truncate">{name}</p>
                     <p className="text-muted-foreground">
@@ -265,7 +265,7 @@ function BulkResultSummary({
                   key={r.workerId}
                   className="flex items-start gap-2 px-3 py-2 text-xs"
                 >
-                  <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600" />
+                  <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-700 dark:text-amber-600" />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium truncate">{name}</p>
                     <p className="text-muted-foreground">

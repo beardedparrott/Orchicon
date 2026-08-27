@@ -773,7 +773,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
       {isResolved && decision !== "" && (
         <div className="mt-2 border-t border-yellow-200 pt-2 text-xs dark:border-yellow-800">
           <span className="text-muted-foreground">Decision: </span>
-          <span className={cn("font-medium", decision === "approved" ? "text-emerald-600" : "text-red-600")}>
+          <span className={cn("font-medium", decision === "approved" ? "text-emerald-700 dark:text-emerald-600" : "text-red-600")}>
             {decision}
           </span>
         </div>
@@ -854,7 +854,7 @@ function RunStepNode({
             position={Position.Bottom}
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-500"
           />
-          <span className="pointer-events-none absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+          <span className="pointer-events-none absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-700 dark:text-emerald-400">
             success
           </span>
           <Handle
@@ -863,7 +863,7 @@ function RunStepNode({
             position={Position.Right}
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-rose-500"
           />
-          <span className="pointer-events-none absolute -right-9 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-600 dark:text-rose-400">
+          <span className="pointer-events-none absolute -right-9 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-700 dark:text-rose-400">
             loop
           </span>
         </>
@@ -921,9 +921,9 @@ function StepStatusPill({ status }: { status: number }) {
 function StreamStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     idle: "text-muted-foreground",
-    connecting: "text-yellow-600",
-    open: "text-green-600",
-    reconnecting: "text-yellow-600",
+    connecting: "text-yellow-700 dark:text-yellow-600",
+    open: "text-green-700 dark:text-green-600",
+    reconnecting: "text-yellow-700 dark:text-yellow-600",
     closed: "text-muted-foreground",
     error: "text-destructive",
   };
@@ -943,12 +943,12 @@ function StreamStatusBadge({ status }: { status: string }) {
 }
 
 function EventDot({ eventType }: { eventType: string }) {
-  if (eventType.includes("succeeded")) return <span className="text-sm text-green-600">✓</span>;
+  if (eventType.includes("succeeded")) return <span className="text-sm text-green-700 dark:text-green-600">✓</span>;
   if (eventType.includes("failed")) return <span className="text-sm text-red-600">✗</span>;
-  if (eventType.includes("ready")) return <span className="text-sm text-yellow-600">●</span>;
+  if (eventType.includes("ready")) return <span className="text-sm text-yellow-700 dark:text-yellow-600">●</span>;
   if (eventType.includes("started") || eventType.includes("running")) return <span className="text-sm text-blue-600">▶</span>;
   if (eventType.includes("blocked")) return <span className="text-sm text-red-700">⛔</span>;
-  if (eventType.includes("approval")) return <span className="text-sm text-amber-600">⚠</span>;
+  if (eventType.includes("approval")) return <span className="text-sm text-amber-700 dark:text-amber-600">⚠</span>;
   return <span className="text-sm text-muted-foreground">•</span>;
 }
 

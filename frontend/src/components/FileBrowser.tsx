@@ -212,9 +212,9 @@ export function FileBrowser({
                       className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
                     >
                       {dirPaths.has(f) ? (
-                        <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-500" />
+                        <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-700 dark:text-amber-500" />
                       ) : (
-                        <File aria-hidden="true" className="h-3 w-3 shrink-0 text-sky-500" />
+                        <File aria-hidden="true" className="h-3 w-3 shrink-0 text-sky-700 dark:text-sky-500" />
                       )}
                       <span className="truncate">{f}</span>
                     </div>
@@ -317,7 +317,7 @@ export function FileBrowser({
                           className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
                         >
                           {dirPaths.has(f) ? (
-                            <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-500" />
+                            <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-700 dark:text-amber-500" />
                           ) : (
                             <File aria-hidden="true" className="h-3 w-3 shrink-0" />
                           )}
@@ -419,7 +419,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
               key={entry.path}
               className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
             >
-              <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
+              <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
               <span
                 className="flex-1 truncate"
                 onClick={() => onNavigate(entry.path)}
@@ -652,7 +652,7 @@ function FileRow({
               )}
             </button>
           )}
-          <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span className="truncate" onClick={() => onToggleExpanded(entry.path)}>
             {entry.name}
           </span>
@@ -697,7 +697,7 @@ function FileRow({
           )}
         </button>
       )}
-      <File aria-hidden="true" className="h-4 w-4 text-sky-500 shrink-0" />
+      <File aria-hidden="true" className="h-4 w-4 text-sky-700 dark:text-sky-500 shrink-0" />
       <span className="truncate">{entry.name}</span>
     </div>
   );

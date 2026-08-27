@@ -84,12 +84,12 @@ function DashboardPage() {
         <Link to="/cost-explorer" className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/50">
           <Tile label="Total Tokens" value={fmtInt(totalTokens)} description="Lifetime token consumption → Cost Explorer" />
         </Link>
-        <Tile label="Workflow Runs Succeeded" value={fmtInt(wfRunStats.succeeded)} description="Completed workflow runs" className="text-green-600" />
+        <Tile label="Workflow Runs Succeeded" value={fmtInt(wfRunStats.succeeded)} description="Completed workflow runs" className="text-green-700 dark:text-green-600" />
         <Tile label="Workflow Runs Failed" value={fmtInt(wfRunStats.failed)} description="Failed workflow runs" className="text-red-600" />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Tile label="Workflow Runs Aborted" value={fmtInt(wfRunStats.aborted)} description="Aborted workflow runs" className="text-yellow-600" />
+        <Tile label="Workflow Runs Aborted" value={fmtInt(wfRunStats.aborted)} description="Aborted workflow runs" className="text-yellow-700 dark:text-yellow-600" />
         <Tile label="Active Recoveries" value={String(activeRecoveries)} description="Ongoing recovery workflows" />
         <Tile label="Total Recoveries" value={fmtInt(recoveries?.length ?? 0)} description="Recoveries triggered (all time)" />
         <Tile label="Other Workflow Runs" value={fmtInt(wfRunStats.other)} description="Pending/running workflow runs" />
