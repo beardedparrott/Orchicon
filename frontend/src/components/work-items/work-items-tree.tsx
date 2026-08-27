@@ -336,10 +336,9 @@ function TreeNode({
   // `treeData.matches`).
   const selectable = !(filterActive && ancestorIds.has(item.id) && !matchIds.has(item.id));
 
-  const subtreeState = subtreeSelectionState(
-    [item.id, ...collectSubtreeIds(item.id, childrenOf)],
-    selected,
-  );
+  const fullSubtree = [item.id, ...collectSubtreeIds(item.id, childrenOf)];
+  const visibleSubtree = filterActive ? fullSubtree.filter((id) => matchIds.has(id)) : fullSubtree;
+  const subtreeState = subtreeSelectionState(visibleSubtree, selected);
   const triState = hasChildren && subtreeState === "indeterminate";
   const checked = subtreeState === "checked";
 

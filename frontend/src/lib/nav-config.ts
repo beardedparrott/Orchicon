@@ -35,6 +35,7 @@ export function isPathActive(path: string, to: string): boolean { if (path === t
 export function getActiveDomain(pathname: string): NavGroup | null { if (pathname === ASK_ORCHICON.to || pathname.startsWith(ASK_ORCHICON.to + "/")) return null; for (const group of NAV_GROUPS) { if (group.items.some((it) => isPathActive(pathname, it.to))) return group; } return null; }
 export function getActiveItem(pathname: string): NavItem | null { if (isPathActive(pathname, ASK_ORCHICON.to)) return ASK_ORCHICON; let best: NavItem | null = null; let bestLen = -1; for (const group of NAV_GROUPS) { for (const item of group.items) { if (isPathActive(pathname, item.to) && item.to.length > bestLen) { best = item; bestLen = item.to.length; } } } return best; }
 export function getBreadcrumbs(pathname: string): { label: string; to?: string }[] { if (isPathActive(pathname, ASK_ORCHICON.to)) { return [{ label: "Ask Orchicon", to: ASK_ORCHICON.to }]; } const domain = getActiveDomain(pathname); const item = getActiveItem(pathname); if (!domain || !item) return []; return [{ label: domain.label },{ label: item.label, to: item.to }]; }
-export const ACTIVE_TRIGGER = "bg-gradient-to-r from-cyan-500/15 to-indigo-500/15 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.15)]";
+export const ACTIVE_TRIGGER = "nav-active-trigger border";
 export const ACTIVE_ITEM = "bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-md";
-export const ACTIVE_ITEM_SUBTLE = "bg-cyan-500/15 text-cyan-300 border border-cyan-500/30";
+export const ACTIVE_ITEM_SUBTLE = "nav-active-item border";
+export const INACTIVE_ASK = "nav-inactive-ask hover:bg-cyan-500/10";

@@ -13,7 +13,14 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems, useRestoreWorkItem } from "@/api/workItems";
+import {
+  useBatchArchiveWorkItems,
+  useBatchDeleteWorkItems,
+  useGetDependencyGraph,
+  useListWorkItems,
+  useReorderWorkItems,
+  useRestoreWorkItem,
+} from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
@@ -84,6 +91,7 @@ function WorkItemsPage() {
 
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
+  const batchArchive = useBatchArchiveWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
   const runWorkItems = useBatchRunWorkItems(projectId);
   const toast = useToast();
@@ -180,18 +188,14 @@ function WorkItemsPage() {
     [items, kinds, statuses, debouncedSearch],
   );
 
-  // Selection (design §5.1): cascade selection uses the FULL items list
-  // so checking/unchecking a parent always affects ALL its children
-  // regardless of active filters. The `childrenOf` callback must walk
-  // the complete hierarchy (not just filtered treeItems) so that
-  // cascade toggles reach descendants that may be hidden by the current
-  // kind/status/search filter.
-  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
-  const childrenOf = useCallback(
-    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
-    [items],
-  );
-  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
+  // A filter is "active" only when the selection differs from the full
+  // option list (the default = show everything) or a search is typed. An
+  // all-selected type/status filter is NOT a query: it must not dim rows,
+  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
+  const hasQuery =
+    debouncedSearch !== "" ||
+    kinds.length !== KIND_FILTER_OPTIONS.length ||
+    statuses.length !== STATUS_FILTER_OPTIONS.length;
 
   // The header select-all + count operate over the MATCHES (the items
   // that actually pass the filters), never the dimmed ancestor container
@@ -199,6 +203,18 @@ function WorkItemsPage() {
   // filtered-out epics/features for bulk delete.
   const visibleItems = view === "tree" ? treeData.matches : filteredItems;
   const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
+  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
+
+  // Selection (design §5.1): cascade selection — when a filter is active
+  // the parent toggle is scoped to the currently-viewable descendants
+  // only (visibleIdsSet + hasQuery), so hidden items are never selected.
+  // With no filter, the full subtree is used (AC5).
+  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
+  const childrenOf = useCallback(
+    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
+    [items],
+  );
+  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, visibleIdsSet, hasQuery, resetKey);
   const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
 
   const handleToggleAll = () => toggleAll(visibleIds);
@@ -209,6 +225,33 @@ function WorkItemsPage() {
     if (!window.confirm(`Permanently delete ${count} work item${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
     batchDelete.mutate(Array.from(selected), {
       onSuccess: () => setSelected(new Set()),
+    });
+  };
+
+  // Bulk "Archive" (mirrors handleBatchDelete): confirm naming the count,
+  // fan out the archive fan-out, clear the selection on completion, and
+  // report the archived/skipped split. The server is authoritative for the
+  // two gates (terminal-only, no children), so skipped items are the ones
+  // the server rejected — reported as one generic bucket (design D2).
+  const handleBatchArchive = () => {
+    if (selected.size === 0) return;
+    const count = selected.size;
+    if (
+      !window.confirm(
+        `Archive ${count} work item${count === 1 ? "" : "s"}? Only terminal items without children can be archived; the rest are skipped.`,
+      )
+    ) return;
+    batchArchive.mutate(Array.from(selected), {
+      onSuccess: (res) => {
+        setSelected(new Set());
+        if (res.skipped > 0) {
+          toast.success(
+            `Archived ${res.archived}, skipped ${res.skipped} (non-terminal or has children)`,
+          );
+        } else {
+          toast.success(`Archived ${res.archived}`);
+        }
+      },
     });
   };
 
@@ -234,7 +277,6 @@ function WorkItemsPage() {
   // select-all and parent cascade can mark filtered-out descendants, but Run
   // must only touch the currently-visible rows (AC-3). The label uses the
   // visible-selected count so it never over-promises (AC-1).
-  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
   const visibleSelectedCount = useMemo(
     () => [...selected].filter((id) => visibleIdsSet.has(id)).length,
     [selected, visibleIdsSet],
@@ -245,14 +287,7 @@ function WorkItemsPage() {
     void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
   };
 
-  // A filter is "active" only when the selection differs from the full
-  // option list (the default = show everything) or a search is typed. An
-  // all-selected type/status filter is NOT a query: it must not dim rows,
-  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
-  const hasQuery =
-    debouncedSearch !== "" ||
-    kinds.length !== KIND_FILTER_OPTIONS.length ||
-    statuses.length !== STATUS_FILTER_OPTIONS.length;
+
 
   // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
   // items list (not the filtered set) so collapsing a filtered-out
@@ -329,6 +364,8 @@ function WorkItemsPage() {
         onToggleAll={handleToggleAll}
         onDeleteSelected={handleBatchDelete}
         deletePending={batchDelete.isPending}
+        onArchiveSelected={handleBatchArchive}
+        archivePending={batchArchive.isPending}
         onMoveSelected={handleMoveSelected}
         movePending={movePending}
         onRunSelected={handleRunSelected}
