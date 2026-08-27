@@ -142,6 +142,13 @@ message CreateWorkItemRequest {
   // Absent/empty = no edges. Validated: same project, target exists, no
   // self-dependency, no cycle.
   repeated string depends_on = 18;
+  // run_context is the calling workflow run's run_context JSONB (feature 4.1,
+  // AC2). A recurring fire writes the automation provenance block into the run
+  // context; a create issued from inside a recurring fire's run carries it so
+  // the created item is stamped spawned_by / spawned_by_run_id and, when the
+  // fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
+  // creates leave it empty (backward compatible).
+  string run_context = 19;
 }
 
 message CreateWorkItemResponse {

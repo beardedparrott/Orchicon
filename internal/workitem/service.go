@@ -111,25 +111,39 @@ func validateContextFilesInput(paths []string) ([]byte, error) {
 
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
-// runContextKey is the context key that carries the calling run's run_context
-// (feature 4.1, AC2) from a recurring fire's execution into the work item
-// create path so automation provenance can be stamped.
-type runContextKey struct{}
+// AutomationRunContextKey is the context key that carries the calling run's
+// run_context (feature 4.1, AC2) from a recurring fire's execution into the
+// work item create path so automation provenance can be stamped. Exported so
+// the sandbox Orchicon MCP can inject it and both the Connect handler and the
+// askorchicon tool path can read it.
+type AutomationRunContextKey struct{}
 
-// runContextFrom returns the run_context carried on the request context, if
+// WithAutomationRunContext returns a context carrying the given run_context so
+// a create path can stamp automation provenance. The run_context is the
+// workflow run's run_context JSONB — the recurring fire writes the provenance
+// block (spawned_by, spawned_by_run_id, outputs_mode) into it at fire time.
+// A nil/empty run_context returns the context unchanged (a plain create).
+func WithAutomationRunContext(ctx context.Context, runContext []byte) context.Context {
+	if len(runContext) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, AutomationRunContextKey{}, runContext)
+}
+
+// RunContextFrom returns the run_context carried on the request context, if
 // any. Absent (the common case — a human creating an item directly) means
 // "not an automation spawn" and returns nil.
-func runContextFrom(ctx context.Context) []byte {
-	rc, _ := ctx.Value(runContextKey{}).([]byte)
+func RunContextFrom(ctx context.Context) []byte {
+	rc, _ := ctx.Value(AutomationRunContextKey{}).([]byte)
 	return rc
 }
 
-// applyAutomationProvenance stamps the automation provenance block onto a
+// ApplyAutomationProvenance stamps the automation provenance block onto a
 // work item being created from a recurring fire's run: spawned_by (the
 // recurring item id), spawned_by_run_id (the fire's run id), and — when the
 // fire's outputs_mode is "idea" — the IDEA status. No-op when the run_context
 // carries no provenance block (a plain create; backward compatible).
-func applyAutomationProvenance(row *db.WorkItemRow, runContext []byte) {
+func ApplyAutomationProvenance(row *db.WorkItemRow, runContext []byte) {
 	if len(runContext) == 0 {
 		return
 	}
@@ -287,11 +301,17 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		NextRunAt:          nextRunAt,
 	}
 	// Stamp automation provenance (feature 4.1, AC2): when this create runs
-	// inside a recurring fire's run, the run_context carried on the request
-	// carries the provenance block written by the reconciler. Stamping sets
-	// spawned_by/spawned_by_run_id and (when outputs_mode=idea) the IDEA
-	// status. Plain creates carry no run_context and are unaffected.
-	applyAutomationProvenance(&row, runContextFrom(ctx))
+	// inside a recurring fire's run, the run_context carried on the request (or
+	// on the request context, injected by the sandbox Orchicon MCP from the
+	// run's run_context) carries the provenance block written by the
+	// reconciler. Stamping sets spawned_by/spawned_by_run_id and (when
+	// outputs_mode=idea) the IDEA status. Plain creates carry no run_context
+	// and are unaffected.
+	rc := []byte(msg.RunContext)
+	if len(rc) == 0 {
+		rc = RunContextFrom(ctx)
+	}
+	ApplyAutomationProvenance(&row, rc)
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
 	// it carries forward to the workflow run regardless of when it fires.

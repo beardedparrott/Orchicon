@@ -107,7 +107,7 @@ func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
 // image (or an unresolved project dir) must NOT emit the deny, so a worker is
 // never locked out of file access with no batch tool to fall back on.
 func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree")
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "")
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -133,7 +133,7 @@ func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
 	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
 	// DB MCP (`orchicon`) stays dev-only.
-	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree")
+	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "")
 	var bcfg map[string]any
 	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
 		t.Fatalf("base config not valid JSON: %v", err)
@@ -205,7 +205,7 @@ func TestBuildConfigContentMCPEnvAndBinaryPath(t *testing.T) {
 func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	// Dev image: the container serve must register the Orchicon MCP against
 	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree")
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "")
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -229,7 +229,7 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 
 	// Base/gui image: no sandbox plane, no MCP — behavior identical to today.
 	for _, tag := range []string{"ghcr.io/beardedparrott/orchicon-runtime:latest", "orchicon-runtime:gui-latest"} {
-		base := RuntimeServeConfig(tag, "")
+		base := RuntimeServeConfig(tag, "", "")
 		var baseCfg map[string]any
 		if err := json.Unmarshal([]byte(base), &baseCfg); err != nil {
 			t.Fatalf("base config not valid JSON: %v", err)
@@ -272,7 +272,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 
 	// Runtime-container serve (dev image, the SDLC runs) + base image.
 	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "ghcr.io/beardedparrott/orchicon-runtime:latest"} {
-		out := RuntimeServeConfig(tag, "/worktree")
+		out := RuntimeServeConfig(tag, "/worktree", "")
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("runtime config not valid JSON: %v", err)
@@ -293,7 +293,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 // is the per-turn token win: Orchicon's real system prompt still rides the
 // per-message `system` field; the agent prompt is just a tool-guideline shell.
 func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
-	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree")
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "")
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("runtime config not valid JSON: %v", err)
@@ -332,7 +332,7 @@ func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
 	for name, out := range map[string]string{
 		"host serve":  BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
-		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree"),
+		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", ""),
 	} {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {

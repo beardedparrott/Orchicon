@@ -94,6 +94,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
 		RuntimeImage       string   `json:"runtime_image"`
 		ContextFiles       []string `json:"context_files"`
+		// run_context is the calling workflow run's run_context JSONB (feature
+		// 4.1, AC2): a recurring fire writes the provenance block into it, and a
+		// create issued from inside a recurring fire's run carries it so the
+		// created item is stamped with automation provenance.
+		RunContext string `json:"run_context"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -211,6 +216,16 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
+	// Stamp automation provenance (feature 4.1, AC2): a create inside a
+	// recurring fire's run carries the run_context (passed on the call or
+	// injected into the context by the sandbox Orchicon MCP from the run's
+	// run_context), so the created item is stamped spawned_by /
+	// spawned_by_run_id and, when outputs_mode=idea, lands in IDEA state.
+	rc := []byte(params.RunContext)
+	if len(rc) == 0 {
+		rc = workitem.RunContextFrom(ctx)
+	}
+	workitem.ApplyAutomationProvenance(&row, rc)
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, row)
 	if err != nil {
 		return nil, err

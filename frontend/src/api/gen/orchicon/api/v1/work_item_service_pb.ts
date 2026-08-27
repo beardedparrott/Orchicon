@@ -261,6 +261,18 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   dependsOn: string[] = [];
 
+  /**
+   * run_context is the calling workflow run's run_context JSONB (feature 4.1,
+   * AC2). A recurring fire writes the automation provenance block into the run
+   * context; a create issued from inside a recurring fire's run carries it so
+   * the created item is stamped spawned_by / spawned_by_run_id and, when the
+   * fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
+   * creates leave it empty (backward compatible).
+   *
+   * @generated from field: string run_context = 19;
+   */
+  runContext = "";
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -287,6 +299,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 19, name: "run_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {

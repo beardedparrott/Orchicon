@@ -189,7 +189,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir, manifest.RuntimeWorkflowID),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -231,7 +231,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag, projectDir string) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  workerAgentPrompt,
@@ -243,6 +243,12 @@ func RuntimeServeConfig(imageTag, projectDir string) string {
 		opts.TenantID = serveTenantID()
 		opts.OrchiconMCP = true
 		opts.MCPEnv = map[string]string{"ORCHICON_POSTGRES_DSN": runtime.SandboxPostgresDSN}
+		// The sandbox worker's Orchicon MCP sidecar is told its workflow run so
+		// it can inject the run_context into create calls and stamp recurring-
+		// fire provenance (feature 4.1, AC2).
+		if workflowRunID != "" {
+			opts.MCPEnv["ORCHICON_MCP_WORKFLOW_RUN_ID"] = workflowRunID
+		}
 	}
 	// The orchicon binary is bind-mounted read-only at /usr/local/bin/orchicon
 	// in EVERY runtime container (the runtime daemon's own executable,
