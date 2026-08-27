@@ -69,7 +69,7 @@ export function MultiSelect<T extends string | number>({
           type="button"
           aria-label={label}
           className={cn(
-            "inline-flex h-9 max-w-[16rem] items-center gap-1.5 rounded-md glass-input px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
+            "inline-flex h-11 sm:h-9 min-h-[44px] max-w-[16rem] items-center gap-1.5 rounded-md glass-input px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
         >

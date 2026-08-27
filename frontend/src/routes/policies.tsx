@@ -54,7 +54,7 @@ function PoliciesPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All statuses</option>
           <option value="1">Draft</option>
@@ -64,7 +64,7 @@ function PoliciesPage() {
         <select
           value={decisionPoint}
           onChange={(e) => setDecisionPoint(e.target.value)}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All decision points</option>
           <option value="1">Admission</option>

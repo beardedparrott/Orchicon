@@ -80,7 +80,7 @@ export function NotificationPanel({
     }
   };
   return (
-    <div ref={containerRef} role="menu" id="notification-panel" aria-label="Notifications" data-testid="notification-panel" onKeyDown={handleKeyDown} className={cn("absolute right-0 top-full mt-2 w-80 sm:w-96 max-h-[28rem] flex flex-col glass-menu rounded-xl shadow-2xl z-50 overflow-hidden","border border-white/10")}>
+    <div ref={containerRef} role="menu" id="notification-panel" aria-label="Notifications" data-testid="notification-panel" onKeyDown={handleKeyDown} className={cn("absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-1rem)] sm:w-96 max-h-[28rem] flex flex-col glass-menu rounded-xl shadow-2xl z-50 overflow-hidden","border border-white/10")}>
       <span tabIndex={0} aria-hidden="true" className="sr-only" onFocus={() => getFocusable().at(-1)?.focus()} />
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2">

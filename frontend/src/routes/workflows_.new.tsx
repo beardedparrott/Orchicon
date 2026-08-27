@@ -110,7 +110,7 @@ function NewWorkflowPage() {
               <select
                 id="type"
                 {...register("type")}
-                className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
               >
                 <option value="one-shot">One-Shot</option>
                 <option value="repeatable-template">Repeatable Template</option>
@@ -128,7 +128,7 @@ function NewWorkflowPage() {
                 <select
                   id="projectId"
                   {...register("projectId")}
-                  className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+                  className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                 >
                   <option value="">— Select a project —</option>
                   {(projects ?? []).map((p) => (

@@ -190,10 +190,10 @@ function ApprovalsPage() {
           placeholder="Search projects, work items, workflows..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
@@ -202,7 +202,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
         >
@@ -211,7 +211,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
         >
@@ -335,7 +335,7 @@ function ApprovalsPage() {
                       to="/workflows/$id/runs/$runId"
                       params={{ id: item.workflowId, runId: item.workflowRunId }}
                     >
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <Button variant="ghost" size="icon" className="h-11 w-11 min-h-[44px] min-w-[44px]">
                         <ExternalLink aria-hidden="true" className="h-4 w-4" />
                       </Button>
                     </Link>

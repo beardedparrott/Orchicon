@@ -126,7 +126,7 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
       <input
         ref={inputRef}
         type="text"
-        className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         placeholder={selected.length > 0 ? "Add more MCP servers..." : "Search MCP servers..."}
         value={search}
         onChange={(e) => {
