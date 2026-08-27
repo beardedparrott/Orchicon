@@ -906,7 +906,7 @@ func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 	// next_run_at and status recurring (mirrors the Create path's flip).
 	seedRecurring := func() db.WorkItemRow {
 		t.Helper()
-		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, nil)
 		scheduleJSON, err := ValidateRecurringSchedule(&apiv1.RecurringSchedule{
 			Frequency: "daily",
 			Interval:  1,
@@ -919,6 +919,7 @@ func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 		future := time.Now().Add(24 * time.Hour)
 		writeItem(t, pool, item.ID, item.Version, db.UpdateWorkItemFields{
 			Status:            strPtr(domain.WorkItemRecurring),
+			WorkflowID:        strPtr("wf-recurring-test"),
 			RecurringSchedule: &scheduleJSON,
 			NextRunAt:         &future,
 		})
