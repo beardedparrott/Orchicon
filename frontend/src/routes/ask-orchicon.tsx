@@ -1392,8 +1392,34 @@ function ChatInputField({
     [],
   );
 
+  // --- attachment constants (server is authoritative: 5 / 10MB / 20MB) ---
+  const MAX_ATTACHMENTS = 5;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+  const ACCEPTED_EXTS = new Set([
+    "png","jpg","jpeg","gif","webp","svg","bmp","pdf","txt","md","mdx","json","csv","yaml","yml","html","css","js","ts","tsx","go","py","rs","java","sh","xml","log",
+  ]);
+  const getExt = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
+  const isAllowedFile = (file: File): boolean => {
+    const mime = (file.type || "").toLowerCase();
+    const ext = getExt(file.name);
+    if (mime.startsWith("image/")) return true;
+    if (mime.startsWith("text/")) return true;
+    if (mime.includes("json") || mime.includes("csv") || mime.includes("pdf") || mime.includes("xml") || mime.includes("yaml")) return true;
+    if (ext && ACCEPTED_EXTS.has(ext)) return true;
+    // empty mime but known extension — allow
+    if (!mime && ext && ACCEPTED_EXTS.has(ext)) return true;
+    return false;
+  };
+
+  const [pendingReads, setPendingReads] = useState(0);
+
   const handleSubmit = useCallback(async () => {
     if (sending) return;
+    if (pendingReads > 0) {
+      useToastStore.getState().push({ kind: "info", message: `Still loading ${pendingReads} file(s)...` });
+      return;
+    }
     const sentText = text.trim();
     const sentAttachments = attachments.length > 0 ? attachments : undefined;
     if (sentText || attachments.length > 0) {
@@ -1416,7 +1442,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend]);
+  }, [sending, text, attachments, onSend, pendingReads]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1432,24 +1458,58 @@ function ChatInputField({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of Array.from(files)) {
-        if (file.size > 10 * 1024 * 1024) {
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
+        }
+        if (!isAllowedFile(file)) {
+          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name;
-          input.mimeType = file.type;
+          // infer mime when empty via extension
+          let mime = file.type;
+          if (!mime) {
+            const ext = getExt(file.name);
+            if (ext === "json") mime = "application/json";
+            else if (ext === "csv") mime = "text/csv";
+            else if (ext === "pdf") mime = "application/pdf";
+            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
+            else if (ext === "txt") mime = "text/plain";
+            else mime = "application/octet-stream";
+          }
+          input.mimeType = mime;
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
       e.target.value = "";
     },
-    [],
+    [attachments],
   );
 
   const handlePaste = useCallback(
@@ -1466,61 +1526,112 @@ function ChatInputField({
       }
       if (imageFiles.length === 0) return;
       e.preventDefault();
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of imageFiles) {
-        if (file.size > 10 * 1024 * 1024) {
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `Image too large (max 10MB): ${file.name || "pasted image"}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name || `pasted-image-${Date.now()}.png`;
           input.mimeType = file.type || "image/png";
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name || "pasted image"}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
     },
-    [],
+    [attachments],
   );
 
   const [dragOver, setDragOver] = useState(false);
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOver(true);
   }, []);
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOver(false);
   }, []);
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       setDragOver(false);
       const files = e.dataTransfer?.files;
       if (!files) return;
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of Array.from(files)) {
-        if (!file.type.startsWith("image/") && !file.type.startsWith("text/") && !file.type.includes("json")) {
-          // accept images + text-like files
-          if (!file.type.startsWith("image/")) continue;
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
         }
-        if (file.size > 10 * 1024 * 1024) {
+        if (!isAllowedFile(file)) {
+          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name;
-          input.mimeType = file.type;
+          let mime = file.type;
+          if (!mime) {
+            const ext = getExt(file.name);
+            if (ext === "json") mime = "application/json";
+            else if (ext === "csv") mime = "text/csv";
+            else if (ext === "pdf") mime = "application/pdf";
+            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
+            else if (ext === "txt") mime = "text/plain";
+            else mime = "application/octet-stream";
+          }
+          input.mimeType = mime;
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
     },
-    [],
+    [attachments],
   );
 
   const [isRecording, setIsRecording] = useState(false);
@@ -1583,18 +1694,37 @@ function ChatInputField({
         const blob = new Blob(audioChunksRef.current, {
           type: "audio/webm",
         });
+        if (blob.size > MAX_FILE_BYTES) {
+          pushToast({ kind: "error", message: `Audio too large (max 10MB)` });
+          return;
+        }
+        const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+        if (existingTotal + blob.size > MAX_TOTAL_BYTES) {
+          pushToast({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          return;
+        }
+        if (attachments.length >= MAX_ATTACHMENTS) {
+          pushToast({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          return;
+        }
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = "voice_input.webm";
           input.mimeType = "audio/webm";
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
           pushToast({
             kind: "success",
             message:
               "Audio recorded and attached. Send your message to have Orchicon process it.",
           });
+        };
+        reader.onerror = () => {
+          pushToast({ kind: "error", message: "Failed to read audio" });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(blob);
       };
@@ -1615,7 +1745,7 @@ function ChatInputField({
         message: "Microphone access denied or unavailable.",
       });
     }
-  }, []);
+  }, [attachments]);
 
   const handleStopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
@@ -1625,6 +1755,11 @@ function ChatInputField({
 
   return (
     <div className="p-4">
+      {pendingReads > 0 && (
+        <div className="mb-2 text-xs text-muted-foreground animate-pulse" aria-live="polite">
+          Loading {pendingReads} file(s)...
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {attachments.map((a, i) => {
@@ -1666,7 +1801,7 @@ function ChatInputField({
         </div>
       )}
       <div
-        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-violet-400 border-dashed" : ""}`}
+        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -1675,9 +1810,11 @@ function ChatInputField({
         <div className="flex items-end gap-2 px-1 pb-1">
           <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
           <button
+            type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent"
+            className="shrink-0 rounded-md border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 p-1.5 text-muted-foreground hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
             title="Attach file"
+            aria-label="Attach file"
           >
             <Paperclip className="h-4 w-4" />
           </button>
@@ -1711,10 +1848,10 @@ function ChatInputField({
               <>
                 <Button
                   onClick={handleSubmit}
-                  disabled={!text.trim() && attachments.length === 0}
+                  disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
                   size="sm"
-                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
-                  title="Send interrupts the current reply and redirects the model"
+                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
+                  title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : "Send interrupts the current reply and redirects the model"}
                 >
                   Send
                 </Button>
@@ -1726,9 +1863,10 @@ function ChatInputField({
             ) : (
               <Button
                 onClick={handleSubmit}
-                disabled={!text.trim() && attachments.length === 0}
+                disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
                 size="sm"
-                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
+                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
+                title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : undefined}
               >
                 Send
               </Button>
@@ -1748,7 +1886,11 @@ function ChatInputField({
         ref={fileInputRef}
         type="file"
         className="hidden"
+        accept="image/*,text/*,.json,.md,.mdx,.csv,.pdf,.txt,.yaml,.yml,.html,.css,.js,.ts,.tsx,.go,.py,.rs,.java,.sh,.xml,.log"
+        multiple
         onChange={handleFileSelect}
+        aria-hidden="true"
+        tabIndex={-1}
       />
     </div>
   );
