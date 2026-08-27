@@ -281,14 +281,35 @@ function AskOrchiconPage() {
     });
   }, []);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
-  const mobileTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const lastMobileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const openMobileSheet = useCallback(() => {
+    lastMobileTriggerRef.current = mobileTriggerRef.current;
+    setMobileSheetOpen(true);
+  }, []);
+  const closeMobileSheet = useCallback(() => {
+    setMobileSheetOpen(false);
+    requestAnimationFrame(() => {
+      (lastMobileTriggerRef.current ?? mobileTriggerRef.current)?.focus();
+    });
+  }, []);
   useEffect(() => {
     if (!mobileSheetOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); } };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMobileSheetOpen(false);
+        requestAnimationFrame(() => {
+          (lastMobileTriggerRef.current ?? mobileTriggerRef.current)?.focus();
+        });
+      }
+    };
     document.addEventListener("keydown", onKeyDown);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => { document.removeEventListener("keydown", onKeyDown); document.body.style.overflow = prev; };
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = prev;
+    };
   }, [mobileSheetOpen]);
 
   // Update one conversation's stream slot with a functional updater so
@@ -899,8 +920,22 @@ function AskOrchiconPage() {
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-h-0 min-w-0">
         {!activeConvId ? (
-          /* --- Greeting state: centered vertical + horizontal --- */
-          <div className="flex flex-1 items-center justify-center px-4 pb-2">
+          /* --- Greeting state: centered + header on mobile --- */
+          <div className="flex flex-1 flex-col min-h-0">
+            {/* Greeting header — mobile only, provides conversations affordance */}
+            <div className="flex items-center justify-between border-b px-4 sm:px-6 py-3 shrink-0 gap-2 lg:hidden">
+              <span className="text-sm font-medium">Ask Orchicon</span>
+              <button
+                ref={mobileTriggerRef}
+                onClick={openMobileSheet}
+                aria-label="Conversations"
+                data-testid="ask-conversation-sheet-trigger-greeting"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
+              >
+                <PanelRight aria-hidden="true" className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex flex-1 items-center justify-center px-4 pb-2">
             <div className="w-full max-w-2xl space-y-8">
               <div className="text-center space-y-4">
                 <div className="flex justify-center">
@@ -947,6 +982,7 @@ function AskOrchiconPage() {
                 onModeChange={handleModeChange}
               />
             </div>
+            </div>
           </div>
         ) : (
           /* --- Active conversation: scroll + pinned input --- */
@@ -956,7 +992,7 @@ function AskOrchiconPage() {
               <div className="flex items-center gap-2 min-w-0">
                 <button
                   ref={mobileTriggerRef}
-                  onClick={() => setMobileSheetOpen(true)}
+                  onClick={openMobileSheet}
                   aria-label="Conversations"
                   data-testid="ask-conversation-sheet-trigger"
                   className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
@@ -1290,8 +1326,8 @@ function AskOrchiconPage() {
       {/* Mobile conversation sheet — route-scoped, lg:hidden per ADR-M10-01 */}
       {mobileSheetOpen && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Conversations">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileSheetOpen(false)} aria-hidden="true" />
-          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
+          <div className="absolute inset-0 bg-black/50" onClick={closeMobileSheet} aria-hidden="true" />
+          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] h-[100dvh] max-h-[100dvh] pb-[env(safe-area-inset-bottom,0px)] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
             <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
               <div className="flex items-center space-x-2 text-slate-300">
                 <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
@@ -1300,7 +1336,7 @@ function AskOrchiconPage() {
               <div className="flex items-center space-x-1">
                 <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={() => { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
