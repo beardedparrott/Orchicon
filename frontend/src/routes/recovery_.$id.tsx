@@ -87,7 +87,7 @@ function RecoveryDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {!isTerminal && (
             <Button
               variant="outline"

@@ -97,7 +97,7 @@ export function CategoryFolder({
       <div
         className={cn(
           "group flex items-center gap-2 rounded-lg px-3 py-2 transition-colors",
-          "bg-muted/50 hover:bg-muted/80",
+          "glass-panel hover:bg-white/5 border border-white/10",
         )}
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}

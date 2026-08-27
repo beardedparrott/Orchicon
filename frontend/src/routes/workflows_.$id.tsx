@@ -951,7 +951,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
             <div
               className={cn(
-                "relative h-[640px] rounded-lg border bg-card transition-colors",
+                "relative h-[640px] rounded-2xl glass-panel transition-colors",
                 dropActive &&
                   "border-primary bg-primary/5 ring-2 ring-primary/30 ring-offset-1",
               )}
@@ -1040,7 +1040,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           </div>
         ) : (
           /* code view: full-width editor */
-          <div className="h-[640px] rounded-lg border bg-card">
+          <div className="h-[640px] rounded-2xl glass-panel">
             <CodeView
               nodes={nodes}
               edges={edges}

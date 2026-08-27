@@ -328,7 +328,7 @@ function ExecutionContextFooter({
     ...worktreeTileItems(exec.worktreeStatus, exec.worktreeBranch, exec.worktreePath),
   ];
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl glass-panel p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Execution context

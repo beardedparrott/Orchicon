@@ -433,7 +433,7 @@ function LiveRefreshIndicator({
     <div
       role="timer"
       aria-label={`Auto-refreshes every 5 seconds. Last refreshed at ${time}`}
-      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+      className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
     >
       <span
         className={cn(

@@ -419,7 +419,7 @@ function IdentitiesTab() {
           <select
             value={createType}
             onChange={(e) => setCreateType(e.target.value as "user" | "service")}
-            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+            className="rounded-xl glass-input px-3 py-2 text-sm"
             aria-label="Identity type"
           >
             <option value="user">User</option>
@@ -453,7 +453,7 @@ function IdentitiesTab() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search identities…"
           value={search}
@@ -461,7 +461,7 @@ function IdentitiesTab() {
           className="max-w-xs"
         />
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           aria-label="Status filter"
@@ -603,7 +603,7 @@ function IdentitiesTab() {
         ref={editDialogRef}
         onClose={handleEditCancel}
         className={cn(
-          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+          "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
           "w-full max-w-md",
         )}
         onClick={(e) => {
@@ -750,7 +750,7 @@ function EntitlementPicker({
           {RBAC_RESOURCES.map((res) => (
             <div
               key={res}
-              className="flex items-center justify-between rounded-md border bg-background px-3 py-2"
+              className="flex items-center justify-between rounded-xl glass-input px-3 py-2"
             >
               <span className="text-sm font-medium">{res}</span>
               <div className="flex items-center gap-3">
@@ -784,7 +784,7 @@ function EntitlementPicker({
             {RBAC_GRANULAR_ACTIONS.map((a) => (
               <label
                 key={a}
-                className="flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs"
+                className="flex items-center gap-1.5 rounded-xl glass-input px-3 py-1.5 text-xs"
               >
                 <input
                   type="checkbox"
@@ -1020,7 +1020,7 @@ function RolesTab() {
         </p>
         <div className="flex flex-wrap gap-2">
           <select
-            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            className="h-9 rounded-xl glass-input px-3 py-1.5 text-sm"
             value={mgrIdentityId}
             onChange={(e) => {
               setMgrIdentityId(e.target.value);
@@ -1036,7 +1036,7 @@ function RolesTab() {
             ))}
           </select>
           <select
-            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            className="h-9 rounded-xl glass-input px-3 py-1.5 text-sm"
             value={mgrRoleId}
             onChange={(e) => setMgrRoleId(e.target.value)}
             aria-label="Role"
@@ -1093,7 +1093,7 @@ function RolesTab() {
         ref={roleDialogRef}
         onClose={cancelRole}
         className={cn(
-          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+          "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
           "w-full max-w-2xl",
         )}
         onClick={(e) => {
@@ -1420,7 +1420,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.from}
             onChange={set("from")}
-            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
+            className="mt-1 h-9 w-52 rounded-xl glass-input px-3 text-sm"
           />
         </div>
         <div>
@@ -1430,7 +1430,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.to}
             onChange={set("to")}
-            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
+            className="mt-1 h-9 w-52 rounded-xl glass-input px-3 text-sm"
           />
         </div>
         <div className="flex items-center gap-2">

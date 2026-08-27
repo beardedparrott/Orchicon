@@ -269,7 +269,7 @@ function NewRuntimeImagePage() {
 
         <div className="space-y-1">
           <Label>Dockerfile preview (always visible — what gets built)</Label>
-          <pre className="min-h-96 overflow-auto rounded-md border bg-muted p-3 text-xs">
+          <pre className="min-h-96 overflow-auto rounded-2xl glass-panel p-3 text-xs">
             <code className={cn(advanced ? "" : "text-muted-foreground")}>{preview || "# no content yet"}</code>
           </pre>
           {advanced && (

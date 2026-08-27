@@ -133,7 +133,7 @@ function RuntimeImagesPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search name or slug…"
           value={search}
@@ -141,7 +141,7 @@ function RuntimeImagesPage() {
           className="h-9 w-56"
         />
         <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          className="rounded-xl glass-input px-3 py-1.5 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >

@@ -188,7 +188,7 @@ function ProjectDetailPage() {
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {!editing && viewMode === "detail" && (
             <Button variant="outline" onClick={() => setEditing(true)}>
               Edit
@@ -308,7 +308,7 @@ function ProjectDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="divide-y rounded-md border">
+            <div className="divide-y divide-white/10 rounded-2xl glass-panel overflow-hidden">
               {parseGoals(project.goals).map(([key, value], i) => (
                 <div key={i} className="flex gap-4 px-4 py-3 text-sm">
                   <span className="w-1/3 font-medium text-muted-foreground">
@@ -335,7 +335,7 @@ function ProjectDetailPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             {project.projectDir ? (
-              <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
+              <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
                 <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                 <span className="flex-1 truncate">{project.projectDir}</span>
               </div>
@@ -636,7 +636,7 @@ function ProjectDirBrowser({ currentDir, onSelect, isSaving }: { currentDir: str
   const [showBrowser, setShowBrowser] = useState(false);
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
+      <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
         <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
         <span className="flex-1 truncate">{currentDir || "No directory set"}</span>
         <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => setShowBrowser(!showBrowser)}>

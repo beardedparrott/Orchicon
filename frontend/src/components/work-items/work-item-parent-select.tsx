@@ -160,7 +160,7 @@ export function WorkItemParentSelect({
         aria-invalid={invalid || undefined}
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-9 w-full items-center gap-2 rounded-xl glass-menu border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
           open && "ring-2 ring-ring",
           invalid && "border-destructive",
         )}
@@ -180,7 +180,7 @@ export function WorkItemParentSelect({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
+        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-xl glass-menu glass-menu text-popover-foreground shadow-md">
           <div className="flex items-center gap-2 border-b px-2 py-1.5">
             <Search
               aria-hidden

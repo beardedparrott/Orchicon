@@ -118,7 +118,7 @@ export function PropertiesPanel({
         {d.kind === STEP_KIND.PROJECT && (
           <Field label="Project" hint="The project that scopes this workflow run.">
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.project_id === "string" ? cfg.project_id : ""}
               disabled={readOnly}
               onChange={(e) => {
@@ -158,7 +158,7 @@ export function PropertiesPanel({
           <>
           <Field label="Worker" hint="The worker that processes the upstream work item.">
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={d.ref}
               disabled={readOnly}
               onChange={(e) => {
@@ -179,7 +179,7 @@ export function PropertiesPanel({
           </Field>
           <Field label="Recovery strategy" hint="What happens when the step's work item fails.">
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.recovery?.strategy === "string" ? cfg.recovery.strategy : "retry"}
               disabled={readOnly}
               onChange={(e) => {
@@ -200,7 +200,7 @@ export function PropertiesPanel({
               type="number"
               min={1}
               max={20}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.recovery?.max_attempts === "number" ? cfg.recovery.max_attempts : 3}
               disabled={readOnly}
               onChange={(e) => {
@@ -217,7 +217,7 @@ export function PropertiesPanel({
         {d.kind === STEP_KIND.POLICY && (
           <Field label="Policy" hint="The Rego policy evaluated as a gate for this step.">
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={d.gatePolicyRef}
               disabled={readOnly}
               onChange={(e) => {
@@ -247,7 +247,7 @@ export function PropertiesPanel({
           <>
           <Field label="Reviewer" hint="Who evaluates this approval gate. Human blocks for an API call; Worker dispatches to an AI approver.">
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.reviewer === "string" ? cfg.reviewer : "human"}
               disabled={readOnly}
               onChange={(e) => {
@@ -266,7 +266,7 @@ export function PropertiesPanel({
           {cfg.reviewer === "worker" ? (
             <Field label="Approver worker" hint="The AI worker that reviews context and decides approve/reject.">
               <select
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                className="h-9 w-full rounded-xl glass-input px-2 text-sm"
                 value={d.ref}
                 disabled={readOnly}
                 onChange={(e) => {
@@ -304,7 +304,7 @@ export function PropertiesPanel({
               type="number"
               min={1}
               max={20}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
               disabled={readOnly}
               onChange={(e) => {
@@ -332,7 +332,7 @@ export function PropertiesPanel({
               type="number"
               min={1}
               max={100}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
               disabled={readOnly}
               onChange={(e) => {
@@ -435,7 +435,7 @@ function WorkItemSelector({
     <div className="space-y-2">
       <Field label="Type" hint="Narrow down by work item type.">
         <select
-          className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+          className="h-9 w-full rounded-xl glass-input px-2 text-sm"
           value={typeFilter ?? ""}
           disabled={disabled || !projectId}
           onChange={(e) => {
@@ -461,7 +461,7 @@ function WorkItemSelector({
             hint={`Filter by ${WORK_ITEM_KIND_LABELS[ancestorKind]?.toLowerCase() ?? "parent"}.`}
           >
             <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
               value={selectedAncestorId}
               disabled={disabled || !projectId}
               onChange={(e) => setLevel(ancestorKind, e.target.value)}
@@ -479,7 +479,7 @@ function WorkItemSelector({
 
       <Field label="Work Item" hint="The work item that flows through this step.">
         <select
-          className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+          className="h-9 w-full rounded-xl glass-input px-2 text-sm"
           value={currentWid}
           disabled={disabled || !projectId}
           onChange={(e) => {
