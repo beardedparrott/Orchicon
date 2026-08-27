@@ -22,8 +22,8 @@ type WorkflowRow struct {
 	Name           string
 	CurrentVersion int
 	Status         string
-	Type           string // "one_shot" or "template"
-	GitStrategy  *string // nil=inherit, values local|pr|none
+	Type           string  // "one_shot" or "template"
+	GitStrategy    *string // nil=inherit, values local|pr|none
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -35,17 +35,17 @@ type WorkflowRow struct {
 // changes create a new version. The steps field is a JSON array of Step
 // messages (validated at the API boundary).
 type WorkflowVersionRow struct {
-	ID                 string
-	TenantID           string
-	WorkflowID         string
-	Version            int
-	VersionNote        string
-	Status             string
-	Steps              []byte // jsonb: array of Step messages
-	Inputs             []byte // jsonb
-	Outputs            []byte // jsonb
-	PublishedAt        *time.Time
-	CreatedAt          time.Time
+	ID          string
+	TenantID    string
+	WorkflowID  string
+	Version     int
+	VersionNote string
+	Status      string
+	Steps       []byte // jsonb: array of Step messages
+	Inputs      []byte // jsonb
+	Outputs     []byte // jsonb
+	PublishedAt *time.Time
+	CreatedAt   time.Time
 }
 
 // WorkflowRunRow is the data-access shape of a workflow_runs table row
@@ -96,6 +96,54 @@ func PrFromRunContext(runContext []byte) (prURL, prState string) {
 		prState = v
 	}
 	return prURL, prState
+}
+
+// ProvenanceFromRunContext extracts the automation provenance block that a
+// recurring fire writes into the run's run_context at fire time (feature 4.1,
+// D3): spawned_by (the recurring item id), spawned_by_run_id (this run's id)
+// and outputs_mode (standard/idea/none). The create path reads it to stamp a
+// newly created work item. Best-effort: missing or non-string keys yield zero
+// values, so a run with no provenance block is treated as a plain run.
+func ProvenanceFromRunContext(runContext []byte) (spawnedByWorkItemID, spawnedByRunID, outputsMode string) {
+	if len(runContext) == 0 {
+		return "", "", ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(runContext, &m); err != nil {
+		return "", "", ""
+	}
+	if v, ok := m["spawned_by"].(string); ok {
+		spawnedByWorkItemID = v
+	}
+	if v, ok := m["spawned_by_run_id"].(string); ok {
+		spawnedByRunID = v
+	}
+	if v, ok := m["outputs_mode"].(string); ok {
+		outputsMode = v
+	}
+	return spawnedByWorkItemID, spawnedByRunID, outputsMode
+}
+
+// MergeRunContext merges add into existing run_context JSONB, returning the
+// merged bytes. A nil/empty existing is treated as {}. Returns ok=false on
+// marshal failure (the caller keeps the original). Exported so the workflow
+// start path can stamp provenance into the run context after the run is
+// created (the run id is only known after creation).
+func MergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
+	out := map[string]any{}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &out); err != nil {
+			out = map[string]any{}
+		}
+	}
+	for k, v := range add {
+		out[k] = v
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs

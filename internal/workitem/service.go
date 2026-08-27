@@ -111,6 +111,39 @@ func validateContextFilesInput(paths []string) ([]byte, error) {
 
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
+// runContextKey is the context key that carries the calling run's run_context
+// (feature 4.1, AC2) from a recurring fire's execution into the work item
+// create path so automation provenance can be stamped.
+type runContextKey struct{}
+
+// runContextFrom returns the run_context carried on the request context, if
+// any. Absent (the common case — a human creating an item directly) means
+// "not an automation spawn" and returns nil.
+func runContextFrom(ctx context.Context) []byte {
+	rc, _ := ctx.Value(runContextKey{}).([]byte)
+	return rc
+}
+
+// applyAutomationProvenance stamps the automation provenance block onto a
+// work item being created from a recurring fire's run: spawned_by (the
+// recurring item id), spawned_by_run_id (the fire's run id), and — when the
+// fire's outputs_mode is "idea" — the IDEA status. No-op when the run_context
+// carries no provenance block (a plain create; backward compatible).
+func applyAutomationProvenance(row *db.WorkItemRow, runContext []byte) {
+	if len(runContext) == 0 {
+		return
+	}
+	spawnedBy, runID, mode := db.ProvenanceFromRunContext(runContext)
+	if spawnedBy == "" {
+		return
+	}
+	row.SpawnedByWorkItemID = &spawnedBy
+	row.SpawnedByRunID = &runID
+	if mode == domain.RecurringOutputsIdea {
+		row.Status = domain.WorkItemIdea
+	}
+}
+
 func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1.CreateWorkItemRequest]) (*connect.Response[apiv1.CreateWorkItemResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -172,10 +205,35 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 
+	// Parse and validate the recurring schedule BEFORE hierarchy validation so
+	// a flat-recurring item (kind=task, no parent) is exempt from the
+	// "only epics are top-level" rule and its flat shape is enforced.
+	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+		msg.RecurringSchedule = nil
+	}
+	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	isRecurring := recurringSchedule != nil
+
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
 	// Shared with the Update path so the two cannot drift.
-	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId); err != nil {
+	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId, isRecurring); err != nil {
 		return nil, mapParentError(err)
+	}
+	// Flat-recurring invariants (D1/D7): recurring items are flat top-level
+	// tasks (no hierarchy participation), and a schedulable recurring LEAF
+	// must be bound to a workflow (the recurring fire has nothing to start
+	// for a workflow-less leaf). A freshly created item has no children, so
+	// it is a leaf for the workflow-binding check.
+	if isRecurring {
+		if err := ValidateRecurringFlatness(true, kind, msg.ParentId); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if err := ValidateRecurringWorkflowBinding(true, false, msg.WorkflowId); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
 	}
 
 	// Parse scheduled start and workflow binding fields (docs/11 §5.1).
@@ -194,17 +252,6 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	workflowID := msg.WorkflowId
 	if workflowID == "" {
 		workflowID = "" // keep empty for unbound items
-	}
-
-	// Parse and validate recurring schedule (if provided). An empty but
-	// present message (proto3 "clear" semantics) is normalized to nil
-	// before validation — same treatment as UpdateWorkItem.
-	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
-		msg.RecurringSchedule = nil
-	}
-	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	status := domain.WorkItemPending
@@ -239,6 +286,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		RecurringSchedule:  recurringSchedule,
 		NextRunAt:          nextRunAt,
 	}
+	// Stamp automation provenance (feature 4.1, AC2): when this create runs
+	// inside a recurring fire's run, the run_context carried on the request
+	// carries the provenance block written by the reconciler. Stamping sets
+	// spawned_by/spawned_by_run_id and (when outputs_mode=idea) the IDEA
+	// status. Plain creates carry no run_context and are unaffected.
+	applyAutomationProvenance(&row, runContextFrom(ctx))
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
 	// it carries forward to the workflow run regardless of when it fires.
@@ -388,6 +441,14 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		// ALL value is required to get the old unfiltered behavior.
 		f.RecurringFilter = "exclude"
 	}
+	switch req.Msg.IdeaScope {
+	case apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA:
+		f.IdeaScope = "only"
+	default:
+		// UNSPECIFIED / EXCLUDE_IDEA legacy default: hide idea-state items so
+		// normal Work Items callers never leak automation-produced ideas.
+		f.IdeaScope = "exclude"
+	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
 		f.ParentID = &pid
@@ -471,6 +532,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if st == domain.WorkItemArchived {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				errors.New("archiving must go through ArchiveWorkItem; it is not settable via the generic update path"))
+		}
+		// "idea" is system-managed (set only by the automation spawn path and
+		// Idea Cloud promotion) — routing it through the generic update path
+		// would let a caller request it directly. Reject it here, mirroring
+		// the archived guard (feature 4.1, D2).
+		if st == domain.WorkItemIdea {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("idea is a system-managed status set only by the automation spawn path; it is not settable via the generic update path"))
 		}
 		fields.Status = strPtr(st)
 	}
@@ -561,6 +630,10 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// A currently-recurring item is exempt from the "only epics are
+	// top-level" parent rule (flat-recurring items are top-level tasks); the
+	// flat shape is enforced separately by ValidateRecurringFlatness.
+	itemIsRecurring := current.RecurringSchedule != nil
 	// Binding a workflow switches the item from one-shot (assigned worker,
 	// standalone dispatch) to template-bound: a stale worker assignment from
 	// the standalone path would flag the item as a worker-assigned one-shot
@@ -667,7 +740,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if fields.ProjectID != nil && *fields.ProjectID != "" {
 			effectiveProject = *fields.ProjectID
 		}
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject, itemIsRecurring); err != nil {
 			return nil, mapParentError(err)
 		}
 	} else if msg.ParentId == nil && fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -677,7 +750,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID, itemIsRecurring); err != nil {
 			return nil, mapParentError(err)
 		}
 	}
@@ -770,6 +843,36 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	effItem := current
 	if msg.WorkflowId != nil {
 		effItem.WorkflowID = msg.WorkflowId
+	}
+	// Flat-recurring + workflow-binding result-state checks (D1/D7). These
+	// apply to the RESULTING state, so a legacy recurring leaf edited to add
+	// a workflow passes, while any request that leaves a schedulable
+	// recurring leaf workflow-less is rejected. Non-recurring items are
+	// unaffected (backward compat).
+	resultRecurring := !fields.ClearRecurringSchedule &&
+		(fields.RecurringSchedule != nil || current.RecurringSchedule != nil)
+	if resultRecurring {
+		effKind := current.Kind
+		if fields.Kind != nil {
+			effKind = *fields.Kind
+		}
+		effParent := ""
+		if fields.ParentID != nil {
+			effParent = *fields.ParentID
+		} else if current.ParentID != nil {
+			effParent = *current.ParentID
+		}
+		if err := ValidateRecurringFlatness(true, effKind, effParent); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		effWorkflow := ""
+		if effItem.WorkflowID != nil && *effItem.WorkflowID != "" {
+			effWorkflow = *effItem.WorkflowID
+		}
+		hasChildren := s.itemHasChildren(ctx, tenantID, current.ID)
+		if err := ValidateRecurringWorkflowBinding(true, hasChildren, effWorkflow); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
 	}
 	if msg.ScheduledStartAt != nil || (msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow) {
 		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
@@ -2292,6 +2395,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
 	case domain.WorkItemArchived:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
+	case domain.WorkItemIdea:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}
@@ -2383,6 +2488,14 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	}
 	if w.ArchivedFromStatus != nil {
 		p.ArchivedFromStatus = *w.ArchivedFromStatus
+	}
+	// Automation provenance (feature 4.1): stamped by the spawn path from the
+	// recurring fire's run_context; empty = not an automation spawn.
+	if w.SpawnedByWorkItemID != nil {
+		p.SpawnedBy = *w.SpawnedByWorkItemID
+	}
+	if w.SpawnedByRunID != nil {
+		p.SpawnedByRunId = *w.SpawnedByRunID
 	}
 	return p
 }

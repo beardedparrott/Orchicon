@@ -102,6 +102,43 @@ proto3.util.setEnumType(RecurringFilter, "orchicon.api.v1.RecurringFilter", [
 ]);
 
 /**
+ * IdeaScope scopes ListWorkItems to idea-state items produced by
+ * automations. status = 'idea' is the signal; idea items are excluded from
+ * the normal Work Items list by default (the Idea Cloud surfaces them via
+ * IDEA_SCOPE_ONLY_IDEA).
+ *
+ * @generated from enum orchicon.api.v1.IdeaScope
+ */
+export enum IdeaScope {
+  /**
+   * legacy default: EXCLUDE idea items
+   *
+   * @generated from enum value: IDEA_SCOPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * normal Work Items page (default)
+   *
+   * @generated from enum value: IDEA_SCOPE_EXCLUDE_IDEA = 1;
+   */
+  EXCLUDE_IDEA = 1,
+
+  /**
+   * Idea Cloud: idea-state items with provenance
+   *
+   * @generated from enum value: IDEA_SCOPE_ONLY_IDEA = 2;
+   */
+  ONLY_IDEA = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(IdeaScope)
+proto3.util.setEnumType(IdeaScope, "orchicon.api.v1.IdeaScope", [
+  { no: 0, name: "IDEA_SCOPE_UNSPECIFIED" },
+  { no: 1, name: "IDEA_SCOPE_EXCLUDE_IDEA" },
+  { no: 2, name: "IDEA_SCOPE_ONLY_IDEA" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
  */
 export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
@@ -455,6 +492,15 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
    */
   recurringFilter = RecurringFilter.UNSPECIFIED;
 
+  /**
+   * idea_scope filters idea-state items: EXCLUDE (default, matches the
+   * legacy UNSPECIFIED) hides automation-produced ideas from every normal
+   * view; ONLY returns them (the Idea Cloud surface, with provenance).
+   *
+   * @generated from field: orchicon.api.v1.IdeaScope idea_scope = 12;
+   */
+  ideaScope = IdeaScope.UNSPECIFIED;
+
   constructor(data?: PartialMessage<ListWorkItemsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -474,6 +520,7 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "include_archived", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 11, name: "recurring_filter", kind: "enum", T: proto3.getEnumType(RecurringFilter) },
+    { no: 12, name: "idea_scope", kind: "enum", T: proto3.getEnumType(IdeaScope) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {

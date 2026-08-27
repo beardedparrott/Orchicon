@@ -105,6 +105,16 @@ enum RecurringFilter {
   RECURRING_FILTER_ONLY_RECURRING = 3; // Recurring Items page
 }
 
+// IdeaScope scopes ListWorkItems to idea-state items produced by
+// automations. status = 'idea' is the signal; idea items are excluded from
+// the normal Work Items list by default (the Idea Cloud surfaces them via
+// IDEA_SCOPE_ONLY_IDEA).
+enum IdeaScope {
+  IDEA_SCOPE_UNSPECIFIED = 0; // legacy default: EXCLUDE idea items
+  IDEA_SCOPE_EXCLUDE_IDEA = 1; // normal Work Items page (default)
+  IDEA_SCOPE_ONLY_IDEA = 2; // Idea Cloud: idea-state items with provenance
+}
+
 message CreateWorkItemRequest {
   string tenant_id = 1;
   string project_id = 2;
@@ -163,6 +173,10 @@ message ListWorkItemsRequest {
   // data has no archived rows, so the default path is byte-for-byte unchanged.
   bool include_archived = 10;
   RecurringFilter recurring_filter = 11;
+  // idea_scope filters idea-state items: EXCLUDE (default, matches the
+  // legacy UNSPECIFIED) hides automation-produced ideas from every normal
+  // view; ONLY returns them (the Idea Cloud surface, with provenance).
+  IdeaScope idea_scope = 12;
 }
 
 message ListWorkItemsResponse {
