@@ -521,6 +521,16 @@ export class WorkItem extends Message<WorkItem> {
    */
   spawnedByRunId = "";
 
+  /**
+   * recurring_enabled is the enable/pause flag for a recurring work item.
+   * true = firing (the scheduler due-scan will dispatch it); false = paused
+   * (keeps the recurring_schedule + next_run_at so resume re-arms, but the
+   * scheduler excludes it from the due-scan). Defaults to true.
+   *
+   * @generated from field: bool recurring_enabled = 37;
+   */
+  recurringEnabled = false;
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -564,6 +574,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 34, name: "archived_from_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 35, name: "spawned_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 36, name: "spawned_by_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 37, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

@@ -194,6 +194,14 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Required:    []string{"id"},
 		},
 		{
+			Name:        "get_work_item_run_history",
+			Description: "Get a recurring work item's per-fire run history (each fire's status, fire time, bound workflow run, and that run's executions + outputs). Returns an empty array for an item that has never fired.",
+			Mutating:    false,
+			Fn:          toolGetWorkItemRunHistory,
+			Properties:  map[string]PropertySchema{"work_item_id": {Type: "string", Description: "Recurring work item ID"}},
+			Required:    []string{"work_item_id"},
+		},
+		{
 			Name:        "create_work_item",
 			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files.",
 			Mutating:    true,

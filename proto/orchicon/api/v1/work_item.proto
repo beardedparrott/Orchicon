@@ -125,6 +125,11 @@ message WorkItem {
   // that produced this work item (empty = not an automation spawn).
   // Server-stamped alongside spawned_by.
   string spawned_by_run_id = 36;
+  // recurring_enabled is the enable/pause flag for a recurring work item.
+  // true = firing (the scheduler due-scan will dispatch it); false = paused
+  // (keeps the recurring_schedule + next_run_at so resume re-arms, but the
+  // scheduler excludes it from the due-scan). Defaults to true.
+  bool recurring_enabled = 37;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent

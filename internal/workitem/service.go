@@ -430,6 +430,68 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
 }
 
+// GetWorkItemRunHistory returns the per-fire run-history ledger for a
+// recurring work item, newest first. Each entry records the fire dispatch
+// outcome ('fired' | 'failed'), the run it produced (status/start/end) and
+// that run's worker executions (execution ids, outputs). A fire that failed
+// before a run existed yields an entry with no workflow_run_id whose Error
+// carries the dispatch error. Queryable from the recurring item detail view
+// (4.3) and via this API (4.2).
+func (s *Service) GetWorkItemRunHistory(ctx context.Context, req *connect.Request[apiv1.GetWorkItemRunHistoryRequest]) (*connect.Response[apiv1.GetWorkItemRunHistoryResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := &apiv1.GetWorkItemRunHistoryResponse{
+		Entries: make([]*apiv1.RecurringRunHistoryEntry, 0, len(entries)),
+	}
+	for _, e := range entries {
+		pe := &apiv1.RecurringRunHistoryEntry{
+			Id:            e.ID,
+			Status:        e.Status,
+			WorkflowRunId: e.WorkflowRunID,
+			RunStatus:     e.RunStatus,
+			Error:         e.Error,
+		}
+		if !e.FireAt.IsZero() {
+			pe.FireAt = timestamppb.New(e.FireAt)
+		}
+		if e.RunStartedAt != nil {
+			pe.RunStartedAt = timestamppb.New(*e.RunStartedAt)
+		}
+		if e.RunEndedAt != nil {
+			pe.RunEndedAt = timestamppb.New(*e.RunEndedAt)
+		}
+		for _, x := range e.Executions {
+			px := &apiv1.RecurringRunExecution{Id: x.ID, Status: x.Status, StepId: x.StepID, Output: x.Output}
+			if x.StartedAt != nil {
+				px.StartedAt = timestamppb.New(*x.StartedAt)
+			}
+			if x.EndedAt != nil {
+				px.EndedAt = timestamppb.New(*x.EndedAt)
+			}
+			pe.Executions = append(pe.Executions, px)
+		}
+		out.Entries = append(out.Entries, pe)
+	}
+	return connect.NewResponse(out), nil
+}
+
 // ListWorkItems returns a page of work items for a project, optionally
 // filtered by parent (tree) or status (Kanban).
 func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
@@ -615,6 +677,10 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			nextRunAt := ComputeNextRunAt(msg.RecurringSchedule, time.Now().UTC())
 			fields.NextRunAt = nextRunAt
 		}
+	}
+	if msg.RecurringEnabled != nil {
+		v := *msg.RecurringEnabled
+		fields.RecurringEnabled = &v
 	}
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
@@ -851,6 +917,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if wouldBeRecurring && !schedulePresent && !explicitOtherStatus {
 		s := domain.WorkItemPending
 		fields.Status = &s
+	}
+	// Resume after a pause: pausing froze next_run_at, so a paused item can
+	// hold a stale (past) cursor. Re-arm it to the next cadence boundary on
+	// resume so firing restarts the cadence instead of firing immediately.
+	// Only when the item still has a recurring schedule and this request
+	// didn't set a fresh one (a fresh schedule computed its own next_run_at
+	// above). Preserving the schedule across pause/resume is a 4.2 AC; the
+	// schedule itself is never cleared by a pause, so resume re-arms it.
+	if msg.RecurringEnabled != nil && *msg.RecurringEnabled &&
+		current.RecurringSchedule != nil && fields.RecurringSchedule == nil &&
+		!fields.ClearRecurringSchedule {
+		fields.NextRunAt = ComputeNextRunAtFromScheduleJSON(current.RecurringSchedule, time.Now().UTC())
 	}
 	// Schedule-time validation (architecture-notes §3): scheduling or
 	// auto-starting runs the subtree validation — a parent WITH children is
@@ -2503,6 +2581,7 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	if w.NextRunAt != nil {
 		p.NextRunAt = timestamppb.New(*w.NextRunAt)
 	}
+	p.RecurringEnabled = w.RecurringEnabled
 	if w.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*w.ArchivedAt)
 	}

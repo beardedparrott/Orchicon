@@ -78,6 +78,29 @@ func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(item)
 }
 
+func toolGetWorkItemRunHistory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkItemID string `json:"work_item_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkItemID == "" {
+		return nil, fmt.Errorf("work_item_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, tenantID, params.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(entries)
+}
+
 func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID          string   `json:"project_id"`

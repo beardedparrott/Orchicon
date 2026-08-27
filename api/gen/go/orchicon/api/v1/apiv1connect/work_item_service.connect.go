@@ -48,6 +48,9 @@ const (
 	// WorkItemServiceGetWorkItemProcedure is the fully-qualified name of the WorkItemService's
 	// GetWorkItem RPC.
 	WorkItemServiceGetWorkItemProcedure = "/orchicon.api.v1.WorkItemService/GetWorkItem"
+	// WorkItemServiceGetWorkItemRunHistoryProcedure is the fully-qualified name of the
+	// WorkItemService's GetWorkItemRunHistory RPC.
+	WorkItemServiceGetWorkItemRunHistoryProcedure = "/orchicon.api.v1.WorkItemService/GetWorkItemRunHistory"
 	// WorkItemServiceListWorkItemsProcedure is the fully-qualified name of the WorkItemService's
 	// ListWorkItems RPC.
 	WorkItemServiceListWorkItemsProcedure = "/orchicon.api.v1.WorkItemService/ListWorkItems"
@@ -96,6 +99,10 @@ type WorkItemServiceClient interface {
 	CreateWorkItem(context.Context, *connect.Request[v1.CreateWorkItemRequest]) (*connect.Response[v1.CreateWorkItemResponse], error)
 	// GetWorkItem returns a single work item by id.
 	GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error)
+	// GetWorkItemRunHistory returns the per-fire run-history ledger for a
+	// recurring work item, newest first (fire status, start/end, execution
+	// ids, outputs). Used by the recurring-item detail view (4.3) and API.
+	GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error)
 	// ListWorkItems returns a page of work items for a project, optionally
 	// filtered by parent (tree) or status (Kanban).
 	ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error)
@@ -170,6 +177,12 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+WorkItemServiceGetWorkItemProcedure,
 			connect.WithSchema(workItemServiceMethods.ByName("GetWorkItem")),
+			connect.WithClientOptions(opts...),
+		),
+		getWorkItemRunHistory: connect.NewClient[v1.GetWorkItemRunHistoryRequest, v1.GetWorkItemRunHistoryResponse](
+			httpClient,
+			baseURL+WorkItemServiceGetWorkItemRunHistoryProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("GetWorkItemRunHistory")),
 			connect.WithClientOptions(opts...),
 		),
 		listWorkItems: connect.NewClient[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse](
@@ -255,21 +268,22 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // workItemServiceClient implements WorkItemServiceClient.
 type workItemServiceClient struct {
-	createWorkItem     *connect.Client[v1.CreateWorkItemRequest, v1.CreateWorkItemResponse]
-	getWorkItem        *connect.Client[v1.GetWorkItemRequest, v1.GetWorkItemResponse]
-	listWorkItems      *connect.Client[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse]
-	updateWorkItem     *connect.Client[v1.UpdateWorkItemRequest, v1.UpdateWorkItemResponse]
-	deleteWorkItem     *connect.Client[v1.DeleteWorkItemRequest, v1.DeleteWorkItemResponse]
-	hardDeleteWorkItem *connect.Client[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse]
-	addDependency      *connect.Client[v1.AddDependencyRequest, v1.AddDependencyResponse]
-	removeDependency   *connect.Client[v1.RemoveDependencyRequest, v1.RemoveDependencyResponse]
-	getDependencyGraph *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
-	assignWorker       *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
-	unassignWorker     *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
-	reorderWorkItems   *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
-	archiveWorkItem    *connect.Client[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse]
-	restoreWorkItem    *connect.Client[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse]
-	controlSequence    *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
+	createWorkItem        *connect.Client[v1.CreateWorkItemRequest, v1.CreateWorkItemResponse]
+	getWorkItem           *connect.Client[v1.GetWorkItemRequest, v1.GetWorkItemResponse]
+	getWorkItemRunHistory *connect.Client[v1.GetWorkItemRunHistoryRequest, v1.GetWorkItemRunHistoryResponse]
+	listWorkItems         *connect.Client[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse]
+	updateWorkItem        *connect.Client[v1.UpdateWorkItemRequest, v1.UpdateWorkItemResponse]
+	deleteWorkItem        *connect.Client[v1.DeleteWorkItemRequest, v1.DeleteWorkItemResponse]
+	hardDeleteWorkItem    *connect.Client[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse]
+	addDependency         *connect.Client[v1.AddDependencyRequest, v1.AddDependencyResponse]
+	removeDependency      *connect.Client[v1.RemoveDependencyRequest, v1.RemoveDependencyResponse]
+	getDependencyGraph    *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
+	assignWorker          *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
+	unassignWorker        *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
+	reorderWorkItems      *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
+	archiveWorkItem       *connect.Client[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse]
+	restoreWorkItem       *connect.Client[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse]
+	controlSequence       *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
 }
 
 // CreateWorkItem calls orchicon.api.v1.WorkItemService.CreateWorkItem.
@@ -280,6 +294,11 @@ func (c *workItemServiceClient) CreateWorkItem(ctx context.Context, req *connect
 // GetWorkItem calls orchicon.api.v1.WorkItemService.GetWorkItem.
 func (c *workItemServiceClient) GetWorkItem(ctx context.Context, req *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error) {
 	return c.getWorkItem.CallUnary(ctx, req)
+}
+
+// GetWorkItemRunHistory calls orchicon.api.v1.WorkItemService.GetWorkItemRunHistory.
+func (c *workItemServiceClient) GetWorkItemRunHistory(ctx context.Context, req *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error) {
+	return c.getWorkItemRunHistory.CallUnary(ctx, req)
 }
 
 // ListWorkItems calls orchicon.api.v1.WorkItemService.ListWorkItems.
@@ -354,6 +373,10 @@ type WorkItemServiceHandler interface {
 	CreateWorkItem(context.Context, *connect.Request[v1.CreateWorkItemRequest]) (*connect.Response[v1.CreateWorkItemResponse], error)
 	// GetWorkItem returns a single work item by id.
 	GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error)
+	// GetWorkItemRunHistory returns the per-fire run-history ledger for a
+	// recurring work item, newest first (fire status, start/end, execution
+	// ids, outputs). Used by the recurring-item detail view (4.3) and API.
+	GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error)
 	// ListWorkItems returns a page of work items for a project, optionally
 	// filtered by parent (tree) or status (Kanban).
 	ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error)
@@ -424,6 +447,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		WorkItemServiceGetWorkItemProcedure,
 		svc.GetWorkItem,
 		connect.WithSchema(workItemServiceMethods.ByName("GetWorkItem")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workItemServiceGetWorkItemRunHistoryHandler := connect.NewUnaryHandler(
+		WorkItemServiceGetWorkItemRunHistoryProcedure,
+		svc.GetWorkItemRunHistory,
+		connect.WithSchema(workItemServiceMethods.ByName("GetWorkItemRunHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workItemServiceListWorkItemsHandler := connect.NewUnaryHandler(
@@ -510,6 +539,8 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceCreateWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceGetWorkItemProcedure:
 			workItemServiceGetWorkItemHandler.ServeHTTP(w, r)
+		case WorkItemServiceGetWorkItemRunHistoryProcedure:
+			workItemServiceGetWorkItemRunHistoryHandler.ServeHTTP(w, r)
 		case WorkItemServiceListWorkItemsProcedure:
 			workItemServiceListWorkItemsHandler.ServeHTTP(w, r)
 		case WorkItemServiceUpdateWorkItemProcedure:
@@ -551,6 +582,10 @@ func (UnimplementedWorkItemServiceHandler) CreateWorkItem(context.Context, *conn
 
 func (UnimplementedWorkItemServiceHandler) GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.GetWorkItem is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.GetWorkItemRunHistory is not implemented"))
 }
 
 func (UnimplementedWorkItemServiceHandler) ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error) {

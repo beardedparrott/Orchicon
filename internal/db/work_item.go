@@ -77,6 +77,11 @@ type WorkItemRow struct {
 	// used by the scheduler due-scan cursor. NULL = not recurring or
 	// no next occurrence yet.
 	NextRunAt *time.Time
+	// RecurringEnabled is the recurrence on/off flag. false = paused: the
+	// item keeps its recurring_schedule + next_run_at but is excluded from
+	// the due-scan (enable/pause lifecycle), so a pause preserves the
+	// schedule and resume re-arms from it. Default true.
+	RecurringEnabled bool
 	// ArchivedAt is set when the work item is archived (NULL = active).
 	// Every active work-item read filters archived_at IS NULL; the
 	// dedicated archive view opts in via ListWorkItems include_archived
@@ -121,14 +126,17 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	if w.ContextFiles == nil {
 		w.ContextFiles = []byte("[]")
 	}
+	// New items always start recurrence-enabled: nothing in the create path
+	// represents "create already-paused" — pause is a later UpdateWorkItem.
+	w.RecurringEnabled = true
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, spawned_by_work_item_id, spawned_by_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -137,7 +145,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
-		w.RecurringSchedule, w.NextRunAt,
+		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
 		w.SpawnedByWorkItemID, w.SpawnedByRunID,
 	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
@@ -155,7 +163,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	workflow_run_id, workflow_step_id,
 	priority, budgets, context_window, sort_order, results, prompt_context,
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-	recurring_schedule, next_run_at,
+	recurring_schedule, next_run_at, recurring_enabled,
 	archived_at, archived_from_status,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
 	spawned_by_work_item_id, spawned_by_run_id,
@@ -172,7 +180,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-		&w.RecurringSchedule, &w.NextRunAt,
+		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
 		&w.ArchivedAt, &w.ArchivedFromStatus,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
 		&w.SpawnedByWorkItemID, &w.SpawnedByRunID,
@@ -484,6 +492,10 @@ type UpdateWorkItemFields struct {
 	// and next_run_at = NULL. Used when status changes to non-recurring
 	// or when the kind switches to a non-schedulable kind.
 	ClearRecurringSchedule bool
+	// RecurringEnabled toggles the recurrence on/off flag. nil = unchanged
+	// (field-mask semantics). Setting false pauses the recurrence while
+	// preserving the schedule + next_run_at; setting true resumes it.
+	RecurringEnabled *bool
 	// SpawnedByWorkItemID and SpawnedByRunID stamp automation provenance
 	// (feature 4.1). Set only by the spawn path; never via the generic
 	// update (nil = unchanged).
@@ -637,6 +649,11 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 			args = append(args, *f.NextRunAt)
 			setIdx++
 		}
+	}
+	if f.RecurringEnabled != nil {
+		q += fmt.Sprintf(`, recurring_enabled = $%d`, setIdx)
+		args = append(args, *f.RecurringEnabled)
+		setIdx++
 	}
 	if f.SpawnedByWorkItemID != nil {
 		q += fmt.Sprintf(`, spawned_by_work_item_id = $%d`, setIdx)
