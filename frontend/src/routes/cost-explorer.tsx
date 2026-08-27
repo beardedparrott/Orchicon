@@ -190,7 +190,7 @@ function CostExplorer() {
                   if (r === UsageRollupEnum.PROJECT) clearScope();
                 }}
                 className={cn(
-                  "rounded-md border px-3 py-1.5 text-sm font-medium",
+                  "rounded-md border px-3 py-2 sm:py-1.5 text-sm font-medium min-h-[44px] sm:min-h-0",
                   rollup === r
                     ? "border-primary bg-primary text-primary-foreground"
                     : "hover:bg-accent",

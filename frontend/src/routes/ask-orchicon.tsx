@@ -280,6 +280,16 @@ function AskOrchiconPage() {
       return next;
     });
   }, []);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!mobileSheetOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); } };
+    document.addEventListener("keydown", onKeyDown);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.removeEventListener("keydown", onKeyDown); document.body.style.overflow = prev; };
+  }, [mobileSheetOpen]);
 
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
@@ -885,7 +895,7 @@ function AskOrchiconPage() {
   }, [messages, isStreaming, groupedStream]);
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] gap-0">
+    <div className="flex h-[calc(100vh-3.5rem)] gap-0 min-w-0 overflow-hidden">
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-w-0">
         {!activeConvId ? (
@@ -899,7 +909,7 @@ function AskOrchiconPage() {
                     Intelligent Orchestration
                   </span>
                 </div>
-                <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
+                <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight">
                   <span className="text-foreground">Orchestrate </span>
                   <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">with intention</span>
                 </h1>
@@ -942,8 +952,17 @@ function AskOrchiconPage() {
           /* --- Active conversation: scroll + pinned input --- */
           <div className="flex flex-1 flex-col min-h-0">
             {/* Chat header */}
-            <div className="flex items-center justify-between border-b px-6 py-3 shrink-0">
+            <div className="flex items-center justify-between border-b px-4 sm:px-6 py-3 shrink-0 gap-2">
               <div className="flex items-center gap-2 min-w-0">
+                <button
+                  ref={mobileTriggerRef}
+                  onClick={() => setMobileSheetOpen(true)}
+                  aria-label="Conversations"
+                  data-testid="ask-conversation-sheet-trigger"
+                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
+                >
+                  <PanelRight aria-hidden="true" className="h-5 w-5" />
+                </button>
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
@@ -1124,7 +1143,7 @@ function AskOrchiconPage() {
             <div className="flex items-center space-x-1">
               <button
                 onClick={() => setFolderDialogOpen(true)}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New folder"
                 aria-label="New folder"
               >
@@ -1134,7 +1153,7 @@ function AskOrchiconPage() {
                 to="/ask-orchicon"
                 search={{ conversationId: undefined } as never}
                 onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New Chat"
                 aria-label="New conversation"
               >
@@ -1266,6 +1285,53 @@ function AskOrchiconPage() {
         >
           <PanelRight aria-hidden="true" className="h-4 w-4" />
         </button>
+      )}
+
+      {/* Mobile conversation sheet — route-scoped, lg:hidden per ADR-M10-01 */}
+      {mobileSheetOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Conversations">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileSheetOpen(false)} aria-hidden="true" />
+          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
+            <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2 text-slate-300">
+                <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
+                <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
+              {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
+              <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+                <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
+                  {convPrefs.state.categories.map((category) => {
+                    const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
+                    const isCollapsed = convPrefs.collapsed.has(category.id);
+                    const isOver = overFolderId === category.id;
+                    const isRenaming = renamingFolderId === category.id;
+                    return (
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} />
+                    );
+                  })}
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={convPrefs.state.categories.length > 0} />
+                </SortableContext>
+                <DragOverlay dropAnimation={null}>
+                  {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
+                </DragOverlay>
+              </DndContext>
+            </div>
+            <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
+              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5 min-h-[44px]">
+                <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
+                <span>View All History</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Create Category Dialog */}

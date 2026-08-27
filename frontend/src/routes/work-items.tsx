@@ -278,7 +278,7 @@ function WorkItemsPage() {
   const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
 
   return (
-    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
+    <div className="flex flex-col gap-6 min-h-0" style={{ minHeight: "calc(100vh - 64px)" }}>
       <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>

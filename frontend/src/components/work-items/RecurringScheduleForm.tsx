@@ -109,7 +109,7 @@ export function RecurringScheduleForm({
                 value={frequency}
                 onChange={(e) => emit({ frequency: e.target.value })}
                 disabled={disabled}
-                className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
               >
                 {FREQUENCIES.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -132,7 +132,7 @@ export function RecurringScheduleForm({
                     emit({ interval: Math.max(1, Number(e.target.value) || 1) })
                   }
                   disabled={disabled}
-                  className="h-9 w-20"
+                  className="h-11 sm:h-9 min-h-[44px] w-20"
                 />
                 <span className="text-sm text-muted-foreground">
                   {frequency === "minute"
@@ -196,7 +196,7 @@ export function RecurringScheduleForm({
                 value={startDate}
                 onChange={(e) => emit({ startDate: e.target.value })}
                 disabled={disabled}
-                className="h-9"
+                className="h-11 sm:h-9 min-h-[44px]"
               />
             </div>
             <div className="space-y-1">
@@ -207,7 +207,7 @@ export function RecurringScheduleForm({
                 value={startTime}
                 onChange={(e) => emit({ startTime: e.target.value })}
                 disabled={disabled}
-                className="h-9"
+                className="h-11 sm:h-9 min-h-[44px]"
               />
             </div>
           </div>

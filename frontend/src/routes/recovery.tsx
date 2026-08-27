@@ -91,7 +91,7 @@ function RecoveryPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All statuses</option>
           <option value="1">Pending</option>
@@ -106,14 +106,14 @@ function RecoveryPage() {
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as "created_at" | "updated_at")}
-            className="h-9 rounded-xl glass-input px-3 text-sm"
+            className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           >
             <option value="created_at">Created</option>
             <option value="updated_at">Updated</option>
           </select>
           <button
             onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
-            className="flex h-9 items-center gap-1 rounded-xl glass-input px-3 text-sm hover:bg-white/5"
+            className="flex h-11 sm:h-9 min-h-[44px] items-center gap-1 rounded-xl glass-input px-3 text-sm hover:bg-white/5"
           >
             <ArrowUpDown aria-hidden="true" className="h-3 w-3" />
             {sortOrder === "desc" ? "Newest" : "Oldest"}

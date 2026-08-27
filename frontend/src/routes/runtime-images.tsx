@@ -138,7 +138,7 @@ function RuntimeImagesPage() {
           placeholder="Search name or slug…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-56"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-56"
         />
         <select
           className="rounded-xl glass-input px-3 py-1.5 text-sm"

@@ -370,7 +370,7 @@ export function WorkItemsBoard({
       autoScroll={false}
     >
       <div
-        className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
+        className="flex flex-1 gap-3 overflow-x-auto snap-x snap-mandatory rounded-lg border bg-muted/20 p-3 -mx-3 sm:mx-0 px-3"
         style={{ minHeight: "calc(100vh - 280px)" }}
       >
         {BOARD_COLUMNS.map((col) => {
@@ -479,7 +479,7 @@ function BoardColumn({
       ref={setNodeRef}
       aria-label={`${column.label} column${isReadOnly ? " (system-managed)" : ""}`}
       className={cn(
-        "flex flex-1 snap-start flex-col rounded-lg border transition-colors",
+        "flex flex-1 min-w-[300px] sm:min-w-[280px] snap-start flex-col rounded-lg border transition-colors",
         isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
         isReadOnly
           ? "border-dashed bg-muted/30 opacity-75"

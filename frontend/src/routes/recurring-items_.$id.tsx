@@ -538,7 +538,7 @@ function WorkItemDetailPage() {
                 type="datetime-local"
                 value={editScheduledStartAt}
                 onChange={(e) => { setEditScheduledStartAt(e.target.value); if (e.target.value) setEditAutoStartWorkflow(false); }}
-                className="mt-1 h-9 w-full rounded-xl glass-input px-3 text-sm"
+                className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -935,7 +935,7 @@ function WorkItemDetailPage() {
           </CardHeader>
           <CardContent>
             <select
-              className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+              className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
               value={editProjectId}
               onChange={(e) => {
                 setEditProjectId(e.target.value);
@@ -1091,7 +1091,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depTarget">Add dependency to</Label>
               <select
                 id="depTarget"
-                className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                 value={depTarget}
                 onChange={(e) => setDepTarget(e.target.value)}
               >
@@ -1107,7 +1107,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depType">Type</Label>
               <select
                 id="depType"
-                className="flex h-9 rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1 text-sm"
                 value={depType}
                 onChange={(e) => setDepType(Number(e.target.value))}
               >

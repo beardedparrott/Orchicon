@@ -458,10 +458,10 @@ function IdentitiesTab() {
           placeholder="Search identities…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           aria-label="Status filter"
@@ -604,7 +604,7 @@ function IdentitiesTab() {
         onClose={handleEditCancel}
         className={cn(
           "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
-          "w-full max-w-md",
+          "w-[calc(100vw-2rem)] max-w-md",
         )}
         onClick={(e) => {
           if (e.target === editDialogRef.current) handleEditCancel();
@@ -1020,7 +1020,7 @@ function RolesTab() {
         </p>
         <div className="flex flex-wrap gap-2">
           <select
-            className="h-9 rounded-xl glass-input px-3 py-1.5 text-sm"
+            className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1.5 text-sm"
             value={mgrIdentityId}
             onChange={(e) => {
               setMgrIdentityId(e.target.value);
@@ -1036,7 +1036,7 @@ function RolesTab() {
             ))}
           </select>
           <select
-            className="h-9 rounded-xl glass-input px-3 py-1.5 text-sm"
+            className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1.5 text-sm"
             value={mgrRoleId}
             onChange={(e) => setMgrRoleId(e.target.value)}
             aria-label="Role"
@@ -1377,7 +1377,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-action">Action</Label>
           <Input
             id="audit-action"
-            className="mt-1 h-9 w-44 font-mono text-xs"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
             placeholder="e.g. work_item.created"
             value={draft.action}
             onChange={set("action")}
@@ -1387,7 +1387,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-actor">Actor</Label>
           <Input
             id="audit-actor"
-            className="mt-1 h-9 w-44 font-mono text-xs"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
             placeholder="identity id"
             value={draft.actorId}
             onChange={set("actorId")}
@@ -1397,7 +1397,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-target-type">Target type</Label>
           <Input
             id="audit-target-type"
-            className="mt-1 h-9 w-36 font-mono text-xs"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-36 font-mono text-xs"
             placeholder="e.g. work_item"
             value={draft.targetType}
             onChange={set("targetType")}
@@ -1407,7 +1407,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-target-id">Target ID</Label>
           <Input
             id="audit-target-id"
-            className="mt-1 h-9 w-44 font-mono text-xs"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
             placeholder="entity id"
             value={draft.targetId}
             onChange={set("targetId")}
@@ -1420,7 +1420,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.from}
             onChange={set("from")}
-            className="mt-1 h-9 w-52 rounded-xl glass-input px-3 text-sm"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-52 rounded-xl glass-input px-3 text-sm"
           />
         </div>
         <div>
@@ -1430,7 +1430,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.to}
             onChange={set("to")}
-            className="mt-1 h-9 w-52 rounded-xl glass-input px-3 text-sm"
+            className="mt-1 h-11 sm:h-9 min-h-[44px] w-52 rounded-xl glass-input px-3 text-sm"
           />
         </div>
         <div className="flex items-center gap-2">

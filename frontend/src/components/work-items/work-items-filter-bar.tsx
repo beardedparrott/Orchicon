@@ -141,7 +141,7 @@ export function WorkItemsFilterBar({
           placeholder="Search title or description…"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
-          className="h-9 w-full pl-8"
+          className="h-11 sm:h-9 min-h-[44px] w-full pl-8"
         />
       </div>
 

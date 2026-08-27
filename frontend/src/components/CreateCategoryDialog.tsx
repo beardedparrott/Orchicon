@@ -79,7 +79,7 @@ export function CreateCategoryDialog({
       onClose={handleClose}
       className={cn(
         "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
-        "w-full max-w-md",
+        "w-[calc(100vw-2rem)] max-w-md",
       )}
       onClick={(e) => {
         // Close on backdrop click

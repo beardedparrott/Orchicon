@@ -240,14 +240,14 @@ function SchedulesPage() {
           placeholder="Search title…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-48"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-48"
         />
 
         <select
           value={projectId}
           onChange={(e) => goProject(e.target.value)}
           disabled={!projects || projects.length === 0}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All projects</option>
           {projects && projects.length > 0 ? (
@@ -266,7 +266,7 @@ function SchedulesPage() {
         <select
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All kinds</option>
           {SCHEDULABLE_KINDS.map((k) => (
@@ -278,7 +278,7 @@ function SchedulesPage() {
 
         <select
           value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           aria-label="Sort by"
         >
           <option value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}>
@@ -293,7 +293,7 @@ function SchedulesPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-xl glass-input px-3 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           aria-label="Sort order"
         >
           <option value="asc">Asc</option>

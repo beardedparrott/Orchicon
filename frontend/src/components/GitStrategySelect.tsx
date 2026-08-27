@@ -49,7 +49,7 @@ export function GitStrategySelect({
         id="git-strategy"
         value={value}
         onChange={(e) => onValueChange(e.target.value as GitStrategyNullable)}
-        className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm"
+        className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
       >
         {includeInherit && <option value="inherit">Inherit from project (default)</option>}
         {GIT_STRATEGY_OPTIONS.map((opt) => (

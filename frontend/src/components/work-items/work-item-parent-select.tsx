@@ -160,7 +160,7 @@ export function WorkItemParentSelect({
         aria-invalid={invalid || undefined}
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "flex h-9 w-full items-center gap-2 rounded-xl glass-menu border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-11 sm:h-9 min-h-[44px] w-full items-center gap-2 rounded-xl glass-menu border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring",
           open && "ring-2 ring-ring",
           invalid && "border-destructive",
         )}

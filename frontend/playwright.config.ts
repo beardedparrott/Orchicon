@@ -15,6 +15,8 @@ export default defineConfig({
   projects: [
     { name: "dark-desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
     { name: "light-desktop", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } } },
+    { name: "dark-tablet", use: { ...devices["Desktop Chrome"], viewport: { width: 768, height: 1024 } } },
+    { name: "light-tablet", use: { ...devices["Desktop Chrome"], viewport: { width: 768, height: 1024 } } },
     { name: "dark-mobile", use: { ...devices["Pixel 5"], viewport: { width: 375, height: 812 } } },
     { name: "light-mobile", use: { ...devices["Pixel 5"], viewport: { width: 375, height: 812 } } },
   ],
