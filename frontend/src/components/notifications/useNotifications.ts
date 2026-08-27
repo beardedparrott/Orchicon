@@ -443,8 +443,8 @@ export function useNotifications(opts?: { enabled?: boolean }) {
   }, [markRead, maxOccurredAt]);
 
   const clearAll = useCallback(() => {
-    if (maxOccurredAt) markRead(maxOccurredAt);
-  }, [markRead, maxOccurredAt]);
+    markRead(new Date());
+  }, [markRead]);
 
   const isLoading = auditQuery.isLoading && workflowRunsQuery.isLoading && executionsQuery.isLoading;
   const isError = auditQuery.isError && workflowRunsQuery.isError && executionsQuery.isError;

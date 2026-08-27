@@ -42,11 +42,6 @@ export const Route = createRoute({
 function CostExplorerPage() {
   return (
     <div className="space-y-6">
-      <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground flex items-center gap-1">
-        <Link to="/dashboard" className="hover:text-foreground hover:underline">Overview</Link>
-        <span aria-hidden="true">›</span>
-        <span className="text-foreground font-medium">Cost Explorer</span>
-      </nav>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Cost Explorer</h1>
         <p className="text-sm text-muted-foreground">

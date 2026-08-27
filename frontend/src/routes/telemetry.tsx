@@ -34,11 +34,6 @@ function TelemetryPage() {
   const [tab, setTab] = useState<Tab>("overview");
   return (
     <div className="space-y-6">
-      <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground flex items-center gap-1">
-        <Link to="/dashboard" className="hover:text-foreground hover:underline">Overview</Link>
-        <span aria-hidden="true">›</span>
-        <span className="text-foreground font-medium">Telemetry</span>
-      </nav>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Telemetry</h1>
         <p className="text-sm text-muted-foreground">

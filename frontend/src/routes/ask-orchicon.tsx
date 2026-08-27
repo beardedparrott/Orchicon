@@ -900,7 +900,7 @@ function AskOrchiconPage() {
       <div className="flex flex-1 flex-col min-w-0">
         {!activeConvId ? (
           /* --- Greeting state: centered vertical + horizontal --- */
-          <div className="flex flex-1 items-center justify-center px-4">
+          <div className="flex flex-1 items-center justify-center px-4 pb-2">
             <div className="w-full max-w-2xl space-y-8">
               <div className="text-center space-y-4">
                 <div className="flex justify-center">
@@ -1116,7 +1116,7 @@ function AskOrchiconPage() {
             </ChatScrollContainer>
 
             {/* Input — fixed at bottom */}
-            <div className="shrink-0 border-t">
+            <div className="shrink-0 border-t pb-2">
               <ChatInputField
                 onSend={handleSendMessage}
                 onStop={handleStopStreaming}
