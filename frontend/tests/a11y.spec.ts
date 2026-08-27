@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-const ROUTES = ["/ask-orchicon", "/dashboard", "/projects", "/work-items", "/workers", "/workflows", "/executions", "/cost-explorer", "/telemetry"];
+const ROUTES = ["/ask-orchicon", "/dashboard", "/projects", "/work-items", "/workers", "/workflows", "/executions", "/cost-explorer", "/telemetry", "/settings", "/recovery"];
 test.describe("a11y axe", () => {
   for (const route of ROUTES) {
     for (const mode of ["dark","light"] as const) {

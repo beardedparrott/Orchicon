@@ -298,11 +298,11 @@ function CostExplorer() {
 function statusBadge(status: string | undefined): { label: string; className: string } {
   switch (status) {
     case "completed":
-      return { label: "Succeeded", className: "bg-green-600/10 text-green-600 border-green-600/20" };
+      return { label: "Succeeded", className: "bg-green-600/10 text-green-700 dark:text-green-600 border-green-600/20" };
     case "failed":
       return { label: "Failed", className: "bg-red-600/10 text-red-600 border-red-600/20" };
     case "aborted":
-      return { label: "Aborted", className: "bg-yellow-600/10 text-yellow-600 border-yellow-600/20" };
+      return { label: "Aborted", className: "bg-yellow-600/10 text-yellow-700 dark:text-yellow-600 border-yellow-600/20" };
     default:
       return { label: status || "—", className: "bg-muted text-muted-foreground border-border" };
   }

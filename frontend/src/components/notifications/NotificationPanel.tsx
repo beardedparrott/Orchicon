@@ -85,17 +85,17 @@ export function NotificationPanel({
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
-          {unreadCount > 0 && (<span data-testid="notification-unread-badge" className="min-w-5 h-5 px-1.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold flex items-center justify-center">{unreadCount}</span>)}
+          {unreadCount > 0 && (<span data-testid="notification-unread-badge" className="min-w-5 h-5 px-1.5 rounded-full bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold flex items-center justify-center">{unreadCount}</span>)}
         </div>
         <div className="flex items-center gap-1">
-          {unreadCount > 0 && (<button onClick={onMarkAllRead} className="text-xs font-medium text-cyan-400 hover:text-cyan-300 px-2 py-1 rounded hover:bg-white/10 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30" aria-label="Mark all as read" data-testid="notification-mark-all-read"><span className="flex items-center gap-1"><CheckCheck aria-hidden="true" className="w-3.5 h-3.5" />Mark read</span></button>)}
+          {unreadCount > 0 && (<button onClick={onMarkAllRead} className="text-xs font-medium text-cyan-700 dark:text-cyan-400 hover:text-cyan-700 dark:hover:text-cyan-300 px-2 py-1 rounded hover:bg-white/10 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30" aria-label="Mark all as read" data-testid="notification-mark-all-read"><span className="flex items-center gap-1"><CheckCheck aria-hidden="true" className="w-3.5 h-3.5" />Mark read</span></button>)}
           <button onClick={onClear} disabled={items.length === 0} className="text-xs font-medium text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-white/10 transition disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30" aria-label="Clear notifications" data-testid="notification-clear">Clear</button>
           <button onClick={onClose} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30" aria-label="Close notifications"><X aria-hidden="true" className="w-4 h-4" /></button>
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto p-1.5 space-y-1 min-h-0" style={{ scrollbarWidth: "thin" as const }}>
         {isLoading && items.length === 0 && (<div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2"><Clock aria-hidden="true" className="w-5 h-5 animate-pulse" /><span className="text-sm">Loading events...</span></div>)}
-        {isError && items.length === 0 && (<div className="flex flex-col items-center justify-center py-10 gap-3"><AlertCircle aria-hidden="true" className="w-5 h-5 text-rose-400" /><span className="text-sm text-muted-foreground">Failed to load events</span><button onClick={onRetry} className="text-xs text-cyan-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30 rounded">Retry</button></div>)}
+        {isError && items.length === 0 && (<div className="flex flex-col items-center justify-center py-10 gap-3"><AlertCircle aria-hidden="true" className="w-5 h-5 text-rose-700 dark:text-rose-400" /><span className="text-sm text-muted-foreground">Failed to load events</span><button onClick={onRetry} className="text-xs text-cyan-700 dark:text-cyan-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30 rounded">Retry</button></div>)}
         {!isLoading && !isError && items.length === 0 && (<div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-1"><span className="text-sm font-medium">No recent events</span><span className="text-xs">Events from the last 50 actions will appear here.</span></div>)}
         {items.map((item) => {
           const kindIcon = iconForKind(item.kind);
@@ -110,7 +110,7 @@ export function NotificationPanel({
           );
         })}
       </div>
-      <div className="border-t border-white/10 p-2 shrink-0"><Link to="/admin" onClick={onClose} data-testid="notification-view-all" aria-label="View all history" className="flex items-center justify-center w-full px-3 py-2 rounded-lg text-sm font-medium text-cyan-400 hover:text-cyan-300 hover:bg-white/10 transition border border-transparent hover:border-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30">View All History</Link></div>
+      <div className="border-t border-white/10 p-2 shrink-0"><Link to="/admin" onClick={onClose} data-testid="notification-view-all" aria-label="View all history" className="flex items-center justify-center w-full px-3 py-2 rounded-lg text-sm font-medium text-cyan-700 dark:text-cyan-400 hover:text-cyan-700 dark:hover:text-cyan-300 hover:bg-white/10 transition border border-transparent hover:border-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30">View All History</Link></div>
       <span tabIndex={0} aria-hidden="true" className="sr-only" onFocus={() => getFocusable()[0]?.focus()} />
     </div>
   );

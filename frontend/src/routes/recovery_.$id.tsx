@@ -138,7 +138,7 @@ function RecoveryDetailPage() {
             <span className="font-medium">
               {((recovery.budgetRelaxFraction || 0) * 100).toFixed(0)}%
               {recovery.needsHumanApproval && (
-                <span className="ml-1 text-orange-600">
+                <span className="ml-1 text-orange-700 dark:text-orange-600">
                   · human approval required
                 </span>
               )}

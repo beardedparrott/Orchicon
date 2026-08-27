@@ -514,7 +514,7 @@ function WorkItemSelector({
             ))}
         </select>
         {!projectId && (
-          <p className="text-[10px] text-amber-600 dark:text-amber-400">
+          <p className="text-[10px] text-amber-700 dark:text-amber-400">
             Assign a project to this workflow to see work items.
           </p>
         )}

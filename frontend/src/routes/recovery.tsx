@@ -79,7 +79,7 @@ function RecoveryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><RotateCcw aria-hidden="true" className="h-6 w-6 text-rose-400" /> Recovery</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><RotateCcw aria-hidden="true" className="h-6 w-6 text-rose-700 dark:text-rose-400" /> Recovery</h1>
           <p className="text-sm text-muted-foreground">
             Recovery workflow executions. When a task fails, recovery runs
             automatically. Open one to see the full narrative.

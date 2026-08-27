@@ -24,7 +24,7 @@ export function CopyButton({ text, className }: CopyButtonProps) {
       }}
     >
       {copied ? (
-        <span className="text-[10px] font-medium text-emerald-500">copied</span>
+        <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-500">copied</span>
       ) : (
         <Copy aria-hidden="true" className="h-3 w-3" />
       )}

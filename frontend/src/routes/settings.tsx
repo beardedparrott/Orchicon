@@ -562,7 +562,7 @@ function DefaultsTab() {
       {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
 
       {!isLoading && (
-        <Card>
+        <Card className="relative z-20">
           <CardHeader>
             <CardTitle>Default models</CardTitle>
             <CardDescription>
@@ -1404,7 +1404,7 @@ function BackupDirBrowser({ path, onSelect, onNavigate }: BackupDirBrowserProps)
           key={entry.path}
           className="flex items-center gap-2 border-b px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer last:border-0"
         >
-          <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span
             className="flex-1 truncate"
             onClick={() => onNavigate(entry.path)}

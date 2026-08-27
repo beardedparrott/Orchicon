@@ -127,7 +127,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
       )}
 
       {kind === STEP_KIND.RECOVER && typeof cfg.strategy === "string" && (
-        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-300">
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-300">
           <span>{RECOVERY_STRATEGY_LABELS[cfg.strategy] ?? cfg.strategy}</span>
           {typeof cfg.max_retries === "number" || typeof cfg.retry_delay_seconds === "number" ? (
             <span className="ml-1 opacity-70">
@@ -137,7 +137,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
       {kind === STEP_KIND.TASK && typeof cfg.recovery?.strategy === "string" && cfg.recovery.strategy !== "retry" && (
-        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300">
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
           <span>recovery: {RECOVERY_STRATEGY_LABELS[cfg.recovery.strategy] ?? cfg.recovery.strategy}</span>
           {typeof cfg.recovery.max_attempts === "number" && (
             <span className="ml-1 opacity-70">· {cfg.recovery.max_attempts} max</span>
@@ -146,7 +146,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
       )}
 
       {(kind === STEP_KIND.LOOP_DECISION || kind === STEP_KIND.APPROVAL) && (
-        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-300">
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-300">
           {typeof cfg.max_iterations === "number" ? (
             <span>max {cfg.max_iterations} iterations</span>
           ) : (
@@ -159,7 +159,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
       )}
 
       {kind === STEP_KIND.PARALLEL && (
-        <div className="mt-0.5 truncate text-[10px] font-medium text-violet-500 dark:text-violet-300">
+        <div className="mt-0.5 truncate text-[10px] font-medium text-violet-700 dark:text-violet-300">
           Runs processes simultaneously
         </div>
       )}
@@ -189,7 +189,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-500"
             title="Success → forward"
           />
-          <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400 pointer-events-none">
+          <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-700 dark:text-emerald-400 pointer-events-none">
             success
           </span>
           <Handle
@@ -199,7 +199,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-rose-500"
             title="Loop → re-enter"
           />
-          <span className="absolute -right-12 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-600 dark:text-rose-400 pointer-events-none">
+          <span className="absolute -right-12 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-700 dark:text-rose-400 pointer-events-none">
             loop
           </span>
         </>
