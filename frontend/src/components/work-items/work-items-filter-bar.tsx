@@ -62,6 +62,9 @@ export interface WorkItemsFilterBarProps {
   onToggleAll: () => void;
   onDeleteSelected: () => void;
   deletePending: boolean;
+  /** Bulk Archive (mirrors bulk delete): archive every selected item. */
+  onArchiveSelected: () => void;
+  archivePending: boolean;
   /** Bulk "Move to…" — operates on the selected set (ADR-WI-5). */
   onMoveSelected: (targetStatus: number) => void;
   movePending: boolean;
@@ -99,6 +102,8 @@ export function WorkItemsFilterBar({
   onToggleAll,
   onDeleteSelected,
   deletePending,
+  onArchiveSelected,
+  archivePending,
   onMoveSelected,
   movePending,
   onRunSelected,
@@ -314,6 +319,16 @@ export function WorkItemsFilterBar({
             >
               <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Delete {selectedCount} selected
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onArchiveSelected}
+              disabled={archivePending}
+              title="Archive all selected work items"
+            >
+              <ArchiveIcon aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Archive {selectedCount} selected
             </Button>
           </>
         )}
