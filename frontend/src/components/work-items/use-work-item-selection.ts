@@ -6,6 +6,11 @@
 // applies to its ENTIRE subtree, parent checkboxes are tri-state, and
 // the header select-all is tri-state over the visible filtered set.
 //
+// Filter-scoped cascade (bug fix): when a filter is active (hasQuery),
+// parent toggle and tri-state are scoped to the currently-viewable
+// descendants only (visibleIds) — hidden items are not selected.
+// With no filter, behavior is unchanged (full subtree).
+//
 // Selection clears whenever the visible set changes (project, status
 // filter, type filter, search, or sort) via `resetKey` — the Tree and
 // Board views share the same selection, so it survives a view toggle
@@ -64,40 +69,61 @@ export function visibleSelectionState(
 
 export function useWorkItemSelection(
   childrenOf: (parentId: string) => WorkItem[],
-  resetKey: string,
+  visibleIdsOrResetKey?: Set<string> | string | null,
+  hasQueryOrResetKey?: boolean | string,
+  resetKeyParam?: string,
 ) {
+  let visibleIds: Set<string> | null = null;
+  let hasQuery = false;
+  let resetKey = "";
+  if (typeof visibleIdsOrResetKey === "string") {
+    resetKey = visibleIdsOrResetKey;
+  } else {
+    visibleIds = (visibleIdsOrResetKey as Set<string> | null) ?? null;
+    if (typeof hasQueryOrResetKey === "boolean") {
+      hasQuery = hasQueryOrResetKey;
+      resetKey = resetKeyParam ?? "";
+    } else if (typeof hasQueryOrResetKey === "string") {
+      resetKey = hasQueryOrResetKey;
+    }
+  }
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Keep a ref so toggle/toggleAll see the latest tree without
-  // re-creating their identities on every render.
   const childrenOfRef = useRef(childrenOf);
   childrenOfRef.current = childrenOf;
+  const visibleIdsRef = useRef<Set<string> | null>(null);
+  visibleIdsRef.current = visibleIds;
+  const hasQueryRef = useRef(false);
+  hasQueryRef.current = hasQuery;
 
-  // Clear the selection whenever the visible set can change.
   useEffect(() => {
     setSelected(new Set());
   }, [resetKey]);
 
-  /** Toggle a node and its entire subtree. */
   const toggle = useCallback((id: string) => {
     setSelected((prev) => {
-      const subtree = subtreeIds(id, childrenOfRef.current);
-      const state = subtreeSelectionState(subtree, prev);
+      const full = subtreeIds(id, childrenOfRef.current);
+      const target =
+        hasQueryRef.current && visibleIdsRef.current
+          ? full.filter((x) => visibleIdsRef.current!.has(x))
+          : full;
+      if (target.length === 0) return prev;
+      const state = subtreeSelectionState(target, prev);
       const next = new Set(prev);
       if (state === "checked") {
-        subtree.forEach((i) => next.delete(i));
+        target.forEach((i) => next.delete(i));
       } else {
-        subtree.forEach((i) => next.add(i));
+        target.forEach((i) => next.add(i));
       }
       return next;
     });
   }, []);
 
-  /** Toggle-select exactly the given visible ids (header checkbox). */
-  const toggleAll = useCallback((visibleIds: string[]) => {
+  const toggleAll = useCallback((visibleIdsArr: string[]) => {
     setSelected((prev) => {
-      const { allChecked } = visibleSelectionState(visibleIds, prev);
-      return allChecked ? new Set() : new Set(visibleIds);
+      const { allChecked } = visibleSelectionState(visibleIdsArr, prev);
+      return allChecked ? new Set() : new Set(visibleIdsArr);
     });
   }, []);
 
