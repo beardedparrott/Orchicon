@@ -113,7 +113,7 @@ function Tile({
 }) {
   return (
     <div className={cn("rounded-2xl glass-panel p-4 h-full", accent && "ring-1 ring-primary/20")}>
-      <div className="text-xs uppercase text-muted-foreground">{label}</div>
+      <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">{label}</div>
       <div className={cn("mt-2 text-3xl font-semibold", className)}>{value}</div>
       {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}
     </div>

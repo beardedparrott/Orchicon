@@ -315,7 +315,7 @@ export function WorkItemsBoard({
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-full flex-1 animate-pulse rounded-lg border bg-card/50"
+            className="h-full flex-1 animate-pulse rounded-2xl glass-panel/50"
           />
         ))}
       </div>

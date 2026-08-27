@@ -39,7 +39,7 @@ function PoliciesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Policies</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-indigo-400 animate-pulse motion-reduce:animate-none" /> Policies</h1>
           <p className="text-sm text-muted-foreground">
             Rego-based decision-point policies (Tier 1). Evaluate at
             admission, dispatch, budget, approval, recovery, and completion.
@@ -50,11 +50,11 @@ function PoliciesPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All statuses</option>
           <option value="1">Draft</option>
@@ -64,7 +64,7 @@ function PoliciesPage() {
         <select
           value={decisionPoint}
           onChange={(e) => setDecisionPoint(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All decision points</option>
           <option value="1">Admission</option>

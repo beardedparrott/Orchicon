@@ -126,7 +126,7 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
       <input
         ref={inputRef}
         type="text"
-        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex h-9 w-full rounded-xl glass-input px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         placeholder={selected.length > 0 ? "Add more MCP servers..." : "Search MCP servers..."}
         value={search}
         onChange={(e) => {
@@ -140,7 +140,7 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
       {showDropdown && (
         <div
           ref={dropdownRef}
-          className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md"
+          className="absolute z-50 mt-1 w-full rounded-xl glass-menu shadow-xl"
           style={{ maxHeight: "300px", overflow: "hidden", display: "flex", flexDirection: "column" }}
         >
           <div className="overflow-y-auto" style={{ maxHeight: "300px" }}>

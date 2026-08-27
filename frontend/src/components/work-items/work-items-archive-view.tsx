@@ -67,7 +67,7 @@ export function WorkItemsArchiveView({
         return (
           <div
             key={item.id}
-            className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3"
+            className="flex items-center gap-3 rounded-2xl glass-panel px-4 py-3"
           >
             <KindPill kind={item.kind} />
             <div className="min-w-0 flex-1">

@@ -214,7 +214,7 @@ function WorkerDetailPage() {
             force a horizontal scroll on phones. Each button stays its
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && selectedVersion.status === 2 && (
             <Button variant="outline" onClick={() => setActiveVersion.mutate({ workerId: id, version: selectedVersion.version })}>
               {setActiveVersion.isPending ? "Setting…" : "Make Active"}

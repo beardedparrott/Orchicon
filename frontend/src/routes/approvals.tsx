@@ -178,14 +178,14 @@ function ApprovalsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Approvals</h1>
+        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" /> Approvals</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Human-in-the-loop approval gates for workflow steps.
         </p>
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search projects, work items, workflows..."
           value={search}
@@ -193,7 +193,7 @@ function ApprovalsPage() {
           className="max-w-xs"
         />
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
@@ -202,7 +202,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
         >
@@ -211,7 +211,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
         >
@@ -345,7 +345,7 @@ function ApprovalsPage() {
               <CardContent className="space-y-3">
                 {/* Upstream summary */}
                 {item.upstreamSummary && (
-                  <div className="rounded-md border bg-muted/30 p-3">
+                  <div className="rounded-2xl glass-panel p-3">
                     <p className="text-xs font-medium text-muted-foreground">Summary</p>
                     <p className="mt-1 text-sm whitespace-pre-wrap">{item.upstreamSummary}</p>
                   </div>
@@ -376,7 +376,7 @@ function ApprovalsPage() {
                   <div className="space-y-2 border-t pt-3">
                     <textarea
                       placeholder="Reason / feedback (optional) — written to .orchicon/ for the downstream worker. Paste a screenshot (cmd+shift+4 / snip) into this box to attach it."
-                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      className="w-full rounded-xl glass-input px-3 py-2 text-sm"
                       rows={2}
                       value={reasonText[item.stepRunId] ?? ""}
                       onChange={(e) =>
@@ -386,7 +386,7 @@ function ApprovalsPage() {
                     />
 
                     {/* Attachments */}
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
                       <Button
                         size="sm"
                         variant="outline"
@@ -464,7 +464,7 @@ function ApprovalsPage() {
 
                 {/* Resolved feedback + attachments */}
                 {!isPending && item.reason && (
-                  <div className="rounded-md border bg-muted/30 p-3">
+                  <div className="rounded-2xl glass-panel p-3">
                     <p className="text-xs font-medium text-muted-foreground">Review feedback</p>
                     <p className="mt-1 text-sm whitespace-pre-wrap">{item.reason}</p>
                   </div>

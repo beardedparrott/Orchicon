@@ -34,7 +34,7 @@ function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b pb-px">
+      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-px">
         {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
@@ -358,7 +358,7 @@ function BackupsTab() {
       </Card>
 
       {message && (
-        <div className="rounded-md border bg-muted px-4 py-2 text-sm">{message}</div>
+        <div className="rounded-2xl glass-panel px-4 py-2 text-sm border border-white/10">{message}</div>
       )}
 
       {!loadingSettings && (

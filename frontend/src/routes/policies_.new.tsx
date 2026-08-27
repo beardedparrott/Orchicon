@@ -121,7 +121,7 @@ function NewPolicyPage() {
                 <Label htmlFor="decisionPoint">Decision point</Label>
                 <select
                   id="decisionPoint"
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-xl glass-input px-3 py-2 text-sm"
                   {...register("decisionPoint", { valueAsNumber: true })}
                 >
                   <option value={DecisionPoint.ADMISSION}>Admission</option>
@@ -136,7 +136,7 @@ function NewPolicyPage() {
                 <Label htmlFor="scope">Scope</Label>
                 <select
                   id="scope"
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-xl glass-input px-3 py-2 text-sm"
                   {...register("scope", { valueAsNumber: true })}
                 >
                   <option value={PolicyScope.TENANT}>Tenant</option>
@@ -149,7 +149,7 @@ function NewPolicyPage() {
                 <Label htmlFor="effect">Effect</Label>
                 <select
                   id="effect"
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-xl glass-input px-3 py-2 text-sm"
                   {...register("effect", { valueAsNumber: true })}
                 >
                   <option value={PolicyEffect.ALLOW}>Allow</option>

@@ -150,7 +150,7 @@ function WorkflowsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Workflows</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-sky-400 animate-pulse motion-reduce:animate-none" /> Workflows</h1>
           <p className="text-sm text-muted-foreground">
             Composable execution plans. Drag Workers onto a canvas, wire
             steps together, and run the DAG.
@@ -161,7 +161,7 @@ function WorkflowsPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search workflows…"
           value={search}
@@ -171,7 +171,7 @@ function WorkflowsPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Draft</option>
@@ -181,7 +181,7 @@ function WorkflowsPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -190,7 +190,7 @@ function WorkflowsPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>

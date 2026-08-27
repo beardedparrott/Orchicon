@@ -183,7 +183,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           {showDropdown && (
             <div
               ref={dropdownRef}
-              className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md"
+              className="absolute z-50 mt-1 w-full rounded-xl glass-menu shadow-xl"
               style={{ maxHeight: "400px", overflow: "hidden", display: "flex", flexDirection: "column" }}
             >
               {/* Provider filter bar */}

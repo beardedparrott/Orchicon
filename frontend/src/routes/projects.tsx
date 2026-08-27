@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX } from "lucide-react";
+import { Trash2, SearchX, Folder } from "lucide-react";
 
 import { useBatchDeleteProjects, useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
@@ -73,7 +73,7 @@ function ProjectsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><Folder className="h-6 w-6 text-cyan-400" /> Projects</h1>
           <p className="text-sm text-muted-foreground">
             The persistent source of truth and trust boundary for work
             state.
@@ -84,7 +84,7 @@ function ProjectsPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search projects..."
           value={search}
@@ -94,7 +94,7 @@ function ProjectsPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Drafting</option>
@@ -105,7 +105,7 @@ function ProjectsPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -114,7 +114,7 @@ function ProjectsPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>

@@ -88,7 +88,7 @@ export function BulkChangeWorkerModelDialog({
       ref={dialogRef}
       onClose={handleClose}
       className={cn(
-        "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+        "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
         "w-full max-w-lg",
       )}
       onClick={(e) => {
@@ -224,7 +224,7 @@ function BulkResultSummary({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border bg-muted/30 p-3 text-xs">
+      <div className="rounded-2xl glass-panel p-3 text-xs">
         <p className="font-medium text-foreground">
           {updated.length} updated · {skipped.length} skipped · {errors.length} error
           {updated.length + skipped.length + errors.length === 1 ? "" : "s"}

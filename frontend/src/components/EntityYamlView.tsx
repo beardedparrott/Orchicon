@@ -55,7 +55,7 @@ export function EntityYamlView({
   };
 
   return (
-    <div className="h-[480px] rounded-lg border bg-card">
+    <div className="h-[480px] rounded-2xl glass-panel">
       <div className="flex items-center justify-between border-b px-4 py-2 text-xs text-muted-foreground">
         <span>{title || "YAML"}</span>
         <div className="flex items-center gap-2">

@@ -1,6 +1,6 @@
 import { Link, createRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
-import { SearchX, ArrowUpDown } from "lucide-react";
+import { SearchX, ArrowUpDown, RotateCcw } from "lucide-react";
 
 import { useBatchCancelRecoveries, useBatchDeleteRecoveries, useListRecoveries } from "@/api/recovery";
 import type { RecoveryStatus } from "@/api/gen/orchicon/api/v1/recovery_pb";
@@ -79,7 +79,7 @@ function RecoveryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Recovery</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><RotateCcw className="h-6 w-6 text-rose-400" /> Recovery</h1>
           <p className="text-sm text-muted-foreground">
             Recovery workflow executions. When a task fails, recovery runs
             automatically. Open one to see the full narrative.
@@ -87,11 +87,11 @@ function RecoveryPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-9 rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All statuses</option>
           <option value="1">Pending</option>
@@ -106,14 +106,14 @@ function RecoveryPage() {
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as "created_at" | "updated_at")}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+            className="h-9 rounded-xl glass-input px-3 text-sm"
           >
             <option value="created_at">Created</option>
             <option value="updated_at">Updated</option>
           </select>
           <button
             onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
-            className="flex h-9 items-center gap-1 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm hover:bg-accent"
+            className="flex h-9 items-center gap-1 rounded-xl glass-input px-3 text-sm hover:bg-white/5"
           >
             <ArrowUpDown className="h-3 w-3" />
             {sortOrder === "desc" ? "Newest" : "Oldest"}

@@ -106,7 +106,7 @@ export function WorkItemsFilterBar({
   visibleSelectedCount,
 }: WorkItemsFilterBarProps) {
   const selectClass =
-    "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring";
+    "h-9 rounded-xl glass-input px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
     <div className="flex flex-wrap items-center gap-3 shrink-0">

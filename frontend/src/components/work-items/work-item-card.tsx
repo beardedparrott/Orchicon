@@ -222,7 +222,7 @@ export function WorkItemCard({
   return (
     <div
       className={cn(
-        "group relative min-w-0 rounded-md border border-l-4 bg-card p-3 transition-all",
+        "group relative min-w-0 rounded-xl glass-panel border border-l-4 p-3 transition-all",
         "hover:-translate-y-0.5 hover:shadow-md motion-reduce:translate-y-0 motion-reduce:transition-none",
         meta.accentBar,
         selected && "border-l-indigo-500 bg-accent/60 ring-1 ring-ring",
