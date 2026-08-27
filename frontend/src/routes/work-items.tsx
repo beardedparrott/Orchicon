@@ -278,7 +278,7 @@ function WorkItemsPage() {
   const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
 
   return (
-    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
+    <div className="flex flex-col gap-6 min-h-0" style={{ minHeight: "calc(100vh - 64px)" }}>
       <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>
@@ -433,7 +433,7 @@ function LiveRefreshIndicator({
     <div
       role="timer"
       aria-label={`Auto-refreshes every 5 seconds. Last refreshed at ${time}`}
-      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+      className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
     >
       <span
         className={cn(

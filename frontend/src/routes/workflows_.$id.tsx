@@ -712,7 +712,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               onClick={() => navigate({ to: "/workflows" })}
               className="shrink-0"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft aria-hidden="true" className="h-4 w-4" />
               <span className="ml-1 hidden sm:inline">Back</span>
             </Button>
             <div className="min-w-0">
@@ -951,7 +951,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
             <div
               className={cn(
-                "relative h-[640px] rounded-lg border bg-card transition-colors",
+                "relative h-[640px] rounded-2xl glass-panel transition-colors",
                 dropActive &&
                   "border-primary bg-primary/5 ring-2 ring-primary/30 ring-offset-1",
               )}
@@ -1017,7 +1017,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               {dropActive && (
                 <div
                   className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
-                  aria-hidden
+                  aria-hidden="true"
                 >
                   <div className="rounded-md border-2 border-dashed border-primary bg-primary/10 px-6 py-3 text-sm font-medium text-primary shadow-sm">
                     Drop to add step
@@ -1040,7 +1040,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           </div>
         ) : (
           /* code view: full-width editor */
-          <div className="h-[640px] rounded-lg border bg-card">
+          <div className="h-[640px] rounded-2xl glass-panel">
             <CodeView
               nodes={nodes}
               edges={edges}

@@ -48,13 +48,13 @@ const STATUS_STYLES: Record<number, string> = {
 function StatusBadge({ status }: { status: number }) {
   const Icon =
     status === 2 ? (
-      <Loader2 className="h-3 w-3 animate-spin" />
+      <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
     ) : status === 3 ? (
-      <CheckCircle2 className="h-3 w-3" />
+      <CheckCircle2 aria-hidden="true" className="h-3 w-3" />
     ) : status === 4 ? (
-      <XCircle className="h-3 w-3" />
+      <XCircle aria-hidden="true" className="h-3 w-3" />
     ) : (
-      <Boxes className="h-3 w-3" />
+      <Boxes aria-hidden="true" className="h-3 w-3" />
     );
   return (
     <span
@@ -133,15 +133,15 @@ function RuntimeImagesPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search name or slug…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-56"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-56"
         />
         <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          className="rounded-xl glass-input px-3 py-1.5 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
@@ -159,7 +159,7 @@ function RuntimeImagesPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -177,7 +177,7 @@ function RuntimeImagesPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No runtime images yet
             </CardTitle>
             <CardDescription>

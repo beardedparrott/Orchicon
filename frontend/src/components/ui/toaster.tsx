@@ -46,7 +46,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       )}
     >
       <span
-        aria-hidden
+        aria-hidden="true"
         className={cn(
           "mt-1 inline-block h-2 w-2 shrink-0 rounded-full",
           toast.kind === "success" && "bg-emerald-500",

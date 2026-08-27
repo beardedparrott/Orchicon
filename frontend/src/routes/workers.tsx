@@ -180,7 +180,7 @@ function WorkersPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Workers</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-cyan-400 animate-pulse motion-reduce:animate-none" /> Workers</h1>
           <p className="text-sm text-muted-foreground">
             Reusable, versioned execution profiles. A Worker declares what is
             permitted; the adapter advertises what is possible.
@@ -191,17 +191,17 @@ function WorkersPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search workers…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-full sm:w-64"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-64"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Draft</option>
@@ -212,7 +212,7 @@ function WorkersPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -221,7 +221,7 @@ function WorkersPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
@@ -231,7 +231,7 @@ function WorkersPage() {
           size="sm"
           onClick={() => setShowCreateCategory(true)}
         >
-          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          <FolderPlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
           New Category
         </Button>
         {selected.size > 0 && (
@@ -241,7 +241,7 @@ function WorkersPage() {
               size="sm"
               onClick={handleChangeModelOpen}
             >
-              <PencilLine className="mr-1 h-3.5 w-3.5" />
+              <PencilLine aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Change model…
             </Button>
             <Button
@@ -250,7 +250,7 @@ function WorkersPage() {
               onClick={handleBatchDelete}
               disabled={batchDelete.isPending}
             >
-              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Delete {selected.size} selected
             </Button>
           </>
@@ -268,7 +268,7 @@ function WorkersPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No workers yet
             </CardTitle>
             <CardDescription>
@@ -405,7 +405,7 @@ function WorkerRow({
         aria-label={`Drag ${worker.name} to a category`}
         className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical aria-hidden="true" className="h-4 w-4" />
       </span>
       <input
         type="checkbox"

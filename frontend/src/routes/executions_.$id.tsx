@@ -114,7 +114,7 @@ function ExecutionDetailPage() {
             onClick={() => navigate({ to: "/executions" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">
@@ -328,7 +328,7 @@ function ExecutionContextFooter({
     ...worktreeTileItems(exec.worktreeStatus, exec.worktreeBranch, exec.worktreePath),
   ];
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl glass-panel p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Execution context

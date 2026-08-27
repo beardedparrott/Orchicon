@@ -34,7 +34,7 @@ function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b pb-px">
+      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-px">
         {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
@@ -293,7 +293,7 @@ function BackupsTab() {
         <CardContent className="space-y-4">
           <div className="flex items-center gap-3">
             <Button onClick={handleCreateBackup} disabled={createBackup.isPending}>
-              <Download className="mr-2 h-4 w-4" />
+              <Download aria-hidden="true" className="mr-2 h-4 w-4" />
               {createBackup.isPending ? "Creating…" : "Create backup now"}
             </Button>
           </div>
@@ -328,7 +328,7 @@ function BackupsTab() {
                               onClick={() => handleRestore(b.name)}
                               disabled={restoring === b.name || deleting === b.name}
                             >
-                              <RotateCcw className="mr-1 h-3 w-3" />
+                              <RotateCcw aria-hidden="true" className="mr-1 h-3 w-3" />
                               {restoring === b.name ? "Restoring…" : "Restore"}
                             </Button>
                             <Button
@@ -338,7 +338,7 @@ function BackupsTab() {
                               disabled={deleting === b.name || restoring === b.name}
                               className="text-destructive hover:text-destructive"
                             >
-                              <Trash2 className="mr-1 h-3 w-3" />
+                              <Trash2 aria-hidden="true" className="mr-1 h-3 w-3" />
                               {deleting === b.name ? "Deleting…" : "Delete"}
                             </Button>
                           </div>
@@ -358,13 +358,13 @@ function BackupsTab() {
       </Card>
 
       {message && (
-        <div className="rounded-md border bg-muted px-4 py-2 text-sm">{message}</div>
+        <div className="rounded-2xl glass-panel px-4 py-2 text-sm border border-white/10">{message}</div>
       )}
 
       {!loadingSettings && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving || loadingSettings}>
-            <Save className="mr-2 h-4 w-4" />
+            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save backup settings"}
           </Button>
         </div>
@@ -395,7 +395,7 @@ function AppearanceTab() {
                     : "border-border text-muted-foreground hover:border-muted-foreground/50",
                 )}
               >
-                <Sun className="h-4 w-4" />
+                <Sun aria-hidden="true" className="h-4 w-4" />
                 Light
               </button>
               <button
@@ -407,7 +407,7 @@ function AppearanceTab() {
                     : "border-border text-muted-foreground hover:border-muted-foreground/50",
                 )}
               >
-                <Moon className="h-4 w-4" />
+                <Moon aria-hidden="true" className="h-4 w-4" />
                 Dark
               </button>
             </div>
@@ -417,7 +417,7 @@ function AppearanceTab() {
 
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Sun className="h-4 w-4" />
+          <Sun aria-hidden="true" className="h-4 w-4" />
           LIGHT THEMES
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -437,7 +437,7 @@ function AppearanceTab() {
 
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Moon className="h-4 w-4" />
+          <Moon aria-hidden="true" className="h-4 w-4" />
           DARK THEMES
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -853,7 +853,7 @@ function DefaultsTab() {
       {!isLoading && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving}>
-            <Save className="mr-2 h-4 w-4" />
+            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </div>
@@ -868,7 +868,7 @@ function UserGuideTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <BookOpen className="h-5 w-5" />
+            <BookOpen aria-hidden="true" className="h-5 w-5" />
             Orchicon User Guide
           </CardTitle>
           <CardDescription>
@@ -980,7 +980,7 @@ function UserGuideTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SlidersHorizontal className="h-5 w-5" />
+            <SlidersHorizontal aria-hidden="true" className="h-5 w-5" />
             Settings explained
           </CardTitle>
           <CardDescription>
@@ -1127,7 +1127,7 @@ function SessionTab() {
       {!isLoading && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving}>
-            <Save className="mr-2 h-4 w-4" />
+            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save session settings"}
           </Button>
         </div>
@@ -1196,7 +1196,7 @@ function ThemeCard({
         <span className="text-sm font-medium">{theme.name}</span>
         {active && (
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-            <Check className="h-3 w-3" />
+            <Check aria-hidden="true" className="h-3 w-3" />
           </span>
         )}
       </div>
@@ -1379,14 +1379,14 @@ function BackupDirBrowser({ path, onSelect, onNavigate }: BackupDirBrowserProps)
         className="flex items-center gap-2 border-b px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer"
         onClick={() => onNavigate(parentOf(path))}
       >
-        <ArrowUp className="h-4 w-4 text-muted-foreground" />
+        <ArrowUp aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
         <span className="truncate text-xs text-muted-foreground">..</span>
         <span className="ml-auto truncate font-mono text-xs text-muted-foreground">{path}</span>
       </div>
 
       {isLoading && (
         <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
           Loading…
         </div>
       )}
@@ -1404,7 +1404,7 @@ function BackupDirBrowser({ path, onSelect, onNavigate }: BackupDirBrowserProps)
           key={entry.path}
           className="flex items-center gap-2 border-b px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer last:border-0"
         >
-          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
           <span
             className="flex-1 truncate"
             onClick={() => onNavigate(entry.path)}

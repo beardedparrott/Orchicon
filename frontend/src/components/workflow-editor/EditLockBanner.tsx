@@ -28,7 +28,7 @@ export function EditLockBanner({
         className="flex items-start gap-2 rounded-md border border-emerald-300/60 bg-emerald-50 p-2.5 text-sm text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-100"
         role="status"
       >
-        <span aria-hidden className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+        <span aria-hidden="true" className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
         <span>
           <strong className="font-semibold">Edit lock acquired</strong> — you can edit
           this workflow. <kbd className="rounded border bg-background/60 px-1 font-mono text-[10px]">Save</kbd>{" "}
@@ -44,7 +44,7 @@ export function EditLockBanner({
         className="flex items-start gap-2 rounded-md border border-amber-300/60 bg-amber-50 p-2.5 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-100"
         role="status"
       >
-        <span aria-hidden className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+        <span aria-hidden="true" className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-amber-500" />
         <span>
           <strong className="font-semibold">Currently being edited by</strong>{" "}
           <span className="font-mono text-xs">{heldBy || "another user"}</span> — viewing

@@ -333,7 +333,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               disabled={retryFailed.isPending}
               title="Reset the run back to pending, re-arm the failed/skipped/blocked step runs, and re-dispatch from where it left off (steps that already succeeded are kept)."
             >
-              <RefreshCw className="mr-1 h-4 w-4" />
+              <RefreshCw aria-hidden="true" className="mr-1 h-4 w-4" />
               {retryFailed.isPending ? "Retrying…" : "Retry failed step"}
             </Button>
           )}
@@ -344,7 +344,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               disabled={forceProgress.isPending}
               title="Force the run past its current step run(s), regardless of their status — use when a run is stuck 'running' after a reconcile error rolled back a completed step."
             >
-              <FastForward className="mr-1 h-4 w-4" />
+              <FastForward aria-hidden="true" className="mr-1 h-4 w-4" />
               {forceProgress.isPending ? "Forcing…" : "Force next step"}
             </Button>
           )}
@@ -361,14 +361,14 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       </div>
 
       {run.startedAt && (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-1.5">
+        <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-1.5 border border-white/10">
           <LiveDuration startedAt={run.startedAt} endedAt={run.endedAt} />
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
 
       {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             <span>Worktree</span>
             {run && (
@@ -390,7 +390,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       )}
 
       {/* run canvas with live step transitions */}
-      <div className="h-[600px] rounded-lg border bg-card">
+      <div className="h-[600px] rounded-2xl glass-panel">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -744,7 +744,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: true, reason, reviewedBy: "" })}
               disabled={approveMutation.isPending}
             >
-              <CheckCircle2 className="mr-1 h-4 w-4" />
+              <CheckCircle2 aria-hidden="true" className="mr-1 h-4 w-4" />
               Approve
             </Button>
             <Button
@@ -753,7 +753,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: false, reason, reviewedBy: "" })}
               disabled={approveMutation.isPending}
             >
-              <XCircle className="mr-1 h-4 w-4" />
+              <XCircle aria-hidden="true" className="mr-1 h-4 w-4" />
               Reject
             </Button>
             <Button
@@ -762,7 +762,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => retryMutation.mutate({ stepRunId: stepRun.id, workflowRunId: runId })}
               disabled={retryMutation.isPending}
             >
-              <RefreshCw className="mr-1 h-4 w-4" />
+              <RefreshCw aria-hidden="true" className="mr-1 h-4 w-4" />
               Retry step
             </Button>
           </div>

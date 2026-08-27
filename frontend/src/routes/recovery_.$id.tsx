@@ -72,7 +72,7 @@ function RecoveryDetailPage() {
             onClick={() => navigate({ to: "/recovery" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -87,7 +87,7 @@ function RecoveryDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {!isTerminal && (
             <Button
               variant="outline"

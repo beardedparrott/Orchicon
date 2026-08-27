@@ -170,7 +170,7 @@ function CostExplorer() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
             {([
               [UsageRollupEnum.PROJECT, "By Project"],
               [UsageRollupEnum.TASK, "By Task"],
@@ -185,7 +185,7 @@ function CostExplorer() {
                   if (r === UsageRollupEnum.PROJECT) clearScope();
                 }}
                 className={cn(
-                  "rounded-md border px-3 py-1.5 text-sm font-medium",
+                  "rounded-md border px-3 py-2 sm:py-1.5 text-sm font-medium min-h-[44px] sm:min-h-0",
                   rollup === r
                     ? "border-primary bg-primary text-primary-foreground"
                     : "hover:bg-accent",
@@ -223,7 +223,7 @@ function CostExplorer() {
               )}
               {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
               {data?.total && (
-                <div className="rounded-md border bg-muted/40 p-3">
+                <div className="rounded-2xl glass-panel p-3 border border-white/10">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">Window total</span>
                     <span className="font-medium">
@@ -239,12 +239,12 @@ function CostExplorer() {
                   </div>
                 </div>
               )}
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
                 <SearchInput value={search} onChange={setSearch} placeholder="Search by name…" />
                 <SortControls sort={sort} onChange={setSort} />
               </div>
               {data?.summaries && data.summaries.length > 0 && (
-                <div className="divide-y rounded-md border">
+                <div className="divide-y divide-white/10 rounded-2xl glass-panel overflow-hidden">
                   {visibleSummaries.map((s) => (
                     <button
                       key={s.groupKey || "unknown"}
@@ -328,7 +328,7 @@ function WorkflowCostPanel() {
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <SearchInput
           value={search}
           onChange={setSearch}

@@ -280,6 +280,16 @@ function AskOrchiconPage() {
       return next;
     });
   }, []);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!mobileSheetOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); } };
+    document.addEventListener("keydown", onKeyDown);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.removeEventListener("keydown", onKeyDown); document.body.style.overflow = prev; };
+  }, [mobileSheetOpen]);
 
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
@@ -885,7 +895,7 @@ function AskOrchiconPage() {
   }, [messages, isStreaming, groupedStream]);
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] gap-0">
+    <div className="flex h-[calc(100vh-3.5rem)] gap-0 min-w-0 overflow-hidden">
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-w-0">
         {!activeConvId ? (
@@ -895,11 +905,11 @@ function AskOrchiconPage() {
               <div className="text-center space-y-4">
                 <div className="flex justify-center">
                   <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-300">
-                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
                     Intelligent Orchestration
                   </span>
                 </div>
-                <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
+                <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight">
                   <span className="text-foreground">Orchestrate </span>
                   <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">with intention</span>
                 </h1>
@@ -942,13 +952,22 @@ function AskOrchiconPage() {
           /* --- Active conversation: scroll + pinned input --- */
           <div className="flex flex-1 flex-col min-h-0">
             {/* Chat header */}
-            <div className="flex items-center justify-between border-b px-6 py-3 shrink-0">
+            <div className="flex items-center justify-between border-b px-4 sm:px-6 py-3 shrink-0 gap-2">
               <div className="flex items-center gap-2 min-w-0">
+                <button
+                  ref={mobileTriggerRef}
+                  onClick={() => setMobileSheetOpen(true)}
+                  aria-label="Conversations"
+                  data-testid="ask-conversation-sheet-trigger"
+                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-300 hover:text-white lg:hidden shrink-0"
+                >
+                  <PanelRight aria-hidden="true" className="h-5 w-5" />
+                </button>
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
                 <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
-                  <Brain className="h-2.5 w-2.5" />
+                  <Brain aria-hidden="true" className="h-2.5 w-2.5" />
                   Brainstorm
                 </span>
                 {/* The model answering this conversation — surfaced so a
@@ -970,7 +989,7 @@ function AskOrchiconPage() {
                 </span>
               </div>
               <Button variant="ghost" size="sm" onClick={handleNewChat}>
-                <Plus className="h-4 w-4" />
+                <Plus aria-hidden="true" className="h-4 w-4" />
               </Button>
             </div>
 
@@ -981,7 +1000,7 @@ function AskOrchiconPage() {
                 actionable "your model config is missing". */}
             {isUsingFallbackModel && (
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-                <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
+                <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
                   No Ask Orchicon model is configured — answering with the free
                   fallback model (<span className="font-mono">{effectiveModel}</span>),
@@ -1063,7 +1082,7 @@ function AskOrchiconPage() {
                   <div className="flex justify-start">
                     <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
-                        <span className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
                         <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                           Orchicon is thinking
                           {isUsingFallbackModel && (
@@ -1115,38 +1134,40 @@ function AskOrchiconPage() {
 
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
-        <aside className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
+        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 max-h-[calc(100vh-5.5rem)]">
           <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
             <div className="flex items-center space-x-2 text-slate-300">
-              <MessageSquare className="w-4 h-4 text-cyan-400" />
+              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
               <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
             </div>
             <div className="flex items-center space-x-1">
               <button
                 onClick={() => setFolderDialogOpen(true)}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New folder"
                 aria-label="New folder"
               >
-                <FolderPlus className="w-4 h-4" />
+                <FolderPlus aria-hidden="true" className="w-4 h-4" />
               </button>
               <Link
                 to="/ask-orchicon"
                 search={{ conversationId: undefined } as never}
                 onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
                 title="New Chat"
                 aria-label="New conversation"
               >
-                <Plus className="w-4 h-4" />
+                <Plus aria-hidden="true" className="w-4 h-4" />
               </Link>
               <button
                 onClick={togglePanel}
-                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                aria-expanded={!panelCollapsed}
+                aria-controls="conversation-history-panel"
+                aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
                 title="Collapse Panel"
-                aria-label="Collapse conversation panel"
               >
-                <PanelRightClose className="w-4 h-4" />
+                <PanelRightClose aria-hidden="true" className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -1248,7 +1269,7 @@ function AskOrchiconPage() {
               onClick={handleNewChat}
               className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
             >
-              <History className="w-3.5 h-3.5 text-slate-400" />
+              <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
               <span>View All History</span>
             </button>
           </div>
@@ -1256,12 +1277,61 @@ function AskOrchiconPage() {
       ) : (
         <button
           onClick={togglePanel}
-          aria-label="Expand conversation panel"
+          aria-expanded={!panelCollapsed}
+          aria-controls="conversation-history-panel"
+          aria-label="Expand conversation history"
           title="Expand Conversations"
-          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start"
+          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
         >
-          <PanelRight className="h-4 w-4" />
+          <PanelRight aria-hidden="true" className="h-4 w-4" />
         </button>
+      )}
+
+      {/* Mobile conversation sheet — route-scoped, lg:hidden per ADR-M10-01 */}
+      {mobileSheetOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Conversations">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileSheetOpen(false)} aria-hidden="true" />
+          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
+            <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2 text-slate-300">
+                <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-400" />
+                <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); mobileTriggerRef.current?.focus(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
+              {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
+              <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+                <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
+                  {convPrefs.state.categories.map((category) => {
+                    const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
+                    const isCollapsed = convPrefs.collapsed.has(category.id);
+                    const isOver = overFolderId === category.id;
+                    const isRenaming = renamingFolderId === category.id;
+                    return (
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} />
+                    );
+                  })}
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={convPrefs.state.categories.length > 0} />
+                </SortableContext>
+                <DragOverlay dropAnimation={null}>
+                  {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
+                </DragOverlay>
+              </DndContext>
+            </div>
+            <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
+              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-medium transition border border-white/5 min-h-[44px]">
+                <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-400" />
+                <span>View All History</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Create Category Dialog */}
@@ -1314,7 +1384,7 @@ function MessageBubble({
           )}
           {onRetry && (
             <Button variant="outline" size="sm" onClick={onRetry} className="mt-2">
-              <RefreshCw className="h-3.5 w-3.5 mr-1" />
+              <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
               Retry
             </Button>
           )}
@@ -1392,8 +1462,34 @@ function ChatInputField({
     [],
   );
 
+  // --- attachment constants (server is authoritative: 5 / 10MB / 20MB) ---
+  const MAX_ATTACHMENTS = 5;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+  const ACCEPTED_EXTS = new Set([
+    "png","jpg","jpeg","gif","webp","svg","bmp","pdf","txt","md","mdx","json","csv","yaml","yml","html","css","js","ts","tsx","go","py","rs","java","sh","xml","log",
+  ]);
+  const getExt = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
+  const isAllowedFile = (file: File): boolean => {
+    const mime = (file.type || "").toLowerCase();
+    const ext = getExt(file.name);
+    if (mime.startsWith("image/")) return true;
+    if (mime.startsWith("text/")) return true;
+    if (mime.includes("json") || mime.includes("csv") || mime.includes("pdf") || mime.includes("xml") || mime.includes("yaml")) return true;
+    if (ext && ACCEPTED_EXTS.has(ext)) return true;
+    // empty mime but known extension — allow
+    if (!mime && ext && ACCEPTED_EXTS.has(ext)) return true;
+    return false;
+  };
+
+  const [pendingReads, setPendingReads] = useState(0);
+
   const handleSubmit = useCallback(async () => {
     if (sending) return;
+    if (pendingReads > 0) {
+      useToastStore.getState().push({ kind: "info", message: `Still loading ${pendingReads} file(s)...` });
+      return;
+    }
     const sentText = text.trim();
     const sentAttachments = attachments.length > 0 ? attachments : undefined;
     if (sentText || attachments.length > 0) {
@@ -1416,7 +1512,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend]);
+  }, [sending, text, attachments, onSend, pendingReads]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1432,24 +1528,58 @@ function ChatInputField({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of Array.from(files)) {
-        if (file.size > 10 * 1024 * 1024) {
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
+        }
+        if (!isAllowedFile(file)) {
+          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name;
-          input.mimeType = file.type;
+          // infer mime when empty via extension
+          let mime = file.type;
+          if (!mime) {
+            const ext = getExt(file.name);
+            if (ext === "json") mime = "application/json";
+            else if (ext === "csv") mime = "text/csv";
+            else if (ext === "pdf") mime = "application/pdf";
+            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
+            else if (ext === "txt") mime = "text/plain";
+            else mime = "application/octet-stream";
+          }
+          input.mimeType = mime;
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
       e.target.value = "";
     },
-    [],
+    [attachments],
   );
 
   const handlePaste = useCallback(
@@ -1466,61 +1596,112 @@ function ChatInputField({
       }
       if (imageFiles.length === 0) return;
       e.preventDefault();
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of imageFiles) {
-        if (file.size > 10 * 1024 * 1024) {
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `Image too large (max 10MB): ${file.name || "pasted image"}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name || `pasted-image-${Date.now()}.png`;
           input.mimeType = file.type || "image/png";
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name || "pasted image"}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
     },
-    [],
+    [attachments],
   );
 
   const [dragOver, setDragOver] = useState(false);
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOver(true);
   }, []);
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOver(false);
   }, []);
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       setDragOver(false);
       const files = e.dataTransfer?.files;
       if (!files) return;
+      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+      let queuedCount = 0;
+      let queuedBytes = 0;
       for (const file of Array.from(files)) {
-        if (!file.type.startsWith("image/") && !file.type.startsWith("text/") && !file.type.includes("json")) {
-          // accept images + text-like files
-          if (!file.type.startsWith("image/")) continue;
+        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
+          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          break;
         }
-        if (file.size > 10 * 1024 * 1024) {
+        if (!isAllowedFile(file)) {
+          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
           useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
           continue;
         }
+        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
+          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          continue;
+        }
+        queuedCount++;
+        queuedBytes += file.size;
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = file.name;
-          input.mimeType = file.type;
+          let mime = file.type;
+          if (!mime) {
+            const ext = getExt(file.name);
+            if (ext === "json") mime = "application/json";
+            else if (ext === "csv") mime = "text/csv";
+            else if (ext === "pdf") mime = "application/pdf";
+            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
+            else if (ext === "txt") mime = "text/plain";
+            else mime = "application/octet-stream";
+          }
+          input.mimeType = mime;
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => prev.length >= 5 ? prev : [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(file);
       }
     },
-    [],
+    [attachments],
   );
 
   const [isRecording, setIsRecording] = useState(false);
@@ -1583,18 +1764,37 @@ function ChatInputField({
         const blob = new Blob(audioChunksRef.current, {
           type: "audio/webm",
         });
+        if (blob.size > MAX_FILE_BYTES) {
+          pushToast({ kind: "error", message: `Audio too large (max 10MB)` });
+          return;
+        }
+        const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
+        if (existingTotal + blob.size > MAX_TOTAL_BYTES) {
+          pushToast({ kind: "error", message: `Attachments too large (max 20MB total)` });
+          return;
+        }
+        if (attachments.length >= MAX_ATTACHMENTS) {
+          pushToast({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+          return;
+        }
+        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = "voice_input.webm";
           input.mimeType = "audio/webm";
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => [...prev, input]);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
+          setPendingReads((n) => Math.max(0, n - 1));
           pushToast({
             kind: "success",
             message:
               "Audio recorded and attached. Send your message to have Orchicon process it.",
           });
+        };
+        reader.onerror = () => {
+          pushToast({ kind: "error", message: "Failed to read audio" });
+          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(blob);
       };
@@ -1615,7 +1815,7 @@ function ChatInputField({
         message: "Microphone access denied or unavailable.",
       });
     }
-  }, []);
+  }, [attachments]);
 
   const handleStopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
@@ -1625,6 +1825,11 @@ function ChatInputField({
 
   return (
     <div className="p-4">
+      {pendingReads > 0 && (
+        <div className="mb-2 text-xs text-muted-foreground animate-pulse" aria-live="polite">
+          Loading {pendingReads} file(s)...
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {attachments.map((a, i) => {
@@ -1648,7 +1853,7 @@ function ChatInputField({
                 {isImage && previewUrl ? (
                   <img src={previewUrl} alt={a.name} className="h-8 w-8 rounded object-cover" />
                 ) : (
-                  <Paperclip className="h-3 w-3" />
+                  <Paperclip aria-hidden="true" className="h-3 w-3" />
                 )}
                 <span className="max-w-[120px] truncate">{a.name}</span>
                 <span className="text-muted-foreground">{a.data ? `${(a.data.length / 1024).toFixed(1)}KB` : ""}</span>
@@ -1666,20 +1871,22 @@ function ChatInputField({
         </div>
       )}
       <div
-        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-violet-400 border-dashed" : ""}`}
+        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {/* Textarea area */}
         <div className="flex items-end gap-2 px-1 pb-1">
-          <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
+          <Sparkles aria-hidden="true" className="h-4 w-4 text-cyan-400 shrink-0 mb-1.5" />
           <button
+            type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent"
+            className="shrink-0 rounded-md border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 p-1.5 text-muted-foreground hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
             title="Attach file"
+            aria-label="Attach file"
           >
-            <Paperclip className="h-4 w-4" />
+            <Paperclip aria-hidden="true" className="h-4 w-4" />
           </button>
           <textarea
             ref={inputRef}
@@ -1701,7 +1908,7 @@ function ChatInputField({
             )}
             title={isRecording ? "Stop recording" : "Voice input"}
           >
-            <Mic className="h-4 w-4" />
+            <Mic aria-hidden="true" className="h-4 w-4" />
           </button>
         </div>
         {/* Bottom toolbar — send/stop on left, mode dropdown on the right */}
@@ -1711,24 +1918,25 @@ function ChatInputField({
               <>
                 <Button
                   onClick={handleSubmit}
-                  disabled={!text.trim() && attachments.length === 0}
+                  disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
                   size="sm"
-                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
-                  title="Send interrupts the current reply and redirects the model"
+                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
+                  title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : "Send interrupts the current reply and redirects the model"}
                 >
                   Send
                 </Button>
                 <Button onClick={onStop} variant="destructive" size="sm">
-                  <Square className="h-3.5 w-3.5 mr-1" />
+                  <Square aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
                   Stop
                 </Button>
               </>
             ) : (
               <Button
                 onClick={handleSubmit}
-                disabled={!text.trim() && attachments.length === 0}
+                disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
                 size="sm"
-                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0"
+                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
+                title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : undefined}
               >
                 Send
               </Button>
@@ -1748,7 +1956,11 @@ function ChatInputField({
         ref={fileInputRef}
         type="file"
         className="hidden"
+        accept="image/*,text/*,.json,.md,.mdx,.csv,.pdf,.txt,.yaml,.yml,.html,.css,.js,.ts,.tsx,.go,.py,.rs,.java,.sh,.xml,.log"
+        multiple
         onChange={handleFileSelect}
+        aria-hidden="true"
+        tabIndex={-1}
       />
     </div>
   );
@@ -1825,7 +2037,7 @@ function ConversationItem({
             {...listeners}
             className="shrink-0 mt-0.5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 text-muted-foreground"
           >
-            <GripVertical className="h-3 w-3" />
+            <GripVertical aria-hidden="true" className="h-3 w-3" />
           </span>
           <div className="flex-1 min-w-0">
             {isRenaming ? (
@@ -1848,7 +2060,7 @@ function ConversationItem({
                     className="shrink-0 relative flex h-1.5 w-1.5"
                     title="Reply in progress"
                   >
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
+                    <span aria-hidden="true" className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
                     <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500" />
                   </span>
                 )}
@@ -1873,7 +2085,7 @@ function ConversationItem({
                     className="shrink-0 cursor-pointer text-destructive hover:text-destructive-foreground"
                     title="Stop this reply"
                   >
-                    <Square className="h-3 w-3 fill-current" />
+                    <Square aria-hidden="true" className="h-3 w-3 fill-current" />
                   </span>
                 )}
               </div>
@@ -1891,14 +2103,14 @@ function ConversationItem({
                 className="text-muted-foreground hover:text-foreground"
                 title="Rename"
               >
-                <Pencil className="h-3 w-3" />
+                <Pencil aria-hidden="true" className="h-3 w-3" />
               </button>
               <button
                 onClick={onDelete}
                 className="text-muted-foreground hover:text-destructive"
                 title="Delete"
               >
-                <Trash2 className="h-3 w-3" />
+                <Trash2 aria-hidden="true" className="h-3 w-3" />
               </button>
             </span>
           )}
@@ -1984,7 +2196,7 @@ function FolderItem({
           className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground"
         >
           <ChevronRight
-            className={cn(
+            aria-hidden="true" className={cn(
               "h-3 w-3 transition-transform",
               !isCollapsed && "rotate-90",
             )}
@@ -2012,14 +2224,14 @@ function FolderItem({
               className="text-muted-foreground hover:text-foreground"
               title="Rename folder"
             >
-              <Pencil className="h-3 w-3" />
+              <Pencil aria-hidden="true" className="h-3 w-3" />
             </button>
             <button
               onClick={onDelete}
               className="text-muted-foreground hover:text-destructive"
               title="Delete folder"
             >
-              <Trash2 className="h-3 w-3" />
+              <Trash2 aria-hidden="true" className="h-3 w-3" />
             </button>
           </span>
         )}

@@ -260,7 +260,7 @@ function WorkItemDetailPage() {
             onClick={() => navigate({ to: "/work-items" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -286,7 +286,7 @@ function WorkItemDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {!editing && viewMode === "detail" && (
             <Button
               variant="outline"
@@ -609,7 +609,7 @@ function WorkItemDetailPage() {
                 type="datetime-local"
                 value={editScheduledStartAt}
                 onChange={(e) => { setEditScheduledStartAt(e.target.value); if (e.target.value) setEditAutoStartWorkflow(false); }}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -640,7 +640,7 @@ function WorkItemDetailPage() {
                     const next = Number(e.target.value);
                     setStatus(next);
                   }}
-                  className="rounded-md border bg-background px-2 py-1 text-sm"
+                  className="rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value={WorkItemStatus.PENDING}>pending</option>
                   <option value={WorkItemStatus.READY}>ready</option>
@@ -688,7 +688,7 @@ function WorkItemDetailPage() {
                       ? "Type cannot change while the item is running"
                       : "Switch to a different work item kind"
                   }
-                  className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl glass-input px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <option value={WorkItemKind.EPIC}>Epic</option>
                   <option value={WorkItemKind.FEATURE}>Feature</option>
@@ -827,7 +827,7 @@ function WorkItemDetailPage() {
                 <select
                   value={editWorkflowId}
                   onChange={(e) => setEditWorkflowId(e.target.value)}
-                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value="">-- No workflow --</option>
                   {(workflows ?? []).map((wf) => (
@@ -986,7 +986,7 @@ function WorkItemDetailPage() {
           </CardHeader>
           <CardContent>
             <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
               value={editProjectId}
               onChange={(e) => {
                 setEditProjectId(e.target.value);
@@ -1025,7 +1025,7 @@ function WorkItemDetailPage() {
           {item.blockedBy.length > 0 && (
             <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
               <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
-                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                <Link2 aria-hidden="true" className="h-3.5 w-3.5"  />
                 Blocked by
               </h4>
               <ul className="mt-2 space-y-1.5">
@@ -1053,7 +1053,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depTarget">Add dependency to</Label>
               <select
                 id="depTarget"
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                 value={depTarget}
                 onChange={(e) => setDepTarget(e.target.value)}
               >
@@ -1069,7 +1069,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depType">Type</Label>
               <select
                 id="depType"
-                className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1 text-sm"
                 value={depType}
                 onChange={(e) => setDepType(Number(e.target.value))}
               >

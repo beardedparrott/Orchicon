@@ -42,7 +42,7 @@ function TelemetryPage() {
           <Link to="/cost-explorer" className="text-primary hover:underline">Cost Explorer</Link>.
         </p>
       </div>
-      <div className="flex flex-wrap gap-2 border-b pb-px">
+      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-px">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -152,7 +152,7 @@ function TracesPanel() {
             <p className="text-sm text-muted-foreground">No traces yet.</p>
           )}
           {data?.traces && data.traces.length > 0 && (
-            <div className="divide-y rounded-md border">
+            <div className="divide-y divide-white/10 rounded-2xl glass-panel overflow-hidden">
               {data.traces.map((t) => (
                 <div key={t.traceId} className="flex items-center justify-between px-3 py-2">
                   <div>

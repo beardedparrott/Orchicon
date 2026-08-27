@@ -24,7 +24,7 @@ export function RuntimeImageSelect({
     <select
       value={value || defaultImage}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+      className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
     >
       <option value={defaultImage}>
         Default ({defaultImage || "base image"})

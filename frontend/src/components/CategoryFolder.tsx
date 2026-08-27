@@ -97,7 +97,7 @@ export function CategoryFolder({
       <div
         className={cn(
           "group flex items-center gap-2 rounded-lg px-3 py-2 transition-colors",
-          "bg-muted/50 hover:bg-muted/80",
+          "glass-panel hover:bg-white/5 border border-white/10",
         )}
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
@@ -110,15 +110,15 @@ export function CategoryFolder({
           aria-controls={`folder-content-${category.id}`}
         >
           <ChevronRight
-            className={cn(
+            aria-hidden="true" className={cn(
               "h-4 w-4 text-muted-foreground transition-transform duration-200",
               !isCollapsed && "rotate-90",
             )}
           />
           {isCollapsed ? (
-            <FolderClosed className="h-4 w-4 text-muted-foreground" />
+            <FolderClosed aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
           ) : (
-            <FolderOpen className="h-4 w-4 text-muted-foreground" />
+            <FolderOpen aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
           )}
         </button>
 
@@ -162,7 +162,7 @@ export function CategoryFolder({
                 className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                 title="Rename folder"
               >
-                <Pencil className="h-3.5 w-3.5" />
+                <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
@@ -170,7 +170,7 @@ export function CategoryFolder({
                 className="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-accent transition-colors"
                 title="Delete folder"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
             </>
           )}
@@ -226,7 +226,7 @@ export function CategoryFolder({
             }}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
           >
-            <FolderPlus className="h-3 w-3" />
+            <FolderPlus aria-hidden="true" className="h-3 w-3" />
             Add description
           </button>
         </div>

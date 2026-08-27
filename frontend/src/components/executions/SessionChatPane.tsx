@@ -244,7 +244,7 @@ function CopyButton({ text }: { text: string }) {
       {copied ? (
         <span className="text-[10px] font-medium text-emerald-500">copied</span>
       ) : (
-        <Copy className="h-3 w-3" />
+        <Copy aria-hidden="true" className="h-3 w-3" />
       )}
     </button>
   );
@@ -392,7 +392,7 @@ function ToolCard({ tool }: { tool: ParsedTool }) {
           onClick={() => setOpen((v) => !v)}
           className="flex w-full items-center gap-2 px-3 py-2 text-left"
         >
-          <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <TerminalSquare aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="font-mono text-sm font-medium">{tool.toolName}</span>
           {hasOutput && (
             <span className="ml-auto shrink-0 rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
@@ -749,7 +749,7 @@ export function SessionChatPane({
   );
 
   return (
-    <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card/50 shadow-sm">
+    <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl glass-panel shadow-sm">
       {/* header */}
       <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
         <span
@@ -825,7 +825,7 @@ export function SessionChatPane({
             onClick={jumpToBottom}
             className="sticky bottom-2 z-10 mx-auto flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs shadow-md hover:bg-accent"
           >
-            <ArrowDown className="h-3 w-3" />
+            <ArrowDown aria-hidden="true" className="h-3 w-3" />
             jump to latest
           </button>
         )}
@@ -855,7 +855,7 @@ export function SessionChatPane({
               className="max-h-32 min-h-[40px] flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
             <Button size="sm" onClick={() => handleSend(draft)} disabled={!draft.trim() || busy}>
-              <SendHorizontal className="h-4 w-4" />
+              <SendHorizontal aria-hidden="true" className="h-4 w-4" />
             </Button>
             <Button
               size="sm"
@@ -866,7 +866,7 @@ export function SessionChatPane({
               }}
               title="Discard"
             >
-              <Square className="h-3 w-3" />
+              <Square aria-hidden="true" className="h-3 w-3" />
             </Button>
           </div>
         ) : (

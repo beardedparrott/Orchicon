@@ -192,7 +192,7 @@ export function FileBrowser({
             {/* Read-only: just list the selected files */}
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground shrink-0">Root:</span>
-              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+              <span className="flex-1 truncate rounded-xl glass-panel px-2 py-1 font-mono text-xs text-muted-foreground border border-white/10">
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
             </div>
@@ -212,9 +212,9 @@ export function FileBrowser({
                       className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
                     >
                       {dirPaths.has(f) ? (
-                        <Folder className="h-3 w-3 shrink-0 text-amber-500" />
+                        <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-500" />
                       ) : (
-                        <File className="h-3 w-3 shrink-0 text-sky-500" />
+                        <File aria-hidden="true" className="h-3 w-3 shrink-0 text-sky-500" />
                       )}
                       <span className="truncate">{f}</span>
                     </div>
@@ -227,13 +227,13 @@ export function FileBrowser({
           <>
             {/* Search bar */}
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <input
                 type="text"
                 placeholder="Search files and folders…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+                className="w-full rounded-xl glass-input pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
               {searchQuery && (
                 <button
@@ -241,7 +241,7 @@ export function FileBrowser({
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   onClick={() => setSearchQuery("")}
                 >
-                  <X className="h-4 w-4" />
+                  <X aria-hidden="true" className="h-4 w-4" />
                 </button>
               )}
             </div>
@@ -254,7 +254,7 @@ export function FileBrowser({
             {/* Directory bar */}
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground shrink-0">Root:</span>
-              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+              <span className="flex-1 truncate rounded-xl glass-panel px-2 py-1 font-mono text-xs text-muted-foreground border border-white/10">
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
               {/* Only a project may change its root directory (and thereby
@@ -317,9 +317,9 @@ export function FileBrowser({
                           className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
                         >
                           {dirPaths.has(f) ? (
-                            <Folder className="h-3 w-3 shrink-0 text-amber-500" />
+                            <Folder aria-hidden="true" className="h-3 w-3 shrink-0 text-amber-500" />
                           ) : (
-                            <File className="h-3 w-3 shrink-0" />
+                            <File aria-hidden="true" className="h-3 w-3 shrink-0" />
                           )}
                           <span className="truncate max-w-[300px]">{f}</span>
                           <button
@@ -390,7 +390,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
         Loading…
       </div>
     );
@@ -406,7 +406,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
         className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b"
         onClick={goUp}
       >
-        <ArrowUp className="h-4 w-4 text-muted-foreground" />
+        <ArrowUp aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
         <span className="text-muted-foreground">..</span>
       </div>
 
@@ -419,7 +419,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
               key={entry.path}
               className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
             >
-              <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+              <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
               <span
                 className="flex-1 truncate"
                 onClick={() => onNavigate(entry.path)}
@@ -442,7 +442,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
               key={entry.path}
               className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
             >
-              <File className="h-4 w-4 shrink-0" />
+              <File aria-hidden="true" className="h-4 w-4 shrink-0" />
               <span
                 className="flex-1 truncate"
                 onClick={() => onSelectFile(entry.path)}
@@ -512,7 +512,7 @@ function FileTreeContainer({
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
         Loading…
       </div>
     );
@@ -631,9 +631,9 @@ function FileRow({
               onClick={(e) => { e.stopPropagation(); onToggleExpanded(entry.path); }}
             >
               {isExpanded ? (
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown aria-hidden="true" className="h-4 w-4" />
               ) : (
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight aria-hidden="true" className="h-4 w-4" />
               )}
             </button>
           )}
@@ -646,13 +646,13 @@ function FileRow({
               onClick={() => onToggleEntry(entry.path)}
             >
               {isSelected ? (
-                <CheckSquare className="h-4 w-4" />
+                <CheckSquare aria-hidden="true" className="h-4 w-4" />
               ) : (
-                <Square className="h-4 w-4" />
+                <Square aria-hidden="true" className="h-4 w-4" />
               )}
             </button>
           )}
-          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-500 shrink-0" />
           <span className="truncate" onClick={() => onToggleExpanded(entry.path)}>
             {entry.name}
           </span>
@@ -691,13 +691,13 @@ function FileRow({
           onClick={() => onToggleEntry(entry.path)}
         >
           {isSelected ? (
-            <CheckSquare className="h-4 w-4" />
+            <CheckSquare aria-hidden="true" className="h-4 w-4" />
           ) : (
-            <Square className="h-4 w-4" />
+            <Square aria-hidden="true" className="h-4 w-4" />
           )}
         </button>
       )}
-      <File className="h-4 w-4 text-sky-500 shrink-0" />
+      <File aria-hidden="true" className="h-4 w-4 text-sky-500 shrink-0" />
       <span className="truncate">{entry.name}</span>
     </div>
   );

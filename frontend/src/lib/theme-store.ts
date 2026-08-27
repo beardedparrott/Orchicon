@@ -54,6 +54,42 @@ export type ThemeState = {
   toggleMode: () => void;
 };
 
+/**
+ * Low-power / reduced-transparency detection for backdrop-filter fallback.
+ * Adds `no-backdrop-blur` class to <html> when:
+ *  - backdrop-filter unsupported, OR
+ *  - hardwareConcurrency <= 2 (heuristic low-power), OR
+ *  - prefers-reduced-transparency is set.
+ * Called from ThemeProvider side-effect and on media-query change.
+ */
+export function shouldUseNoBackdropBlur(): boolean {
+  try {
+    if (typeof CSS !== "undefined" && !CSS.supports("backdrop-filter", "blur(1px)") && !CSS.supports("-webkit-backdrop-filter", "blur(1px)")) {
+      return true;
+    }
+    const hc = (navigator as Navigator & { hardwareConcurrency?: number }).hardwareConcurrency;
+    if (typeof hc === "number" && hc <= 2) return true;
+    if (typeof window !== "undefined" && window.matchMedia) {
+      try {
+        if (window.matchMedia("(prefers-reduced-transparency: reduce)").matches) return true;
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+export function applyNoBackdropBlurClass(): void {
+  try {
+    const root = document.documentElement;
+    if (shouldUseNoBackdropBlur()) {
+      root.classList.add("no-backdrop-blur");
+    } else {
+      root.classList.remove("no-backdrop-blur");
+    }
+  } catch { /* ignore */ }
+}
+
 function apply(theme: string, mode: "light" | "dark") {
   const root = document.documentElement;
   if (mode === "dark") root.classList.add("dark");
@@ -66,6 +102,8 @@ export const useThemeStore = create<ThemeState>((set, get) => {
   const initialMode = loadMode();
   const initialTheme = initialMode === "dark" ? slots.dark : slots.light;
   apply(initialTheme, initialMode);
+  // Apply low-power fallback on store init (before ThemeProvider mounts)
+  applyNoBackdropBlurClass();
 
   const persist = (light: string, dark: string) => {
     try {

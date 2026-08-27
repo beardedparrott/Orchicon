@@ -150,7 +150,7 @@ function NewRuntimeImagePage() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={() => navigate({ to: "/runtime-images" })}>
-          <ArrowLeft className="mr-1 h-4 w-4" />
+          <ArrowLeft aria-hidden="true" className="mr-1 h-4 w-4" />
           Back
         </Button>
         <div>
@@ -246,7 +246,7 @@ function NewRuntimeImagePage() {
           )}
 
           <Button onClick={handleSave} disabled={deploying || createImage.isPending} className="w-full">
-            <Hammer className="mr-2 h-4 w-4" />
+            <Hammer aria-hidden="true" className="mr-2 h-4 w-4" />
             {deploying ? "Deploying…" : "Save & Deploy"}
           </Button>
 
@@ -269,7 +269,7 @@ function NewRuntimeImagePage() {
 
         <div className="space-y-1">
           <Label>Dockerfile preview (always visible — what gets built)</Label>
-          <pre className="min-h-96 overflow-auto rounded-md border bg-muted p-3 text-xs">
+          <pre className="min-h-96 overflow-auto rounded-2xl glass-panel p-3 text-xs">
             <code className={cn(advanced ? "" : "text-muted-foreground")}>{preview || "# no content yet"}</code>
           </pre>
           {advanced && (

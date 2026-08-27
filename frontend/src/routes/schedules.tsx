@@ -193,7 +193,7 @@ function SchedulesPage() {
       </div>
 
       {/* View toggle + filter bar (AGENTS.md UI-consistency rule). */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <div className="flex rounded-md border" role="group" aria-label="View">
           <button
             type="button"
@@ -240,14 +240,14 @@ function SchedulesPage() {
           placeholder="Search title…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-48"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-48"
         />
 
         <select
           value={projectId}
           onChange={(e) => goProject(e.target.value)}
           disabled={!projects || projects.length === 0}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All projects</option>
           {projects && projects.length > 0 ? (
@@ -266,7 +266,7 @@ function SchedulesPage() {
         <select
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="">All kinds</option>
           {SCHEDULABLE_KINDS.map((k) => (
@@ -278,7 +278,7 @@ function SchedulesPage() {
 
         <select
           value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           aria-label="Sort by"
         >
           <option value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}>
@@ -293,7 +293,7 @@ function SchedulesPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           aria-label="Sort order"
         >
           <option value="asc">Asc</option>
@@ -308,7 +308,7 @@ function SchedulesPage() {
               onClick={handleRemoveSchedule}
               disabled={removeSchedule.isPending}
             >
-              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
             </Button>
           ) : (
@@ -318,7 +318,7 @@ function SchedulesPage() {
               onClick={handleCancelSelected}
               disabled={cancelScheduled.isPending}
             >
-              <Ban className="mr-1 h-3.5 w-3.5" />
+              <Ban aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Cancel {selected.size} selected
             </Button>
           ))}
@@ -486,7 +486,7 @@ function UpcomingView({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SearchX className="h-5 w-5 text-muted-foreground" />
+            <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
             No upcoming schedules
           </CardTitle>
           <CardDescription>
@@ -584,7 +584,7 @@ function QueuedSection({
               />
               {ii !== queued.length - 1 && (
                 <span
-                  aria-hidden
+                  aria-hidden="true"
                   className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
                 />
               )}
@@ -654,7 +654,7 @@ function QueuedCard({
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {projectName && <span>{projectName}</span>}
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
+                    <Clock aria-hidden="true" className="h-3 w-3" />
                     Queued — waits for the current step
                   </span>
                 </div>
@@ -713,7 +713,7 @@ function AgendaGroup({
                 />
                 {!isLast && (
                   <span
-                    aria-hidden
+                    aria-hidden="true"
                     className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
                   />
                 )}
@@ -789,7 +789,7 @@ function ScheduleCard({
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
               <span className="inline-flex items-center gap-1 font-mono tabular-nums">
-                <Clock className="h-3 w-3" />
+                <Clock aria-hidden="true" className="h-3 w-3" />
                 {formatTime(fireTime)}
               </span>
               <CountdownChip target={fireTime} now={now} />
@@ -878,7 +878,7 @@ function RunningView({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SearchX className="h-5 w-5 text-muted-foreground" />
+            <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
             No schedules running
           </CardTitle>
           <CardDescription>
@@ -919,7 +919,7 @@ function RunningView({
               />
               {ii !== items.length - 1 && (
                 <span
-                  aria-hidden
+                  aria-hidden="true"
                   className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
                 />
               )}
@@ -996,7 +996,7 @@ function RunningCard({
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {projectName && <span>{projectName}</span>}
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
+                    <Clock aria-hidden="true" className="h-3 w-3" />
                     Started {formatDate(startedAt)}
                   </span>
                 </div>
@@ -1126,7 +1126,7 @@ function HistoryView({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SearchX className="h-5 w-5 text-muted-foreground" />
+            <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
             No past runs yet
           </CardTitle>
           <CardDescription>
@@ -1170,7 +1170,7 @@ function HistoryView({
               />
               {ii !== entries.length - 1 && (
                 <span
-                  aria-hidden
+                  aria-hidden="true"
                   className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
                 />
               )}
@@ -1245,7 +1245,7 @@ function HistoryCard({
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {projectName && <span>{projectName}</span>}
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
+                    <Clock aria-hidden="true" className="h-3 w-3" />
                     Ran {formatDate(ranAt)}
                   </span>
                 </div>
@@ -1328,7 +1328,7 @@ function LiveClock({ now }: { now: number }) {
     <div
       role="timer"
       aria-label="Current time"
-      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+      className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
     >
       <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none" />
       <span className="font-mono text-sm font-medium tabular-nums text-foreground">
@@ -1350,7 +1350,7 @@ function StatsStrip({ items, now }: { items: WorkItemProto[]; now: number }) {
     isSameLocalDay(upcomingSortTime(i), now),
   ).length;
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border bg-card px-4 py-2.5 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl glass-panel px-4 py-2.5 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full bg-primary/70" />
         {items.length} upcoming
@@ -1405,7 +1405,7 @@ function WorkflowChip({ workflowId }: { workflowId: string }) {
       title={workflowId}
       className="inline-flex max-w-[12rem] items-center gap-1 rounded-md border border-input bg-background px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
     >
-      <Workflow className="h-3 w-3 shrink-0" />
+      <Workflow aria-hidden="true" className="h-3 w-3 shrink-0" />
       <span className="truncate">{workflowId}</span>
     </Link>
   );
@@ -1420,7 +1420,7 @@ function RunChip({ workflowId, runId }: { workflowId: string; runId: string }) {
       title={`${workflowId} / ${runId}`}
       className="inline-flex max-w-[12rem] items-center gap-1 rounded-md border border-input bg-background px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
     >
-      <CalendarClock className="h-3 w-3 shrink-0" />
+      <CalendarClock aria-hidden="true" className="h-3 w-3 shrink-0" />
       <span className="truncate">run {runId.slice(-8)}</span>
     </Link>
   );
