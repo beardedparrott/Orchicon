@@ -531,6 +531,19 @@ export class WorkItem extends Message<WorkItem> {
    */
   recurringEnabled = false;
 
+  /**
+   * spawned_by_title is a read-time badge: the title of the spawning
+   * recurring item (spawned_by) resolved by the server for display
+   * ("from automation X"). Empty when the item is not an automation spawn
+   * or when the spawning item no longer exists. Never stored — computed at
+   * read time (feature 5.1) and only populated on the idea-surface reads
+   * (ListIdeas / GetWorkItem) that callers use to render the badge, so the
+   * hot general list path stays untouched.
+   *
+   * @generated from field: string spawned_by_title = 38;
+   */
+  spawnedByTitle = "";
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -575,6 +588,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 35, name: "spawned_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 36, name: "spawned_by_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 37, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 38, name: "spawned_by_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

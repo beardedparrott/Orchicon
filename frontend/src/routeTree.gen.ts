@@ -25,6 +25,7 @@ import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as IdeaCloudRouteImport } from './routes/idea-cloud'
 import { Route as HomeRouteImport } from './routes/home'
 import { Route as ExecutionsRouteImport } from './routes/executions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
@@ -132,6 +133,11 @@ const OverviewRoute = OverviewRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IdeaCloudRoute = IdeaCloudRouteImport.update({
+  id: '/idea-cloud',
+  path: '/idea-cloud',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HomeRoute = HomeRouteImport.update({
@@ -286,6 +292,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
@@ -332,6 +339,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
@@ -379,6 +387,7 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
@@ -427,6 +436,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/executions'
     | '/home'
+    | '/idea-cloud'
     | '/login'
     | '/overview'
     | '/policies'
@@ -473,6 +483,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/executions'
     | '/home'
+    | '/idea-cloud'
     | '/login'
     | '/overview'
     | '/policies'
@@ -519,6 +530,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/executions'
     | '/home'
+    | '/idea-cloud'
     | '/login'
     | '/overview'
     | '/policies'
@@ -566,6 +578,7 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   ExecutionsRoute: typeof ExecutionsRoute
   HomeRoute: typeof HomeRoute
+  IdeaCloudRoute: typeof IdeaCloudRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   PoliciesRoute: typeof PoliciesRoute
@@ -714,6 +727,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/idea-cloud': {
+      id: '/idea-cloud'
+      path: '/idea-cloud'
+      fullPath: '/idea-cloud'
+      preLoaderRoute: typeof IdeaCloudRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/home': {
@@ -926,6 +946,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   ExecutionsRoute: ExecutionsRoute,
   HomeRoute: HomeRoute,
+  IdeaCloudRoute: IdeaCloudRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   PoliciesRoute: PoliciesRoute,

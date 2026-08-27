@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Calendar,
   Repeat,
+  Lightbulb,
   CircleCheck,
   ShieldCheck,
   Webhook,
@@ -27,7 +28,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { label: "Overview", items: [{ label: "Dashboard", to: "/dashboard", icon: LayoutDashboard, iconColor: "text-cyan-700 dark:text-cyan-400" },{ label: "Telemetry", to: "/telemetry", icon: Activity, iconColor: "text-emerald-700 dark:text-emerald-400" },{ label: "Cost Explorer", to: "/cost-explorer", icon: Coins, iconColor: "text-amber-700 dark:text-amber-400" }]},
   { label: "Work", items: [{ label: "Projects", to: "/projects", icon: Folder, iconColor: "text-cyan-700 dark:text-cyan-400" },{ label: "Work Items", to: "/work-items", icon: CheckSquare, iconColor: "text-indigo-700 dark:text-indigo-400" },{ label: "Runtime Images", to: "/runtime-images", icon: Container, iconColor: "text-purple-700 dark:text-purple-400" }]},
   { label: "Execution", items: [{ label: "Workers", to: "/workers", icon: Cpu, iconColor: "text-cyan-700 dark:text-cyan-400" },{ label: "Workflows", to: "/workflows", icon: GitMerge, iconColor: "text-sky-700 dark:text-sky-400" },{ label: "Executions", to: "/executions", icon: PlayCircle, iconColor: "text-emerald-700 dark:text-emerald-400" },{ label: "Recovery", to: "/recovery", icon: RotateCcw, iconColor: "text-rose-700 dark:text-rose-400" }]},
-  { label: "Automation", items: [{ label: "Schedules", to: "/schedules", icon: Calendar, iconColor: "text-violet-700 dark:text-violet-400" },{ label: "Recurring Items", to: "/recurring-items", icon: Repeat, iconColor: "text-fuchsia-700 dark:text-fuchsia-400", badge: "NEW" }]},
+  { label: "Automation", items: [{ label: "Schedules", to: "/schedules", icon: Calendar, iconColor: "text-violet-700 dark:text-violet-400" },{ label: "Recurring Items", to: "/recurring-items", icon: Repeat, iconColor: "text-fuchsia-700 dark:text-fuchsia-400", badge: "NEW" },{ label: "Idea Cloud", to: "/idea-cloud", icon: Lightbulb, iconColor: "text-amber-600 dark:text-amber-400", badge: "NEW" }]},
   { label: "Enforcement", items: [{ label: "Approvals", to: "/approvals", icon: CircleCheck, iconColor: "text-emerald-700 dark:text-emerald-400" },{ label: "Policies", to: "/policies", icon: ShieldCheck, iconColor: "text-indigo-700 dark:text-indigo-400" }]},
   { label: "Control", items: [{ label: "Webhooks", to: "/webhooks", icon: Webhook, iconColor: "text-cyan-700 dark:text-cyan-400" },{ label: "Adapters", to: "/adapters", icon: Plug, iconColor: "text-amber-700 dark:text-amber-400" },{ label: "Settings", to: "/settings", icon: SlidersHorizontal, iconColor: "text-slate-600 dark:text-slate-400" },{ label: "Admin", to: "/admin", icon: UserCog, iconColor: "text-rose-700 dark:text-rose-400", admin: true }]},
 ];

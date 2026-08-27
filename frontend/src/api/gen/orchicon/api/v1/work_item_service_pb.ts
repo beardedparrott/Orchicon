@@ -2028,3 +2028,294 @@ export class GetWorkItemRunHistoryResponse extends Message<GetWorkItemRunHistory
   }
 }
 
+/**
+ * ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
+ * work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
+ * the same query UX.
+ *
+ * @generated from message orchicon.api.v1.ListIdeasRequest
+ */
+export class ListIdeasRequest extends Message<ListIdeasRequest> {
+  /**
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId = "";
+
+  /**
+   * empty = all projects
+   *
+   * @generated from field: string project_id = 2;
+   */
+  projectId = "";
+
+  /**
+   * free-text search across title and description
+   *
+   * @generated from field: string search = 3;
+   */
+  search = "";
+
+  /**
+   * "title", "priority", "created_at" (default)
+   *
+   * @generated from field: string sort_by = 4;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "asc")
+   *
+   * @generated from field: string sort_order = 5;
+   */
+  sortOrder = "";
+
+  /**
+   * id > cursor (stable ULID pagination)
+   *
+   * @generated from field: string page_token = 6;
+   */
+  pageToken = "";
+
+  /**
+   * @generated from field: int32 page_size = 7;
+   */
+  pageSize = 0;
+
+  constructor(data?: PartialMessage<ListIdeasRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListIdeasRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListIdeasRequest {
+    return new ListIdeasRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListIdeasRequest {
+    return new ListIdeasRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListIdeasRequest {
+    return new ListIdeasRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListIdeasRequest | PlainMessage<ListIdeasRequest> | undefined, b: ListIdeasRequest | PlainMessage<ListIdeasRequest> | undefined): boolean {
+    return proto3.util.equals(ListIdeasRequest, a, b);
+  }
+}
+
+/**
+ * ListIdeasResponse carries a page of idea-state work items (already
+ * populated with automation provenance + the read-time spawned_by_title
+ * badge) plus the next page token.
+ *
+ * @generated from message orchicon.api.v1.ListIdeasResponse
+ */
+export class ListIdeasResponse extends Message<ListIdeasResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkItem ideas = 1;
+   */
+  ideas: WorkItem[] = [];
+
+  /**
+   * @generated from field: string next_page_token = 2;
+   */
+  nextPageToken = "";
+
+  constructor(data?: PartialMessage<ListIdeasResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListIdeasResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ideas", kind: "message", T: WorkItem, repeated: true },
+    { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListIdeasResponse {
+    return new ListIdeasResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListIdeasResponse {
+    return new ListIdeasResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListIdeasResponse {
+    return new ListIdeasResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListIdeasResponse | PlainMessage<ListIdeasResponse> | undefined, b: ListIdeasResponse | PlainMessage<ListIdeasResponse> | undefined): boolean {
+    return proto3.util.equals(ListIdeasResponse, a, b);
+  }
+}
+
+/**
+ * PromoteIdeaRequest identifies the idea-state work item to approve.
+ *
+ * @generated from message orchicon.api.v1.PromoteIdeaRequest
+ */
+export class PromoteIdeaRequest extends Message<PromoteIdeaRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<PromoteIdeaRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PromoteIdeaRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PromoteIdeaRequest {
+    return new PromoteIdeaRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PromoteIdeaRequest {
+    return new PromoteIdeaRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PromoteIdeaRequest {
+    return new PromoteIdeaRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PromoteIdeaRequest | PlainMessage<PromoteIdeaRequest> | undefined, b: PromoteIdeaRequest | PlainMessage<PromoteIdeaRequest> | undefined): boolean {
+    return proto3.util.equals(PromoteIdeaRequest, a, b);
+  }
+}
+
+/**
+ * PromoteIdeaResponse carries the promoted work item (now a normal pending
+ * item, provenance retained).
+ *
+ * @generated from message orchicon.api.v1.PromoteIdeaResponse
+ */
+export class PromoteIdeaResponse extends Message<PromoteIdeaResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<PromoteIdeaResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PromoteIdeaResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PromoteIdeaResponse {
+    return new PromoteIdeaResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PromoteIdeaResponse {
+    return new PromoteIdeaResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PromoteIdeaResponse {
+    return new PromoteIdeaResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PromoteIdeaResponse | PlainMessage<PromoteIdeaResponse> | undefined, b: PromoteIdeaResponse | PlainMessage<PromoteIdeaResponse> | undefined): boolean {
+    return proto3.util.equals(PromoteIdeaResponse, a, b);
+  }
+}
+
+/**
+ * DismissIdeaRequest identifies the idea-state work item to discard.
+ *
+ * @generated from message orchicon.api.v1.DismissIdeaRequest
+ */
+export class DismissIdeaRequest extends Message<DismissIdeaRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DismissIdeaRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DismissIdeaRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DismissIdeaRequest {
+    return new DismissIdeaRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DismissIdeaRequest {
+    return new DismissIdeaRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DismissIdeaRequest {
+    return new DismissIdeaRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DismissIdeaRequest | PlainMessage<DismissIdeaRequest> | undefined, b: DismissIdeaRequest | PlainMessage<DismissIdeaRequest> | undefined): boolean {
+    return proto3.util.equals(DismissIdeaRequest, a, b);
+  }
+}
+
+/**
+ * DismissIdeaResponse carries the dismissed work item (now cancelled).
+ *
+ * @generated from message orchicon.api.v1.DismissIdeaResponse
+ */
+export class DismissIdeaResponse extends Message<DismissIdeaResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<DismissIdeaResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DismissIdeaResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DismissIdeaResponse {
+    return new DismissIdeaResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DismissIdeaResponse {
+    return new DismissIdeaResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DismissIdeaResponse {
+    return new DismissIdeaResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DismissIdeaResponse | PlainMessage<DismissIdeaResponse> | undefined, b: DismissIdeaResponse | PlainMessage<DismissIdeaResponse> | undefined): boolean {
+    return proto3.util.equals(DismissIdeaResponse, a, b);
+  }
+}
+

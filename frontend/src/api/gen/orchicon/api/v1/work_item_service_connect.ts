@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, GetWorkItemRunHistoryRequest, GetWorkItemRunHistoryResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, DismissIdeaRequest, DismissIdeaResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, GetWorkItemRunHistoryRequest, GetWorkItemRunHistoryResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListIdeasRequest, ListIdeasResponse, ListWorkItemsRequest, ListWorkItemsResponse, PromoteIdeaRequest, PromoteIdeaResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -204,6 +204,53 @@ export const WorkItemService = {
       name: "RestoreWorkItem",
       I: RestoreWorkItemRequest,
       O: RestoreWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListIdeas returns a page of idea-state work items (automation-produced
+     * items awaiting triage, feature 5.1) with their automation provenance
+     * (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
+     * Scoped to status='idea' by construction — it shares the 4.1 idea gate
+     * with ListWorkItems(IdeaScope=only), so membership can never diverge.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.ListIdeas
+     */
+    listIdeas: {
+      name: "ListIdeas",
+      I: ListIdeasRequest,
+      O: ListIdeasResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * PromoteIdea approves an idea: it transitions the idea-state work item
+     * to a normal pending work item (leaves idea state, becomes queryable in
+     * the normal Work Items scope with normal status semantics, and can be
+     * planned/scheduled/run through the existing pipeline). Provenance fields
+     * are retained for display. Audited as work_item.promoted. PromoteIdea is
+     * the ONLY sanctioned path out of idea state (the generic update path is
+     * gated for idea items).
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.PromoteIdea
+     */
+    promoteIdea: {
+      name: "PromoteIdea",
+      I: PromoteIdeaRequest,
+      O: PromoteIdeaResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DismissIdea discards an idea: it transitions the idea-state work item
+     * to cancelled (the soft-delete/cancel terminal, consistent with
+     * DeleteWorkItem), so it leaves idea state and drops out of every active
+     * view. Provenance is retained as a record of where it came from. Audited
+     * as work_item.dismissed.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.DismissIdea
+     */
+    dismissIdea: {
+      name: "DismissIdea",
+      I: DismissIdeaRequest,
+      O: DismissIdeaResponse,
       kind: MethodKind.Unary,
     },
     /**
