@@ -33,7 +33,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // every canned worker's AGENTS.md in place of the safety rules. The rules
 // themselves now ship in the composite's stable prompt prefix
 // (StablePromptPrefix) so they are not duplicated per worker.
-const seedSafetyMarker = "orchicon.safety=v21"
+const seedSafetyMarker = "orchicon.safety=v22"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via
 // the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
@@ -165,7 +165,8 @@ var cannedWorkers = []cannedWorker{
 			"- After each meaningful phase of analysis or implementation, persist something concrete to the project directory (an updated file, a scaffold, or a short progress note). Orchicon monitors execution health from file-modification activity — a worker that goes long stretches without writing files can be flagged as stalled even while it is actively working.\n\n" +
 			"### Before finishing\n" +
 			"- Run the project's existing test suite to verify nothing is broken.\n" +
-			"- Review your own diff for obvious mistakes before submitting.\n\n" +
+			"- Review your own diff for obvious mistakes before submitting.\n" +
+			"- Commit ALL changes to the feature branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			"",
 	},
 	{
@@ -394,7 +395,8 @@ var cannedWorkers = []cannedWorker{
 			"- After each meaningful phase of analysis or implementation, persist something concrete to the project directory (an updated file, a scaffold, or a short progress note). Orchicon monitors execution health from file-modification activity — a worker that goes long stretches without writing files can be flagged as stalled even while it is actively working.\n\n" +
 			"### Before finishing\n" +
 			"- Run the project's existing test suite to verify nothing is broken.\n" +
-			"- Review your own diff for obvious mistakes before submitting.\n\n" +
+			"- Review your own diff for obvious mistakes before submitting.\n" +
+			"- Commit ALL changes to the feature branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			playwrightBlock,
 	},
 	{

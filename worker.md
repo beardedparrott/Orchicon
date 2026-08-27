@@ -61,6 +61,19 @@ Before writing your `ORCHICON WORKER SUMMARY:` line, clean up the temporary file
 - The worktree itself is pruned by the platform after the run, but you must clean up your own mess so `.orchicon/` and the shared control-plane directory never accumulate scratch.
 - Cleanup is a mandatory step — do not report `ORCHICON WORKER SUMMARY` until your scratch is removed.
 
+## Commit-on-finish contract (worktree runs)
+
+For **git-backed runs** (your worktree at `<project_dir>/.orchicon-worktrees/<runID>/` on branch `<branch>` — `worktree_status=ready`):
+
+- Before writing `ORCHICON WORKER SUMMARY:`, **commit ALL changes** to the feature branch and **push to origin**.
+- Verify: `git status --porcelain` must be clean (modulo gitignored scratch: `.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, `.gtmp/`, `.gocache/`, `.cache-build/`, `architecture-notes/`, `design-notes/`, `.orchicon/`, `.orchicon-worktrees/`).
+- Minimal recipe: `git status --porcelain && git diff --stat && git log --oneline -3`; `git add <files>`; `git commit -m "feat: <summary>"`; `git push origin <branch>`.
+- **WHY:** downstream steps (QA Engineer, PR Reviewer, Code Approver, DevOps Engineer) run in **pristine sibling worktrees** created from the committed branch tip — **only committed + pushed work is visible to them**. Uncommitted working-tree changes are invisible and cause loops (observed: run `01M11YDJ03054YZ4THACMD7HXT` — 4 fixes implemented but 0 commits; QA blocked, PR Reviewer hacked `git -C <parent> diff`; extra iteration to `d25632c`).
+
+For **in-place runs** (`worktree_status != ready`, no branch — you work directly in `project_dir`): do NOT create branches, commit, or push — work in place. The `GitGuidanceBlock` in `internal/db/prompt.go` already selects this path.
+
+Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and pushed (git-backed) or files are persisted in place (non-worktree).
+
 ## Summary contract
 
 End your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure` — and a short paragraph. The first word routes the workflow. Keep the summary under ~500 tokens; it is re-embedded into every later step's prompt.
