@@ -13,7 +13,14 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems, useRestoreWorkItem } from "@/api/workItems";
+import {
+  useBatchArchiveWorkItems,
+  useBatchDeleteWorkItems,
+  useGetDependencyGraph,
+  useListWorkItems,
+  useReorderWorkItems,
+  useRestoreWorkItem,
+} from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
@@ -84,6 +91,7 @@ function WorkItemsPage() {
 
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
+  const batchArchive = useBatchArchiveWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
   const runWorkItems = useBatchRunWorkItems(projectId);
   const toast = useToast();
@@ -220,6 +228,33 @@ function WorkItemsPage() {
     });
   };
 
+  // Bulk "Archive" (mirrors handleBatchDelete): confirm naming the count,
+  // fan out the archive fan-out, clear the selection on completion, and
+  // report the archived/skipped split. The server is authoritative for the
+  // two gates (terminal-only, no children), so skipped items are the ones
+  // the server rejected — reported as one generic bucket (design D2).
+  const handleBatchArchive = () => {
+    if (selected.size === 0) return;
+    const count = selected.size;
+    if (
+      !window.confirm(
+        `Archive ${count} work item${count === 1 ? "" : "s"}? Only terminal items without children can be archived; the rest are skipped.`,
+      )
+    ) return;
+    batchArchive.mutate(Array.from(selected), {
+      onSuccess: (res) => {
+        setSelected(new Set());
+        if (res.skipped > 0) {
+          toast.success(
+            `Archived ${res.archived}, skipped ${res.skipped} (non-terminal or has children)`,
+          );
+        } else {
+          toast.success(`Archived ${res.archived}`);
+        }
+      },
+    });
+  };
+
   // Bulk "Move to…" (ADR-WI-5): the selection toolbar's keyboard path for
   // multi-move, sharing the exact gates + mutation path with board
   // multi-drag.
@@ -329,6 +364,8 @@ function WorkItemsPage() {
         onToggleAll={handleToggleAll}
         onDeleteSelected={handleBatchDelete}
         deletePending={batchDelete.isPending}
+        onArchiveSelected={handleBatchArchive}
+        archivePending={batchArchive.isPending}
         onMoveSelected={handleMoveSelected}
         movePending={movePending}
         onRunSelected={handleRunSelected}

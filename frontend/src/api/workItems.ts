@@ -251,6 +251,38 @@ export function useBatchDeleteWorkItems() {
   });
 }
 
+// useBatchArchiveWorkItems archives multiple terminal work items by id.
+// Mirrors useBatchDeleteWorkItems but fans out with Promise.allSettled so a
+// single non-archivable item (the server rejects with CodeFailedPrecondition
+// — it is non-terminal or has children) does not abort the rest. The fan-out
+// is intentionally raw: the server is authoritative for both gates, so the
+// client counts successes vs. failures from the returned results rather than
+// duplicating validation. Invalidation-only, no optimistic row removal —
+// parity with the single-item useArchiveWorkItem (which relies on
+// invalidation + the 5s poll).
+export function useBatchArchiveWorkItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((id) => workItemClient.archiveWorkItem({ id })),
+      );
+      const archived = results.filter(
+        (r) => r.status === "fulfilled",
+      ).length;
+      const skipped = results.length - archived;
+      return { archived, skipped, results };
+    },
+    onSuccess: () => {
+      // Invalidate every list query so the active view (tree/board) drops the
+      // archived rows and the Archive view picks them up. Mirrors
+      // useBatchDeleteWorkItems (workItemKeys.all) — correct in the "All
+      // projects" view where projectId is empty.
+      qc.invalidateQueries({ queryKey: workItemKeys.all });
+    },
+  });
+}
+
 // useRemoveSchedule removes the schedule from a work item without
 // changing its status. It clears recurring_schedule, unbinds the
 // workflow_run_id, and disables auto_start_workflow using proto3 clear
