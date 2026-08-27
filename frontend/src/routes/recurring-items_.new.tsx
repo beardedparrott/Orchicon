@@ -1,3 +1,10 @@
+// New Recurring Item form (feature 4.3) — schedule-first, NOT a work-item
+// clone. Kind/parent/priority are dropped (recurring rows are the flat
+// shape: kind=task, no parent, status RECURRING). Added: workflow binding
+// (required to schedule), runtime image, context files, cadence
+// (RecurringScheduleForm), and an OPT-IN "outputs: ideas" toggle that sets
+// the schedule's `outputs_mode` so a fire's spawned items land in IDEA state.
+
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
@@ -5,13 +12,13 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorkItem } from "@/api/workItems";
-import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { useListWorkflows } from "@/api/workflows";
 import { FileBrowser } from "@/components/FileBrowser";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
-import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
-import { RecurringSchedule, WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -25,127 +32,91 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Create work item form (docs/10 §5, §2). The kind determines the
-// allowed parent (epic=none, otherwise any shallower kind).
-// Zod validation mirrors the server-side rules
-// (internal/workitem/validate.go).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/recurring-items/new",
   component: NewRecurringItemPage,
   validateSearch: (search: Record<string, unknown>) => ({
     projectId: (search.projectId as string) ?? "",
-    parentId: (search.parentId as string) ?? "",
   }),
 });
 
-const createWorkItemSchema = z.object({
+const createRecurringSchema = z.object({
   title: z
     .string()
     .min(1, "Title is required")
     .max(500, "Title must be at most 500 characters"),
-  kind: z.enum(["epic", "feature", "task", "subtask"], {
-    message: "Kind must be one of: epic, feature, task, subtask",
-  }),
+  // The cadence needs a runnable workflow — binding is required to schedule.
+  workflowId: z
+    .string()
+    .min(1, "A workflow binding is required to schedule a recurring item"),
   description: z.string().max(1_048_576, "Description is too large").optional(),
   acceptanceCriteria: z
     .string()
     .max(1_048_576, "Acceptance criteria is too large")
     .optional(),
-  priority: z.number().int().min(0).max(1000),
-  parentId: z.string().optional().or(z.literal("")),
 });
 
-type CreateWorkItemForm = z.infer<typeof createWorkItemSchema>;
-
-const KIND_TO_PROTO: Record<string, number> = {
-  epic: WorkItemKind.EPIC,
-  feature: WorkItemKind.FEATURE,
-  task: WorkItemKind.TASK,
-  subtask: WorkItemKind.SUBTASK,
-};
+type CreateRecurringForm = z.infer<typeof createRecurringSchema>;
 
 function NewRecurringItemPage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/recurring-items_/new" });
   const [selectedProjectId, setSelectedProjectId] = useState(search.projectId || "");
-  const parentId = search.parentId || "";
   const createWorkItem = useCreateWorkItem();
   const { data: projects } = useListProjects();
+  const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
-  // Fetch sibling items for parent selection.
-  const { data: projectItems } = useListWorkItems(selectedProjectId);
-
-  // Determine the default kind based on the parent (if any).
-  const parentItem = projectItems?.find((i) => i.id === parentId);
-  const defaultKind = parentItem
-    ? parentItem.kind === 1
-      ? "feature"
-      : parentItem.kind === 2
-        ? "task"
-        : "subtask"
-    : "epic";
+  const [runtimeImage, setRuntimeImage] = useState("");
+  const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
+  // OPT-IN "outputs: ideas" provenance — sets the schedule's outputs_mode so
+  // spawned items land in IDEA state (hidden from normal work-item views).
+  const [ideaOutputs, setIdeaOutputs] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
 
   const {
     register,
     handleSubmit,
-    watch,
-    setValue,
-    getValues,
     formState: { errors, isSubmitting },
-  } = useForm<CreateWorkItemForm>({
-    resolver: zodResolver(createWorkItemSchema),
+  } = useForm<CreateRecurringForm>({
+    resolver: zodResolver(createRecurringSchema),
     defaultValues: {
       title: "",
-      kind: defaultKind as CreateWorkItemForm["kind"],
+      workflowId: "",
       description: "",
       acceptanceCriteria: "",
-      priority: 0,
-      parentId: parentId,
     },
   });
 
-  const selectedKind = watch("kind");
-  const selectedParentId = watch("parentId");
-  const [runtimeImage, setRuntimeImage] = useState("");
-  const [contextFiles, setContextFiles] = useState<string[]>([]);
-  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
+  const hasSchedule = !!recurringSchedule?.frequency || !!recurringSchedule?.startDate || !!recurringSchedule?.startTime;
 
-  // Changing the kind can invalidate the previously chosen parent: epics
-  // have no parent, and a shallower kind cannot sit under a deeper one.
-  // Clear a stale parent_id so the form never submits one the server
-  // rejects with a generic InvalidArgument (and the picker shows its
-  // "requires a parent" error instead of a silent placeholder).
-  const clearStaleParent = (nextKind: CreateWorkItemForm["kind"]) => {
-    const pid = getValues("parentId");
-    if (!pid) return;
-    if (nextKind === "epic") {
-      setValue("parentId", "");
+  const onSubmit = async (values: CreateRecurringForm) => {
+    if (!hasSchedule) {
+      setScheduleError("A recurring schedule is required — toggle it on and set a cadence.");
       return;
     }
-    const parent = projectItems?.find((i) => i.id === pid);
-    if (parent && depthForKind(parent.kind) >= KIND_TO_PROTO[nextKind]) {
-      setValue("parentId", "");
-    }
-  };
-  const kindRegister = register("kind");
-
-  // The parent picker filters candidates by depth itself (only items
-  // strictly shallower than the selected kind) — this mirrors the
-  // server-side rule and is UX only (invariant #1).
-  const onSubmit = async (values: CreateWorkItemForm) => {
+    setScheduleError("");
+    // Apply the outputs:ideas opt-in to the schedule's outputs_mode
+    // ("standard" is the default; "idea" routes spawned items to IDEA state).
+    const schedule = recurringSchedule
+      ? new RecurringSchedule({
+          ...recurringSchedule,
+          outputsMode: ideaOutputs ? "idea" : "standard",
+        })
+      : undefined;
     const workItem = await createWorkItem.mutateAsync({
       projectId: selectedProjectId,
-      parentId: values.parentId || undefined,
-      kind: KIND_TO_PROTO[values.kind],
+      // Flat recurring shape (migration D1): kind=task, no parent.
+      kind: WorkItemKind.TASK,
       title: values.title,
       description: values.description || undefined,
       acceptanceCriteria: values.acceptanceCriteria || undefined,
-      priority: values.priority,
+      workflowId: values.workflowId,
       runtimeImage: runtimeImage || undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
-      recurringSchedule: recurringSchedule,
+      recurringSchedule: schedule,
     });
     navigate({
       to: "/recurring-items/$id",
@@ -158,17 +129,17 @@ function NewRecurringItemPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New Recurring Item</h1>
         <p className="text-sm text-muted-foreground">
-          Create a recurring item — it will fire on schedule and appear under Automation → Recurring Items. Epics are top-level; features,
-          tasks, and subtasks nest under any shallower kind.
+          A recurring item is a first-class automation: it fires its bound
+          workflow on a cadence and records a per-fire history. No kind, no
+          parent, no priority — just a schedule and a workflow.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Work item details</CardTitle>
+          <CardTitle>Automation details</CardTitle>
           <CardDescription>
-            A new item starts in the pending state. Only tasks and subtasks
-            are schedulable.
+            Binding a workflow is required — the cadence needs something to run.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -177,7 +148,7 @@ function NewRecurringItemPage() {
               <Label htmlFor="project">Project</Label>
               <select
                 id="project"
-                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-11 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm sm:h-9"
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
               >
@@ -197,80 +168,44 @@ function NewRecurringItemPage() {
               <Label htmlFor="title">Title</Label>
               <Input
                 id="title"
-                placeholder="Implement authentication"
+                placeholder="Weekly dependency audit"
                 {...register("title")}
               />
               {errors.title && (
-                <p className="text-xs text-destructive">
-                  {errors.title.message}
-                </p>
+                <p className="text-xs text-destructive">{errors.title.message}</p>
               )}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="kind">Kind</Label>
-                <select
-                  id="kind"
-                  className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
-                  {...kindRegister}
-                  onChange={(e) => {
-                    void kindRegister.onChange(e);
-                    clearStaleParent(e.target.value as CreateWorkItemForm["kind"]);
-                  }}
-                >
-                  <option value="epic">Epic (top-level)</option>
-                  <option value="feature">Feature</option>
-                  <option value="task">Task</option>
-                  <option value="subtask">Subtask</option>
-                </select>
-                {errors.kind && (
-                  <p className="text-xs text-destructive">
-                    {errors.kind.message}
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="priority">Priority</Label>
-                <Input
-                  id="priority"
-                  type="number"
-                  min={0}
-                  max={1000}
-                  {...register("priority", { valueAsNumber: true })}
-                />
-                {errors.priority && (
-                  <p className="text-xs text-destructive">
-                    {errors.priority.message}
-                  </p>
-                )}
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="workflow">Workflow</Label>
+              <select
+                id="workflow"
+                className="flex h-11 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm sm:h-9"
+                {...register("workflowId")}
+              >
+                <option value="">— Select a workflow —</option>
+                {(workflows ?? []).map((wf) => (
+                  <option key={wf.id} value={wf.id}>
+                    {wf.name}
+                  </option>
+                ))}
+              </select>
+              {errors.workflowId && (
+                <p className="text-xs text-destructive">{errors.workflowId.message}</p>
+              )}
+              {(workflows ?? []).length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No published workflow templates yet — publish one in
+                  Workflows to bind it here.
+                </p>
+              )}
             </div>
-
-            {selectedKind !== "epic" && (
-              <div className="space-y-2">
-                <Label htmlFor="parentId">Parent</Label>
-                <WorkItemParentSelect
-                  items={projectItems ?? []}
-                  childKind={KIND_TO_PROTO[selectedKind as keyof typeof KIND_TO_PROTO]}
-                  value={selectedParentId ?? ""}
-                  onChange={(id) => setValue("parentId", id)}
-                  invalid={!selectedParentId}
-                  error={
-                    !selectedParentId
-                      ? `A ${selectedKind} requires a parent.`
-                      : undefined
-                  }
-                />
-              </div>
-            )}
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
               <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
               <p className="text-xs text-muted-foreground">
-                The container image workers run in for this item&apos;s
+                The container image workers run in for this automation&apos;s
                 workflow. Defaults to the base image.
               </p>
             </div>
@@ -287,33 +222,51 @@ function NewRecurringItemPage() {
             ) : (
               <p className="text-xs text-muted-foreground">
                 Select a project with a project directory to add context
-                files or directories for this work item.
+                files or directories for this automation.
               </p>
             )}
 
-            <RecurringScheduleForm
-              value={recurringSchedule}
-              onChange={setRecurringSchedule}
-            />
-
-            <div className="space-y-2">
-              <Label htmlFor="description">Description (optional)</Label>
-              <Textarea
-                id="description"
-                rows={4}
-                {...register("description")}
+            <div className="rounded-2xl glass-panel p-3 space-y-3">
+              <RecurringScheduleForm
+                value={recurringSchedule}
+                onChange={(s) => {
+                  setRecurringSchedule(s);
+                  if (s && (!s.frequency || !s.startDate)) setScheduleError("");
+                }}
               />
-              {errors.description && (
-                <p className="text-xs text-destructive">
-                  {errors.description.message}
-                </p>
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  id="ideaOutputs"
+                  checked={ideaOutputs}
+                  disabled={!hasSchedule}
+                  onChange={(e) => setIdeaOutputs(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <div>
+                  <Label htmlFor="ideaOutputs">Outputs: ideas</Label>
+                  <p className="text-xs text-muted-foreground">
+                    {hasSchedule
+                      ? "Each fire's spawned work items land in IDEA state — hidden from normal Work Items until promoted."
+                      : "Enable a recurring schedule to opt into idea-state outputs."}
+                  </p>
+                </div>
+              </div>
+              {scheduleError && (
+                <p className="text-xs text-destructive">{scheduleError}</p>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="acceptanceCriteria">
-                Acceptance criteria (optional)
-              </Label>
+              <Label htmlFor="description">Description (optional)</Label>
+              <Textarea id="description" rows={4} {...register("description")} />
+              {errors.description && (
+                <p className="text-xs text-destructive">{errors.description.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="acceptanceCriteria">Acceptance criteria (optional)</Label>
               <Textarea
                 id="acceptanceCriteria"
                 rows={3}
@@ -328,7 +281,23 @@ function NewRecurringItemPage() {
 
             {createWorkItem.error && (
               <p className="text-sm text-destructive">
-                Failed to create work item: {String(createWorkItem.error)}
+                Failed to create recurring item: {String(createWorkItem.error)}
+              </p>
+            )}
+
+            {!selectedProjectId && (
+              <p
+                className="text-xs text-destructive"
+                role="alert"
+                aria-label="Project required"
+              >
+                Select a project before saving.
+              </p>
+            )}
+            {hasSchedule && ideaOutputs && (
+              <p className="text-xs text-muted-foreground">
+                Each fire&apos;s spawned work items will land in IDEA state —
+                hidden from normal Work Items until promoted.
               </p>
             )}
 
@@ -340,8 +309,8 @@ function NewRecurringItemPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={isSubmitting || !selectedProjectId}>
-                {isSubmitting ? "Creating…" : "Create Work Item"}
+              <Button type="submit" disabled={isSubmitting || !selectedProjectId || !hasSchedule}>
+                {isSubmitting ? "Creating…" : "Create Recurring Item"}
               </Button>
             </div>
           </form>

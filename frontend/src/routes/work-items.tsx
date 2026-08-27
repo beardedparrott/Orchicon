@@ -54,7 +54,7 @@ import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
-import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { RecurringFilter, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -143,6 +143,9 @@ function WorkItemsPage() {
     // never surface in them.
     includeArchived: view === "archive",
     recurringFilter: RecurringFilter.EXCLUDE_RECURRING,
+    // Idea-state items are automation-produced and hidden from every normal
+    // work-item view; exclude them explicitly (AC: no idea leakage).
+    ideaScope: IdeaScope.EXCLUDE_IDEA,
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 

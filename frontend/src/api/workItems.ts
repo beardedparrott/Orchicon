@@ -15,7 +15,8 @@ import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
-import { RecurringFilter, SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import type { RecurringRunHistoryEntry } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { RecurringFilter, SequenceAction, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -35,7 +36,7 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean, recurringFilter?: RecurringFilter) => {
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean, recurringFilter?: RecurringFilter, ideaScope?: IdeaScope) => {
     const key: unknown[] = [...workItemKeys.all, "list", projectId];
     if (parentId !== undefined) key.push(parentId);
     if (status !== undefined) key.push(status);
@@ -44,11 +45,13 @@ export const workItemKeys = {
     // archive view never share a cache entry (same projectId).
     if (includeArchived === true) key.push("archived");
     if (recurringFilter !== undefined) key.push(recurringFilter);
+    if (ideaScope !== undefined) key.push(ideaScope);
     return key;
   },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
   graph: (projectId: string) =>
     [...workItemKeys.all, "graph", projectId] as const,
+  runHistory: (id: string) => [...workItemKeys.all, "run-history", id] as const,
 };
 
 // useListWorkItems fetches a page of work items for a project, optionally
@@ -56,13 +59,13 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean; recurringFilter?: RecurringFilter },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean; recurringFilter?: RecurringFilter; ideaScope?: IdeaScope },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
   const listOpts = { search: opts?.search, sortBy: opts?.sortBy, sortOrder: opts?.sortOrder };
   return useQuery({
-    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived, opts?.recurringFilter),
+    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived, opts?.recurringFilter, opts?.ideaScope),
     queryFn: async () => {
       const res = await workItemClient.listWorkItems({
         projectId,
@@ -74,6 +77,7 @@ export function useListWorkItems(
         pageSize: 1000,
         includeArchived: opts?.includeArchived ?? false,
         recurringFilter: opts?.recurringFilter,
+        ideaScope: opts?.ideaScope,
       });
       return res.workItems as WorkItem[];
     },
@@ -102,6 +106,23 @@ export function useGetWorkItem(id: string) {
       return res.workItem as WorkItem;
     },
     enabled: !!id,
+  });
+}
+
+// useGetWorkItemRunHistory fetches a recurring item's per-fire run-history
+// ledger (feature 4.2): each fire's dispatch outcome ('fired' | 'failed'),
+// fire timestamp, the produced run's id + status ("" when the fire failed
+// before a run existed), and that run's worker executions (ids, outputs).
+// Newest first. Used by the recurring item detail page's run-history list.
+export function useGetWorkItemRunHistory(id: string) {
+  return useQuery({
+    queryKey: workItemKeys.runHistory(id),
+    queryFn: async () => {
+      const res = await workItemClient.getWorkItemRunHistory({ id });
+      return res.entries as RecurringRunHistoryEntry[];
+    },
+    enabled: !!id,
+    refetchInterval: 5_000,
   });
 }
 

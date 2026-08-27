@@ -1,27 +1,33 @@
+// Recurring Item detail (feature 4.3) — schedule-first. Shows the cadence
+// editor (edit cadence + enable/pause), the per-fire run-history ledger
+// (status, timestamps, run id + outputs), and a provenance/settings summary
+// (workflow binding, runtime image, context files, spawned_by provenance).
+// Kind/type/parent/priority cards and the dependency DAG are gone — this is
+// an automation, not a work item.
+
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useState } from "react";
-import { ArrowLeft, Link2 } from "lucide-react";
+import { useState } from "react";
+import {
+  ArrowLeft,
+  CalendarClock,
+  ExternalLink,
+  Pause,
+  Play,
+  Repeat,
+  Workflow,
+} from "lucide-react";
 
 import {
-  useCreateWorkItem,
   useGetWorkItem,
+  useGetWorkItemRunHistory,
   useUpdateWorkItem,
-  useDeleteWorkItem,
-  useHardDeleteWorkItem,
-  useAddDependency,
-  useRemoveDependency,
-  useGetDependencyGraph,
-  useListWorkItems,
-  useArchiveWorkItem,
-  useRestoreWorkItem,
 } from "@/api/workItems";
-import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
-import { EntityYamlView } from "@/components/EntityYamlView";
+import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
-import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
+import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,19 +40,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
-import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
-import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
-import { Timestamp } from "@bufbuild/protobuf";
-import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import {
+  RecurringSchedule,
+  type WorkItem,
+} from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { RecurringRunHistoryEntry } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
-// status, hierarchy position, and allows editing all mutable fields and
-// adding dependencies (edges in the work DAG — cycles are rejected
-// server-side via recursive CTE).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/recurring-items/$id",
@@ -56,105 +57,6 @@ export const Route = createRoute({
 function WorkItemDetailPage() {
   const { id } = Route.useParams();
   const { data: item, isLoading, error } = useGetWorkItem(id);
-  const updateWorkItem = useUpdateWorkItem(item?.projectId ?? "");
-  const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
-  const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
-  const archiveWorkItem = useArchiveWorkItem(item?.projectId ?? "");
-  const restoreWorkItem = useRestoreWorkItem(item?.projectId ?? "");
-  const addDependency = useAddDependency(item?.projectId ?? "");
-  const removeDependency = useRemoveDependency(item?.projectId ?? "");
-  const createWorkItem = useCreateWorkItem();
-  const toast = useToast();
-  const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
-  const { data: projects } = useListProjects();
-  const navigate = useNavigate();
-
-  const [editing, setEditing] = useState(false);
-  const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
-  const [acceptanceReview, setAcceptanceReview] = useState("");
-  const [priority, setPriority] = useState(0);
-  const [contextWindow, setContextWindow] = useState(0);
-  const [status, setStatus] = useState(0);
-  const [editProjectId, setEditProjectId] = useState("");
-  const [editWorkflowId, setEditWorkflowId] = useState("");
-  const [editRuntimeImage, setEditRuntimeImage] = useState("");
-  const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
-  const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(false);
-  const [editParentId, setEditParentId] = useState("");
-  const [editKind, setEditKind] = useState(0);
-  const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
-  const [editRecurringSchedule, setEditRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
-
-  const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
-
-  // Candidate parents while editing. Fetched from the *edit* project so
-  // the dropdown switches when the user also reassigns the item (the
-  // dependency graph above is keyed on the item's current project and
-  // would go stale). Only enabled in edit mode.
-  const { data: editProjectItems } = useListWorkItems(editing ? editProjectId : "", {
-    enabled: editing,
-  });
-
-  // Whether this item has direct children — "has children" is the sequence
-  // determinant. A parent with children is a sequence run (its children each
-  // run their own bound workflows in chain order); its own workflow binding
-  // is ignored. Derived from the edit project's items (the editor already
-  // fetches them), so the schedule/start card can show for a parent even
-  // without a workflow selected.
-  const hasChildren = useMemo(
-    () => (editProjectItems ?? []).some((i) => i.parentId === id),
-    [editProjectItems, id],
-  );
-
-  const [depTarget, setDepTarget] = useState("");
-  const [depType, setDepType] = useState(1); // BLOCKS
-
-  // Paste image into description/acceptance: inline as markdown data URL (persisted via updateWorkItem description field)
-  const handlePasteImage = useCallback(
-    (e: React.ClipboardEvent<HTMLTextAreaElement>, setter: (v: string) => void, current: string) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.kind === "file" && item.type.startsWith("image/")) {
-          const file = item.getAsFile();
-          if (!file) continue;
-          if (file.size > 10 * 1024 * 1024) {
-            toast.error(`Image too large (max 10MB): ${file.name || "pasted image"}`);
-            continue;
-          }
-          e.preventDefault();
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64 = (reader.result as string).split(",")[1] || "";
-            const dataUrl = `data:${file.type || "image/png"};base64,${base64}`;
-            const markdown = `![${file.name || "pasted-image"}](${dataUrl})`;
-            setter(current ? `${current}\n\n${markdown}` : markdown);
-          };
-          reader.readAsDataURL(file);
-          break;
-        }
-      }
-    },
-    [toast],
-  );
-
-  // Quick lookup for dependency display
-  const itemsById = useMemo(
-    () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
-    [graph],
-  );
-
-  // Chain position within its parent's siblings (sequence-child rank),
-  // derived from the already-loaded project graph — shows the item's order
-  // in its sequence chain on the detail page.
-  const chainPosition = useMemo(
-    () => computeSequencePositions(graph?.nodes ?? []).get(id),
-    [graph, id],
-  );
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -162,94 +64,87 @@ function WorkItemDetailPage() {
   if (error) {
     return (
       <p className="text-sm text-destructive">
-        Failed to load work item: {String(error)}
+        Failed to load recurring item: {String(error)}
       </p>
     );
   }
-  if (!item) {
-    return null;
-  }
+  if (!item) return null;
+  return <RecurringItemDetail item={item} />;
+}
 
-  // Dependencies involving this item.
-  const incomingDeps = graph?.edges?.filter((e) => e.toId === id) ?? [];
-  const outgoingDeps = graph?.edges?.filter((e) => e.fromId === id) ?? [];
+function RecurringItemDetail({ item }: { item: WorkItem }) {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const updateWorkItem = useUpdateWorkItem(item.projectId);
+  const { data: history = [] } = useGetWorkItemRunHistory(item.id);
+  const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true });
+  const { data: projects } = useListProjects();
+  const projectDir = projects?.find((p) => p.id === item.projectId)?.projectDir ?? "";
 
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
+  const [workflowId, setWorkflowId] = useState("");
+  const [runtimeImage, setRuntimeImage] = useState("");
+  const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
 
-  const handleSoftDelete = () => {
-    if (
-      window.confirm(
-        "Cancel this work item? The status will be set to cancelled and it will be hidden from the board.",
-      )
-    ) {
-      deleteWorkItem.mutate(id);
-    }
+  const enabled = item.recurringEnabled !== false;
+  const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
+  const nextMs = nextRunTs ? Number(nextRunTs.seconds) * 1000 : 0;
+
+  const beginEdit = () => {
+    setTitle(item.title);
+    setDescription(item.description ?? "");
+    setAcceptanceCriteria(item.acceptanceCriteria ?? "");
+    setWorkflowId(item.workflowId ?? "");
+    setRuntimeImage(item.runtimeImage ?? "");
+    setContextFiles(item.contextFiles ?? []);
+    setRecurringSchedule(
+      item.recurringSchedule ? new RecurringSchedule(item.recurringSchedule) : undefined,
+    );
+    setEditing(true);
   };
 
-  const handleHardDelete = () => {
-    if (
-      window.confirm(
-        "Permanently delete this work item and all its dependencies? This cannot be undone.",
-      )
-    ) {
-      hardDeleteWorkItem.mutate(id, {
-        onSuccess: () => navigate({ to: "/recurring-items" }),
-      });
-    }
-  };
-
-  const handleArchive = () => {
-    if (directChildren.length > 0) {
-      window.alert(
-        "This work item has child work items. Archive the children first.",
-      );
-      return;
-    }
-    if (!isTerminal(item.status)) {
-      window.alert(
-        "This work item is not finished. Finish or cancel it before archiving.",
-      );
-      return;
-    }
-    if (
-      window.confirm(
-        "Archive this work item? It will be hidden from all views and only visible in the Archive view.",
-      )
-    ) {
-      archiveWorkItem.mutate(id);
-    }
-  };
-
-  const handleRestore = () => {
-    if (
-      window.confirm(
-        "Restore this work item? It will reappear in the active views with its prior status.",
-      )
-    ) {
-      restoreWorkItem.mutate(id);
-    }
-  };
-
-  const handleAddDep = () => {
-    if (!depTarget || depTarget === id) return;
-    addDependency.mutate(
-      { projectId: item.projectId, fromId: id, toId: depTarget, type: depType },
-      { onSuccess: () => setDepTarget("") },
+  const handleSave = async () => {
+    updateWorkItem.mutate(
+      {
+        id: item.id,
+        title,
+        description: description || undefined,
+        acceptanceCriteria: acceptanceCriteria || undefined,
+        workflowId: workflowId || undefined,
+        runtimeImage: runtimeImage || undefined,
+        // UpdateWorkItemRequest.context_files is a ContextFiles wrapper (an
+        // empty list clears the selection), not the repeated array CREATE uses.
+        contextFiles: { files: contextFiles },
+        recurringSchedule: recurringSchedule ? new RecurringSchedule(recurringSchedule) : undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Recurring item updated.");
+          setEditing(false);
+        },
+        onError: (e) => toast.error(`Failed to update: ${String(e)}`),
+      },
     );
   };
 
-  const siblingItems = graph?.nodes?.filter(
-    (n) => n.id !== id && n.projectId === item.projectId,
-  );
+  const handleToggleEnabled = () => {
+    updateWorkItem.mutate(
+      { id: item.id, recurringEnabled: !enabled },
+      {
+        onSuccess: () =>
+          toast.success(enabled ? "Paused" : "Resumed"),
+        onError: (e) => toast.error(`Failed to update: ${String(e)}`),
+      },
+    );
+  };
 
-  // The item's parent, resolved from the already-loaded project graph.
-  const parentItem = item.parentId ? itemsById.get(item.parentId) : undefined;
+  const workflowName = workflows?.find((w) => w.id === item.workflowId)?.name;
 
-  // Direct children — used by the kind-switch confirmation (children that
-  // can no longer sit under the item after a switch move to its parent).
-  const directChildren = graph?.nodes?.filter((n) => n.parentId === id) ?? [];
-
-  const projectName =
-    projects?.find((p) => p.id === item.projectId)?.name ?? item.projectId;
+  const ideaOutputs = item.recurringSchedule?.outputsMode === "idea";
 
   return (
     <div className="space-y-6">
@@ -266,517 +161,74 @@ function WorkItemDetailPage() {
           </Button>
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
-              <KindPill kind={item.kind} />
-                  {showRecurringBadge(item) && <RecurringBadge />}
+              <Repeat aria-hidden="true" className="h-5 w-5 shrink-0 text-fuchsia-500" />
               <h1 className="min-w-0 break-words [overflow-wrap:anywhere] text-lg font-semibold tracking-tight sm:text-2xl">
                 {item.title}
               </h1>
+              <RecurringBadge />
             </div>
             <p className="mt-1 truncate text-xs text-muted-foreground">
               v{item.version} · {item.id}
             </p>
-            <p className="truncate text-xs text-muted-foreground">
-              Project:{" "}
-              <Link
-                to="/projects/$id"
-                params={{ id: item.projectId }}
-                className="font-medium hover:underline"
-              >
-                {projectName}
-              </Link>
-            </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
-          {!editing && viewMode === "detail" && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                setTitle(item.title);
-                setDescription(item.description ?? "");
-                setAcceptanceCriteria(item.acceptanceCriteria ?? "");
-                setAcceptanceReview(item.acceptanceReview ?? "");
-                setPriority(item.priority);
-                setContextWindow(item.contextWindow ?? 0);
-                setEditProjectId(item.projectId);
-                setEditWorkflowId(item.workflowId ?? "");
-                setEditRuntimeImage(item.runtimeImage ?? "");
-                setEditParentId(item.parentId ?? "");
-                setEditScheduledStartAt(
-                  item.scheduledStartAt
-                    ? localDatetimeString(
-                        new Date(Number(item.scheduledStartAt.seconds) * 1000),
-                      )
-                    : "",
-                );
-                // "Start immediately on save" always defaults to OFF when
-                // opening the editor — even for items whose stored
-                // auto_start_workflow is true (legacy rows created before
-                // the default flipped). Saving an edit (e.g. a kind switch)
-                // must never kick off a run the user did not explicitly ask
-                // for; they opt in by checking the box.
-                setEditAutoStartWorkflow(false);
-                setStatus(item.status);
-                setEditKind(item.kind);
-                setEditContextFiles(item.contextFiles ?? []);
-                setEditRecurringSchedule(
-                  item.recurringSchedule
-                    ? new RecurringSchedule(item.recurringSchedule)
-                    : undefined,
-                );
-                setEditing(true);
-              }}
-            >
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={handleToggleEnabled} disabled={updateWorkItem.isPending}>
+            {enabled ? (
+              <>
+                <Pause aria-hidden="true" className="h-4 w-4" />
+                Pause
+              </>
+            ) : (
+              <>
+                <Play aria-hidden="true" className="h-4 w-4" />
+                Resume
+              </>
+            )}
+          </Button>
+          {!editing && (
+            <Button variant="outline" onClick={beginEdit}>
               Edit
             </Button>
           )}
           <Button
             variant="outline"
-            onClick={handleSoftDelete}
-            disabled={deleteWorkItem.isPending || item.status === WorkItemStatus.CANCELLED}
+            onClick={() => navigate({ to: "/recurring-items" })}
           >
-            {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
-          </Button>
-          {item.status === WorkItemStatus.ARCHIVED ? (
-            <Button
-              variant="outline"
-              onClick={handleRestore}
-              disabled={restoreWorkItem.isPending}
-            >
-              {restoreWorkItem.isPending ? "Restoring…" : "Restore"}
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              onClick={handleArchive}
-              disabled={archiveWorkItem.isPending}
-              title={
-                !isTerminal(item.status)
-                  ? "Finish or cancel the work item before archiving"
-                  : directChildren.length > 0
-                    ? "Archive the child work items first"
-                    : "Hide this work item from all views"
-              }
-            >
-              {archiveWorkItem.isPending ? "Archiving…" : "Archive"}
-            </Button>
-          )}
-          <Button
-            variant="destructive"
-            onClick={handleHardDelete}
-            disabled={hardDeleteWorkItem.isPending}
-          >
-            {hardDeleteWorkItem.isPending ? "Deleting…" : "Delete"}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() =>
-              setViewMode(viewMode === "detail" ? "code" : "detail")
-            }
-            title={
-              viewMode === "detail"
-                ? "Switch to code view"
-                : "Switch to detail view"
-            }
-          >
-            {viewMode === "detail" ? "Code" : "Detail"}
+            Close
           </Button>
         </div>
       </div>
 
-      {viewMode === "code" ? (
-        <EntityYamlView
-          data={{
-            id: item.id,
-            title: item.title,
-            kind: ({
-              [WorkItemKind.EPIC]: "epic",
-              [WorkItemKind.FEATURE]: "feature",
-              [WorkItemKind.TASK]: "task",
-              [WorkItemKind.SUBTASK]: "subtask",
-            } as Record<number, string>)[item.kind] ?? "unknown",
-            project_id: item.projectId,
-            parent_id: item.parentId || undefined,
-            status: ({
-              [WorkItemStatus.PENDING]: "pending",
-              [WorkItemStatus.SCHEDULED]: "scheduled",
-              [WorkItemStatus.READY]: "ready",
-              [WorkItemStatus.ASSIGNED]: "assigned",
-              [WorkItemStatus.RUNNING]: "running",
-              [WorkItemStatus.SUCCEEDED]: "succeeded",
-              [WorkItemStatus.FAILED]: "failed",
-              [WorkItemStatus.CANCELLED]: "cancelled",
-              [WorkItemStatus.RECOVERING]: "recovering",
-              [WorkItemStatus.RECURRING]: "recurring",
-            } as Record<number, string>)[item.status] ?? "unknown",
-            priority: item.priority,
-            description: item.description || undefined,
-            acceptance_criteria: item.acceptanceCriteria || undefined,
-            acceptance_review: item.acceptanceReview || undefined,
-            workflow_id: item.workflowId || undefined,
-            workflow_run_id: item.workflowRunId || undefined,
-            assigned_worker_ref: item.assignedWorkerRef || undefined,
-            context_window: item.contextWindow || undefined,
-            context_files:
-              item.contextFiles && item.contextFiles.length > 0
-                ? item.contextFiles
-                : undefined,
-            recurring_schedule: item.recurringSchedule
-              ? {
-                  frequency: item.recurringSchedule.frequency,
-                  interval: item.recurringSchedule.interval,
-                  days: item.recurringSchedule.days.length > 0 ? item.recurringSchedule.days : undefined,
-                  start_date: item.recurringSchedule.startDate || undefined,
-                  start_time: item.recurringSchedule.startTime || undefined,
-                }
-              : undefined,
-            version: item.version,
-            created_at: item.createdAt
-              ? new Date(Number(item.createdAt.seconds) * 1000).toISOString()
-              : null,
-            updated_at: item.updatedAt
-              ? new Date(Number(item.updatedAt.seconds) * 1000).toISOString()
-              : null,
-          }}
-          title="Work Item YAML"
-          editable
-          onSave={(parsed) => {
-            const statusMap: Record<string, number> = {
-              pending: WorkItemStatus.PENDING,
-              scheduled: WorkItemStatus.SCHEDULED,
-              ready: WorkItemStatus.READY,
-              assigned: WorkItemStatus.ASSIGNED,
-              running: WorkItemStatus.RUNNING,
-              succeeded: WorkItemStatus.SUCCEEDED,
-              failed: WorkItemStatus.FAILED,
-              cancelled: WorkItemStatus.CANCELLED,
-              recurring: WorkItemStatus.RECURRING,
-            };
-            // Always include all known fields from the YAML. Optional text
-            // fields default to "" so removing a line from YAML clears it.
-            const str = (key: string): string => String(parsed[key] ?? "");
-            const num = (key: string): number | undefined => {
-              const v = parsed[key];
-              return typeof v === "number" ? v : undefined;
-            };
-            updateWorkItem.mutate({
-              id,
-              title: str("title") || item.title,
-              description: str("description"),
-              acceptanceCriteria: str("acceptance_criteria"),
-              acceptanceReview: str("acceptance_review"),
-              priority: num("priority"),
-              status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
-              projectId: str("project_id"),
-              workflowId: str("workflow_id"),
-              workflowRunId: str("workflow_run_id"),
-              // context_files is sent when the YAML carries it as an
-              // array; an absent/empty array clears the selection.
-              contextFiles: Array.isArray(parsed.context_files)
-                ? { files: parsed.context_files.map(String) }
-                : undefined,
-              // parent_id is only sent when the YAML actually carries it.
-              // Sending "" means "clear parent", which the server rejects
-              // for non-epics — so a child whose parent line is absent
-              // (orphan, or line removed) stays unchanged instead of
-              // erroring on every save.
-              parentId: str("parent_id") || undefined,
-              // recurring_schedule is parsed from the YAML object if present;
-              // an absent field leaves it unchanged.
-              recurringSchedule: parsed.recurring_schedule
-                ? new RecurringSchedule({
-                    frequency: String((parsed.recurring_schedule as Record<string, unknown>).frequency ?? "daily"),
-                    interval: Number((parsed.recurring_schedule as Record<string, unknown>).interval ?? 1),
-                    days: Array.isArray((parsed.recurring_schedule as Record<string, unknown>).days)
-                      ? ((parsed.recurring_schedule as Record<string, unknown>).days as unknown[]).map(String)
-                      : [],
-                    startDate: String((parsed.recurring_schedule as Record<string, unknown>).start_date ?? ""),
-                    startTime: String((parsed.recurring_schedule as Record<string, unknown>).start_time ?? ""),
-                  })
-                : undefined,
-            });
-          }}
-          saveDisabled={updateWorkItem.isPending}
-          onClone={async () => {
-            const title = window.prompt(
-              "Clone title:",
-              `Clone of ${item.title}`,
-            );
-            if (!title) return;
-            const result = await createWorkItem.mutateAsync({
-              title,
-              projectId: item.projectId,
-              kind: item.kind,
-              parentId: item.parentId ?? undefined,
-              description: item.description,
-              acceptanceCriteria: item.acceptanceCriteria,
-              priority: item.priority,
-              contextWindow: item.contextWindow,
-            });
-            navigate({ to: `/recurring-items/${result.id}` });
-          }}
-          cloneDisabled={createWorkItem.isPending}
-        />
-      ) : (
-      <>
-
-      {editing && (editWorkflowId || hasChildren) && (
+      {editing ? (
         <Card>
           <CardHeader>
-            <CardTitle>Scheduled start</CardTitle>
+            <CardTitle>Edit automation</CardTitle>
             <CardDescription>
-              {hasChildren
-                ? "Run this item's children sequentially — each child runs its own bound workflow, one after another in chain order."
-                : "Leave empty to start immediately. Set a time to schedule the run."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div>
-              <Label htmlFor="scheduledStart">Scheduled start time</Label>
-              <input
-                id="scheduledStart"
-                type="datetime-local"
-                value={editScheduledStartAt}
-                onChange={(e) => { setEditScheduledStartAt(e.target.value); if (e.target.value) setEditAutoStartWorkflow(false); }}
-                className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="autoStart"
-                checked={editAutoStartWorkflow}
-                onChange={(e) => { setEditAutoStartWorkflow(e.target.checked); if (e.target.checked) setEditScheduledStartAt(""); }}
-                className="h-4 w-4 rounded border-input"
-              />
-              <Label htmlFor="autoStart">Start immediately on save</Label>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {editing && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Recurring schedule</CardTitle>
-            <CardDescription>
-              Set a recurrence pattern. Setting this flips the item to
-              recurring status; clearing it resets to non-recurring.
+              Change the title, workflow binding, runtime image, context files,
+              cadence, or output mode. Cadence changes re-arm the next run.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <RecurringScheduleForm
-              value={editRecurringSchedule}
-              onChange={setEditRecurringSchedule}
-            />
-          </CardContent>
-        </Card>
-      )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleSave();
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="title">Title</Label>
+                <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} />
+              </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader>
-            <CardDescription>Status</CardDescription>
-            <CardTitle className="text-base">
-              {editing ? (
+              <div className="space-y-2">
+                <Label htmlFor="workflow">Workflow</Label>
                 <select
-                  value={status}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    setStatus(next);
-                    // Switching away from recurring clears the schedule
-                    if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
-                      setEditRecurringSchedule(undefined);
-                    }
-                  }}
-                  className="rounded-xl glass-input px-3 py-1.5 text-sm"
-                >
-                  <option value={WorkItemStatus.PENDING}>pending</option>
-                  <option value={WorkItemStatus.READY}>ready</option>
-                  <option value={WorkItemStatus.ASSIGNED}>assigned</option>
-                  <option value={WorkItemStatus.RUNNING}>running</option>
-                  <option value={WorkItemStatus.SUCCEEDED}>succeeded</option>
-                  <option value={WorkItemStatus.FAILED}>failed</option>
-                  <option value={WorkItemStatus.CANCELLED}>cancelled</option>
-                  <option value={WorkItemStatus.RECOVERING}>recovering</option>
-                  <option value={WorkItemStatus.SCHEDULED}>scheduled</option>
-                  <option value={WorkItemStatus.RECURRING}>recurring</option>
-                </select>
-              ) : (
-                ({
-                  [WorkItemStatus.PENDING]: "pending",
-                  [WorkItemStatus.SCHEDULED]: "scheduled",
-                  [WorkItemStatus.READY]: "ready",
-                  [WorkItemStatus.ASSIGNED]: "assigned",
-                  [WorkItemStatus.RUNNING]: "running",
-                  [WorkItemStatus.SUCCEEDED]: "succeeded",
-                  [WorkItemStatus.FAILED]: "failed",
-                  [WorkItemStatus.CANCELLED]: "cancelled",
-                  [WorkItemStatus.RECOVERING]: "recovering",
-                  [WorkItemStatus.RECURRING]: "recurring",
-                } as Record<number, string>)[item.status] ?? "unknown"
-              )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        {/* Type — switch between hierarchy kinds (ADR-WIT-1). Switching
-            resolves the parent/child tree server-side; the save handler
-            confirms the consequences first. Disabled while the item is
-            executing (running/checkpointing/recovering). */}
-        <Card>
-          <CardHeader>
-            <CardDescription>Type</CardDescription>
-            <CardTitle className="text-base">
-              {editing ? (
-                <select
-                  value={editKind}
-                  disabled={MANUALLY_UNMOVABLE_STATUSES.has(item.status)}
-                  onChange={(e) => setEditKind(Number(e.target.value))}
-                  title={
-                    MANUALLY_UNMOVABLE_STATUSES.has(item.status)
-                      ? "Type cannot change while the item is running"
-                      : "Switch to a different work item kind"
-                  }
-                  className="rounded-xl glass-input px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <option value={WorkItemKind.EPIC}>Epic</option>
-                  <option value={WorkItemKind.FEATURE}>Feature</option>
-                  <option value={WorkItemKind.TASK}>Task</option>
-                  <option value={WorkItemKind.SUBTASK}>Subtask</option>
-                </select>
-              ) : (
-                <span className="inline-flex items-center gap-2">
-                  <KindPill kind={item.kind} />
-                </span>
-              )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        {/* Parent — shown for children (view) / all non-epics (edit). The
-            dropdown candidates come from the edit project's items so they
-            switch when the item is reassigned. Uses the searchable
-            parent picker (ADR-WIT-5); candidates are filtered by the
-            SELECTED kind (a switched-to deeper kind offers deeper
-            parents, an epic switched to a non-epic forces a pick). */}
-                {item.parentId || (editing && editKind !== WorkItemKind.EPIC) ? (
-          <Card>
-            <CardHeader>
-              <CardDescription>Parent</CardDescription>
-              <CardTitle className="text-base">
-                {editing && editKind !== WorkItemKind.EPIC ? (
-                  <WorkItemParentSelect
-                    items={editProjectItems ?? []}
-                    childKind={editKind}
-                    value={editParentId ?? ""}
-                    onChange={setEditParentId}
-                    excludeId={id}
-                    invalid={!editParentId}
-                    error={
-                      !editParentId
-                        ? `A ${kindLabel(editKind)} requires a parent.`
-                        : undefined
-                    }
-                  />
-                ) : parentItem ? (
-                  <Link
-                    to="/recurring-items/$id"
-                    params={{ id: item.parentId }}
-                    className="inline-flex min-w-0 max-w-full items-center gap-2 font-medium hover:underline"
-                    title={parentItem.title}
-                  >
-                    <KindPill kind={parentItem.kind} />
-                    <span className="min-w-0 truncate">{parentItem.title}</span>
-                  </Link>
-                ) : (
-                  item.parentId
-                )}
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        ) : null}
-        {chainPosition ? (
-          <Card>
-            <CardHeader>
-              <CardDescription>Chain position</CardDescription>
-              <CardTitle className="text-base">
-                <span className="inline-flex items-center gap-1.5">
-                  <PositionBadge position={chainPosition} />
-              {showRecurringBadge(item) && <RecurringBadge />}
-                </span>
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        ) : null}
-        {(() => {
-          const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
-          return nextRunTs ? (
-            <Card>
-              <CardHeader>
-                <CardDescription>Next Run</CardDescription>
-                <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
-                  {new Date(Number(nextRunTs.seconds) * 1000).toLocaleString()}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-          ) : null;
-        })()}
-        {item.recurringSchedule && (
-          <Card>
-            <CardHeader>
-              <CardDescription>Recurrence</CardDescription>
-              <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
-                {formatRecurrence(item.recurringSchedule)}
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        )}
-        <Card>
-          <CardHeader>
-            <CardDescription>Priority</CardDescription>
-            <CardTitle className="text-base">
-              {editing ? (
-                <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={priority}
-                  onChange={(e) => setPriority(Number(e.target.value))}
-                  className="h-8 w-20"
-                />
-              ) : (
-                item.priority
-              )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardDescription>Context window</CardDescription>
-            <CardTitle className="text-base">
-              {editing ? (
-                <Input
-                  type="number"
-                  min={0}
-                  max={1000000}
-                  value={contextWindow}
-                  onChange={(e) => setContextWindow(Number(e.target.value))}
-                  className="h-8 w-24"
-                />
-              ) : (
-                item.contextWindow || "—"
-              )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardDescription>Workflow template</CardDescription>
-            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
-              {editing ? (
-                <select
-                  value={editWorkflowId}
-                  onChange={(e) => setEditWorkflowId(e.target.value)}
-                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                  id="workflow"
+                  className="flex h-11 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm sm:h-9"
+                  value={workflowId}
+                  onChange={(e) => setWorkflowId(e.target.value)}
                 >
                   <option value="">-- No workflow --</option>
                   {(workflows ?? []).map((wf) => (
@@ -785,502 +237,328 @@ function WorkItemDetailPage() {
                     </option>
                   ))}
                 </select>
-              ) : (
-                (() => {
-                  const wf = workflows?.find((w) => w.id === item.workflowId);
-                  return wf ? wf.name : "none (unbound)";
-                })()
-              )}
-            </CardTitle>
-            {item.workflowRunId && (
-              <CardDescription className="mt-1 text-xs">
-                Active run: {item.workflowRunId.slice(0, 12)}…
-              </CardDescription>
-            )}
-            {hasChildren && (
-              <CardDescription className="mt-1 text-xs text-muted-foreground">
-                This item has children — it runs as a sequence, so its own
-                workflow is ignored. Each child runs its own workflow in chain
-                order.
-              </CardDescription>
-            )}
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardDescription>Runtime image</CardDescription>
-            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
-              {editing ? (
-                <RuntimeImageSelect
-                  value={editRuntimeImage}
-                  onChange={setEditRuntimeImage}
+                {!workflowId && (
+                  <p className="text-xs text-destructive">
+                    A workflow binding is required to schedule a recurring item.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="runtimeImage">Runtime image</Label>
+                <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+              </div>
+
+              {projectDir ? (
+                <FileBrowser
+                  projectId={item.projectId}
+                  projectDir={projectDir}
+                  initialSelectedFiles={contextFiles}
+                  onChange={setContextFiles}
+                  title="Automation Context Files"
+                  description="Expand folders and check files or directories to include as context for the worker."
                 />
               ) : (
-                item.runtimeImage || "default (base image)"
+                <p className="text-xs text-muted-foreground">
+                  This project has no project directory — context files are
+                  not available for this automation.
+                </p>
               )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
 
-      {/* Description */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Description</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {editing ? (
-            <Textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onPaste={(e) => handlePasteImage(e, setDescription, description)}
-              className="min-h-[80px]"
-              placeholder="Paste images directly (Ctrl+V) — they will be embedded as markdown"
-            />
-          ) : (
-            <Markdown>{item.description}</Markdown>
-          )}
-        </CardContent>
-      </Card>
+              {recurringSchedule ? (
+                <div className="rounded-2xl glass-panel p-3 space-y-3">
+                  <RecurringScheduleForm
+                    value={recurringSchedule}
+                    onChange={setRecurringSchedule}
+                  />
+                  <div className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      id="ideaOutputs"
+                      checked={ideaOutputsFromSchedule(recurringSchedule)}
+                      onChange={(e) => {
+                        const mode = e.target.checked ? "idea" : "standard";
+                        setRecurringSchedule(
+                          new RecurringSchedule({ ...recurringSchedule, outputsMode: mode }),
+                        );
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-input"
+                    />
+                    <div>
+                      <Label htmlFor="ideaOutputs">Outputs: ideas</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Each fire&apos;s spawned work items land in IDEA state —
+                        hidden from normal Work Items until promoted.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No recurring schedule — <button type="button" className="underline" onClick={() => setRecurringSchedule(new RecurringSchedule())}>add one</button>.
+                </p>
+              )}
 
-      {/* Acceptance criteria */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Acceptance criteria</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {editing ? (
-            <Textarea
-              value={acceptanceCriteria}
-              onChange={(e) => setAcceptanceCriteria(e.target.value)}
-              onPaste={(e) => handlePasteImage(e, setAcceptanceCriteria, acceptanceCriteria)}
-              className="min-h-[80px]"
-              placeholder="Paste images directly (Ctrl+V)"
-            />
-          ) : (
-            <Markdown>{item.acceptanceCriteria}</Markdown>
-          )}
-        </CardContent>
-      </Card>
+              <div className="space-y-2">
+                <Label htmlFor="description">Description (optional)</Label>
+                <Textarea id="description" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="acceptanceCriteria">Acceptance criteria (optional)</Label>
+                <Textarea id="acceptanceCriteria" rows={3} value={acceptanceCriteria} onChange={(e) => setAcceptanceCriteria(e.target.value)} />
+              </div>
 
-      {/* Acceptance review — auto-populated by the WorkflowReconciler
-          when a bound workflow run completes; editable by a reviewer */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Acceptance Review</CardTitle>
-          <CardDescription>
-            Summary of the final work done, generated automatically when a
-            bound workflow run completes.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {editing ? (
-            <Textarea
-              value={acceptanceReview}
-              onChange={(e) => setAcceptanceReview(e.target.value)}
-              className="min-h-[80px]"
-              placeholder="Auto-populated on workflow completion — extend or correct as needed."
-            />
-          ) : item.acceptanceReview ? (
-            <Markdown>{item.acceptanceReview}</Markdown>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No acceptance review yet — populated automatically when a
-              bound workflow run completes.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+              {updateWorkItem.error && (
+                <p className="text-sm text-destructive">
+                  Failed to update: {String(updateWorkItem.error)}
+                </p>
+              )}
 
-      {/* Context files — files AND directories, exactly like projects */}
-      {(() => {
-        const project = projects?.find((p) => p.id === (editing ? editProjectId : item.projectId));
-        if (!project?.projectDir) {
-          return (
-            <Card>
-              <CardHeader>
-                <CardTitle>Work Item Context Files</CardTitle>
-                <CardDescription>
-                  The project for this item has no project directory set —
-                  context files cannot be added until it does.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          );
-        }
-        return (
-          <FileBrowser
-            projectId={project.id}
-            projectDir={project.projectDir}
-            initialSelectedFiles={
-              editing ? editContextFiles : item.contextFiles ?? []
-            }
-            readOnly={!editing}
-            onChange={setEditContextFiles}
-            title="Work Item Context Files"
-            description="Expand folders and check files or directories to include as context for the worker, exactly like project context files."
-            emptyHint="Context files selected for this work item. Click Edit to modify."
-          />
-        );
-      })()}
-
-      {/* Project (editable) */}
-      {editing && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Project</CardTitle>
-            <CardDescription>
-              Reassign to a different project. The target must be active.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <select
-              className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
-              value={editProjectId}
-              onChange={(e) => {
-                setEditProjectId(e.target.value);
-                // The parent dropdown is repopulated from the target
-                // project; reset the selection so a stale parent from the
-                // old project is never kept (server re-validates anyway).
-                setEditParentId("");
-              }}
-            >
-              {(projects ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setEditing(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={updateWorkItem.isPending || !workflowId}>
+                  {updateWorkItem.isPending ? "Saving…" : "Save"}
+                </Button>
+              </div>
+            </form>
           </CardContent>
         </Card>
-      )}
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-3">
+          {/* Schedule / cadence editor (read-only summary + live toggle). */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <CalendarClock aria-hidden="true" className="h-4 w-4" />
+                Schedule
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="break-words text-sm font-medium [overflow-wrap:anywhere]">
+                {formatRecurrence(item.recurringSchedule)}
+              </div>
+              <RecurringScheduleForm value={item.recurringSchedule} onChange={() => {}} readOnly />
+              <div className="border-t border-border/60 pt-2 text-sm">
+                <span className="text-xs text-muted-foreground">Next run</span>
+                <span className="ml-2 font-medium">
+                  {enabled && nextMs ? new Date(nextMs).toLocaleString() : enabled ? "Not scheduled" : "Paused"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-xs font-medium",
+                    enabled
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {enabled ? "Active" : "Paused"}
+                </span>
+                {ideaOutputs && (
+                  <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-fuchsia-500/15 text-fuchsia-800">
+                    Outputs: ideas
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
 
-      {/* Edit save/cancel */}
-      {editing && (
-        <div className="flex gap-2">
-          <Button
-            onClick={() => {
-              const kindChanging = editKind !== item.kind;
-              // Epic → non-epic without a parent: force the pick before
-              // enabling Save (ADR-WIT-1 — the server requires it too).
-              if (kindChanging && editKind !== 1 && !editParentId) {
-                window.alert(
-                  `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
-                );
-                return;
-              }
-              if (kindChanging) {
-                // Describe the automatic resolution before confirming
-                // (ADR-WIT-2): children that can no longer sit under the
-                // item move to its parent; non-schedulable kinds clear
-                // worker/schedule/status.
-                const moving = directChildren.filter(
-                  (c) => depthForKind(c.kind) <= depthForKind(editKind),
-                );
-                const lines = [
-                  `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
-                ];
-                if (moving.length > 0) {
-                  lines.push(
-                    `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
-                    moving.map((c) => `  • ${c.title}`).join("\n"),
-                  );
-                }
-                if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
-                  lines.push(
-                    "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
-                  );
-                }
-                if (!window.confirm(lines.join("\n"))) return;
-              }
-              updateWorkItem.mutate(
-                {
-                  id,
-                  title,
-                  description,
-                  acceptanceCriteria,
-                  acceptanceReview,
-                  priority,
-                  contextWindow,
-                  status,
-                  projectId: editProjectId,
-                  workflowId: editWorkflowId,
-                  runtimeImage: editRuntimeImage || undefined,
-                  scheduledStartAt: editScheduledStartAt
-                    ? Timestamp.fromDate(new Date(editScheduledStartAt))
-                    : undefined,
-                  autoStartWorkflow: editAutoStartWorkflow,
-                  parentId: editParentId || undefined,
-                  kind: kindChanging ? editKind : undefined,
-                  contextFiles: { files: editContextFiles },
-                  recurringSchedule:
-                    kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
-                      ? new RecurringSchedule()
-                      : editRecurringSchedule,
-                },
-                {
-                  onSuccess: ({ warning }) => {
-                    setEditing(false);
-                    // The server saved the edit but declined an explicit
-                    // auto-start (item status not startable). Surface the
-                    // server's explanation verbatim so "save with
-                    // auto-start on a non-startable item" reads as an
-                    // intentional, explained no-op — not as breakage.
-                    if (warning) {
-                      toast.error(warning, {
-                        title: "Auto-start not applied",
-                        duration: 9000,
-                      });
-                    }
-                  },
-                },
-              );
-            }}
-            disabled={updateWorkItem.isPending || !title.trim()}
-          >
-            {updateWorkItem.isPending ? "Saving…" : "Save changes"}
-          </Button>
-          <Button variant="outline" onClick={() => setEditing(false)}>
-            Cancel
-          </Button>
-        </div>
-      )}
-
-      {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Dependencies</CardTitle>
-          <CardDescription>
-            Edges in the work DAG. Cycles are rejected at admission (recursive
-            CTE — docs/09 §11).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Blocked-by banner — server-authoritative blockers (the DAG
-              sources not yet terminal-success). Rendered whenever the
-              server computed unsat edges, so the reason this item isn't
-              dispatching is always visible. */}
-          {item.blockedBy.length > 0 && (
-            <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
-              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
-                <Link2 aria-hidden="true" className="h-3.5 w-3.5"  />
-                Blocked by
-              </h4>
-              <ul className="mt-2 space-y-1.5">
-                {item.blockedBy.map((b) => (
-                  <li key={b.id} className="flex items-center gap-2 text-xs">
+          {/* Provenance / settings summary. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Settings</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div>
+                <div className="text-xs text-muted-foreground">Workflow</div>
+                {item.workflowId ? (
+                  <Link
+                    to="/workflows/$id"
+                    params={{ id: item.workflowId }}
+                    className="inline-flex items-center gap-1 font-medium hover:underline"
+                  >
+                    <Workflow aria-hidden="true" className="h-3.5 w-3.5" />
+                    {workflowName ?? item.workflowId}
+                  </Link>
+                ) : (
+                  <span className="italic text-muted-foreground/70">none (unbound)</span>
+                )}
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Runtime image</div>
+                <div className="break-words [overflow-wrap:anywhere]">
+                  {item.runtimeImage || "default (base)"}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Context files</div>
+                {item.contextFiles && item.contextFiles.length > 0 ? (
+                  <ul className="list-inside list-disc space-y-0.5">
+                    {item.contextFiles.map((f) => (
+                      <li key={f} className="break-all text-xs">{f}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="italic text-muted-foreground/70">none</span>
+                )}
+              </div>
+              {item.spawnedBy && (
+                <div>
+                  <div className="text-xs text-muted-foreground">Spawned by</div>
+                  <div className="break-all text-xs">
                     <Link
                       to="/recurring-items/$id"
-                      params={{ id: b.id }}
-                      className="min-w-0 flex-1 truncate font-medium hover:underline"
+                      params={{ id: item.spawnedBy }}
+                      className="font-medium hover:underline"
                     >
-                      {b.title}
+                      {item.spawnedBy}
                     </Link>
-                    <span className="shrink-0 text-muted-foreground">
-                      ({b.status || "unknown"})
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+                    {item.spawnedByRunId ? ` · run ${shortId(item.spawnedByRunId)}` : ""}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-          {/* Add dependency form */}
-          <div className="flex items-end gap-2">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="depTarget">Add dependency to</Label>
-              <select
-                id="depTarget"
-                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
-                value={depTarget}
-                onChange={(e) => setDepTarget(e.target.value)}
-              >
-                <option value="">— Select work item —</option>
-                {(siblingItems ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title} ({kindLabel(s.kind)})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="depType">Type</Label>
-              <select
-                id="depType"
-                className="flex h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1 text-sm"
-                value={depType}
-                onChange={(e) => setDepType(Number(e.target.value))}
-              >
-                <option value={1}>blocks</option>
-                <option value={2}>depends_on</option>
-                <option value={3}>relates_to</option>
-              </select>
-            </div>
-            <Button
-              onClick={handleAddDep}
-              disabled={!depTarget || addDependency.isPending}
-            >
-              Add
-            </Button>
-          </div>
-
-          {addDependency.error && (
-            <p className="text-sm text-destructive">
-              {String(addDependency.error.message ?? addDependency.error)}
-            </p>
-          )}
-
-          {/* Dependency lists */}
-          <div className="grid gap-4 md:grid-cols-2">
-            {/* Incoming (what this item depends on) */}
-            <div>
-              <h4 className="text-xs font-medium uppercase text-muted-foreground">
-                Depends on ({incomingDeps.length})
-              </h4>
-              <div className="mt-2 space-y-1.5">
-                {incomingDeps.length === 0 && (
-                  <p className="text-xs text-muted-foreground">None</p>
-                )}
-                {incomingDeps.map((dep) => {
-                  const from = graph?.nodes?.find((n) => n.id === dep.fromId);
-                  const fromItem = itemsById.get(dep.fromId);
-                  return (
-                    <div
-                      key={dep.id}
-                      className={cn(
-                        "group flex items-center gap-2 rounded-md border p-2 text-xs transition-colors hover:bg-accent/50",
-                        fromItem && isTerminal(fromItem.status) && "opacity-60",
-                      )}
-                    >
-                      {fromItem ? (
-                        <>
-                          <span className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold", kindMeta(fromItem.kind).badge)}>
-                            {kindMeta(fromItem.kind).shortLabel}
-                          </span>
-                          <Link
-                            to="/recurring-items/$id"
-                            params={{ id: dep.fromId }}
-                            className="min-w-0 flex-1 truncate font-medium hover:underline"
-                          >
-                            {from?.title ?? dep.fromId}
-                          </Link>
-                          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusMeta(fromItem.status).pill)}>
-                            <span className={cn("h-1 w-1 rounded-full", statusMeta(fromItem.status).dot)} />
-                            {statusMeta(fromItem.status).label}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="font-medium">{from?.title ?? dep.fromId}</span>
-                      )}
-                      <span className="shrink-0 text-muted-foreground">
-                        ({depTypeLabel(dep.type)})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`Remove dependency from "${from?.title ?? dep.fromId}"?`)) {
-                            removeDependency.mutate(dep.id);
-                          }
-                        }}
-                        disabled={removeDependency.isPending}
-                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                        aria-label={`Remove dependency from ${from?.title ?? dep.fromId}`}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Outgoing (what depends on this item) */}
-            <div>
-              <h4 className="text-xs font-medium uppercase text-muted-foreground">
-                Blocks ({outgoingDeps.length})
-              </h4>
-              <div className="mt-2 space-y-1.5">
-                {outgoingDeps.length === 0 && (
-                  <p className="text-xs text-muted-foreground">None</p>
-                )}
-                {outgoingDeps.map((dep) => {
-                  const to = graph?.nodes?.find((n) => n.id === dep.toId);
-                  const toItem = itemsById.get(dep.toId);
-                  return (
-                    <div
-                      key={dep.id}
-                      className={cn(
-                        "group flex items-center gap-2 rounded-md border p-2 text-xs transition-colors hover:bg-accent/50",
-                        toItem && isTerminal(toItem.status) && "opacity-60",
-                      )}
-                    >
-                      {toItem ? (
-                        <>
-                          <span className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold", kindMeta(toItem.kind).badge)}>
-                            {kindMeta(toItem.kind).shortLabel}
-                          </span>
-                          <Link
-                            to="/recurring-items/$id"
-                            params={{ id: dep.toId }}
-                            className="min-w-0 flex-1 truncate font-medium hover:underline"
-                          >
-                            {to?.title ?? dep.toId}
-                          </Link>
-                          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusMeta(toItem.status).pill)}>
-                            <span className={cn("h-1 w-1 rounded-full", statusMeta(toItem.status).dot)} />
-                            {statusMeta(toItem.status).label}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="font-medium">{to?.title ?? dep.toId}</span>
-                      )}
-                      <span className="shrink-0 text-muted-foreground">
-                        ({depTypeLabel(dep.type)})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(`Remove dependency to "${to?.title ?? dep.toId}"?`)) {
-                            removeDependency.mutate(dep.id);
-                          }
-                        }}
-                        disabled={removeDependency.isPending}
-                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                        aria-label={`Remove dependency to ${to?.title ?? dep.toId}`}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-        </>
+          {/* Run history ledger (per-fire status, timestamps, run + outputs). */}
+          <Card className="lg:col-span-1">
+            <CardHeader>
+              <CardTitle className="text-base">Run history</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {history.length === 0 ? (
+                <p className="text-sm italic text-muted-foreground">-</p>
+              ) : (
+                <ol className="space-y-3">
+                  {history.map((entry) => (
+                    <RunHistoryRow key={entry.id} entry={entry} workflowId={item.workflowId ?? ""} />
+                  ))}
+                </ol>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );
 }
 
-function depTypeLabel(type: number): string {
-  const labels: Record<number, string> = {
-    1: "blocks",
-    2: "depends_on",
-    3: "relates_to",
-  };
-  return labels[type] ?? "unknown";
+function RunHistoryRow({
+  entry,
+  workflowId,
+}: {
+  entry: RecurringRunHistoryEntry;
+  workflowId: string;
+}) {
+  const fired = entry.status === "fired";
+  return (
+    <li className="rounded-xl border border-border/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">
+          {formatTimestamp(entry.fireAt)}
+        </span>
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+            fired
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-rose-100 text-rose-800",
+          )}
+        >
+          {entry.status}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        {entry.workflowRunId && (
+          <RunStatusBadge status={runStatusToNumber(entry.runStatus)} />
+        )}
+        {entry.workflowRunId && workflowId ? (
+          <Link
+            to="/workflows/$id/runs/$runId"
+            params={{ id: workflowId, runId: entry.workflowRunId }}
+            className="inline-flex items-center gap-1 font-medium hover:underline"
+          >
+            run {shortId(entry.workflowRunId)}
+            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+          </Link>
+        ) : entry.workflowRunId ? (
+          <span className="font-mono">{shortId(entry.workflowRunId)}</span>
+        ) : null}
+        {entry.error && (
+          <span className="w-full break-words text-rose-500 [overflow-wrap:anywhere]">
+            {entry.error}
+          </span>
+        )}
+      </div>
+      {entry.executions.length > 0 && (
+        <div className="mt-2 space-y-1 border-t border-border/40 pt-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Outputs
+          </div>
+          {entry.executions.map((exec) => (
+            <Link
+              key={exec.id}
+              to="/executions/$id"
+              params={{ id: exec.id }}
+              className="flex items-center justify-between gap-2 rounded px-1 py-0.5 text-xs hover:bg-accent"
+            >
+              <span className="truncate font-mono">{shortId(exec.id)}</span>
+              <span className="shrink-0 text-muted-foreground">
+                {exec.status}
+                {exec.output ? " · has output" : ""}
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </li>
+  );
 }
 
-// Hierarchy depth of a work item kind (epic=1 … subtask=4, matching the
-// proto enum values). Unknown/recovery kinds are not valid parents via
-// the API, so they map to 0 (never shallower than a real kind).
-function depthForKind(kind: number): number {
-  return kind >= 1 && kind <= 4 ? kind : 0;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function ideaOutputsFromSchedule(s: RecurringSchedule): boolean {
+  return s.outputsMode === "idea";
 }
 
-function localDatetimeString(d: Date): string {
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function shortId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+function formatTimestamp(ts?: { seconds: bigint | number; nanos?: number }): string {
+  if (!ts) return "";
+  const ms = Number(ts.seconds) * 1000;
+  return new Date(ms).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+/** Map a stored workflow-run status string to its WorkflowRunStatus number
+ *  for RunStatusBadge (pending/running/completed/failed/aborted/paused). */
+function runStatusToNumber(status: string): number {
+  switch (status) {
+    case "pending":
+      return 1;
+    case "running":
+      return 2;
+    case "completed":
+      return 3;
+    case "failed":
+      return 4;
+    case "aborted":
+      return 5;
+    case "paused":
+      return 6;
+    default:
+      return 0;
+  }
 }
