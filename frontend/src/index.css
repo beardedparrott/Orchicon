@@ -60,6 +60,14 @@
     --z-bell-panel: 50;
     --z-drawer: 50;
     --z-dialog: 60;
+
+    /* Nav active — light/dark token defaults (dark = current cyan-300 feel, light overridden per theme) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   .dark {
     --kind-sky: 199 89% 60%;
@@ -70,6 +78,13 @@
     --kind-emerald: 160 70% 50%;
     --kind-indigo: 234 90% 70%;
     --kind-cyan: 188 90% 55%;
+    /* Nav — dark defaults (pixel-identical to pre-fix hardcoded cyan-300/cyan-500) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-light"] {
     --background: 210 40% 98%;
@@ -119,6 +134,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 199 89% 36%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-gruvbox"] {
     --background: 48 87% 88%;
@@ -170,6 +192,13 @@
     --scroll-thumb-a: 0.22;
     --scroll-thumb-hover: 38 85% 33%;
     --scroll-thumb-hover-a: 0.45;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-ember"] {
     --background: 20 100% 97%;
@@ -219,6 +248,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 350 89% 42%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-forest"] {
     --background: 142 40% 96%;
@@ -268,6 +304,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 160 84% 28%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-ocean"] {
     --background: 199 100% 97%;
@@ -317,6 +360,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 199 89% 36%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-violet"] {
     --background: 270 50% 97%;
@@ -366,6 +416,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 263 70% 42%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-amber"] {
     --background: 38 100% 96%;
@@ -415,6 +472,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 30 92% 34%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-slate"] {
     --background: 210 20% 97%;
@@ -464,6 +528,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 215 25% 32%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-rose"] {
     --background: 350 100% 97%;
@@ -513,6 +584,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 346 77% 42%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-light-teal"] {
     --background: 173 60% 96%;
@@ -562,6 +640,13 @@
     --scroll-thumb-a: 0.18;
     --scroll-thumb-hover: 173 80% 28%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — light contrast (≥4.5:1 on light background) */
+    --nav-active-from: 199 89% 28%;
+    --nav-active-to: 239 84% 42%;
+    --nav-active-fg: 199 89% 28%;
+    --nav-active-border: 199 89% 28%;
+    --nav-active-glow: 199 89% 32%;
+    --nav-inactive-cyan: 199 89% 32%;
   }
   [data-theme="orchicon-dark"].dark,
   .dark [data-theme="orchicon-dark"] {
@@ -614,6 +699,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 199 89% 52%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-ember"].dark,
   .dark [data-theme="orchicon-dark-ember"] {
@@ -666,6 +758,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 350 89% 62%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-forest"].dark,
   .dark [data-theme="orchicon-dark-forest"] {
@@ -718,6 +817,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 160 60% 50%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-ocean"].dark,
   .dark [data-theme="orchicon-dark-ocean"] {
@@ -770,6 +876,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 199 89% 58%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-violet"].dark,
   .dark [data-theme="orchicon-dark-violet"] {
@@ -822,6 +935,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 263 70% 68%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-amber"].dark,
   .dark [data-theme="orchicon-dark-amber"] {
@@ -874,6 +994,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 38 92% 58%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-slate"].dark,
   .dark [data-theme="orchicon-dark-slate"] {
@@ -926,6 +1053,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 215 20% 62%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-rose"].dark,
   .dark [data-theme="orchicon-dark-rose"] {
@@ -978,6 +1112,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 346 80% 62%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-teal"].dark,
   .dark [data-theme="orchicon-dark-teal"] {
@@ -1030,6 +1171,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 173 60% 45%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   [data-theme="orchicon-dark-crimson"].dark,
   .dark [data-theme="orchicon-dark-crimson"] {
@@ -1082,6 +1230,13 @@
     --scroll-thumb-a: 0.15;
     --scroll-thumb-hover: 355 78% 58%;
     --scroll-thumb-hover-a: 0.40;
+    /* Nav active — dark (pixel-identical to pre-fix) */
+    --nav-active-from: 189 94% 43%;
+    --nav-active-to: 239 84% 67%;
+    --nav-active-fg: 187 92% 69%;
+    --nav-active-border: 189 94% 43%;
+    --nav-active-glow: 189 94% 43%;
+    --nav-inactive-cyan: 188 86% 53%;
   }
   *,
   *::before,
@@ -1148,6 +1303,36 @@
     box-shadow: var(--glass-input-inset), var(--glass-input-focus-glow);
   }
 }
+@layer components {
+  .nav-active-trigger {
+    background-image: linear-gradient(to right, hsl(var(--nav-active-from) / 0.15), hsl(var(--nav-active-to) / 0.15));
+    color: hsl(var(--nav-active-fg));
+    border-color: hsl(var(--nav-active-border) / 0.30);
+    box-shadow: 0 0 12px hsl(var(--nav-active-glow) / 0.15);
+  }
+  :where([data-theme^="orchicon-light"]) .nav-active-trigger {
+    background-image: linear-gradient(to right, hsl(var(--nav-active-from) / 0.18), hsl(var(--nav-active-to) / 0.18));
+    border-color: hsl(var(--nav-active-border) / 0.38);
+    box-shadow: 0 0 14px hsl(var(--nav-active-glow) / 0.22);
+  }
+  .nav-active-item {
+    background-color: hsl(var(--nav-active-from) / 0.15);
+    color: hsl(var(--nav-active-fg));
+    border-color: hsl(var(--nav-active-border) / 0.30);
+  }
+  :where([data-theme^="orchicon-light"]) .nav-active-item {
+    background-color: hsl(var(--nav-active-from) / 0.16);
+    border-color: hsl(var(--nav-active-border) / 0.38);
+  }
+  .nav-inactive-ask {
+    color: hsl(var(--nav-inactive-cyan));
+  }
+  :where([data-theme^="orchicon-light"]) .nav-inactive-ask:hover {
+    color: hsl(var(--nav-active-fg));
+    background-color: hsl(var(--nav-active-from) / 0.10);
+  }
+}
+
 @supports not (backdrop-filter: blur(1px)) {
   .glass-panel,
   .glass-menu,

@@ -37,7 +37,7 @@ while ((match = themeRegex.exec(css)) !== null) {
   const body = match[2];
   const vars = {};
   for (const line of body.split(";")) {
-    const vm = line.match(/--([a-z-]+):\s*([^;]+)/);
+    const vm = line.match(/--([a-z0-9-]+):\s*([^;]+)/);
     if (vm) vars[vm[1]] = vm[2].trim();
   }
   // deduplicate by id (dark has two selectors but same id; keep first)
@@ -81,6 +81,19 @@ for (const t of themes) {
     const c = contrast(v["destructive-foreground"], v["destructive"]);
     const ok = c >= 4.5;
     checks.push(`  destructive-fg/destructive ${c.toFixed(2)}:1 ${ok?"PASS":"FAIL"}`);
+    if (!ok) failures++;
+  }
+  // nav active checks — must be ≥4.5:1 on background (active tab readability)
+  if (v["nav-active-fg"] && v["background"]) {
+    const c = contrast(v["nav-active-fg"], v["background"]);
+    const ok = c >= 4.5;
+    checks.push(`  nav-active-fg/bg ${c.toFixed(2)}:1 ${ok?"PASS":"FAIL (need ≥4.5)"}`);
+    if (!ok) failures++;
+  }
+  if (v["nav-inactive-cyan"] && v["background"]) {
+    const c = contrast(v["nav-inactive-cyan"], v["background"]);
+    const ok = c >= 4.5;
+    checks.push(`  nav-inactive-cyan/bg ${c.toFixed(2)}:1 ${ok?"PASS":"FAIL (need ≥4.5)"}`);
     if (!ok) failures++;
   }
   console.log(`${t.id}:\n${checks.join("\n")}`);
