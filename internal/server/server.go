@@ -455,6 +455,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})
 	recurringFireRec := scheduler.NewRecurringFireReconciler(pool, log, startWorkflowFn)
+	recurringFireRec.SetRunContextStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, rc map[string]any) error {
+		return workflow.StartWorkflowDirectWithContext(ctx, pool, log, tenantID, workflowID, projectID, workItemID, rc)
+	})
 	recurringFireRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})

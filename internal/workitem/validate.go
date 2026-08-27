@@ -84,8 +84,15 @@ func validateKindDepth(childKind, parentKind string) error {
 //
 // Errors: db.ErrNotFound when the parent id does not exist in the tenant;
 // any other error is a plain hierarchy violation (CodeInvalidArgument).
-func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string) error {
+func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string, recurringOpt ...bool) error {
 	if parentID == "" {
+		// Flat-recurring items are top-level tasks (kind=task, no parent).
+		// They are exempt from the "only epics are top-level" rule; the flat
+		// shape (task kind, no parent) is enforced separately by
+		// ValidateRecurringFlatness (D1).
+		if len(recurringOpt) > 0 && recurringOpt[0] {
+			return nil
+		}
 		return validateTopLevelKind(childKind)
 	}
 	parent, err := db.GetWorkItem(ctx, tx, tenantID, parentID)
@@ -192,6 +199,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemSkipped
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED:
 		return domain.WorkItemArchived
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA:
+		return domain.WorkItemIdea
 	default:
 		return domain.WorkItemPending
 	}
@@ -466,11 +475,12 @@ var validDays = map[string]bool{
 // recurringScheduleJSON is the JSON shape stored in the recurring_schedule
 // JSONB column. It mirrors the proto RecurringSchedule for DB round-tripping.
 type recurringScheduleJSON struct {
-	Frequency string   `json:"frequency"`
-	Interval  int      `json:"interval"`
-	Days      []string `json:"days"`
-	StartDate string   `json:"start_date"`
-	StartTime string   `json:"start_time"`
+	Frequency   string   `json:"frequency"`
+	Interval    int      `json:"interval"`
+	Days        []string `json:"days"`
+	StartDate   string   `json:"start_date"`
+	StartTime   string   `json:"start_time"`
+	OutputsMode string   `json:"outputs_mode"`
 }
 
 // IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
@@ -527,17 +537,52 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 		return nil, fmt.Errorf("recurring_schedule.start_time must be HH:MM; got %q", startTime)
 	}
 	schedule := recurringScheduleJSON{
-		Frequency: freq,
-		Interval:  int(msg.Interval),
-		Days:      days,
-		StartDate: startDate,
-		StartTime: startTime,
+		Frequency:   freq,
+		Interval:    int(msg.Interval),
+		Days:        days,
+		StartDate:   startDate,
+		StartTime:   startTime,
+		OutputsMode: domain.NormalizeRecurringOutputsMode(msg.OutputsMode),
 	}
 	b, err := json.Marshal(schedule)
 	if err != nil {
 		return nil, fmt.Errorf("recurring_schedule: marshal: %w", err)
 	}
 	return b, nil
+}
+
+// ValidateRecurringFlatness enforces the flat-recurring invariant (D1): a
+// recurring item is a flat top-level task with no parent and no hierarchy
+// participation. kind is only "task" and parent_id is empty. Returns nil
+// when the item is NOT recurring. Exported so the Ask Orchicon tools share
+// the API's boundary validation (AGENTS.md Ask-Orchicon-sync rule).
+func ValidateRecurringFlatness(recurring bool, kind, parentID string) error {
+	if !recurring {
+		return nil
+	}
+	if kind != domain.WorkItemKindTask {
+		return fmt.Errorf("a recurring work item must be flat (kind=task); got kind %q", kind)
+	}
+	if parentID != "" {
+		return errors.New("a recurring work item must be flat and cannot have a parent")
+	}
+	return nil
+}
+
+// ValidateRecurringWorkflowBinding enforces D7: a schedulable recurring
+// LEAF must be bound to a workflow to be schedulable (the recurring fire has
+// nothing to start for a workflow-less leaf). A recurring item WITH children
+// is a sequence parent — it needs no workflow binding (the sequence
+// reconciler fires its children). The rejection is result-state based: it
+// applies to the resulting state (recurring && no children && no workflow)
+// only, so a legacy recurring leaf can still be edited to bind a workflow,
+// and a sequence parent remains valid without one. Exported so the Ask
+// Orchicon tools share the API's boundary validation.
+func ValidateRecurringWorkflowBinding(recurring, hasChildren bool, workflowID string) error {
+	if recurring && !hasChildren && workflowID == "" {
+		return errors.New("a recurring work item must be bound to a workflow to be schedulable; bind a workflow to this item")
+	}
+	return nil
 }
 
 // ComputeNextRunAt computes the first occurrence of a recurring schedule

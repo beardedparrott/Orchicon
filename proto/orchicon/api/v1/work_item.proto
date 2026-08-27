@@ -117,6 +117,14 @@ message WorkItem {
   // archived_from_status is the terminal status the item had when archived;
   // RestoreWorkItem returns the item to this status (not pending).
   string archived_from_status = 34;
+  // spawned_by is the recurring item id that produced this work item
+  // (empty = not an automation spawn). Server-stamped from the recurring
+  // fire's run_context; never client-supplied.
+  string spawned_by = 35;
+  // spawned_by_run_id is the workflow run id of the recurring fire's run
+  // that produced this work item (empty = not an automation spawn).
+  // Server-stamped alongside spawned_by.
+  string spawned_by_run_id = 36;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
@@ -136,6 +144,14 @@ message RecurringSchedule {
   repeated string days = 3; // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
   string start_date = 4;  // YYYY-MM-DD (first occurrence date)
   string start_time = 5;  // HH:MM (time of day for occurrences)
+  // outputs_mode controls what the recurring fire's run produces:
+  //   standard (default): spawned items land in their normal status with
+  //     provenance stamped.
+  //   idea: spawned items land in IDEA state (hidden from every normal
+  //     work-item list) with provenance stamped.
+  //   none: the fire spawns no new work items.
+  // Stored as a key inside the recurring_schedule JSONB (no new column).
+  string outputs_mode = 6;
 }
 
 // WorkItemStatus — schedulable kinds follow:
@@ -171,6 +187,11 @@ enum WorkItemStatus {
   // item has no children. Reversible via RestoreWorkItem, which returns the
   // item to its archived_from_status.
   WORK_ITEM_STATUS_ARCHIVED = 14;
+  // System-managed: set only by the automation spawn path (a recurring fire
+  // with outputs_mode=idea) and by Idea Cloud promotion. An idea is an
+  // automation-produced item awaiting triage; it is excluded from every
+  // normal work-item view. Never user-assignable.
+  WORK_ITEM_STATUS_IDEA = 15;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
