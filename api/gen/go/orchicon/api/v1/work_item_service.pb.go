@@ -219,7 +219,14 @@ type CreateWorkItemRequest struct {
 	// creates a DEPENDS_ON-type edge (from = this item, to = the listed ID).
 	// Absent/empty = no edges. Validated: same project, target exists, no
 	// self-dependency, no cycle.
-	DependsOn     []string `protobuf:"bytes,18,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	DependsOn []string `protobuf:"bytes,18,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	// run_context is the calling workflow run's run_context JSONB (feature 4.1,
+	// AC2). A recurring fire writes the automation provenance block into the run
+	// context; a create issued from inside a recurring fire's run carries it so
+	// the created item is stamped spawned_by / spawned_by_run_id and, when the
+	// fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
+	// creates leave it empty (backward compatible).
+	RunContext    string `protobuf:"bytes,19,opt,name=run_context,json=runContext,proto3" json:"run_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -378,6 +385,13 @@ func (x *CreateWorkItemRequest) GetDependsOn() []string {
 		return x.DependsOn
 	}
 	return nil
+}
+
+func (x *CreateWorkItemRequest) GetRunContext() string {
+	if x != nil {
+		return x.RunContext
+	}
+	return ""
 }
 
 type CreateWorkItemResponse struct {
@@ -2072,7 +2086,7 @@ var File_orchicon_api_v1_work_item_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\n" +
-	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dorchicon/api/v1/project.proto\x1a\x1forchicon/api/v1/work_item.proto\"\x98\x06\n" +
+	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dorchicon/api/v1/project.proto\x1a\x1forchicon/api/v1/work_item.proto\"\xb9\x06\n" +
 	"\x15CreateWorkItemRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -2096,7 +2110,9 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\rcontext_files\x18\x10 \x03(\tR\fcontextFiles\x12V\n" +
 	"\x12recurring_schedule\x18\x11 \x01(\v2\".orchicon.api.v1.RecurringScheduleH\x01R\x11recurringSchedule\x88\x01\x01\x12\x1d\n" +
 	"\n" +
-	"depends_on\x18\x12 \x03(\tR\tdependsOnB\x16\n" +
+	"depends_on\x18\x12 \x03(\tR\tdependsOn\x12\x1f\n" +
+	"\vrun_context\x18\x13 \x01(\tR\n" +
+	"runContextB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
 	"\x13_recurring_schedule\"P\n" +
 	"\x16CreateWorkItemResponse\x126\n" +
