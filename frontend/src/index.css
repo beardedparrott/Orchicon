@@ -1,20 +1,16 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
 /* ── Orchicon Glass Design System — mesh + glass tokens
-   Mockup ground truth: mockup2.html
-   Tokens: --mesh-*, --glass-panel/menu/input-*, --scroll-*
-   Two themes only: orchicon-dark (verbatim #030712 mesh + cyan/indigo/violet glows)
-                    orchicon-light (inverted white translucency, slate borders)
-   All shadcn vars re-derived so bg-* utilities automatically follow the theme.
-   See architecture-notes/1-design-system-theme-engine-mockup-tokenization.md
+   20 themes (10 light + 10 dark) in same glassmorphism vein:
+   bg-mesh 3 radials, glass-panel 16px / glass-menu 20px / glass-input 12px,
+   micro-borders, 4px scrollbar, thin inset highlights, per-theme glow tints.
+   Dark family lightened from #030712 (222 47% 4% → ~222 35% 7-9%) for bright-light legibility.
+   See architecture-notes/11-theme-expansion-…md
 */
 @layer base {
   :root {
     --radius: 0.5rem;
-
-    /* Step-kind accent colors (canvas edges) — light palette */
     --kind-sky: 199 89% 38%;
     --kind-amber: 38 92% 36%;
     --kind-yellow: 45 93% 34%;
@@ -23,8 +19,6 @@
     --kind-emerald: 160 84% 30%;
     --kind-indigo: 234 89% 60%;
     --kind-cyan: 188 86% 32%;
-
-    /* Mesh + glass — light defaults (overridden per-theme) */
     --mesh-bg: 210 40% 98%;
     --mesh-glow-1: 199 89% 48%;
     --mesh-glow-2: 239 84% 67%;
@@ -32,35 +26,31 @@
     --mesh-glow-1-a: 0.08;
     --mesh-glow-2-a: 0.06;
     --mesh-glow-3-a: 0.05;
-
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-blur: 16px;
     --glass-panel-border: 222 47% 11%;
     --glass-panel-border-a: 0.08;
     --glass-panel-shadow: 0 8px 32px rgba(15, 23, 42, 0.08);
-
     --glass-menu-bg: 0 0% 100%;
     --glass-menu-bg-a: 0.88;
     --glass-menu-blur: 20px;
     --glass-menu-border: 222 47% 11%;
     --glass-menu-border-a: 0.10;
     --glass-menu-shadow: 0 20px 50px rgba(15, 23, 42, 0.12), 0 0 15px rgba(6, 182, 212, 0.08);
-
     --glass-input-bg: 0 0% 100%;
     --glass-input-bg-a: 0.60;
-    --glass-input-blur: 16px;
+    --glass-input-blur: 12px;
     --glass-input-border: 222 47% 11%;
     --glass-input-border-a: 0.12;
     --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
     --glass-input-glow: 0 0 20px rgba(6, 182, 212, 0.04);
-    --glass-input-focus: 199 89% 38%;
+    --glass-input-focus: 199 89% 36%;
     --glass-input-focus-a: 0.45;
     --glass-input-focus-glow: 0 0 20px rgba(6, 182, 212, 0.15);
-
     --scroll-thumb: 222 47% 11%;
     --scroll-thumb-a: 0.15;
-    --scroll-thumb-hover: 199 89% 38%;
+    --scroll-thumb-hover: 199 89% 36%;
     --scroll-thumb-hover-a: 0.40;
     --scroll-width: 4px;
 
@@ -71,8 +61,6 @@
     --z-drawer: 50;
     --z-dialog: 60;
   }
-
-  /* Kind colors — dark palette */
   .dark {
     --kind-sky: 199 89% 60%;
     --kind-amber: 38 95% 60%;
@@ -83,9 +71,6 @@
     --kind-indigo: 234 90% 70%;
     --kind-cyan: 188 90% 55%;
   }
-
-  /* Light theme — Lumen (inverted glass, white translucency, slate borders)
-     muted-foreground bumped from 215 16% 47% → 215 19% 38% for WCAG AA on bg-background */
   [data-theme="orchicon-light"] {
     --background: 210 40% 98%;
     --foreground: 222 47% 11%;
@@ -93,7 +78,7 @@
     --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    --primary: 199 89% 38%;
+    --primary: 199 89% 36%;
     --primary-foreground: 0 0% 98%;
     --secondary: 210 20% 96%;
     --secondary-foreground: 222 47% 11%;
@@ -105,85 +90,1011 @@
     --destructive-foreground: 0 0% 98%;
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 199 89% 38%;
-  }
-
-  /* Dark theme — Obsidian (mockup verbatim: #030712 + cyan/indigo/violet glows) */
-  [data-theme="orchicon-dark"].dark,
-  .dark [data-theme="orchicon-dark"] {
-    --background: 222 47% 4%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 11%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222 47% 11%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 199 89% 48%;
-    --primary-foreground: 222 47% 4%;
-    --secondary: 222 47% 14%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62% 30%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 17%;
-    --input: 217 33% 20%;
-    --ring: 199 89% 48%;
-
-    --mesh-bg: 222 47% 4%;
+    --ring: 199 89% 36%;
+    --mesh-bg: 210 40% 98%;
     --mesh-glow-1: 199 89% 48%;
     --mesh-glow-2: 239 84% 67%;
     --mesh-glow-3: 271 81% 56%;
-    --mesh-glow-1-a: 0.15;
-    --mesh-glow-2-a: 0.12;
-    --mesh-glow-3-a: 0.08;
-
-    --glass-panel-bg: 222 47% 11%;
-    --glass-panel-bg-a: 0.65;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(6, 182, 212, 0.04);
+    --glass-input-focus: 199 89% 36%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(6, 182, 212, 0.15);
+    --scroll-thumb: 222 47% 11%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 199 89% 36%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-gruvbox"] {
+    --background: 48 87% 88%;
+    --foreground: 20 6% 18%;
+    --card: 43 45% 85%;
+    --card-foreground: 20 6% 18%;
+    --popover: 43 45% 85%;
+    --popover-foreground: 20 6% 18%;
+    --primary: 38 85% 33%;
+    --primary-foreground: 48 87% 96%;
+    --secondary: 43 30% 85%;
+    --secondary-foreground: 20 6% 18%;
+    --muted: 43 30% 84%;
+    --muted-foreground: 28 10% 36%;
+    --accent: 43 25% 80%;
+    --accent-foreground: 20 6% 18%;
+    --destructive: 0 65% 42%;
+    --destructive-foreground: 48 87% 96%;
+    --border: 40 20% 78%;
+    --input: 40 20% 78%;
+    --ring: 38 85% 33%;
+    --mesh-bg: 48 87% 88%;
+    --mesh-glow-1: 38 85% 42%;
+    --mesh-glow-2: 15 85% 42%;
+    --mesh-glow-3: 70 30% 38%;
+    --mesh-glow-1-a: 0.09;
+    --mesh-glow-2-a: 0.07;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 48 87% 88%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 20 6% 18%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(60, 56, 54, 0.08);
+    --glass-menu-bg: 48 87% 88%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 20 6% 18%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(60, 56, 54, 0.12), 0 0 15px rgba(181, 118, 20, 0.08);
+    --glass-input-bg: 48 87% 88%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 20 6% 18%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 253, 240, 0.9);
+    --glass-input-glow: 0 0 20px rgba(181, 118, 20, 0.04);
+    --glass-input-focus: 38 85% 33%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(181, 118, 20, 0.15);
+    --scroll-thumb: 28 10% 36%;
+    --scroll-thumb-a: 0.22;
+    --scroll-thumb-hover: 38 85% 33%;
+    --scroll-thumb-hover-a: 0.45;
+  }
+  [data-theme="orchicon-light-ember"] {
+    --background: 20 100% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 350 89% 42%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 20 20% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 20 20% 96%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 20 20% 93%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 20 20% 90%;
+    --input: 20 20% 90%;
+    --ring: 350 89% 42%;
+    --mesh-bg: 20 100% 97%;
+    --mesh-glow-1: 350 89% 55%;
+    --mesh-glow-2: 38 92% 50%;
+    --mesh-glow-3: 25 95% 58%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(244, 63, 94, 0.04);
+    --glass-input-focus: 350 89% 42%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(244, 63, 94, 0.15);
+    --scroll-thumb: 350 89% 42%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 350 89% 42%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-forest"] {
+    --background: 142 40% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 160 84% 28%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 142 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 142 20% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 142 20% 91%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 142 20% 88%;
+    --input: 142 20% 88%;
+    --ring: 160 84% 28%;
+    --mesh-bg: 142 40% 96%;
+    --mesh-glow-1: 160 84% 35%;
+    --mesh-glow-2: 173 80% 36%;
+    --mesh-glow-3: 188 86% 38%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(16, 185, 129, 0.04);
+    --glass-input-focus: 160 84% 28%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(16, 185, 129, 0.15);
+    --scroll-thumb: 160 84% 28%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 160 84% 28%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-ocean"] {
+    --background: 199 100% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 199 89% 36%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 199 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 199 20% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 199 20% 91%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 199 20% 88%;
+    --input: 199 20% 88%;
+    --ring: 199 89% 36%;
+    --mesh-bg: 199 100% 97%;
+    --mesh-glow-1: 199 89% 48%;
+    --mesh-glow-2: 188 86% 42%;
+    --mesh-glow-3: 234 89% 65%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(14, 165, 233, 0.04);
+    --glass-input-focus: 199 89% 36%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(14, 165, 233, 0.15);
+    --scroll-thumb: 199 89% 36%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 199 89% 36%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-violet"] {
+    --background: 270 50% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 263 70% 42%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 270 20% 95%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 270 20% 95%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 270 20% 92%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 270 20% 88%;
+    --input: 270 20% 88%;
+    --ring: 263 70% 42%;
+    --mesh-bg: 270 50% 97%;
+    --mesh-glow-1: 263 70% 52%;
+    --mesh-glow-2: 234 89% 65%;
+    --mesh-glow-3: 291 80% 60%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(124, 58, 237, 0.04);
+    --glass-input-focus: 263 70% 42%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(124, 58, 237, 0.15);
+    --scroll-thumb: 263 70% 42%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 263 70% 42%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-amber"] {
+    --background: 38 100% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 30 92% 34%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 38 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 38 20% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 38 20% 91%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 38 20% 88%;
+    --input: 38 20% 88%;
+    --ring: 30 92% 34%;
+    --mesh-bg: 38 100% 96%;
+    --mesh-glow-1: 38 92% 50%;
+    --mesh-glow-2: 25 95% 53%;
+    --mesh-glow-3: 45 93% 48%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(245, 158, 11, 0.04);
+    --glass-input-focus: 30 92% 34%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(245, 158, 11, 0.15);
+    --scroll-thumb: 30 92% 34%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 30 92% 34%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-slate"] {
+    --background: 210 20% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 215 25% 32%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 210 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 20% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 210 20% 91%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 214 20% 89%;
+    --input: 214 20% 89%;
+    --ring: 215 25% 32%;
+    --mesh-bg: 210 20% 97%;
+    --mesh-glow-1: 215 20% 55%;
+    --mesh-glow-2: 199 40% 55%;
+    --mesh-glow-3: 263 25% 60%;
+    --mesh-glow-1-a: 0.07;
+    --mesh-glow-2-a: 0.05;
+    --mesh-glow-3-a: 0.04;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(100, 116, 139, 0.04);
+    --glass-input-focus: 215 25% 32%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(100, 116, 139, 0.15);
+    --scroll-thumb: 215 25% 32%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 215 25% 32%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-rose"] {
+    --background: 350 100% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 346 77% 42%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 350 20% 95%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 350 20% 95%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 350 20% 92%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 350 20% 89%;
+    --input: 350 20% 89%;
+    --ring: 346 77% 42%;
+    --mesh-bg: 350 100% 97%;
+    --mesh-glow-1: 346 77% 55%;
+    --mesh-glow-2: 330 80% 60%;
+    --mesh-glow-3: 270 60% 62%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(244, 63, 94, 0.04);
+    --glass-input-focus: 346 77% 42%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(244, 63, 94, 0.15);
+    --scroll-thumb: 346 77% 42%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 346 77% 42%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-light-teal"] {
+    --background: 173 60% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 173 80% 28%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 173 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 173 20% 94%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 173 20% 91%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 173 20% 88%;
+    --input: 173 20% 88%;
+    --ring: 173 80% 28%;
+    --mesh-bg: 173 60% 96%;
+    --mesh-glow-1: 173 80% 36%;
+    --mesh-glow-2: 188 86% 42%;
+    --mesh-glow-3: 160 60% 42%;
+    --mesh-glow-1-a: 0.08;
+    --mesh-glow-2-a: 0.06;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 0 0% 100%;
+    --glass-panel-bg-a: 0.72;
+    --glass-panel-border: 222 47% 11%;
+    --glass-panel-border-a: 0.08;
+    --glass-menu-bg: 0 0% 100%;
+    --glass-menu-bg-a: 0.88;
+    --glass-menu-border: 222 47% 11%;
+    --glass-menu-border-a: 0.10;
+    --glass-input-bg: 0 0% 100%;
+    --glass-input-bg-a: 0.60;
+    --glass-input-border: 222 47% 11%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+    --glass-input-glow: 0 0 20px rgba(20, 184, 166, 0.04);
+    --glass-input-focus: 173 80% 28%;
+    --glass-input-focus-a: 0.45;
+    --glass-input-focus-glow: 0 0 20px rgba(20, 184, 166, 0.15);
+    --scroll-thumb: 173 80% 28%;
+    --scroll-thumb-a: 0.18;
+    --scroll-thumb-hover: 173 80% 28%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark"].dark,
+  .dark [data-theme="orchicon-dark"] {
+    --background: 222 35% 7%;
+    --foreground: 210 40% 98%;
+    --card: 222 35% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 35% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 199 89% 52%;
+    --primary-foreground: 222 47% 7%;
+    --secondary: 222 30% 15%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 28% 17%;
+    --muted-foreground: 215 20% 68%;
+    --accent: 217 28% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 28% 17%;
+    --input: 217 28% 20%;
+    --ring: 199 89% 52%;
+    --mesh-bg: 222 35% 7%;
+    --mesh-glow-1: 199 89% 52%;
+    --mesh-glow-2: 239 84% 67%;
+    --mesh-glow-3: 271 81% 56%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 222 35% 11%;
+    --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
     --glass-panel-border-a: 0.08;
     --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-
-    --glass-menu-bg: 222 47% 11%;
-    --glass-menu-bg-a: 0.85;
+    --glass-menu-bg: 222 35% 11%;
+    --glass-menu-bg-a: 0.82;
     --glass-menu-border: 0 0% 100%;
     --glass-menu-border-a: 0.10;
     --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(56, 189, 248, 0.10);
-
-    --glass-input-bg: 222 47% 11%;
-    --glass-input-bg-a: 0.40;
+    --glass-input-bg: 222 35% 11%;
+    --glass-input-bg-a: 0.38;
     --glass-input-border: 0 0% 100%;
     --glass-input-border-a: 0.12;
     --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
     --glass-input-glow: 0 0 20px rgba(56, 189, 248, 0.05);
-    --glass-input-focus: 199 89% 48%;
+    --glass-input-focus: 199 89% 52%;
     --glass-input-focus-a: 0.50;
     --glass-input-focus-glow: 0 0 25px rgba(56, 189, 248, 0.2);
-
     --scroll-thumb: 0 0% 100%;
     --scroll-thumb-a: 0.15;
-    --scroll-thumb-hover: 199 89% 48%;
+    --scroll-thumb-hover: 199 89% 52%;
     --scroll-thumb-hover-a: 0.40;
   }
-
-  /* Smooth theme transitions — disabled when reduced-motion is preferred */
+  [data-theme="orchicon-dark-ember"].dark,
+  .dark [data-theme="orchicon-dark-ember"] {
+    --background: 12 30% 8%;
+    --foreground: 20 20% 96%;
+    --card: 12 25% 12%;
+    --card-foreground: 20 20% 96%;
+    --popover: 12 25% 12%;
+    --popover-foreground: 20 20% 96%;
+    --primary: 350 89% 62%;
+    --primary-foreground: 12 30% 8%;
+    --secondary: 12 20% 16%;
+    --secondary-foreground: 20 20% 96%;
+    --muted: 12 15% 17%;
+    --muted-foreground: 20 10% 68%;
+    --accent: 12 15% 17%;
+    --accent-foreground: 20 20% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 20 20% 96%;
+    --border: 12 15% 17%;
+    --input: 12 15% 20%;
+    --ring: 350 89% 62%;
+    --mesh-bg: 12 30% 8%;
+    --mesh-glow-1: 350 89% 58%;
+    --mesh-glow-2: 38 92% 50%;
+    --mesh-glow-3: 25 90% 55%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 12 25% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 12 25% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(251, 113, 133, 0.10);
+    --glass-input-bg: 12 25% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(251, 113, 133, 0.05);
+    --glass-input-focus: 350 89% 62%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(251, 113, 133, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 350 89% 62%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-forest"].dark,
+  .dark [data-theme="orchicon-dark-forest"] {
+    --background: 145 20% 8%;
+    --foreground: 142 30% 96%;
+    --card: 145 18% 12%;
+    --card-foreground: 142 30% 96%;
+    --popover: 145 18% 12%;
+    --popover-foreground: 142 30% 96%;
+    --primary: 160 60% 50%;
+    --primary-foreground: 145 20% 8%;
+    --secondary: 145 15% 16%;
+    --secondary-foreground: 142 30% 96%;
+    --muted: 145 12% 17%;
+    --muted-foreground: 142 10% 68%;
+    --accent: 145 12% 17%;
+    --accent-foreground: 142 30% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 142 30% 96%;
+    --border: 145 12% 17%;
+    --input: 145 12% 20%;
+    --ring: 160 60% 50%;
+    --mesh-bg: 145 20% 8%;
+    --mesh-glow-1: 160 60% 45%;
+    --mesh-glow-2: 173 60% 42%;
+    --mesh-glow-3: 188 60% 45%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 145 18% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 145 18% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(52, 211, 153, 0.10);
+    --glass-input-bg: 145 18% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(52, 211, 153, 0.05);
+    --glass-input-focus: 160 60% 50%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(52, 211, 153, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 160 60% 50%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-ocean"].dark,
+  .dark [data-theme="orchicon-dark-ocean"] {
+    --background: 210 30% 8%;
+    --foreground: 199 30% 96%;
+    --card: 210 28% 12%;
+    --card-foreground: 199 30% 96%;
+    --popover: 210 28% 12%;
+    --popover-foreground: 199 30% 96%;
+    --primary: 199 89% 58%;
+    --primary-foreground: 210 30% 8%;
+    --secondary: 210 22% 16%;
+    --secondary-foreground: 199 30% 96%;
+    --muted: 210 18% 17%;
+    --muted-foreground: 210 15% 68%;
+    --accent: 210 18% 17%;
+    --accent-foreground: 199 30% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 199 30% 96%;
+    --border: 210 18% 17%;
+    --input: 210 18% 20%;
+    --ring: 199 89% 58%;
+    --mesh-bg: 210 30% 8%;
+    --mesh-glow-1: 199 89% 55%;
+    --mesh-glow-2: 234 80% 65%;
+    --mesh-glow-3: 188 80% 50%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 210 28% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 210 28% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(56, 189, 248, 0.10);
+    --glass-input-bg: 210 28% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(56, 189, 248, 0.05);
+    --glass-input-focus: 199 89% 58%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(56, 189, 248, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 199 89% 58%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-violet"].dark,
+  .dark [data-theme="orchicon-dark-violet"] {
+    --background: 270 22% 9%;
+    --foreground: 270 30% 96%;
+    --card: 270 20% 13%;
+    --card-foreground: 270 30% 96%;
+    --popover: 270 20% 13%;
+    --popover-foreground: 270 30% 96%;
+    --primary: 263 70% 68%;
+    --primary-foreground: 270 22% 9%;
+    --secondary: 270 15% 16%;
+    --secondary-foreground: 270 30% 96%;
+    --muted: 270 12% 17%;
+    --muted-foreground: 270 12% 68%;
+    --accent: 270 12% 17%;
+    --accent-foreground: 270 30% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 270 30% 96%;
+    --border: 270 12% 17%;
+    --input: 270 12% 20%;
+    --ring: 263 70% 68%;
+    --mesh-bg: 270 22% 9%;
+    --mesh-glow-1: 263 70% 60%;
+    --mesh-glow-2: 234 70% 65%;
+    --mesh-glow-3: 291 70% 60%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 270 20% 13%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 270 20% 13%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(167, 139, 250, 0.10);
+    --glass-input-bg: 270 20% 13%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(167, 139, 250, 0.05);
+    --glass-input-focus: 263 70% 68%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(167, 139, 250, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 263 70% 68%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-amber"].dark,
+  .dark [data-theme="orchicon-dark-amber"] {
+    --background: 28 25% 8%;
+    --foreground: 38 30% 96%;
+    --card: 28 22% 12%;
+    --card-foreground: 38 30% 96%;
+    --popover: 28 22% 12%;
+    --popover-foreground: 38 30% 96%;
+    --primary: 38 92% 58%;
+    --primary-foreground: 28 25% 8%;
+    --secondary: 28 18% 16%;
+    --secondary-foreground: 38 30% 96%;
+    --muted: 28 12% 17%;
+    --muted-foreground: 38 12% 68%;
+    --accent: 28 12% 17%;
+    --accent-foreground: 38 30% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 38 30% 96%;
+    --border: 28 12% 17%;
+    --input: 28 12% 20%;
+    --ring: 38 92% 58%;
+    --mesh-bg: 28 25% 8%;
+    --mesh-glow-1: 38 92% 52%;
+    --mesh-glow-2: 25 90% 55%;
+    --mesh-glow-3: 45 90% 48%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 28 22% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 28 22% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(251, 191, 36, 0.10);
+    --glass-input-bg: 28 22% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(251, 191, 36, 0.05);
+    --glass-input-focus: 38 92% 58%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(251, 191, 36, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 38 92% 58%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-slate"].dark,
+  .dark [data-theme="orchicon-dark-slate"] {
+    --background: 222 15% 8%;
+    --foreground: 210 20% 96%;
+    --card: 222 15% 12%;
+    --card-foreground: 210 20% 96%;
+    --popover: 222 15% 12%;
+    --popover-foreground: 210 20% 96%;
+    --primary: 215 20% 62%;
+    --primary-foreground: 222 15% 8%;
+    --secondary: 222 12% 16%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 222 10% 17%;
+    --muted-foreground: 215 12% 68%;
+    --accent: 222 10% 17%;
+    --accent-foreground: 210 20% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 210 20% 96%;
+    --border: 222 10% 17%;
+    --input: 222 10% 20%;
+    --ring: 215 20% 62%;
+    --mesh-bg: 222 15% 8%;
+    --mesh-glow-1: 215 15% 50%;
+    --mesh-glow-2: 199 40% 50%;
+    --mesh-glow-3: 263 20% 55%;
+    --mesh-glow-1-a: 0.10;
+    --mesh-glow-2-a: 0.08;
+    --mesh-glow-3-a: 0.05;
+    --glass-panel-bg: 222 15% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 222 15% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(148, 163, 184, 0.10);
+    --glass-input-bg: 222 15% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(148, 163, 184, 0.05);
+    --glass-input-focus: 215 20% 62%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(148, 163, 184, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 215 20% 62%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-rose"].dark,
+  .dark [data-theme="orchicon-dark-rose"] {
+    --background: 350 22% 8%;
+    --foreground: 350 20% 96%;
+    --card: 350 20% 12%;
+    --card-foreground: 350 20% 96%;
+    --popover: 350 20% 12%;
+    --popover-foreground: 350 20% 96%;
+    --primary: 346 80% 62%;
+    --primary-foreground: 350 22% 8%;
+    --secondary: 350 15% 16%;
+    --secondary-foreground: 350 20% 96%;
+    --muted: 350 12% 17%;
+    --muted-foreground: 350 10% 68%;
+    --accent: 350 12% 17%;
+    --accent-foreground: 350 20% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 350 20% 96%;
+    --border: 350 12% 17%;
+    --input: 350 12% 20%;
+    --ring: 346 80% 62%;
+    --mesh-bg: 350 22% 8%;
+    --mesh-glow-1: 346 77% 58%;
+    --mesh-glow-2: 330 75% 58%;
+    --mesh-glow-3: 270 50% 55%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 350 20% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 350 20% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(251, 113, 133, 0.10);
+    --glass-input-bg: 350 20% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(251, 113, 133, 0.05);
+    --glass-input-focus: 346 80% 62%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(251, 113, 133, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 346 80% 62%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-teal"].dark,
+  .dark [data-theme="orchicon-dark-teal"] {
+    --background: 175 22% 8%;
+    --foreground: 173 20% 96%;
+    --card: 175 20% 12%;
+    --card-foreground: 173 20% 96%;
+    --popover: 175 20% 12%;
+    --popover-foreground: 173 20% 96%;
+    --primary: 173 60% 45%;
+    --primary-foreground: 175 22% 8%;
+    --secondary: 175 15% 16%;
+    --secondary-foreground: 173 20% 96%;
+    --muted: 175 12% 17%;
+    --muted-foreground: 173 10% 68%;
+    --accent: 175 12% 17%;
+    --accent-foreground: 173 20% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 173 20% 96%;
+    --border: 175 12% 17%;
+    --input: 175 12% 20%;
+    --ring: 173 60% 45%;
+    --mesh-bg: 175 22% 8%;
+    --mesh-glow-1: 173 60% 42%;
+    --mesh-glow-2: 188 60% 45%;
+    --mesh-glow-3: 160 50% 42%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 175 20% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 175 20% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(45, 212, 191, 0.10);
+    --glass-input-bg: 175 20% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(45, 212, 191, 0.05);
+    --glass-input-focus: 173 60% 45%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(45, 212, 191, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 173 60% 45%;
+    --scroll-thumb-hover-a: 0.40;
+  }
+  [data-theme="orchicon-dark-crimson"].dark,
+  .dark [data-theme="orchicon-dark-crimson"] {
+    --background: 355 30% 8%;
+    --foreground: 355 20% 96%;
+    --card: 355 28% 12%;
+    --card-foreground: 355 20% 96%;
+    --popover: 355 28% 12%;
+    --popover-foreground: 355 20% 96%;
+    --primary: 355 78% 58%;
+    --primary-foreground: 355 30% 8%;
+    --secondary: 355 20% 16%;
+    --secondary-foreground: 355 20% 96%;
+    --muted: 355 15% 17%;
+    --muted-foreground: 355 12% 68%;
+    --accent: 355 15% 17%;
+    --accent-foreground: 355 20% 96%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 355 20% 96%;
+    --border: 355 15% 17%;
+    --input: 355 15% 20%;
+    --ring: 355 78% 58%;
+    --mesh-bg: 355 30% 8%;
+    --mesh-glow-1: 355 78% 55%;
+    --mesh-glow-2: 346 70% 52%;
+    --mesh-glow-3: 38 70% 48%;
+    --mesh-glow-1-a: 0.12;
+    --mesh-glow-2-a: 0.09;
+    --mesh-glow-3-a: 0.06;
+    --glass-panel-bg: 355 28% 12%;
+    --glass-panel-bg-a: 0.62;
+    --glass-panel-border: 0 0% 100%;
+    --glass-panel-border-a: 0.08;
+    --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    --glass-menu-bg: 355 28% 12%;
+    --glass-menu-bg-a: 0.82;
+    --glass-menu-border: 0 0% 100%;
+    --glass-menu-border-a: 0.10;
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(248, 113, 113, 0.10);
+    --glass-input-bg: 355 28% 12%;
+    --glass-input-bg-a: 0.38;
+    --glass-input-border: 0 0% 100%;
+    --glass-input-border-a: 0.12;
+    --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
+    --glass-input-glow: 0 0 20px rgba(248, 113, 113, 0.05);
+    --glass-input-focus: 355 78% 58%;
+    --glass-input-focus-a: 0.50;
+    --glass-input-focus-glow: 0 0 25px rgba(248, 113, 113, 0.2);
+    --scroll-thumb: 0 0% 100%;
+    --scroll-thumb-a: 0.15;
+    --scroll-thumb-hover: 355 78% 58%;
+    --scroll-thumb-hover-a: 0.40;
+  }
   *,
   *::before,
   *::after {
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.1s ease, box-shadow 0.15s ease;
   }
-
   * {
     @apply border-border;
   }
-
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
-
-  /* Thin micro-scrollbar — 4px, theme-aware */
   ::-webkit-scrollbar {
     width: var(--scroll-width);
     height: var(--scroll-width);
@@ -203,7 +1114,6 @@
     scrollbar-color: hsla(var(--scroll-thumb) / var(--scroll-thumb-a)) transparent;
   }
 }
-
 @layer utilities {
   .bg-mesh {
     background:
@@ -212,77 +1122,37 @@
       radial-gradient(circle at 20% 80%, hsla(var(--mesh-glow-3) / var(--mesh-glow-3-a)), transparent 50%),
       hsl(var(--mesh-bg));
   }
-
   .glass-panel {
     background: hsla(var(--glass-panel-bg) / var(--glass-panel-bg-a));
     backdrop-filter: blur(var(--glass-panel-blur));
     -webkit-backdrop-filter: blur(var(--glass-panel-blur));
     border: 1px solid hsla(var(--glass-panel-border) / var(--glass-panel-border-a));
     box-shadow: var(--glass-panel-shadow), inset 0 1px 0 hsla(0 0% 100% / 0.06);
-    contain: paint;
   }
-
   .glass-menu {
     background: hsla(var(--glass-menu-bg) / var(--glass-menu-bg-a));
     backdrop-filter: blur(var(--glass-menu-blur));
     -webkit-backdrop-filter: blur(var(--glass-menu-blur));
     border: 1px solid hsla(var(--glass-menu-border) / var(--glass-menu-border-a));
     box-shadow: var(--glass-menu-shadow);
-    contain: paint;
   }
-
   .glass-input {
     background: hsla(var(--glass-input-bg) / var(--glass-input-bg-a));
     backdrop-filter: blur(var(--glass-input-blur));
     -webkit-backdrop-filter: blur(var(--glass-input-blur));
     border: 1px solid hsla(var(--glass-input-border) / var(--glass-input-border-a));
     box-shadow: var(--glass-input-inset), var(--glass-input-glow);
-    contain: paint;
   }
-
   .glass-input:focus-within {
     border-color: hsla(var(--glass-input-focus) / var(--glass-input-focus-a));
     box-shadow: var(--glass-input-inset), var(--glass-input-focus-glow);
   }
 }
-
-/* Low-power / no-backdrop-filter fallback — opaque glass */
 @supports not (backdrop-filter: blur(1px)) {
   .glass-panel,
   .glass-menu,
   .glass-input {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-  }
-}
-html.no-backdrop-blur .glass-panel,
-html.no-backdrop-blur .glass-menu,
-html.no-backdrop-blur .glass-input {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-html.no-backdrop-blur .glass-panel {
-  background: hsla(var(--glass-panel-bg) / 0.96) !important;
-}
-html.no-backdrop-blur .glass-menu {
-  background: hsla(var(--glass-menu-bg) / 0.98) !important;
-}
-html.no-backdrop-blur .glass-input {
-  background: hsla(var(--glass-input-bg) / 0.96) !important;
-}
-
-/* prefers-reduced-motion: disable pulse/ping and global transitions */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition: none !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
-  .animate-pulse,
-  .animate-ping,
-  .animate-spin {
-    animation: none !important;
   }
 }
