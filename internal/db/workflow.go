@@ -1539,7 +1539,15 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
 		  AND worktree_status IN ('ready', 'pruned') AND worktree_branch <> ''
-		  AND (run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
+		  AND (
+			(run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
+			OR EXISTS (
+				SELECT 1 FROM worker_executions e
+				WHERE e.workflow_run_id = workflow_runs.id
+				  AND e.tenant_id = workflow_runs.tenant_id
+				  AND (e.pr_url IS NULL OR e.pr_url = '')
+			)
+		  )
 		ORDER BY created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {

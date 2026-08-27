@@ -276,6 +276,12 @@ func requiresPRStep(stepID, config string) bool {
 // worker's self-reported marker for the pass/fail decision.
 var prURLRe = regexp.MustCompile(`PR_URL:\s*(https://github\.com/[^\s"]+/pull/\d+)`)
 var prURLJSONRe = regexp.MustCompile(`"pr_url"\s*:\s*"(https://[^"]+)"`)
+var prStateMarkerRe = regexp.MustCompile(`PR_STATE:\s*([A-Za-z]+)`)
+
+// ghBin is the binary deterministicPRForBranch shells out to for the
+// platform-verified PR lookup. It is a variable so tests can stub the gh
+// invocation; production always runs the real gh.
+var ghBin = "gh"
 
 func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow) string {
 	if u, _ := db.PrFromRunContext(run.RunContext); u != "" {
@@ -289,6 +295,22 @@ func effectivePRURL(run db.WorkflowRunRow, execRow db.ExecutionRow) string {
 	}
 	if m := prURLJSONRe.FindStringSubmatch(string(execRow.Output)); len(m) == 2 {
 		return m[1]
+	}
+	return ""
+}
+
+// markerPRState extracts a worker-reported PR_STATE from the execution
+// output using a non-anchored whole-output scan, so a marker glued
+// mid-sentence (the 4.2 case) still captures its state. It recovers the
+// marker when the extractPRFields column stamp is demoted for a succeeded
+// PR step and the deterministic check could not verify (verified=false).
+func markerPRState(output string) string {
+	if m := prStateMarkerRe.FindStringSubmatch(output); len(m) == 2 {
+		s := strings.ToLower(m[1])
+		switch s {
+		case "open", "merged", "draft", "closed", "none":
+			return s
+		}
 	}
 	return ""
 }
@@ -315,7 +337,7 @@ func deterministicPRForBranch(repoSlug, branch string) (prURL, prState string, v
 	// The jq filter must not error on an empty result set: `length > 0`
 	// selects the first PR only when one exists, otherwise emits nothing and
 	// exits 0, so "no PR found" is distinguishable from "gh failed".
-	if out, err := osexec.Command("gh", "pr", "list", "--head", branch, "--state", "all",
+	if out, err := osexec.Command(ghBin, "pr", "list", "--head", branch, "--state", "all",
 		"--repo", repoSlug, "--json", "url,state",
 		"--jq", `if length > 0 then .[0] | [.url, .state] | @tsv else empty end`).Output(); err == nil {
 		if url, state := parsePRLine(string(out)); url != "" {
@@ -325,7 +347,7 @@ func deterministicPRForBranch(repoSlug, branch string) (prURL, prState string, v
 		return "", "", true
 	}
 	// Fallback: gh pr view <branch> --repo OWNER/REPO
-	if out, err := osexec.Command("gh", "pr", "view", branch,
+	if out, err := osexec.Command(ghBin, "pr", "view", branch,
 		"--repo", repoSlug, "--json", "url,state",
 		"--jq", `[.url, .state] | @tsv`).Output(); err == nil {
 		if url, state := parsePRLine(string(out)); url != "" {
@@ -4185,15 +4207,40 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 							// PrURL, worker stdout) rather than fail a
 							// possibly-valid run.
 							prURL = effectivePRURL(*run, exec)
-							if exec.PrState != nil {
+							// Recover the recorded PR state by the same precedence
+							// as the URL fallback chain: run_context, the execution
+							// column, then the worker's stdout marker. The
+							// execution-column marker stamp is demoted for a
+							// succeeded PR step (Change 2), so a marker-reported
+							// PR_STATE must be recovered here rather than lost.
+							if _, ctxState := db.PrFromRunContext(run.RunContext); ctxState != "" {
+								prState = ctxState
+							} else if exec.PrState != nil {
 								prState = *exec.PrState
+							} else {
+								prState = markerPRState(string(exec.Output))
 							}
 						}
 						if prURL != "" {
-							if curURL, _ := db.PrFromRunContext(run.RunContext); curURL == "" {
-								if prState == "" {
-									prState = "open"
-								}
+							// Change 1: mirror the authoritative PR onto the step's
+							// execution row columns (the work item card reads these)
+							// so the rows agree with run_context at completion time.
+							// Best-effort / non-fatal: the PR surface is auxiliary
+							// and the pass/fail decision is already made.
+							if _, err := db.UpdateExecution(ctx, tx, tenantID, exec.ID, exec.Version,
+								db.UpdateExecutionFields{PrURL: &prURL, PrState: &prState}); err != nil {
+								r.log.Warn("step-success: update execution PR fields (best-effort)",
+									"run", run.ID, "execution", exec.ID, "error", err)
+							}
+							if prState == "" {
+								prState = "open"
+							}
+							// Change 1b: when verified, the deterministic result is
+							// authoritative and overrides any marker-derived
+							// run_context value. When !verified, keep the
+							// write-only-if-empty guard so a recorded source we
+							// couldn't improve on is not clobbered.
+							if curURL, _ := db.PrFromRunContext(run.RunContext); verified || curURL == "" {
 								// Merge into existing run_context instead of replacing - preserves worktree_branch and other keys
 								merged := run.RunContext
 								var m map[string]any
