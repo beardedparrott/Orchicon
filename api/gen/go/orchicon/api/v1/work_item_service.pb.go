@@ -2381,6 +2381,337 @@ func (x *GetWorkItemRunHistoryResponse) GetEntries() []*RecurringRunHistoryEntry
 	return nil
 }
 
+// ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
+// work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
+// the same query UX.
+type ListIdeasRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ProjectId     string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"` // empty = all projects
+	Search        string                 `protobuf:"bytes,3,opt,name=search,proto3" json:"search,omitempty"`                        // free-text search across title and description
+	SortBy        string                 `protobuf:"bytes,4,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`          // "title", "priority", "created_at" (default)
+	SortOrder     string                 `protobuf:"bytes,5,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"` // "asc" or "desc" (default "asc")
+	PageToken     string                 `protobuf:"bytes,6,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"` // id > cursor (stable ULID pagination)
+	PageSize      int32                  `protobuf:"varint,7,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIdeasRequest) Reset() {
+	*x = ListIdeasRequest{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIdeasRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIdeasRequest) ProtoMessage() {}
+
+func (x *ListIdeasRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIdeasRequest.ProtoReflect.Descriptor instead.
+func (*ListIdeasRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ListIdeasRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetSearch() string {
+	if x != nil {
+		return x.Search
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetSortBy() string {
+	if x != nil {
+		return x.SortBy
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetSortOrder() string {
+	if x != nil {
+		return x.SortOrder
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListIdeasRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+// ListIdeasResponse carries a page of idea-state work items (already
+// populated with automation provenance + the read-time spawned_by_title
+// badge) plus the next page token.
+type ListIdeasResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ideas         []*WorkItem            `protobuf:"bytes,1,rep,name=ideas,proto3" json:"ideas,omitempty"`
+	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIdeasResponse) Reset() {
+	*x = ListIdeasResponse{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIdeasResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIdeasResponse) ProtoMessage() {}
+
+func (x *ListIdeasResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIdeasResponse.ProtoReflect.Descriptor instead.
+func (*ListIdeasResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ListIdeasResponse) GetIdeas() []*WorkItem {
+	if x != nil {
+		return x.Ideas
+	}
+	return nil
+}
+
+func (x *ListIdeasResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+// PromoteIdeaRequest identifies the idea-state work item to approve.
+type PromoteIdeaRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PromoteIdeaRequest) Reset() {
+	*x = PromoteIdeaRequest{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PromoteIdeaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PromoteIdeaRequest) ProtoMessage() {}
+
+func (x *PromoteIdeaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PromoteIdeaRequest.ProtoReflect.Descriptor instead.
+func (*PromoteIdeaRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *PromoteIdeaRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// PromoteIdeaResponse carries the promoted work item (now a normal pending
+// item, provenance retained).
+type PromoteIdeaResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkItem      *WorkItem              `protobuf:"bytes,1,opt,name=work_item,json=workItem,proto3" json:"work_item,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PromoteIdeaResponse) Reset() {
+	*x = PromoteIdeaResponse{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PromoteIdeaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PromoteIdeaResponse) ProtoMessage() {}
+
+func (x *PromoteIdeaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PromoteIdeaResponse.ProtoReflect.Descriptor instead.
+func (*PromoteIdeaResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *PromoteIdeaResponse) GetWorkItem() *WorkItem {
+	if x != nil {
+		return x.WorkItem
+	}
+	return nil
+}
+
+// DismissIdeaRequest identifies the idea-state work item to discard.
+type DismissIdeaRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DismissIdeaRequest) Reset() {
+	*x = DismissIdeaRequest{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissIdeaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissIdeaRequest) ProtoMessage() {}
+
+func (x *DismissIdeaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissIdeaRequest.ProtoReflect.Descriptor instead.
+func (*DismissIdeaRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *DismissIdeaRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// DismissIdeaResponse carries the dismissed work item (now cancelled).
+type DismissIdeaResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkItem      *WorkItem              `protobuf:"bytes,1,opt,name=work_item,json=workItem,proto3" json:"work_item,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DismissIdeaResponse) Reset() {
+	*x = DismissIdeaResponse{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissIdeaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissIdeaResponse) ProtoMessage() {}
+
+func (x *DismissIdeaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissIdeaResponse.ProtoReflect.Descriptor instead.
+func (*DismissIdeaResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *DismissIdeaResponse) GetWorkItem() *WorkItem {
+	if x != nil {
+		return x.WorkItem
+	}
+	return nil
+}
+
 var File_orchicon_api_v1_work_item_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
@@ -2586,7 +2917,29 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"executions\x18\t \x03(\v2&.orchicon.api.v1.RecurringRunExecutionR\n" +
 	"executions\"d\n" +
 	"\x1dGetWorkItemRunHistoryResponse\x12C\n" +
-	"\aentries\x18\x01 \x03(\v2).orchicon.api.v1.RecurringRunHistoryEntryR\aentries*\x82\x01\n" +
+	"\aentries\x18\x01 \x03(\v2).orchicon.api.v1.RecurringRunHistoryEntryR\aentries\"\xda\x01\n" +
+	"\x10ListIdeasRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x02 \x01(\tR\tprojectId\x12\x16\n" +
+	"\x06search\x18\x03 \x01(\tR\x06search\x12\x17\n" +
+	"\asort_by\x18\x04 \x01(\tR\x06sortBy\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\x05 \x01(\tR\tsortOrder\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x06 \x01(\tR\tpageToken\x12\x1b\n" +
+	"\tpage_size\x18\a \x01(\x05R\bpageSize\"l\n" +
+	"\x11ListIdeasResponse\x12/\n" +
+	"\x05ideas\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\x05ideas\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"$\n" +
+	"\x12PromoteIdeaRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
+	"\x13PromoteIdeaResponse\x126\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"$\n" +
+	"\x12DismissIdeaRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
+	"\x13DismissIdeaResponse\x126\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem*\x82\x01\n" +
 	"\x0eSequenceAction\x12\x1f\n" +
 	"\x1bSEQUENCE_ACTION_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SEQUENCE_ACTION_START\x10\x01\x12\x1a\n" +
@@ -2600,7 +2953,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\tIdeaScope\x12\x1a\n" +
 	"\x16IDEA_SCOPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17IDEA_SCOPE_EXCLUDE_IDEA\x10\x01\x12\x18\n" +
-	"\x14IDEA_SCOPE_ONLY_IDEA\x10\x022\xee\f\n" +
+	"\x14IDEA_SCOPE_ONLY_IDEA\x10\x022\xf6\x0e\n" +
 	"\x0fWorkItemService\x12a\n" +
 	"\x0eCreateWorkItem\x12&.orchicon.api.v1.CreateWorkItemRequest\x1a'.orchicon.api.v1.CreateWorkItemResponse\x12X\n" +
 	"\vGetWorkItem\x12#.orchicon.api.v1.GetWorkItemRequest\x1a$.orchicon.api.v1.GetWorkItemResponse\x12v\n" +
@@ -2616,7 +2969,10 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x0eUnassignWorker\x12&.orchicon.api.v1.UnassignWorkerRequest\x1a'.orchicon.api.v1.UnassignWorkerResponse\x12g\n" +
 	"\x10ReorderWorkItems\x12(.orchicon.api.v1.ReorderWorkItemsRequest\x1a).orchicon.api.v1.ReorderWorkItemsResponse\x12d\n" +
 	"\x0fArchiveWorkItem\x12'.orchicon.api.v1.ArchiveWorkItemRequest\x1a(.orchicon.api.v1.ArchiveWorkItemResponse\x12d\n" +
-	"\x0fRestoreWorkItem\x12'.orchicon.api.v1.RestoreWorkItemRequest\x1a(.orchicon.api.v1.RestoreWorkItemResponse\x12d\n" +
+	"\x0fRestoreWorkItem\x12'.orchicon.api.v1.RestoreWorkItemRequest\x1a(.orchicon.api.v1.RestoreWorkItemResponse\x12R\n" +
+	"\tListIdeas\x12!.orchicon.api.v1.ListIdeasRequest\x1a\".orchicon.api.v1.ListIdeasResponse\x12X\n" +
+	"\vPromoteIdea\x12#.orchicon.api.v1.PromoteIdeaRequest\x1a$.orchicon.api.v1.PromoteIdeaResponse\x12X\n" +
+	"\vDismissIdea\x12#.orchicon.api.v1.DismissIdeaRequest\x1a$.orchicon.api.v1.DismissIdeaResponse\x12d\n" +
 	"\x0fControlSequence\x12'.orchicon.api.v1.ControlSequenceRequest\x1a(.orchicon.api.v1.ControlSequenceResponseB\xce\x01\n" +
 	"\x13com.orchicon.api.v1B\x14WorkItemServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
@@ -2633,7 +2989,7 @@ func file_orchicon_api_v1_work_item_service_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_work_item_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_orchicon_api_v1_work_item_service_proto_goTypes = []any{
 	(SequenceAction)(0),                   // 0: orchicon.api.v1.SequenceAction
 	(RecurringFilter)(0),                  // 1: orchicon.api.v1.RecurringFilter
@@ -2673,88 +3029,103 @@ var file_orchicon_api_v1_work_item_service_proto_goTypes = []any{
 	(*RecurringRunExecution)(nil),         // 35: orchicon.api.v1.RecurringRunExecution
 	(*RecurringRunHistoryEntry)(nil),      // 36: orchicon.api.v1.RecurringRunHistoryEntry
 	(*GetWorkItemRunHistoryResponse)(nil), // 37: orchicon.api.v1.GetWorkItemRunHistoryResponse
-	(WorkItemKind)(0),                     // 38: orchicon.api.v1.WorkItemKind
-	(*timestamppb.Timestamp)(nil),         // 39: google.protobuf.Timestamp
-	(*RecurringSchedule)(nil),             // 40: orchicon.api.v1.RecurringSchedule
-	(*WorkItem)(nil),                      // 41: orchicon.api.v1.WorkItem
-	(WorkItemStatus)(0),                   // 42: orchicon.api.v1.WorkItemStatus
-	(*ContextFiles)(nil),                  // 43: orchicon.api.v1.ContextFiles
-	(DependencyType)(0),                   // 44: orchicon.api.v1.DependencyType
-	(*WorkItemDependency)(nil),            // 45: orchicon.api.v1.WorkItemDependency
-	(*DependencyGraph)(nil),               // 46: orchicon.api.v1.DependencyGraph
+	(*ListIdeasRequest)(nil),              // 38: orchicon.api.v1.ListIdeasRequest
+	(*ListIdeasResponse)(nil),             // 39: orchicon.api.v1.ListIdeasResponse
+	(*PromoteIdeaRequest)(nil),            // 40: orchicon.api.v1.PromoteIdeaRequest
+	(*PromoteIdeaResponse)(nil),           // 41: orchicon.api.v1.PromoteIdeaResponse
+	(*DismissIdeaRequest)(nil),            // 42: orchicon.api.v1.DismissIdeaRequest
+	(*DismissIdeaResponse)(nil),           // 43: orchicon.api.v1.DismissIdeaResponse
+	(WorkItemKind)(0),                     // 44: orchicon.api.v1.WorkItemKind
+	(*timestamppb.Timestamp)(nil),         // 45: google.protobuf.Timestamp
+	(*RecurringSchedule)(nil),             // 46: orchicon.api.v1.RecurringSchedule
+	(*WorkItem)(nil),                      // 47: orchicon.api.v1.WorkItem
+	(WorkItemStatus)(0),                   // 48: orchicon.api.v1.WorkItemStatus
+	(*ContextFiles)(nil),                  // 49: orchicon.api.v1.ContextFiles
+	(DependencyType)(0),                   // 50: orchicon.api.v1.DependencyType
+	(*WorkItemDependency)(nil),            // 51: orchicon.api.v1.WorkItemDependency
+	(*DependencyGraph)(nil),               // 52: orchicon.api.v1.DependencyGraph
 }
 var file_orchicon_api_v1_work_item_service_proto_depIdxs = []int32{
-	38, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
-	39, // 1: orchicon.api.v1.CreateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	40, // 2: orchicon.api.v1.CreateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
-	41, // 3: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 4: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	42, // 5: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	44, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
+	45, // 1: orchicon.api.v1.CreateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	46, // 2: orchicon.api.v1.CreateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	47, // 3: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 4: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	48, // 5: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
 	1,  // 6: orchicon.api.v1.ListWorkItemsRequest.recurring_filter:type_name -> orchicon.api.v1.RecurringFilter
 	2,  // 7: orchicon.api.v1.ListWorkItemsRequest.idea_scope:type_name -> orchicon.api.v1.IdeaScope
-	41, // 8: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
-	42, // 9: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
-	39, // 10: orchicon.api.v1.UpdateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	38, // 11: orchicon.api.v1.UpdateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
-	43, // 12: orchicon.api.v1.UpdateWorkItemRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
-	40, // 13: orchicon.api.v1.UpdateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	47, // 8: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
+	48, // 9: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	45, // 10: orchicon.api.v1.UpdateWorkItemRequest.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	44, // 11: orchicon.api.v1.UpdateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
+	49, // 12: orchicon.api.v1.UpdateWorkItemRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
+	46, // 13: orchicon.api.v1.UpdateWorkItemRequest.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
 	10, // 14: orchicon.api.v1.UpdateWorkItemRequest.depends_on:type_name -> orchicon.api.v1.DependencyIds
-	41, // 15: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 16: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	44, // 17: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
-	45, // 18: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
-	46, // 19: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
-	41, // 20: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 21: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 22: orchicon.api.v1.ReorderWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
+	47, // 15: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 16: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	50, // 17: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
+	51, // 18: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
+	52, // 19: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
+	47, // 20: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 21: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 22: orchicon.api.v1.ReorderWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
 	0,  // 23: orchicon.api.v1.ControlSequenceRequest.action:type_name -> orchicon.api.v1.SequenceAction
-	41, // 24: orchicon.api.v1.ControlSequenceResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 25: orchicon.api.v1.ArchiveWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	41, // 26: orchicon.api.v1.RestoreWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	39, // 27: orchicon.api.v1.RecurringRunExecution.started_at:type_name -> google.protobuf.Timestamp
-	39, // 28: orchicon.api.v1.RecurringRunExecution.ended_at:type_name -> google.protobuf.Timestamp
-	39, // 29: orchicon.api.v1.RecurringRunHistoryEntry.fire_at:type_name -> google.protobuf.Timestamp
-	39, // 30: orchicon.api.v1.RecurringRunHistoryEntry.run_started_at:type_name -> google.protobuf.Timestamp
-	39, // 31: orchicon.api.v1.RecurringRunHistoryEntry.run_ended_at:type_name -> google.protobuf.Timestamp
+	47, // 24: orchicon.api.v1.ControlSequenceResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 25: orchicon.api.v1.ArchiveWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 26: orchicon.api.v1.RestoreWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	45, // 27: orchicon.api.v1.RecurringRunExecution.started_at:type_name -> google.protobuf.Timestamp
+	45, // 28: orchicon.api.v1.RecurringRunExecution.ended_at:type_name -> google.protobuf.Timestamp
+	45, // 29: orchicon.api.v1.RecurringRunHistoryEntry.fire_at:type_name -> google.protobuf.Timestamp
+	45, // 30: orchicon.api.v1.RecurringRunHistoryEntry.run_started_at:type_name -> google.protobuf.Timestamp
+	45, // 31: orchicon.api.v1.RecurringRunHistoryEntry.run_ended_at:type_name -> google.protobuf.Timestamp
 	35, // 32: orchicon.api.v1.RecurringRunHistoryEntry.executions:type_name -> orchicon.api.v1.RecurringRunExecution
 	36, // 33: orchicon.api.v1.GetWorkItemRunHistoryResponse.entries:type_name -> orchicon.api.v1.RecurringRunHistoryEntry
-	3,  // 34: orchicon.api.v1.WorkItemService.CreateWorkItem:input_type -> orchicon.api.v1.CreateWorkItemRequest
-	5,  // 35: orchicon.api.v1.WorkItemService.GetWorkItem:input_type -> orchicon.api.v1.GetWorkItemRequest
-	34, // 36: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:input_type -> orchicon.api.v1.GetWorkItemRunHistoryRequest
-	7,  // 37: orchicon.api.v1.WorkItemService.ListWorkItems:input_type -> orchicon.api.v1.ListWorkItemsRequest
-	9,  // 38: orchicon.api.v1.WorkItemService.UpdateWorkItem:input_type -> orchicon.api.v1.UpdateWorkItemRequest
-	12, // 39: orchicon.api.v1.WorkItemService.DeleteWorkItem:input_type -> orchicon.api.v1.DeleteWorkItemRequest
-	14, // 40: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:input_type -> orchicon.api.v1.HardDeleteWorkItemRequest
-	16, // 41: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
-	18, // 42: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
-	20, // 43: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
-	22, // 44: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
-	24, // 45: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
-	26, // 46: orchicon.api.v1.WorkItemService.ReorderWorkItems:input_type -> orchicon.api.v1.ReorderWorkItemsRequest
-	30, // 47: orchicon.api.v1.WorkItemService.ArchiveWorkItem:input_type -> orchicon.api.v1.ArchiveWorkItemRequest
-	32, // 48: orchicon.api.v1.WorkItemService.RestoreWorkItem:input_type -> orchicon.api.v1.RestoreWorkItemRequest
-	28, // 49: orchicon.api.v1.WorkItemService.ControlSequence:input_type -> orchicon.api.v1.ControlSequenceRequest
-	4,  // 50: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
-	6,  // 51: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
-	37, // 52: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:output_type -> orchicon.api.v1.GetWorkItemRunHistoryResponse
-	8,  // 53: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
-	11, // 54: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
-	13, // 55: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
-	15, // 56: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:output_type -> orchicon.api.v1.HardDeleteWorkItemResponse
-	17, // 57: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
-	19, // 58: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
-	21, // 59: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
-	23, // 60: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
-	25, // 61: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
-	27, // 62: orchicon.api.v1.WorkItemService.ReorderWorkItems:output_type -> orchicon.api.v1.ReorderWorkItemsResponse
-	31, // 63: orchicon.api.v1.WorkItemService.ArchiveWorkItem:output_type -> orchicon.api.v1.ArchiveWorkItemResponse
-	33, // 64: orchicon.api.v1.WorkItemService.RestoreWorkItem:output_type -> orchicon.api.v1.RestoreWorkItemResponse
-	29, // 65: orchicon.api.v1.WorkItemService.ControlSequence:output_type -> orchicon.api.v1.ControlSequenceResponse
-	50, // [50:66] is the sub-list for method output_type
-	34, // [34:50] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	47, // 34: orchicon.api.v1.ListIdeasResponse.ideas:type_name -> orchicon.api.v1.WorkItem
+	47, // 35: orchicon.api.v1.PromoteIdeaResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	47, // 36: orchicon.api.v1.DismissIdeaResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	3,  // 37: orchicon.api.v1.WorkItemService.CreateWorkItem:input_type -> orchicon.api.v1.CreateWorkItemRequest
+	5,  // 38: orchicon.api.v1.WorkItemService.GetWorkItem:input_type -> orchicon.api.v1.GetWorkItemRequest
+	34, // 39: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:input_type -> orchicon.api.v1.GetWorkItemRunHistoryRequest
+	7,  // 40: orchicon.api.v1.WorkItemService.ListWorkItems:input_type -> orchicon.api.v1.ListWorkItemsRequest
+	9,  // 41: orchicon.api.v1.WorkItemService.UpdateWorkItem:input_type -> orchicon.api.v1.UpdateWorkItemRequest
+	12, // 42: orchicon.api.v1.WorkItemService.DeleteWorkItem:input_type -> orchicon.api.v1.DeleteWorkItemRequest
+	14, // 43: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:input_type -> orchicon.api.v1.HardDeleteWorkItemRequest
+	16, // 44: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
+	18, // 45: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
+	20, // 46: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
+	22, // 47: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
+	24, // 48: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
+	26, // 49: orchicon.api.v1.WorkItemService.ReorderWorkItems:input_type -> orchicon.api.v1.ReorderWorkItemsRequest
+	30, // 50: orchicon.api.v1.WorkItemService.ArchiveWorkItem:input_type -> orchicon.api.v1.ArchiveWorkItemRequest
+	32, // 51: orchicon.api.v1.WorkItemService.RestoreWorkItem:input_type -> orchicon.api.v1.RestoreWorkItemRequest
+	38, // 52: orchicon.api.v1.WorkItemService.ListIdeas:input_type -> orchicon.api.v1.ListIdeasRequest
+	40, // 53: orchicon.api.v1.WorkItemService.PromoteIdea:input_type -> orchicon.api.v1.PromoteIdeaRequest
+	42, // 54: orchicon.api.v1.WorkItemService.DismissIdea:input_type -> orchicon.api.v1.DismissIdeaRequest
+	28, // 55: orchicon.api.v1.WorkItemService.ControlSequence:input_type -> orchicon.api.v1.ControlSequenceRequest
+	4,  // 56: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
+	6,  // 57: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
+	37, // 58: orchicon.api.v1.WorkItemService.GetWorkItemRunHistory:output_type -> orchicon.api.v1.GetWorkItemRunHistoryResponse
+	8,  // 59: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
+	11, // 60: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
+	13, // 61: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
+	15, // 62: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:output_type -> orchicon.api.v1.HardDeleteWorkItemResponse
+	17, // 63: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
+	19, // 64: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
+	21, // 65: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
+	23, // 66: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
+	25, // 67: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
+	27, // 68: orchicon.api.v1.WorkItemService.ReorderWorkItems:output_type -> orchicon.api.v1.ReorderWorkItemsResponse
+	31, // 69: orchicon.api.v1.WorkItemService.ArchiveWorkItem:output_type -> orchicon.api.v1.ArchiveWorkItemResponse
+	33, // 70: orchicon.api.v1.WorkItemService.RestoreWorkItem:output_type -> orchicon.api.v1.RestoreWorkItemResponse
+	39, // 71: orchicon.api.v1.WorkItemService.ListIdeas:output_type -> orchicon.api.v1.ListIdeasResponse
+	41, // 72: orchicon.api.v1.WorkItemService.PromoteIdea:output_type -> orchicon.api.v1.PromoteIdeaResponse
+	43, // 73: orchicon.api.v1.WorkItemService.DismissIdea:output_type -> orchicon.api.v1.DismissIdeaResponse
+	29, // 74: orchicon.api.v1.WorkItemService.ControlSequence:output_type -> orchicon.api.v1.ControlSequenceResponse
+	56, // [56:75] is the sub-list for method output_type
+	37, // [37:56] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_service_proto_init() }
@@ -2773,7 +3144,7 @@ func file_orchicon_api_v1_work_item_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_work_item_service_proto_rawDesc), len(file_orchicon_api_v1_work_item_service_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   35,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

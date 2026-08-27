@@ -246,6 +246,26 @@ func IsActiveRunStatus(status string) bool {
 	}
 }
 
+// IsIdeaStatus reports whether a work item status is the system-managed
+// idea state (feature 4.1/5.1). An idea is an automation-produced item
+// awaiting triage; it is excluded from every normal work-item view and may
+// only leave idea state via PromoteIdea (→ pending) or DismissIdea
+// (→ cancelled). Exported so the Ask Orchicon MCP tools apply the identical
+// not-idea gate as the Connect handlers (AGENTS.md: the tool and the
+// service cannot drift).
+func IsIdeaStatus(status string) bool {
+	return status == domain.WorkItemIdea
+}
+
+// ErrWorkItemIsIdea is the shared guidance returned when a generic
+// mutation path (UpdateWorkItem / DeleteWorkItem / HardDeleteWorkItem /
+// ArchiveWorkItem, or the corresponding Ask Orchicon tools) targets an
+// idea-state work item. Exported so the service handlers wrap it in a
+// FailedPrecondition error and the MCP tools surface the same message.
+func ErrWorkItemIsIdea() error {
+	return errors.New("idea is a system-managed status scoped to the Idea Cloud; act on an idea only via PromoteIdea (approve) or DismissIdea (discard)")
+}
+
 // IsStartableForAutoStart reports whether UPDATE-path auto-start may fire
 // for a work item in this status. Only pre-run statuses may be armed by an
 // edit: pending, scheduled, ready, assigned. Every other status (running,

@@ -427,6 +427,11 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// Idea surface: render the 'from automation X' badge for items that carry
+	// automation provenance (feature 5.1). Read-time only; nothing is stored.
+	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
 }
 
@@ -561,6 +566,178 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		resp.NextPageToken = items[len(items)-1].ID
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// ListIdeas returns a page of idea-state work items (feature 5.1) with
+// their automation provenance and a read-time spawned_by_title badge. It
+// reuses the 4.1 idea gate (status='idea') via ListWorkItems(IdeaScope=only)
+// rather than a parallel query, so idea-list membership can never diverge
+// from the exclusion gate that keeps ideas out of the normal Work Items
+// scope — the two are the same SQL predicate by construction. The response
+// also attaches depends_on / blocked_by exactly like the general list.
+func (s *Service) ListIdeas(ctx context.Context, req *connect.Request[apiv1.ListIdeasRequest]) (*connect.Response[apiv1.ListIdeasResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	f := db.ListWorkItemsFilter{
+		TenantID:  tenantID,
+		ProjectID: req.Msg.ProjectId,
+		PageSize:  int(req.Msg.PageSize),
+		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
+		// The idea surface always asks for idea-state items. IdeaScope="only"
+		// and the default EXCLUDE share the exact `status = 'idea'` predicate,
+		// so membership parity is guaranteed by construction.
+		IdeaScope: domain.IdeaScopeOnly,
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	items, err := db.ListWorkItems(ctx, ttx.Tx, f)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	resp := &apiv1.ListIdeasResponse{}
+	for _, w := range items {
+		resp.Ideas = append(resp.Ideas, rowToProto(w))
+	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachSpawnedByTitlesBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(items) > 0 {
+		resp.NextPageToken = items[len(items)-1].ID
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// PromoteIdea approves an idea (feature 5.1): it transitions an idea-state
+// work item to a normal pending work item via CAS on the current version
+// (stale version → ErrVersionConflict → CodeAborted, exactly like
+// ArchiveWorkItem). The item leaves idea state, so it becomes queryable in
+// the normal Work Items scope with normal status semantics and can be
+// planned/scheduled/run through the existing pipeline; provenance
+// (spawned_by / spawned_by_run_id) is retained for the badge. Emits the
+// work_item.promoted outbox event and the work_item.promoted audit row in
+// the same transaction. PromoteIdea is the ONLY sanctioned path out of idea
+// state — the generic update/delete paths are gated for idea items.
+func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.PromoteIdeaRequest]) (*connect.Response[apiv1.PromoteIdeaResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkItemIdea {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("only idea-state work items can be promoted; approve it via PromoteIdea, or discard it via DismissIdea"))
+	}
+	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemPending)}
+	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.promoted", updated); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.promoted", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.promoted: %w", err))
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item promoted", "id", updated.ID, "version", updated.Version)
+	return connect.NewResponse(&apiv1.PromoteIdeaResponse{WorkItem: proto}), nil
+}
+
+// DismissIdea discards an idea (feature 5.1): it transitions an idea-state
+// work item to cancelled — the soft-delete/cancel terminal, consistent with
+// DeleteWorkItem — via CAS on the current version. The item leaves idea
+// state (so it drops out of the Idea Cloud list) and becomes a cancelled
+// terminal item no active query surfaces as work; provenance is retained as
+// a record of where it came from. Emits the work_item.dismissed outbox event
+// and the work_item.dismissed audit row in the same transaction.
+func (s *Service) DismissIdea(ctx context.Context, req *connect.Request[apiv1.DismissIdeaRequest]) (*connect.Response[apiv1.DismissIdeaResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkItemIdea {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("only idea-state work items can be dismissed; discard it via DismissIdea, or approve it via PromoteIdea"))
+	}
+	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemCancelled)}
+	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.dismissed", updated); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dismissed", "work_item", updated.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dismissed: %w", err))
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Provenance is retained; render the badge if the spawning item still
+	// exists (harmless if not).
+	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item dismissed", "id", updated.ID, "version", updated.Version)
+	return connect.NewResponse(&apiv1.DismissIdeaResponse{WorkItem: proto}), nil
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency
@@ -715,6 +892,12 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// Ideas are system-managed (feature 4.1): the generic update path must
+	// never move an idea out of idea state — only PromoteIdea / DismissIdea
+	// are sanctioned. Keep the two surfaces identical (service + MCP).
+	if IsIdeaStatus(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
 	// A currently-recurring item is exempt from the "only epics are
 	// top-level" parent rule (flat-recurring items are top-level tasks); the
@@ -1124,6 +1307,11 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// An idea must be dismissed via DismissIdea (cancelled + audited as
+	// work_item.dismissed), not soft-deleted through the generic path.
+	if IsIdeaStatus(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	}
 	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemCancelled)}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
 	if err != nil {
@@ -1168,6 +1356,11 @@ func (s *Service) HardDeleteWorkItem(ctx context.Context, req *connect.Request[a
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// Hard-deleting an idea would destroy its provenance before triage; an
+	// idea must be dismissed via DismissIdea (which retains provenance).
+	if IsIdeaStatus(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
 	if err := db.HardDeleteWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
@@ -1603,6 +1796,11 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// An idea is never terminal-archivable; route it through DismissIdea so
+	// the dismissal is audited as work_item.dismissed rather than archived.
+	if IsIdeaStatus(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
 	if !domain.WorkItemIsTerminalArchivable(current.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -2225,6 +2423,52 @@ func attachBlockedByBatch(ctx context.Context, tx pgx.Tx, tenantID string, items
 		if it, ok := byID[b.ToID]; ok {
 			it.BlockedBy = append(it.BlockedBy, &apiv1.WorkItemBlocker{Id: b.ID, Title: b.Title, Status: b.Status})
 		}
+	}
+	return nil
+}
+
+// attachSpawnedByTitles populates proto.SpawnedByTitle — the title of the
+// spawning recurring item (the "from automation X" badge) — with ONE batched
+// query for the rows that carry provenance, avoiding an N+1 per idea.
+func attachSpawnedByTitlesBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
+	ids := make([]string, 0, len(items))
+	byID := map[string]*apiv1.WorkItem{}
+	for _, it := range items {
+		if it == nil || it.SpawnedBy == "" {
+			continue
+		}
+		ids = append(ids, it.SpawnedBy)
+		byID[it.SpawnedBy] = it
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	titles, err := db.SpawnedByTitles(ctx, tx, tenantID, ids)
+	if err != nil {
+		return err
+	}
+	for id, title := range titles {
+		if it, ok := byID[id]; ok {
+			it.SpawnedByTitle = title
+		}
+	}
+	return nil
+}
+
+// attachSpawnedByTitles populates proto.SpawnedByTitle for a single work
+// item (the "from automation X" badge). No-op when the item carries no
+// provenance. Used by GetWorkItem and the Promote/Dismiss responses so the
+// badge is always rendered alongside the item.
+func attachSpawnedByTitles(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
+	if p == nil || p.SpawnedBy == "" {
+		return nil
+	}
+	titles, err := db.SpawnedByTitles(ctx, tx, tenantID, []string{p.SpawnedBy})
+	if err != nil {
+		return err
+	}
+	if t, ok := titles[p.SpawnedBy]; ok {
+		p.SpawnedByTitle = t
 	}
 	return nil
 }
