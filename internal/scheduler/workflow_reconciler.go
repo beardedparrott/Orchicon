@@ -150,6 +150,26 @@ func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, pa
 	r.sequenceNotifier = fn
 }
 
+// isSequenceParentActive reports whether a sequence parent is still
+// participating in chain advance. A STOP-parked parent (pending) is
+// deliberately excluded so standalone single-child dispatch does not
+// trigger the next sibling. Only running/failed parents advance.
+func (r *WorkflowReconciler) isSequenceParentActive(ctx context.Context, tenantID, parentID string) bool {
+	if r.pool == nil {
+		return true
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return false
+	}
+	defer ttx.Rollback(ctx)
+	p, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return false
+	}
+	return p.Status == domain.WorkItemRunning || p.Status == domain.WorkItemFailed
+}
+
 // SetWorktreeNotifier injects the callback that enqueues a run (or, for a
 // parallel-branch step run, a "<runID>:<stepRunID>" key) with the
 // WorktreeReconciler so its isolated working tree is provisioned
@@ -1298,7 +1318,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// the sequence-parent guard (status running/failed + no bound workflow
 	// run + has children), so a non-sequence parent is a no-op there.
 	if terminalParent != "" && r.sequenceNotifier != nil {
-		r.sequenceNotifier(context.Background(), terminalParent)
+		// Parked parent (pending) must not auto-advance: a single child
+		// fired standalone while the chain is STOP-parked must run alone.
+		// Only running/failed parents participate in sequence advance.
+		if r.isSequenceParentActive(context.Background(), tenantID, terminalParent) {
+			r.sequenceNotifier(context.Background(), terminalParent)
+		}
 	}
 	// Recovery triggers run AFTER the transaction commits: TriggerOnFailure
 	// opens its own transaction on a separate connection, and calling it
