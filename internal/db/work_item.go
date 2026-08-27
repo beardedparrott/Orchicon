@@ -203,6 +203,34 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 	return w, nil
 }
 
+// SpawnedByTitles resolves the titles of the given work item ids within the
+// tenant — a single batched lookup used to render the "from automation X"
+// badge (feature 5.1). The ids are the spawned_by provenance ids carried by
+// automation-produced idea items. Returns a map of id -> title; ids that no
+// longer exist (the spawning item was deleted) are simply absent, so callers
+// can render an empty badge. An empty id set is a no-op (returns an empty
+// map) so callers never pay a round-trip when nothing is actionable.
+func SpawnedByTitles(ctx context.Context, tx pgx.Tx, tenantID string, ids []string) (map[string]string, error) {
+	out := make(map[string]string)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	const q = `SELECT id, title FROM work_items WHERE tenant_id = $1 AND id = ANY($2)`
+	rows, err := tx.Query(ctx, q, tenantID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("db: spawned-by titles: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, title string
+		if err := rows.Scan(&id, &title); err != nil {
+			return nil, fmt.Errorf("db: scan spawned-by title: %w", err)
+		}
+		out[id] = title
+	}
+	return out, rows.Err()
+}
+
 // ListWorkItemsFilter scopes a list query to a tenant + project,
 // optionally filtered by parent (tree view) or status (Kanban).
 type ListWorkItemsFilter struct {

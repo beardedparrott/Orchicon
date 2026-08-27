@@ -366,8 +366,16 @@ type WorkItem struct {
 	// (keeps the recurring_schedule + next_run_at so resume re-arms, but the
 	// scheduler excludes it from the due-scan). Defaults to true.
 	RecurringEnabled bool `protobuf:"varint,37,opt,name=recurring_enabled,json=recurringEnabled,proto3" json:"recurring_enabled,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// spawned_by_title is a read-time badge: the title of the spawning
+	// recurring item (spawned_by) resolved by the server for display
+	// ("from automation X"). Empty when the item is not an automation spawn
+	// or when the spawning item no longer exists. Never stored — computed at
+	// read time (feature 5.1) and only populated on the idea-surface reads
+	// (ListIdeas / GetWorkItem) that callers use to render the badge, so the
+	// hot general list path stays untouched.
+	SpawnedByTitle string `protobuf:"bytes,38,opt,name=spawned_by_title,json=spawnedByTitle,proto3" json:"spawned_by_title,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -650,6 +658,13 @@ func (x *WorkItem) GetRecurringEnabled() bool {
 		return x.RecurringEnabled
 	}
 	return false
+}
+
+func (x *WorkItem) GetSpawnedByTitle() string {
+	if x != nil {
+		return x.SpawnedByTitle
+	}
+	return ""
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
@@ -964,7 +979,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb7\f\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe1\f\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1011,7 +1026,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
 	"spawned_by\x18# \x01(\tR\tspawnedBy\x12)\n" +
 	"\x11spawned_by_run_id\x18$ \x01(\tR\x0espawnedByRunId\x12+\n" +
-	"\x11recurring_enabled\x18% \x01(\bR\x10recurringEnabledB\x16\n" +
+	"\x11recurring_enabled\x18% \x01(\bR\x10recurringEnabled\x12(\n" +
+	"\x10spawned_by_title\x18& \x01(\tR\x0espawnedByTitleB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
 	"\x13_recurring_schedule\"O\n" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +

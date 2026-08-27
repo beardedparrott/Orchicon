@@ -313,6 +313,12 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
+	// Ideas are system-managed (feature 4.1): the generic update tool must
+	// never move an idea out of idea state — only PromoteIdea / DismissIdea
+	// are sanctioned. Mirrors the Connect Update handler guard.
+	if workitem.IsIdeaStatus(current.Status) {
+		return nil, workitem.ErrWorkItemIsIdea()
+	}
 	// Context files must live inside the effective project's directory (the
 	// only path guaranteed mounted where workers run) — same rule as the
 	// Connect Update handler.
@@ -793,6 +799,11 @@ func toolDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
+	// An idea must be dismissed via DismissIdea (cancelled + audited as
+	// work_item.dismissed), not soft-deleted through the generic path.
+	if workitem.IsIdeaStatus(current.Status) {
+		return nil, workitem.ErrWorkItemIsIdea()
+	}
 	status := domain.WorkItemCancelled
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, db.UpdateWorkItemFields{
 		Status: &status,
@@ -827,6 +838,11 @@ func toolArchiveWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessag
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
 	if err != nil {
 		return nil, err
+	}
+	// An idea is never terminal-archivable; route it through DismissIdea so
+	// the dismissal is audited as work_item.dismissed rather than archived.
+	if workitem.IsIdeaStatus(current.Status) {
+		return nil, workitem.ErrWorkItemIsIdea()
 	}
 	if !domain.WorkItemIsTerminalArchivable(current.Status) {
 		return nil, fmt.Errorf("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first")

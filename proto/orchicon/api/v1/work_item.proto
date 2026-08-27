@@ -130,6 +130,14 @@ message WorkItem {
   // (keeps the recurring_schedule + next_run_at so resume re-arms, but the
   // scheduler excludes it from the due-scan). Defaults to true.
   bool recurring_enabled = 37;
+  // spawned_by_title is a read-time badge: the title of the spawning
+  // recurring item (spawned_by) resolved by the server for display
+  // ("from automation X"). Empty when the item is not an automation spawn
+  // or when the spawning item no longer exists. Never stored — computed at
+  // read time (feature 5.1) and only populated on the idea-surface reads
+  // (ListIdeas / GetWorkItem) that callers use to render the badge, so the
+  // hot general list path stays untouched.
+  string spawned_by_title = 38;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent

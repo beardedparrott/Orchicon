@@ -80,6 +80,29 @@ service WorkItemService {
   // Audited as work_item.restored.
   rpc RestoreWorkItem(RestoreWorkItemRequest) returns (RestoreWorkItemResponse);
 
+  // ListIdeas returns a page of idea-state work items (automation-produced
+  // items awaiting triage, feature 5.1) with their automation provenance
+  // (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
+  // Scoped to status='idea' by construction — it shares the 4.1 idea gate
+  // with ListWorkItems(IdeaScope=only), so membership can never diverge.
+  rpc ListIdeas(ListIdeasRequest) returns (ListIdeasResponse);
+
+  // PromoteIdea approves an idea: it transitions the idea-state work item
+  // to a normal pending work item (leaves idea state, becomes queryable in
+  // the normal Work Items scope with normal status semantics, and can be
+  // planned/scheduled/run through the existing pipeline). Provenance fields
+  // are retained for display. Audited as work_item.promoted. PromoteIdea is
+  // the ONLY sanctioned path out of idea state (the generic update path is
+  // gated for idea items).
+  rpc PromoteIdea(PromoteIdeaRequest) returns (PromoteIdeaResponse);
+
+  // DismissIdea discards an idea: it transitions the idea-state work item
+  // to cancelled (the soft-delete/cancel terminal, consistent with
+  // DeleteWorkItem), so it leaves idea state and drops out of every active
+  // view. Provenance is retained as a record of where it came from. Audited
+  // as work_item.dismissed.
+  rpc DismissIdea(DismissIdeaRequest) returns (DismissIdeaResponse);
+
   // ControlSequence drives a sequence parent manually (START / RESUME /
   // STOP). A parent with children IS a sequence run; these explicit
   // gestures are what the engine's derived cursor cannot infer on its own:
@@ -394,4 +417,46 @@ message RecurringRunHistoryEntry {
 // newest first.
 message GetWorkItemRunHistoryResponse {
   repeated RecurringRunHistoryEntry entries = 1;
+}
+
+// ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
+// work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
+// the same query UX.
+message ListIdeasRequest {
+  string tenant_id = 1;
+  string project_id = 2; // empty = all projects
+  string search = 3; // free-text search across title and description
+  string sort_by = 4; // "title", "priority", "created_at" (default)
+  string sort_order = 5; // "asc" or "desc" (default "asc")
+  string page_token = 6; // id > cursor (stable ULID pagination)
+  int32 page_size = 7;
+}
+
+// ListIdeasResponse carries a page of idea-state work items (already
+// populated with automation provenance + the read-time spawned_by_title
+// badge) plus the next page token.
+message ListIdeasResponse {
+  repeated WorkItem ideas = 1;
+  string next_page_token = 2;
+}
+
+// PromoteIdeaRequest identifies the idea-state work item to approve.
+message PromoteIdeaRequest {
+  string id = 1;
+}
+
+// PromoteIdeaResponse carries the promoted work item (now a normal pending
+// item, provenance retained).
+message PromoteIdeaResponse {
+  WorkItem work_item = 1;
+}
+
+// DismissIdeaRequest identifies the idea-state work item to discard.
+message DismissIdeaRequest {
+  string id = 1;
+}
+
+// DismissIdeaResponse carries the dismissed work item (now cancelled).
+message DismissIdeaResponse {
+  WorkItem work_item = 1;
 }
