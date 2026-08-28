@@ -26,6 +26,7 @@ func toolListCategories(ctx context.Context, pool *db.Pool, args json.RawMessage
 func toolCreateCategory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var in struct { TargetType string `json:"target_type"`; Name string `json:"name"`; Description string `json:"description"` }
 	if err := json.Unmarshal(args, &in); err != nil { return nil, err }
+	if err := db.ValidateTargetType(in.TargetType); err != nil { return nil, err }
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" { return nil, fmt.Errorf("no tenant in context") }
 	tx, err := pool.BeginTenantTx(ctx, tenantID); if err != nil { return nil, err }
@@ -66,6 +67,7 @@ func toolDeleteCategory(ctx context.Context, pool *db.Pool, args json.RawMessage
 func toolAssignToCategory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var in struct { CategoryID string `json:"category_id"`; EntityID string `json:"entity_id"`; TargetType string `json:"target_type"` }
 	if err := json.Unmarshal(args, &in); err != nil { return nil, err }
+	if err := db.ValidateTargetType(in.TargetType); err != nil { return nil, err }
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" { return nil, fmt.Errorf("no tenant in context") }
 	tx, err := pool.BeginTenantTx(ctx, tenantID); if err != nil { return nil, err }
@@ -78,6 +80,7 @@ func toolAssignToCategory(ctx context.Context, pool *db.Pool, args json.RawMessa
 func toolUnassignFromCategory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var in struct { EntityID string `json:"entity_id"`; TargetType string `json:"target_type"` }
 	if err := json.Unmarshal(args, &in); err != nil { return nil, err }
+	if err := db.ValidateTargetType(in.TargetType); err != nil { return nil, err }
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" { return nil, fmt.Errorf("no tenant in context") }
 	tx, err := pool.BeginTenantTx(ctx, tenantID); if err != nil { return nil, err }
@@ -90,6 +93,7 @@ func toolUnassignFromCategory(ctx context.Context, pool *db.Pool, args json.RawM
 func toolReorderCategories(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var in struct { TargetType string `json:"target_type"`; OrderedIDs []string `json:"ordered_ids"` }
 	if err := json.Unmarshal(args, &in); err != nil { return nil, err }
+	if err := db.ValidateTargetType(in.TargetType); err != nil { return nil, err }
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" { return nil, fmt.Errorf("no tenant in context") }
 	tx, err := pool.BeginTenantTx(ctx, tenantID); if err != nil { return nil, err }

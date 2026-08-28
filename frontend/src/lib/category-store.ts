@@ -16,6 +16,7 @@ import {
   useDeleteCategory,
   useAssignToCategory,
   useUnassignFromCategory,
+  useReorderCategories,
   type CategoryTargetType,
   type CategoryDTO,
 } from "@/api/categories";
@@ -133,6 +134,7 @@ export interface CategoryPreferences {
   deleteCategory: (categoryId: string) => void;
   updateDescription: (categoryId: string, description: string) => void;
   assignItem: (entityId: string, categoryId: string) => void;
+  reorderCategories: (orderedIds: string[]) => void;
   ensureSeeded: (entityIds: string[]) => void;
   isLoading: boolean;
 }
@@ -146,6 +148,7 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
   const deleteMut = useDeleteCategory(targetType);
   const assignMut = useAssignToCategory(targetType);
   const unassignMut = useUnassignFromCategory(targetType);
+  const reorderMut = useReorderCategories(targetType);
 
   const [collapsed, setCollapsedState] = useState<Set<string>>(() => loadCollapsedState(page));
   useEffect(() => { setCollapsedState(loadCollapsedState(page)); }, [page]);
@@ -223,6 +226,10 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
     else assignMut.mutate({ categoryId, entityId });
   }, [assignMut, unassignMut]);
 
+  const reorderCategories = useCallback((orderedIds: string[]) => {
+    reorderMut.mutate(orderedIds);
+  }, [reorderMut]);
+
   const ensureSeeded = useCallback((_entityIds: string[]) => {}, []);
 
   return {
@@ -234,6 +241,7 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
     deleteCategory,
     updateDescription,
     assignItem,
+    reorderCategories,
     ensureSeeded,
     isLoading,
   };

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type CSSProperties, type ReactNode } from "react";
 import {
   ChevronRight,
   FolderClosed,
@@ -8,6 +8,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { useDroppable } from "@dnd-kit/core";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -28,7 +31,9 @@ interface CategoryFolderProps {
    * DnD), so non-DnD callers are unaffected.
    */
   droppableId?: string;
-  children: React.ReactNode;
+  /** When true, folder header is drag-reorderable via Sortable. */
+  sortable?: boolean;
+  children: ReactNode;
 }
 
 export function CategoryFolder({
@@ -40,6 +45,7 @@ export function CategoryFolder({
   onDelete,
   onUpdateDescription,
   droppableId,
+  sortable,
   children,
 }: CategoryFolderProps) {
   // Unconditional hook call; disabled when no droppableId is given so the
@@ -47,6 +53,10 @@ export function CategoryFolder({
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId ?? "",
     disabled: !droppableId,
+  });
+  const sortableState = useSortable({
+    id: category.id,
+    disabled: !sortable,
   });
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
@@ -86,12 +96,21 @@ export function CategoryFolder({
 
   const isUncategorized = category.id === "uncategorized";
 
+  const folderStyle: CSSProperties | undefined = sortable
+    ? { transform: CSS.Transform.toString(sortableState.transform), transition: sortableState.transition }
+    : undefined;
+  const setRefs = (el: HTMLDivElement | null) => {
+    setNodeRef(el);
+    if (sortable) sortableState.setNodeRef(el);
+  };
   return (
     <div
-      ref={setNodeRef}
+      ref={setRefs}
+      style={folderStyle}
       className={cn(
         "mt-3 first:mt-0 transition-shadow",
         isOver && "rounded-lg ring-2 ring-ring bg-accent/30",
+        sortable && sortableState.isDragging && "opacity-50",
       )}
     >
       <div
@@ -102,6 +121,17 @@ export function CategoryFolder({
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
+        {sortable && (
+          <button
+            type="button"
+            className="cursor-grab active:cursor-grabbing p-1 text-muted-foreground hover:text-foreground"
+            aria-label={`Drag to reorder ${category.name}`}
+            {...sortableState.attributes}
+            {...sortableState.listeners}
+          >
+            <GripVertical aria-hidden="true" className="h-3.5 w-3.5" />
+          </button>
+        )}
         <button
           type="button"
           onClick={onToggle}
