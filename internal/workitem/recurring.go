@@ -23,15 +23,3 @@ func ComputeNextRunAtFromScheduleJSON(scheduleJSON []byte, now time.Time) *time.
 	}
 	return ComputeNextRunAt(&rs, now)
 }
-
-// RecurringOutputsIdeas reports whether a recurring item's schedule declares
-// outputs_mode = ideas. In this worktree 4.1's outputs_mode field does not
-// exist on RecurringSchedule, so it always returns false — the
-// idea/provenance stamping seam is a no-op until 4.1 lands (gated in
-// CreateWorkItem). When 4.1 adds the field, this resolves the value from the
-// schedule JSONB so worker-created work items inside a fire's run can be
-// stamped idea-state + spawned_by provenance; with no such field the creation
-// is unmarked (no idea routing). Never hard-depends on 4.1 symbols.
-func RecurringOutputsIdeas(scheduleJSON []byte) bool {
-	return false
-}

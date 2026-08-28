@@ -165,6 +165,14 @@ message RecurringSchedule {
   //   none: the fire spawns no new work items.
   // Stored as a key inside the recurring_schedule JSONB (no new column).
   string outputs_mode = 6;
+  // Window confines fires to a daily time-of-day interval [window_start, window_end).
+  // Both empty (the default) = no window (legacy 24/7 behaviour). When set, both
+  // MUST be set, validated HH:MM, and represent a half-open interval on the same
+  // calendar day; wrapping midnight is v1-out-of-scope and rejected. Fires use
+  // the anchor-grid-truncated-by-window semantic (A): the interval cadence is
+  // anchored at start_date+start_time and truncated to the window.
+  string window_start = 7; // HH:MM, inclusive
+  string window_end = 8;   // HH:MM, exclusive — must be > window_start
 }
 
 // WorkItemStatus — schedulable kinds follow:

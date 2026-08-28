@@ -718,6 +718,19 @@ export class RecurringSchedule extends Message<RecurringSchedule> {
    */
   outputsMode = "";
 
+  /**
+   * Window confines fires to a daily time-of-day interval [window_start, window_end).
+   * Both empty (the default) = no window (legacy 24/7 behaviour).
+   *
+   * @generated from field: string window_start = 7;
+   */
+  windowStart = "";
+
+  /**
+   * @generated from field: string window_end = 8;
+   */
+  windowEnd = "";
+
   constructor(data?: PartialMessage<RecurringSchedule>) {
     super();
     proto3.util.initPartial(data, this);
@@ -732,6 +745,8 @@ export class RecurringSchedule extends Message<RecurringSchedule> {
     { no: 4, name: "start_date", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "start_time", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "outputs_mode", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "window_start", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "window_end", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringSchedule {
