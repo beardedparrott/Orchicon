@@ -553,6 +553,63 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
 		},
 
+		// --- Categories ---
+		{
+			Name:        "list_categories",
+			Description: "List categories for a target type (worker|workflow|conversation) with assignments. Each target_type has its own independent set.",
+			Mutating:    false,
+			Fn:          toolListCategories,
+			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type: worker, workflow, or conversation"}},
+			Required:    []string{"target_type"},
+		},
+		{
+			Name:        "create_category",
+			Description: "Create a category for a target type (worker|workflow|conversation). Target type is required and immutable.",
+			Mutating:    true,
+			Fn:          toolCreateCategory,
+			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "name": {Type: "string", Description: "Category name (1-64 chars)"}, "description": {Type: "string", Description: "Optional description (max 256)"}},
+			Required:    []string{"target_type", "name"},
+		},
+		{
+			Name:        "update_category",
+			Description: "Update a category name/description. Target type is immutable.",
+			Mutating:    true,
+			Fn:          toolUpdateCategory,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Category ID"}, "name": {Type: "string", Description: "New name"}, "description": {Type: "string", Description: "New description"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "delete_category",
+			Description: "Delete a category. Assignments are removed (items move to Uncategorized).",
+			Mutating:    true,
+			Fn:          toolDeleteCategory,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Category ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "assign_to_category",
+			Description: "Assign an entity to a category. Validates target_type matches the category.",
+			Mutating:    true,
+			Fn:          toolAssignToCategory,
+			Properties:  map[string]PropertySchema{"category_id": {Type: "string", Description: "Category ID"}, "entity_id": {Type: "string", Description: "Entity ID"}, "target_type": {Type: "string", Description: "Target type"}},
+			Required:    []string{"category_id", "entity_id", "target_type"},
+		},
+		{
+			Name:        "unassign_from_category",
+			Description: "Remove an entity from its category (move to Uncategorized).",
+			Mutating:    true,
+			Fn:          toolUnassignFromCategory,
+			Properties:  map[string]PropertySchema{"entity_id": {Type: "string", Description: "Entity ID"}, "target_type": {Type: "string", Description: "Target type"}},
+			Required:    []string{"entity_id", "target_type"},
+		},
+		{
+			Name:        "reorder_categories",
+			Description: "Reorder categories within a target_type set. ordered_ids must be a permutation of existing ids.",
+			Mutating:    true,
+			Fn:          toolReorderCategories,
+			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "ordered_ids": {Type: "array", Description: "Category IDs in new order"}},
+			Required:    []string{"target_type", "ordered_ids"},
+		},
 		// --- Runtime Images ---
 		{
 			Name:        "list_runtime_images",
