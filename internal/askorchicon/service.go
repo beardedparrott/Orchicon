@@ -18,6 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -25,11 +26,12 @@ import (
 
 // Service implements the AskOrchiconService Connect handler.
 type Service struct {
-	pool         *db.Pool
-	log          *slog.Logger
-	blobStore    blobstore.Store
-	modelDisc    *aigateway.ModelDiscoverer
-	toolRegistry *ToolRegistry
+	pool          *db.Pool
+	log           *slog.Logger
+	blobStore     blobstore.Store
+	modelDisc     *aigateway.ModelDiscoverer
+	toolRegistry  *ToolRegistry
+	runtimeClient *runtime.Client
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
@@ -113,6 +115,12 @@ func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, m
 // treats a nil serve as "fail the turn fast" (no one-shot fallback).
 func (s *Service) SetHostServe(hs *opencode.HostServe) {
 	s.hostServe = hs
+}
+
+// SetRuntimeClient wires the runtime daemon client for image builds.
+func (s *Service) SetRuntimeClient(rt *runtime.Client) {
+	s.runtimeClient = rt
+	toolRuntimeClient = rt
 }
 
 // registerSessionTools adds tools that depend on service-injected

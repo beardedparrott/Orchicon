@@ -261,6 +261,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}
 	askSvc.SetHostServe(deps.HostServe)
+	if deps.RuntimeClient != nil {
+		askSvc.SetRuntimeClient(deps.RuntimeClient)
+	}
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin
