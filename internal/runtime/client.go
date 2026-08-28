@@ -88,6 +88,10 @@ func (c *Client) Kill(ctx context.Context, workflowID string) error {
 }
 
 // Ready returns true if the daemon socket answers /v1/health.
+type StreamDroppedError struct{ Err error }
+func (e *StreamDroppedError) Error() string { return "build log stream disconnected: " + e.Err.Error() }
+func IsStreamDropped(err error) bool { _, ok := err.(*StreamDroppedError); return ok }
+
 func (c *Client) Ready(ctx context.Context) bool {
 	var out map[string]string
 	return c.getJSON(ctx, "/v1/health", &out) == nil
@@ -127,6 +131,7 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	exit := 1
+	sawExit := false
 	for sc.Scan() {
 		var ev AgentEvent
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
@@ -138,6 +143,7 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 			}
 		}
 		if ev.Event == "exit" {
+			sawExit = true
 			exit = ev.ExitCode
 			if ev.Error != "" {
 				return exit, fmt.Errorf("runtime image build: %s", ev.Error)
@@ -146,12 +152,35 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return 1, err
+		return 1, &StreamDroppedError{Err: err}
+	}
+	if !sawExit {
+		return 1, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
 	}
 	return exit, nil
 }
 
 // RemoveImage removes a locally-built runtime image (docker rmi, best-effort).
+func (c *Client) CancelBuild(ctx context.Context, tag string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "http://runtime"+"/v1/images/build?tag="+url.QueryEscape(tag), nil)
+	if err != nil { return err }
+	resp, err := c.hc.Do(req)
+	if err != nil { return err }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK { return readError(resp.Body) }
+	return nil
+}
+func (c *Client) IsBuilding(ctx context.Context, tag string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://runtime"+"/v1/images/build?tag="+url.QueryEscape(tag), nil)
+	if err != nil { return false, err }
+	resp, err := c.hc.Do(req)
+	if err != nil { return false, err }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK { return false, readError(resp.Body) }
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return false, err }
+	return out["status"] == "building", nil
+}
 func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		"http://runtime"+"/v1/images?ref="+url.QueryEscape(ref), nil)

@@ -34,6 +34,12 @@ service RuntimeImageService {
   // chunks until the image is ready or the build fails.
   rpc BuildRuntimeImage(BuildRuntimeImageRequest) returns (stream BuildRuntimeImageResponse);
 
+  // CancelRuntimeImageBuild cancels an in-flight build (building -> failed).
+  rpc CancelRuntimeImageBuild(CancelRuntimeImageBuildRequest) returns (CancelRuntimeImageBuildResponse);
+
+  // ResetRuntimeImage resets a stuck building image to failed (orphan escape hatch).
+  rpc ResetRuntimeImage(ResetRuntimeImageRequest) returns (ResetRuntimeImageResponse);
+
   // ListAvailableRuntimeImages returns the merged dropdown list for the
   // work-item runtime_image field: the daemon's stock images (base + any
   // ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
@@ -123,6 +129,10 @@ message BuildRuntimeImageResponse {
   // is unchanged: the image is already up to date at the current version,
   // so no docker build (and no prune) ran.
   bool skipped = 5;
+  string failure_reason = 6;
+  string failed_step = 7;
+  string log_tail = 8;
+  string failure_category = 9;
 }
 
 message ListAvailableRuntimeImagesRequest {
@@ -136,6 +146,24 @@ message ListAvailableRuntimeImagesResponse {
   repeated string custom_images = 2;
   // The image to pre-select in the dropdown (the base image).
   string default_image = 3;
+}
+
+message CancelRuntimeImageBuildRequest {
+  string id = 1;
+  int32 version = 2;
+}
+
+message CancelRuntimeImageBuildResponse {
+  RuntimeImage runtime_image = 1;
+}
+
+message ResetRuntimeImageRequest {
+  string id = 1;
+  int32 version = 2;
+}
+
+message ResetRuntimeImageResponse {
+  RuntimeImage runtime_image = 1;
 }
 
 message GetStockImageTemplateRequest {

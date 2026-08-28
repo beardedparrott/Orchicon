@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	assets "github.com/beardedparrott/orchicon"
@@ -380,6 +381,10 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		}
 		return stream.Send(&apiv1.BuildRuntimeImageResponse{Log: chunk})
 	})
+	if err != nil && isStreamDropped(err) {
+		// Stream dropped but daemon still building: surface as unavailable so UI can show building + retry.
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("%s", final.FailureReason))
+	}
 	if errors.Is(err, errAlreadyUpToDate) {
 		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
 			"id", req.Msg.Id, "tag", final.Tag, "version", final.Version)
@@ -397,14 +402,22 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		return err
 	}
 	if err := stream.Send(&apiv1.BuildRuntimeImageResponse{
-		Status: imageStatusProto(final.Status),
-		Error:  final.Error,
-		Tag:    final.Tag,
+		Status:          imageStatusProto(final.Status),
+		Error:           final.Error,
+		FailureReason: final.FailureReason,
+		FailedStep:      final.FailedStep,
+		LogTail:         final.LogTail,
+		FailureCategory: final.FailureCategory,
+		Tag:             final.Tag,
 	}); err != nil {
 		return err
 	}
 	if exit != 0 {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("image build failed: %s", final.Error))
+		reason := final.FailureReason
+		if reason == "" {
+			reason = final.Error
+		}
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("image build failed: %s", reason))
 	}
 	return nil
 }
@@ -513,6 +526,8 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 	status := "ready"
 	buildLog := truncate(logBuf.String(), maxBuildLogLen)
 	failMsg := ""
+	var bf BuildFailure
+	isStreamDrop := err != nil && isStreamDropped(err)
 	if exit != 0 {
 		status = "failed"
 		if err != nil {
@@ -520,6 +535,27 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		}
 		if failMsg == "" {
 			failMsg = "docker build failed"
+		}
+		// Classify the failure for actionable hints.
+		bf = ClassifyBuildLog(buildLog, exit, failMsg)
+		// Stream drop: don't mark failed immediately if daemon still building.
+		if isStreamDrop {
+			bf.Category = "stream"
+			if s.rt != nil {
+				if building, perr := s.rt.IsBuilding(ctx, row.Tag); perr == nil && building {
+					bf.Reason = "stream disconnected — build still running"
+					bf.FailedStep = ""
+					// Keep row building with a visible signal; caller handles CodeUnavailable.
+					status = "building"
+					failMsg = bf.Reason
+				} else if perr != nil {
+					bf.Reason = "daemon unreachable — build may still be running on host"
+					failMsg = bf.Reason
+				}
+			}
+		}
+		if bf.Reason != "" {
+			failMsg = bf.Reason
 		}
 	}
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
@@ -532,9 +568,35 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		Error:      &failMsg,
 		StatusOnly: true,
 	}
-	if exit == 0 {
+	if status == "failed" {
+		fr := bf.Reason
+		fs := bf.FailedStep
+		lt := bf.LogTail
+		fc := bf.Category
+		if fr == "" { fr = failMsg }
+		fields.FailureReason = &fr
+		fields.FailedStep = &fs
+		fields.LogTail = &lt
+		fields.FailureCategory = &fc
+	} else if exit == 0 {
+		// Success clears stale failure fields.
+		empty := ""
+		fields.FailureReason = &empty
+		fields.FailedStep = &empty
+		fields.LogTail = &empty
+		fields.FailureCategory = &empty
 		built := row.Version
 		fields.BuiltVersion = &built
+	} else if status == "building" && isStreamDrop {
+		// Stream dropped but still building: surface reason without marking failed.
+		fr := bf.Reason
+		fs := bf.FailedStep
+		lt := bf.LogTail
+		fc := bf.Category
+		fields.FailureReason = &fr
+		fields.FailedStep = &fs
+		fields.LogTail = &lt
+		fields.FailureCategory = &fc
 	}
 	final, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, fields)
 	if err != nil {
@@ -545,12 +607,97 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 	if err := ttx.Commit(ctx); err != nil {
 		return final, exit, connect.NewError(connect.CodeInternal, err)
 	}
+	if status == "building" && isStreamDrop {
+		return final, exit, &runtime.StreamDroppedError{Err: fmt.Errorf("%s", failMsg)}
+	}
 	return final, exit, nil
 }
 
 // ListAvailableRuntimeImages returns the merged dropdown list for the
 // work-item runtime_image field: the daemon's stock images plus the
 // tenant's ready custom images, with the base image as the default.
+
+func (s *Service) CancelRuntimeImageBuild(ctx context.Context, req *connect.Request[apiv1.CancelRuntimeImageBuildRequest]) (*connect.Response[apiv1.CancelRuntimeImageBuildResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil { return nil, err }
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	defer ttx.Rollback(ctx)
+	row, err := db.GetRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) { return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found")) }
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if row.Status != "building" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is not building"))
+	}
+	if int(req.Msg.Version) != 0 && int(req.Msg.Version) != row.Version {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
+	}
+	if s.rt != nil && row.Tag != "" {
+		_ = s.rt.CancelBuild(ctx, row.Tag)
+	}
+	failed := "failed"
+	reason := "cancelled by user"
+	cat := "stream"
+	tail := truncate(row.BuildLog, 8*1024)
+	emptyStep := ""
+	updated, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
+		Status:          &failed,
+		Error:           &reason,
+		FailureReason: &reason,
+		FailedStep:      &emptyStep,
+		LogTail:         &tail,
+		FailureCategory: &cat,
+		StatusOnly: true,
+	})
+	if err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	if err := ttx.Commit(ctx); err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	return connect.NewResponse(&apiv1.CancelRuntimeImageBuildResponse{RuntimeImage: toProto(updated)}), nil
+}
+
+func (s *Service) ResetRuntimeImage(ctx context.Context, req *connect.Request[apiv1.ResetRuntimeImageRequest]) (*connect.Response[apiv1.ResetRuntimeImageResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil { return nil, err }
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	defer ttx.Rollback(ctx)
+	row, err := db.GetRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) { return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found")) }
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if row.Status != "building" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is not building — reset only applies to stuck building images"))
+	}
+	if int(req.Msg.Version) != 0 && int(req.Msg.Version) != row.Version {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
+	}
+	// If daemon still reports building, prefer Cancel path.
+	if s.rt != nil && row.Tag != "" {
+		if building, perr := s.rt.IsBuilding(ctx, row.Tag); perr == nil && building {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("build still running on daemon — use Cancel instead"))
+		}
+	}
+	failed := "failed"
+	reason := "build abandoned (no image produced) — daemon restarted or stream lost; retry Deploy"
+	cat := "stream"
+	tail := truncate(row.BuildLog, 8*1024)
+	emptyStep := ""
+	updated, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
+		Status:          &failed,
+		Error:           &reason,
+		FailureReason: &reason,
+		FailedStep:      &emptyStep,
+		LogTail:         &tail,
+		FailureCategory: &cat,
+		StatusOnly: true,
+	})
+	if err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	if err := ttx.Commit(ctx); err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
+	return connect.NewResponse(&apiv1.ResetRuntimeImageResponse{RuntimeImage: toProto(updated)}), nil
+}
+
 func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.Request[apiv1.ListAvailableRuntimeImagesRequest]) (*connect.Response[apiv1.ListAvailableRuntimeImagesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -589,6 +736,53 @@ func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.R
 		resp.DefaultImage = resp.StockImages[0]
 	}
 	return connect.NewResponse(resp), nil
+}
+
+
+// ReconcileStuckBuilding transitions stale building rows (>ttl) to failed
+// when the daemon no longer reports them as building and no image exists.
+// Called periodically and at boot to heal ghost builds without daemon restart.
+func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration) (int, error) {
+	if ttl == 0 { ttl = 5 * time.Minute }
+	// List building rows older than ttl
+	ttx, err := s.pool.Begin(ctx)
+	if err != nil { return 0, err }
+	defer ttx.Rollback(ctx)
+	rows, err := ttx.Query(ctx, `SELECT id, tenant_id, tag, version, build_log, updated_at FROM runtime_images WHERE status='building' AND updated_at < now() - $1::interval`, ttl.String())
+	if err != nil { return 0, err }
+	type stuck struct{id, tenant, tag, log string; ver int}
+	var list []stuck
+	for rows.Next() {
+		var r stuck; var upd time.Time
+		if err := rows.Scan(&r.id, &r.tenant, &r.tag, &r.ver, &r.log, &upd); err != nil { continue }
+		list = append(list, r)
+	}
+	rows.Close()
+	if len(list)==0 { return 0, nil }
+	count:=0
+	for _, r := range list {
+		skipped:=false
+		if s.rt != nil && r.tag != "" {
+			if building, perr := s.rt.IsBuilding(ctx, r.tag); perr==nil && building { continue }
+			if imgs, perr := s.rt.Images(ctx); perr==nil && imgs != nil {
+				for i, ref := range imgs.Images {
+					if ref==r.tag && i < len(imgs.Infos) && imgs.Infos[i].SpecVersion == fmt.Sprintf("%d", r.ver) {
+						status:="ready"; empty:=""; built:=r.ver
+						_, err := db.UpdateRuntimeImage(ctx, ttx, r.tenant, r.id, r.ver, db.UpdateRuntimeImageFields{Status: &status, Error: &empty, FailureReason: &empty, FailedStep: &empty, LogTail: &empty, FailureCategory: &empty, BuiltVersion: &built, StatusOnly: true})
+						if err==nil { count++ }
+						skipped=true
+						break
+					}
+				}
+				if skipped { continue }
+			}
+		}
+		failed:="failed"; reason:="build abandoned (no image produced) — daemon restarted or stream lost; retry Deploy"; cat:="stream"; tail:=truncate(r.log, 8*1024); emptyStep:=""
+		_, err := db.UpdateRuntimeImage(ctx, ttx, r.tenant, r.id, r.ver, db.UpdateRuntimeImageFields{Status: &failed, Error: &reason, FailureReason: &reason, FailedStep: &emptyStep, LogTail: &tail, FailureCategory: &cat, StatusOnly: true})
+		if err==nil { count++ }
+	}
+	_ = ttx.Commit(ctx)
+	return count, nil
 }
 
 // activeRunUsesImage reports whether any non-terminal workflow run has
@@ -700,6 +894,10 @@ func toProto(r db.RuntimeImageRow) *apiv1.RuntimeImage {
 		Status:             imageStatusProto(r.Status),
 		BuildLog:           r.BuildLog,
 		Error:              r.Error,
+		FailureReason:    r.FailureReason,
+		FailedStep:       r.FailedStep,
+		LogTail:          r.LogTail,
+		FailureCategory:  r.FailureCategory,
 		Version:            int32(r.Version),
 		BuiltVersion:       int32(r.BuiltVersion),
 		CreatedAt:          timestamppb.New(r.CreatedAt),
@@ -781,6 +979,13 @@ func bound(s string, max int) (string, error) {
 		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("value too long (max %d)", max))
 	}
 	return s, nil
+}
+
+func isStreamDropped(err error) bool {
+	if err == nil { return false }
+	if e, ok := err.(*runtime.StreamDroppedError); ok && e != nil { return true }
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "stream") && (strings.Contains(msg, "disconnected") || strings.Contains(msg, "input stream") || strings.Contains(msg, "without exit event"))
 }
 
 func truncate(s string, max int) string {

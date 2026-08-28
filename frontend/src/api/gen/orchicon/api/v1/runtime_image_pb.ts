@@ -202,6 +202,26 @@ export class RuntimeImage extends Message<RuntimeImage> {
    */
   builtVersion = 0;
 
+  /**
+   * @generated from field: string failure_reason = 20;
+   */
+  failureReason = "";
+
+  /**
+   * @generated from field: string failed_step = 21;
+   */
+  failedStep = "";
+
+  /**
+   * @generated from field: string log_tail = 22;
+   */
+  logTail = "";
+
+  /**
+   * @generated from field: string failure_category = 23;
+   */
+  failureCategory = "";
+
   constructor(data?: PartialMessage<RuntimeImage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -229,6 +249,10 @@ export class RuntimeImage extends Message<RuntimeImage> {
     { no: 17, name: "updated_at", kind: "message", T: Timestamp },
     { no: 18, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 19, name: "built_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 20, name: "failure_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "failed_step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "log_tail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "failure_category", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RuntimeImage {

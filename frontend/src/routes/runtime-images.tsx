@@ -1,6 +1,6 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
 import {
   useListRuntimeImages,
@@ -235,10 +235,14 @@ function RuntimeImagesPage() {
                     stock
                   </span>
                 )}
-                {img.error && (
-                  <span className="max-w-64 truncate text-xs text-destructive">
-                    {img.error}
+                {img.status === 4 && (img.failureReason || img.error) && (
+                  <span className="flex max-w-64 items-center gap-1 truncate text-xs text-amber-700 dark:text-amber-300" role="alert">
+                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    {img.failureReason || img.error}
                   </span>
+                )}
+                {img.status === 2 && (img.failureReason || img.error) && (
+                  <span className="max-w-64 truncate text-xs text-amber-600">{img.failureReason || img.error}</span>
                 )}
               </CardContent>
             </Card>

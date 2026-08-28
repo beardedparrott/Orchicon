@@ -26,6 +26,10 @@ type RuntimeImageRow struct {
 	Status             string
 	BuildLog           string
 	Error              string
+	FailureReason    string
+	FailedStep       string
+	LogTail          string
+	FailureCategory  string
 	Version            int
 	BuiltVersion       int // spec version the current ready image was built from (0 = never built)
 	Source             string // "stock" (canned, seeded) or "custom" (tenant-created)
@@ -43,13 +47,15 @@ type RuntimeImageFilter struct {
 
 const runtimeImageCols = `id, tenant_id, name, slug, description, base_image_ref,
 	apt_packages, toolchains, env, dockerfile_override, tag, status, build_log, error,
+	failure_reason, failed_step, log_tail, failure_category,
 	version, built_version, source, created_at, updated_at`
 
 func scanRuntimeImage(row pgx.Row) (RuntimeImageRow, error) {
 	var r RuntimeImageRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description, &r.BaseImageRef,
 		&r.AptPackages, &r.Toolchains, &r.Env, &r.DockerfileOverride, &r.Tag, &r.Status,
-		&r.BuildLog, &r.Error, &r.Version, &r.BuiltVersion, &r.Source, &r.CreatedAt, &r.UpdatedAt)
+		&r.BuildLog, &r.Error, &r.FailureReason, &r.FailedStep, &r.LogTail, &r.FailureCategory,
+		&r.Version, &r.BuiltVersion, &r.Source, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
 }
 
@@ -167,6 +173,10 @@ type UpdateRuntimeImageFields struct {
 	BuildLog           *string
 	Error              *string
 	BuiltVersion       *int   // set on build success to the spec version the image was built from
+	FailureReason    *string
+	FailedStep       *string
+	LogTail          *string
+	FailureCategory  *string
 	StatusOnly         bool   // true = build-flow transition; do not bump version
 }
 
@@ -215,6 +225,18 @@ func UpdateRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string, ver
 	}
 	if f.BuiltVersion != nil {
 		add("built_version", *f.BuiltVersion)
+	}
+	if f.FailureReason != nil {
+		add("failure_reason", *f.FailureReason)
+	}
+	if f.FailedStep != nil {
+		add("failed_step", *f.FailedStep)
+	}
+	if f.LogTail != nil {
+		add("log_tail", *f.LogTail)
+	}
+	if f.FailureCategory != nil {
+		add("failure_category", *f.FailureCategory)
 	}
 	if len(sets) == 0 {
 		return GetRuntimeImage(ctx, tx, tenantID, id)

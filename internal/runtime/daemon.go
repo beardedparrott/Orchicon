@@ -63,6 +63,9 @@ type Daemon struct {
 	// race `docker run` on the same name (the pool names are unique, but
 	// serializing the docker create path keeps docker itself calm).
 	createMu sync.Mutex
+	// activeBuilds tracks in-flight docker builds by tag so Cancel can kill them.
+	buildMu      sync.Mutex
+	activeBuilds map[string]*exec.Cmd
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
 	dockerFn  func(args ...string) (string, error)                          // overrides docker()
@@ -144,6 +147,7 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/runtimes", d.handleRuntimes)
 	mux.HandleFunc("/v1/runtimes/", d.handleRuntime)
 	mux.HandleFunc("/v1/images", d.handleImages)
+	mux.HandleFunc("/v1/images/build", d.handleBuildCancel)
 	return mux
 }
 
