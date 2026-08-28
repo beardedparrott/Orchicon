@@ -757,64 +757,168 @@ export class ListAvailableRuntimeImagesResponse extends Message<ListAvailableRun
 }
 
 /**
- * @generated from message orchicon.api.v1.GetStockImageTemplateRequest
+ * @generated from message orchicon.api.v1.CancelRuntimeImageBuildRequest
  */
 export class CancelRuntimeImageBuildRequest extends Message<CancelRuntimeImageBuildRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
   id = "";
+
+  /**
+   * @generated from field: int32 version = 2;
+   */
   version = 0;
-  constructor(data?: PartialMessage<CancelRuntimeImageBuildRequest>) { super(); proto3.util.initPartial(data, this); }
+
+  constructor(data?: PartialMessage<CancelRuntimeImageBuildRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.CancelRuntimeImageBuildRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CancelRuntimeImageBuildRequest { return new CancelRuntimeImageBuildRequest().fromBinary(bytes, options); }
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildRequest { return new CancelRuntimeImageBuildRequest().fromJson(jsonValue, options); }
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildRequest { return new CancelRuntimeImageBuildRequest().fromJsonString(jsonString, options); }
-  static equals(a: CancelRuntimeImageBuildRequest | PlainMessage<CancelRuntimeImageBuildRequest> | undefined, b: CancelRuntimeImageBuildRequest | PlainMessage<CancelRuntimeImageBuildRequest> | undefined): boolean { return proto3.util.equals(CancelRuntimeImageBuildRequest, a, b); }
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CancelRuntimeImageBuildRequest {
+    return new CancelRuntimeImageBuildRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildRequest {
+    return new CancelRuntimeImageBuildRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildRequest {
+    return new CancelRuntimeImageBuildRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CancelRuntimeImageBuildRequest | PlainMessage<CancelRuntimeImageBuildRequest> | undefined, b: CancelRuntimeImageBuildRequest | PlainMessage<CancelRuntimeImageBuildRequest> | undefined): boolean {
+    return proto3.util.equals(CancelRuntimeImageBuildRequest, a, b);
+  }
 }
+
+/**
+ * @generated from message orchicon.api.v1.CancelRuntimeImageBuildResponse
+ */
 export class CancelRuntimeImageBuildResponse extends Message<CancelRuntimeImageBuildResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.RuntimeImage runtime_image = 1;
+   */
   runtimeImage?: RuntimeImage;
-  constructor(data?: PartialMessage<CancelRuntimeImageBuildResponse>) { super(); proto3.util.initPartial(data, this); }
+
+  constructor(data?: PartialMessage<CancelRuntimeImageBuildResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.CancelRuntimeImageBuildResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "runtime_image", kind: "message", T: RuntimeImage },
   ]);
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CancelRuntimeImageBuildResponse { return new CancelRuntimeImageBuildResponse().fromBinary(bytes, options); }
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildResponse { return new CancelRuntimeImageBuildResponse().fromJson(jsonValue, options); }
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildResponse { return new CancelRuntimeImageBuildResponse().fromJsonString(jsonString, options); }
-  static equals(a: CancelRuntimeImageBuildResponse | PlainMessage<CancelRuntimeImageBuildResponse> | undefined, b: CancelRuntimeImageBuildResponse | PlainMessage<CancelRuntimeImageBuildResponse> | undefined): boolean { return proto3.util.equals(CancelRuntimeImageBuildResponse, a, b); }
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CancelRuntimeImageBuildResponse {
+    return new CancelRuntimeImageBuildResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildResponse {
+    return new CancelRuntimeImageBuildResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CancelRuntimeImageBuildResponse {
+    return new CancelRuntimeImageBuildResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CancelRuntimeImageBuildResponse | PlainMessage<CancelRuntimeImageBuildResponse> | undefined, b: CancelRuntimeImageBuildResponse | PlainMessage<CancelRuntimeImageBuildResponse> | undefined): boolean {
+    return proto3.util.equals(CancelRuntimeImageBuildResponse, a, b);
+  }
 }
+
+/**
+ * @generated from message orchicon.api.v1.ResetRuntimeImageRequest
+ */
 export class ResetRuntimeImageRequest extends Message<ResetRuntimeImageRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
   id = "";
+
+  /**
+   * @generated from field: int32 version = 2;
+   */
   version = 0;
-  constructor(data?: PartialMessage<ResetRuntimeImageRequest>) { super(); proto3.util.initPartial(data, this); }
+
+  constructor(data?: PartialMessage<ResetRuntimeImageRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.ResetRuntimeImageRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetRuntimeImageRequest { return new ResetRuntimeImageRequest().fromBinary(bytes, options); }
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetRuntimeImageRequest { return new ResetRuntimeImageRequest().fromJson(jsonValue, options); }
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetRuntimeImageRequest { return new ResetRuntimeImageRequest().fromJsonString(jsonString, options); }
-  static equals(a: ResetRuntimeImageRequest | PlainMessage<ResetRuntimeImageRequest> | undefined, b: ResetRuntimeImageRequest | PlainMessage<ResetRuntimeImageRequest> | undefined): boolean { return proto3.util.equals(ResetRuntimeImageRequest, a, b); }
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetRuntimeImageRequest {
+    return new ResetRuntimeImageRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetRuntimeImageRequest {
+    return new ResetRuntimeImageRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetRuntimeImageRequest {
+    return new ResetRuntimeImageRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResetRuntimeImageRequest | PlainMessage<ResetRuntimeImageRequest> | undefined, b: ResetRuntimeImageRequest | PlainMessage<ResetRuntimeImageRequest> | undefined): boolean {
+    return proto3.util.equals(ResetRuntimeImageRequest, a, b);
+  }
 }
+
+/**
+ * @generated from message orchicon.api.v1.ResetRuntimeImageResponse
+ */
 export class ResetRuntimeImageResponse extends Message<ResetRuntimeImageResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.RuntimeImage runtime_image = 1;
+   */
   runtimeImage?: RuntimeImage;
-  constructor(data?: PartialMessage<ResetRuntimeImageResponse>) { super(); proto3.util.initPartial(data, this); }
+
+  constructor(data?: PartialMessage<ResetRuntimeImageResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.ResetRuntimeImageResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "runtime_image", kind: "message", T: RuntimeImage },
   ]);
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetRuntimeImageResponse { return new ResetRuntimeImageResponse().fromBinary(bytes, options); }
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetRuntimeImageResponse { return new ResetRuntimeImageResponse().fromJson(jsonValue, options); }
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetRuntimeImageResponse { return new ResetRuntimeImageResponse().fromJsonString(jsonString, options); }
-  static equals(a: ResetRuntimeImageResponse | PlainMessage<ResetRuntimeImageResponse> | undefined, b: ResetRuntimeImageResponse | PlainMessage<ResetRuntimeImageResponse> | undefined): boolean { return proto3.util.equals(ResetRuntimeImageResponse, a, b); }
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetRuntimeImageResponse {
+    return new ResetRuntimeImageResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetRuntimeImageResponse {
+    return new ResetRuntimeImageResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetRuntimeImageResponse {
+    return new ResetRuntimeImageResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResetRuntimeImageResponse | PlainMessage<ResetRuntimeImageResponse> | undefined, b: ResetRuntimeImageResponse | PlainMessage<ResetRuntimeImageResponse> | undefined): boolean {
+    return proto3.util.equals(ResetRuntimeImageResponse, a, b);
+  }
 }
+
+/**
+ * @generated from message orchicon.api.v1.GetStockImageTemplateRequest
+ */
 export class GetStockImageTemplateRequest extends Message<GetStockImageTemplateRequest> {
   /**
    * image tag, e.g. "orchicon-runtime:local" or "orchicon-runtime:gui"

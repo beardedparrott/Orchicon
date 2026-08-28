@@ -217,8 +217,63 @@ func (g *Guard) Close() {
 }
 
 func resolveRealBin(name string) string {
+	// Search PATH for the real binary, skipping any orchicon-guard shim
+	// directories that may be present on PATH when this process itself is
+	// running inside a guarded environment (e.g. a worker worktree or
+	// `go test` invoked through a guarded shell). exec.LookPath would
+	// otherwise resolve to the shim itself, causing the new shim to exec
+	// another shim (or itself) instead of the real binary.
+	pathEnv := os.Getenv("PATH")
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			continue
+		}
+		if strings.Contains(dir, "orchicon-guard") {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			// Ensure it is executable.
+			if fi.Mode()&0o111 != 0 {
+				return candidate
+			}
+			// Even if not executable by mode, return it — the shim will
+			// fail with a clear exec error rather than looping through the
+			// guard. This mirrors exec.LookPath's behaviour for non-exec
+			// files.
+			return candidate
+		}
+	}
+	// Fallback: search without guard dirs on PATH via a cleaned env.
+	// Build a PATH without guard entries and try LookPath with it.
+	var cleaned []string
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if strings.Contains(dir, "orchicon-guard") {
+			continue
+		}
+		cleaned = append(cleaned, dir)
+	}
+	if len(cleaned) > 0 {
+		origPath := os.Getenv("PATH")
+		os.Setenv("PATH", strings.Join(cleaned, string(os.PathListSeparator)))
+		p, err := exec.LookPath(name)
+		os.Setenv("PATH", origPath)
+		if err == nil {
+			return p
+		}
+	}
 	p, err := exec.LookPath(name)
 	if err != nil {
+		return ""
+	}
+	// If the resolved path is itself a guard shim, try common absolute
+	// locations as a last resort.
+	if strings.Contains(p, "orchicon-guard") {
+		for _, abs := range []string{"/bin/" + name, "/usr/bin/" + name, "/usr/local/bin/" + name} {
+			if _, err := os.Stat(abs); err == nil {
+				return abs
+			}
+		}
 		return ""
 	}
 	return p
