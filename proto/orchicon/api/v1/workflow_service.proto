@@ -16,6 +16,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "orchicon/api/v1/workflow.proto";
+import "orchicon/api/v1/category.proto";
 import "orchicon/api/v1/project.proto";
 import "orchicon/api/v1/worker.proto";
 
@@ -209,6 +210,8 @@ message ListWorkflowsRequest {
 message ListWorkflowsResponse {
   repeated Workflow workflows = 1;
   string next_page_token = 2;
+  repeated Category categories = 3;
+  repeated CategoryAssignment assignments = 4;
 }
 
 message ListWorkflowVersionsRequest {

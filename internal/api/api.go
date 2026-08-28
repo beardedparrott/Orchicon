@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
+	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/secrets"
@@ -130,6 +131,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// ProjectService (docs/07 §3.1).
 	projSvc := project.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewProjectServiceHandler(projSvc, interceptorOpt))
+
+	// CategoryService (first-class categories).
+	catSvc := category.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
 	// WorkerService (docs/07 §3.3).
 	workerSvc := worker.New(deps.Pool, deps.Log)

@@ -1,0 +1,28 @@
+syntax = "proto3";
+package orchicon.api.v1;
+import "google/protobuf/timestamp.proto";
+
+enum CategoryTargetType {
+  CATEGORY_TARGET_TYPE_UNSPECIFIED = 0;
+  CATEGORY_TARGET_TYPE_WORKER = 1;
+  CATEGORY_TARGET_TYPE_WORKFLOW = 2;
+  CATEGORY_TARGET_TYPE_CONVERSATION = 3;
+}
+
+message Category {
+  string id = 1;
+  string tenant_id = 2;
+  CategoryTargetType target_type = 3;
+  string name = 4;
+  string description = 5;
+  string slug = 6;
+  int32 sort_order = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message CategoryAssignment {
+  string entity_id = 1;
+  string category_id = 2;
+  CategoryTargetType target_type = 3;
+}

@@ -1,7 +1,8 @@
 // Shared drag-and-drop context for the Workers and Workflows category
 // folders. Makes item rows freely draggable into their category folders
 // (and into "Uncategorized" to remove an assignment), replacing the old
-// per-row category dropdown.
+// per-row category dropdown. Also supports reordering category folders
+// via drag when onReorder is provided.
 //
 // Reuses the verified work-items click-suppression standard so a drag-and-
 // release never triggers the accidental item open/select bug:
@@ -15,11 +16,11 @@
 //   - a ~300ms setTimeout backstop in onDragEnd that clears the flag when the
 //     pointer is released outside any clickable target (no click to consume).
 //
-// Categories are a frontend-only organizational layer (see
-// lib/category-store.ts): dropping calls `onAssign(entityId, categoryId)`,
-// the same local mutation the old dropdown used. No backend surface.
+// Categories and assignments are server-backed via CategoryService
+// (tenant-scoped, target_type partitioned); dropping calls onAssign which
+// mutates the server, and reordering calls onReorder which persists sort_order.
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -31,6 +32,7 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import type { Category } from "@/lib/category-store";
+import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 
 const UNCAT_ID = "uncategorized";
 
@@ -39,12 +41,15 @@ interface CategoryDndContextProps {
   categories: Category[];
   /** Called on drop: assign the dragged entity to a category ("" removes). */
   onAssign: (entityId: string, categoryId: string) => void;
-  children: React.ReactNode;
+  /** Called when category folders are reordered via drag (ordered ids). */
+  onReorder?: (orderedIds: string[]) => void;
+  children: ReactNode;
 }
 
 export function CategoryDndContext({
   categories,
   onAssign,
+  onReorder,
   children,
 }: CategoryDndContextProps) {
   const suppressClickRef = useRef(false);
@@ -89,16 +94,30 @@ export function CategoryDndContext({
 
     const { active, over } = event;
     if (!over) return;
-    const entityId = String(active.id);
-    const targetId = String(over.id);
-    // No-op when the collision resolves back to the dragged row itself.
-    if (entityId === targetId) return;
-    // Only accept known folder targets (category ids or "uncategorized").
-    if (!validTargets.has(targetId)) return;
-    if (targetId === UNCAT_ID) {
-      onAssign(entityId, "");
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    if (activeId === overId) return;
+
+    // Category reorder: dragging a folder header over another folder.
+    const categoryIdSet = new Set(categories.map((c) => c.id));
+    if (onReorder && categoryIdSet.has(activeId) && categoryIdSet.has(overId)) {
+      const oldIndex = categories.findIndex((c) => c.id === activeId);
+      const newIndex = categories.findIndex((c) => c.id === overId);
+      if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+        const reordered = arrayMove(categories.map((c) => c.id), oldIndex, newIndex);
+        onReorder(reordered);
+      }
+      return;
+    }
+    // Folder drags should only reorder, never trigger assignment.
+    if (categoryIdSet.has(activeId)) return;
+
+    // Entity -> category assignment (existing behavior).
+    if (!validTargets.has(overId)) return;
+    if (overId === UNCAT_ID) {
+      onAssign(activeId, "");
     } else {
-      onAssign(entityId, targetId);
+      onAssign(activeId, overId);
     }
   };
 
@@ -111,6 +130,7 @@ export function CategoryDndContext({
     }, 300);
   };
 
+  const categoryIds = categories.map((c) => c.id);
   return (
     <DndContext
       sensors={sensors}
@@ -119,7 +139,13 @@ export function CategoryDndContext({
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      {children}
+      {onReorder ? (
+        <SortableContext items={categoryIds} strategy={verticalListSortingStrategy}>
+          {children}
+        </SortableContext>
+      ) : (
+        children
+      )}
     </DndContext>
   );
 }

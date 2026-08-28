@@ -259,6 +259,7 @@ function WorkflowsPage() {
             <CategoryDndContext
               categories={prefs.state.categories}
               onAssign={prefs.assignItem}
+              onReorder={prefs.reorderCategories}
             >
               {categoryGroups.map(({ category, items }) => (
                 <CategoryFolder
@@ -287,6 +288,7 @@ function WorkflowsPage() {
                     prefs.updateDescription(category.id, desc)
                   }
                   droppableId={category.id}
+                  sortable={prefs.state.categories.length > 1}
                 >
                   <div className="space-y-1">
                     {items.map((w) => (

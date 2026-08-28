@@ -1713,3 +1713,38 @@ table "tenant_secrets" {
   }
 }
 
+
+table "categories" {
+  schema = schema.public
+  comment = "Tenant-scoped categories partitioned by target_type (worker|workflow|conversation)."
+
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "target_type" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "description" { type = text; null = false; default = "" }
+  column "slug" { type = text; null = false }
+  column "sort_order" { type = integer; null = false; default = 0 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+
+  primary_key { columns = [column.id] }
+  index "categories_tenant_target_slug_idx" { unique = true; columns = [column.tenant_id, column.target_type, column.slug] }
+  index "categories_tenant_target_name_idx" { unique = true; columns = [column.tenant_id, column.target_type, column.name] }
+  index "categories_tenant_target_order_idx" { columns = [column.tenant_id, column.target_type, column.sort_order] }
+}
+
+table "category_assignments" {
+  schema = schema.public
+  comment = "Entity -> category assignment, PK is tenant+target_type+entity_id."
+
+  column "tenant_id" { type = text; null = false }
+  column "target_type" { type = text; null = false }
+  column "entity_id" { type = text; null = false }
+  column "category_id" { type = text; null = false }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+
+  primary_key { columns = [column.tenant_id, column.target_type, column.entity_id] }
+  index "category_assignments_category_idx" { columns = [column.tenant_id, column.category_id] }
+  index "category_assignments_entity_idx" { columns = [column.tenant_id, column.entity_id] }
+}

@@ -14,6 +14,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { EditLock, Worker, WorkerStatus, WorkerVersion, WorkerVersionStatus } from "./worker_pb.js";
+import { Category, CategoryAssignment } from "./category_pb.js";
 
 /**
  * @generated from enum orchicon.api.v1.BulkUpdateWorkerModelSkipReason
@@ -1140,6 +1141,16 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
    */
   items: WorkerListItem[] = [];
 
+  /**
+   * @generated from field: repeated orchicon.api.v1.Category categories = 4;
+   */
+  categories: Category[] = [];
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.CategoryAssignment assignments = 5;
+   */
+  assignments: CategoryAssignment[] = [];
+
   constructor(data?: PartialMessage<ListWorkersResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1151,6 +1162,8 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
     { no: 1, name: "workers", kind: "message", T: Worker, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "items", kind: "message", T: WorkerListItem, repeated: true },
+    { no: 4, name: "categories", kind: "message", T: Category, repeated: true },
+    { no: 5, name: "assignments", kind: "message", T: CategoryAssignment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkersResponse {
