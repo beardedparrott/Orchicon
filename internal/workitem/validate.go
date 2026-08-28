@@ -501,6 +501,8 @@ type recurringScheduleJSON struct {
 	StartDate   string   `json:"start_date"`
 	StartTime   string   `json:"start_time"`
 	OutputsMode string   `json:"outputs_mode"`
+	WindowStart string   `json:"window_start,omitempty"`
+	WindowEnd   string   `json:"window_end,omitempty"`
 }
 
 // IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
@@ -513,7 +515,9 @@ func IsRecurringScheduleEmpty(msg *apiv1.RecurringSchedule) bool {
 		msg.Interval == 0 &&
 		len(msg.Days) == 0 &&
 		strings.TrimSpace(msg.StartDate) == "" &&
-		strings.TrimSpace(msg.StartTime) == ""
+		strings.TrimSpace(msg.StartTime) == "" &&
+		strings.TrimSpace(msg.WindowStart) == "" &&
+		strings.TrimSpace(msg.WindowEnd) == ""
 }
 
 // ValidateRecurringSchedule validates a proto RecurringSchedule message and
@@ -556,6 +560,34 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	if _, err := time.Parse("15:04", startTime); err != nil {
 		return nil, fmt.Errorf("recurring_schedule.start_time must be HH:MM; got %q", startTime)
 	}
+	windowStart := strings.TrimSpace(msg.WindowStart)
+	windowEnd := strings.TrimSpace(msg.WindowEnd)
+	if (windowStart == "") != (windowEnd == "") {
+		return nil, errors.New("recurring_schedule.window_start and window_end must be set together")
+	}
+	if windowStart != "" && windowEnd != "" {
+		ws, err := time.Parse("15:04", windowStart)
+		if err != nil {
+			return nil, fmt.Errorf("recurring_schedule.window_start must be HH:MM; got %q", windowStart)
+		}
+		we, err := time.Parse("15:04", windowEnd)
+		if err != nil {
+			return nil, fmt.Errorf("recurring_schedule.window_end must be HH:MM; got %q", windowEnd)
+		}
+		windowStartMin := ws.Hour()*60 + ws.Minute()
+		windowEndMin := we.Hour()*60 + we.Minute()
+		if windowEndMin <= windowStartMin {
+			return nil, errors.New("recurring_schedule.window_end must be after window_start (wrapping midnight is not supported in v1)")
+		}
+		// For daily/weekly/monthly the anchor time must lie inside the window.
+		if freq == "daily" || freq == "weekly" || freq == "monthly" {
+			st, _ := time.Parse("15:04", startTime)
+			m := st.Hour()*60 + st.Minute()
+			if m < windowStartMin || m >= windowEndMin {
+				return nil, errors.New("recurring_schedule.start_time must lie inside the window")
+			}
+		}
+	}
 	schedule := recurringScheduleJSON{
 		Frequency:   freq,
 		Interval:    int(msg.Interval),
@@ -563,6 +595,8 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 		StartDate:   startDate,
 		StartTime:   startTime,
 		OutputsMode: domain.NormalizeRecurringOutputsMode(msg.OutputsMode),
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
 	}
 	b, err := json.Marshal(schedule)
 	if err != nil {
@@ -605,10 +639,101 @@ func ValidateRecurringWorkflowBinding(recurring, hasChildren bool, workflowID st
 	return nil
 }
 
+// parseWindow parses the optional daily window from a schedule.
+// Returns hasWindow=false when both fields are empty. When exactly one is
+// set or the format is invalid it returns an error; ComputeNextRunAt treats
+// parse errors as no window (defensive, since Validate should have rejected).
+func parseWindow(schedule *apiv1.RecurringSchedule) (bool, int, int) {
+	ws := strings.TrimSpace(schedule.WindowStart)
+	we := strings.TrimSpace(schedule.WindowEnd)
+	if ws == "" && we == "" {
+		return false, 0, 0
+	}
+	if ws == "" || we == "" {
+		return false, 0, 0
+	}
+	tStart, err := time.Parse("15:04", ws)
+	if err != nil {
+		return false, 0, 0
+	}
+	tEnd, err := time.Parse("15:04", we)
+	if err != nil {
+		return false, 0, 0
+	}
+	sm := tStart.Hour()*60 + tStart.Minute()
+	em := tEnd.Hour()*60 + tEnd.Minute()
+	if em <= sm {
+		return false, 0, 0
+	}
+	return true, sm, em
+}
+
+func isInWindow(t time.Time, startMin, endMin int) bool {
+	m := t.Hour()*60 + t.Minute()
+	return m >= startMin && m < endMin
+}
+
+func nextWindowStart(t time.Time, startMin int) time.Time {
+	m := t.Hour()*60 + t.Minute()
+	if m < startMin {
+		// Later today at window start.
+		h, mm := startMin/60, startMin%60
+		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, time.UTC)
+	}
+	// Next day at window start.
+	h, mm := startMin/60, startMin%60
+	next := t.AddDate(0, 0, 1)
+	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, time.UTC)
+}
+
+// alignToGrid returns the smallest grid-aligned time >= target for the given
+// anchor cadence. Grid is anchor + k*step where step depends on frequency.
+// Anchored-grid-truncated-by-window semantic (A): fires stay on the anchor
+// grid, truncated to the window.
+func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time {
+	switch freq {
+	case "minute":
+		step := time.Duration(interval) * time.Minute
+		diff := target.Sub(anchor)
+		if diff <= 0 {
+			return anchor
+		}
+		remainder := diff % step
+		if remainder == 0 {
+			return target
+		}
+		return target.Add(step - remainder)
+	case "hourly":
+		step := time.Duration(interval) * time.Hour
+		diff := target.Sub(anchor)
+		if diff <= 0 {
+			return anchor
+		}
+		remainder := diff % step
+		if remainder == 0 {
+			return target
+		}
+		return target.Add(step - remainder)
+	default:
+		// daily/weekly/monthly: walk from anchor by steps until >= target.
+		// Cap at 1000 to avoid infinite loops.
+		candidate := anchor
+		for i := 0; i < 1000; i++ {
+			if !candidate.Before(target) {
+				return candidate
+			}
+			candidate = advanceTime(candidate, freq, interval)
+		}
+		return target
+	}
+}
+
 // ComputeNextRunAt computes the first occurrence of a recurring schedule
 // that is >= the given "now" time. The start_date + start_time define the
-// anchor; the frequency/interval/days define the cadence. Returns nil when
-// the schedule is nil (not recurring).
+// anchor; the frequency/interval/days define the cadence. When a daily
+// window is set (window_start/window_end), only fires inside [window_start,
+// window_end) are returned; the anchor grid is truncated by the window
+// (semantic A). Returns nil when the schedule is nil (not recurring).
 func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Time {
 	if schedule == nil {
 		return nil
@@ -624,21 +749,16 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 	if interval < 1 {
 		interval = 1
 	}
+	hasWindow, wsMin, weMin := parseWindow(schedule)
 
 	// For weekly frequency, walk day-by-day so we hit every selected
 	// weekday within each cadence week. Empty days means "every day"
-	// (all 7 weekdays are valid). The previous approach (7*interval-day
-	// jumps from the anchor) only ever landed on the anchor's weekday,
-	// skipping all other selected days.
+	// (all 7 weekdays are valid). Window gating is applied per candidate.
 	if freq == "weekly" {
 		cadenceDays := 7 * interval
 		anchorWeekday := int(anchor.Weekday())
-		// Precompute valid day offsets from the anchor's weekday.
-		// For each selected day, the offset is the number of days after
-		// the anchor's weekday within the same cadence week.
 		validOffsets := make(map[int]bool)
 		if len(schedule.Days) == 0 {
-			// Empty days = every day of the week.
 			for i := 0; i < 7; i++ {
 				validOffsets[i] = true
 			}
@@ -654,25 +774,30 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 			if !candidate.Before(now) {
 				daysSinceAnchor := int(candidate.Sub(anchor).Hours() / 24)
 				if daysSinceAnchor >= 0 && validOffsets[daysSinceAnchor%cadenceDays] {
-					return &candidate
+					if !hasWindow || isInWindow(candidate, wsMin, weMin) {
+						return &candidate
+					}
 				}
 			}
 			candidate = candidate.AddDate(0, 0, 1)
 		}
-		// Fallback: return the anchor even though it may be in the past.
 		return &anchor
 	}
 
-	// Walk forward from the anchor until we find a time >= now.
-	// Cap at 1000 iterations to prevent infinite loops on degenerate inputs.
+	// Non-weekly: walk from anchor, gating by window.
 	candidate := anchor
 	for i := 0; i < 1000; i++ {
-		if !candidate.Before(now) {
-			return &candidate
+		if candidate.Before(now) {
+			candidate = advanceTime(candidate, freq, interval)
+			continue
 		}
-		candidate = advanceTime(candidate, freq, interval)
+		if hasWindow && !isInWindow(candidate, wsMin, weMin) {
+			target := nextWindowStart(candidate, wsMin)
+			candidate = alignToGrid(target, anchor, freq, interval)
+			continue
+		}
+		return &candidate
 	}
-	// Fallback: return the anchor even though it's in the past.
 	return &anchor
 }
 

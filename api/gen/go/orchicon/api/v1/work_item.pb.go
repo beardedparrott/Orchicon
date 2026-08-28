@@ -748,7 +748,15 @@ type RecurringSchedule struct {
 	//	none: the fire spawns no new work items.
 	//
 	// Stored as a key inside the recurring_schedule JSONB (no new column).
-	OutputsMode   string `protobuf:"bytes,6,opt,name=outputs_mode,json=outputsMode,proto3" json:"outputs_mode,omitempty"`
+	OutputsMode string `protobuf:"bytes,6,opt,name=outputs_mode,json=outputsMode,proto3" json:"outputs_mode,omitempty"`
+	// Window confines fires to a daily time-of-day interval [window_start, window_end).
+	// Both empty (the default) = no window (legacy 24/7 behaviour). When set, both
+	// MUST be set, validated HH:MM, and represent a half-open interval on the same
+	// calendar day; wrapping midnight is v1-out-of-scope and rejected. Fires use
+	// the anchor-grid-truncated-by-window semantic (A): the interval cadence is
+	// anchored at start_date+start_time and truncated to the window.
+	WindowStart   string `protobuf:"bytes,7,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"` // HH:MM, inclusive
+	WindowEnd     string `protobuf:"bytes,8,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`       // HH:MM, exclusive — must be > window_start
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -821,6 +829,20 @@ func (x *RecurringSchedule) GetStartTime() string {
 func (x *RecurringSchedule) GetOutputsMode() string {
 	if x != nil {
 		return x.OutputsMode
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetWindowStart() string {
+	if x != nil {
+		return x.WindowStart
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetWindowEnd() string {
+	if x != nil {
+		return x.WindowEnd
 	}
 	return ""
 }
@@ -1033,7 +1055,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status\"\xc2\x01\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"\x84\x02\n" +
 	"\x11RecurringSchedule\x12\x1c\n" +
 	"\tfrequency\x18\x01 \x01(\tR\tfrequency\x12\x1a\n" +
 	"\binterval\x18\x02 \x01(\x05R\binterval\x12\x12\n" +
@@ -1042,7 +1064,10 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"start_date\x18\x04 \x01(\tR\tstartDate\x12\x1d\n" +
 	"\n" +
 	"start_time\x18\x05 \x01(\tR\tstartTime\x12!\n" +
-	"\foutputs_mode\x18\x06 \x01(\tR\voutputsMode\"\xfe\x01\n" +
+	"\foutputs_mode\x18\x06 \x01(\tR\voutputsMode\x12!\n" +
+	"\fwindow_start\x18\a \x01(\tR\vwindowStart\x12\x1d\n" +
+	"\n" +
+	"window_end\x18\b \x01(\tR\twindowEnd\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +

@@ -15,7 +15,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/workflow"
-	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
 // Recurring-fire reconciler tests: the fire path that scans for
@@ -1078,12 +1077,3 @@ func TestRecurringFireSkipsPausedItem(t *testing.T) {
 	}
 }
 
-// TestRecurringOutputsIdeasSeam verifies the idea-output mode wiring at the 4.2
-// boundary: with 4.1's idea/provenance plumbing not present, the seam is a
-// no-op that reports idea-output mode is disabled — so worker-created items in
-// a fired run are NOT routed through idea state or spawned_by provenance.
-func TestRecurringOutputsIdeasSeam(t *testing.T) {
-	if workitem.RecurringOutputsIdeas([]byte(`{"outputs":"ideas"}`)) {
-		t.Error("RecurringOutputsIdeas = true, want false (idea-output mode not wired until 4.1)")
-	}
-}
