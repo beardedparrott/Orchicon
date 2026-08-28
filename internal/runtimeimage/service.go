@@ -743,6 +743,9 @@ func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.R
 // when the daemon no longer reports them as building and no image exists.
 // Called periodically and at boot to heal ghost builds without daemon restart.
 func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration) (int, error) {
+	if s == nil || s.pool == nil {
+		return 0, nil
+	}
 	if ttl == 0 { ttl = 5 * time.Minute }
 	// List building rows older than ttl
 	ttx, err := s.pool.Begin(ctx)
@@ -793,6 +796,9 @@ func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration)
 
 // StartReconciler runs a periodic background reconciler for stuck building images (60s tick).
 func (s *Service) StartReconciler(ctx context.Context) {
+	if s == nil || s.pool == nil {
+		return
+	}
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
