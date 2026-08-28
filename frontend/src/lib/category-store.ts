@@ -75,6 +75,9 @@ function parseEnvelope<T>(key: string): T | undefined {
 function writeEnvelope(key: string, value: object): void {
   writeRaw(key, JSON.stringify({ v: VERSION, ...value }));
 }
+function hasEnvelope(key: string): boolean {
+  return readRaw(key) !== null;
+}
 
 export function loadCollapsedState(page: CategoryPage): Set<string> {
   const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${page}.collapsed`);
@@ -110,7 +113,14 @@ function markSeeded(page: CategoryPage) {
 }
 
 export function seedAssignments(page: CategoryPage, entityIds: string[]): CategoryState {
-  return loadCategoryState(page, true);
+  if (hasEnvelope(`${PREFIX}${page}`)) {
+    return loadCategoryState(page);
+  }
+  const assignments: Record<string, string> = {};
+  for (const id of entityIds) assignments[id] = "cat_software_dev";
+  const state: CategoryState = { categories: [{ id: "cat_software_dev", name: "Software Development", description: "General-purpose workers and workflows for software development tasks", order: 0 }], assignments };
+  saveCategoryState(page, state);
+  return state;
 }
 
 // --- Hook ---
