@@ -426,6 +426,15 @@ func (r *WorkflowReconciler) holdInPlaceDispatch(ctx context.Context, tx pgx.Tx,
 		// Missing project: nothing to serialize against — fail open.
 		return false
 	}
+	// Git-backed pending runs must not dispatch in the shared project_dir
+	// (mandatory worktree for git repos, ADR 2.1). Hold until the
+	// WorktreeReconciler moves worktree_status out of pending (ready/failed)
+	// so neither inline DispatchTask nor TaskReconciler can run in place.
+	// This holds even when the cache is stale — a stale true still means git
+	// backed, and we must not fail-open to a dirty checkout.
+	if gitWorkTree {
+		return true
+	}
 	if detectedAt == nil {
 		return false
 	}
