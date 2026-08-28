@@ -4,27 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-func secretsService(pool *db.Pool) (*secrets.Service, error) {
-	raw := os.Getenv("ORCHICON_SECRETS_KEK")
-	if raw == "" {
-		return nil, fmt.Errorf("secrets store unavailable: KEK not configured (ORCHICON_SECRETS_KEK)")
-	}
-	kek, err := secretcrypto.ParseKEK(raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid KEK: %w", err)
+func secretsService(pool *db.Pool, kek []byte) (*secrets.Service, error) {
+	if len(kek) != 32 {
+		return nil, fmt.Errorf("secrets store unavailable: KEK not configured")
 	}
 	return secrets.New(pool, kek), nil
 }
 
-func toolListSecrets(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+func toolListSecrets(ctx context.Context, pool *db.Pool, kek []byte, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Search    string `json:"search"`
 		PageSize  int    `json:"page_size"`
@@ -35,7 +28,7 @@ func toolListSecrets(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 			return nil, fmt.Errorf("invalid args: %w", err)
 		}
 	}
-	svc, err := secretsService(pool)
+	svc, err := secretsService(pool, kek)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +43,7 @@ func toolListSecrets(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(map[string]any{"secrets": list, "next_page_token": next})
 }
 
-func toolCreateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+func toolCreateSecret(ctx context.Context, pool *db.Pool, kek []byte, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Name        string `json:"name"`
 		Value       string `json:"value"`
@@ -62,7 +55,7 @@ func toolCreateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if params.Name == "" || params.Value == "" {
 		return nil, fmt.Errorf("name and value are required")
 	}
-	svc, err := secretsService(pool)
+	svc, err := secretsService(pool, kek)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +67,7 @@ func toolCreateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	return json.Marshal(s)
 }
 
-func toolUpdateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+func toolUpdateSecret(ctx context.Context, pool *db.Pool, kek []byte, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID          string  `json:"id"`
 		Value       *string `json:"value"`
@@ -89,7 +82,7 @@ func toolUpdateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if params.Value == nil && params.Description == nil {
 		return nil, fmt.Errorf("at least one of value or description required")
 	}
-	svc, err := secretsService(pool)
+	svc, err := secretsService(pool, kek)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +94,7 @@ func toolUpdateSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	return json.Marshal(s)
 }
 
-func toolDeleteSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+func toolDeleteSecret(ctx context.Context, pool *db.Pool, kek []byte, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
 	}
@@ -111,7 +104,7 @@ func toolDeleteSecret(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if params.ID == "" {
 		return nil, fmt.Errorf("id is required")
 	}
-	svc, err := secretsService(pool)
+	svc, err := secretsService(pool, kek)
 	if err != nil {
 		return nil, err
 	}

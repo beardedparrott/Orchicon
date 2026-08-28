@@ -29,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcp"
+	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -298,6 +299,14 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 1
 	}
 
+	// Secrets KEK for the MCP surface's secret tools: explicit override
+	// wins, else the per-instance data-dir key (load-or-create on first
+	// boot) — same resolution as the control plane.
+	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
+	if kekErr != nil {
+		log.Warn("secrets KEK unavailable (secret tools disabled)", "error", kekErr)
+	}
+
 	pool, err := db.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		log.Error("db open", "error", err)
@@ -305,7 +314,7 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	}
 	defer pool.Close()
 
-	toolReg := askorchicon.NewToolRegistry(pool, log)
+	toolReg := askorchicon.NewToolRegistry(pool, log, secretsKEK)
 	mcpSrv := mcp.New(log, pool, mcp.NewAskOrchiconRegistry(toolReg))
 
 	log.Info("mcp server started (stdio transport)")

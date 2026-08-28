@@ -38,7 +38,7 @@ type ToolRegistry struct {
 }
 
 // NewToolRegistry creates the registry with all available tools.
-func NewToolRegistry(pool *db.Pool, log *slog.Logger) *ToolRegistry {
+func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
 	// Package-level logger for tools whose post-commit side effects (e.g.
 	// auto-starting a workflow) need a logger but receive none via the
 	// ToolFn signature.
@@ -51,7 +51,7 @@ func NewToolRegistry(pool *db.Pool, log *slog.Logger) *ToolRegistry {
 	}
 
 	// Register all tools.
-	for _, td := range allTools(pool, log) {
+	for _, td := range allTools(pool, log, secretsKEK) {
 		r.tools = append(r.tools, td)
 		r.byName[td.Name] = td
 	}
@@ -96,7 +96,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, pool *db.Pool, name string, 
 }
 
 // allTools returns the complete list of tool definitions.
-func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
+func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefinition {
 	return []ToolDefinition{
 		// --- Projects ---
 		{
@@ -606,13 +606,17 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Name:        "list_secrets",
 			Description: "List tenant secrets (encrypted at rest; values never returned).",
 			Mutating:    false,
-			Fn:          toolListSecrets,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolListSecrets(ctx, pool, secretsKEK, args)
+			},
 		},
 		{
 			Name:        "create_secret",
 			Description: "Create a tenant secret (AES-256-GCM encrypted at rest). Name must match ^[A-Z][A-Z0-9_]+$.",
 			Mutating:    true,
-			Fn:          toolCreateSecret,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolCreateSecret(ctx, pool, secretsKEK, args)
+			},
 			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
 			Required:    []string{"name", "value"},
 		},
@@ -620,7 +624,9 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Name:        "update_secret",
 			Description: "Update a tenant secret value or description.",
 			Mutating:    true,
-			Fn:          toolUpdateSecret,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolUpdateSecret(ctx, pool, secretsKEK, args)
+			},
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
 			Required:    []string{"id"},
 		},
@@ -628,7 +634,9 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Name:        "delete_secret",
 			Description: "Delete a tenant secret by ID.",
 			Mutating:    true,
-			Fn:          toolDeleteSecret,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolDeleteSecret(ctx, pool, secretsKEK, args)
+			},
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
 			Required:    []string{"id"},
 		},

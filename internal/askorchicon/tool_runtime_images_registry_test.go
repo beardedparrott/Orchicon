@@ -9,7 +9,7 @@ import (
 )
 
 func TestRuntimeImageRegistryExposesNewTools(t *testing.T) {
-    reg := NewToolRegistry(nil, slog.Default())
+    reg := NewToolRegistry(nil, slog.Default(), nil)
     for _, name := range []string{"create_runtime_image", "update_runtime_image", "build_runtime_image", "list_runtime_images", "get_runtime_image", "delete_runtime_image"} {
         if _, ok := reg.Get(name); !ok {
             t.Fatalf("registry missing tool %q", name)
