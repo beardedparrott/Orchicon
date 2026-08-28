@@ -244,6 +244,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// RuntimeImageService — tenant runtime container image specs + build.
 	runtimeImageSvc := runtimeimage.New(deps.Pool, deps.Log, deps.RuntimeClient)
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(runtimeImageSvc, interceptorOpt))
+	// Heal ghost builds stuck in building after stream drops / daemon restarts (boot + periodic).
+	go func() {
+		ctx := context.Background()
+		if _, err := runtimeImageSvc.ReconcileStuckBuilding(ctx, 0); err != nil {
+			deps.Log.Warn("runtime image reconcile (boot) failed", "error", err)
+		}
+	}()
+	go runtimeImageSvc.StartReconciler(context.Background())
 
 	// SecretsService — tenant-scoped encrypted secrets (Tavily etc.).
 	// The KEK is resolved once at server construction (env override or

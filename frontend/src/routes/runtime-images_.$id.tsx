@@ -161,7 +161,7 @@ function RuntimeImageDetailPage() {
   };
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (error) return <p className="text-sm text-destructive">Failed to load: {String(error)}</p>;
+  if (error) return <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">Failed to load: {String(error)}</div>;
   if (!img) return <p className="text-sm text-muted-foreground">Not found.</p>;
 
 
@@ -190,7 +190,6 @@ function RuntimeImageDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {(buildLog || img.buildLog) && !editMode && <BuildLogViewer log={buildLog || img.buildLog} />}
       {!editMode && (
             <>
               <Button variant="outline" onClick={startEdit}>
@@ -348,18 +347,13 @@ function RuntimeImageDetailPage() {
         </div>
       )}
 
-      {buildError && <p className="text-sm text-destructive">Error: {buildError}</p>}
-
-      {buildLog && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Build Log</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">{buildLog}</pre>
-          </CardContent>
-        </Card>
+      {buildError && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">
+          {buildError}
+        </div>
       )}
+
+
 
       <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <Link to="/runtime-images" className="hover:underline">

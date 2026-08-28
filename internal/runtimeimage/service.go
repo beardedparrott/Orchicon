@@ -785,6 +785,23 @@ func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration)
 	return count, nil
 }
 
+
+// StartReconciler runs a periodic background reconciler for stuck building images (60s tick).
+func (s *Service) StartReconciler(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.ReconcileStuckBuilding(ctx, 0); err != nil {
+				s.log.Warn("runtime image periodic reconcile failed", "error", err)
+			}
+		}
+	}
+}
+
 // activeRunUsesImage reports whether any non-terminal workflow run has
 // resolved to the given image tag.
 func activeRunUsesImage(ctx context.Context, tx pgx.Tx, tenantID, tag string) (bool, error) {
