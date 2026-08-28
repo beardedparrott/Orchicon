@@ -252,6 +252,11 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 	// that is provably merged into the base (success-only: never on a failed /
 	// aborted run's branch, which a retry re-attaches to).
 	r.sweepOrphanBranches(ctx, tenantID)
+	// ADR 2.3: reclaim stale .orchicon-worktrees/<id> dirs that are no longer
+	// valid git worktrees and have no DB row referencing them, then restore
+	// any terminal skipped run's shared checkout (ADR 2.2).
+	r.sweepOrphanDirs(ctx, tenantID)
+	r.sweepSkippedTerminalRuns(ctx, tenantID)
 	return reconciler.Result{}
 }
 
@@ -927,6 +932,12 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 	// after the step worktree above is removed so an empty <runID>/ is seen.
 	r.sweepOrphanContainers(ctx, projectDir)
 
+	// ADR 2.3: verify physical removal before DB transition.
+	if occupied, _ := r.dirOccupied(path); occupied {
+		r.log.Warn("worktree: step prune verification failed — path still exists", "run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
+		return nil
+	}
+
 	return r.markStepPruned(ctx, tenantID, sr.ID, "")
 }
 
@@ -1071,6 +1082,23 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 	// ones past manual cleanups left). Runs after the registered run worktree
 	// removal above.
 	r.sweepOrphanContainers(ctx, projectDir)
+
+	// ADR 2.3: verify physical removal before DB state transition. If the
+	// worktree path still exists (refused non-artifact dir, or a stale dir
+	// left behind) or the branch still exists when it should have been
+	// deleted (completed + provably merged), keep the row ready and retry
+	// next scan — never clear DB while dirt remains.
+	if occupied, _ := r.dirOccupied(path); occupied {
+		r.log.Warn("worktree: prune verification failed — path still exists", "run", run.ID, "path", path)
+		return nil
+	}
+	if run.Status == domain.WorkflowRunCompleted && run.WorktreeBranch != "" && r.branchExists(ctx, projectDir, run.WorktreeBranch) {
+		// Branch should have been deleted (provably merged). If it still
+		// exists the deleteBranch gate refused — leave the sweep to reclaim it.
+		// Do not block the run's pruned transition on branch deletion; the
+		// orphan sweep will reclaim it. So we do not gate here beyond logging.
+		r.log.Info("worktree: branch still exists after prune (orphan sweep will reclaim)", "run", run.ID, "branch", run.WorktreeBranch)
+	}
 
 	return r.markPruned(ctx, tenantID, run.ID, "")
 }
@@ -2093,6 +2121,26 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 	// scan pass re-admits it once a slot frees. Only 'skipped' transitions
 	// consult the gate — 'ready'/'failed' carry no in-place token.
 	if status == domain.WorktreeSkipped {
+		// ADR 2.2 pre-dispatch clean check: never dispatch in-place against a
+		// dirty git checkout. If the project dir is a git work tree and is
+		// dirty, refuse admission and mark failed instead — the checkout must
+		// be cleaned manually. This converts silent pollution into an explicit
+		// failure (AC: git pull never fails with local changes).
+		if run.ProjectID != "" {
+			if dir := r.lookupProjectDir(ctx, tenantID, run.ProjectID); dir != "" && r.isInsideWorkTree(ctx, dir) && r.isDirtyWorkTree(ctx, dir) {
+				r.log.Warn("worktree: refusing in-place dispatch — checkout dirty", "run", runID, "project_dir", dir)
+				// Mark failed instead of skipped so the run does not proceed in place.
+				fields := db.UpdateWorkflowRunFields{WorktreeStatus: strPtr(domain.WorktreeFailed)}
+				reasonDirty := "checkout dirty — refusing in-place dispatch; clean the working tree and retry"
+				if merged, ok := mergeRunContext(run.RunContext, map[string]any{"worktree_error": reasonDirty}); ok {
+					fields.RunContext = &merged
+				}
+				if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, fields); err != nil {
+					return fmt.Errorf("mark worktree failed (dirty): %w", err)
+				}
+				return ttx.Commit(ctx)
+			}
+		}
 		admitted, aerr := r.admitInPlace(ctx, ttx.Tx, tenantID, run)
 		if aerr != nil {
 			return fmt.Errorf("admit in-place run: %w", aerr)
@@ -2369,6 +2417,219 @@ func (r *WorktreeReconciler) markStepPruned(ctx context.Context, tenantID, stepR
 	}
 	r.log.Info("worktree: branch worktree pruned", "step_run", stepRunID, "branch", sr.WorktreeBranch)
 	return nil
+}
+
+// isDirtyWorkTree reports whether the git work tree at projectDir has
+// uncommitted changes (modified/deleted) or untracked non-ignored files.
+// It runs `git status --porcelain` and treats any output as dirty.
+func (r *WorktreeReconciler) isDirtyWorkTree(ctx context.Context, projectDir string) bool {
+	out, err := runGit(ctx, projectDir, "status", "--porcelain")
+	if err != nil {
+		// If git status fails, assume dirty to fail-closed (never dispatch
+		// in-place on uncertainty).
+		return true
+	}
+	return strings.TrimSpace(out) != ""
+}
+
+// restoreWorkTree restores a git checkout to a clean state: `git reset --hard HEAD`
+// plus `git clean -fd` (not -fdx — preserve ignored build artifacts; the
+// observed stray file _batch_test2.go is untracked non-ignored and is removed
+// by -fd, while .gotmp etc. remain). Returns an error if verification after
+// restore still shows dirty.
+func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir string) error {
+	if _, err := runGit(ctx, projectDir, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("git reset --hard HEAD: %w", err)
+	}
+	if _, err := runGit(ctx, projectDir, "clean", "-fd"); err != nil {
+		return fmt.Errorf("git clean -fd: %w", err)
+	}
+	if r.isDirtyWorkTree(ctx, projectDir) {
+		return fmt.Errorf("checkout still dirty after restore")
+	}
+	return nil
+}
+
+// sweepOrphanDirs removes stale .orchicon-worktrees/<id> directories that
+// are not valid git worktrees and have no DB row referencing them. This
+// reclaims the observed stale dirs that prune left behind (no .git pointer).
+func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID string) {
+	// Collect all projects with a project_dir so we sweep each repo once.
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	// Use raw query to list projects with project_dir set — avoid loading all
+	// project rows via ListProjects and filter in Go.
+	rows, err := ttx.Tx.Query(ctx, `SELECT project_dir FROM projects WHERE tenant_id = $1 AND project_dir <> ''`, tenantID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return
+	}
+	var dirs []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err == nil && d != "" {
+			dirs = append(dirs, d)
+		}
+	}
+	rows.Close()
+	ttx.Rollback(ctx)
+	seen := make(map[string]bool)
+	for _, dir := range dirs {
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if !r.isInsideWorkTree(ctx, dir) {
+			continue
+		}
+		root := filepath.Join(dir, worktreeDirName)
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		// Build set of valid worktree paths from git worktree list.
+		wts, _ := listWorktrees(ctx, dir)
+		validPaths := make(map[string]bool, len(wts))
+		for _, wt := range wts {
+			validPaths[filepath.Clean(wt.path)] = true
+		}
+		// Also collect DB-referenced paths (run-level ready worktrees) to avoid
+		// deleting a just-provisioned path that git hasn't registered yet.
+		ttx2, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err == nil {
+			if readyRuns, err := r.listReadyRunPaths(ctx, ttx2.Tx, tenantID, dir); err == nil {
+				for _, rp := range readyRuns {
+					validPaths[filepath.Clean(rp)] = true
+				}
+			}
+			ttx2.Rollback(ctx)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), stagingPrefix) {
+				continue
+			}
+			child := filepath.Join(root, e.Name())
+			if validPaths[filepath.Clean(child)] {
+				continue
+			}
+			// A run-namespaced path whose DB row is not ready (pruned/terminal)
+			// and not a registered worktree is an orphan. Only delete if it is
+			// not a registered worktree and not an orchicon-owned container with
+			// live children.
+			if wt, _ := r.worktreeAt(ctx, dir, child); wt != nil {
+				continue
+			}
+			// If it's an orchicon container with live children, skip.
+			if fi, err := os.Stat(child); err == nil && fi.IsDir() {
+				if isContainer, _ := r.isOrchiconContainer(ctx, dir, child); isContainer {
+					if occupied, _ := r.dirOccupied(child); occupied {
+						// Check if container has any orchicon-owned child that is
+						// still registered — keep it.
+						entries2, _ := os.ReadDir(child)
+						hasLive := false
+						for _, ce := range entries2 {
+							nested := filepath.Join(child, ce.Name())
+							if validPaths[filepath.Clean(nested)] {
+								hasLive = true
+								break
+							}
+							if wt2, _ := r.worktreeAt(ctx, dir, nested); wt2 != nil {
+								hasLive = true
+								break
+							}
+						}
+						if hasLive {
+							continue
+						}
+					}
+				}
+			}
+			// Orphan dir — remove if it's a worktree artifact or empty, else
+			// leave (never delete arbitrary user data). The observed stale dirs
+			// are empty or contain only a stale .git artifact without a valid
+			// worktree registration.
+			if r.isOrchiconWorktreeArtifact(child) {
+				if err := r.removeWorktreeArtifact(child); err == nil {
+					r.log.Info("worktree: orphan dir sweep removed artifact", "path", child)
+				}
+				continue
+			}
+			if empty, _ := dirEmpty(child); empty {
+				if err := os.Remove(child); err == nil {
+					r.log.Info("worktree: orphan dir sweep removed empty dir", "path", child)
+				}
+				continue
+			}
+			// For any other orphan directory, try to remove via git worktree prune
+			// housekeeping; otherwise leave it for manual inspection.
+			r.log.Warn("worktree: orphan dir sweep found stale dir (not artifact, not empty)", "path", child)
+		}
+	}
+}
+
+// listReadyRunPaths returns worktree_path for runs in ready state whose
+// project_dir matches the given dir (used to protect a just-provisioned
+// path from the orphan dir sweep).
+func (r *WorktreeReconciler) listReadyRunPaths(ctx context.Context, tx pgx.Tx, tenantID, projectDir string) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT worktree_path FROM workflow_runs WHERE tenant_id = $1 AND worktree_path <> '' AND worktree_status = 'ready'`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err == nil {
+			// Only consider paths under this project_dir's worktree root.
+			if strings.HasPrefix(p, projectDir+string(filepath.Separator)) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// sweepSkippedTerminalRuns restores the shared checkout for any terminal
+// skipped run (in-place fallback). For git-backed projects the checkout must
+// be clean after a skipped run; run `reset --hard HEAD && clean -fd` and
+// verify clean. Best-effort — failures are logged but don't block the scan.
+func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenantID string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	rows, err := ttx.Tx.Query(ctx, `SELECT id, project_id, worktree_status, status FROM workflow_runs WHERE tenant_id = $1 AND worktree_status = 'skipped' AND status IN ('completed','failed','aborted')`, tenantID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return
+	}
+	type rec struct{ id, projectID string }
+	var recs []rec
+	for rows.Next() {
+		var id, projectID, ws, st string
+		if err := rows.Scan(&id, &projectID, &ws, &st); err == nil {
+			recs = append(recs, rec{id, projectID})
+		}
+	}
+	rows.Close()
+	ttx.Rollback(ctx)
+	for _, rec := range recs {
+		dir := r.lookupProjectDir(ctx, tenantID, rec.projectID)
+		if dir == "" || !r.isInsideWorkTree(ctx, dir) {
+			continue
+		}
+		if !r.isDirtyWorkTree(ctx, dir) {
+			continue
+		}
+		r.log.Warn("worktree: restoring dirty checkout after skipped terminal run", "run", rec.id, "dir", dir)
+		if err := r.restoreWorkTree(ctx, dir); err != nil {
+			r.log.Warn("worktree: restore after skipped run failed", "run", rec.id, "error", err)
+		} else {
+			r.log.Info("worktree: restored checkout after skipped run", "run", rec.id)
+		}
+	}
 }
 
 // mergeStepRunContext folds a worktree_error into a step run's result
