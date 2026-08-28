@@ -128,6 +128,84 @@ type ListWorkersFilter struct {
 	AfterID   string
 }
 
+// WorkerListRow is the enriched list row — the Worker header plus the
+// active version's model_ref and status. The active version is the row
+// pinned by current_version when >0, otherwise the latest version.
+type WorkerListRow struct {
+	WorkerRow
+	ActiveModelRef      string
+	ActiveVersionStatus string
+}
+
+// ListWorkersWithActiveVersion returns a page of workers with the active
+// version's model_ref and publish state in one round-trip. The active
+// version is workers.current_version when >0, otherwise the latest
+// version by version number — matches dispatch pinning and avoids an
+// N+1 ListWorkerVersions per card. Tenant isolation is preserved on
+// every join.
+func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerListRow, error) {
+	if f.PageSize <= 0 || f.PageSize > 1000 {
+		f.PageSize = 100
+	}
+	args := []any{f.TenantID}
+	where := `w.tenant_id = $1`
+	idx := 2
+	if f.AfterID != "" {
+		where += fmt.Sprintf(` AND w.id > $%d`, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
+	if f.Search != "" {
+		where += fmt.Sprintf(` AND (w.name ILIKE $%d OR w.slug ILIKE $%d OR w.purpose ILIKE $%d)`, idx, idx, idx)
+		args = append(args, "%"+f.Search+"%")
+		idx++
+	}
+	if f.Status != "" {
+		where += fmt.Sprintf(` AND w.status = $%d`, idx)
+		args = append(args, f.Status)
+		idx++
+	}
+	sortBy := "w.created_at"
+	if f.SortBy == "name" {
+		sortBy = "w.name"
+	} else if f.SortBy == "status" {
+		sortBy = "w.status"
+	}
+	sortOrder := "ASC"
+	if f.SortOrder == "desc" {
+		sortOrder = "DESC"
+	}
+	q := fmt.Sprintf(`SELECT w.id, w.tenant_id, w.name, w.slug, w.description, w.purpose, w.status,
+		w.current_version, w.created_by, w.version, w.created_at, w.updated_at,
+		COALESCE(v.model_ref, ''), COALESCE(v.status, '')
+		FROM workers w
+		LEFT JOIN LATERAL (
+			SELECT model_ref, status, version FROM worker_versions
+			WHERE tenant_id = w.tenant_id AND worker_id = w.id
+				AND ((w.current_version > 0 AND version = w.current_version) OR w.current_version = 0)
+			ORDER BY version DESC LIMIT 1
+		) v ON true
+		WHERE %s
+		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
+	args = append(args, f.PageSize)
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list workers with active version: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkerListRow
+	for rows.Next() {
+		var r WorkerListRow
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description,
+			&r.Purpose, &r.Status, &r.CurrentVersion, &r.CreatedBy, &r.Version,
+			&r.CreatedAt, &r.UpdatedAt, &r.ActiveModelRef, &r.ActiveVersionStatus); err != nil {
+			return nil, fmt.Errorf("db: scan worker list row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ListWorkers returns a page of workers for the tenant with cursor-based
 // pagination, optional search/filter, and configurable sort.
 func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerRow, error) {

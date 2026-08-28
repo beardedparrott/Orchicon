@@ -206,9 +206,26 @@ message ListWorkersRequest {
   string sort_order = 7; // "asc" or "desc" (default "asc")
 }
 
+// WorkerListItem is a single row in the workers list — the header plus
+// the active version's model_ref and publish state so cards render both
+// without an N+1 ListWorkerVersions fetch. The active version is the
+// version pinned by workers.current_version when >0, otherwise the
+// latest version (highest version number). Mirrors GetWorkerResponse's
+// header+version pattern with a minimal projection.
+message WorkerListItem {
+  Worker worker = 1;
+  // active_model_ref is the model_ref of the active version
+  // (worker_versions.model_ref) — matches the ModelPicker provider/id
+  // format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
+  // worker has no versions yet.
+  string active_model_ref = 2;
+  WorkerVersionStatus active_version_status = 3;
+}
+
 message ListWorkersResponse {
-  repeated Worker workers = 1;
+  repeated Worker workers = 1 [deprecated = true];
   string next_page_token = 2;
+  repeated WorkerListItem items = 3;
 }
 
 message ListWorkerVersionsRequest {

@@ -13,7 +13,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
-import { EditLock, Worker, WorkerStatus, WorkerVersion } from "./worker_pb.js";
+import { EditLock, Worker, WorkerStatus, WorkerVersion, WorkerVersionStatus } from "./worker_pb.js";
 
 /**
  * @generated from enum orchicon.api.v1.BulkUpdateWorkerModelSkipReason
@@ -1060,11 +1060,73 @@ export class ListWorkersRequest extends Message<ListWorkersRequest> {
 }
 
 /**
+ * WorkerListItem is a single row in the workers list — the header plus
+ * the active version's model_ref and publish state so cards render both
+ * without an N+1 ListWorkerVersions fetch. The active version is the
+ * version pinned by workers.current_version when >0, otherwise the
+ * latest version (highest version number). Mirrors GetWorkerResponse's
+ * header+version pattern with a minimal projection.
+ *
+ * @generated from message orchicon.api.v1.WorkerListItem
+ */
+export class WorkerListItem extends Message<WorkerListItem> {
+  /**
+   * @generated from field: orchicon.api.v1.Worker worker = 1;
+   */
+  worker?: Worker;
+
+  /**
+   * active_model_ref is the model_ref of the active version
+   * (worker_versions.model_ref) — matches the ModelPicker provider/id
+   * format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
+   * worker has no versions yet.
+   *
+   * @generated from field: string active_model_ref = 2;
+   */
+  activeModelRef = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.WorkerVersionStatus active_version_status = 3;
+   */
+  activeVersionStatus = WorkerVersionStatus.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<WorkerListItem>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkerListItem";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker", kind: "message", T: Worker },
+    { no: 2, name: "active_model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "active_version_status", kind: "enum", T: proto3.getEnumType(WorkerVersionStatus) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkerListItem | PlainMessage<WorkerListItem> | undefined, b: WorkerListItem | PlainMessage<WorkerListItem> | undefined): boolean {
+    return proto3.util.equals(WorkerListItem, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListWorkersResponse
  */
 export class ListWorkersResponse extends Message<ListWorkersResponse> {
   /**
-   * @generated from field: repeated orchicon.api.v1.Worker workers = 1;
+   * @generated from field: repeated orchicon.api.v1.Worker workers = 1 [deprecated = true];
+   * @deprecated
    */
   workers: Worker[] = [];
 
@@ -1072,6 +1134,11 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
    * @generated from field: string next_page_token = 2;
    */
   nextPageToken = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkerListItem items = 3;
+   */
+  items: WorkerListItem[] = [];
 
   constructor(data?: PartialMessage<ListWorkersResponse>) {
     super();
@@ -1083,6 +1150,7 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "workers", kind: "message", T: Worker, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "items", kind: "message", T: WorkerListItem, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkersResponse {
