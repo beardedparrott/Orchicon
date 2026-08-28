@@ -10,6 +10,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "orchicon/api/v1/worker.proto";
+import "orchicon/api/v1/category.proto";
 
 service WorkerService {
   // CreateWorker creates a new Worker in draft state with its first
@@ -226,6 +227,8 @@ message ListWorkersResponse {
   repeated Worker workers = 1 [deprecated = true];
   string next_page_token = 2;
   repeated WorkerListItem items = 3;
+  repeated Category categories = 4;
+  repeated CategoryAssignment assignments = 5;
 }
 
 message ListWorkerVersionsRequest {

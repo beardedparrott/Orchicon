@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getAccessToken } from "@/auth/session";
+import { categoryClient } from "@/api/clients";
+import { CategoryTargetType as ProtoTargetType } from "@/api/gen/orchicon/api/v1/category_pb";
 
 export type CategoryTargetType = "worker" | "workflow" | "conversation";
 
@@ -20,63 +21,77 @@ export interface CategoryAssignmentDTO {
   targetType: CategoryTargetType;
 }
 
-const BASE = typeof window !== "undefined" ? window.location.origin : "http://localhost:8080";
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) h["Authorization"] = `Bearer ${token}`;
-  return h;
+function toProtoTarget(t: CategoryTargetType): ProtoTargetType {
+  switch (t) {
+    case "worker": return ProtoTargetType.WORKER;
+    case "workflow": return ProtoTargetType.WORKFLOW;
+    case "conversation": return ProtoTargetType.CONVERSATION;
+  }
 }
 
-async function connectPost<T>(service: string, method: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}/${service}/${method}`, {
-    method: "POST",
-    headers: authHeaders(),
-    credentials: "include",
-    body: JSON.stringify(body ?? {}),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `${method} failed: ${res.status}`);
+function fromProtoTarget(t: ProtoTargetType): CategoryTargetType {
+  switch (t) {
+    case ProtoTargetType.WORKER: return "worker";
+    case ProtoTargetType.WORKFLOW: return "workflow";
+    case ProtoTargetType.CONVERSATION: return "conversation";
+    default: return "worker";
   }
-  const json = await res.json().catch(() => ({}));
-  return json as T;
 }
 
 export const categoryKeys = {
   all: ["categories"] as const,
   list: (targetType: CategoryTargetType) => ["categories", "list", targetType] as const,
-  assignments: (targetType: CategoryTargetType) => ["categories", "assignments", targetType] as const,
 };
+
+export interface CategoryListResult {
+  categories: CategoryDTO[];
+  assignments: CategoryAssignmentDTO[];
+}
+
+function mapCategory(c: { id: string; targetType: ProtoTargetType; name: string; slug: string; description: string; sortOrder: number; createdAt?: unknown; updatedAt?: unknown }): CategoryDTO {
+  return {
+    id: c.id,
+    targetType: fromProtoTarget(c.targetType),
+    name: c.name,
+    slug: c.slug,
+    description: c.description,
+    sortOrder: c.sortOrder,
+    createdAt: (c.createdAt as { toDate?: () => Date })?.toDate?.()?.toISOString(),
+    updatedAt: (c.updatedAt as { toDate?: () => Date })?.toDate?.()?.toISOString(),
+  };
+}
 
 export function useListCategories(targetType: CategoryTargetType) {
   return useQuery({
     queryKey: categoryKeys.list(targetType),
-    queryFn: async () => {
-      const r = await connectPost<{ categories: CategoryDTO[] }>("orchicon.api.v1.CategoryService", "ListCategories", { targetType });
-      const list = (r as unknown as { categories?: CategoryDTO[] })?.categories ?? (r as unknown as CategoryDTO[]) ?? [];
-      return Array.isArray(list) ? list : [];
+    queryFn: async (): Promise<CategoryListResult> => {
+      const res = await categoryClient.listCategories({ targetType: toProtoTarget(targetType) });
+      const categories: CategoryDTO[] = (res.categories ?? []).map((c) => mapCategory(c as unknown as { id: string; targetType: ProtoTargetType; name: string; slug: string; description: string; sortOrder: number }));
+      const assignments: CategoryAssignmentDTO[] = (res.assignments ?? []).map((a) => ({
+        categoryId: a.categoryId,
+        entityId: a.entityId,
+        targetType: fromProtoTarget(a.targetType),
+      }));
+      return { categories, assignments };
     },
   });
 }
 
+// Backwards-compat: some callers import useListAssignments; keep it as alias to the single source.
 export function useListAssignments(targetType: CategoryTargetType) {
-  return useQuery({
-    queryKey: categoryKeys.assignments(targetType),
-    queryFn: async () => {
-      const r = await connectPost<{ assignments: CategoryAssignmentDTO[] } | CategoryAssignmentDTO[]>("orchicon.api.v1.CategoryService", "ListAssignments", { targetType });
-      const list = (r as unknown as { assignments?: CategoryAssignmentDTO[] })?.assignments ?? (r as unknown as CategoryAssignmentDTO[]) ?? [];
-      return Array.isArray(list) ? (list as CategoryAssignmentDTO[]) : [];
-    },
-  });
+  const q = useListCategories(targetType);
+  return {
+    ...q,
+    data: q.data?.assignments,
+  } as unknown as ReturnType<typeof useQuery<CategoryAssignmentDTO[]>>;
 }
 
 export function useCreateCategory(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; description?: string }) => {
-      return connectPost<CategoryDTO>("orchicon.api.v1.CategoryService", "CreateCategory", { targetType, name: input.name, description: input.description ?? "" });
+      const res = await categoryClient.createCategory({ targetType: toProtoTarget(targetType), name: input.name, description: input.description ?? "" });
+      return res.category ? mapCategory(res.category as unknown as { id: string; targetType: ProtoTargetType; name: string; slug: string; description: string; sortOrder: number }) : null;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) });
@@ -88,7 +103,8 @@ export function useUpdateCategory(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { id: string; name?: string; description?: string }) => {
-      return connectPost<CategoryDTO>("orchicon.api.v1.CategoryService", "UpdateCategory", { targetType, id: input.id, name: input.name, description: input.description });
+      const res = await categoryClient.updateCategory({ id: input.id, name: input.name, description: input.description });
+      return res.category ? mapCategory(res.category as unknown as { id: string; targetType: ProtoTargetType; name: string; slug: string; description: string; sortOrder: number }) : null;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) }),
   });
@@ -98,11 +114,10 @@ export function useDeleteCategory(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      return connectPost("orchicon.api.v1.CategoryService", "DeleteCategory", { targetType, id });
+      await categoryClient.deleteCategory({ id });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) });
-      qc.invalidateQueries({ queryKey: categoryKeys.assignments(targetType) });
     },
   });
 }
@@ -111,9 +126,9 @@ export function useAssignToCategory(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { categoryId: string; entityId: string }) => {
-      return connectPost("orchicon.api.v1.CategoryService", "AssignToCategory", { targetType, categoryId: input.categoryId, entityId: input.entityId });
+      await categoryClient.assignToCategory({ categoryId: input.categoryId, entityId: input.entityId, targetType: toProtoTarget(targetType) });
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.assignments(targetType) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) }),
   });
 }
 
@@ -121,9 +136,9 @@ export function useUnassignFromCategory(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (entityId: string) => {
-      return connectPost("orchicon.api.v1.CategoryService", "UnassignFromCategory", { targetType, entityId });
+      await categoryClient.unassignFromCategory({ entityId, targetType: toProtoTarget(targetType) });
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.assignments(targetType) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) }),
   });
 }
 
@@ -131,7 +146,7 @@ export function useReorderCategories(targetType: CategoryTargetType) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (orderedIds: string[]) => {
-      return connectPost("orchicon.api.v1.CategoryService", "ReorderCategories", { targetType, orderedIds });
+      await categoryClient.reorderCategories({ targetType: toProtoTarget(targetType), orderedIds });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: categoryKeys.list(targetType) }),
   });

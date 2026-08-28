@@ -256,8 +256,8 @@ func (x *CreateCategoryResponse) GetCategory() *Category {
 type UpdateCategoryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Description   *string                `protobuf:"bytes,3,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -300,15 +300,15 @@ func (x *UpdateCategoryRequest) GetId() string {
 }
 
 func (x *UpdateCategoryRequest) GetName() string {
-	if x != nil {
-		return x.Name
+	if x != nil && x.Name != nil {
+		return *x.Name
 	}
 	return ""
 }
 
 func (x *UpdateCategoryRequest) GetDescription() string {
-	if x != nil {
-		return x.Description
+	if x != nil && x.Description != nil {
+		return *x.Description
 	}
 	return ""
 }
@@ -733,11 +733,13 @@ const file_orchicon_api_v1_category_service_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\"O\n" +
 	"\x16CreateCategoryResponse\x125\n" +
-	"\bcategory\x18\x01 \x01(\v2\x19.orchicon.api.v1.CategoryR\bcategory\"]\n" +
+	"\bcategory\x18\x01 \x01(\v2\x19.orchicon.api.v1.CategoryR\bcategory\"\x80\x01\n" +
 	"\x15UpdateCategoryRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\"O\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12%\n" +
+	"\vdescription\x18\x03 \x01(\tH\x01R\vdescription\x88\x01\x01B\a\n" +
+	"\x05_nameB\x0e\n" +
+	"\f_description\"O\n" +
 	"\x16UpdateCategoryResponse\x125\n" +
 	"\bcategory\x18\x01 \x01(\v2\x19.orchicon.api.v1.CategoryR\bcategory\"'\n" +
 	"\x15DeleteCategoryRequest\x12\x0e\n" +
@@ -840,6 +842,7 @@ func file_orchicon_api_v1_category_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_category_proto_init()
+	file_orchicon_api_v1_category_service_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

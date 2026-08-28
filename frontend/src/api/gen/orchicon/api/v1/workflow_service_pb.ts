@@ -21,6 +21,7 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 import { GitStrategy } from "./project_pb.js";
 import { Workflow, WorkflowEvent, WorkflowRun, WorkflowRunStatus, WorkflowStatus, WorkflowStepRun, WorkflowVersion } from "./workflow_pb.js";
+import { Category, CategoryAssignment } from "./category_pb.js";
 import { EditLock } from "./worker_pb.js";
 
 /**
@@ -592,6 +593,16 @@ export class ListWorkflowsResponse extends Message<ListWorkflowsResponse> {
    */
   nextPageToken = "";
 
+  /**
+   * @generated from field: repeated orchicon.api.v1.Category categories = 3;
+   */
+  categories: Category[] = [];
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.CategoryAssignment assignments = 4;
+   */
+  assignments: CategoryAssignment[] = [];
+
   constructor(data?: PartialMessage<ListWorkflowsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -602,6 +613,8 @@ export class ListWorkflowsResponse extends Message<ListWorkflowsResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "workflows", kind: "message", T: Workflow, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "categories", kind: "message", T: Category, repeated: true },
+    { no: 4, name: "assignments", kind: "message", T: CategoryAssignment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowsResponse {

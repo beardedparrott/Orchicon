@@ -11,7 +11,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import {
   useListCategories,
-  useListAssignments,
   useCreateCategory,
   useUpdateCategory,
   useDeleteCategory,
@@ -20,6 +19,8 @@ import {
   type CategoryTargetType,
   type CategoryDTO,
 } from "@/api/categories";
+import { categoryClient } from "@/api/clients";
+import { CategoryTargetType as ProtoTargetType } from "@/api/gen/orchicon/api/v1/category_pb";
 
 const PREFIX = "orchicon.categories.";
 const VERSION = 1;
@@ -42,6 +43,13 @@ function pageToTarget(page: CategoryPage): CategoryTargetType {
   if (page === "workers") return "worker";
   if (page === "workflows") return "workflow";
   return "conversation";
+}
+
+function protoTarget(page: CategoryPage): ProtoTargetType {
+  const t = pageToTarget(page);
+  if (t === "worker") return ProtoTargetType.WORKER;
+  if (t === "workflow") return ProtoTargetType.WORKFLOW;
+  return ProtoTargetType.CONVERSATION;
 }
 
 function dtoToCategory(dto: CategoryDTO): Category {
@@ -121,8 +129,7 @@ export interface CategoryPreferences {
 
 export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: boolean }): CategoryPreferences {
   const targetType = pageToTarget(page);
-  const { data: catDTOs, isLoading: catsLoading } = useListCategories(targetType);
-  const { data: assignmentsDTOs, isLoading: assignLoading } = useListAssignments(targetType);
+  const { data, isLoading } = useListCategories(targetType);
 
   const createMut = useCreateCategory(targetType);
   const updateMut = useUpdateCategory(targetType);
@@ -137,10 +144,10 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
   useEffect(() => {
     if (options?.noSeed) return;
     if (seedingRef.current) return;
-    if (catsLoading || assignLoading) return;
+    if (isLoading) return;
     if (hasSeeded(page)) return;
     const local = loadCategoryState(page);
-    const serverEmpty = !catDTOs || catDTOs.length === 0;
+    const serverEmpty = !data || data.categories.length === 0;
     if (!serverEmpty) { markSeeded(page); return; }
     if (!local.categories.length && Object.keys(local.assignments).length === 0) { markSeeded(page); return; }
     seedingRef.current = true;
@@ -148,16 +155,8 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
       const idMap = new Map<string, string>();
       for (const cat of local.categories) {
         try {
-          const token = await import("@/auth/session").then(m => m.getAccessToken());
-          const res = await fetch(`${typeof window !== "undefined" ? window.location.origin : ""}/orchicon.api.v1.CategoryService/CreateCategory`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-            credentials: "include",
-            body: JSON.stringify({ targetType, name: cat.name, description: cat.description ?? "" }),
-          });
-          if (!res.ok) continue;
-          const j = await res.json() as { id?: string; category?: { id: string } };
-          const serverId = j.id ?? j.category?.id ?? (j as unknown as CategoryDTO)?.id ?? "";
+          const res = await categoryClient.createCategory({ targetType: protoTarget(page), name: cat.name, description: cat.description ?? "" });
+          const serverId = (res.category as unknown as { id: string })?.id ?? "";
           if (serverId) idMap.set(cat.id, serverId);
         } catch { /* best-effort */ }
       }
@@ -165,27 +164,23 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
         const serverCatId = idMap.get(localCatId);
         if (!serverCatId) continue;
         try {
-          const token = await import("@/auth/session").then(m => m.getAccessToken());
-          await fetch(`${typeof window !== "undefined" ? window.location.origin : ""}/orchicon.api.v1.CategoryService/AssignToCategory`, {
-            method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, credentials: "include",
-            body: JSON.stringify({ targetType, categoryId: serverCatId, entityId }),
-          });
+          await categoryClient.assignToCategory({ categoryId: serverCatId, entityId, targetType: protoTarget(page) });
         } catch { /* ignore */ }
       }
       markSeeded(page);
       seedingRef.current = false;
     })();
-  }, [page, targetType, catDTOs, catsLoading, assignLoading, options?.noSeed]);
+  }, [page, data, isLoading, options?.noSeed]);
 
   const state: CategoryState = useMemo(() => {
-    const categories = (catDTOs ?? []).map(dtoToCategory).sort((a, b) => a.order - b.order);
+    const categories = (data?.categories ?? []).map(dtoToCategory).sort((a, b) => a.order - b.order);
     const assignments: Record<string, string> = {};
-    for (const a of assignmentsDTOs ?? []) {
+    for (const a of data?.assignments ?? []) {
       assignments[a.entityId] = a.categoryId;
     }
     try { saveCategoryState(page, { categories, assignments }); } catch { /* ignore */ }
     return { categories, assignments };
-  }, [catDTOs, assignmentsDTOs, page]);
+  }, [data, page]);
 
   const toggleCollapsed = useCallback((categoryId: string) => {
     setCollapsedState((prev) => {
@@ -230,7 +225,7 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
     updateDescription,
     assignItem,
     ensureSeeded,
-    isLoading: catsLoading || assignLoading,
+    isLoading,
   };
 }
 

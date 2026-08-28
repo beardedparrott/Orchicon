@@ -98,10 +98,15 @@ func (s *Service) UpdateCategory(ctx context.Context, req *connect.Request[apiv1
 	tenantID, err := requireTenant(ctx); if err != nil { return nil, err }
 	if req.Msg.Id == "" { return nil, connect.NewError(connect.CodeInvalidArgument, nil) }
 	var namePtr *string
-	if req.Msg.Name != "" { n := strings.TrimSpace(req.Msg.Name); namePtr = &n }
 	var descPtr *string
-	if req.Msg.Description != "" { d := strings.TrimSpace(req.Msg.Description); descPtr = &d }
-	// If both empty, no-op (but still require at least one)
+	if req.Msg.Name != nil {
+		n := strings.TrimSpace(*req.Msg.Name)
+		namePtr = &n
+	}
+	if req.Msg.Description != nil {
+		d := strings.TrimSpace(*req.Msg.Description)
+		descPtr = &d
+	}
 	if namePtr == nil && descPtr == nil { return nil, connect.NewError(connect.CodeInvalidArgument, nil) }
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID); if err != nil { return nil, connect.NewError(connect.CodeInternal, err) }
 	defer tx.Rollback(ctx)

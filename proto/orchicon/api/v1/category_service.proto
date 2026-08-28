@@ -31,8 +31,8 @@ message CreateCategoryRequest {
 message CreateCategoryResponse { Category category = 1; }
 message UpdateCategoryRequest {
   string id = 1;
-  string name = 2;
-  string description = 3;
+  optional string name = 2;
+  optional string description = 3;
 }
 message UpdateCategoryResponse { Category category = 1; }
 message DeleteCategoryRequest { string id = 1; }

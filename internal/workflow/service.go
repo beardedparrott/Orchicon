@@ -474,6 +474,16 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 	if len(workflows) > 0 {
 		resp.NextPageToken = workflows[len(workflows)-1].ID
 	}
+	if cats, err := db.ListCategories(ctx, ttx.Tx, tenantID, "workflow"); err == nil {
+		for _, c := range cats {
+			resp.Categories = append(resp.Categories, &apiv1.Category{Id: c.ID, TenantId: c.TenantID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW, Name: c.Name, Description: c.Description, Slug: c.Slug, SortOrder: int32(c.SortOrder)})
+		}
+		if assigns, err := db.ListAssignments(ctx, ttx.Tx, tenantID, "workflow"); err == nil {
+			for _, a := range assigns {
+				resp.Assignments = append(resp.Assignments, &apiv1.CategoryAssignment{EntityId: a.EntityID, CategoryId: a.CategoryID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW})
+			}
+		}
+	}
 	return connect.NewResponse(resp), nil
 }
 

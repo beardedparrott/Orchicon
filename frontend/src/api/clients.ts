@@ -27,6 +27,7 @@ import { WebhookService } from "@/api/gen/orchicon/api/v1/webhook_service_connec
 import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_connect";
 import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { SecretsService } from "@/api/gen/orchicon/api/v1/secret_service_connect";
+import { CategoryService } from "@/api/gen/orchicon/api/v1/category_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
 import type { RefreshResult } from "@/auth/session";
 
@@ -114,6 +115,7 @@ export const settingsClient = createClient(SettingsService, connectTransport);
 export const askOrchiconClient = createClient(AskOrchiconService, connectTransport);
 export const runtimeImageClient = createClient(RuntimeImageService, connectTransport);
 export const secretsClient = createClient(SecretsService, connectTransport);
+export const categoryClient = createClient(CategoryService, connectTransport);
 
 // Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
 export const GRAFANA_UI_URL = "/grafana";

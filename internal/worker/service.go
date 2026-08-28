@@ -894,6 +894,17 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
 	}
+	// Enrich with worker categories (each response only carries its own target_type set).
+	if cats, err := db.ListCategories(ctx, ttx.Tx, tenantID, "worker"); err == nil {
+		for _, c := range cats {
+			resp.Categories = append(resp.Categories, &apiv1.Category{Id: c.ID, TenantId: c.TenantID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER, Name: c.Name, Description: c.Description, Slug: c.Slug, SortOrder: int32(c.SortOrder)})
+		}
+		if assigns, err := db.ListAssignments(ctx, ttx.Tx, tenantID, "worker"); err == nil {
+			for _, a := range assigns {
+				resp.Assignments = append(resp.Assignments, &apiv1.CategoryAssignment{EntityId: a.EntityID, CategoryId: a.CategoryID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER})
+			}
+		}
+	}
 	return connect.NewResponse(resp), nil
 }
 
