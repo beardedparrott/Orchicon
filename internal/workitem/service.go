@@ -932,6 +932,21 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if IsIdeaStatus(current.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
+	// Per-item secret selection: validate dangling refs inside the tx so a
+	// concurrent delete cannot race the pre-tx check (fail-closed at write).
+	if fields.SecretIDs != nil {
+		var ids []string
+		_ = json.Unmarshal(*fields.SecretIDs, &ids)
+		if len(ids) > 0 {
+			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, ids)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if len(m) != len(ids) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
+			}
+		}
+	}
 	// A currently-recurring item is exempt from the "only epics are
 	// top-level" parent rule (flat-recurring items are top-level tasks); the
 	// flat shape is enforced separately by ValidateRecurringFlatness.

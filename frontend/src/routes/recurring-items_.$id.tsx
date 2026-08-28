@@ -25,6 +25,7 @@ import {
 import { useListWorkflows } from "@/api/workflows";
 import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
@@ -90,6 +91,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
   const [runtimeImage, setRuntimeImage] = useState("");
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
+  const [secretIds, setSecretIds] = useState<string[]>([]);
 
   const enabled = item.recurringEnabled !== false;
   const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
@@ -102,6 +104,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
     setWorkflowId(item.workflowId ?? "");
     setRuntimeImage(item.runtimeImage ?? "");
     setContextFiles(item.contextFiles ?? []);
+    setSecretIds((item as any).secretIds ?? []);
     setRecurringSchedule(
       item.recurringSchedule ? new RecurringSchedule(item.recurringSchedule) : undefined,
     );
@@ -120,6 +123,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
         // UpdateWorkItemRequest.context_files is a ContextFiles wrapper (an
         // empty list clears the selection), not the repeated array CREATE uses.
         contextFiles: { files: contextFiles },
+        secretIds: { ids: secretIds },
         recurringSchedule: recurringSchedule ? new RecurringSchedule(recurringSchedule) : undefined,
       },
       {
@@ -246,6 +250,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                 )}
               </div>
 
+              <SecretsPicker value={secretIds} onChange={setSecretIds} />
               <div className="space-y-2">
                 <Label htmlFor="runtimeImage">Runtime image</Label>
                 <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
@@ -280,7 +285,8 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                       checked={ideaOutputsFromSchedule(recurringSchedule)}
                       onChange={(e) => {
                         const mode = e.target.checked ? "idea" : "standard";
-                        setRecurringSchedule(
+                        setSecretIds((item as any).secretIds ?? []);
+    setRecurringSchedule(
                           new RecurringSchedule({ ...recurringSchedule, outputsMode: mode }),
                         );
                       }}
@@ -297,7 +303,8 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  No recurring schedule — <button type="button" className="underline" onClick={() => setRecurringSchedule(new RecurringSchedule())}>add one</button>.
+                  No recurring schedule — <button type="button" className="underline" onClick={() => setSecretIds((item as any).secretIds ?? []);
+    setRecurringSchedule(new RecurringSchedule())}>add one</button>.
                 </p>
               )}
 

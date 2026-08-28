@@ -8,6 +8,7 @@ import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
 import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -107,6 +108,7 @@ function NewWorkItemPage() {
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
+  const [secretIds, setSecretIds] = useState<string[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
 
@@ -142,7 +144,9 @@ function NewWorkItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
+      secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
+      secretIds: secretIds.length > 0 ? secretIds : undefined,
     });
     navigate({
       to: "/work-items/$id",
@@ -262,6 +266,8 @@ function NewWorkItemPage() {
                 />
               </div>
             )}
+
+            <SecretsPicker value={secretIds} onChange={setSecretIds} />
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
