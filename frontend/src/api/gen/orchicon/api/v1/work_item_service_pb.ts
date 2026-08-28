@@ -273,6 +273,11 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   runContext = "";
 
+  /**
+   * @generated from field: repeated string secret_ids = 20;
+   */
+  secretIds: string[] = [];
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -300,6 +305,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 19, name: "run_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 20, name: "secret_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -747,6 +753,13 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   recurringEnabled?: boolean;
 
+  /**
+   * secret_ids replaces the secret selection (set-replace): empty list clears, absent leaves unchanged. Max 10.
+   *
+   * @generated from field: optional orchicon.api.v1.SecretIds secret_ids = 27;
+   */
+  secretIds?: SecretIds;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -777,6 +790,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 24, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 25, name: "depends_on", kind: "message", T: DependencyIds, opt: true },
     { no: 26, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
+    { no: 27, name: "secret_ids", kind: "message", T: SecretIds, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
@@ -801,6 +815,43 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
  * UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
  * "clear all" (empty ids) are distinguishable.
  *
+ * @generated from message orchicon.api.v1.SecretIds
+ */
+export class SecretIds extends Message<SecretIds> {
+  /**
+   * @generated from field: repeated string ids = 1;
+   */
+  ids: string[] = [];
+
+  constructor(data?: PartialMessage<SecretIds>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SecretIds";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SecretIds {
+    return new SecretIds().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SecretIds {
+    return new SecretIds().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SecretIds {
+    return new SecretIds().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SecretIds | PlainMessage<SecretIds> | undefined, b: SecretIds | PlainMessage<SecretIds> | undefined): boolean {
+    return proto3.util.equals(SecretIds, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.DependencyIds
  */
 export class DependencyIds extends Message<DependencyIds> {

@@ -147,6 +147,10 @@ type Config struct {
 	// the pool's max_conns must comfortably exceed it. Values are clamped
 	// to [1, scanBatchSize=16] by the reconciler setter.
 	DispatchConcurrency int
+
+	// SecretsKEK is the 32-byte KEK for tenant secrets (ORCHICON_SECRETS_KEK).
+	// Base64-encoded 32 bytes or raw 32 chars. Empty = secrets disabled (fail-closed at service layer).
+	SecretsKEK string
 }
 
 // Default returns a Config populated with local-dev defaults that match
@@ -192,6 +196,7 @@ func Default() Config {
 		ShutdownTimeout:     15 * time.Second,
 		IndexCheckInterval:  envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
 		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
+		SecretsKEK:       env("ORCHICON_SECRETS_KEK", ""),
 	}
 }
 
