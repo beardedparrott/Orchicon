@@ -285,8 +285,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                       checked={ideaOutputsFromSchedule(recurringSchedule)}
                       onChange={(e) => {
                         const mode = e.target.checked ? "idea" : "standard";
-                        setSecretIds((item as any).secretIds ?? []);
-    setRecurringSchedule(
+                        setRecurringSchedule(
                           new RecurringSchedule({ ...recurringSchedule, outputsMode: mode }),
                         );
                       }}
@@ -303,8 +302,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  No recurring schedule — <button type="button" className="underline" onClick={() => setSecretIds((item as any).secretIds ?? []);
-    setRecurringSchedule(new RecurringSchedule())}>add one</button>.
+                  No recurring schedule — <button type="button" className="underline" onClick={() => setRecurringSchedule(new RecurringSchedule())}>add one</button>.
                 </p>
               )}
 

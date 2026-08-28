@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Label } from "@/components/ui/label";
+import { secretsClient } from "@/api/clients";
 
 type SecretMeta = { id: string; name: string; description: string };
 
@@ -11,9 +12,8 @@ export function SecretsPicker({ value, onChange }: { value: string[]; onChange: 
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch("/api/orchicon.api.v1.SecretsService/ListSecrets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
-        const data = await res.json();
-        if (!cancelled) setSecrets((data.secrets || []).map((s: any) => ({ id: s.id, name: s.name, description: s.description })));
+        const res = await secretsClient.listSecrets({});
+        if (!cancelled) setSecrets((res.secrets || []).map((s: any) => ({ id: s.id, name: s.name, description: s.description })));
       } catch { /* ignore */ } finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };

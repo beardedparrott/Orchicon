@@ -431,13 +431,12 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		if tok := d.ghToken(); tok != "" {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
-		for k, v := range req.Secrets {
-			if k == "" || v == "" {
-				continue
-			}
-			// Validate env name matches secret naming (defense: daemon never trusts plane blindly)
-			args = append(args, "-e", k+"="+v)
+	}
+	for k, v := range req.Secrets {
+		if k == "" || v == "" {
+			continue
 		}
+		args = append(args, "-e", k+"="+v)
 	}
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon

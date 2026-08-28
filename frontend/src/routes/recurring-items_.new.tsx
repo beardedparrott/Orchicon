@@ -119,7 +119,6 @@ function NewRecurringItemPage() {
       runtimeImage: runtimeImage || undefined,
       secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
-      secretIds: secretIds.length > 0 ? secretIds : undefined,
       recurringSchedule: schedule,
     });
     navigate({

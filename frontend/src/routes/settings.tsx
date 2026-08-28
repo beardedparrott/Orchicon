@@ -1362,22 +1362,25 @@ function SecretsTab() {
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/orchicon.api.v1.SecretsService/ListSecrets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
-      const data = await res.json();
-      setSecrets(data.secrets || []);
+      const { secretsClient } = await import("@/api/clients");
+      const res: any = await secretsClient.listSecrets({});
+      setSecrets(res.secrets || []);
     } catch (e: any) { setMsg(String(e.message||e)) } finally { setLoading(false) }
   }, []);
   React.useEffect(() => { load() }, [load]);
 
   const create = async () => {
     setMsg(null);
-    const res = await fetch("/api/orchicon.api.v1.SecretsService/CreateSecret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, description: desc }) });
-    if (!res.ok) { const err = await res.text(); setMsg(err); return; }
-    setName(""); setValue(""); setDesc(""); load(); setMsg("Secret created.");
+    try {
+      const { secretsClient } = await import("@/api/clients");
+      await secretsClient.createSecret({ name, value, description: desc });
+      setName(""); setValue(""); setDesc(""); load(); setMsg("Secret created.");
+    } catch (e: any) { setMsg(String(e.message||e)) }
   };
   const del = async (id: string) => {
     if (!confirm("Delete secret?")) return;
-    await fetch("/api/orchicon.api.v1.SecretsService/DeleteSecret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    const { secretsClient } = await import("@/api/clients");
+    await secretsClient.deleteSecret({ id });
     load();
   };
   return (

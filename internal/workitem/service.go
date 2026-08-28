@@ -2888,6 +2888,12 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	if w.SpawnedByRunID != nil {
 		p.SpawnedByRunId = *w.SpawnedByRunID
 	}
+	if len(w.SecretIDs) > 0 {
+		var ids []string
+		if err := json.Unmarshal(w.SecretIDs, &ids); err == nil {
+			p.SecretIds = ids
+		}
+	}
 	return p
 }
 

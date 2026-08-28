@@ -146,7 +146,6 @@ function NewWorkItemPage() {
       runtimeImage: runtimeImage || undefined,
       secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
-      secretIds: secretIds.length > 0 ? secretIds : undefined,
     });
     navigate({
       to: "/work-items/$id",
