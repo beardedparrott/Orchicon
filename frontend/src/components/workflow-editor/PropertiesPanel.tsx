@@ -36,7 +36,8 @@ export function PropertiesPanel({
 }) {
   const { data: projects } = useListProjects();
   const { data: workItems } = useListWorkItems(projectId || "", {});
-  const { data: workers } = useListWorkers();
+  const { data: workerItems } = useListWorkers();
+  const workers = (workerItems ?? []).map((it) => it.worker!);
   const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
 
   // Seed default config values for newly-created steps. Must be before

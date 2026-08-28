@@ -876,16 +876,23 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	workers, err := db.ListWorkers(ctx, ttx.Tx, f)
+	rows, err := db.ListWorkersWithActiveVersion(ctx, ttx.Tx, f)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.ListWorkersResponse{}
-	for _, w := range workers {
-		resp.Workers = append(resp.Workers, workerRowToProto(w))
+	for _, r := range rows {
+		item := &apiv1.WorkerListItem{
+			Worker:              workerRowToProto(r.WorkerRow),
+			ActiveModelRef:      r.ActiveModelRef,
+			ActiveVersionStatus: workerVersionStatusToProto(r.ActiveVersionStatus),
+		}
+		resp.Items = append(resp.Items, item)
+		// Keep deprecated workers populated for wire-compat during rollout.
+		resp.Workers = append(resp.Workers, item.Worker)
 	}
-	if len(workers) > 0 {
-		resp.NextPageToken = workers[len(workers)-1].ID
+	if len(rows) > 0 {
+		resp.NextPageToken = rows[len(rows)-1].ID
 	}
 	return connect.NewResponse(resp), nil
 }
