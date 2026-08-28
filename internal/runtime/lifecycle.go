@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 )
 
 // devTenantID mirrors the single-dev-tenant assumption used by the
@@ -94,6 +95,40 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	// Serve config is built last so the in-container project dir is available
 	// for the composite worktree batch tools (batch_read/grep/write).
 	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID)
+	// Secrets: decrypt per-work-item selection and inject as container env.
+	// KEK is plane-only; daemon blindly injects -e (same pattern as GH_TOKEN).
+	if run.WorkItemID != "" {
+		if raw := os.Getenv("ORCHICON_SECRETS_KEK"); raw != "" {
+			if kek, err := secretcrypto.ParseKEK(raw); err == nil {
+				// Reuse the tx already opened above if still in scope; open a fresh one for secrets.
+				ttx2, terr := l.pool.BeginTenantTx(ctx, run.TenantID)
+				if terr == nil {
+					defer ttx2.Rollback(ctx)
+					if wi, werr := db.GetWorkItem(ctx, ttx2.Tx, run.TenantID, run.WorkItemID); werr == nil {
+						var ids []string
+						if len(wi.SecretIDs) > 0 {
+							_ = json.Unmarshal(wi.SecretIDs, &ids)
+						}
+						if len(ids) > 0 {
+							m, merr := db.BatchGetSecrets(ctx, ttx2.Tx, run.TenantID, ids)
+							if merr == nil && len(m) == len(ids) {
+								if req.Secrets == nil {
+									req.Secrets = map[string]string{}
+								}
+								for _, id := range ids {
+									row := m[id]
+									if pt, derr := secretcrypto.Decrypt(row.Ciphertext, kek); derr == nil {
+										req.Secrets[row.Name] = string(pt)
+									}
+								}
+							}
+						}
+					}
+					_ = ttx2.Commit(ctx)
+				}
+			}
+		}
+	}
 	return req, nil
 }
 

@@ -678,16 +678,7 @@ func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.Pr
 			errors.New("only idea-state work items can be promoted; approve it via PromoteIdea, or discard it via DismissIdea"))
 	}
 	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemPending)}
-	if fields.SecretIDs != nil && len(msg.SecretIds.Ids) > 0 {
-			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, msg.SecretIds.Ids)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			if len(m) != len(msg.SecretIds.Ids) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
-			}
-		}
-		updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
+	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
 	}

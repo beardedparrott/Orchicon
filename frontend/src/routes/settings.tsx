@@ -1,3 +1,4 @@
+import * as React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
 import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock } from "lucide-react";
@@ -20,7 +21,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -40,6 +41,7 @@ function SettingsPage() {
           ["defaults", "Defaults", SlidersHorizontal],
           ["session", "Session", Clock],
           ["backups", "Backups", Database],
+          ["secrets", "Secrets", Database],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
           <button
@@ -62,6 +64,7 @@ function SettingsPage() {
       {tab === "defaults" && <DefaultsTab />}
       {tab === "session" && <SessionTab />}
       {tab === "backups" && <BackupsTab />}
+      {tab === "secrets" && <SecretsTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
   );
@@ -1346,6 +1349,57 @@ function CompactTiersEditor({
 }
 
 // ─── Backup directory browser (server-side filesystem tree) ───────
+
+
+function SecretsTab() {
+  const [secrets, setSecrets] = React.useState<any[]>([]);
+  const [name, setName] = React.useState("");
+  const [value, setValue] = React.useState("");
+  const [desc, setDesc] = React.useState("");
+  const [msg, setMsg] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/orchicon.api.v1.SecretsService/ListSecrets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const data = await res.json();
+      setSecrets(data.secrets || []);
+    } catch (e: any) { setMsg(String(e.message||e)) } finally { setLoading(false) }
+  }, []);
+  React.useEffect(() => { load() }, [load]);
+
+  const create = async () => {
+    setMsg(null);
+    const res = await fetch("/api/orchicon.api.v1.SecretsService/CreateSecret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, description: desc }) });
+    if (!res.ok) { const err = await res.text(); setMsg(err); return; }
+    setName(""); setValue(""); setDesc(""); load(); setMsg("Secret created.");
+  };
+  const del = async (id: string) => {
+    if (!confirm("Delete secret?")) return;
+    await fetch("/api/orchicon.api.v1.SecretsService/DeleteSecret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    load();
+  };
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader><CardTitle>Secrets</CardTitle><CardDescription>Tenant-scoped encrypted secrets (e.g. TAVILY_API_KEY). Values are encrypted at rest (AES-256-GCM) and injected as container env at dispatch. Never stored in plaintext.</CardDescription></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Input placeholder="NAME (e.g. TAVILY_API_KEY)" value={name} onChange={(e:any)=>setName(e.target.value.toUpperCase())} />
+            <Input placeholder="value" type="password" value={value} onChange={(e:any)=>setValue(e.target.value)} />
+            <Input placeholder="description" value={desc} onChange={(e:any)=>setDesc(e.target.value)} />
+          </div>
+          <Button onClick={create} disabled={!name||!value}>Create secret</Button>
+          {msg && <p className="text-sm text-muted-foreground">{msg}</p>}
+          {loading ? <p className="text-sm">Loading…</p> : (
+            <table className="w-full text-sm"><thead><tr className="text-muted-foreground text-left"><th>Name</th><th>Description</th><th></th></tr></thead><tbody>{secrets.map((s:any)=>(<tr key={s.id} className="border-t"><td className="font-mono py-2">{s.name}</td><td>{s.description}</td><td><Button variant="outline" size="sm" onClick={()=>del(s.id)}>Delete</Button></td></tr>))}</tbody></table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
 
 interface BackupDirBrowserProps {
   path: string;

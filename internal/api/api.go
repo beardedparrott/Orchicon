@@ -7,6 +7,7 @@
 package api
 
 import (
+	"os"
 	"context"
 	"log/slog"
 	"net/http"
@@ -39,6 +40,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/beardedparrott/orchicon/internal/secretcrypto"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
@@ -239,6 +242,18 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// RuntimeImageService — tenant runtime container image specs + build.
 	runtimeImageSvc := runtimeimage.New(deps.Pool, deps.Log, deps.RuntimeClient)
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(runtimeImageSvc, interceptorOpt))
+
+	// SecretsService — tenant-scoped encrypted secrets (Tavily etc.).
+	var secretsKEK []byte
+	if raw := os.Getenv("ORCHICON_SECRETS_KEK"); raw != "" {
+		if k, err := secretcrypto.ParseKEK(raw); err == nil {
+			secretsKEK = k
+		} else {
+			deps.Log.Warn("secrets KEK invalid (secrets store disabled)", "error", err)
+		}
+	}
+	secretsSvc := secrets.NewHandler(deps.Pool, secretsKEK, deps.Log)
+	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)

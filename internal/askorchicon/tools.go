@@ -585,6 +585,38 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Required:    []string{"id"},
 		},
 
+		// --- Secrets ---
+		{
+			Name:        "list_secrets",
+			Description: "List tenant secrets (encrypted at rest; values never returned).",
+			Mutating:    false,
+			Fn:          toolListSecrets,
+		},
+		{
+			Name:        "create_secret",
+			Description: "Create a tenant secret (AES-256-GCM encrypted at rest). Name must match ^[A-Z][A-Z0-9_]+$.",
+			Mutating:    true,
+			Fn:          toolCreateSecret,
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
+			Required:    []string{"name", "value"},
+		},
+		{
+			Name:        "update_secret",
+			Description: "Update a tenant secret value or description.",
+			Mutating:    true,
+			Fn:          toolUpdateSecret,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "delete_secret",
+			Description: "Delete a tenant secret by ID.",
+			Mutating:    true,
+			Fn:          toolDeleteSecret,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
+			Required:    []string{"id"},
+		},
+
 		// --- Settings ---
 		{
 			Name:        "get_settings",
