@@ -51,7 +51,7 @@ func chatDBTestPool(t *testing.T) *db.Pool {
 // the injected fake session client (bypassing the real host serve).
 func newChatService(t *testing.T, pool *db.Pool, client *fakeSessionClient) *Service {
 	t.Helper()
-	s := New(pool, slog.Default(), nil, nil)
+	s := New(pool, slog.Default(), nil, nil, nil)
 	s.testServeClient = client
 	return s
 }

@@ -7,7 +7,6 @@
 package api
 
 import (
-	"os"
 	"context"
 	"log/slog"
 	"net/http"
@@ -40,7 +39,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
-	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
@@ -55,6 +53,10 @@ type Dependencies struct {
 	PolicyEngine   *policy.Engine
 	RecoveryEngine *recovery.Engine
 	TelemetryQuery *telemetry.QueryClient
+	// SecretsKEK is the resolved 32-byte KEK for the tenant secrets store
+	// (ORCHICON_SECRETS_KEK override, or the per-instance data-dir key).
+	// nil/len != 32 disables the store (fail-closed at the service layer).
+	SecretsKEK []byte
 	// GrafanaURL is the base URL of the Grafana UI (default
 	// http://localhost:3000). Used by the /grafana reverse proxy so the
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
@@ -244,19 +246,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(runtimeImageSvc, interceptorOpt))
 
 	// SecretsService — tenant-scoped encrypted secrets (Tavily etc.).
-	var secretsKEK []byte
-	if raw := os.Getenv("ORCHICON_SECRETS_KEK"); raw != "" {
-		if k, err := secretcrypto.ParseKEK(raw); err == nil {
-			secretsKEK = k
-		} else {
-			deps.Log.Warn("secrets KEK invalid (secrets store disabled)", "error", err)
-		}
-	}
-	secretsSvc := secrets.NewHandler(deps.Pool, secretsKEK, deps.Log)
+	// The KEK is resolved once at server construction (env override or
+	// first-boot generation in the instance data dir); a nil/short key
+	// leaves the store disabled (fail-closed at the service layer).
+	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
-	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
+	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}

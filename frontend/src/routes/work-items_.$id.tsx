@@ -320,7 +320,7 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
-                setEditSecretIds((item as any).secretIds ?? []);
+                setEditSecretIds(item.secretIds ?? []);
                 setEditing(true);
               }}
             >
@@ -978,6 +978,21 @@ function WorkItemDetailPage() {
           />
         );
       })()}
+
+      {/* Secrets — tenant secrets injected into the runtime container at
+          dispatch (never baked into images). Picker only in edit mode;
+          the values are loaded into editSecretIds on Edit and saved via
+          the update payload. */}
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Secrets</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SecretsPicker value={editSecretIds} onChange={setEditSecretIds} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Project (editable) */}
       {editing && (

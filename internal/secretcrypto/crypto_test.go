@@ -2,6 +2,8 @@ package secretcrypto
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,4 +55,45 @@ func TestPlaintextNeverPersistedInCiphertext(t *testing.T) {
 	kek := make([]byte, 32); for i:=range kek{ kek[i]=byte(42)}
 	ct, _ := Encrypt([]byte("super-secret-tavily-key"), kek)
 	if strings.Contains(ct, "super-secret") { t.Fatal("plaintext leaked into ciphertext") }
+}
+
+func TestLoadOrCreateKEK(t *testing.T) {
+	dir := t.TempDir()
+	k1, err := LoadOrCreateKEK(dir)
+	if err != nil { t.Fatalf("create: %v", err) }
+	if len(k1) != 32 { t.Fatalf("len %d", len(k1)) }
+	// persisted: a second call returns the SAME key (secrets survive restarts)
+	k2, err := LoadOrCreateKEK(dir)
+	if err != nil { t.Fatalf("reload: %v", err) }
+	if string(k1) != string(k2) { t.Fatal("KEK changed across loads — stored secrets would be lost") }
+	// restrictive file perms
+	st, err := os.Stat(KEKPath(dir))
+	if err != nil { t.Fatalf("stat: %v", err) }
+	if st.Mode().Perm() != 0o600 { t.Fatalf("perms %o, want 600", st.Mode().Perm()) }
+}
+
+func TestLoadOrCreateKEKRejectsCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(KEKPath(dir), []byte("not-a-32-byte-key"), 0o600); err != nil { t.Fatal(err) }
+	if _, err := LoadOrCreateKEK(dir); err == nil {
+		t.Fatal("expected error for corrupt KEK file (fail-closed, never regenerate over it)")
+	}
+}
+
+func TestResolveKEK(t *testing.T) {
+	dir := t.TempDir()
+	// no override -> per-instance key created on first use
+	k1, err := ResolveKEK("", dir)
+	if err != nil { t.Fatalf("resolve file: %v", err) }
+	if len(k1) != 32 { t.Fatalf("len %d", len(k1)) }
+	// explicit override wins
+	raw := "01234567890123456789012345678901"
+	k2, err := ResolveKEK(raw, dir)
+	if err != nil { t.Fatalf("resolve override: %v", err) }
+	if string(k2) != raw { t.Fatal("override did not win") }
+	// instance key untouched by the override
+	k3, err := ResolveKEK("", dir)
+	if err != nil { t.Fatalf("resolve file again: %v", err) }
+	if string(k1) != string(k3) { t.Fatal("instance KEK changed") }
 }

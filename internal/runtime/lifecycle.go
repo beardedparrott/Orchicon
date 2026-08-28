@@ -38,6 +38,9 @@ type Lifecycle struct {
 	// directory to resolve against — the project is mounted in-container at
 	// the same absolute path.
 	serveConfigFor func(image, projectDir, workflowRunID string) string
+	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
+	// (resolved at server construction; nil disables secret injection).
+	secretsKEK []byte
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
@@ -46,8 +49,8 @@ type Lifecycle struct {
 // the run's runtime image tag (permission rules only for base/gui images,
 // plus the sandbox-scoped Orchicon MCP for dev images — built by the
 // opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string) string) *Lifecycle {
-	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor}
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string) string, secretsKEK []byte) *Lifecycle {
+	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
 
 // Enabled reports whether a daemon is configured.
@@ -96,37 +99,35 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	// for the composite worktree batch tools (batch_read/grep/write).
 	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID)
 	// Secrets: decrypt per-work-item selection and inject as container env.
-	// KEK is plane-only; daemon blindly injects -e (same pattern as GH_TOKEN).
-	if run.WorkItemID != "" {
-		if raw := os.Getenv("ORCHICON_SECRETS_KEK"); raw != "" {
-			if kek, err := secretcrypto.ParseKEK(raw); err == nil {
-				// Reuse the tx already opened above if still in scope; open a fresh one for secrets.
-				ttx2, terr := l.pool.BeginTenantTx(ctx, run.TenantID)
-				if terr == nil {
-					defer ttx2.Rollback(ctx)
-					if wi, werr := db.GetWorkItem(ctx, ttx2.Tx, run.TenantID, run.WorkItemID); werr == nil {
-						var ids []string
-						if len(wi.SecretIDs) > 0 {
-							_ = json.Unmarshal(wi.SecretIDs, &ids)
+	// KEK is plane-only — resolved once at server construction (env override
+	// or the per-instance data-dir key); the daemon blindly injects -e (same
+	// pattern as GH_TOKEN).
+	if run.WorkItemID != "" && len(l.secretsKEK) == 32 {
+		// Reuse the tx already opened above if still in scope; open a fresh one for secrets.
+		ttx2, terr := l.pool.BeginTenantTx(ctx, run.TenantID)
+		if terr == nil {
+			defer ttx2.Rollback(ctx)
+			if wi, werr := db.GetWorkItem(ctx, ttx2.Tx, run.TenantID, run.WorkItemID); werr == nil {
+				var ids []string
+				if len(wi.SecretIDs) > 0 {
+					_ = json.Unmarshal(wi.SecretIDs, &ids)
+				}
+				if len(ids) > 0 {
+					m, merr := db.BatchGetSecrets(ctx, ttx2.Tx, run.TenantID, ids)
+					if merr == nil && len(m) == len(ids) {
+						if req.Secrets == nil {
+							req.Secrets = map[string]string{}
 						}
-						if len(ids) > 0 {
-							m, merr := db.BatchGetSecrets(ctx, ttx2.Tx, run.TenantID, ids)
-							if merr == nil && len(m) == len(ids) {
-								if req.Secrets == nil {
-									req.Secrets = map[string]string{}
-								}
-								for _, id := range ids {
-									row := m[id]
-									if pt, derr := secretcrypto.Decrypt(row.Ciphertext, kek); derr == nil {
-										req.Secrets[row.Name] = string(pt)
-									}
-								}
+						for _, id := range ids {
+							row := m[id]
+							if pt, derr := secretcrypto.Decrypt(row.Ciphertext, l.secretsKEK); derr == nil {
+								req.Secrets[row.Name] = string(pt)
 							}
 						}
 					}
-					_ = ttx2.Commit(ctx)
 				}
 			}
+			_ = ttx2.Commit(ctx)
 		}
 	}
 	return req, nil

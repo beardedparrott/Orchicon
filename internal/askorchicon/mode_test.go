@@ -147,7 +147,7 @@ func TestModePersistsAcrossTurns(t *testing.T) {
 }
 
 func testToolRegistry() *ToolRegistry {
-	r := NewToolRegistry(nil, nil)
+	r := NewToolRegistry(nil, nil, nil)
 	r.Add(ToolDefinition{Name: "list_projects", Description: "List projects"})
 	r.Add(ToolDefinition{Name: "create_work_item", Description: "Create work item", Mutating: true})
 	return r

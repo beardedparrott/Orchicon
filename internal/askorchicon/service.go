@@ -53,13 +53,13 @@ type Service struct {
 
 var _ apiv1connect.AskOrchiconServiceHandler = (*Service)(nil)
 
-func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer) *Service {
+func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer, secretsKEK []byte) *Service {
 	s := &Service{
 		pool:         pool,
 		log:          log.With("component", "ask_orchicon"),
 		blobStore:    blobStore,
 		modelDisc:    modelDisc,
-		toolRegistry: NewToolRegistry(pool, log),
+		toolRegistry: NewToolRegistry(pool, log, secretsKEK),
 		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()

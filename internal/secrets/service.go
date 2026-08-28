@@ -27,7 +27,7 @@ func New(pool *db.Pool, kek []byte) *Service {
 
 func (s *Service) requireKEK() error {
 	if len(s.kek) != 32 {
-		return fmt.Errorf("secrets store unavailable: KEK not configured (ORCHICON_SECRETS_KEK)")
+		return fmt.Errorf("secrets store unavailable: KEK not configured")
 	}
 	return nil
 }

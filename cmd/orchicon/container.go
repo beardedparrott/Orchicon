@@ -208,7 +208,7 @@ func (s *supervisor) prepare(ctx context.Context) error {
 		if err := os.Chown(s.dataDir, s.hostUID, s.hostGID); err != nil {
 			return fmt.Errorf("chown data dir: %w", err)
 		}
-		for _, sub := range []string{"backups", "blobs"} {
+		for _, sub := range []string{"backups", "blobs", "secrets"} {
 			dir := filepath.Join(s.dataDir, sub)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", dir, err)

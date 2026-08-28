@@ -40,6 +40,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
@@ -80,6 +81,15 @@ type Server struct {
 func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Secrets KEK: an explicit ORCHICON_SECRETS_KEK override wins; otherwise
+	// load-or-create the per-instance key in the data dir on first boot so
+	// the store works out of the box with no container/env changes and
+	// survives restarts and rebuilds exactly like the instance database.
+	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
+	if kekErr != nil {
+		log.Warn("secrets KEK unavailable (secrets store disabled)", "error", kekErr)
 	}
 
 	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
@@ -363,6 +373,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			return adapterBridge.AbortExecution(ctx, execID, reason)
 		},
 		HostServe: hostServe,
+		SecretsKEK: secretsKEK,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -403,7 +414,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig)
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig, secretsKEK)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
