@@ -181,6 +181,23 @@ func (c *Client) IsBuilding(ctx context.Context, tag string) (bool, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return false, err }
 	return out["status"] == "building", nil
 }
+type ImageInspect struct {
+	Exists      bool   `json:"exists"`
+	SpecVersion string `json:"spec_version"`
+}
+
+func (c *Client) InspectImage(ctx context.Context, tag string) (*ImageInspect, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://runtime"+"/v1/images/inspect?ref="+url.QueryEscape(tag), nil)
+	if err != nil { return nil, err }
+	resp, err := c.hc.Do(req)
+	if err != nil { return nil, err }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK { return nil, readError(resp.Body) }
+	var out ImageInspect
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return nil, err }
+	return &out, nil
+}
+
 func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		"http://runtime"+"/v1/images?ref="+url.QueryEscape(ref), nil)

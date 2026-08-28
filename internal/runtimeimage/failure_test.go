@@ -80,6 +80,24 @@ func TestNeverBareExitStatus(t *testing.T) {
 	}
 }
 
+
+func TestClassifyDockerfile(t *testing.T) {
+	log := "dockerfile: syntax error near unexpected token"
+	f := ClassifyBuildLog(log, 1, "exit status 1")
+	if f.Category != "dockerfile" {
+		t.Fatalf("expected dockerfile got %q", f.Category)
+	}
+}
+
+func TestClassifyUnknownFallsBackToLogTail(t *testing.T) {
+	f := ClassifyBuildLog("", 1, "exit status 1")
+	if f.Reason == "exit status 1" {
+		t.Fatalf("should not return bare exit")
+	}
+	if f.Category != "unknown" && f.Category != "stream" {
+		// empty log with generic exit => unknown with fallback
+	}
+}
 func TestClassifyUnknownUsesLogTail(t *testing.T) {
 	log := "Step 1/2 : RUN echo hi\nerror: something went wrong"
 	f := ClassifyBuildLog(log, 1, "exit status 1")

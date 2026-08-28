@@ -341,6 +341,25 @@ func (d *Daemon) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (d *Daemon) handleImageInspect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ref := r.URL.Query().Get("ref")
+	if ref == "" || !imageTagPattern.MatchString(ref) {
+		httpError(w, http.StatusBadRequest, "bad image ref")
+		return
+	}
+	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "org.orchicon.runtime.spec-version"}}`, ref)
+	if err != nil {
+		writeJSON(w, http.StatusOK, ImageInspect{Exists: false})
+		return
+	}
+	// docker inspect succeeded => image exists; empty string means no label
+	writeJSON(w, http.StatusOK, ImageInspect{Exists: true, SpecVersion: strings.TrimSpace(out)})
+}
+
 func rewriteDockerfileBase(dockerfile, base string, specVersion int) string {
 	var body []string
 	for _, line := range strings.Split(dockerfile, "\n") {

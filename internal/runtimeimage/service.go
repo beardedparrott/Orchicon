@@ -748,7 +748,8 @@ func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration)
 	ttx, err := s.pool.Begin(ctx)
 	if err != nil { return 0, err }
 	defer ttx.Rollback(ctx)
-	rows, err := ttx.Query(ctx, `SELECT id, tenant_id, tag, version, build_log, updated_at FROM runtime_images WHERE status='building' AND updated_at < now() - $1::interval`, ttl.String())
+	interval := fmt.Sprintf("%d seconds", int(ttl.Seconds()))
+	rows, err := ttx.Query(ctx, `SELECT id, tenant_id, tag, version, build_log, updated_at FROM runtime_images WHERE status='building' AND updated_at < now() - $1::interval`, interval)
 	if err != nil { return 0, err }
 	type stuck struct{id, tenant, tag, log string; ver int}
 	var list []stuck
@@ -761,20 +762,24 @@ func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration)
 	if len(list)==0 { return 0, nil }
 	count:=0
 	for _, r := range list {
-		skipped:=false
 		if s.rt != nil && r.tag != "" {
-			if building, perr := s.rt.IsBuilding(ctx, r.tag); perr==nil && building { continue }
-			if imgs, perr := s.rt.Images(ctx); perr==nil && imgs != nil {
-				for i, ref := range imgs.Images {
-					if ref==r.tag && i < len(imgs.Infos) && imgs.Infos[i].SpecVersion == fmt.Sprintf("%d", r.ver) {
-						status:="ready"; empty:=""; built:=r.ver
-						_, err := db.UpdateRuntimeImage(ctx, ttx, r.tenant, r.id, r.ver, db.UpdateRuntimeImageFields{Status: &status, Error: &empty, FailureReason: &empty, FailedStep: &empty, LogTail: &empty, FailureCategory: &empty, BuiltVersion: &built, StatusOnly: true})
-						if err==nil { count++ }
-						skipped=true
-						break
+			if building, perr := s.rt.IsBuilding(ctx, r.tag); perr != nil {
+				// daemon unreachable — leave stuck building for next tick, don't falsely mark failed
+				continue
+			} else if building {
+				continue
+			}
+			// Not building: if image exists with matching spec_version, heal to ready; else failed
+			if info, perr := s.rt.InspectImage(ctx, r.tag); perr == nil && info != nil && info.Exists {
+				if info.SpecVersion == fmt.Sprintf("%d", r.ver) {
+					status := "ready"
+					empty := ""
+					built := r.ver
+					if _, err := db.UpdateRuntimeImage(ctx, ttx, r.tenant, r.id, r.ver, db.UpdateRuntimeImageFields{Status: &status, Error: &empty, FailureReason: &empty, FailedStep: &empty, LogTail: &empty, FailureCategory: &empty, BuiltVersion: &built, StatusOnly: true}); err == nil {
+						count++
 					}
+					continue
 				}
-				if skipped { continue }
 			}
 		}
 		failed:="failed"; reason:="build abandoned (no image produced) — daemon restarted or stream lost; retry Deploy"; cat:="stream"; tail:=truncate(r.log, 8*1024); emptyStep:=""
