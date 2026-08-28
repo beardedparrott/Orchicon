@@ -544,6 +544,15 @@ export class WorkItem extends Message<WorkItem> {
    */
   spawnedByTitle = "";
 
+  /**
+   * secret_ids are selected tenant secrets to inject into the runtime container at dispatch.
+   * Stored as JSONB array of secret IDs in work_items.secret_ids.
+   * Max 10 per item; dangling refs fail dispatch.
+   *
+   * @generated from field: repeated string secret_ids = 39;
+   */
+  secretIds: string[] = [];
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -589,6 +598,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 36, name: "spawned_by_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 37, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 38, name: "spawned_by_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 39, name: "secret_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

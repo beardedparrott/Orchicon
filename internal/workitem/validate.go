@@ -853,3 +853,20 @@ func advanceTime(t time.Time, freq string, interval int) time.Time {
 		return t.AddDate(0, 0, interval)
 	}
 }
+// ValidateSecretIDs validates per-work-item secret selection: max 10, no empty, no duplicates.
+func ValidateSecretIDs(ids []string) error {
+	if len(ids) > 10 {
+		return fmt.Errorf("too many secrets: max 10, got %d", len(ids))
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" {
+			return fmt.Errorf("secret id must not be empty")
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate secret id %q", id)
+		}
+		seen[id] = true
+	}
+	return nil
+}

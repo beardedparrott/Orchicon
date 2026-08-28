@@ -98,6 +98,7 @@ type WorkItemRow struct {
 	// SpawnedByRunID is the workflow run id of the recurring fire's run
 	// that produced this work item (empty = not an automation spawn).
 	SpawnedByRunID *string
+	SecretIDs   []byte // jsonb array of secret IDs to inject at dispatch (max 10)
 	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
 	SequenceAttempts int
 	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
@@ -126,6 +127,9 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	if w.ContextFiles == nil {
 		w.ContextFiles = []byte("[]")
 	}
+	if w.SecretIDs == nil {
+		w.SecretIDs = []byte("[]")
+	}
 	// New items always start recurrence-enabled: nothing in the create path
 	// represents "create already-paused" — pause is a later UpdateWorkItem.
 	w.RecurringEnabled = true
@@ -135,8 +139,8 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -146,7 +150,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
-		w.SpawnedByWorkItemID, w.SpawnedByRunID,
+		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
 	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
@@ -166,7 +170,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	recurring_schedule, next_run_at, recurring_enabled,
 	archived_at, archived_from_status,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
-	spawned_by_work_item_id, spawned_by_run_id,
+	spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 	version, created_at, updated_at`
 
 // WorkItemScanPtrs returns a slice of Scan pointers matching
@@ -183,7 +187,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
 		&w.ArchivedAt, &w.ArchivedFromStatus,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
-		&w.SpawnedByWorkItemID, &w.SpawnedByRunID,
+		&w.SpawnedByWorkItemID, &w.SpawnedByRunID, &w.SecretIDs,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	}
 }
@@ -529,6 +533,7 @@ type UpdateWorkItemFields struct {
 	// update (nil = unchanged).
 	SpawnedByWorkItemID *string
 	SpawnedByRunID      *string
+	SecretIDs         *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -691,6 +696,11 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.SpawnedByRunID != nil {
 		q += fmt.Sprintf(`, spawned_by_run_id = $%d`, setIdx)
 		args = append(args, *f.SpawnedByRunID)
+		setIdx++
+	}
+	if f.SecretIDs != nil {
+		q += fmt.Sprintf(`, secret_ids = $%d`, setIdx)
+		args = append(args, *f.SecretIDs)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`

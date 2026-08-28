@@ -177,6 +177,7 @@ message CreateWorkItemRequest {
   // fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
   // creates leave it empty (backward compatible).
   string run_context = 19;
+  repeated string secret_ids = 20;
 }
 
 message CreateWorkItemResponse {
@@ -263,11 +264,17 @@ message UpdateWorkItemRequest {
   // keeps the recurring_schedule + next_run_at (resume re-arms) but the item
   // is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
   optional bool recurring_enabled = 26;
+  // secret_ids replaces the secret selection (set-replace): empty list clears, absent leaves unchanged. Max 10.
+  optional SecretIds secret_ids = 27;
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for
 // UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
 // "clear all" (empty ids) are distinguishable.
+message SecretIds {
+  repeated string ids = 1;
+}
+
 message DependencyIds {
   repeated string ids = 1;
 }

@@ -585,6 +585,73 @@ table "work_items" {
     null = false
     default = ""
   }
+  column "secret_ids" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "prompt_context" {
+    type = jsonb
+    null = true
+  }
+  column "scheduled_start_at" {
+    type = timestamptz
+    null = true
+  }
+  column "auto_start_workflow" {
+    type = boolean
+    null = false
+    default = false
+  }
+  column "context_files" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "acceptance_review" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "recurring_schedule" {
+    type = jsonb
+    null = true
+  }
+  column "next_run_at" {
+    type = timestamptz
+    null = true
+  }
+  column "recurring_enabled" {
+    type = boolean
+    null = false
+    default = true
+  }
+  column "spawned_by_work_item_id" {
+    type = text
+    null = true
+  }
+  column "spawned_by_run_id" {
+    type = text
+    null = true
+  }
+  column "sequence_attempts" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "sequence_last_attempt_at" {
+    type = timestamptz
+    null = true
+  }
+  column "sequence_consecutive_scan_errors" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "sequence_last_progress_at" {
+    type = timestamptz
+    null = true
+  }
   column "version" {
     type = integer
     null = false
@@ -1591,3 +1658,58 @@ table "runtime_images" {
   index "runtime_images_tenant_idx" { columns = [column.tenant_id] }
   index "runtime_images_tenant_status_idx" { columns = [column.tenant_id, column.status] }
 }
+
+table "tenant_secrets" {
+  schema = schema.public
+  comment = "Tenant-scoped encrypted secrets (API keys etc.) — ciphertext at rest via KEK (docs/09). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "name" {
+    type = text
+    null = false
+  }
+  column "description" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "ciphertext" {
+    type = text
+    null = false
+  }
+  column "key_version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "tenant_secrets_tenant_id_idx" {
+    columns = [column.tenant_id]
+  }
+  index "tenant_secrets_tenant_name_idx" {
+    unique = true
+    columns = [column.tenant_id, column.name]
+  }
+}
+

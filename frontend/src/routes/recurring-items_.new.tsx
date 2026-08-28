@@ -15,6 +15,7 @@ import { useCreateWorkItem } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
 import { FileBrowser } from "@/components/FileBrowser";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -68,6 +69,7 @@ function NewRecurringItemPage() {
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
   const [runtimeImage, setRuntimeImage] = useState("");
+  const [secretIds, setSecretIds] = useState<string[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   // OPT-IN "outputs: ideas" provenance — sets the schedule's outputs_mode so
@@ -115,6 +117,7 @@ function NewRecurringItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       workflowId: values.workflowId,
       runtimeImage: runtimeImage || undefined,
+      secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
       recurringSchedule: schedule,
     });
@@ -200,6 +203,8 @@ function NewRecurringItemPage() {
                 </p>
               )}
             </div>
+
+            <SecretsPicker value={secretIds} onChange={setSecretIds} />
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>

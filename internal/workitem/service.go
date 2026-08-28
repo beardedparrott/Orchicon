@@ -192,6 +192,14 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	var secretIDsJSON []byte
+	if len(msg.SecretIds) > 0 {
+		if err := ValidateSecretIDs(msg.SecretIds); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	// validate existence via DB after tx begins — store JSON for row
+
 	var parentID *string
 	if msg.ParentId != "" {
 		parentID = &msg.ParentId
@@ -268,6 +276,22 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
+	if len(msg.SecretIds) > 0 {
+		if len(msg.SecretIds) > 0 {
+			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, msg.SecretIds)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if len(m) != len(msg.SecretIds) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
+			}
+		}
+		b, _ := json.Marshal(msg.SecretIds)
+		secretIDsJSON = b
+	} else {
+		secretIDsJSON = []byte("[]")
+	}
+
 	status := domain.WorkItemPending
 	if scheduledStartAt != nil {
 		status = domain.WorkItemScheduled
@@ -298,6 +322,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		AutoStartWorkflow:  autoStart,
 		ContextFiles:       contextFiles,
 		RecurringSchedule:  recurringSchedule,
+		SecretIDs:        secretIDsJSON,
 		NextRunAt:          nextRunAt,
 	}
 	// Stamp automation provenance (feature 4.1, AC2): when this create runs
@@ -830,6 +855,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
 	}
+	if msg.SecretIds != nil {
+		if err := ValidateSecretIDs(msg.SecretIds.Ids); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		b, _ := json.Marshal(msg.SecretIds.Ids)
+		fields.SecretIDs = &b
+	}
+
 	if msg.AutoStartWorkflow != nil {
 		v := *msg.AutoStartWorkflow
 		fields.AutoStartWorkflow = &v
@@ -898,6 +931,21 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// are sanctioned. Keep the two surfaces identical (service + MCP).
 	if IsIdeaStatus(current.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	}
+	// Per-item secret selection: validate dangling refs inside the tx so a
+	// concurrent delete cannot race the pre-tx check (fail-closed at write).
+	if fields.SecretIDs != nil {
+		var ids []string
+		_ = json.Unmarshal(*fields.SecretIDs, &ids)
+		if len(ids) > 0 {
+			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, ids)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if len(m) != len(ids) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
+			}
+		}
 	}
 	// A currently-recurring item is exempt from the "only epics are
 	// top-level" parent rule (flat-recurring items are top-level tasks); the
@@ -2839,6 +2887,12 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	}
 	if w.SpawnedByRunID != nil {
 		p.SpawnedByRunId = *w.SpawnedByRunID
+	}
+	if len(w.SecretIDs) > 0 {
+		var ids []string
+		if err := json.Unmarshal(w.SecretIDs, &ids); err == nil {
+			p.SecretIds = ids
+		}
 	}
 	return p
 }

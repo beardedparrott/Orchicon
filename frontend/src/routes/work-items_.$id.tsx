@@ -20,6 +20,7 @@ import { useListWorkflows } from "@/api/workflows";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { useToast } from "@/components/ui/toast";
@@ -86,6 +87,7 @@ function WorkItemDetailPage() {
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
   const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
+  const [editSecretIds, setEditSecretIds] = useState<string[]>([]);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -318,6 +320,7 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
+                setEditSecretIds((item as any).secretIds ?? []);
                 setEditing(true);
               }}
             >
@@ -375,6 +378,7 @@ function WorkItemDetailPage() {
                       parentId: editParentId || undefined,
                       kind: kindChanging ? editKind : undefined,
                       contextFiles: { files: editContextFiles },
+                      secretIds: { ids: editSecretIds },
                       recurringSchedule: kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
                           ? new RecurringSchedule()
                           : undefined,

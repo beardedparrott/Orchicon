@@ -102,6 +102,9 @@ type CreateRequest struct {
 	// and returns ServePort/ServePassword in the response.
 	ServeConfig string `json:"serve_config,omitempty"`
 	ProjectDir  string `json:"project_dir,omitempty"`
+	// Secrets are tenant secrets to inject as container env at create time.
+	// Decrypted plane-side, never stored in image; same pattern as GH_TOKEN.
+	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -428,6 +431,12 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		if tok := d.ghToken(); tok != "" {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
+	}
+	for k, v := range req.Secrets {
+		if k == "" || v == "" {
+			continue
+		}
+		args = append(args, "-e", k+"="+v)
 	}
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon

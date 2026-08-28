@@ -138,6 +138,10 @@ message WorkItem {
   // (ListIdeas / GetWorkItem) that callers use to render the badge, so the
   // hot general list path stays untouched.
   string spawned_by_title = 38;
+  // secret_ids are selected tenant secrets to inject into the runtime container at dispatch.
+  // Stored as JSONB array of secret IDs in work_items.secret_ids.
+  // Max 10 per item; dangling refs fail dispatch.
+  repeated string secret_ids = 39;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
