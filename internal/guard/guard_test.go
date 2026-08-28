@@ -169,15 +169,15 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	defer g.Close()
 
 	env := g.Apply(os.Environ())
-	cmd := exec.Command("bash", "-lc", "rm -rf /")
+	cmd := exec.Command("bash", "-c", "rm -rf /")
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "ORCHICON GUARD") {
-		t.Errorf("bash -lc 'rm -rf /' through guard PATH: expected guard message, got: %s", out)
+		t.Errorf("bash -c 'rm -rf /' through guard PATH: expected guard message, got: %s", out)
 	}
 
 	// A safe command still works through the shimmed PATH.
-	cmd = exec.Command("bash", "-lc", "echo hi")
+	cmd = exec.Command("bash", "-c", "echo hi")
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("bash -lc 'echo hi' through guard PATH: expected success, got %v: %s", err, out)

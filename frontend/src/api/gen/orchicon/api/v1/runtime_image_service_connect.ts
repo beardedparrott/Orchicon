@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, GetStockImageTemplateRequest, GetStockImageTemplateResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
+import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CancelRuntimeImageBuildRequest, CancelRuntimeImageBuildResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, GetStockImageTemplateRequest, GetStockImageTemplateResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, ResetRuntimeImageRequest, ResetRuntimeImageResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -89,6 +89,28 @@ export const RuntimeImageService = {
       I: BuildRuntimeImageRequest,
       O: BuildRuntimeImageResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * CancelRuntimeImageBuild cancels an in-flight build (building -> failed).
+     *
+     * @generated from rpc orchicon.api.v1.RuntimeImageService.CancelRuntimeImageBuild
+     */
+    cancelRuntimeImageBuild: {
+      name: "CancelRuntimeImageBuild",
+      I: CancelRuntimeImageBuildRequest,
+      O: CancelRuntimeImageBuildResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResetRuntimeImage resets a stuck building image to failed (orphan escape hatch).
+     *
+     * @generated from rpc orchicon.api.v1.RuntimeImageService.ResetRuntimeImage
+     */
+    resetRuntimeImage: {
+      name: "ResetRuntimeImage",
+      I: ResetRuntimeImageRequest,
+      O: ResetRuntimeImageResponse,
+      kind: MethodKind.Unary,
     },
     /**
      * ListAvailableRuntimeImages returns the merged dropdown list for the

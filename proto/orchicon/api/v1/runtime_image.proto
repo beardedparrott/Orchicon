@@ -56,4 +56,8 @@ message RuntimeImage {
   // built). When built_version == version the image is up to date and Deploy
   // short-circuits; a lagging built_version means a rebuild is pending.
   int32 built_version = 19;
+  string failure_reason = 20;
+  string failed_step = 21;
+  string log_tail = 22;
+  string failure_category = 23;
 }

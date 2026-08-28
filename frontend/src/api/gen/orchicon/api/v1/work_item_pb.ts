@@ -730,13 +730,21 @@ export class RecurringSchedule extends Message<RecurringSchedule> {
 
   /**
    * Window confines fires to a daily time-of-day interval [window_start, window_end).
-   * Both empty (the default) = no window (legacy 24/7 behaviour).
+   * Both empty (the default) = no window (legacy 24/7 behaviour). When set, both
+   * MUST be set, validated HH:MM, and represent a half-open interval on the same
+   * calendar day; wrapping midnight is v1-out-of-scope and rejected. Fires use
+   * the anchor-grid-truncated-by-window semantic (A): the interval cadence is
+   * anchored at start_date+start_time and truncated to the window.
+   *
+   * HH:MM, inclusive
    *
    * @generated from field: string window_start = 7;
    */
   windowStart = "";
 
   /**
+   * HH:MM, exclusive — must be > window_start
+   *
    * @generated from field: string window_end = 8;
    */
   windowEnd = "";

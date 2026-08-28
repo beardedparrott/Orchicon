@@ -1,6 +1,6 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
 import {
   useListRuntimeImages,
@@ -42,7 +42,7 @@ const STATUS_STYLES: Record<number, string> = {
   1: "bg-gray-100 text-gray-700",
   2: "bg-blue-100 text-blue-800",
   3: "bg-green-600 text-white",
-  4: "bg-red-100 text-red-800",
+  4: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
 };
 
 function StatusBadge({ status }: { status: number }) {
@@ -169,9 +169,9 @@ function RuntimeImagesPage() {
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
       {error && (
-        <p className="text-sm text-destructive">
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">
           Failed to load runtime images: {String(error)}
-        </p>
+        </div>
       )}
       {!isLoading && !error && (!images || images.length === 0) && (
         <Card>
@@ -235,10 +235,14 @@ function RuntimeImagesPage() {
                     stock
                   </span>
                 )}
-                {img.error && (
-                  <span className="max-w-64 truncate text-xs text-destructive">
-                    {img.error}
+                {img.status === 4 && (img.failureReason || img.error) && (
+                  <span className="flex max-w-64 items-center gap-1 truncate text-xs text-amber-700 dark:text-amber-300" role="alert">
+                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    {img.failureReason || img.error}
                   </span>
+                )}
+                {img.status === 2 && (img.failureReason || img.error) && (
+                  <span className="max-w-64 truncate text-xs text-amber-600">{img.failureReason || img.error}</span>
                 )}
               </CardContent>
             </Card>
