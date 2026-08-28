@@ -8,7 +8,9 @@ import {
   useBulkUpdateWorkerModel,
   useListWorkers,
 } from "@/api/workers";
-import { WorkerStatus, type Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
+import { WorkerStatus, type Worker, WorkerVersionStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
+import type { WorkerListItem } from "@/api/gen/orchicon/api/v1/worker_service_pb";
+import { formatModelRef, versionStatusLabel, versionStatusTone } from "@/lib/worker-display";
 import type { BulkUpdateWorkerModelResult } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 import { Button } from "@/components/ui/button";
 import {
@@ -64,7 +66,7 @@ function WorkersPage() {
 
   // Seed all workers into categories on first load
   const workerIds = useMemo(
-    () => (workers ? workers.map((w) => w.id) : []),
+    () => (workers ? workers.map((it) => (it as WorkerListItem).worker!.id) : []),
     [workers],
   );
   useEffect(() => {
@@ -77,14 +79,14 @@ function WorkersPage() {
   const { categorized, uncategorized } = useMemo(() => {
     if (!workers)
       return { categorized: new Map<string, string[]>(), uncategorized: [] };
-    const ids = workers.map((w) => w.id);
+    const ids = workers.map((it) => (it as WorkerListItem).worker!.id);
     return getItemsForCategory(prefs.state, ids);
   }, [prefs.state, workers]);
 
   // Build ordered list of categories with their workers
   const categoryGroups = useMemo(() => {
     if (!workers) return [];
-    const workerMap = new Map(workers.map((w) => [w.id, w]));
+    const workerMap = new Map(workers.map((it) => [(it as WorkerListItem).worker!.id, it as WorkerListItem]));
     const groups: { category: Category; items: typeof workers }[] = [];
 
     const sortedCategories = [...prefs.state.categories].sort(
@@ -131,7 +133,7 @@ function WorkersPage() {
     if (selected.size === workers.length) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(workers.map((w) => w.id)));
+      setSelected(new Set(workers.map((it) => (it as WorkerListItem).worker!.id)));
     }
   };
 
@@ -330,10 +332,12 @@ function WorkersPage() {
                   droppableId={category.id}
                 >
                   <div className="space-y-1">
-                    {items.map((w) => (
+                    {items.map((it) => {
+                      const w = (it as WorkerListItem).worker!;
+                      return (
                       <WorkerRow
                         key={w.id}
-                        worker={w}
+                        item={it as WorkerListItem}
                         checked={selected.has(w.id)}
                         onToggleSelect={() => toggleSelect(w.id)}
                         onDelete={() => {
@@ -342,7 +346,7 @@ function WorkersPage() {
                           }
                         }}
                       />
-                    ))}
+                    )})}
                   </div>
                 </CategoryFolder>
               ))}
@@ -367,7 +371,7 @@ function WorkersPage() {
           else setShowChangeModel(true);
         }}
         selectedIds={Array.from(selected)}
-        workers={workers}
+        workers={(workers ?? []).map((it) => (it as WorkerListItem).worker!) as Worker[]}
         onSubmit={handleChangeModelApply}
         isPending={bulkUpdateModel.isPending}
         error={bulkUpdateModel.error as Error | null}
@@ -378,16 +382,17 @@ function WorkersPage() {
 }
 
 function WorkerRow({
-  worker,
+  item,
   checked,
   onToggleSelect,
   onDelete,
 }: {
-  worker: Worker;
+  item: WorkerListItem;
   checked: boolean;
   onToggleSelect: () => void;
   onDelete: () => void;
 }) {
+  const worker = item.worker!;
   // Drag handle is a SIBLING of the <Link>, so clicking the handle can never
   // open the item; only the Card (<Link>) navigates. dnd-kit's listeners live
   // on the handle span, the measured node is the row.
@@ -439,6 +444,8 @@ function WorkerRow({
                 </span>
               )}
               <span>v{worker.currentVersion}</span>
+              <span className="max-w-[180px] truncate font-mono" title={item.activeModelRef || undefined}>{formatModelRef(item.activeModelRef)}</span>
+              <VersionStatusBadge status={item.activeVersionStatus} />
             </div>
           </CardContent>
         </Card>
@@ -452,6 +459,17 @@ function WorkerRow({
         ✕
       </button>
     </div>
+  );
+}
+
+function VersionStatusBadge({ status }: { status: WorkerVersionStatus }) {
+  const label = versionStatusLabel(status);
+  // Hide badge when no version yet (UNSPECIFIED)
+  if (status === WorkerVersionStatus.UNSPECIFIED) return null;
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", versionStatusTone(status))}>
+      {label}
+    </span>
   );
 }
 
