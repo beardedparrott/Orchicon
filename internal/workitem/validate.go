@@ -565,10 +565,7 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	if (windowStart == "") != (windowEnd == "") {
 		return nil, errors.New("recurring_schedule.window_start and window_end must be set together")
 	}
-	var windowStartMin, windowEndMin int
-	var hasWindow bool
 	if windowStart != "" && windowEnd != "" {
-		hasWindow = true
 		ws, err := time.Parse("15:04", windowStart)
 		if err != nil {
 			return nil, fmt.Errorf("recurring_schedule.window_start must be HH:MM; got %q", windowStart)
@@ -577,8 +574,8 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("recurring_schedule.window_end must be HH:MM; got %q", windowEnd)
 		}
-		windowStartMin = ws.Hour()*60 + ws.Minute()
-		windowEndMin = we.Hour()*60 + we.Minute()
+		windowStartMin := ws.Hour()*60 + ws.Minute()
+		windowEndMin := we.Hour()*60 + we.Minute()
 		if windowEndMin <= windowStartMin {
 			return nil, errors.New("recurring_schedule.window_end must be after window_start (wrapping midnight is not supported in v1)")
 		}
@@ -590,9 +587,6 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 				return nil, errors.New("recurring_schedule.start_time must lie inside the window")
 			}
 		}
-		_ = hasWindow
-		_ = windowStartMin
-		_ = windowEndMin
 	}
 	schedule := recurringScheduleJSON{
 		Frequency:   freq,
