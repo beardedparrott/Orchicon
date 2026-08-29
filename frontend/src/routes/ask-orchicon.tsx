@@ -59,6 +59,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -836,9 +837,33 @@ function AskOrchiconPage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
+  // Click-suppression standard (mirrors CategoryDndContext): after a dnd-kit
+  // drag the browser dispatches a synthetic click whose propagation path is
+  // only [target -> document], so a document capture-phase listener is the
+  // only reliable place to consume it — otherwise the release click lands on
+  // the row/folder under the pointer and selects/toggles it mid-drop.
+  const suppressClickRef = useRef(false);
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
+  const armClickSuppressionBackstop = useCallback(() => {
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 300);
+  }, []);
+
   // Handle drag start
   const handleDragStart = useCallback(
     (event: { active: { id: string | number } }) => {
+      suppressClickRef.current = true;
       setActiveDragId(String(event.active.id));
       setOverFolderId(null);
     },
@@ -861,6 +886,9 @@ function AskOrchiconPage() {
   // Handle drag end (assign conversation to folder)
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
+      // Backstop: keep the flag set long enough that the drag's post-mouseup
+      // click lands inside it, then clear (mirrors CategoryDndContext).
+      armClickSuppressionBackstop();
       const { active, over } = event;
       setActiveDragId(null);
       setOverFolderId(null);
@@ -878,8 +906,17 @@ function AskOrchiconPage() {
         }
       }
     },
-    [convPrefs],
+    [convPrefs, armClickSuppressionBackstop],
   );
+
+  // A cancelled drag (e.g. Escape) still ends with a possible click under the
+  // pointer — arm the same backstop so a stray click is suppressed and the
+  // flag clears shortly after (mirrors CategoryDndContext).
+  const handleDragCancel = useCallback(() => {
+    armClickSuppressionBackstop();
+    setActiveDragId(null);
+    setOverFolderId(null);
+  }, [armClickSuppressionBackstop]);
 
   // Build categorized conversation groups
   const categorizedConversations = useMemo(() => {
@@ -930,7 +967,7 @@ function AskOrchiconPage() {
                 onClick={openMobileSheet}
                 aria-label="Conversations"
                 data-testid="ask-conversation-sheet-trigger-greeting"
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-500 dark:text-slate-300 hover:text-white lg:hidden shrink-0"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground lg:hidden shrink-0"
               >
                 <PanelRight aria-hidden="true" className="h-5 w-5" />
               </button>
@@ -995,7 +1032,7 @@ function AskOrchiconPage() {
                   onClick={openMobileSheet}
                   aria-label="Conversations"
                   data-testid="ask-conversation-sheet-trigger"
-                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-white/10 text-slate-500 dark:text-slate-300 hover:text-white lg:hidden shrink-0"
+                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground lg:hidden shrink-0"
                 >
                   <PanelRight aria-hidden="true" className="h-5 w-5" />
                 </button>
@@ -1170,16 +1207,16 @@ function AskOrchiconPage() {
 
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
-        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
-          <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
-            <div className="flex items-center space-x-2 text-slate-500 dark:text-slate-300">
+        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
+          <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
+            <div className="flex items-center space-x-2 text-muted-foreground">
               <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
               <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
             </div>
             <div className="flex items-center space-x-1">
               <button
                 onClick={() => setFolderDialogOpen(true)}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
                 title="New folder"
                 aria-label="New folder"
               >
@@ -1189,7 +1226,7 @@ function AskOrchiconPage() {
                 to="/ask-orchicon"
                 search={{ conversationId: undefined } as never}
                 onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
                 title="New Chat"
                 aria-label="New conversation"
               >
@@ -1200,7 +1237,7 @@ function AskOrchiconPage() {
                 aria-expanded={!panelCollapsed}
                 aria-controls="conversation-history-panel"
                 aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
-                className="p-1 text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
                 title="Collapse Panel"
               >
                 <PanelRightClose aria-hidden="true" className="w-4 h-4" />
@@ -1221,9 +1258,11 @@ function AskOrchiconPage() {
 
           <DndContext
             sensors={dndSensors}
+            collisionDetection={pointerWithin}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
           >
             <SortableContext
               items={conversations?.map((c) => c.id) ?? []}
@@ -1300,12 +1339,12 @@ function AskOrchiconPage() {
             </DragOverlay>
           </DndContext>
         </div>
-          <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
+          <div className="p-2 border-t border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-slate-900/30 shrink-0">
             <button
               onClick={handleNewChat}
-              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-white text-xs font-medium transition border border-white/5"
+              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-accent/50 hover:bg-accent text-muted-foreground hover:text-foreground text-xs font-medium transition border border-border/50"
             >
-              <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
+              <History aria-hidden="true" className="w-3.5 h-3.5 text-muted-foreground" />
               <span>View All History</span>
             </button>
           </div>
@@ -1317,7 +1356,7 @@ function AskOrchiconPage() {
           aria-controls="conversation-history-panel"
           aria-label="Expand conversation history"
           title="Expand Conversations"
-          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
         >
           <PanelRight aria-hidden="true" className="h-4 w-4" />
         </button>
@@ -1327,22 +1366,22 @@ function AskOrchiconPage() {
       {mobileSheetOpen && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Conversations">
           <div className="absolute inset-0 bg-black/50" onClick={closeMobileSheet} aria-hidden="true" />
-          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] h-[100dvh] max-h-[100dvh] pb-[env(safe-area-inset-bottom,0px)] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
-            <div className="p-3.5 border-b border-white/10 flex items-center justify-between shrink-0">
-              <div className="flex items-center space-x-2 text-slate-500 dark:text-slate-300">
+          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] h-[100dvh] max-h-[100dvh] pb-[env(safe-area-inset-bottom,0px)] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
+            <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2 text-muted-foreground">
                 <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
                 <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
               </div>
               <div className="flex items-center space-x-1">
-                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-slate-600 dark:text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
+                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
               {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
-              <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+              <DndContext sensors={dndSensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
                 <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
                   {convPrefs.state.categories.map((category) => {
                     const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
@@ -1360,9 +1399,9 @@ function AskOrchiconPage() {
                 </DragOverlay>
               </DndContext>
             </div>
-            <div className="p-2 border-t border-white/10 bg-slate-900/30 shrink-0">
-              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-500 dark:text-slate-300 hover:text-white text-xs font-medium transition border border-white/5 min-h-[44px]">
-                <History aria-hidden="true" className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
+            <div className="p-2 border-t border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-slate-900/30 shrink-0">
+              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-accent/50 hover:bg-accent text-muted-foreground hover:text-foreground text-xs font-medium transition border border-border/50 min-h-[44px]">
+                <History aria-hidden="true" className="w-3.5 h-3.5 text-muted-foreground" />
                 <span>View All History</span>
               </button>
             </div>
@@ -2062,8 +2101,8 @@ function ConversationItem({
         className={cn(
           "w-full text-left rounded-xl p-2.5 text-sm transition border",
           isActive
-            ? "bg-cyan-500/10 border-cyan-500/30 text-white"
-            : "border-transparent text-slate-500 dark:text-slate-300 hover:bg-white/5 hover:border-white/5 hover:text-white",
+            ? "bg-cyan-500/10 border-cyan-500/30 text-foreground"
+            : "border-transparent text-muted-foreground hover:bg-accent hover:border-border hover:text-foreground",
         )}
       >
         <div className="flex items-start gap-2">
