@@ -505,14 +505,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 1. Register the turn. ---
-	// The turn is registered BEFORE the user message is persisted so a
-	// rejected second send (one turn per conversation) never orphans a
-	// persisted user message. The detached context keeps the collector alive
-	// across a stream disconnect / tab close; only the turn registry's
-	// cancellation (Stop / supersede / TTL expiry) ends it. On any error
-	// below, the turn is released.
-	detached := context.WithoutCancel(ctx)
-	turnCtx, cancelTurn := context.WithCancelCause(detached)
 	// The acked assistant message id is generated up front so the registry
 	// entry can carry it — a refreshed page re-attaches to the running turn
 	// via Conversation.pending_assistant_message_id, which is read from this
@@ -523,10 +515,20 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// contention on the shared serve bus + connection pool. A re-dispatch onto
 	// a conversation that ALREADY has a running turn is not counted against the
 	// cap — it is handled by the one-turn gate below (register returns false).
+	// Checked BEFORE the detached collector context is created so a rejected
+	// dispatch never allocates an un-cancelled context (lostcancel).
 	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
 		return "", nil, connect.NewError(connect.CodeResourceExhausted,
 			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
 	}
+	// The turn is registered before the user message is persisted so a
+	// rejected second send (one turn per conversation) never orphans a
+	// persisted user message. The detached context keeps the collector alive
+	// across a stream disconnect / tab close; only the turn registry's
+	// cancellation (Stop / supersede / TTL expiry) ends it. On any error
+	// below, the turn is released.
+	detached := context.WithoutCancel(ctx)
+	turnCtx, cancelTurn := context.WithCancelCause(detached)
 	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
