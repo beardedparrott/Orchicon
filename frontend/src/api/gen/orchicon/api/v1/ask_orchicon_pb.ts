@@ -129,6 +129,29 @@ export class Conversation extends Message<Conversation> {
    */
   pendingAssistantMessageId = "";
 
+  /**
+   * turn_progressing is the server-confirmed "the model is still genuinely
+   * working" signal. Computed at read time from the running turn's last
+   * activity: true when the turn has produced recent output and is not wedged
+   * on an unresolved tool. The frontend shows "still working…" only when this
+   * is true; when it is false but turn_in_flight is true, the UI can accurately
+   * report "Turn stalled — stop or retry" instead of the misleading "connection
+   * lost — still working" the refresh path used to show.
+   *
+   * @generated from field: bool turn_progressing = 13;
+   */
+  turnProgressing = false;
+
+  /**
+   * turn_last_activity_at is when the running turn last produced activity
+   * (token, reasoning, step, or tool output). Companion to turn_progressing —
+   * lets the frontend compute how long the turn has been quiet (and show a
+   * stale/stopped state) without polling the bus.
+   *
+   * @generated from field: google.protobuf.Timestamp turn_last_activity_at = 14;
+   */
+  turnLastActivityAt?: Timestamp;
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);

@@ -127,7 +127,7 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-time.After(15 * time.Second):
 		}
 		client := h.Client()
-		if client == nil || client.Healthy(ctx) {
+		if client == nil || client.MCPHealthy(ctx) {
 			backoff = 5 * time.Second
 			continue
 		}

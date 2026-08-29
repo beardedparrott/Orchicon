@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,23 @@ func askServeDownGrace() time.Duration {
 	return defaultServeDownGrace
 }
 
+// defaultAskMaxConcurrentTurns bounds how many Ask Orchicon turns may run
+// concurrently across all conversations (ADR-0002 D7 — session admission
+// bound). A turn would exceed the cap is rejected with a clear
+// CodeResourceExhausted error instead of degrading under contention on the
+// shared serve bus + connection pool. Env override
+// ORCHICON_ASK_MAX_CONCURRENT_TURNS.
+const defaultAskMaxConcurrentTurns = 16
+
+func askMaxConcurrentTurns() int {
+	if v := os.Getenv("ORCHICON_ASK_MAX_CONCURRENT_TURNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultAskMaxConcurrentTurns
+}
+
 // opencodeEvent is a single JSON event from opencode's stdout.
 type opencodeEvent struct {
 	Type string         `json:"type"`
@@ -167,6 +185,17 @@ type turnEntry struct {
 	// re-attach to the running turn (Stop + completion poll), not just know
 	// that one exists.
 	assistantMsgID string
+	// wedged records that this turn's session wedged on an unresolved tool call
+	// (MCP wedge, AC1). Read by InterjectConversationTurn so a mid-run
+	// interjection recycles a wedged session to a fresh one rather than
+	// dispatching onto (or queuing behind) the wedged turn (ADr-0002 D4).
+	wedged bool
+	// lastActivity is when the running turn last produced output (token,
+	// reasoning, step, or tool activity). Updated by the collector on each
+	// activity signal; read by turnStatus to compute the server-confirmed
+	// turn_progressing / turn_last_activity_at the frontend uses to show an
+	// accurate "still working" vs "stalled" state after a refresh (AC2, D3).
+	lastActivity time.Time
 }
 
 // turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
@@ -210,7 +239,7 @@ func (r *turnRegistry) register(convID, tenant, assistantMsgID string, cancel co
 	}
 	r.nextTok++
 	token := r.nextTok
-	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID}
+	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID, lastActivity: time.Now()}
 	return token, true
 }
 
@@ -224,6 +253,41 @@ func (r *turnRegistry) get(convID string) (turnEntry, bool) {
 	defer r.mu.Unlock()
 	entry, ok := r.turns[convID]
 	return entry, ok
+}
+
+// len reports the number of conversations with an in-flight turn. Used by the
+// admission bound (ADR-0002 D7) to reject dispatch beyond the concurrent-turn
+// cap with a clear error instead of degrading under contention.
+func (r *turnRegistry) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.turns)
+}
+
+// markWedged records that a turn's session wedged on an unresolved tool (AC1),
+// keyed by the caller's token so a stale marker from a superseded turn never
+// clobbers the replacement. Read by InterjectConversationTurn (D4).
+func (r *turnRegistry) markWedged(convID string, token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		entry.wedged = true
+		r.turns[convID] = entry
+	}
+}
+
+// markActivity records that a running turn last produced output at now,
+// advancing the server-confirmed turn_progressing signal the frontend reads to
+// distinguish a genuinely-working turn from a stalled/wedged one (AC2, D3).
+// Keyed by the caller's token so a stale marker from a superseded turn never
+// clobbers the replacement.
+func (r *turnRegistry) markActivity(convID string, token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		entry.lastActivity = time.Now()
+		r.turns[convID] = entry
+	}
 }
 
 // cancel fires the collector's cancellation for a conversation (if any) with
@@ -393,8 +457,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// sessionIDOverride is the session the new turn dispatches on. Normally
+	// the conversation's persisted session; set to "" below (forcing a fresh
+	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
+	// interjection lands on a healthy session rather than the stuck one.
+	useSessionID := conv.SessionID
+
 	// --- 0.5. Supersede an in-flight turn (interject only). ---
 	if opts.supersede {
+		prevEntry, prevOk := s.turns.get(convID)
 		if token, ok := s.turns.cancel(convID, errTurnSuperseded); ok {
 			s.turns.remove(convID, token)
 			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
@@ -405,6 +476,16 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 			if client := s.hostServeClient(); client != nil {
 				_ = client.Abort(context.WithoutCancel(ctx), conv.SessionID)
 			}
+		}
+		// D4 (mid-run interjection on a wedged session): the superseded turn
+		// was wedged on an unresolved tool (MCP wedge) — its session is stuck,
+		// so dispatching the interjection onto it would wedge the new turn
+		// too. Force a fresh seeded session: the collector creates one (and
+		// seeds the DB history) when sessionID is empty, so the interjection
+		// is answered by a healthy session and never silently dropped.
+		if prevOk && prevEntry.wedged {
+			useSessionID = ""
+			s.log.Warn("interjection recycling a wedged session to a fresh one", "conversation", convID, "old_session", conv.SessionID)
 		}
 	}
 
@@ -424,7 +505,23 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 1. Register the turn. ---
-	// The turn is registered BEFORE the user message is persisted so a
+	// The acked assistant message id is generated up front so the registry
+	// entry can carry it — a refreshed page re-attaches to the running turn
+	// via Conversation.pending_assistant_message_id, which is read from this
+	// entry.
+	assistantID := db.NewID()
+	// D7 (session admission bound): reject dispatch beyond the concurrent-turn
+	// cap with a clear CodeResourceExhausted error instead of degrading under
+	// contention on the shared serve bus + connection pool. A re-dispatch onto
+	// a conversation that ALREADY has a running turn is not counted against the
+	// cap — it is handled by the one-turn gate below (register returns false).
+	// Checked BEFORE the detached collector context is created so a rejected
+	// dispatch never allocates an un-cancelled context (lostcancel).
+	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
+		return "", nil, connect.NewError(connect.CodeResourceExhausted,
+			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
+	}
+	// The turn is registered before the user message is persisted so a
 	// rejected second send (one turn per conversation) never orphans a
 	// persisted user message. The detached context keeps the collector alive
 	// across a stream disconnect / tab close; only the turn registry's
@@ -432,11 +529,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// below, the turn is released.
 	detached := context.WithoutCancel(ctx)
 	turnCtx, cancelTurn := context.WithCancelCause(detached)
-	// The acked assistant message id is generated up front so the registry
-	// entry can carry it — a refreshed page re-attaches to the running turn
-	// via Conversation.pending_assistant_message_id, which is read from this
-	// entry.
-	assistantID := db.NewID()
 	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -569,7 +661,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				convID:         convID,
 				token:          token,
 				assistantMsgID: assistantID,
-				sessionID:      conv.SessionID,
+				sessionID:      useSessionID,
 				modelRef:       modelRef,
 				seedSystem:     seedSystem,
 				reuseSystem:    reuseSystem,
@@ -810,18 +902,18 @@ func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, co
 // across serve restarts, so the session identity here is the starting point,
 // not the final one.
 type turnCollectOpts struct {
-	client   sessionTurnClient
-	tenantID string
-	convID   string
+	client         sessionTurnClient
+	tenantID       string
+	convID         string
 	token          uint64
 	assistantMsgID string
-	sessionID string
-	modelRef  string
-	seedSystem  string
-	reuseSystem string
-	userMsg     string
-	attachments []*apiv1.AttachmentInput
-	onStreamEvent func(*apiv1.ChatStreamResponse)
+	sessionID      string
+	modelRef       string
+	seedSystem     string
+	reuseSystem    string
+	userMsg        string
+	attachments    []*apiv1.AttachmentInput
+	onStreamEvent  func(*apiv1.ChatStreamResponse)
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -833,6 +925,7 @@ const (
 	turnRecreated                        // session 404'd — a fresh seeded session was created
 	turnReattach                         // bus lost after a live connection — retry after a backoff
 	turnServeDown                        // the serve never accepted a connection this attempt
+	turnToolWedge                        // a tool call was issued but never resolved — the session is wedged (recycle)
 )
 
 type turnAttemptResult struct {
@@ -840,7 +933,39 @@ type turnAttemptResult struct {
 	text      string
 	reasoning []string
 	newSid    string
+	// wedgeTool names the tool whose call wedged (set only for turnToolWedge).
+	wedgeTool string
 	err       error
+}
+
+// activeToolName returns the name of a tool call that is issued but not yet
+// resolved, from a raw bus event. The serve emits a tool part with
+// state.status "running"/"pending" (non-terminal) while the tool executes;
+// LegacyEventFromBus drops these (it only maps completed/errored tools to
+// "tool_use"), so the chat collector uses this to feed the stall monitor's
+// tool-wedge signal (AC1). ok=false means the event is not an unresolved tool.
+func activeToolName(evt opencode.BusEvent) (string, bool) {
+	if evt.Type != "message.part.updated" {
+		return "", false
+	}
+	props := evt.Properties
+	part, _ := props["part"].(map[string]any)
+	if part == nil {
+		return "", false
+	}
+	if ptype, _ := part["type"].(string); ptype != "tool" {
+		return "", false
+	}
+	state, _ := part["state"].(map[string]any)
+	status, _ := state["status"].(string)
+	if status == "completed" || status == "error" {
+		return "", false
+	}
+	tool, _ := part["tool"].(string)
+	if tool == "" {
+		return "", false
+	}
+	return tool, true
 }
 
 // collectConversationReply is the detached reply collector for one chat
@@ -870,6 +995,10 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	sid = c.sessionID
 	system := c.reuseSystem
 	recreated := false
+	// reconnects counts the bounded session recycles performed on an MCP
+	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
+	// session is healed once (or a small bound) instead of looping.
+	reconnects := 0
 
 	// A first message (no persisted session id) creates the session up front
 	// and persists the id immediately; follow-ups reuse the persisted one. A
@@ -915,6 +1044,33 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			return res.text, reasoning, sid, res.err
 		case turnRecreated:
 			sid = res.newSid
+			system = c.seedSystem
+			recreated = true
+			everLive = true
+			s.persistConversationSessionID(ctx, c.tenantID, c.convID, sid)
+		case turnToolWedge:
+			// A tool call was issued on the session but never resolved (MCP
+			// wedge — AC1). Heal, don't fail: abort the wedged session, create
+			// a FRESH seeded session, and re-dispatch the SAME user message
+			// once (bounded by the reconnect budget). The reply window applies
+			// and the turn continues transparently on a healthy session.
+			// Record the wedge so a mid-run interjection (D4) recycles rather
+			// than dispatching onto the (now-stuck) session.
+			s.turns.markWedged(c.convID, c.token)
+			if reconnects >= askMCPReconnectAttempts() {
+				return res.text, reasoning, sid, fmt.Errorf("the conversation session wedged on a tool (%s) and could not be recovered after %d attempt(s) — please retry", res.wedgeTool, reconnects+1)
+			}
+			oldSid := sid
+			reconnects++
+			s.log.Warn("ask orchicon session wedged on a tool — recycling to a fresh session",
+				"conversation", c.convID, "old_session", oldSid, "tool", res.wedgeTool, "reconnects", reconnects)
+			// Interrupt the stuck model NOW (idempotent best-effort).
+			_ = c.client.Abort(context.WithoutCancel(ctx), oldSid)
+			fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
+			if cerr != nil {
+				return res.text, reasoning, sid, fmt.Errorf("recreate conversation session after tool wedge: %w", cerr)
+			}
+			sid = fresh
 			system = c.seedSystem
 			recreated = true
 			everLive = true
@@ -1056,6 +1212,15 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
 			}
 		case <-stallTicker.C:
+			// First, the AC1 MCP-wedge signal: a tool call issued but never
+			// resolved. This is UNLIKE no_progress/repetition — it is healed
+			// (the collector recycles to a fresh session and re-dispatches the
+			// same message), not failed. The monitor's toolWedge is precise: a
+			// slow tool that still streams activity never trips it.
+			if tool, wedged := monitor.toolWedge(); wedged {
+				s.log.Warn("ask orchicon turn wedged on a tool call", "conversation", c.convID, "session", sid, "model", c.modelRef, "tool", tool)
+				return turnAttemptResult{kind: turnToolWedge, reasoning: reasoning, wedgeTool: tool, err: fmt.Errorf("tool %s did not respond", tool)}
+			}
 			if reason := monitor.stallReason(); reason != "" {
 				// The model has stopped making progress: interrupt it NOW
 				// (the same abort the Stop button uses) and fail the turn
@@ -1138,6 +1303,18 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// monitor ignores the part, so pass nil (no per-delta
 					// allocation).
 					monitor.observe("text", nil)
+					s.turns.markActivity(c.convID, c.token)
+					continue
+				}
+				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
+				// serve emits a tool part with a non-terminal status before the
+				// tool resolves; LegacyEventFromBus drops these (it only maps
+				// completed/errored tools to "tool_use"), so a wedged tool
+				// would otherwise be invisible to the stall monitor. Feed an
+				// explicit tool start so the monitor can detect the wedge.
+				if tool, ok2 := activeToolName(evt); ok2 {
+					monitor.observeToolStart(tool)
+					s.turns.markActivity(c.convID, c.token)
 					continue
 				}
 				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
@@ -1146,6 +1323,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// Activity resets the stall clock: text, reasoning,
 					// step_finish and tool_use all count as progress.
 					monitor.observe(t, part)
+					s.turns.markActivity(c.convID, c.token)
 					switch t {
 					case "text":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {

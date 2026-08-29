@@ -167,6 +167,12 @@ interface ConvStream {
   // detached collector keeps running server-side, so the slot stays attached
   // (Stop + interject remain) and completion is resolved via the poll.
   reconnecting: boolean;
+  // turnProgressing is the server-confirmed "still genuinely working" signal
+  // (Conversation.turn_progressing) captured when a refresh re-attaches the
+  // reconnecting slot. True => show "still working…"; false (while reconnecting)
+  // => the turn is stalled/wedged, so show an accurate "stalled" state instead
+  // of the misleading "connection lost — still working".
+  turnProgressing: boolean;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
   // sentText is the message text captured at send time, held in-memory so the
@@ -180,6 +186,7 @@ const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
   reconnecting: false,
+  turnProgressing: false,
   optimisticUserMsg: null,
   pendingReplyId: null,
   sentText: null,
@@ -331,6 +338,7 @@ function AskOrchiconPage() {
   const isStreaming = activeStream?.isStreaming ?? false;
   const isThinking = activeStream?.isThinking ?? false;
   const reconnecting = activeStream?.reconnecting ?? false;
+  const turnProgressing = activeStream?.turnProgressing ?? false;
   const optimisticUserMsg = activeStream?.optimisticUserMsg ?? null;
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
@@ -482,6 +490,8 @@ function AskOrchiconPage() {
         isStreaming: true,
         isThinking: true,
         reconnecting: true,
+        turnProgressing:
+          server?.turnProgressing ?? activeConv?.turnProgressing ?? false,
         pendingReplyId: pendingId || prev.pendingReplyId,
         items: [],
       };
@@ -1174,12 +1184,16 @@ function AskOrchiconPage() {
                 {/* Reconnecting notice — the acked turn's socket dropped but
                     the detached collector keeps running server-side. The Stop
                     button + interject input stay available and the poll
-                    resolves completion. */}
+                    resolves completion. Shown only while the server confirms
+                    the turn is genuinely progressing; when the turn is
+                    stalled/wedged (turnProgressing false) the UI reports an
+                    accurate stalled state instead of "still working". */}
                 {isStreaming && reconnecting && (
                   <div className="flex justify-center">
                     <p className="text-xs text-muted-foreground">
-                      Connection lost — still working… You can interject or
-                      stop this reply.
+                      {turnProgressing
+                        ? "Connection lost — still working… You can interject or stop this reply."
+                        : "Turn stalled — the model stopped responding. You can stop this reply and try again."}
                     </p>
                   </div>
                 )}
