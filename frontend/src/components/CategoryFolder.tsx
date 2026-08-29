@@ -7,7 +7,6 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useDroppable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
@@ -48,16 +47,18 @@ export function CategoryFolder({
   sortable,
   children,
 }: CategoryFolderProps) {
-  // Unconditional hook call; disabled when no droppableId is given so the
-  // component stays usable outside a DndContext.
-  const { setNodeRef, isOver } = useDroppable({
-    id: droppableId ?? "",
-    disabled: !droppableId,
-  });
+  // Single droppable registration per folder: useSortable's internal
+  // droppable IS the folder's drop target. (An extra useDroppable with the
+  // same id used to collide in dnd-kit's container map — the later
+  // registration wins — and when the sortable was disabled its node ref was
+  // never populated, so the folder had no measured rect and drops silently
+  // no-op'd whenever there was only one category, the default seeded state.)
+  const sortableEnabled = sortable && category.id !== "uncategorized";
   const sortableState = useSortable({
-    id: category.id,
-    disabled: !sortable,
+    id: droppableId ?? category.id,
+    disabled: !sortableEnabled,
   });
+  const { setNodeRef, isOver } = sortableState;
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
@@ -96,12 +97,13 @@ export function CategoryFolder({
 
   const isUncategorized = category.id === "uncategorized";
 
-  const folderStyle: CSSProperties | undefined = sortable
+  const folderStyle: CSSProperties | undefined = sortableEnabled
     ? { transform: CSS.Transform.toString(sortableState.transform), transition: sortableState.transition }
     : undefined;
   const setRefs = (el: HTMLDivElement | null) => {
+    // Always attach the node ref (droppable + draggable) so the folder's
+    // droppable is measured even when it is not drag-reorderable.
     setNodeRef(el);
-    if (sortable) sortableState.setNodeRef(el);
   };
   return (
     <div
@@ -110,7 +112,7 @@ export function CategoryFolder({
       className={cn(
         "mt-3 first:mt-0 transition-shadow",
         isOver && "rounded-lg ring-2 ring-ring bg-accent/30",
-        sortable && sortableState.isDragging && "opacity-50",
+        sortableEnabled && sortableState.isDragging && "opacity-50",
       )}
     >
       <div
@@ -121,7 +123,7 @@ export function CategoryFolder({
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
-        {sortable && (
+        {sortableEnabled && (
           <button
             type="button"
             className="cursor-grab active:cursor-grabbing p-1 text-muted-foreground hover:text-foreground"

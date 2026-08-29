@@ -113,6 +113,20 @@ function markSeeded(page: CategoryPage) {
   try { localStorage.setItem(SEED_DONE_KEY + page, "1"); } catch { /* ignore */ }
 }
 
+// Assignment seeding runs independently of the category-migration seeder: it
+// populates unassigned items into the default folder on first load so
+// workers/workflows/conversations have a home before any manual
+// categorization (pre-PR parity). It needs its own done-key because the
+// migration seeder above marks `seeded` as soon as ANY category exists
+// server-side, even when nothing has been assigned yet.
+const ASSIGN_SEED_DONE_KEY = "orchicon.categories.assign-seeded.";
+function hasAssignSeeded(page: CategoryPage): boolean {
+  try { return localStorage.getItem(ASSIGN_SEED_DONE_KEY + page) === "1"; } catch { return true; }
+}
+function markAssignSeeded(page: CategoryPage) {
+  try { localStorage.setItem(ASSIGN_SEED_DONE_KEY + page, "1"); } catch { /* ignore */ }
+}
+
 export function seedAssignments(page: CategoryPage, entityIds: string[]): CategoryState {
   if (hasEnvelope(`${PREFIX}${page}`)) {
     return loadCategoryState(page);
@@ -230,7 +244,40 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
     reorderMut.mutate(orderedIds);
   }, [reorderMut]);
 
-  const ensureSeeded = useCallback((_entityIds: string[]) => {}, []);
+  const ensureSeeded = useCallback(
+    (entityIds: string[]) => {
+      if (options?.noSeed) return;
+      if (hasAssignSeeded(page)) return;
+      if (!entityIds || entityIds.length === 0) return;
+      // Never re-seed a tenant that already has manual assignments.
+      if (Object.keys(state.assignments).length > 0) {
+        markAssignSeeded(page);
+        return;
+      }
+      const unassigned = entityIds.filter((id) => !state.assignments[id]);
+      if (unassigned.length === 0) {
+        markAssignSeeded(page);
+        return;
+      }
+      const seedInto = (categoryId: string) => {
+        for (const id of unassigned) {
+          assignMut.mutate({ categoryId, entityId: id });
+        }
+      };
+      if (state.categories.length > 0) {
+        seedInto(state.categories[0].id);
+        markAssignSeeded(page);
+        return;
+      }
+      // No folder exists yet — create the default one, then seed into it.
+      createMut.mutate(
+        { name: "Software Development", description: "General-purpose workers, workflows, and conversations for software development tasks" },
+        { onSuccess: (cat) => { if (cat) seedInto(cat.id); } },
+      );
+      markAssignSeeded(page);
+    },
+    [options?.noSeed, assignMut, createMut, state, page],
+  );
 
   return {
     state,
