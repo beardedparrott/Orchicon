@@ -59,6 +59,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -836,9 +837,33 @@ function AskOrchiconPage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
+  // Click-suppression standard (mirrors CategoryDndContext): after a dnd-kit
+  // drag the browser dispatches a synthetic click whose propagation path is
+  // only [target -> document], so a document capture-phase listener is the
+  // only reliable place to consume it — otherwise the release click lands on
+  // the row/folder under the pointer and selects/toggles it mid-drop.
+  const suppressClickRef = useRef(false);
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
+  const armClickSuppressionBackstop = useCallback(() => {
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 300);
+  }, []);
+
   // Handle drag start
   const handleDragStart = useCallback(
     (event: { active: { id: string | number } }) => {
+      suppressClickRef.current = true;
       setActiveDragId(String(event.active.id));
       setOverFolderId(null);
     },
@@ -861,6 +886,9 @@ function AskOrchiconPage() {
   // Handle drag end (assign conversation to folder)
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
+      // Backstop: keep the flag set long enough that the drag's post-mouseup
+      // click lands inside it, then clear (mirrors CategoryDndContext).
+      armClickSuppressionBackstop();
       const { active, over } = event;
       setActiveDragId(null);
       setOverFolderId(null);
@@ -878,8 +906,17 @@ function AskOrchiconPage() {
         }
       }
     },
-    [convPrefs],
+    [convPrefs, armClickSuppressionBackstop],
   );
+
+  // A cancelled drag (e.g. Escape) still ends with a possible click under the
+  // pointer — arm the same backstop so a stray click is suppressed and the
+  // flag clears shortly after (mirrors CategoryDndContext).
+  const handleDragCancel = useCallback(() => {
+    armClickSuppressionBackstop();
+    setActiveDragId(null);
+    setOverFolderId(null);
+  }, [armClickSuppressionBackstop]);
 
   // Build categorized conversation groups
   const categorizedConversations = useMemo(() => {
@@ -1221,9 +1258,11 @@ function AskOrchiconPage() {
 
           <DndContext
             sensors={dndSensors}
+            collisionDetection={pointerWithin}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
           >
             <SortableContext
               items={conversations?.map((c) => c.id) ?? []}
@@ -1342,7 +1381,7 @@ function AskOrchiconPage() {
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
               {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
-              <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+              <DndContext sensors={dndSensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
                 <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
                   {convPrefs.state.categories.map((category) => {
                     const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
