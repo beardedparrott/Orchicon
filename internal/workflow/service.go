@@ -67,40 +67,40 @@ func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason 
 
 // CreateWorkflow validates input, inserts the workflow header + its first
 // draft version, and enqueues a workflow.created event — all in one
-// tenant-scoped transaction.
+// tenant-scoped transaction. The transactional create lives in
+// CreateWorkflowTx (create.go) so the AskOrchicon tool path shares the
+// exact same implementation (one create core, no drift).
 func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1.CreateWorkflowRequest]) (*connect.Response[apiv1.CreateWorkflowResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	name, err := validateName(msg.Name)
-	if err != nil {
+	in := CreateWorkflowInput{
+		TenantID:    tenantID,
+		ProjectID:   msg.ProjectId,
+		Name:        msg.Name,
+		Type:        msg.Type,
+		VersionNote: msg.VersionNote,
+		Steps:       msg.Steps,
+		Inputs:      msg.Inputs,
+		Outputs:     msg.Outputs,
+	}
+	// git_strategy is a proto enum; map a present value to its domain
+	// string (absent/unspecified inherits).
+	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
+		switch msg.ProtoReflect().Get(fd).Enum() {
+		case 1:
+			in.GitStrategy = "local"
+		case 2:
+			in.GitStrategy = "pr"
+		case 3:
+			in.GitStrategy = "none"
+		}
+	}
+	if err := ValidateCreateWorkflowInput(&in); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	versionNote, err := validateTextField(msg.VersionNote, maxVersionNoteLen, "version_note")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	steps, err := validateStepsField(msg.Steps)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	inputs, err := validateJSONField(msg.Inputs, "{}", "inputs", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	outputs, err := validateJSONField(msg.Outputs, "{}", "outputs", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	// project_id is optional (empty for tenant-level templates). Trim
-	// whitespace; no further validation — it's a ULID reference checked
-	// by the data-access layer's FK-free convention.
-	projectID := msg.ProjectId
-
-	workflowID := db.NewID()
-	versionID := db.NewID()
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -108,80 +108,23 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
-	// Only active projects may host workflows (docs/02 §2.1).
+	// Preserve the exact FailedPrecondition mapping for a missing/inactive
+	// project; CreateWorkflowTx re-checks inside the same transaction for
+	// the tool path (one extra indexed lookup, exact RPC parity).
 	if msg.ProjectId != "" {
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
 		}
 	}
 
-	workflowType := msg.Type
-	if workflowType == "" {
-		if projectID == "" {
-			workflowType = domain.WorkflowTypeTemplate
-		} else {
-			workflowType = domain.WorkflowTypeOneShot
-		}
-	}
-	var gitStrategy *string
-	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
-		enumVal := msg.ProtoReflect().Get(fd).Enum()
-		var s string
-		switch enumVal {
-		case 1:
-			s = "local"
-		case 2:
-			s = "pr"
-		case 3:
-			s = "none"
-		}
-		if s != "" {
-			gitStrategy = &s
-		}
-	}
-	workflowRow := db.WorkflowRow{
-		ID:             workflowID,
-		TenantID:       tenantID,
-		ProjectID:      projectID,
-		Name:           name,
-		Type:           workflowType,
-		Status:         domain.WorkflowDraft,
-		CurrentVersion: 0,
-		GitStrategy:    gitStrategy,
-	}
-	created, err := db.CreateWorkflow(ctx, ttx.Tx, workflowRow)
+	created, createdVersion, err := CreateWorkflowTx(ctx, ttx.Tx, in)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-
-	// First version is always version 1, in draft state (docs/02 §2.4).
-	versionRow := db.WorkflowVersionRow{
-		ID:          versionID,
-		TenantID:    tenantID,
-		WorkflowID:  workflowID,
-		Version:     1,
-		VersionNote: versionNote,
-		Status:      domain.WorkflowVersionDraft,
-		Steps:       steps,
-		Inputs:      inputs,
-		Outputs:     outputs,
-	}
-	createdVersion, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-
-	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.created", created, createdVersion, db.WorkflowRunRow{}, ""); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.created", "workflow", created.ID,
-		nil, audit.Snapshot(workflowVersionAuditSnapshot(createdVersion))); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("workflow created", "id", created.ID, "tenant", tenantID, "name", name)
+	s.log.Info("workflow created", "id", created.ID, "tenant", tenantID, "name", in.Name)
 	return connect.NewResponse(&apiv1.CreateWorkflowResponse{
 		Workflow: workflowRowToProto(created),
 		Version:  versionRowToProto(createdVersion),
