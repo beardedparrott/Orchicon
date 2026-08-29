@@ -31,14 +31,16 @@ package opencode
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -50,6 +52,20 @@ const defaultServeUsername = "opencode"
 // ServePasswordEnv is the env var the host serve / runtime supervisor
 // sets to protect its HTTP API with basic auth.
 const ServePasswordEnv = "OPENCODE_SERVER_PASSWORD"
+
+// defaultMCPProbeTimeout bounds a single MCP-usability probe so a slow (but
+// alive) serve is not treated as wedged by the watchdog and restarted in a
+// churn. Env override ORCHICON_ASK_MCP_PROBE_TIMEOUT is a dev/test knob.
+const defaultMCPProbeTimeout = 8 * time.Second
+
+func askMCPProbeTimeout() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_MCP_PROBE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultMCPProbeTimeout
+}
 
 // BusEvent is one event from the opencode server's /event SSE stream.
 // The shape matches the SDK's event objects ({id, type, properties}).
@@ -66,7 +82,14 @@ type SessionClient struct {
 	username  string
 	password  string
 	directory string
-	hc        *http.Client
+	// hc is the client for short-lived API calls. It uses a DEDICATED
+	// http.Transport (ADR-0002 D5) so this serve's connections never contend
+	// on the package-level http.DefaultTransport shared by every SessionClient.
+	hc *http.Client
+	// sseHC is the client for long-lived /event SSE subscriptions. It uses a
+	// separate keep-alive-disabled transport so a parked stream never occupies
+	// the API idle pool (D5).
+	sseHC *http.Client
 }
 
 // ErrSessionNotFound marks a 404 from the serve for a session-scoped
@@ -80,14 +103,44 @@ var ErrSessionNotFound = errors.New("opencode serve: session not found")
 // directory is the project path every session created through this client
 // is scoped to (may be empty for an unscoped client).
 func NewSessionClient(baseURL, password, directory string) *SessionClient {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	// Dedicated transport (ADR-0002 D5). Every SessionClient used to be built
+	// with &http.Client{}, which SHARES the package-level http.DefaultTransport
+	// (MaxIdleConnsPerHost=2, MaxIdleConns=100). With many concurrent sessions
+	// each doing an API call plus a long-lived /event stream against the ONE
+	// host serve, that pooled to 2 idle conns a host and sessions contended.
+	// A dedicated transport sized to the concurrent-session ceiling isolates
+	// this serve's traffic from every other client's. There is deliberately
+	// NO per-request global timeout: the /event subscription is long-lived and
+	// API calls carry their own context deadlines.
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   256,
+		MaxConnsPerHost:       256,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	// /event SSE pushes ONE long-lived stream per subscription; keep-alive is
+	// pointless and a parked stream must never land in the shared idle pool.
+	// A separate keep-alive-disabled client keeps long-lived streams off the
+	// API pool (D5).
+	sseTransport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: 256,
+	}
 	return &SessionClient{
-		baseURL:   strings.TrimSuffix(baseURL, "/"),
+		baseURL:   baseURL,
 		username:  defaultServeUsername,
 		password:  password,
 		directory: directory,
-		// No global timeout: the /event subscription is long-lived. API
-		// calls carry their own per-request context deadlines.
-		hc: &http.Client{},
+		hc:        &http.Client{Transport: transport},
+		sseHC:     &http.Client{Transport: sseTransport},
 	}
 }
 
@@ -110,12 +163,12 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// ProbeUsable is the L1 serve-readiness probe (the workflow run-start gate):
-// the serve must answer /global/health AND accept a real session-create
-// round-trip. A cold-starting serve answers health before its session
-// machinery is up, so health alone is not "usable" for dispatch. The probe
-// session is aborted after creation so no probe residue accumulates.
-func (c *SessionClient) ProbeUsable(ctx context.Context) error {
+// probeServe exercises the serve's full readiness surface: it must answer
+// /global/health AND accept a real session-create round-trip. A cold-starting
+// serve answers health before its session machinery is up, so health alone is
+// not "usable" for dispatch. The probe session is aborted after creation so no
+// probe residue accumulates.
+func (c *SessionClient) probeServe(ctx context.Context) error {
 	if !c.Healthy(ctx) {
 		return fmt.Errorf("opencode serve not healthy (%s)", c.baseURL)
 	}
@@ -125,6 +178,33 @@ func (c *SessionClient) ProbeUsable(ctx context.Context) error {
 	}
 	_ = c.Abort(ctx, sid)
 	return nil
+}
+
+// ProbeUsable is the L1 serve-readiness probe (the workflow run-start gate):
+// the serve must answer /global/health AND accept a real session-create
+// round-trip. A cold-starting serve answers health before its session
+// machinery is up, so health alone is not "usable" for dispatch.
+func (c *SessionClient) ProbeUsable(ctx context.Context) error {
+	return c.probeServe(ctx)
+}
+
+// MCPHealthy reports whether the serve's MCP-enabled agent session machinery is
+// usable (ADR-0002 D1 — the MCP watchdog). The Orchicon MCP is loaded into the
+// serve at startup, and a wedged/unusable MCP is INVISIBLE to /global/health
+// (which only proves the process is up). A session-create round-trip exercises
+// the serve's agent session + MCP configuration; a session that cannot be
+// created/aborted means the serve is not usable for dispatch. This is the
+// plane-level watchdog gate: `HostServe.Watch` restarts a serve that passes
+// /global/health but fails MCP usability, healing a single wedged MCP for every
+// session on the serve (MCP is per-serve).
+//
+// Failure-tolerant: bounded by a short timeout so a single slow probe does not
+// churn the watchdog into restarts (the watchdog's own backoff absorbs
+// transient slowness). Returns true only on a definitive success.
+func (c *SessionClient) MCPHealthy(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, askMCPProbeTimeout())
+	defer cancel()
+	return c.probeServe(probeCtx) == nil
 }
 
 // CreateSession creates a session on the serve, scoped to the client's
@@ -276,7 +356,7 @@ func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.hc.Do(req)
+	resp, err := c.sseHC.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("opencode session subscribe: %w", err)
 	}
@@ -284,7 +364,7 @@ func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
 		resp.Body.Close()
 		return nil, fmt.Errorf("opencode session subscribe: http %d", resp.StatusCode)
 	}
-	sub := &Subscription{events: make(chan BusEvent, 256), done: make(chan struct{}), once: make(chan struct{}), body: resp.Body}
+	sub := &Subscription{events: make(chan BusEvent, 1024), done: make(chan struct{}), once: make(chan struct{}), body: resp.Body}
 	go sub.read(ctx, resp.Body)
 	return sub, nil
 }
@@ -343,6 +423,16 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 			select {
 			case s.events <- evt:
 			case <-s.once:
+				return
+			default:
+				// Bus full — DROP the event (ADR-0002 D6). The /event bus is
+				// telemetry/liveness only; the durable record is the persisted
+				// transcript/reply, so a dropped telemetry event never loses
+				// data. Before this, a slow consumer parked its own SSE reader
+				// on the full channel, stalling its connection and (with every
+				// session subscribing to the one bus) affecting other sessions
+				// on the same serve. Dropping makes backpressure per-session,
+				// not a drive-wide stall.
 			}
 		}
 		data.Reset()

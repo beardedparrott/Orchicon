@@ -114,8 +114,21 @@ type Conversation struct {
 	// turn_in_flight is true; the frontend polls ListMessages for this id to
 	// resolve the restored turn's completion.
 	PendingAssistantMessageId string `protobuf:"bytes,12,opt,name=pending_assistant_message_id,json=pendingAssistantMessageId,proto3" json:"pending_assistant_message_id,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// turn_progressing is the server-confirmed "the model is still genuinely
+	// working" signal (ADR-0002 D3). Computed at read time from the running
+	// turn's last activity: true when the turn has produced recent output and is
+	// not wedged on an unresolved tool. The frontend shows "still working…" only
+	// when this is true; when it is false but turn_in_flight is true, the UI can
+	// accurately report "Turn stalled — stop or retry" instead of the misleading
+	// "connection lost — still working" the refresh path used to show.
+	TurnProgressing bool `protobuf:"varint,13,opt,name=turn_progressing,json=turnProgressing,proto3" json:"turn_progressing,omitempty"`
+	// turn_last_activity_at is when the running turn last produced activity
+	// (token, reasoning, step, or tool output). Companion to turn_progressing —
+	// lets the frontend compute how long the turn has been quiet (and show a
+	// stale/stopped state) without polling the bus.
+	TurnLastActivityAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=turn_last_activity_at,json=turnLastActivityAt,proto3" json:"turn_last_activity_at,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Conversation) Reset() {
@@ -230,6 +243,20 @@ func (x *Conversation) GetPendingAssistantMessageId() string {
 		return x.PendingAssistantMessageId
 	}
 	return ""
+}
+
+func (x *Conversation) GetTurnProgressing() bool {
+	if x != nil {
+		return x.TurnProgressing
+	}
+	return false
+}
+
+func (x *Conversation) GetTurnLastActivityAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.TurnLastActivityAt
+	}
+	return nil
 }
 
 // ChatMessage is a single message within a conversation.
@@ -1172,7 +1199,7 @@ var File_orchicon_api_v1_ask_orchicon_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
-	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\x03\n" +
+	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf2\x04\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1189,7 +1216,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x04mode\x18\n" +
 	" \x01(\x0e2!.orchicon.api.v1.ConversationModeR\x04mode\x12$\n" +
 	"\x0eturn_in_flight\x18\v \x01(\bR\fturnInFlight\x12?\n" +
-	"\x1cpending_assistant_message_id\x18\f \x01(\tR\x19pendingAssistantMessageId\"\xc4\x03\n" +
+	"\x1cpending_assistant_message_id\x18\f \x01(\tR\x19pendingAssistantMessageId\x12)\n" +
+	"\x10turn_progressing\x18\r \x01(\bR\x0fturnProgressing\x12M\n" +
+	"\x15turn_last_activity_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x12turnLastActivityAt\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +
@@ -1315,19 +1344,20 @@ var file_orchicon_api_v1_ask_orchicon_proto_depIdxs = []int32{
 	15, // 0: orchicon.api.v1.Conversation.created_at:type_name -> google.protobuf.Timestamp
 	15, // 1: orchicon.api.v1.Conversation.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: orchicon.api.v1.Conversation.mode:type_name -> orchicon.api.v1.ConversationMode
-	3,  // 3: orchicon.api.v1.ChatMessage.tool_calls:type_name -> orchicon.api.v1.ToolCall
-	4,  // 4: orchicon.api.v1.ChatMessage.tool_results:type_name -> orchicon.api.v1.ToolResult
-	5,  // 5: orchicon.api.v1.ChatMessage.attachments:type_name -> orchicon.api.v1.Attachment
-	6,  // 6: orchicon.api.v1.ChatMessage.metadata:type_name -> orchicon.api.v1.MessageMetadata
-	15, // 7: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
-	15, // 8: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
-	15, // 9: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
-	6,  // 10: orchicon.api.v1.DoneSignal.metadata:type_name -> orchicon.api.v1.MessageMetadata
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	15, // 3: orchicon.api.v1.Conversation.turn_last_activity_at:type_name -> google.protobuf.Timestamp
+	3,  // 4: orchicon.api.v1.ChatMessage.tool_calls:type_name -> orchicon.api.v1.ToolCall
+	4,  // 5: orchicon.api.v1.ChatMessage.tool_results:type_name -> orchicon.api.v1.ToolResult
+	5,  // 6: orchicon.api.v1.ChatMessage.attachments:type_name -> orchicon.api.v1.Attachment
+	6,  // 7: orchicon.api.v1.ChatMessage.metadata:type_name -> orchicon.api.v1.MessageMetadata
+	15, // 8: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
+	15, // 9: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
+	15, // 10: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 11: orchicon.api.v1.DoneSignal.metadata:type_name -> orchicon.api.v1.MessageMetadata
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ask_orchicon_proto_init() }

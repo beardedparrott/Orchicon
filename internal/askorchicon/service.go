@@ -181,8 +181,7 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		turnInFlight, pendingID := s.turnStatus(r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, turnInFlight, pendingID))
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -222,9 +221,9 @@ func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.GetConversationResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -289,7 +288,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 	return connect.NewResponse(&apiv1.CreateConversationResponse{
-		Conversation: conversationRowToProto(row, 0, preview, false, ""),
+		Conversation: conversationRowToProto(row, 0, preview, turnStatusInfo{}),
 	}), nil
 }
 
@@ -373,9 +372,9 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -417,9 +416,9 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -580,7 +579,7 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, turnInFlight bool, pendingAssistantMsgID string) *apiv1.Conversation {
+func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, s turnStatusInfo) *apiv1.Conversation {
 	p := &apiv1.Conversation{
 		Id:                        r.ID,
 		TenantId:                  r.TenantID,
@@ -590,26 +589,52 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		Mode:                      conversationModeToProto(r.Mode),
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
-		TurnInFlight:              turnInFlight,
-		PendingAssistantMessageId: pendingAssistantMsgID,
+		TurnInFlight:              s.inFlight,
+		PendingAssistantMessageId: s.pendingMsgID,
+		TurnProgressing:           s.progressing,
+		TurnLastActivityAt:        s.lastActivity,
 		CreatedAt:                 timestamppb.New(r.CreatedAt),
 		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	return p
 }
 
-// turnStatus reports whether a reply turn is currently in flight for a
-// conversation and, if so, the acked assistant message id under which its
-// reply will be persisted. Read from the in-memory turn registry — the same
-// authoritative source as the one-turn gate. This is how a refreshed frontend
-// learns "a turn is running here" and re-attaches the Stop button + the
-// completion poll.
-func (s *Service) turnStatus(convID string) (bool, string) {
+// turnStatusInfo is the server-confirmed snapshot of a conversation's running
+// turn, computed at read time from the in-memory turn registry (the same
+// authoritative source as the one-turn gate). It is what a refreshed frontend
+// uses to re-attach the Stop button + completion poll (turn_in_flight /
+// pending_assistant_message_id) AND to show an ACCURATE
+// progressing-vs-stalled state (turn_progressing / turn_last_activity_at)
+// instead of the misleading "connection lost — still working" (AC2, D3).
+type turnStatusInfo struct {
+	inFlight     bool
+	pendingMsgID string
+	// progressing is true when the running turn is making genuine progress:
+	// it produced activity within the no-progress window and is not wedged on
+	// an unresolved tool. False (while inFlight) ⇒ the turn is stalled/wedged.
+	progressing  bool
+	lastActivity *timestamppb.Timestamp
+}
+
+// turnStatus returns the server-confirmed snapshot of a conversation's running
+// turn. Read from the in-memory turn registry — the same authoritative source
+// as the one-turn gate. This is how a refreshed frontend learns "a turn is
+// running here" and re-attaches the Stop button + the completion poll, plus
+// whether that turn is genuinely progressing or stalled/wedged (D3).
+func (s *Service) turnStatus(convID string) turnStatusInfo {
 	entry, ok := s.turns.get(convID)
 	if !ok {
-		return false, ""
+		return turnStatusInfo{}
 	}
-	return true, entry.assistantMsgID
+	info := turnStatusInfo{inFlight: true, pendingMsgID: entry.assistantMsgID}
+	if !entry.lastActivity.IsZero() {
+		info.lastActivity = timestamppb.New(entry.lastActivity)
+	}
+	// Progress = recent activity AND the session is not wedged. If the turn
+	// has been quiet for longer than the no-progress window, the server no
+	// longer claims "still working" — the frontend shows a stalled/retry state.
+	info.progressing = !entry.wedged && time.Since(entry.lastActivity) < askStallNoProgressWindow()
+	return info
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'
