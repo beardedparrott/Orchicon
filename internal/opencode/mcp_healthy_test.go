@@ -107,3 +107,49 @@ func TestSubscriptionReadDropsWhenFull(t *testing.T) {
 		t.Fatal("expected some events buffered before the reader dropped the overflow")
 	}
 }
+
+// TestSubscriptionReadNeverDropsSessionIdle verifies the ADR-0002 D6 WATCH
+// constraint: session.idle is the SOLE completion signal for a turn — the event
+// a collector relies on to mark a reply complete. A slow consumer's buffer
+// overflowing must DROP telemetry events, but it must NEVER drop session.idle,
+// or a completed turn is silently reported as timed out. The reader blocks
+// (bounded by the subscription's own Close) to deliver the completion signal
+// instead of discarding it.
+func TestSubscriptionReadNeverDropsSessionIdle(t *testing.T) {
+	var b strings.Builder
+	// Fill + overflow the buffer with non-idle telemetry, then a terminal
+	// session.idle at the end. All prior frames are droppable; the idle is not.
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, `data: {"id":"%d","type":"message.part.delta","properties":{"field":"text","delta":"x"}}`+"\n\n", i)
+	}
+	fmt.Fprintf(&b, `data: {"id":"idle","type":"session.idle","properties":{"sessionID":"ses_x"}}`+"\n\n")
+
+	sub := &Subscription{events: make(chan BusEvent, 4), done: make(chan struct{}), once: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sub.read(context.Background(), io.NopCloser(strings.NewReader(b.String())))
+	}()
+
+	// Drain whatever the reader buffers. The full-buffer telemetry frames are
+	// dropped; the trailing session.idle must STILL be delivered (the reader
+	// blocks on the send rather than discarding the completion signal).
+	var gotIdle bool
+	timer := time.After(3 * time.Second)
+	for {
+		select {
+		case evt, ok := <-sub.events:
+			if !ok {
+				if !gotIdle {
+					t.Fatal("session.idle was dropped on a full buffer — it is the sole completion signal (D6 WATCH)")
+				}
+				return
+			}
+			if evt.Type == "session.idle" {
+				gotIdle = true
+			}
+		case <-timer:
+			t.Fatal("Subscription.read blocked or never delivered session.idle")
+		}
+	}
+}

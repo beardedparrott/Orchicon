@@ -420,19 +420,35 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 		}
 		var evt BusEvent
 		if err := json.Unmarshal(data.Bytes(), &evt); err == nil && evt.Type != "" {
-			select {
-			case s.events <- evt:
-			case <-s.once:
-				return
-			default:
-				// Bus full — DROP the event (ADR-0002 D6). The /event bus is
-				// telemetry/liveness only; the durable record is the persisted
-				// transcript/reply, so a dropped telemetry event never loses
-				// data. Before this, a slow consumer parked its own SSE reader
-				// on the full channel, stalling its connection and (with every
-				// session subscribing to the one bus) affecting other sessions
-				// on the same serve. Dropping makes backpressure per-session,
-				// not a drive-wide stall.
+			if evt.Type == "session.idle" {
+				// session.idle is the SOLE completion signal for a turn — the event
+				// a collector uses to mark a reply complete. Dropping it on a full
+				// buffer would make a completed turn appear timed out (ADR-0002 D6
+				// WATCH): the collector sits waiting for a completion that was
+				// silently discarded, then fails that turn as a stale timeout. Never
+				// drop a completion signal: deliver it, blocking only until the
+				// consumer drains a slot or the subscription closes. It is rare (one
+				// per turn end), so this cannot park the reader on the bus.
+				select {
+				case s.events <- evt:
+				case <-s.once:
+					return
+				}
+			} else {
+				select {
+				case s.events <- evt:
+				case <-s.once:
+					return
+				default:
+					// Bus full — DROP the event (ADR-0002 D6). The /event bus is
+					// telemetry/liveness only; the durable record is the persisted
+					// transcript/reply, so a dropped telemetry event never loses
+					// data. Before this, a slow consumer parked its own SSE reader
+					// on the full channel, stalling its connection and (with every
+					// session subscribing to the one bus) affecting other sessions
+					// on the same serve. Dropping makes backpressure per-session,
+					// not a drive-wide stall.
+				}
 			}
 		}
 		data.Reset()

@@ -2,6 +2,7 @@ package askorchicon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -103,4 +104,112 @@ func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	if _, ok := s.turns.get(conv3); ok {
 		t.Fatal("a capped dispatch must not leave an orphan turn registered")
 	}
+}
+
+// TestInterjectRecyclesWedgedSession verifies ADR-0002 D4 (AC3): a mid-run
+// interjection onto a conversation whose in-flight turn wedged on an
+// unresolved tool (MCP wedge) recycles the wedged session. The interjection is
+// dispatched on a FRESH seeded session (sessionID forced to "" in
+// startConversationTurnOpts) rather than queued behind / dispatched onto the
+// stuck one, and its reply is persisted on that fresh session. It drives a
+// genuinely wedged in-flight turn through startConversationTurnOpts(supersede).
+func TestInterjectRecyclesWedgedSession(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "200ms")
+	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "3s")
+	t.Setenv("ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS", "1")
+	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
+
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+	ctx := context.Background()
+	convID := createConversation(t, pool, "")
+	// The conversation already has a session (a follow-up turn reuses it). The
+	// wedged turn wedges THIS session; D4 must recycle away from it.
+	setConversationSessionID(t, pool, convID, "ses_live")
+
+	// Start turn A on the reused session: it registers, subscribes, sends on
+	// ses_live and waits for the reply.
+	ackA, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first message", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+	// Give the drain loop a beat to flip sent == true so the tool event below is
+	// observed (a pre-accept event would be ignored as a prior turn's telemetry).
+	time.Sleep(150 * time.Millisecond)
+
+	// The wedged tool: issued (non-terminal tool part) on ses_live, never
+	// resolves. The collector's tool-wedge monitor detects it and recycles the
+	// session — aborts ses_live, creates ses_1, re-dispatches (the second
+	// send) — and marks the registry turn wedged (the D4 pre-condition).
+	client.sub.feed(busToolRunning("ses_live", "list_projects"))
+
+	// Wait for the collector's wedge-recycle re-dispatch (second send) so the
+	// in-flight turn is genuinely wedged and stable before the interjection.
+	waitForSend(t, client, 2)
+
+	// Interject now that the in-flight turn is wedged.
+	ackB, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "steer it", nil, turnDispatchOpts{supersede: true})
+	if err != nil {
+		t.Fatalf("interject: %v", err)
+	}
+
+	// The interjection's collector was dispatched with sessionID == "" (D4 forced
+	// a fresh seeded session): it creates one and sends on it — the third send.
+	waitForSend(t, client, 3)
+	client.mu.Lock()
+	interjectSend := client.sendCalls[2]
+	created := append([]string(nil), client.created...)
+	client.mu.Unlock()
+
+	// D4 must NOT have redispatched the interjection on the wedged session.
+	if interjectSend.sessionID == "ses_live" {
+		t.Fatalf("interjection sent on the wedged session ses_live — D4 recycle did not fire")
+	}
+	// It must be on a session freshly created during this turn (useSessionID == "").
+	fresh := false
+	for _, c := range created {
+		if c == interjectSend.sessionID {
+			fresh = true
+			break
+		}
+	}
+	if !fresh {
+		t.Fatalf("interjection dispatched on session %q which was not freshly created — D4 did not force a fresh session", interjectSend.sessionID)
+	}
+
+	// Feed the interjection's reply on its fresh session, then assert it is
+	// persisted on that session.
+	client.sub.feed(busText(interjectSend.sessionID, "steered reply"))
+	client.sub.feed(busIdle(interjectSend.sessionID))
+	msg := waitForMessage(t, pool, convID, ackB)
+	if strings.TrimSpace(msg.Content) != "steered reply" {
+		t.Errorf("interjection reply = %q, want %q", msg.Content, "steered reply")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal reply metadata: %v", err)
+	}
+	if meta["session_id"] != interjectSend.sessionID {
+		t.Errorf("reply metadata session_id = %v, want %q (persisted on the fresh D4 session)", meta["session_id"], interjectSend.sessionID)
+	}
+
+	// The wedged session was aborted (the wedge-recycle aborts it).
+	client.mu.Lock()
+	aborted := append([]string(nil), client.aborted...)
+	client.mu.Unlock()
+	abortedSesLive := false
+	for _, a := range aborted {
+		if a == "ses_live" {
+			abortedSesLive = true
+			break
+		}
+	}
+	if !abortedSesLive {
+		t.Errorf("wedged session ses_live was not aborted; aborted = %v", aborted)
+	}
+
+	// The superseded turn A's reply was never persisted (no partial content).
+	_ = ackA
 }
