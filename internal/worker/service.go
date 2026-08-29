@@ -48,96 +48,41 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 
 // CreateWorker validates input, inserts the worker header + its first
 // draft version, and enqueues a worker.created event — all in one
-// tenant-scoped transaction.
+// tenant-scoped transaction. The transactional create lives in
+// CreateWorkerTx (create.go) so the AskOrchicon tool path shares the
+// exact same implementation (one create core, no drift).
 func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.CreateWorkerRequest]) (*connect.Response[apiv1.CreateWorkerResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	name, err := validateName(msg.Name)
-	if err != nil {
+	in := CreateWorkerInput{
+		TenantID:            tenantID,
+		Name:                msg.Name,
+		Slug:                msg.Slug,
+		Description:         msg.Description,
+		Purpose:             msg.Purpose,
+		VersionNote:         msg.VersionNote,
+		RuntimeRef:          msg.RuntimeRef,
+		ModelRef:            msg.ModelRef,
+		Role:                msg.Role,
+		Skills:              msg.Skills,
+		Behavior:            msg.Behavior,
+		AgentsMD:            msg.AgentsMd,
+		SystemPrompt:        msg.SystemPrompt,
+		ContextSources:      msg.ContextSources,
+		Permissions:         msg.Permissions,
+		GatedTools:          msg.GatedTools,
+		BudgetOverrides:     msg.BudgetOverrides,
+		Labels:              msg.Labels,
+		ExecutionPolicyRef:  msg.ExecutionPolicyRef,
+		ConcurrencyLimit:    int(msg.ConcurrencyLimit),
+		RecoveryWorkflowRef: msg.RecoveryWorkflowRef,
+	}
+	if err := ValidateCreateWorkerInput(&in); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	slug, err := normalizeSlug(msg.Slug, name)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	description, err := validateTextField(msg.Description, maxDescLen, "description")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	purpose, err := validateTextField(msg.Purpose, maxPurposeLen, "purpose")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	versionNote, err := validateTextField(msg.VersionNote, maxVersionNoteLen, "version_note")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	runtimeRef, err := validateTextField(msg.RuntimeRef, maxNameLen, "runtime_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	modelRef, err := validateTextField(msg.ModelRef, maxNameLen, "model_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	systemPrompt, err := validateTextField(msg.SystemPrompt, maxPromptLen, "system_prompt")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	role, err := validateTextField(msg.Role, maxPromptLen, "role")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	skills, err := validateTextField(msg.Skills, maxPromptLen, "skills")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	behavior, err := validateTextField(msg.Behavior, maxPromptLen, "behavior")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	agentsMD, err := validateTextField(msg.AgentsMd, maxPromptLen, "agents_md")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	executionPolicyRef, err := validateTextField(msg.ExecutionPolicyRef, maxNameLen, "execution_policy_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	recoveryWorkflowRef, err := validateTextField(msg.RecoveryWorkflowRef, maxNameLen, "recovery_workflow_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	contextSources, err := validateJSONField(msg.ContextSources, "[]", "context_sources", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	permissions, err := validateJSONField(msg.Permissions, "{}", "permissions", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	gatedTools, err := validateJSONField(msg.GatedTools, "[]", "gated_tools", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	budgetOverrides, err := validateJSONField(msg.BudgetOverrides, "{}", "budget_overrides", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	labels, err := validateJSONField(msg.Labels, "{}", "labels", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	concurrencyLimit := int(msg.ConcurrencyLimit)
-	if concurrencyLimit < 0 {
-		concurrencyLimit = 0
-	}
-
-	workerID := db.NewID()
-	versionID := db.NewID()
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -145,80 +90,14 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	defer ttx.Rollback(ctx)
 
-	// Dedupe the slug against the tenant so clones and re-created workers
-	// never hit the unique workers_tenant_slug_idx constraint: append -2, -3,
-	// ... until the slug is free.
-	slug, err = uniqueSlug(ctx, ttx.Tx, tenantID, slug)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	workerRow := db.WorkerRow{
-		ID:             workerID,
-		TenantID:       tenantID,
-		Name:           name,
-		Slug:           slug,
-		Description:    description,
-		Purpose:        purpose,
-		Status:         domain.WorkerDraft,
-		CurrentVersion: 0,
-		CreatedBy:      "", // populated when auth lands (Phase 9)
-	}
-	created, err := db.CreateWorker(ctx, ttx.Tx, workerRow)
+	created, createdVersion, err := CreateWorkerTx(ctx, ttx.Tx, in)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-
-	// Structured prompt fields are the source of truth for the version; the
-	// composed system_prompt is derived so the DB column always matches what
-	// dispatch would send. Legacy clients that only send system_prompt keep
-	// working (structured fields stay empty and the raw prompt is stored).
-	versionRow := db.WorkerVersionRow{
-		ID:                  versionID,
-		TenantID:            tenantID,
-		WorkerID:            workerID,
-		Version:             1,
-		VersionNote:         versionNote,
-		Status:              domain.WorkerVersionDraft,
-		RuntimeRef:          runtimeRef,
-		ModelRef:            modelRef,
-		Role:                role,
-		Skills:              skills,
-		Behavior:            behavior,
-		AgentsMD:            agentsMD,
-		ContextSources:      contextSources,
-		Permissions:         permissions,
-		GatedTools:          gatedTools,
-		BudgetOverrides:     budgetOverrides,
-		ExecutionPolicyRef:  executionPolicyRef,
-		ConcurrencyLimit:    concurrencyLimit,
-		RecoveryWorkflowRef: recoveryWorkflowRef,
-		Labels:              labels,
-	}
-	if role == "" && skills == "" && behavior == "" && agentsMD == "" {
-		versionRow.SystemPrompt = systemPrompt
-	} else {
-		versionRow.SystemPrompt = composeWorkerPrompt(versionRow)
-	}
-	createdVersion, err := db.CreateWorkerVersion(ctx, ttx.Tx, versionRow)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-
-	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.created", created, createdVersion); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.created", "worker", created.ID,
-		nil, audit.Snapshot(map[string]any{
-			"id": created.ID, "name": created.Name, "slug": created.Slug, "status": created.Status,
-			"version": createdVersion.Version, "model_ref": createdVersion.ModelRef,
-		})); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("worker created", "id", created.ID, "tenant", tenantID, "slug", slug)
+	s.log.Info("worker created", "id", created.ID, "tenant", tenantID, "slug", created.Slug)
 	return connect.NewResponse(&apiv1.CreateWorkerResponse{
 		Worker:  workerRowToProto(created),
 		Version: versionRowToProto(createdVersion),
