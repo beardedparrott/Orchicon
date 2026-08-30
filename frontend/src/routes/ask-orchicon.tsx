@@ -444,12 +444,20 @@ function AskOrchiconPage() {
   }, [activeConv?.mode]);
 
   // The reply (or error) is persisted under the acked assistant message id.
-  // When it appears via polling, the turn is over — clear the ACTIVE
-  // conversation's stream slot (other conversations keep their own state,
-  // so a turn running while you browse elsewhere stays intact). When the
-  // acked message came back as an ERROR (reply failed after ack), the sent
-  // text is copied to the clipboard and the composer is signalled to put it
-  // back in the box so the user never loses what they typed on a failed reply.
+  // When it appears via polling AND the turn is no longer in flight, the turn
+  // is over — clear the ACTIVE conversation's stream slot (other conversations
+  // keep their own state, so a turn running while you browse elsewhere stays
+  // intact). When the acked message came back as an ERROR (reply failed after
+  // ack), the sent text is copied to the clipboard and the composer is
+  // signalled to put it back in the box so the user never loses what they
+  // typed.
+  //
+  // The server mirrors the running reply into the acked row as it is collected
+  // (partial content), so a row under pendingReplyId can exist WHILE the turn
+  // is still running — a refreshed / second-tab client watches it grow via the
+  // 2s ListMessages poll. The turn registry is the terminal authority:
+  // finalizing only when serverTurnInFlight is false keeps a partial row from
+  // collapsing the re-attached streaming state (Stop button + banner) early.
   //
   // This effect does NOT depend on `streams` (which changes on every streaming
   // chunk): clearing the slot on every chunk while the local stream is still
@@ -463,6 +471,7 @@ function AskOrchiconPage() {
     if (liveStreamRef.current[activeConvId]) return;
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
+    if (serverTurnInFlight) return;
     if (acked.metadata?.error) {
       // Reply failed after the message was acked. The composer already cleared
       // on send (the message is persisted in history), but copy the sent text
@@ -493,7 +502,7 @@ function AskOrchiconPage() {
     }));
     delete sentTextRef.current[activeConvId];
     qc.invalidateQueries({ queryKey: askKeys.conversations });
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast, serverTurnInFlight]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -505,13 +514,12 @@ function AskOrchiconPage() {
   // stream until it completes.
   //
   // The server's turn flag can LAG the persisted reply by up to a poll cycle
-  // (the registry entry is removed before the reply row is written). Re-arming
-  // a turn whose reply is already persisted would ping-pong with the completion
-  // effect — clearing here, re-arming there — flickering the Stop button and
-  // re-sticking the scroll on every toggle. The acked assistant message only
-  // ever exists in messages once the reply is persisted (never as a placeholder
-  // at ack time), so skip re-arming when it is present: the turn is genuinely
-  // done and the stale flag will clear on the next conversations poll.
+  // (the registry entry is removed before the reply row is written). The acked
+  // assistant message row is mirrored as the reply is collected, so a row's
+  // presence does NOT mean the turn is done — re-arm whenever the server
+  // reports the turn in flight with a pending id, and let the completion
+  // effect (which waits for turn_in_flight to clear) resolve the slot once the
+  // final reply lands.
   useEffect(() => {
     if (!activeConvId) return;
     const server = conversations?.find((c) => c.id === activeConvId);
@@ -523,7 +531,7 @@ function AskOrchiconPage() {
       server?.pendingAssistantMessageId ||
       activeConv?.pendingAssistantMessageId ||
       "";
-    if (pendingId && messages?.some((m) => m.id === pendingId)) return;
+    if (!pendingId) return;
     setStream(activeConvId, (prev) => {
       if (prev.isStreaming) return prev;
       return {
@@ -537,7 +545,7 @@ function AskOrchiconPage() {
         items: [],
       };
     });
-  }, [activeConvId, activeConv, conversations, streams, messages, setStream]);
+  }, [activeConvId, activeConv, conversations, streams, setStream]);
 
   // Keep the slot's turnProgressing fresh while a server turn is re-attached:
   // it is set once at re-arm, but the server recomputes it on every
@@ -1253,7 +1261,7 @@ function AskOrchiconPage() {
                   <div className="flex flex-col items-center gap-1">
                     <p className="text-xs text-muted-foreground">
                       {turnProgressing
-                        ? "Connection lost — still working… You can interject or stop this reply."
+                        ? "Connection interrupted — still working… Output continues below. You can interject or stop this reply."
                         : "Turn stalled — the model stopped responding. You can stop this reply and try again."}
                     </p>
                     {/* Live "last activity Ns ago" ticker from the server's

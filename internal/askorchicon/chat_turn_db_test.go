@@ -420,6 +420,81 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 	waitForMessage(t, pool, convID, firstAck)
 }
 
+// TestPartialReplyMirroredWhileTurnRuns verifies a refreshed / second-tab
+// client can watch the reply grow: the collector mirrors collected text into
+// the acked assistant message row WHILE the turn is still in flight (the
+// ListMessages poll renders it), and the finalize upserts the complete reply
+// over the partial — exactly one row, terminal content.
+func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// First text chunk — the acked row appears with partial content while the
+	// turn is still running (no idle yet) and still reports in flight.
+	client.sub.feed(busText("ses_1", "part one"))
+	partial := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(partial.Content) != "part one" {
+		t.Fatalf("partial content = %q, want %q (mirrored while the turn runs)", partial.Content, "part one")
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight while the partial row is visible")
+	}
+
+	// Second chunk + idle — the SAME row is upserted to the complete reply.
+	client.sub.feed(busText("ses_1", "part two"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var final *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				final = &msgs[i]
+				break
+			}
+		}
+		if final != nil && strings.TrimSpace(final.Content) == "part one\n\npart two" {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("final reply never upserted over the partial")
+		}
+	}
+
+	// Exactly one row for the acked id (the partial was upserted, not
+	// duplicated) and the turn released.
+	if count := countMessageRows(t, pool, convID, ackID); count != 1 {
+		t.Errorf("acked id has %d rows, want exactly 1 (partial upserted)", count)
+	}
+	if _, ok := s.turns.get(convID); ok {
+		t.Error("turn must be released once the reply finalizes")
+	}
+}
+
+// countMessageRows returns how many rows exist for a message id (partial
+// mirroring must upsert, never duplicate).
+func countMessageRows(t *testing.T, pool *db.Pool, convID, id string) int {
+	t.Helper()
+	n := 0
+	for _, m := range listMessages(t, pool, convID) {
+		if m.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
 // TestAbortConversationTurn verifies the Stop path: it cancels the registered
 // turn and aborts the conversation's opencode session via SessionClient,
 // keeping the session alive for the next message.
