@@ -228,7 +228,7 @@ export function ExecutionContextSidebar({
   // `entered` is the CUMULATIVE re-send sum (each usage_records row is the
   // full per-step_finish request size, so the sum grows with every model
   // call — a transport/spend figure, NOT the model's working set). It is
-  // surfaced separately as the cumulative billed footer.
+  // surfaced separately as the cumulative bar.
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
@@ -305,6 +305,13 @@ export function ExecutionContextSidebar({
     effectiveContextWindow > 0
       ? Math.min(100, Math.round((totalTokens / effectiveContextWindow) * 100))
       : 0;
+  const cumulativePct =
+    effectiveContextWindow > 0
+      ? Math.min(
+          100,
+          Math.round((usageBreakdown.entered / effectiveContextWindow) * 100),
+        )
+      : 0;
 
   const statusLabel = EXEC_STATUS_LABELS[exec.status] ?? "unknown";
   const statusClass =
@@ -322,14 +329,16 @@ export function ExecutionContextSidebar({
       : stats.lastAssistantText
     : "—";
 
-  // Token % bars for the working-set mix key off the PEAK FRESH row buckets
-  // (prompt+completion+reasoning, cache excluded) — the same basis as the
-  // Context card's working-set %, so the Messages breakdown is slices of the
-  // same number the Context card shows. Cache reads/writes are NOT baked in;
-  // they're shown separately in the cumulative cache-transport section.
+  // Token % bars key off the PEAK FRESH row buckets (prompt+completion+
+  // reasoning, cache excluded) and the cumulative sums — both measured
+  // against the resolved total context window (capped at 100%). Cache
+  // reads/writes are NOT baked in; they're shown separately in the
+  // cumulative cache-transport section.
   const peakBuckets = usageBreakdown.peakBuckets;
-  const peakRolePct = (n: number) =>
-    totalTokens > 0 ? Math.round((n / totalTokens) * 100) : 0;
+  const rolePctVsWindow = (n: number) =>
+    effectiveContextWindow > 0
+      ? Math.min(100, Math.round((n / effectiveContextWindow) * 100))
+      : 0;
 
   return (
     <aside className="space-y-3 lg:sticky lg:top-4">
@@ -360,29 +369,38 @@ export function ExecutionContextSidebar({
           <span className="font-mono">{fmtNum(totalTokens)} tokens</span>
           <span>
             {effectiveContextWindow > 0 ? (
-              <>
-                peak working set / {fmtNum(effectiveContextWindow)} window
-              </>
+              <>peak working set / {fmtNum(effectiveContextWindow)} window</>
             ) : (
               "working set (model window unknown)"
             )}
           </span>
         </div>
-        {usageBreakdown.entered > totalTokens && (
-          <div className="mt-1.5 border-t pt-1 text-[10px] text-muted-foreground">
-            <div>
-              Cumulative billed:{" "}
-              <span className="font-mono">
-                {fmtNum(usageBreakdown.entered)} tokens · ${cost.toFixed(4)}
-              </span>
+        {usageBreakdown.entered > 0 && (
+          <div className="mt-2 border-t pt-1.5">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  cumulativePct > 80
+                    ? "bg-red-500"
+                    : cumulativePct > 50
+                      ? "bg-amber-500"
+                      : "bg-emerald-500",
+                )}
+                style={{ width: `${Math.max(cumulativePct, 2)}%` }}
+              />
             </div>
-            <div>
-              (of which{" "}
+            <div className="mt-1 flex items-baseline justify-between text-xs text-muted-foreground">
               <span className="font-mono">
-                {fmtNum(usageBreakdown.cacheRead)}
-              </span>{" "}
-              cache-read re-sent each turn — that's transport, not the{" "}
-              {fmtNum(totalTokens)}-token working set above)
+                {fmtNum(usageBreakdown.entered)} tokens
+              </span>
+              <span>
+                {effectiveContextWindow > 0 ? (
+                  <>cumulative / {fmtNum(effectiveContextWindow)} window</>
+                ) : (
+                  "cumulative (model window unknown)"
+                )}
+              </span>
             </div>
           </div>
         )}
@@ -454,36 +472,54 @@ export function ExecutionContextSidebar({
           />
         </div>
         {usageBreakdown.entered > 0 && (
-          <div className="mt-3 space-y-1">
-            <div className="text-[10px] text-muted-foreground">
-              Token mix at peak working set (of {fmtNum(totalTokens)}, cache
-              excluded)
-            </div>
-            <TokenBar
-              label="Input"
-              count={peakBuckets.prompt}
-              pct={peakRolePct(peakBuckets.prompt)}
-              color="bg-blue-500"
-            />
-            <TokenBar
-              label="Output"
-              count={peakBuckets.completion}
-              pct={peakRolePct(peakBuckets.completion)}
-              color="bg-violet-500"
-            />
-            {peakBuckets.reasoning > 0 && (
+          <div className="mt-3 space-y-2">
+            <div>
+              <div className="mb-1 text-[10px] text-muted-foreground">
+                Context window (input/output)
+              </div>
               <TokenBar
-                label="Reasoning"
-                count={peakBuckets.reasoning}
-                pct={peakRolePct(peakBuckets.reasoning)}
-                color="bg-amber-500"
+                label="Input"
+                count={peakBuckets.prompt}
+                pct={rolePctVsWindow(peakBuckets.prompt)}
+                color="bg-blue-500"
               />
-            )}
+              <TokenBar
+                label="Output"
+                count={peakBuckets.completion}
+                pct={rolePctVsWindow(peakBuckets.completion)}
+                color="bg-violet-500"
+              />
+              {peakBuckets.reasoning > 0 && (
+                <TokenBar
+                  label="Reasoning"
+                  count={peakBuckets.reasoning}
+                  pct={rolePctVsWindow(peakBuckets.reasoning)}
+                  color="bg-amber-500"
+                />
+              )}
+            </div>
+            <div className="border-t border-dashed pt-1.5">
+              <div className="mb-1 text-[10px] text-muted-foreground">
+                Cumulative (input/output)
+              </div>
+              <TokenBar
+                label="Input"
+                count={usageBreakdown.prompt}
+                pct={rolePctVsWindow(usageBreakdown.prompt)}
+                color="bg-blue-500"
+              />
+              <TokenBar
+                label="Output"
+                count={usageBreakdown.completion}
+                pct={rolePctVsWindow(usageBreakdown.completion)}
+                color="bg-violet-500"
+              />
+            </div>
             {/* Cache transport is a SEPARATE figure from the working set —
                 it's cumulative re-sends of already-counted tokens, so it
                 gets its own bar + hit-rate %, not a slice of the mix. */}
             {(usageBreakdown.cumCacheRead > 0 || usageBreakdown.cumCacheWrite > 0) && (
-              <div className="mt-2 border-t border-dashed pt-1.5">
+              <div className="border-t border-dashed pt-1.5">
                 <div className="mb-1 flex items-center justify-between text-[10px]">
                   <span className="font-medium uppercase tracking-wider text-muted-foreground">
                     Cache transport (cumulative)
@@ -523,11 +559,6 @@ export function ExecutionContextSidebar({
                 )}
               </div>
             )}
-            <div className="mt-1 border-t pt-1 text-[10px] text-muted-foreground">
-              Cumulative (billed): {fmtNum(usageBreakdown.prompt)} input ·{" "}
-              {fmtNum(usageBreakdown.cacheRead)} cache read ·{" "}
-              {fmtNum(usageBreakdown.completion)} output
-            </div>
           </div>
         )}
       </div>
