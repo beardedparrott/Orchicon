@@ -40,7 +40,7 @@ make container-build                  # build bin/orchicon + the container image
 scripts/container.sh down dev && scripts/container.sh up dev   # restart with the new image
 ```
 
-Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing compose-era Postgres volumes. **The DEV instance is the default and only instance for development work. Never create, mutate, or delete data on the PROD instance.**
+Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing compose-era Postgres volumes. Dev is the default instance for hands-on development; prod runs the pipeline (the work items, workers, and workflows you schedule there). Worker access to an instance's data is role-scoped through the worker's identity, and the `:orchicon-dev` sandbox plane keeps worker DB tests out of real data — there is no dev-vs-prod instance choice a worker must manage.
 
 **Disk hygiene:** the Go build cache grows to tens of GB (`~/.cache/go-build`) and repeated container builds leave dangling Docker images. Reclaim with `make clean` (go cache + `bin/`) and `make clean-docker` (dangling images + stopped containers + unused volumes). The serve/detached log auto-rotates and is pruned via Settings → Defaults → Log management — never `rm` a live log by hand. Run `make clean` at the end of a heavy dev session, and check `make cache-check` before starting work.
 

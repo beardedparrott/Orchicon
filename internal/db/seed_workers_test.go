@@ -396,10 +396,10 @@ func TestSeedVisionWorkersCarryPlaywright(t *testing.T) {
 	}
 }
 
-// TestSeedCannedWorkersCarryDevOnlyGuard: every canned worker's agents_md
-// must carry the DEV-ONLY instruction (never touch the PROD instance), the
-// safety marker at the current version, and the develop-first git workflow.
-func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
+// TestSeedCannedWorkersCarrySandboxPlaneGuard: every canned worker's agents_md
+// must carry the sandbox-vs-plane instruction, must NOT carry prod/dev
+// instance wording, and must carry the safety marker at the current version.
+func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 	const cannedID = "w_se_senior_software_engineer"
@@ -413,11 +413,13 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 		cannedID).Scan(&agents); err != nil {
 		t.Fatalf("query canned agents: %v", err)
 	}
-	if !strings.Contains(agents, "DEV-ONLY") {
-		t.Errorf("canned worker must carry the DEV-ONLY prod guard")
+	if !strings.Contains(agents, "Sandbox vs plane") {
+		t.Errorf("canned worker must carry the sandbox-vs-plane instruction")
 	}
-	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
-		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
+	for _, forbid := range []string{"DEV-ONLY", "orchicon-cnt-prod", "orchicon-cnt-dev"} {
+		if strings.Contains(agents, forbid) {
+			t.Errorf("canned worker must not carry prod/dev instance wording (contains %q)", forbid)
+		}
 	}
 	if !strings.Contains(agents, "orchicon.safety=v20") {
 		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v20)")

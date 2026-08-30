@@ -4,7 +4,7 @@
 # The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/
 # Grafana, control plane) runs inside ONE container via `orchicon
 # container` (the binary is the PID-1 supervisor). This script manages
-# two isolated instances — dev and prod (dogfooding) — as two containers
+# two isolated instances — dev and prod — as two containers
 # on offset published ports with separate data volumes.
 #
 # Usage:
@@ -208,7 +208,7 @@ build_image() {
     fi
   fi
 
-  # Orchicon-dev variant (dogfooding): Go/Node/buf/atlas + baked Postgres so
+  # Orchicon-dev variant: Go/Node/buf/atlas + baked Postgres so
   # a worker can build and DB-test the Orchicon repo in-sandbox.
   local RT_DEV_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.dev"
   if [ -f "$RT_DEV_DOCKERFILE" ]; then
