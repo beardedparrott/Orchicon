@@ -629,7 +629,7 @@ func CreateApiKey(ctx context.Context, tx pgx.Tx, r ApiKeyRow) (ApiKeyRow, error
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at, last_used_at, version, created_at, updated_at`
 	err = tx.QueryRow(ctx, q, r.ID, r.TenantID, r.IdentityID, r.Name, r.KeyPrefix, r.KeyHash, scopes, r.Status, r.ExpiresAt).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -647,7 +647,7 @@ func GetApiKey(ctx context.Context, tx pgx.Tx, tenantID, id string) (ApiKeyRow, 
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -699,7 +699,7 @@ func UpdateApiKeyStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status str
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, status, tenantID, id, expectedVersion).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -721,7 +721,7 @@ func RotateApiKeyHash(ctx context.Context, tx pgx.Tx, tenantID, id, prefix, hash
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, prefix, hash, tenantID, id, expectedVersion).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -745,7 +745,7 @@ func LookupApiKeyByHash(ctx context.Context, p *Pool, hash string) (ApiKeyRow, e
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := p.QueryRow(ctx, q, hash).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
