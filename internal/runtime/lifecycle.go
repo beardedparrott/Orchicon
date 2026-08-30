@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +23,51 @@ import (
 // devTenantID mirrors the single-dev-tenant assumption used by the
 // reconcilers (docs/03 §1). Multi-tenant scheduling arrives with auth.
 const devTenantID = "tnt_dev"
+
+// worktreeDirName mirrors the WorktreeReconciler's namespace under
+// project_dir where per-run worktrees are provisioned
+// (internal/scheduler/worktree_reconciler.go). The runtime layer must know
+// it so the composite worktree MCP tools can be pointed at the run's
+// worktree instead of the project root.
+const worktreeDirName = ".orchicon-worktrees"
+
+// runWorktreeBase resolves the base directory the composite worktree MCP
+// tools (batch_read/batch_grep/batch_write) resolve relative paths against
+// for a run's container serve. For a git-backed project the run gets a
+// provisioned worktree at the deterministic path
+// <projectDir>/.orchicon-worktrees/<runID> and executions run inside it —
+// so the batch tools MUST resolve there, never at the project root (a
+// project-root base silently writes into the main checkout, violating
+// worktree hygiene). Non-repo projects run in place at projectDir. Mirrors
+// the WorktreeReconciler's isInsideWorkTree decision so the baked base
+// matches the execution cwd.
+func runWorktreeBase(ctx context.Context, projectDir, runID string) string {
+	if projectDir == "" {
+		return ""
+	}
+	if isInsideWorkTree(ctx, projectDir) {
+		return filepath.Join(projectDir, worktreeDirName, runID)
+	}
+	return projectDir
+}
+
+// isInsideWorkTree mirrors the WorktreeReconciler's git check
+// (`git rev-parse --is-inside-work-tree` exits 0 and prints "true"). A
+// non-zero exit or "false" output means not a git repo / not a work tree —
+// the non-repo skip signal that keeps the execution in place at projectDir.
+// A missing git binary or nonexistent dir is treated as non-repo (the run
+// proceeds in place), matching the reconciler.
+func isInsideWorkTree(ctx context.Context, projectDir string) bool {
+	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
 
 // Lifecycle decides WHEN workflow runtime containers are created and
 // reaped based on workflow run state, and gates execution dispatch on the
@@ -117,9 +163,19 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			req.Secrets[k] = v
 		}
 	}
-	// Serve config is built last so the in-container project dir is available
-	// for the composite worktree batch tools (batch_read/grep/write).
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID, planeEnv)
+	// Serve config is built last so the composite worktree batch tools
+	// (batch_read/grep/write) resolve against the RUN'S WORKTREE, not the
+	// project root: the worker's session cwd is the run worktree
+	// (executionDir), so a batch tool resolving relative paths against the
+	// project root silently writes into the main checkout — the worktree
+	// hygiene violation observed in automation runs (research/ pollution in
+	// the develop checkout). The run worktree path is deterministic
+	// (<projectDir>/.orchicon-worktrees/<runID>) for git-backed projects
+	// (the WorktreeReconciler provisions exactly that path); non-repo
+	// projects run in place at the project dir. Mirror the reconciler's
+	// isInsideWorkTree decision so the baked base matches the eventual
+	// execution cwd.
+	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
 	// or the per-instance data-dir key); the daemon blindly injects -e (same

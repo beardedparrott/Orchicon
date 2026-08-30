@@ -185,11 +185,20 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // (the legacy one-shot fallback was removed).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
 	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+		// The composite worktree MCP tools resolve relative paths against
+		// ORCHICON_MCP_WORKTREE_DIR, which must be the execution's working
+		// directory — the run worktree when provisioned, else the project
+		// dir — NOT the project root. Passing the project root here (the
+		// pre-fix behavior) made batch_write land in the main checkout
+		// instead of the run worktree (worktree hygiene violation).
+		// executionDir mirrors the reconciler's cwd resolution, so the
+		// serve config baked for a self-healed/recreated container carries
+		// the same base the run-start gate uses.
 		resp, err := a.rt.Create(ctx, runtime.CreateRequest{
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir, manifest.RuntimeWorkflowID, nil),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, executionDir(manifest), manifest.RuntimeWorkflowID, nil),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {

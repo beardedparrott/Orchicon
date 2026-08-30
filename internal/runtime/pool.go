@@ -91,6 +91,20 @@ func poolEnvKey(req CreateRequest, hostFp string) string {
 	for _, m := range mounts {
 		_, _ = io.WriteString(h, fmt.Sprintf("%s:%s\n", m.Source, m.Dest))
 	}
+	// The serve config (OPENCODE_CONFIG_CONTENT) is baked into the
+	// container at create time and CANNOT change on a live container: it
+	// carries the worktree MCP base dir, the plane channel env, and the
+	// permission rules — all run-scoped. A warm pooled container whose
+	// serve config differs from the requesting run's MUST NOT be reused:
+	// e.g. a container baked before the plane channel existed (or with a
+	// different run's worktree base / plane token) would serve stale,
+	// wrong-scope credentials and tools. Fold the config into the env key
+	// so runs needing a different serve config get a fresh container with
+	// their own baked config. resetAndPool recomputes the key from the
+	// entry's OWN serveCfg, so pooled entries stay consistently keyed.
+	if req.ServeConfig != "" {
+		_, _ = io.WriteString(h, "cfg="+req.ServeConfig+"\n")
+	}
 	if hostFp != "" {
 		_, _ = io.WriteString(h, "host="+hostFp+"\n")
 	}
