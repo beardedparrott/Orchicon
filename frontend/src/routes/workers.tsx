@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+
+import { useListRoles } from "@/api/auth";
 import { Link, createRoute } from "@tanstack/react-router";
 import { Trash2, SearchX, FolderPlus, GripVertical, PencilLine } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
@@ -65,6 +67,12 @@ function WorkersPage() {
   const { ensureSeeded } = prefs;
 
   // Seed all workers into categories on first load
+  const { data: roles } = useListRoles();
+  const roleNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of roles ?? []) m.set(r.id, r.name);
+    return m;
+  }, [roles]);
   const workerIds = useMemo(
     () => (workers ? workers.map((it) => (it as WorkerListItem).worker!.id) : []),
     [workers],
@@ -443,6 +451,14 @@ function WorkerRow({
               {worker.purpose && (
                 <span className="max-w-[200px] truncate">
                   {worker.purpose}
+                </span>
+              )}
+              {worker.roleRef && (
+                <span
+                  className="rounded-full border border-input px-2 py-0.5 font-mono"
+                  title={worker.roleRef}
+                >
+                  {roleNameById.get(worker.roleRef) ?? worker.roleRef}
                 </span>
               )}
               <span>v{worker.currentVersion}</span>

@@ -167,6 +167,13 @@ export class Worker extends Message<Worker> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * RBAC role binding (header-level); empty = no plane access (deny-by-default)
+   *
+   * @generated from field: string role_ref = 13;
+   */
+  roleRef = "";
+
   constructor(data?: PartialMessage<Worker>) {
     super();
     proto3.util.initPartial(data, this);
@@ -187,6 +194,7 @@ export class Worker extends Message<Worker> {
     { no: 10, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 11, name: "created_at", kind: "message", T: Timestamp },
     { no: 12, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 13, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Worker {

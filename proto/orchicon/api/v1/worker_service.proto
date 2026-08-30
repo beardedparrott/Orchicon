@@ -118,6 +118,7 @@ message CreateWorkerRequest {
   string skills = 20;
   string behavior = 21;
   string agents_md = 22;
+  string role_ref = 23; // optional RBAC role binding; empty = no plane access
 }
 
 message CreateWorkerResponse {
@@ -130,6 +131,10 @@ message UpdateWorkerRequest {
   string name = 2;
   string description = 3; // Markdown
   string purpose = 4;
+  // Role binding with presence: set to a role id to bind, "" to clear.
+  // Unlike name/description/purpose (draft-only), the role binding is
+  // editable on published workers (it lives on the header, not the version).
+  optional string role_ref = 5;
 }
 
 message UpdateWorkerResponse {

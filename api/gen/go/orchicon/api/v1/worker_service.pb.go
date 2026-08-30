@@ -111,6 +111,7 @@ type CreateWorkerRequest struct {
 	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
 	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`
 	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
+	RoleRef       string `protobuf:"bytes,23,opt,name=role_ref,json=roleRef,proto3" json:"role_ref,omitempty"` // optional RBAC role binding; empty = no plane access
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -299,6 +300,13 @@ func (x *CreateWorkerRequest) GetAgentsMd() string {
 	return ""
 }
 
+func (x *CreateWorkerRequest) GetRoleRef() string {
+	if x != nil {
+		return x.RoleRef
+	}
+	return ""
+}
+
 type CreateWorkerResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Worker        *Worker                `protobuf:"bytes,1,opt,name=worker,proto3" json:"worker,omitempty"`
@@ -352,11 +360,15 @@ func (x *CreateWorkerResponse) GetVersion() *WorkerVersion {
 }
 
 type UpdateWorkerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // Markdown
-	Purpose       string                 `protobuf:"bytes,4,opt,name=purpose,proto3" json:"purpose,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // Markdown
+	Purpose     string                 `protobuf:"bytes,4,opt,name=purpose,proto3" json:"purpose,omitempty"`
+	// Role binding with presence: set to a role id to bind, "" to clear.
+	// Unlike name/description/purpose (draft-only), the role binding is
+	// editable on published workers (it lives on the header, not the version).
+	RoleRef       *string `protobuf:"bytes,5,opt,name=role_ref,json=roleRef,proto3,oneof" json:"role_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -415,6 +427,13 @@ func (x *UpdateWorkerRequest) GetDescription() string {
 func (x *UpdateWorkerRequest) GetPurpose() string {
 	if x != nil {
 		return x.Purpose
+	}
+	return ""
+}
+
+func (x *UpdateWorkerRequest) GetRoleRef() string {
+	if x != nil && x.RoleRef != nil {
+		return *x.RoleRef
 	}
 	return ""
 }
@@ -2708,7 +2727,7 @@ var File_orchicon_api_v1_worker_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
-	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\xe2\x05\n" +
+	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\xfd\x05\n" +
 	"\x13CreateWorkerRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -2735,15 +2754,18 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
 	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
-	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\"\x81\x01\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x19\n" +
+	"\brole_ref\x18\x17 \x01(\tR\aroleRef\"\x81\x01\n" +
 	"\x14CreateWorkerResponse\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\x128\n" +
-	"\aversion\x18\x02 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"u\n" +
+	"\aversion\x18\x02 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xa2\x01\n" +
 	"\x13UpdateWorkerRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
-	"\apurpose\x18\x04 \x01(\tR\apurpose\"G\n" +
+	"\apurpose\x18\x04 \x01(\tR\apurpose\x12\x1e\n" +
+	"\brole_ref\x18\x05 \x01(\tH\x00R\aroleRef\x88\x01\x01B\v\n" +
+	"\t_role_ref\"G\n" +
 	"\x14UpdateWorkerResponse\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\"]\n" +
 	"\x1bPublishWorkerVersionRequest\x12\x1b\n" +
@@ -3110,6 +3132,7 @@ func file_orchicon_api_v1_worker_service_proto_init() {
 	}
 	file_orchicon_api_v1_worker_proto_init()
 	file_orchicon_api_v1_category_proto_init()
+	file_orchicon_api_v1_worker_service_proto_msgTypes[2].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[20].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[27].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[29].OneofWrappers = []any{}
