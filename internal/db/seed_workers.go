@@ -459,8 +459,70 @@ var cannedWorkers = []cannedWorker{
 // Idempotent — safe to call on every boot. A single failing worker (e.g. a
 // slug owned by a user-created worker that isn't adoptable) is logged and
 // skipped; the remaining canned workers still seed.
+// automationResearchRoleID is the role that grants the Automation Research
+// workers their plane-channel entitlements: read work items/usage and
+// create work items (the sanctioned automated write surface — items created
+// with run-context provenance land in IDEA state).
+const automationResearchRoleID = "r_se_automation_research"
+
+// researchWorkerRoleRefs maps the LIVE Automation Research worker records
+// to the automation-research role. The research workers are not canned
+// records (they were created live), so the seeder backfills their role_ref
+// on boot when empty — deny-by-default: everything else has no role_ref and
+// gets no plane channel.
+var researchWorkerRoleRefs = map[string]string{
+	"01M13DYHKHEF71MVGY07GMGMJ6": automationResearchRoleID, // Automation — Research Planner
+	"01M13DYJWHCYHWQ1X85J1BWWZ1": automationResearchRoleID, // Automation — Research Analyst
+	"01M13DYM3A7CTY8ECP4R7M33SR": automationResearchRoleID, // Automation — Research Synthesizer
+}
+
+// seedAutomationResearchRole creates the automation-research role
+// (idempotent).
+func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx) error {
+	if _, err := GetRole(ctx, tx, "tnt_dev", automationResearchRoleID); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	_, err := CreateRole(ctx, tx, RoleRow{
+		ID:           automationResearchRoleID,
+		TenantID:     "tnt_dev",
+		Name:         "automation-research",
+		Scope:        "tenant",
+		Entitlements: []string{"workitem:read", "workitem:write", "aigateway:read"},
+	})
+	return err
+}
+
 func SeedDevWorkers(ctx context.Context, p *Pool) error {
 	var errs []error
+	// Plane channel: seed the automation-research role and backfill the live
+	// research worker records' role_ref (idempotent; no-op for other rows).
+	{
+		ttx, terr := p.BeginTenantTx(ctx, "tnt_dev")
+		if terr != nil {
+			errs = append(errs, fmt.Errorf("seed automation role: begin tx: %w", terr))
+		} else {
+			ok := true
+			if err := seedAutomationResearchRole(ctx, ttx.Tx); err != nil {
+				errs = append(errs, fmt.Errorf("seed automation role: %w", err))
+				ok = false
+			}
+			for wid, rid := range researchWorkerRoleRefs {
+				if _, err := ttx.Tx.Exec(ctx,
+					`UPDATE workers SET role_ref = $1 WHERE id = $2 AND tenant_id = 'tnt_dev' AND role_ref = ''`,
+					rid, wid); err != nil {
+					errs = append(errs, fmt.Errorf("backfill worker %s role_ref: %w", wid, err))
+					ok = false
+				}
+			}
+			if !ok {
+				_ = ttx.Rollback(ctx)
+			} else if err := ttx.Commit(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("seed automation role: commit: %w", err))
+			}
+		}
+	}
 	for _, w := range cannedWorkers {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {

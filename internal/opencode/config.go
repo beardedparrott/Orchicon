@@ -414,6 +414,17 @@ type ConfigOptions struct {
 	// because the plane's own executable path (which builds the config) is
 	// not necessarily present inside the container.
 	MCPBinaryPath string
+	// PlaneMCP registers the plane-channel Orchicon MCP server
+	// (`orchicon-plane`): the `orchicon mcp` sidecar runs in API-client
+	// mode against the REAL instance's Connect API (ORCHICON_PLANE_URL)
+	// using a short-lived, role-scoped worker credential
+	// (ORCHICON_PLANE_TOKEN) — no Postgres DSN, no sandbox. Deny-by-default:
+	// only role-bound published workers get the channel (the runtime
+	// lifecycle mints the credential and threads it through planeEnv).
+	PlaneMCP bool
+	// PlaneMCPEnv are the environment variables for the plane-channel MCP
+	// server (ORCHICON_PLANE_URL, ORCHICON_PLANE_TOKEN, tenant + run ids).
+	PlaneMCPEnv map[string]string
 	// SkipUserMCP omits the operator's opencode-config MCP servers from the
 	// injected config. Required for the runtime-container serve: a SERVE
 	// eagerly connects to every configured MCP server at startup, and the
@@ -497,6 +508,11 @@ func BuildConfigContent(o ConfigOptions) string {
 	if o.OrchiconMCP && o.TenantID != "" {
 		if _, exists := mcp["orchicon"]; !exists {
 			mcp["orchicon"] = orchiconMCPServer(o.TenantID, o.MCPEnv, o.MCPBinaryPath)
+		}
+	}
+	if o.PlaneMCP {
+		if _, exists := mcp["orchicon-plane"]; !exists {
+			mcp["orchicon-plane"] = planeMCPServer(o.PlaneMCPEnv, o.MCPBinaryPath)
 		}
 	}
 	if o.CompositeTools && o.WorktreeDir != "" {
@@ -603,6 +619,28 @@ func orchiconBinaryPath() string {
 // executable) — the sandbox forces the daemon's runtime-container mount.
 func orchiconMCPServer(tenantID string, extraEnv map[string]string, binaryPath string) map[string]any {
 	env := map[string]string{"ORCHICON_MCP_TENANT_ID": tenantID}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	if binaryPath == "" {
+		binaryPath = orchiconBinaryPath()
+	}
+	return map[string]any{
+		"type":        "local",
+		"command":     []string{binaryPath, "mcp"},
+		"environment": env,
+		"enabled":     true,
+		"timeout":     15000,
+	}
+}
+
+// planeMCPServer builds the opencode MCP config entry for the plane
+// channel (`orchicon-plane`): the `orchicon mcp` sidecar runs in
+// API-client mode against the real instance (ORCHICON_PLANE_URL) with the
+// run's scoped worker credential (ORCHICON_PLANE_TOKEN). The sidecar
+// selects the plane registry from its env (see cmd/orchicon runMCP).
+func planeMCPServer(extraEnv map[string]string, binaryPath string) map[string]any {
+	env := map[string]string{}
 	for k, v := range extraEnv {
 		env[k] = v
 	}

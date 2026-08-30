@@ -20,6 +20,7 @@ type WorkerRow struct {
 	Slug           string
 	Description    string
 	Purpose        string
+	RoleRef        string
 	Status         string
 	CurrentVersion int
 	CreatedBy      string
@@ -77,17 +78,17 @@ func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bo
 // current_version starts at 0 (no published versions yet).
 func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error) {
 	const q = `INSERT INTO workers
-		(id, tenant_id, name, slug, description, purpose, status, current_version, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, tenant_id, name, slug, description, purpose, status,
+		(id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 			current_version, created_by, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.Name, w.Slug, w.Description, w.Purpose,
-		w.Status, w.CurrentVersion, w.CreatedBy,
+		w.RoleRef, w.Status, w.CurrentVersion, w.CreatedBy,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Description,
-		&row.Purpose, &row.Status, &row.CurrentVersion, &row.CreatedBy,
+		&row.Purpose, &row.RoleRef, &row.Status, &row.CurrentVersion, &row.CreatedBy,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -98,12 +99,12 @@ func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error
 
 // GetWorker fetches a single worker by id within the tenant scope.
 func GetWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkerRow, error) {
-	const q = `SELECT id, tenant_id, name, slug, description, purpose, status,
+	const q = `SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at
 		FROM workers WHERE id = $1 AND tenant_id = $2`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 		&w.CreatedAt, &w.UpdatedAt,
 	)

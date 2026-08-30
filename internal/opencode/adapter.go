@@ -189,7 +189,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir, manifest.RuntimeWorkflowID),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, manifest.ProjectDir, manifest.RuntimeWorkflowID, nil),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -231,7 +231,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag, projectDir, workflowRunID string) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  workerAgentPrompt,
@@ -249,6 +249,16 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string) string {
 		if workflowRunID != "" {
 			opts.MCPEnv["ORCHICON_MCP_WORKFLOW_RUN_ID"] = workflowRunID
 		}
+	}
+	// Plane channel: when the runtime lifecycle minted a role-scoped worker
+	// credential for this run, register the `orchicon-plane` MCP server so
+	// the worker gets `orchicon_plane_*` tools against the REAL instance.
+	// Orthogonal to the sandbox channel (dev images register `orchicon_*`
+	// against the in-container sandbox DB) — a role-bound worker on a dev
+	// image gets both.
+	if len(planeEnv) > 0 {
+		opts.PlaneMCP = true
+		opts.PlaneMCPEnv = planeEnv
 	}
 	// The orchicon binary is bind-mounted read-only at /usr/local/bin/orchicon
 	// in EVERY runtime container (the runtime daemon's own executable,
