@@ -81,12 +81,14 @@ type Lifecycle struct {
 	log    *slog.Logger
 	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
 	// container serve from its runtime image tag and in-container project dir.
-	// The Orchicon MCP is registered only for dev images (which boot the
-	// sandbox plane against a sandbox DB); base/gui images get a config
-	// identical to today. The project dir is threaded through because the
-	// composite worktree batch tools (batch_read/grep/write) need a base
-	// directory to resolve against — the project is mounted in-container at
-	// the same absolute path.
+	// The sandbox-scoped Orchicon MCP is registered only for dev images
+	// (which boot the sandbox plane against a sandbox DB); the plane-channel
+	// Orchicon MCP (`orchicon-plane`) is registered on EVERY image when the
+	// run's worker role grants it (planeEnv non-empty) — plane access is
+	// role-gated, never image-gated. The project dir is threaded through
+	// because the composite worktree batch tools (batch_read/grep/write) need
+	// a base directory to resolve against — the project is mounted
+	// in-container at the same absolute path.
 	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
@@ -96,9 +98,10 @@ type Lifecycle struct {
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
 // disable per-workflow runtime containers. serveConfigFor builds the
 // OPENCODE_CONFIG_CONTENT the container's opencode serve boots with from
-// the run's runtime image tag (permission rules only for base/gui images,
-// plus the sandbox-scoped Orchicon MCP for dev images — built by the
-// opencode package).
+// the run's runtime image tag (permission rules for every image, the
+// sandbox-scoped Orchicon MCP for dev images, and the plane-channel
+// Orchicon MCP on any image when the run's worker role grants it — built
+// by the opencode package).
 func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }

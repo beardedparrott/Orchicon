@@ -80,6 +80,8 @@ const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated wo
 	"The `:orchicon-dev` runtime image boots a **disposable in-container sandbox plane** (Postgres → NATS → `orchicon serve` on container-local ports) for building and DB-testing the Orchicon repo — it dies with the container and never touches the real instance's database. " +
 	"The **real instance** (the plane your work item was created on) holds the actual work items, workers, workflows, runs, and data. " +
 	"Your access to the real instance is **role-scoped through your worker identity**: use only the `orchicon_plane_*` tools for it, and only within the entitlements your role grants. " +
+	"The plane channel is **not image-gated**: `orchicon_plane_*` tools are registered on every runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your role grants access — only the sandbox `orchicon_*` tools require the `:orchicon-dev` image. " +
+	"If your worker has a role but no `orchicon_plane_*` tools appear, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do not conclude that real-instance access is dev-runtime-only. " +
 	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
 // lintBlock instructs review/QA workers to run the safety lint before
@@ -150,8 +152,9 @@ type cannedWorker struct {
 // sandboxPlaneBlock. The roll-forward check keys on it (alongside the
 // safety marker) so a wording change to the block reaches existing canned
 // workers on boot — the safety marker alone would leave the old wording in
-// place forever.
-const sandboxPlaneMarker = "Sandbox vs plane"
+// place forever. Bump it to a fragment of the NEW wording whenever the
+// block text changes.
+const sandboxPlaneMarker = "not image-gated"
 
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers: deliverables are committed + pushed to the run branch
@@ -530,7 +533,7 @@ var cannedWorkers = []cannedWorker{
 			"- Read `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
 			"- Write `research/brief-<date>.md` with spawn-ready manifests (verbatim title + description, evidence URLs with capture dates).\n" +
 			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in `research/plan.md`.\n" +
-			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). If the runtime has no plane access, ship the manifests in the brief for spawning from a sandbox runtime or the UI.\n\n" +
+			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
