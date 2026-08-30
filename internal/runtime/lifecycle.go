@@ -15,6 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
+	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/jackc/pgx/v5"
 )
 
 // devTenantID mirrors the single-dev-tenant assumption used by the
@@ -210,7 +212,15 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		_ = json.Unmarshal(wi.AssignedWorkerRef, &ref)
 	}
 	if ref.WorkerID == "" {
-		return nil, nil
+		// Workflow-driven runs (a recurring item bound to a template
+		// workflow) carry their workers on the run's STEPS, not on the work
+		// item — resolve the first published, role-bound step worker so the
+		// plane channel is available there too. Deny-by-default remains: no
+		// qualifying step worker → no channel.
+		ref.WorkerID = l.resolveWorkflowStepWorker(ctx, ttx.Tx, run)
+		if ref.WorkerID == "" {
+			return nil, nil
+		}
 	}
 	worker, err := db.GetWorker(ctx, ttx.Tx, run.TenantID, ref.WorkerID)
 	if err != nil {
@@ -256,6 +266,45 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
 	}, nil
+}
+
+// resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
+// referenced by any step of the run's workflow version, or "" when the run
+// is not a workflow run or no step worker qualifies (deny-by-default).
+//
+// The run's container and opencode serve are shared across all steps, so a
+// single run-level credential is minted for the first qualifying step
+// worker and the whole run speaks with that role's entitlements. Mixed-role
+// workflows (steps with different roles) are not yet supported — the first
+// qualifying worker's role wins and steps with other roles get no plane
+// channel; per-step minting is a follow-up.
+func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, run db.WorkflowRunRow) string {
+	if run.WorkflowID == "" {
+		return ""
+	}
+	wv, err := db.GetWorkflowVersion(ctx, tx, run.TenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		l.log.Warn("plane credential: workflow version lookup failed", "run", run.ID, "workflow", run.WorkflowID, "version", run.WorkflowVersion, "error", err)
+		return ""
+	}
+	steps, err := workflow.ParseSteps(wv.Steps)
+	if err != nil {
+		l.log.Warn("plane credential: workflow steps parse failed", "run", run.ID, "workflow", run.WorkflowID, "error", err)
+		return ""
+	}
+	for _, s := range steps {
+		if s.Ref == "" {
+			continue
+		}
+		w, werr := db.GetWorker(ctx, tx, run.TenantID, s.Ref)
+		if werr != nil {
+			continue
+		}
+		if w.Status == "published" && w.RoleRef != "" {
+			return w.ID
+		}
+	}
+	return ""
 }
 
 // EnsureForRun creates the runtime container for a workflow run
