@@ -20,6 +20,7 @@ type WorkerRow struct {
 	Slug           string
 	Description    string
 	Purpose        string
+	RoleRef        string
 	Status         string
 	CurrentVersion int
 	CreatedBy      string
@@ -77,17 +78,17 @@ func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bo
 // current_version starts at 0 (no published versions yet).
 func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error) {
 	const q = `INSERT INTO workers
-		(id, tenant_id, name, slug, description, purpose, status, current_version, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, tenant_id, name, slug, description, purpose, status,
+		(id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 			current_version, created_by, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.Name, w.Slug, w.Description, w.Purpose,
-		w.Status, w.CurrentVersion, w.CreatedBy,
+		w.RoleRef, w.Status, w.CurrentVersion, w.CreatedBy,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Description,
-		&row.Purpose, &row.Status, &row.CurrentVersion, &row.CreatedBy,
+		&row.Purpose, &row.RoleRef, &row.Status, &row.CurrentVersion, &row.CreatedBy,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -98,12 +99,12 @@ func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error
 
 // GetWorker fetches a single worker by id within the tenant scope.
 func GetWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkerRow, error) {
-	const q = `SELECT id, tenant_id, name, slug, description, purpose, status,
+	const q = `SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at
 		FROM workers WHERE id = $1 AND tenant_id = $2`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 		&w.CreatedAt, &w.UpdatedAt,
 	)
@@ -175,7 +176,7 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	q := fmt.Sprintf(`SELECT w.id, w.tenant_id, w.name, w.slug, w.description, w.purpose, w.status,
+	q := fmt.Sprintf(`SELECT w.id, w.tenant_id, w.name, w.slug, w.description, w.purpose, w.role_ref, w.status,
 		w.current_version, w.created_by, w.version, w.created_at, w.updated_at,
 		COALESCE(v.model_ref, ''), COALESCE(v.status, '')
 		FROM workers w
@@ -197,7 +198,7 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 	for rows.Next() {
 		var r WorkerListRow
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description,
-			&r.Purpose, &r.Status, &r.CurrentVersion, &r.CreatedBy, &r.Version,
+			&r.Purpose, &r.RoleRef, &r.Status, &r.CurrentVersion, &r.CreatedBy, &r.Version,
 			&r.CreatedAt, &r.UpdatedAt, &r.ActiveModelRef, &r.ActiveVersionStatus); err != nil {
 			return nil, fmt.Errorf("db: scan worker list row: %w", err)
 		}
@@ -238,7 +239,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, description, purpose, status,
+	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at
 		FROM workers
 		WHERE %s
@@ -253,7 +254,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	for rows.Next() {
 		var w WorkerRow
 		if err := rows.Scan(&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description,
-			&w.Purpose, &w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
+			&w.Purpose, &w.RoleRef, &w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 			&w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan worker: %w", err)
 		}
@@ -269,11 +270,11 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 	const q = `UPDATE workers
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, description, purpose, status,
+		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 			current_version, created_by, version, created_at, updated_at`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
-		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 		&w.CreatedAt, &w.UpdatedAt,
 	)
@@ -287,16 +288,22 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 }
 
 // UpdateWorkerFields is a partial update for worker header fields.
-// Only non-nil fields are written (field-mask semantics).
+// Only non-nil fields are written (field-mask semantics). RoleRef is the
+// exception to the draft-only rule: the role binding lives on the header
+// and is editable on published workers too (see UpdateWorker).
 type UpdateWorkerFields struct {
 	Name        *string
 	Description *string
 	Purpose     *string
+	RoleRef     *string
 }
 
 // UpdateWorker applies a partial update to worker header fields with
 // optimistic concurrency. Returns ErrNotFound if no row matches the
-// id+tenant+version. Only draft workers can be updated.
+// id+tenant+version. name/description/purpose are draft-only; the role
+// binding (RoleRef) is additionally editable on published workers — a
+// published worker can only change its role, never its other header
+// fields (mixed updates on a published worker fail the status gate).
 func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkerFields) (WorkerRow, error) {
 	q := `UPDATE workers SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -316,12 +323,19 @@ func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedV
 		args = append(args, *f.Purpose)
 		setIdx++
 	}
-	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` AND status = 'draft' RETURNING id, tenant_id, name, slug, description, purpose, status,
+	if f.RoleRef != nil {
+		q += fmt.Sprintf(`, role_ref = $%d`, setIdx)
+		args = append(args, *f.RoleRef)
+		setIdx++
+	}
+	onlyRole := f.Name == nil && f.Description == nil && f.Purpose == nil
+	q += fmt.Sprintf(` WHERE tenant_id = $1 AND id = $2 AND version = $3 AND (status = 'draft' OR $%d = true)`, setIdx)
+	args = append(args, onlyRole)
+	q += ` RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
-		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 		&w.CreatedAt, &w.UpdatedAt,
 	)
@@ -340,11 +354,11 @@ func UpdateWorkerCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id str
 	const q = `UPDATE workers
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, description, purpose, status,
+		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 			current_version, created_by, version, created_at, updated_at`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
-		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
 		&w.CreatedAt, &w.UpdatedAt,
 	)

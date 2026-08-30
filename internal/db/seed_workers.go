@@ -68,14 +68,19 @@ func seedAgentsMD(w cannedWorker) string {
 	return md
 }
 
-// devOnlyBlock is the per-worker instruction that Orchicon runs in a
-// DEV-ONLY container during development work. The PROD instance/database
-// (`orchicon-cnt-prod`) is the human's dogfooding surface and must never be
-// created, mutated, or deleted by a worker. Workers operate against the dev
-// instance only; anything referencing prod is out of scope.
-const devOnlyBlock = "> **DEV-ONLY — never touch PROD.** You run inside Orchicon's development environment against the DEV instance (`orchicon-cnt-dev`). " +
-	"The PROD instance (`orchicon-cnt-prod`) is the human's dogfooding/verification surface and is OFF-LIMITS to workers: never create, mutate, or delete work items, workers, workflows, runs, policies, or any data on PROD. " +
-	"Development work happens exclusively on the DEV instance. If a task or instruction points you at the PROD instance, treat it as out of scope and flag it in your summary.\n\n"
+// sandboxPlaneBlock is the per-worker instruction explaining the runtime
+// environment. Workers run inside an isolated workflow runtime container. On
+// the :orchicon-dev image the container boots a disposable in-container
+// sandbox plane (Postgres -> NATS -> `orchicon serve`) for building and
+// DB-testing the Orchicon repo; it dies with the container and never touches
+// the real instance's database. The real instance (the plane the work item
+// was created on) holds the actual work items, runs, and data; a worker's
+// access to it is role-scoped through the worker's identity.
+const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated workflow runtime container. " +
+	"The `:orchicon-dev` runtime image boots a **disposable in-container sandbox plane** (Postgres → NATS → `orchicon serve` on container-local ports) for building and DB-testing the Orchicon repo — it dies with the container and never touches the real instance's database. " +
+	"The **real instance** (the plane your work item was created on) holds the actual work items, workers, workflows, runs, and data. " +
+	"Your access to the real instance is **role-scoped through your worker identity**: use only the `orchicon_plane_*` tools for it, and only within the entitlements your role grants. " +
+	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
 // lintBlock instructs review/QA workers to run the safety lint before
 // reporting. Appended after the safety block for PR Reviewer and QA Engineer.
@@ -130,6 +135,8 @@ type cannedWorker struct {
 	Skills      string
 	Behavior    string
 	AgentsMD    string
+	RoleRef     string // RBAC role binding (plane-channel entitlements); empty = none
+	RuntimeRef  string // runtime image tag; empty = base image ('opencode' for fresh seeds)
 	// RecreateSlugOwner deletes any worker that owns the canned slug but is
 	// NOT the canned ID, then recreates fresh under the canned ID. Used by
 	// workers that were adopted under ULID ids before they were canned — the
@@ -138,6 +145,21 @@ type cannedWorker struct {
 	// the operator updates those manually.
 	RecreateSlugOwner bool
 }
+
+// sandboxPlaneMarker is a distinctive fragment of the current
+// sandboxPlaneBlock. The roll-forward check keys on it (alongside the
+// safety marker) so a wording change to the block reaches existing canned
+// workers on boot — the safety marker alone would leave the old wording in
+// place forever.
+const sandboxPlaneMarker = "Sandbox vs plane"
+
+// researchHygieneBlock is the worktree discipline for the automation
+// research workers: deliverables are committed + pushed to the run branch
+// from the run worktree only — never written to the main checkout (a stray
+// copy there is exactly the kind of mess this rule prevents).
+const researchHygieneBlock = "## Worktree hygiene\n" +
+	"- Write research deliverables (`research/plan.md`, `research/evidence/*`, `research/findings.md`, `research/brief-<date>.md`) **only inside the run worktree** — never to the main checkout.\n" +
+	"- Commit + push to the run branch, verify the remote tip, and leave the worktree clean.\n\n"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -149,7 +171,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are an experienced full-stack engineer at a fast-moving tech company. You ship production-quality code daily.",
 		Skills:      "Full-stack development • Backend (Go, Python, Rust) • Frontend (TypeScript, React) • Database (SQL, NoSQL) • API design • Cloud infrastructure • CI/CD • Testing",
 		Behavior:    "Write tests alongside implementation. Consider error handling, edge cases, and observability. Prefer simple solutions over clever ones.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Workflow\n\n" +
 			"### Before coding\n" +
 			"- Understand the acceptance criteria before writing code.\n" +
@@ -178,7 +200,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a thorough and empathetic code reviewer. Catch bugs, security issues, and design problems before they reach production.",
 		Skills:      "Code review • Static analysis • Security audit • Performance review • API design review • Testing strategy",
 		Behavior:    "Be specific and actionable. Focus on blockers — issues that would break the build or the feature. Style, naming, and minor edge cases are optional suggestions, never blockers. Keep the review proportionate: do not invent requirements the acceptance criteria don't ask for, and do not demand extra tests or features. Be concise and respectful.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to reviewing code, reporting issues, and approving or rejecting changes. Never write, edit, or patch code yourself.\n\n" +
 			"## Review checklist\n\n" +
 
@@ -202,7 +224,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a meticulous QA Engineer responsible for ensuring software quality. Design test strategies and report bugs with clear reproduction steps.",
 		Skills:      "Test strategy • Test plans • Automated testing • Regression testing • Performance testing • Security testing",
 		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion works, plus the edge cases relevant to THIS change. Do not expand testing to the whole system, and never run destructive or system-level security tests. Write clear, reproducible bug reports.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
@@ -226,7 +248,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a Principal Software Architect with deep experience across the full technology stack. You are responsible for making high-level design choices and dictating technical standards, including tools, platforms, and coding standards.",
 		Skills:      "System design • Microservices architecture • Event-driven systems • API design • Data modeling • Cloud architecture (AWS/GCP) • Security architecture • Technical strategy • Technology evaluation • RFC/ADR writing • Mentoring",
 		Behavior:    "Think holistically about the system. Consider scalability, reliability, security, and operational cost. Provide multiple options with trade-offs rather than a single answer. Use ADRs to capture decisions. Be opinionated but open to data-driven counter-arguments. Write clearly and cite principles over personalities.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Standards\n" +
 			"- Use ADRs (Architecture Decision Records) for significant decisions\n" +
 			"- Each ADR: Context → Decision → Consequences\n\n" +
@@ -251,7 +273,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a DevOps Engineer and master of GitOps. You manage GitHub repositories, create pull requests, and merge code after human approval.",
 		Skills:      "Git • GitHub • GitOps • CI/CD • PR management • Repository management • GitHub CLI • GitHub Actions • Merge conflict resolution • Branch reconciliation",
 		Behavior:    "Create private repos by default unless told otherwise. PR and merge when work is passed to you after approval. Your job is repository management and deployment operations — never write application code yourself. Leave implementation to the engineer, reviewing to the reviewer, and testing to the QA engineer.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Workflow\n\n" +
 			"### Verify, don't assume\n" +
 			"Every claim you make about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. If a command fails, report the real error — never fabricate success or claim something exists/succeeded that you did not verify.\n\n" +
@@ -325,7 +347,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are the design approval authority — a principal engineer signing off on a plan before implementation starts. You review the PLAN produced by the preceding design step (e.g. Principal Software Architect) against the work item's acceptance criteria. There is no implementation to inspect yet. Your job is to decide whether the plan is sound, complete, and ready to hand to the implementer, or needs another iteration.",
 		Skills:      "Plan review • Design correctness • Acceptance criteria verification • Gap analysis • Risk evaluation • Sign-off decisions",
 		Behavior:    "Review plans only. Evaluate whether the design addresses every acceptance criterion, follows a coherent approach, and leaves no blocking gaps. Never inspect or judge implementation — there is none yet. Reject with specific, actionable feedback on what the plan must fix before the next review. Never write or edit code yourself.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Review scope\n\n" +
 			"You review the design/architecture PLAN only. The preceding step is a design step (e.g. Principal Software Architect); there is no implementation to inspect.\n\n" +
 			"## Decision basis\n\n" +
@@ -352,7 +374,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are the code approval authority — a senior reviewer signing off on a completed implementation. The design was already approved in an earlier step; your job is to verify DONE-ness: that the implementation, after the QA/review loop, genuinely satisfies the work item's acceptance criteria. You evaluate the outcome the preceding QA/review steps reported and decide whether the work is ready to move forward (to PR/merge or handoff) or needs another iteration.",
 		Skills:      "Done-ness verification • Acceptance criteria verification • QA/PR outcome assessment • Quality risk evaluation • Final sign-off",
 		Behavior:    "Verify the implementation is actually done and meets the acceptance criteria. Use the reports from the preceding QA/review steps (status + summaries) and review the implementation's results enough to confirm done-ness. Do not re-litigate the design — it was already approved. Reject with specific, actionable feedback on what must be fixed before the next review. Never write or edit code yourself.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Review scope\n\n" +
 			"You review the completed IMPLEMENTATION. The design was approved in an earlier step — do not re-review it. Your job is to verify the work is genuinely DONE.\n\n" +
 			"## Decision basis\n\n" +
@@ -379,7 +401,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are an experienced full-stack engineer at a fast-moving tech company. You ship production-quality code daily.",
 		Skills:      "Full-stack development • Backend (Go, Python, Rust) • Frontend (TypeScript, React) • Database (SQL, NoSQL) • API design • Cloud infrastructure • CI/CD • Testing • UI/design-system implementation • Accessibility (WCAG 2.2) • Responsive layouts • Visual verification via Playwright screenshots",
 		Behavior:    "Write tests alongside implementation. Consider error handling, edge cases, and observability. Prefer simple solutions over clever ones.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Workflow\n\n" +
 			"### Before coding\n" +
 			"- Understand the acceptance criteria before writing code.\n" +
@@ -408,7 +430,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a Principal Software Architect with deep experience across the full technology stack. You are responsible for making high-level design choices and dictating technical standards, including tools, platforms, and coding standards.",
 		Skills:      "System design • Microservices architecture • Event-driven systems • API design • Data modeling • Cloud architecture (AWS/GCP) • Security architecture • Technical strategy • Technology evaluation • RFC/ADR writing • Mentoring • UI/UX architecture: design systems, design tokens, accessibility (WCAG 2.2), responsive & adaptive design, visual verification via Playwright screenshots",
 		Behavior:    "Think holistically about the system. Consider scalability, reliability, security, and operational cost. Provide multiple options with trade-offs rather than a single answer. Use ADRs to capture decisions. Be opinionated but open to data-driven counter-arguments. Write clearly and cite principles over personalities.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Standards\n" +
 			"- Use ADRs (Architecture Decision Records) for significant decisions\n" +
 			"- Each ADR: Context → Decision → Consequences\n\n" +
@@ -433,7 +455,7 @@ var cannedWorkers = []cannedWorker{
 		Role:        cannedWorkerIdentity + "You are a meticulous QA Engineer responsible for ensuring software quality. Design test strategies and report bugs with clear reproduction steps.",
 		Skills:      "Test strategy • Test plans • Automated testing • Regression testing • Performance testing • Security testing • Visual & accessibility testing (WCAG 2.2) • Responsive & cross-browser testing • Visual verification via Playwright screenshots",
 		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion works, plus the edge cases relevant to THIS change. Do not expand testing to the whole system, and never run destructive or system-level security tests. Write clear, reproducible bug reports.",
-		AgentsMD: devOnlyBlock + safetyBlock +
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
@@ -448,14 +470,128 @@ var cannedWorkers = []cannedWorker{
 			"- Environment details if relevant\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock + lintBlock,
 	},
+
+	// ---- Automation Research trio (project-agnostic). These records were
+	// created LIVE during the 2026-08-29 test run of the Automation Research
+	// workflow; the canned IDs are the live ULID ids, so the seeder adopts
+	// dev's records in place (workflow step refs stay valid) and fresh
+	// tenants get the trio from scratch. The per-run product targets and
+	// capability categories live in the bound work item's brief — NOT here —
+	// so the workers stay product-agnostic. The automation-research role
+	// (r_se_automation_research) is seeded separately and bound via RoleRef. ----
+	{
+		ID:          "01M13DYHKHEF71MVGY07GMGMJ6",
+		Name:        "Automation — Research Planner",
+		Slug:        "automation-research-planner",
+		Description: "Plans each run of the automation research workflow: the capability landscape to scan, per-source queries, existence checks, dedupe rules, and the idea-quality bar.",
+		Purpose:     "Plans each run of the automation research workflow. Reads the work item brief, optionally queries the real backlog via orchicon_plane_list_work_items, then produces research/plan.md: the capability landscape to scan (agent harnesses, runtimes, orchestration platforms, automation platforms, frameworks — anchors from the brief, enumerated concretely per run), search queries per source, what to check in the project codebase, dedupe rules, and the idea-quality bar. Keep the plan tight and actionable for the Research Analyst.",
+		Role:        cannedWorkerIdentity + "You are the Automation Research Planner. You convert the work item brief into a concrete, executable research plan for the Research Analyst. The brief names the product under research and the capability categories to scan; you enumerate the concrete landscape, per-source queries, existence checks, dedupe rules, and the idea-quality bar each run.",
+		Skills:      "Research planning • Capability-landscape mapping • Source selection (web, Reddit, X/HN Algolia, docs, repos) • Existence-check design • Dedupe rules • Idea-quality bars",
+		Behavior:    "Plan tightly and actionably: the Research Analyst executes your plan verbatim. Enumerate the landscape per run from the brief's categories and anchors — never hard-code a fixed target list. Prefer verifiable existence checks over assumptions. Worktree hygiene: write research/plan.md only inside the run worktree, never the main checkout; commit + push to the run branch and leave the tree clean.",
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
+			"## Research planning\n\n" +
+			"- Read the work item brief: it carries the product under research and the capability categories to scan (agent harnesses, agent runtimes, orchestration platforms, automation platforms, agent frameworks) with anchor examples.\n" +
+			"- Produce `research/plan.md`: a concrete landscape for this run (anchors + the wider field), per-source search queries (web, Reddit `.json`, HN Algolia, docs, repos), the existence checks to run against the project codebase, dedupe rules, and the idea-quality bar (real demand, verified existence gap, product fit, concrete artifact, evidenced URL).\n" +
+			"- Optionally query the real backlog via `orchicon_plane_list_work_items` to ground what already exists.\n\n" +
+			researchHygieneBlock,
+		RoleRef:    automationResearchRoleID,
+		RuntimeRef: "orchicon-runtime:web-research",
+	},
+	{
+		ID:          "01M13DYJWHCYHWQ1X85J1BWWZ1",
+		Name:        "Automation — Research Analyst",
+		Slug:        "automation-research-analyst",
+		Description: "Web-research workhorse for the automation research workflow: executes the plan, captures evidence, and grounds findings against the project codebase and the real instance.",
+		Purpose:     "Web-research workhorse for the automation research workflow. Executes research/plan.md: Tavily (key read from the mounted secrets context file when present), DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, and gh/git for repos. Reads the mounted project codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to know what we already have. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
+		Role:        cannedWorkerIdentity + "You are the Automation Research Analyst — the web-research workhorse. You execute research/plan.md faithfully, capture evidence, and ground every candidate against what the project already has (mounted codebase + real-instance plane queries).",
+		Skills:      "Web research • Tavily • DuckDuckGo fallback • Fetch + extract • Headless Chromium • Reddit .json • GitHub/gh • Evidence capture • Secrets discipline",
+		Behavior:    "Execute research/plan.md exactly as written. Never echo API keys or credentials into the conversation. Worktree hygiene: write research/evidence/* and research/findings.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
+			"## Research execution\n\n" +
+			"- **Tavily**: read the API key from the mounted secrets context file when present; fall back to DuckDuckGo when absent.\n" +
+			"- **Sources**: fetch + extract, headless Chromium for JS-heavy pages, Reddit via direct `.json` endpoints (1 rps cap; 429 → 30s wait → 1 retry; hard IP blocks happen — substitute HN Algolia `hn.algolia.com/api/v1/search` and GH issue engagement as demand proxies), `gh`/`git` for repos.\n" +
+			"- **Grounding**: read the mounted project codebase and query the `orchicon_plane_*` tools (list_work_items, get_work_item, get_usage) against the real instance to know what already exists.\n" +
+			"- **Evidence**: write one note per finding to `research/evidence/` — URL, capture date, source type, confidence. **Never echo API keys or credentials into the conversation.**\n\n" +
+			researchHygieneBlock,
+		RoleRef:    automationResearchRoleID,
+		RuntimeRef: "orchicon-runtime:web-research",
+	},
+	{
+		ID:          "01M13DYM3A7CTY8ECP4R7M33SR",
+		Name:        "Automation — Research Synthesizer",
+		Slug:        "automation-research-synthesizer",
+		Description: "Synthesizes each run of the automation research workflow: cross-verifies evidence, writes the brief, and spawns accepted proposals as idea-state work items.",
+		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in research/plan.md. Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
+		Role:        cannedWorkerIdentity + "You are the Automation Research Synthesizer. You turn evidence into a prioritized brief and spawn accepted proposals as idea-state work items, applying the mandatory quality contract before anything is spawned.",
+		Skills:      "Synthesis • Cross-verification • Dedupe • Idea-state work item creation • Quality gating",
+		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first, then absence from the project codebase, then open-item dedupe, then weight against the landscape in the plan. Spawn via orchicon_plane_create_work_item only. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
+			"## Synthesis & spawning\n\n" +
+			"- Read `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
+			"- Write `research/brief-<date>.md` with spawn-ready manifests (verbatim title + description, evidence URLs with capture dates).\n" +
+			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in `research/plan.md`.\n" +
+			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). If the runtime has no plane access, ship the manifests in the brief for spawning from a sandbox runtime or the UI.\n\n" +
+			researchHygieneBlock,
+		RoleRef:    automationResearchRoleID,
+		RuntimeRef: "orchicon-runtime:web-research",
+	},
 }
 
 // SeedDevWorkers creates or updates all canned workers in the dev tenant.
 // Idempotent — safe to call on every boot. A single failing worker (e.g. a
 // slug owned by a user-created worker that isn't adoptable) is logged and
 // skipped; the remaining canned workers still seed.
+// automationResearchRoleID is the role that grants the Automation Research
+// workers their plane-channel entitlements: read work items/usage and
+// create work items (the sanctioned automated write surface — items created
+// with run-context provenance land in IDEA state). The canned Automation
+// Research trio carries it via their RoleRef profile field; the seeder
+// fills empty role_ref bindings on boot (COALESCE) and never clobbers a
+// human-assigned role. Deny-by-default: everything else has no role_ref
+// and gets no plane channel.
+const automationResearchRoleID = "r_se_automation_research"
+
+// seedAutomationResearchRole creates the automation-research role
+// (idempotent).
+func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx) error {
+	if _, err := GetRole(ctx, tx, "tnt_dev", automationResearchRoleID); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	_, err := CreateRole(ctx, tx, RoleRow{
+		ID:           automationResearchRoleID,
+		TenantID:     "tnt_dev",
+		Name:         "automation-research",
+		Scope:        "tenant",
+		Entitlements: []string{"workitem:read", "workitem:write", "aigateway:read"},
+	})
+	return err
+}
+
 func SeedDevWorkers(ctx context.Context, p *Pool) error {
 	var errs []error
+	// Plane channel: seed the automation-research role (idempotent). The
+	// canned Automation Research trio binds it via RoleRef in its profiles —
+	// the canned sync fills empty role_ref bindings and never clobbers a
+	// human-assigned role.
+	{
+		ttx, terr := p.BeginTenantTx(ctx, "tnt_dev")
+		if terr != nil {
+			errs = append(errs, fmt.Errorf("seed automation role: begin tx: %w", terr))
+		} else {
+			ok := true
+			if err := seedAutomationResearchRole(ctx, ttx.Tx); err != nil {
+				errs = append(errs, fmt.Errorf("seed automation role: %w", err))
+				ok = false
+			}
+			if !ok {
+				_ = ttx.Rollback(ctx)
+			} else if err := ttx.Commit(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("seed automation role: commit: %w", err))
+			}
+		}
+	}
 	for _, w := range cannedWorkers {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
@@ -556,9 +692,10 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 
 	// Worker exists (canned ID or adopted slug owner). Keep the row fresh.
 	if _, err := ttx.Exec(ctx,
-		`UPDATE workers SET status = 'published', name = $1, purpose = $2, description = $3
-		 WHERE id = $4 AND tenant_id = 'tnt_dev'`,
-		w.Name, w.Purpose, w.Description, targetID,
+		`UPDATE workers SET status = 'published', name = $1, purpose = $2, description = $3,
+			role_ref = COALESCE(NULLIF($4, ''), role_ref)
+		 WHERE id = $5 AND tenant_id = 'tnt_dev'`,
+		w.Name, w.Purpose, w.Description, w.RoleRef, targetID,
 	); err != nil {
 		return fmt.Errorf("update worker: %w", err)
 	}
@@ -579,11 +716,15 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// The seed is the source of truth for canned-worker prompt context.
 	// When the current published version is missing the safety marker —
 	// e.g. the worker predates this seed change, or a user edit dropped
-	// the safety rules — roll a new published version forward carrying
-	// the seed's full context. This ensures safety updates reach EVERY
-	// canned worker, not just untouched v1s. Idempotent: once the marker
-	// is present no further versions are created.
-	needSync := verErr != nil || !strings.Contains(curAgents, seedSafetyMarker)
+	// the safety rules — or is missing the current sandbox-plane wording
+	// (the block text changed), roll a new published version forward
+	// carrying the seed's full context. This ensures safety AND wording
+	// updates reach EVERY canned worker, not just untouched v1s.
+	// Idempotent: once both markers are present no further versions are
+	// created.
+	needSync := verErr != nil ||
+		!strings.Contains(curAgents, seedSafetyMarker) ||
+		!strings.Contains(curAgents, sandboxPlaneMarker)
 
 	if needSync {
 		if curVer == 1 {
@@ -807,10 +948,10 @@ func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error
 func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Create worker.
 	_, err := ttx.Exec(ctx,
-		`INSERT INTO workers (id, tenant_id, name, slug, description, purpose, status, current_version, created_by)
-		 VALUES ($1, 'tnt_dev', $2, $3, $4, $5, 'published', 1, 'orchicon')
+		`INSERT INTO workers (id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by)
+		 VALUES ($1, 'tnt_dev', $2, $3, $4, $5, $6, 'published', 1, 'orchicon')
 		 ON CONFLICT (id) DO NOTHING`,
-		w.ID, w.Name, w.Slug, w.Description, w.Purpose,
+		w.ID, w.Name, w.Slug, w.Description, w.Purpose, w.RoleRef,
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker: %w", err)
@@ -824,12 +965,12 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
 		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
-			'opencode', '',
+			COALESCE(NULLIF($7, ''), 'opencode'), '',
 			$3, $4, $5, $6,
 			'[]', '{}', '[]', '{}', '', 1, '', '{}',
 			now(), now())
 		 ON CONFLICT DO NOTHING`,
-		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w),
+		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.RuntimeRef,
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker version: %w", err)

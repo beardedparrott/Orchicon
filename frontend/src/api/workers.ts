@@ -225,11 +225,13 @@ export function useBulkUpdateWorkerModel() {
   });
 }
 
-// useUpdateWorker updates the mutable header fields of a draft worker.
+// useUpdateWorker updates the mutable header fields of a worker. name,
+// description, and purpose are draft-only; roleRef (the role binding) is
+// additionally editable on published workers.
 export function useUpdateWorker() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string }) => {
+    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string; roleRef?: string }) => {
       const res = await workerClient.updateWorker(req);
       return res.worker;
     },

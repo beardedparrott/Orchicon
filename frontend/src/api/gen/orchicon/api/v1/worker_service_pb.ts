@@ -189,6 +189,13 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
    */
   agentsMd = "";
 
+  /**
+   * optional RBAC role binding; empty = no plane access
+   *
+   * @generated from field: string role_ref = 23;
+   */
+  roleRef = "";
+
   constructor(data?: PartialMessage<CreateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -219,6 +226,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerRequest {
@@ -307,6 +315,15 @@ export class UpdateWorkerRequest extends Message<UpdateWorkerRequest> {
    */
   purpose = "";
 
+  /**
+   * Role binding with presence: set to a role id to bind, "" to clear.
+   * Unlike name/description/purpose (draft-only), the role binding is
+   * editable on published workers (it lives on the header, not the version).
+   *
+   * @generated from field: optional string role_ref = 5;
+   */
+  roleRef?: string;
+
   constructor(data?: PartialMessage<UpdateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -319,6 +336,7 @@ export class UpdateWorkerRequest extends Message<UpdateWorkerRequest> {
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "purpose", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerRequest {

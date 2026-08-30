@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -104,5 +105,39 @@ func TestSeedRetiresRetiredWorkflows(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("user-forked workflow wf_devops_per_branch was deleted, want preserved (n=%d)", n)
+	}
+}
+
+// TestSeedAutomationResearchWorkflow: the Automation Research template is
+// seeded with the live research worker refs wired to the canned trio.
+func TestSeedAutomationResearchWorkflow(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	if err := db.SeedDevWorkflows(ctx, pool); err != nil {
+		t.Fatalf("seed dev workflows: %v", err)
+	}
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+
+	var steps string
+	if err := ttx.QueryRow(ctx,
+		`SELECT steps FROM workflow_versions WHERE workflow_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		"01M17EZC170ZR7SZAJET4Z5RY1").Scan(&steps); err != nil {
+		t.Fatalf("query workflow steps: %v", err)
+	}
+	for _, ref := range []string{
+		"01M13DYHKHEF71MVGY07GMGMJ6",
+		"01M13DYJWHCYHWQ1X85J1BWWZ1",
+		"01M13DYM3A7CTY8ECP4R7M33SR",
+	} {
+		if !strings.Contains(steps, ref) {
+			t.Errorf("steps missing worker ref %s", ref)
+		}
+	}
+	if !strings.Contains(steps, `"kind": "end"`) {
+		t.Errorf("steps missing End step")
 	}
 }

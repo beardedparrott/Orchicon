@@ -63,6 +63,7 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		Slug:                msg.Slug,
 		Description:         msg.Description,
 		Purpose:             msg.Purpose,
+		RoleRef:             msg.RoleRef,
 		VersionNote:         msg.VersionNote,
 		RuntimeRef:          msg.RuntimeRef,
 		ModelRef:            msg.ModelRef,
@@ -89,6 +90,16 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+
+	// A role binding must reference a role that exists in this tenant.
+	if in.RoleRef != "" {
+		if _, err := db.GetRole(ctx, ttx.Tx, tenantID, in.RoleRef); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("role_ref: role %q not found in tenant", in.RoleRef))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
 
 	created, createdVersion, err := CreateWorkerTx(ctx, ttx.Tx, in)
 	if err != nil {
@@ -293,6 +304,25 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		fields.Purpose = &purpose
+	}
+	// The role binding is the only header field editable on a published
+	// worker: it lives on the header (not the version) and is what gates
+	// plane access. name/description/purpose stay draft-only.
+	if msg.RoleRef != nil {
+		roleRef := msg.GetRoleRef()
+		if current.Status != domain.WorkerDraft && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("only the role binding can be changed on a published worker"))
+		}
+		if roleRef != "" {
+			if _, err := db.GetRole(ctx, ttx.Tx, tenantID, roleRef); err != nil {
+				if errors.Is(err, db.ErrNotFound) {
+					return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("role_ref: role %q not found in tenant", roleRef))
+				}
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		}
+		fields.RoleRef = &roleRef
 	}
 
 	updated, err := db.UpdateWorker(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
@@ -586,6 +616,7 @@ func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, m
 // applyModelChange applies the per-version update+publish flow:
 //   - draft: set model_ref on the row in place, then publish.
 //   - published: revert to draft, set model_ref, then republish.
+//
 // In both branches the version number is preserved and UpdateWorkerCurrentVersion
 // is called so current_version follows the latest published version (mirrors
 // PublishWorkerVersion).
@@ -1191,11 +1222,12 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // for the audit trail.
 func workerAuditSnapshot(w db.WorkerRow) map[string]any {
 	return map[string]any{
-		"id":      w.ID,
-		"name":    w.Name,
-		"slug":    w.Slug,
-		"status":  w.Status,
-		"version": w.Version,
+		"id":       w.ID,
+		"name":     w.Name,
+		"slug":     w.Slug,
+		"status":   w.Status,
+		"role_ref": w.RoleRef,
+		"version":  w.Version,
 	}
 }
 
@@ -1352,6 +1384,7 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 		Slug:           w.Slug,
 		Description:    w.Description,
 		Purpose:        w.Purpose,
+		RoleRef:        w.RoleRef,
 		Status:         workerStatusToProto(w.Status),
 		CurrentVersion: int32(w.CurrentVersion),
 		CreatedBy:      w.CreatedBy,

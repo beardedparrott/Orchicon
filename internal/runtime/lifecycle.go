@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 )
@@ -37,7 +39,7 @@ type Lifecycle struct {
 	// composite worktree batch tools (batch_read/grep/write) need a base
 	// directory to resolve against — the project is mounted in-container at
 	// the same absolute path.
-	serveConfigFor func(image, projectDir, workflowRunID string) string
+	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
@@ -49,7 +51,7 @@ type Lifecycle struct {
 // the run's runtime image tag (permission rules only for base/gui images,
 // plus the sandbox-scoped Orchicon MCP for dev images — built by the
 // opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string) string, secretsKEK []byte) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
 
@@ -95,9 +97,27 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			return CreateRequest{}, fmt.Errorf("ensure runtime: get project: %w", gerr)
 		}
 	}
+	// Plane channel: when the run's worker is a published worker with a
+	// role_ref, mint a short-lived, role-scoped API key and pass it to the
+	// serve config + container env so the `orchicon-plane` MCP channel is
+	// available (deny-by-default — planeEnv is nil otherwise). The plaintext
+	// is never stored; only the hash persists, and the key expires with the
+	// TTL.
+	planeEnv, merr := l.mintPlaneCredential(ctx, run)
+	if merr != nil {
+		l.log.Warn("plane credential mint failed", "run", run.ID, "error", merr)
+	}
+	if planeEnv != nil {
+		if req.Secrets == nil {
+			req.Secrets = map[string]string{}
+		}
+		for k, v := range planeEnv {
+			req.Secrets[k] = v
+		}
+	}
 	// Serve config is built last so the in-container project dir is available
 	// for the composite worktree batch tools (batch_read/grep/write).
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID)
+	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID, planeEnv)
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
 	// or the per-instance data-dir key); the daemon blindly injects -e (same
@@ -131,6 +151,111 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 		}
 	}
 	return req, nil
+}
+
+// planeTokenTTL resolves the plane credential lifetime. Overridable via
+// ORCHICON_PLANE_TOKEN_TTL (duration string); default 24h — long enough to
+// cover the run's container lifetime (including pool reset recreation) but
+// short enough that a leaked token is useless well before it matters.
+func planeTokenTTL() time.Duration {
+	if v := os.Getenv("ORCHICON_PLANE_TOKEN_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 24 * time.Hour
+}
+
+// planePublicURL is the plane's API base URL as reachable from inside a
+// runtime container (the docker bridge gateway + the instance's published
+// HTTP port). The container has no route to the plane's internal
+// localhost, so the operator sets ORCHICON_PLANE_PUBLIC_URL when the
+// published port differs from the default dev mapping (:8080 → prod
+// publishes :8091).
+func planePublicURL() string {
+	if v := os.Getenv("ORCHICON_PLANE_PUBLIC_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "http://172.17.0.1:8080"
+}
+
+// mintPlaneCredential resolves the run's bound worker and, when it is a
+// PUBLISHED worker with a role_ref (deny-by-default), mints a short-lived
+// API key scoped to the role's entitlements. Returns the env vars the serve
+// config + container need for the `orchicon-plane` MCP channel, or nil when
+// no plane access is granted. The plaintext key is returned once and never
+// persisted — only its SHA-256 hash is stored (internal/auth/apikeys.go).
+func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
+	if run.WorkItemID == "" {
+		return nil, nil
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("plane credential: begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	wi, err := db.GetWorkItem(ctx, ttx.Tx, run.TenantID, run.WorkItemID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("plane credential: get work item: %w", err)
+	}
+	var ref struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if len(wi.AssignedWorkerRef) > 0 {
+		_ = json.Unmarshal(wi.AssignedWorkerRef, &ref)
+	}
+	if ref.WorkerID == "" {
+		return nil, nil
+	}
+	worker, err := db.GetWorker(ctx, ttx.Tx, run.TenantID, ref.WorkerID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("plane credential: get worker: %w", err)
+	}
+	// Draft/deprecated workers are inert: no plane access. Role_ref is the
+	// explicit opt-in (deny-by-default).
+	if worker.Status != "published" || worker.RoleRef == "" {
+		return nil, nil
+	}
+	role, err := db.GetRole(ctx, ttx.Tx, run.TenantID, worker.RoleRef)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			l.log.Warn("plane credential: role missing for worker", "worker", worker.ID, "role", worker.RoleRef)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("plane credential: get role: %w", err)
+	}
+	plaintext, prefix, hash := auth.GenerateApiKey()
+	expiresAt := time.Now().Add(planeTokenTTL())
+	if _, err := db.CreateApiKey(ctx, ttx.Tx, db.ApiKeyRow{
+		TenantID:   run.TenantID,
+		IdentityID: worker.ID,
+		Name:       "automation:run:" + run.ID,
+		KeyPrefix:  prefix,
+		KeyHash:    hash,
+		Scopes:     role.Entitlements,
+		Status:     "active",
+		ExpiresAt:  &expiresAt,
+	}); err != nil {
+		return nil, fmt.Errorf("plane credential: mint key: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("plane credential: commit: %w", err)
+	}
+	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
+	return map[string]string{
+		"ORCHICON_PLANE_URL":           planePublicURL(),
+		"ORCHICON_PLANE_TOKEN":         plaintext,
+		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
+		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
+	}, nil
 }
 
 // EnsureForRun creates the runtime container for a workflow run

@@ -39,6 +39,7 @@ import {
   ContextSourcesSection,
   GatedToolsSection,
   PermissionsSection,
+  PlaneRoleField,
 } from "@/components/WorkerFormSections";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
@@ -517,6 +518,29 @@ function WorkerDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Plane role binding — visible for draft AND published workers (the
+          role binding is the only header field editable when published). */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plane role</CardTitle>
+          <CardDescription>
+            Role-scopes this worker&apos;s access to the real instance
+            (orchicon_plane_* tools). Effective for published workers; saved
+            immediately.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PlaneRoleField
+            value={worker.roleRef ?? ""}
+            onChange={(v) => {
+              if (v !== (worker.roleRef ?? "")) {
+                updateWorker.mutate({ id: worker.id, roleRef: v });
+              }
+            }}
+          />
+        </CardContent>
+      </Card>
 
       {/* Inline editor for draft versions */}
       {isEditingEnabled && (

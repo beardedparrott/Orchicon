@@ -74,6 +74,15 @@ For **in-place runs** (`worktree_status != ready`, no branch — you work direct
 
 Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and pushed (git-backed) or files are persisted in place (non-worktree).
 
+## Orchicon tool channels
+
+You may see two Orchicon MCP tool families — they are deliberately separate:
+
+- **`orchicon_*` (sandbox)** — available on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
+- **`orchicon_plane_*` (real instance)** — available when your worker's role grants plane access. Operates on the REAL instance your work item was created on, through the plane API, scoped to your role's entitlements. Use to inspect the real backlog and to create idea-state work items.
+
+Hard rules: **never** use sandbox tools to inspect real work items; **never** use plane tools for throwaway records or migration tests.
+
 ## Summary contract
 
 End your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure` — and a short paragraph. The first word routes the workflow. Keep the summary under ~500 tokens; it is re-embedded into every later step's prompt.

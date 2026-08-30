@@ -23,6 +23,7 @@ type CreateWorkerInput struct {
 	Slug         string // optional; derived from Name when empty
 	Description  string
 	Purpose      string
+	RoleRef      string // RBAC role binding; empty = no plane access (deny-by-default)
 	VersionNote  string
 	RuntimeRef   string
 	ModelRef     string
@@ -76,6 +77,9 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 		return err
 	}
 	if in.Purpose, err = validateTextField(in.Purpose, maxPurposeLen, "purpose"); err != nil {
+		return err
+	}
+	if in.RoleRef, err = validateTextField(in.RoleRef, maxNameLen, "role_ref"); err != nil {
 		return err
 	}
 	if in.VersionNote, err = validateTextField(in.VersionNote, maxVersionNoteLen, "version_note"); err != nil {
@@ -154,6 +158,7 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Slug:           slug,
 		Description:    in.Description,
 		Purpose:        in.Purpose,
+		RoleRef:        in.RoleRef,
 		Status:         domain.WorkerDraft,
 		CurrentVersion: 0,
 		CreatedBy:      "", // populated when auth lands (Phase 9)

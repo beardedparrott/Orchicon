@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 
+import { useListRoles } from "@/api/auth";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
@@ -9,6 +10,39 @@ import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 interface SectionProps {
   value: string;
   onChange: (value: string) => void;
+}
+
+// --- Plane Role Field ---
+// The RBAC role binding on the worker header: it role-scopes the worker's
+// access to the real instance (orchicon_plane_* tools) and is effective
+// for published workers only. Empty = deny-by-default (no plane access).
+// Roles come from the tenant's role table (the same set the Admin → Roles
+// tab manages).
+export function PlaneRoleField({ value, onChange }: SectionProps) {
+  const { data: roles } = useListRoles();
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="planeRole">Plane role</Label>
+      <select
+        id="planeRole"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <option value="">No role (deny-by-default)</option>
+        {(roles ?? []).map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.name}
+          </option>
+        ))}
+      </select>
+      <p className="text-xs text-muted-foreground">
+        Role-scopes this worker&apos;s access to the real instance
+        (orchicon_plane_* tools) — effective for published workers only.
+        Empty means no plane access.
+      </p>
+    </div>
+  );
 }
 
 // --- Permissions Section ---

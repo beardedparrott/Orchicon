@@ -850,7 +850,7 @@ func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Reques
 	case strings.HasSuffix(suffix, "dev") || strings.HasSuffix(suffix, "orchicon-dev"):
 		file = "deploy/runtime/Dockerfile.dev"
 		name = "Orchicon development image (:orchicon-dev)"
-		desc = "Go, Node, buf, atlas, and a baked PostgreSQL 15 for building and DB-testing the Orchicon repo in-sandbox (dogfooding)."
+		desc = "Go, Node, buf, atlas, and a baked PostgreSQL 15 for building and DB-testing the Orchicon repo in-sandbox."
 	default:
 		file = "deploy/runtime/Dockerfile"
 		name = "Runtime base image"

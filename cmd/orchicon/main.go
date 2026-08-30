@@ -293,6 +293,21 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 0
 	}
 
+	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound
+	// worker executions) talks to the REAL instance's Connect API with a
+	// short-lived, role-scoped credential — no Postgres, no sandbox. The
+	// control plane sets ORCHICON_PLANE_URL + ORCHICON_PLANE_TOKEN when it
+	// mints the credential for the run.
+	if url := os.Getenv("ORCHICON_PLANE_URL"); url != "" && os.Getenv("ORCHICON_PLANE_TOKEN") != "" {
+		mcpSrv := mcp.New(log, nil, mcp.NewPlaneRegistry(url, os.Getenv("ORCHICON_PLANE_TOKEN"), log))
+		log.Info("mcp server started (plane channel, stdio transport)", "url", url)
+		if err := mcpSrv.Run(ctx); err != nil {
+			log.Error("mcp server", "error", err)
+			return 1
+		}
+		return 0
+	}
+
 	cfg := config.Default()
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid configuration", "error", err)
