@@ -78,6 +78,7 @@ interface ExecutionContextSidebarProps {
 
 interface EventStats {
   assistantCount: number; // text events
+  reasoningCount: number; // streamed reasoning chunks (content, not tokens)
   toolCount: number;       // tool_call events (input)
   toolResultCount: number; // tool_call events (output)
   errorCount: number;
@@ -101,6 +102,7 @@ export function ExecutionContextSidebar({
   const stats = useMemo<EventStats>(() => {
     const s: EventStats = {
       assistantCount: 0,
+      reasoningCount: 0,
       toolCount: 0,
       toolResultCount: 0,
       errorCount: 0,
@@ -138,12 +140,14 @@ export function ExecutionContextSidebar({
       switch (eventType) {
         case ET.TELEMETRY: {
           let text = payload.text as string | undefined;
+          let isReasoning = false;
           if (text && text.startsWith("{")) {
             try {
               const parsed = JSON.parse(text);
               if (parsed && parsed.kind === "reasoning" && typeof parsed.text === "string") {
                 // Streamed reasoning chunk — unwrap for display.
                 text = parsed.text;
+                isReasoning = true;
               }
             } catch {
               /* keep raw */
@@ -151,6 +155,7 @@ export function ExecutionContextSidebar({
           }
           if (text) {
             s.assistantCount++;
+            if (isReasoning) s.reasoningCount++;
             s.lastAssistantText = text;
             s.lastAssistantAt = ts;
           }
@@ -190,6 +195,8 @@ export function ExecutionContextSidebar({
           if (!s.lastToolName) s.lastToolName = "tool";
         } else if (p.kind === "text") {
           s.assistantCount++;
+        } else if (p.kind === "reasoning") {
+          s.reasoningCount++;
         }
       }
     }
@@ -340,6 +347,19 @@ export function ExecutionContextSidebar({
       ? Math.min(100, Math.round((n / effectiveContextWindow) * 100))
       : 0;
 
+  // Provider honesty: a model that streams reasoning content but reports
+  // zero reasoning tokens is going through a provider route that doesn't
+  // surface cache/reasoning usage (e.g. ollama-cloud). The zero bars are
+  // then "not reported", not "genuinely zero" — annotate them so they don't
+  // read as a broken calculation next to visible reasoning blocks.
+  const hasReasoningContent = stats.reasoningCount > 0;
+  const reasoningUnreported =
+    hasReasoningContent && usageBreakdown.reasoning === 0;
+  const cacheUnreported =
+    reasoningUnreported &&
+    usageBreakdown.cumCacheRead === 0 &&
+    usageBreakdown.cumCacheWrite === 0;
+
   return (
     <aside className="space-y-3 lg:sticky lg:top-4">
       {/* Context usage card */}
@@ -489,14 +509,16 @@ export function ExecutionContextSidebar({
                 pct={rolePctVsWindow(peakBuckets.completion)}
                 color="bg-violet-500"
               />
-              {peakBuckets.reasoning > 0 && (
-                <TokenBar
-                  label="Reasoning"
-                  count={peakBuckets.reasoning}
-                  pct={rolePctVsWindow(peakBuckets.reasoning)}
-                  color="bg-amber-500"
-                />
-              )}
+              <TokenBar
+                label={
+                  reasoningUnreported
+                    ? "Reasoning (not reported)"
+                    : "Reasoning"
+                }
+                count={peakBuckets.reasoning}
+                pct={rolePctVsWindow(peakBuckets.reasoning)}
+                color="bg-amber-500"
+              />
             </div>
             <div className="border-t border-dashed pt-1.5">
               <div className="mb-1 text-[10px] text-muted-foreground">
@@ -514,59 +536,67 @@ export function ExecutionContextSidebar({
                 pct={rolePctVsWindow(usageBreakdown.completion)}
                 color="bg-violet-500"
               />
-              {usageBreakdown.reasoning > 0 && (
-                <TokenBar
-                  label="Reasoning"
-                  count={usageBreakdown.reasoning}
-                  pct={rolePctVsWindow(usageBreakdown.reasoning)}
-                  color="bg-amber-500"
-                />
-              )}
+              <TokenBar
+                label={
+                  reasoningUnreported
+                    ? "Reasoning (not reported)"
+                    : "Reasoning"
+                }
+                count={usageBreakdown.reasoning}
+                pct={rolePctVsWindow(usageBreakdown.reasoning)}
+                color="bg-amber-500"
+              />
             </div>
-            {/* Cache transport is a SEPARATE figure from the working set —
-                it's cumulative re-sends of already-counted tokens, so it
-                gets its own bar + hit-rate %, not a slice of the mix. */}
-            {(usageBreakdown.cumCacheRead > 0 || usageBreakdown.cumCacheWrite > 0) && (
-              <div className="border-t border-dashed pt-1.5">
-                <div className="mb-1 flex items-center justify-between text-[10px]">
-                  <span className="font-medium uppercase tracking-wider text-muted-foreground">
-                    Cache transport (cumulative)
-                  </span>
-                  {cacheHitRate > 0 && (
-                    <span className="font-mono font-medium text-emerald-700 dark:text-emerald-600">
-                      {cacheHitRate}% hit rate
-                    </span>
+            {/* Cache — a SEPARATE figure from the working set (cumulative
+                re-sends of already-counted tokens), so it gets its own
+                Read/Write bars + hit-rate %, not a slice of the mix. Always
+                rendered so the cache picture stays visible even when it's
+                zero. */}
+            <div className="border-t border-dashed pt-1.5">
+              <div className="mb-1 flex items-center justify-between text-[10px]">
+                <span className="font-medium uppercase tracking-wider text-muted-foreground">
+                  Cache
+                </span>
+                <span
+                  className={cn(
+                    "font-mono font-medium",
+                    cacheUnreported
+                      ? "text-muted-foreground"
+                      : "text-emerald-700 dark:text-emerald-600",
                   )}
-                </div>
-                {usageBreakdown.cumCacheRead > 0 && (
-                  <TokenBar
-                    label="Cache read (re-sent)"
-                    count={usageBreakdown.cumCacheRead}
-                    pct={cacheHitRate}
-                    color="bg-emerald-500"
-                  />
-                )}
-                {usageBreakdown.cumCacheWrite > 0 && (
-                  <TokenBar
-                    label="Cache write"
-                    count={usageBreakdown.cumCacheWrite}
-                    pct={
-                      usageBreakdown.cumCacheWrite +
-                        usageBreakdown.cumPrompt >
-                      0
-                        ? Math.round(
-                            (usageBreakdown.cumCacheWrite /
-                              (usageBreakdown.cumCacheWrite +
-                                usageBreakdown.cumPrompt)) *
-                              100,
-                          )
-                        : 0
-                    }
-                    color="bg-teal-500"
-                  />
-                )}
+                  title={
+                    cacheUnreported
+                      ? "Provider doesn't report cache usage — 0 is not a real hit rate"
+                      : undefined
+                  }
+                >
+                  {cacheUnreported
+                    ? "n/a hit rate"
+                    : `${cacheHitRate}% hit rate`}
+                </span>
               </div>
-            )}
+              <TokenBar
+                label="Read (re-sent)"
+                count={usageBreakdown.cumCacheRead}
+                pct={cacheHitRate}
+                color="bg-emerald-500"
+              />
+              <TokenBar
+                label="Write"
+                count={usageBreakdown.cumCacheWrite}
+                pct={
+                  usageBreakdown.cumCacheWrite + usageBreakdown.cumPrompt > 0
+                    ? Math.round(
+                        (usageBreakdown.cumCacheWrite /
+                          (usageBreakdown.cumCacheWrite +
+                            usageBreakdown.cumPrompt)) *
+                          100,
+                      )
+                    : 0
+                }
+                color="bg-teal-500"
+              />
+            </div>
             {/* Cumulative totals — always shown when any usage was recorded.
                 Cache read/write and reasoning are separate cost buckets and
                 are deliberately NOT folded into the input/output mix, so
