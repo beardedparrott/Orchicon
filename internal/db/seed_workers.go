@@ -494,6 +494,33 @@ func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
+// researchWorkerPurposeUpdates rewords the LIVE Automation Research worker
+// purposes to the plane-channel contract (orchicon_plane_* tools). The
+// published-worker header is immutable through the API (UpdateWorker is
+// draft-only by design), so the seeder backfills on boot — gated on the
+// STALE text so a later human edit is never rolled back.
+var researchWorkerPurposeUpdates = []struct {
+	WorkerID string
+	Purpose  string
+	Stale    string // LIKE fragment that must still be present for the update
+}{
+	{
+		WorkerID: "01M13DYHKHEF71MVGY07GMGMJ6",
+		Purpose: "Plans each run of the Automation Research workflow. Reads the work item brief, optionally queries the real backlog via orchicon_plane_list_work_items, then produces research/plan.md: a concrete list of competitors to analyze, search queries per source (web, Reddit, X, docs, repos), what to check in the Orchicon codebase, dedupe rules, and the idea-quality bar. Keep the plan tight and actionable for the Research Analyst.",
+		Stale:    "%Keep the plan tight and actionable for the Research Analyst.%",
+	},
+	{
+		WorkerID: "01M13DYJWHCYHWQ1X85J1BWWZ1",
+		Purpose: "Web-research workhorse for the Automation Research workflow. Executes research/plan.md: Tavily (key read from the mounted secrets context file when present), DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, and gh/git for competitor repos. Reads the mounted Orchicon codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to know what we already have. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
+		Stale:    "%queries the orchicon_* MCP tools (work items, usage, features)%",
+	},
+	{
+		WorkerID: "01M13DYM3A7CTY8ECP4R7M33SR",
+		Purpose: "Synthesizes each run of the Automation Research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the Orchicon codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) compare Orchicon against other AI orchestration engines, AI-workload project-management suites (Jira-like), and automation engines (OpenClaw/Hermes). Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
+		Stale:    "%spawns each accepted proposal as an idea-state work item via the orchicon_* MCP create_work_item tool%",
+	},
+}
+
 func SeedDevWorkers(ctx context.Context, p *Pool) error {
 	var errs []error
 	// Plane channel: seed the automation-research role and backfill the live
@@ -513,6 +540,14 @@ func SeedDevWorkers(ctx context.Context, p *Pool) error {
 					`UPDATE workers SET role_ref = $1 WHERE id = $2 AND tenant_id = 'tnt_dev' AND role_ref = ''`,
 					rid, wid); err != nil {
 					errs = append(errs, fmt.Errorf("backfill worker %s role_ref: %w", wid, err))
+					ok = false
+				}
+			}
+			for _, u := range researchWorkerPurposeUpdates {
+				if _, err := ttx.Tx.Exec(ctx,
+					`UPDATE workers SET purpose = $1 WHERE id = $2 AND tenant_id = 'tnt_dev' AND purpose LIKE $3`,
+					u.Purpose, u.WorkerID, u.Stale); err != nil {
+					errs = append(errs, fmt.Errorf("backfill worker %s purpose: %w", u.WorkerID, err))
 					ok = false
 				}
 			}
