@@ -349,6 +349,7 @@ function WorkersPage() {
                         key={w.id}
                         item={it as WorkerListItem}
                         checked={selected.has(w.id)}
+                        roleNameById={roleNameById}
                         onToggleSelect={() => toggleSelect(w.id)}
                         onDelete={() => {
                           if (window.confirm("Delete this worker?")) {
@@ -396,11 +397,13 @@ function WorkerRow({
   checked,
   onToggleSelect,
   onDelete,
+  roleNameById,
 }: {
   item: WorkerListItem;
   checked: boolean;
   onToggleSelect: () => void;
   onDelete: () => void;
+  roleNameById: Map<string, string>;
 }) {
   const worker = item.worker!;
   // Drag handle is a SIBLING of the <Link>, so clicking the handle can never
