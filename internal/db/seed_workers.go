@@ -144,6 +144,13 @@ type cannedWorker struct {
 	RecreateSlugOwner bool
 }
 
+// sandboxPlaneMarker is a distinctive fragment of the current
+// sandboxPlaneBlock. The roll-forward check keys on it (alongside the
+// safety marker) so a wording change to the block reaches existing canned
+// workers on boot — the safety marker alone would leave the old wording in
+// place forever.
+const sandboxPlaneMarker = "Sandbox vs plane"
+
 var cannedWorkers = []cannedWorker{
 	{
 		ID:          "w_se_senior_software_engineer",
@@ -506,17 +513,17 @@ var researchWorkerPurposeUpdates = []struct {
 }{
 	{
 		WorkerID: "01M13DYHKHEF71MVGY07GMGMJ6",
-		Purpose: "Plans each run of the Automation Research workflow. Reads the work item brief, optionally queries the real backlog via orchicon_plane_list_work_items, then produces research/plan.md: a concrete list of competitors to analyze, search queries per source (web, Reddit, X, docs, repos), what to check in the Orchicon codebase, dedupe rules, and the idea-quality bar. Keep the plan tight and actionable for the Research Analyst.",
+		Purpose:  "Plans each run of the Automation Research workflow. Reads the work item brief, optionally queries the real backlog via orchicon_plane_list_work_items, then produces research/plan.md: a concrete list of competitors to analyze, search queries per source (web, Reddit, X, docs, repos), what to check in the Orchicon codebase, dedupe rules, and the idea-quality bar. Keep the plan tight and actionable for the Research Analyst.",
 		Stale:    "%Keep the plan tight and actionable for the Research Analyst.%",
 	},
 	{
 		WorkerID: "01M13DYJWHCYHWQ1X85J1BWWZ1",
-		Purpose: "Web-research workhorse for the Automation Research workflow. Executes research/plan.md: Tavily (key read from the mounted secrets context file when present), DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, and gh/git for competitor repos. Reads the mounted Orchicon codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to know what we already have. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
+		Purpose:  "Web-research workhorse for the Automation Research workflow. Executes research/plan.md: Tavily (key read from the mounted secrets context file when present), DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, and gh/git for competitor repos. Reads the mounted Orchicon codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to know what we already have. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
 		Stale:    "%queries the orchicon_* MCP tools (work items, usage, features)%",
 	},
 	{
 		WorkerID: "01M13DYM3A7CTY8ECP4R7M33SR",
-		Purpose: "Synthesizes each run of the Automation Research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the Orchicon codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) compare Orchicon against other AI orchestration engines, AI-workload project-management suites (Jira-like), and automation engines (OpenClaw/Hermes). Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
+		Purpose:  "Synthesizes each run of the Automation Research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the Orchicon codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) compare Orchicon against other AI orchestration engines, AI-workload project-management suites (Jira-like), and automation engines (OpenClaw/Hermes). Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
 		Stale:    "%spawns each accepted proposal as an idea-state work item via the orchicon_* MCP create_work_item tool%",
 	},
 }
@@ -681,11 +688,15 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// The seed is the source of truth for canned-worker prompt context.
 	// When the current published version is missing the safety marker —
 	// e.g. the worker predates this seed change, or a user edit dropped
-	// the safety rules — roll a new published version forward carrying
-	// the seed's full context. This ensures safety updates reach EVERY
-	// canned worker, not just untouched v1s. Idempotent: once the marker
-	// is present no further versions are created.
-	needSync := verErr != nil || !strings.Contains(curAgents, seedSafetyMarker)
+	// the safety rules — or is missing the current sandbox-plane wording
+	// (the block text changed), roll a new published version forward
+	// carrying the seed's full context. This ensures safety AND wording
+	// updates reach EVERY canned worker, not just untouched v1s.
+	// Idempotent: once both markers are present no further versions are
+	// created.
+	needSync := verErr != nil ||
+		!strings.Contains(curAgents, seedSafetyMarker) ||
+		!strings.Contains(curAgents, sandboxPlaneMarker)
 
 	if needSync {
 		if curVer == 1 {

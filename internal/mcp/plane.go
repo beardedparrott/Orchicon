@@ -65,7 +65,7 @@ var _ ToolRegistry = (*planeRegistry)(nil)
 func (p *planeRegistry) List() []ToolDef {
 	return []ToolDef{
 		{
-			Name: "orchicon_plane_list_work_items",
+			Name:        "orchicon_plane_list_work_items",
 			Description: "Lists work items in the REAL instance (the plane this run was created on) — role-scoped read of the current backlog. Use this to see what already exists instead of the sandbox tools.",
 			Properties: map[string]propertySchema{
 				"project_id": {Type: "string", Description: "Project ID filter (optional)"},
@@ -82,7 +82,7 @@ func (p *planeRegistry) List() []ToolDef {
 			Required: []string{"id"},
 		},
 		{
-			Name: "orchicon_plane_create_work_item",
+			Name:        "orchicon_plane_create_work_item",
 			Description: "Creates a work item in the REAL instance (role-scoped write). With the run context stamped, an automation-created item lands in IDEA state with provenance — the sanctioned automated write surface.",
 			Properties: map[string]propertySchema{
 				"title":               {Type: "string", Description: "Work item title"},

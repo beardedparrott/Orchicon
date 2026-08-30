@@ -39,7 +39,7 @@ type Lifecycle struct {
 	// composite worktree batch tools (batch_read/grep/write) need a base
 	// directory to resolve against — the project is mounted in-container at
 	// the same absolute path.
-serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
+	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
@@ -251,9 +251,9 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
 	return map[string]string{
-		"ORCHICON_PLANE_URL":         planePublicURL(),
-		"ORCHICON_PLANE_TOKEN":       plaintext,
-		"ORCHICON_MCP_TENANT_ID":     run.TenantID,
+		"ORCHICON_PLANE_URL":           planePublicURL(),
+		"ORCHICON_PLANE_TOKEN":         plaintext,
+		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
 	}, nil
 }
