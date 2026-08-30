@@ -31,7 +31,7 @@ func busToolRunning(sessionID, tool string) opencode.BusEvent {
 // tool emits no completed tool_use, so LegacyEventFromBus never reports it).
 func TestToolWedgeDetectsUnresolvedTool(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "5s")
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
 	base := time.Now()
 	m.now = func() time.Time { return base }
 
@@ -54,7 +54,7 @@ func TestToolWedgeDetectsUnresolvedTool(t *testing.T) {
 // event) closes the open tool, so toolWedge returns false afterward.
 func TestToolWedgeClearedByActivity(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "5s")
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
 	base := time.Now()
 	m.now = func() time.Time { return base }
 

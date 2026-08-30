@@ -218,6 +218,38 @@ func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 	return row, nil
 }
 
+// UpsertMessage creates a message row under its id or replaces the existing
+// one's content/reasoning/metadata. The running turn's PARTIAL reply is
+// written under the acked assistant message id as it is collected (so a
+// client that lost the live stream can watch it grow via ListMessages); the
+// finalize then upserts the complete reply over the partial. The row is only
+// ever visible while the turn is in flight (its terminal state is written by
+// the finalize).
+func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
+	reasoningJSON := []byte("[]")
+	if m.Reasoning != nil {
+		reasoningJSON, _ = json.Marshal(m.Reasoning)
+	}
+	const q = `INSERT INTO ask_orchicon_messages
+		(id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (tenant_id, id) DO UPDATE SET
+			content = EXCLUDED.content,
+			reasoning = EXCLUDED.reasoning,
+			metadata = EXCLUDED.metadata
+		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at`
+	row := m
+	err := tx.QueryRow(ctx, q, m.ID, m.TenantID, m.ConversationID, m.Role, m.Content,
+		m.ToolCalls, m.ToolResults, m.Attachments, m.Metadata, reasoningJSON).Scan(
+		&row.ID, &row.TenantID, &row.ConversationID, &row.Role, &row.Content,
+		&row.ToolCalls, &row.ToolResults, &row.Attachments, &row.Metadata, &row.Reasoning, &row.CreatedAt,
+	)
+	if err != nil {
+		return MessageRow{}, fmt.Errorf("db: upsert message: %w", err)
+	}
+	return row, nil
+}
+
 func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID string, limit int, afterID string) ([]MessageRow, error) {
 	var rows []MessageRow
 	var q string

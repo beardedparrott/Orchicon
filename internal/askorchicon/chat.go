@@ -623,6 +623,10 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
+	// The tenant's stall window for THIS turn: read at dispatch time so a
+	// settings change applies to the next turn, and the collector's stall
+	// monitor uses the same value the read path reports as turn_progressing.
+	settings, _ := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
 	ttx.Rollback(ctx)
 
 	// Inject the tenant's enabled projects so the agent always has
@@ -654,21 +658,79 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	if client := s.hostServeClient(); client != nil {
+		// Partial-reply mirror: the collector's onPartial callbacks feed a
+		// throttled flusher that upserts the running turn's collected
+		// text/reasoning under the ACKED assistant message id. A client that
+		// lost the live stream (refresh, another tab/device) polls ListMessages
+		// and watches the reply grow instead of a bare spinner. The flusher is
+		// cancelled and drained BEFORE the finalize so the complete reply
+		// always lands last (no stale partial can clobber it). Its own tiny
+		// tenant tx keeps it off the collector's hot path.
+		partialMu := &sync.Mutex{}
+		partialDirty := false
+		var partialText string
+		var partialReasoning []string
+		partialCtx, partialCancel := context.WithCancel(detached)
+		partialDone := make(chan struct{})
+		go func() {
+			defer close(partialDone)
+			for {
+				partialMu.Lock()
+				dirty := partialDirty
+				text := partialText
+				rsn := append([]string(nil), partialReasoning...)
+				if dirty {
+					partialDirty = false
+				}
+				partialMu.Unlock()
+				if dirty {
+					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn)
+					continue
+				}
+				select {
+				case <-partialCtx.Done():
+					return
+				case <-time.After(250 * time.Millisecond):
+				}
+			}
+		}()
+		onPartial := func(text string, reasoning []string) {
+			partialMu.Lock()
+			partialText = text
+			partialReasoning = append([]string(nil), reasoning...)
+			partialDirty = true
+			partialMu.Unlock()
+		}
+
 		go func() {
 			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
-				client:         client,
-				tenantID:       tenantID,
-				convID:         convID,
-				token:          token,
-				assistantMsgID: assistantID,
-				sessionID:      useSessionID,
-				modelRef:       modelRef,
-				seedSystem:     seedSystem,
-				reuseSystem:    reuseSystem,
-				userMsg:        msg,
-				attachments:    attachments,
-				onStreamEvent:  onStreamEvent,
+				client:                  client,
+				tenantID:                tenantID,
+				convID:                  convID,
+				token:                   token,
+				assistantMsgID:          assistantID,
+				sessionID:               useSessionID,
+				modelRef:                modelRef,
+				seedSystem:              seedSystem,
+				reuseSystem:             reuseSystem,
+				userMsg:                 msg,
+				attachments:             attachments,
+				onStreamEvent:           onStreamEvent,
+				stallNoProgressSeconds:  settings.StallNoProgressWindowSeconds,
+				onPartial:               onPartial,
 			})
+			// Drain the partial mirror before finalizing: stop the flusher,
+			// wait for any in-flight write, then write whatever is still dirty
+			// so the finalize below is the LAST write to the row.
+			partialCancel()
+			<-partialDone
+			partialMu.Lock()
+			dirty := partialDirty
+			pText, pReasoning := partialText, append([]string(nil), partialReasoning...)
+			partialMu.Unlock()
+			if dirty {
+				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning)
+			}
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
 			// context.Cause on cancellation so Stop / supersede / expiry are
 			// distinguished:
@@ -914,6 +976,17 @@ type turnCollectOpts struct {
 	userMsg        string
 	attachments    []*apiv1.AttachmentInput
 	onStreamEvent  func(*apiv1.ChatStreamResponse)
+	// stallNoProgressSeconds is the tenant's stall_no_progress_window_seconds
+	// read at dispatch time (0 when unset). The turn's stall monitor resolves
+	// its effective no-progress window from it, matching executions.
+	stallNoProgressSeconds int64
+	// onPartial mirrors the running turn's collected text/reasoning into the
+	// acked assistant message row (throttled by the caller) so a client that
+	// lost the live stream — refresh, another tab, another device — can watch
+	// the reply grow via ListMessages instead of a bare spinner. The finalize
+	// upserts the complete reply over the partial row. Nil when the dispatch
+	// path has no partial mirror (e.g. the no-serve fast-fail).
+	onPartial func(text string, reasoning []string)
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1166,6 +1239,28 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 
 	var reply strings.Builder
 	var reasoning []string
+	// Live-delta buffers for the partial-reply mirror: completed parts are
+	// authoritative (reply/reasoning), but between parts the model streams
+	// token deltas — those stream into liveText/liveReasoning so a re-attached
+	// client sees output grow live instead of freezing until the next part
+	// completes. Each completed part RESETS its live buffer (the part's text
+	// subsumes the deltas that built it, so the mirror never double-counts).
+	var liveText strings.Builder
+	var liveReasoning strings.Builder
+	// lastMirror throttles how often the drain loop snapshots the live buffers
+	// into the partial mirror (the flusher further throttles the DB writes).
+	var lastMirror time.Time
+	// mirrorSnapshot builds the live partial snapshot for onPartial:
+	// authoritative completed parts + the delta tail. The reasoning tail is
+	// appended as ONE growing entry (the frontend joins reasoning parts into a
+	// single thinking bubble).
+	mirrorSnapshot := func() (string, []string) {
+		rsn := append([]string(nil), reasoning...)
+		if liveReasoning.Len() > 0 {
+			rsn = append(rsn, liveReasoning.String())
+		}
+		return reply.String() + liveText.String(), rsn
+	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
 	// only fires while the message is still un-accepted, so a wedged serve
@@ -1181,7 +1276,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// ticker polls on a bounded interval (≤30s, ≥1s) so a trip is detected
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
-	monitor := newChatStallMonitor(c.modelRef)
+	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -1296,14 +1391,32 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// them to the stall monitor so a long, slow generation on
 				// a local model resets the no_progress clock instead of
 				// false-tripping the stall. Deltas must NOT flow into the
-				// reply text / reasoning / stream events (completed parts
-				// carry the durable record — TokenDeltaFromBus).
-				if _, ok := opencode.TokenDeltaFromBus(evt); ok {
+				// durable reply text / reasoning / stream events (completed
+				// parts carry the durable record — TokenDeltaFromBus).
+				if delta, kind, ok := opencode.TokenDeltaInfoFromBus(evt); ok {
 					// observe("text") resets lastActivity — for "text" the
 					// monitor ignores the part, so pass nil (no per-delta
 					// allocation).
 					monitor.observe("text", nil)
 					s.turns.markActivity(c.convID, c.token)
+					// Mirror the delta into the live partial row (throttled):
+					// completed parts alone would freeze the mirror between
+					// parts, so a re-attached client would see NO output while
+					// the model streams a long part — the exact 'nothing until
+					// the final message' report. Reasoning deltas grow the
+					// thinking tail; text (or unknown-kind) deltas stream as
+					// text. The finalize overwrites the row with the
+					// authoritative reply, so deltas never corrupt it.
+					if kind == "reasoning" {
+						liveReasoning.WriteString(delta)
+					} else {
+						liveText.WriteString(delta)
+					}
+					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
+						lastMirror = time.Now()
+						snapText, snapRsn := mirrorSnapshot()
+						c.onPartial(snapText, snapRsn)
+					}
 					continue
 				}
 				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
@@ -1329,6 +1442,14 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reply.WriteString(text)
 							reply.WriteString("\n\n")
+							// The completed part subsumes the deltas that
+							// built it — reset the live text tail so the
+							// mirror doesn't double-count.
+							liveText.Reset()
+							if c.onPartial != nil {
+								snapText, snapRsn := mirrorSnapshot()
+								c.onPartial(snapText, snapRsn)
+							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
 									Event: &apiv1.ChatStreamResponse_TextChunk{
@@ -1340,6 +1461,11 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					case "reasoning":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reasoning = append(reasoning, text)
+							liveReasoning.Reset()
+							if c.onPartial != nil {
+								snapText, snapRsn := mirrorSnapshot()
+								c.onPartial(snapText, snapRsn)
+							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
 									Event: &apiv1.ChatStreamResponse_Reasoning{
@@ -1399,7 +1525,7 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,
 	}
-	if _, err := db.CreateMessage(ctx, ttx.Tx, assistantMsg); err != nil {
+	if _, err := db.UpsertMessage(ctx, ttx.Tx, assistantMsg); err != nil {
 		s.log.Warn("persist conversation reply", "conversation", convID, "error", err)
 		return
 	}
@@ -1409,6 +1535,41 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		s.log.Warn("persist conversation reply: commit", "conversation", convID, "error", err)
+	}
+}
+
+// upsertPartialMessage writes the running turn's partial reply under the acked
+// assistant message id (best-effort, its own tiny tenant tx so the collector's
+// hot loop never blocks on the DB). Only visible while the turn is in flight:
+// the finalize (persistConversationReply) upserts the complete reply over it.
+func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string) {
+	if s.pool == nil {
+		return
+	}
+	metaJSON, _ := json.Marshal(map[string]any{"model_ref": modelRef})
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Warn("upsert partial message: begin tx", "conversation", convID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.UpsertMessage(ctx, ttx.Tx, db.MessageRow{
+		ID:             assistantMsgID,
+		TenantID:       tenantID,
+		ConversationID: convID,
+		Role:           "assistant",
+		Content:        content,
+		ToolCalls:      []byte("[]"),
+		ToolResults:    []byte("[]"),
+		Attachments:    []byte("[]"),
+		Metadata:       metaJSON,
+		Reasoning:      reasoning,
+	}); err != nil {
+		s.log.Warn("upsert partial message", "conversation", convID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Warn("upsert partial message: commit", "conversation", convID, "error", err)
 	}
 }
 

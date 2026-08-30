@@ -514,6 +514,14 @@ export function ExecutionContextSidebar({
                 pct={rolePctVsWindow(usageBreakdown.completion)}
                 color="bg-violet-500"
               />
+              {usageBreakdown.reasoning > 0 && (
+                <TokenBar
+                  label="Reasoning"
+                  count={usageBreakdown.reasoning}
+                  pct={rolePctVsWindow(usageBreakdown.reasoning)}
+                  color="bg-amber-500"
+                />
+              )}
             </div>
             {/* Cache transport is a SEPARATE figure from the working set —
                 it's cumulative re-sends of already-counted tokens, so it
@@ -559,6 +567,29 @@ export function ExecutionContextSidebar({
                 )}
               </div>
             )}
+            {/* Cumulative totals — always shown when any usage was recorded.
+                Cache read/write and reasoning are separate cost buckets and
+                are deliberately NOT folded into the input/output mix, so
+                they get their own explicit totals line. */}
+            <div className="mt-1 border-t border-dashed pt-1.5 text-[10px] text-muted-foreground">
+              Cumulative: {fmtNum(usageBreakdown.prompt)} input ·{" "}
+              {fmtNum(usageBreakdown.completion)} output
+              {[
+                usageBreakdown.reasoning > 0 &&
+                  `${fmtNum(usageBreakdown.reasoning)} reasoning`,
+                usageBreakdown.cumCacheRead > 0 &&
+                  `${fmtNum(usageBreakdown.cumCacheRead)} cache read`,
+                usageBreakdown.cumCacheWrite > 0 &&
+                  `${fmtNum(usageBreakdown.cumCacheWrite)} cache write`,
+                cacheHitRate > 0 && `${cacheHitRate}% hit rate`,
+              ]
+                .filter(Boolean)
+                .map((seg) =>
+                  seg ? (
+                    <span key={seg}> · {seg}</span>
+                  ) : null,
+                )}
+            </div>
           </div>
         )}
       </div>

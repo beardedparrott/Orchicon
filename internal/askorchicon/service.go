@@ -178,10 +178,13 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// Resolve the chat stall window once per request so every conversation's
+	// turn_progressing is computed against the tenant's configured value.
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID)))
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID, stallWindow)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -221,7 +224,7 @@ func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	st := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
 	return connect.NewResponse(&apiv1.GetConversationResponse{
 		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
@@ -363,6 +366,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.title_updated", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"title": req.Msg.Title})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.title_updated: %w", err))
@@ -372,7 +376,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	st := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
 		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
@@ -407,6 +411,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.mode_changed", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"mode": mode})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.mode_changed: %w", err))
@@ -416,7 +421,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	st := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
 		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
@@ -621,7 +626,12 @@ type turnStatusInfo struct {
 // as the one-turn gate. This is how a refreshed frontend learns "a turn is
 // running here" and re-attaches the Stop button + the completion poll, plus
 // whether that turn is genuinely progressing or stalled/wedged (D3).
-func (s *Service) turnStatus(convID string) turnStatusInfo {
+//
+// noProgressWindow is the effective chat stall window (resolved from the
+// tenant's stall_no_progress_window_seconds via chatStallWindow) so the
+// progressing signal uses the SAME window as the turn's stall monitor — they
+// must agree on when "no progress" starts.
+func (s *Service) turnStatus(convID string, noProgressWindow time.Duration) turnStatusInfo {
 	entry, ok := s.turns.get(convID)
 	if !ok {
 		return turnStatusInfo{}
@@ -633,8 +643,19 @@ func (s *Service) turnStatus(convID string) turnStatusInfo {
 	// Progress = recent activity AND the session is not wedged. If the turn
 	// has been quiet for longer than the no-progress window, the server no
 	// longer claims "still working" — the frontend shows a stalled/retry state.
-	info.progressing = !entry.wedged && time.Since(entry.lastActivity) < askStallNoProgressWindow()
+	info.progressing = !entry.wedged && time.Since(entry.lastActivity) < noProgressWindow
 	return info
+}
+
+// chatStallWindow resolves the tenant's effective chat no-progress stall
+// window from its settings row (best-effort: any read failure falls back to
+// the env/default resolution, matching the dispatch path's behavior).
+func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID string) time.Duration {
+	settings, err := db.GetTenantSettings(ctx, tx, tenantID)
+	if err != nil {
+		return askStallNoProgressWindow()
+	}
+	return resolveChatStallNoProgressWindow(settings.StallNoProgressWindowSeconds)
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'

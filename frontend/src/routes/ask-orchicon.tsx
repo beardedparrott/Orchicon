@@ -199,6 +199,29 @@ const EMPTY_STREAM: ConvStream = {
 // "Ask Orchicon is stuck" (a silent provider 429 looks like a stall).
 const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
 
+// Ticks Date.now() every `intervalMs` while truthy, frozen otherwise. Used to
+// render live "last activity Ns ago" elapsed time in the reconnecting banner
+// without running a timer (and re-rendering the tree) when nothing needs it.
+function useNow(intervalMs: number | false): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!intervalMs) return;
+    const t = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
+// "12s" / "3m 05s" / "1h 12m" — elapsed-time label for the activity ticker.
+function formatElapsed(totalSecs: number): string {
+  const s = Math.max(0, Math.floor(totalSecs));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 function AskOrchiconPage() {
   const search = Route.useSearch() as { conversationId: string | null };
   const navigate = useNavigate();
@@ -358,6 +381,24 @@ function AskOrchiconPage() {
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
 
+  // Server-reported turn state for the ACTIVE conversation, freshest source
+  // first. The conversations list polls every 3s while any turn is running;
+  // GetConversation is fetched once per conversation, so it only fills gaps
+  // before the first poll lands.
+  const serverTurnInFlight =
+    conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
+    activeConv?.turnInFlight ??
+    false;
+  const turnLastActivityAt =
+    conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
+    activeConv?.turnLastActivityAt ??
+    null;
+  // 1s ticker while the reconnecting banner is live so the "last activity"
+  // line updates in place; frozen (no timer) otherwise.
+  const liveNow = useNow(
+    isStreaming && reconnecting && turnProgressing ? 1000 : false,
+  );
+
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition
   // is the UNION of local streaming (a turn this page started — the earliest
@@ -403,12 +444,20 @@ function AskOrchiconPage() {
   }, [activeConv?.mode]);
 
   // The reply (or error) is persisted under the acked assistant message id.
-  // When it appears via polling, the turn is over — clear the ACTIVE
-  // conversation's stream slot (other conversations keep their own state,
-  // so a turn running while you browse elsewhere stays intact). When the
-  // acked message came back as an ERROR (reply failed after ack), the sent
-  // text is copied to the clipboard and the composer is signalled to put it
-  // back in the box so the user never loses what they typed on a failed reply.
+  // When it appears via polling AND the turn is no longer in flight, the turn
+  // is over — clear the ACTIVE conversation's stream slot (other conversations
+  // keep their own state, so a turn running while you browse elsewhere stays
+  // intact). When the acked message came back as an ERROR (reply failed after
+  // ack), the sent text is copied to the clipboard and the composer is
+  // signalled to put it back in the box so the user never loses what they
+  // typed.
+  //
+  // The server mirrors the running reply into the acked row as it is collected
+  // (partial content), so a row under pendingReplyId can exist WHILE the turn
+  // is still running — a refreshed / second-tab client watches it grow via the
+  // 2s ListMessages poll. The turn registry is the terminal authority:
+  // finalizing only when serverTurnInFlight is false keeps a partial row from
+  // collapsing the re-attached streaming state (Stop button + banner) early.
   //
   // This effect does NOT depend on `streams` (which changes on every streaming
   // chunk): clearing the slot on every chunk while the local stream is still
@@ -422,6 +471,7 @@ function AskOrchiconPage() {
     if (liveStreamRef.current[activeConvId]) return;
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
+    if (serverTurnInFlight) return;
     if (acked.metadata?.error) {
       // Reply failed after the message was acked. The composer already cleared
       // on send (the message is persisted in history), but copy the sent text
@@ -452,7 +502,7 @@ function AskOrchiconPage() {
     }));
     delete sentTextRef.current[activeConvId];
     qc.invalidateQueries({ queryKey: askKeys.conversations });
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast, serverTurnInFlight]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -464,13 +514,12 @@ function AskOrchiconPage() {
   // stream until it completes.
   //
   // The server's turn flag can LAG the persisted reply by up to a poll cycle
-  // (the registry entry is removed before the reply row is written). Re-arming
-  // a turn whose reply is already persisted would ping-pong with the completion
-  // effect — clearing here, re-arming there — flickering the Stop button and
-  // re-sticking the scroll on every toggle. The acked assistant message only
-  // ever exists in messages once the reply is persisted (never as a placeholder
-  // at ack time), so skip re-arming when it is present: the turn is genuinely
-  // done and the stale flag will clear on the next conversations poll.
+  // (the registry entry is removed before the reply row is written). The acked
+  // assistant message row is mirrored as the reply is collected, so a row's
+  // presence does NOT mean the turn is done — re-arm whenever the server
+  // reports the turn in flight with a pending id, and let the completion
+  // effect (which waits for turn_in_flight to clear) resolve the slot once the
+  // final reply lands.
   useEffect(() => {
     if (!activeConvId) return;
     const server = conversations?.find((c) => c.id === activeConvId);
@@ -482,7 +531,7 @@ function AskOrchiconPage() {
       server?.pendingAssistantMessageId ||
       activeConv?.pendingAssistantMessageId ||
       "";
-    if (pendingId && messages?.some((m) => m.id === pendingId)) return;
+    if (!pendingId) return;
     setStream(activeConvId, (prev) => {
       if (prev.isStreaming) return prev;
       return {
@@ -496,7 +545,23 @@ function AskOrchiconPage() {
         items: [],
       };
     });
-  }, [activeConvId, activeConv, conversations, streams, messages, setStream]);
+  }, [activeConvId, activeConv, conversations, streams, setStream]);
+
+  // Keep the slot's turnProgressing fresh while a server turn is re-attached:
+  // it is set once at re-arm, but the server recomputes it on every
+  // conversations poll (3s) against the tenant's stall window. Syncing it lets
+  // the banner flip from "still working" to "turn stalled" without a manual
+  // refresh, and keeps the "still working" claim honest.
+  useEffect(() => {
+    if (!activeConvId) return;
+    const server = conversations?.find((c) => c.id === activeConvId);
+    const sp = server?.turnProgressing ?? activeConv?.turnProgressing;
+    if (sp === undefined) return;
+    setStream(activeConvId, (prev) => {
+      if (!prev.isStreaming || prev.turnProgressing === sp) return prev;
+      return { ...prev, turnProgressing: sp };
+    });
+  }, [activeConvId, conversations, activeConv, setStream]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -792,10 +857,14 @@ function AskOrchiconPage() {
   const handleSendMessage = useCallback(
     async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       if (!text.trim() || !activeConvId) return false;
-      if (isStreaming) {
+      if (isStreaming || serverTurnInFlight) {
         // Send while streaming = interject: interrupt the current reply and
         // redirect the model (the server aborts the session + supersedes the
         // turn), never the "another reply already processing" dead-end.
+        // serverTurnInFlight covers the case where THIS browser's slot is
+        // idle but the turn is running server-side (started here before a
+        // refresh, or in another tab/device): the poll may not have re-armed
+        // the slot yet, but a send must still interject, not double-start.
         const ok = await interjectStreaming(activeConvId, text, attachments);
         if (!ok) {
           copyTextToClipboard(text);
@@ -808,7 +877,7 @@ function AskOrchiconPage() {
       }
       return ok;
     },
-    [activeConvId, isStreaming, sendStreaming, interjectStreaming],
+    [activeConvId, isStreaming, serverTurnInFlight, sendStreaming, interjectStreaming],
   );
 
   const handleRetry = useCallback((): Promise<boolean> => {
@@ -1189,12 +1258,29 @@ function AskOrchiconPage() {
                     stalled/wedged (turnProgressing false) the UI reports an
                     accurate stalled state instead of "still working". */}
                 {isStreaming && reconnecting && (
-                  <div className="flex justify-center">
+                  <div className="flex flex-col items-center gap-1">
                     <p className="text-xs text-muted-foreground">
                       {turnProgressing
-                        ? "Connection lost — still working… You can interject or stop this reply."
+                        ? "Connection interrupted — still working… Output continues below. You can interject or stop this reply."
                         : "Turn stalled — the model stopped responding. You can stop this reply and try again."}
                     </p>
+                    {/* Live "last activity Ns ago" ticker from the server's
+                        turn_last_activity_at (refreshed by the 3s conversations
+                        poll) so a re-attached turn proves it is alive — a long,
+                        quiet model run looks hung without this. */}
+                    {turnProgressing && turnLastActivityAt && (
+                      <p
+                        className="text-[11px] text-muted-foreground/70"
+                        data-testid="turn-last-activity"
+                      >
+                        Last activity{" "}
+                        {formatElapsed(
+                          (liveNow - turnLastActivityAt.toDate().getTime()) /
+                            1000,
+                        )}{" "}
+                        ago
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1491,10 +1577,14 @@ function MessageBubble({
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
-      <AssistantBubble
-        text={message.content}
-        label="Orchicon"
-      />
+      {/* A running turn's mirrored partial row can hold reasoning but no text
+          yet (the model is still thinking) — skip the empty bubble shell. */}
+      {message.content && (
+        <AssistantBubble
+          text={message.content}
+          label="Orchicon"
+        />
+      )}
     </>
   );
 }
@@ -1574,7 +1664,13 @@ function ChatInputField({
   const [pendingReads, setPendingReads] = useState(0);
 
   const handleSubmit = useCallback(async () => {
-    if (sending) return;
+    // The sending lock only guards a double-click on a FRESH send. While a
+    // turn is streaming, `sending` stays true for the whole turn (onSend
+    // resolves only when the stream ends), so locking unconditionally would
+    // swallow every interject attempt mid-reply — the box already cleared on
+    // submit, so a submit during a stream IS a deliberate interject
+    // (interrupt + redirect), not an accidental duplicate.
+    if (sending && !isStreaming) return;
     if (pendingReads > 0) {
       useToastStore.getState().push({ kind: "info", message: `Still loading ${pendingReads} file(s)...` });
       return;
@@ -1601,7 +1697,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend, pendingReads]);
+  }, [sending, text, attachments, onSend, pendingReads, isStreaming]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

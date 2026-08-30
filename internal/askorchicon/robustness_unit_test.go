@@ -26,7 +26,7 @@ func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 	if !ok {
 		t.Fatal("register failed")
 	}
-	info := s.turnStatus("conv")
+	info := s.turnStatus("conv", askStallNoProgressWindow())
 	if !info.inFlight {
 		t.Fatal("freshly registered turn must be in flight")
 	}
@@ -46,7 +46,7 @@ func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 	e.lastActivity = time.Now().Add(-2 * time.Hour)
 	s.turns.turns["conv"] = e
 	s.turns.mu.Unlock()
-	info = s.turnStatus("conv")
+	info = s.turnStatus("conv", askStallNoProgressWindow())
 	if !info.inFlight {
 		t.Fatal("a quiet-but-live turn is still in flight")
 	}
@@ -57,14 +57,14 @@ func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 	// Wedged: never progressing even with recent activity.
 	s.turns.markWedged("conv", tok)
 	s.turns.markActivity("conv", tok)
-	info = s.turnStatus("conv")
+	info = s.turnStatus("conv", askStallNoProgressWindow())
 	if info.progressing {
 		t.Error("a wedged turn must not report progressing regardless of activity")
 	}
 
 	// Completed (removed) turn: clears in flight.
 	s.turns.remove("conv", tok)
-	info = s.turnStatus("conv")
+	info = s.turnStatus("conv", askStallNoProgressWindow())
 	if info.inFlight || info.pendingMsgID != "" || info.progressing {
 		t.Errorf("completed turn status = %+v, want zero", info)
 	}
