@@ -584,9 +584,11 @@ export function ExecutionContextSidebar({
                 cacheHitRate > 0 && `${cacheHitRate}% hit rate`,
               ]
                 .filter(Boolean)
-                .map((seg) => (
-                  <span key={seg}> · {seg}</span>
-                ))}
+                .map((seg) =>
+                  seg ? (
+                    <span key={seg}> · {seg}</span>
+                  ) : null,
+                )}
             </div>
           </div>
         )}
