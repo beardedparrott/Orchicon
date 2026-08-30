@@ -495,6 +495,91 @@ func countMessageRows(t *testing.T, pool *db.Pool, convID, id string) int {
 	return n
 }
 
+// TestPartialReplyMirrorsTokenDeltas verifies the live mirror streams
+// mid-generation token deltas: a long single part with no completion still
+// grows the partial row, so a re-attached client sees output without waiting
+// for the part to complete (the "nothing until the final message" report).
+// Reasoning deltas/parts grow the thinking tail; deltas never corrupt the
+// durable record (the finalize overwrites the row with the authoritative
+// reply).
+func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A completed reasoning part first (the "last reasoning block" a refresher
+	// sees), then raw deltas for a text part that never completes before the
+	// assertions run.
+	client.sub.feed(busReasoning("ses_1", "thinking hard"))
+	client.sub.feed(busDelta("ses_1", "The "))
+	client.sub.feed(busDelta("ses_1", "answer"))
+	client.sub.feed(busDelta("ses_1", " is "))
+
+	// The partial row grows with the deltas (no part completion, no idle).
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var row *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil && strings.Contains(row.Content, "The answer is") {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("delta text never mirrored into the partial row")
+		}
+	}
+	// The completed reasoning part is mirrored as the thinking tail.
+	msgs := listMessages(t, pool, convID)
+	var row *db.MessageRow
+	for i := range msgs {
+		if msgs[i].ID == ackID {
+			row = &msgs[i]
+			break
+		}
+	}
+	if len(row.Reasoning) == 0 || row.Reasoning[0] != "thinking hard" {
+		t.Errorf("reasoning mirror = %v, want [thinking hard]", row.Reasoning)
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight (deltas are not a completed reply)")
+	}
+
+	// Finalize cleanly so the collector exits: the authoritative reply
+	// replaces the delta text and the turn releases.
+	client.sub.feed(busText("ses_1", "The answer is 42"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline = time.After(5 * time.Second)
+	for {
+		if _, ok := s.turns.get(convID); !ok {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("turn never released after finalize")
+		}
+	}
+	final := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(final.Content) != "The answer is 42" {
+		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
+	}
+}
+
 // TestAbortConversationTurn verifies the Stop path: it cancels the registered
 // turn and aborts the conversation's opencode session via SessionClient,
 // keeping the session alive for the next message.

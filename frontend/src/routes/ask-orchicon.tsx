@@ -1577,10 +1577,14 @@ function MessageBubble({
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
-      <AssistantBubble
-        text={message.content}
-        label="Orchicon"
-      />
+      {/* A running turn's mirrored partial row can hold reasoning but no text
+          yet (the model is still thinking) — skip the empty bubble shell. */}
+      {message.content && (
+        <AssistantBubble
+          text={message.content}
+          label="Orchicon"
+        />
+      )}
     </>
   );
 }

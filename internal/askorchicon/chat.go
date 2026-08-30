@@ -1239,6 +1239,28 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 
 	var reply strings.Builder
 	var reasoning []string
+	// Live-delta buffers for the partial-reply mirror: completed parts are
+	// authoritative (reply/reasoning), but between parts the model streams
+	// token deltas — those stream into liveText/liveReasoning so a re-attached
+	// client sees output grow live instead of freezing until the next part
+	// completes. Each completed part RESETS its live buffer (the part's text
+	// subsumes the deltas that built it, so the mirror never double-counts).
+	var liveText strings.Builder
+	var liveReasoning strings.Builder
+	// lastMirror throttles how often the drain loop snapshots the live buffers
+	// into the partial mirror (the flusher further throttles the DB writes).
+	var lastMirror time.Time
+	// mirrorSnapshot builds the live partial snapshot for onPartial:
+	// authoritative completed parts + the delta tail. The reasoning tail is
+	// appended as ONE growing entry (the frontend joins reasoning parts into a
+	// single thinking bubble).
+	mirrorSnapshot := func() (string, []string) {
+		rsn := append([]string(nil), reasoning...)
+		if liveReasoning.Len() > 0 {
+			rsn = append(rsn, liveReasoning.String())
+		}
+		return reply.String() + liveText.String(), rsn
+	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
 	// only fires while the message is still un-accepted, so a wedged serve
@@ -1369,14 +1391,32 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// them to the stall monitor so a long, slow generation on
 				// a local model resets the no_progress clock instead of
 				// false-tripping the stall. Deltas must NOT flow into the
-				// reply text / reasoning / stream events (completed parts
-				// carry the durable record — TokenDeltaFromBus).
-				if _, ok := opencode.TokenDeltaFromBus(evt); ok {
+				// durable reply text / reasoning / stream events (completed
+				// parts carry the durable record — TokenDeltaFromBus).
+				if delta, kind, ok := opencode.TokenDeltaInfoFromBus(evt); ok {
 					// observe("text") resets lastActivity — for "text" the
 					// monitor ignores the part, so pass nil (no per-delta
 					// allocation).
 					monitor.observe("text", nil)
 					s.turns.markActivity(c.convID, c.token)
+					// Mirror the delta into the live partial row (throttled):
+					// completed parts alone would freeze the mirror between
+					// parts, so a re-attached client would see NO output while
+					// the model streams a long part — the exact 'nothing until
+					// the final message' report. Reasoning deltas grow the
+					// thinking tail; text (or unknown-kind) deltas stream as
+					// text. The finalize overwrites the row with the
+					// authoritative reply, so deltas never corrupt it.
+					if kind == "reasoning" {
+						liveReasoning.WriteString(delta)
+					} else {
+						liveText.WriteString(delta)
+					}
+					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
+						lastMirror = time.Now()
+						snapText, snapRsn := mirrorSnapshot()
+						c.onPartial(snapText, snapRsn)
+					}
 					continue
 				}
 				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
@@ -1402,8 +1442,13 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reply.WriteString(text)
 							reply.WriteString("\n\n")
+							// The completed part subsumes the deltas that
+							// built it — reset the live text tail so the
+							// mirror doesn't double-count.
+							liveText.Reset()
 							if c.onPartial != nil {
-								c.onPartial(reply.String(), reasoning)
+								snapText, snapRsn := mirrorSnapshot()
+								c.onPartial(snapText, snapRsn)
 							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
@@ -1416,8 +1461,10 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					case "reasoning":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reasoning = append(reasoning, text)
+							liveReasoning.Reset()
 							if c.onPartial != nil {
-								c.onPartial(reply.String(), reasoning)
+								snapText, snapRsn := mirrorSnapshot()
+								c.onPartial(snapText, snapRsn)
 							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
