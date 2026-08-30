@@ -58,6 +58,18 @@ var cannedWorkflows = []cannedWorkflow{
 			{"id":"step-end","name":"End","kind":"end","ref":"","worker_version":0,"depends_on":["step-e75nato1"],"gate_policy_ref":"","config":"{}","position_x":400,"position_y":950}
 		]`,
 	},
+	{
+		ID:          "01M17EZC170ZR7SZAJET4Z5RY1",
+		VersionID:   "wfv_automation_research_v1",
+		Name:        "Automation Research",
+		VersionNote: "Planner -> Analyst -> Synthesizer -> End: market research against a per-run capability landscape (harnesses, runtimes, orchestration platforms, automation platforms, frameworks), evidence capture, and idea-state work item spawning via the automation-research role. Product targets live in the bound work item's brief, so the workflow and its workers stay product-agnostic.",
+		StepsJSON: `[
+  {"id":"step-5mxcx4yk","ref":"01M13DYHKHEF71MVGY07GMGMJ6","kind":"task","name":"Automation — Research Planner","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"edge_handles":{"e-step-5mxcx4yk-step-8wdctc1f":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-8wdctc1f-step-mt87ezlw":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-mt87ezlw-step-1tzgaakr":{"sourceHandle":"source-right","targetHandle":"target-left"}},"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-8wdctc1f","ref":"01M13DYJWHCYHWQ1X85J1BWWZ1","kind":"task","name":"Automation — Research Analyst","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","depends_on":["step-5mxcx4yk"],"position_x":74.70288563736119,"position_y":136.46383242810788,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-mt87ezlw","ref":"01M13DYM3A7CTY8ECP4R7M33SR","kind":"task","name":"Automation — Research Synthesizer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","depends_on":["step-8wdctc1f"],"position_x":74.91912768189644,"position_y":249.66389623805503,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-1tzgaakr","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-mt87ezlw"],"position_x":366.4761407515862,"position_y":259.8566843019803,"worker_version":0,"gate_policy_ref":""}
+]`,
+	},
 }
 
 // retiredCannedWorkflow is a template that was once seeded as canned but

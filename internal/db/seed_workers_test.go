@@ -696,3 +696,69 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 		t.Errorf("roll-forward version must preserve the current version's model_ref, got %q want google/gemini-2.5-pro", model)
 	}
 }
+
+// TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes: the
+// Automation Research trio (Planner/Analyst/Synthesizer) is canned with
+// the automation-research role and project-agnostic purposes — the
+// per-run product targets live in the bound work item's brief, not in the
+// workers. Asserts: role_ref bound, generic wording, no Orchicon-project
+// bias phrases, the web-research runtime image, and the markers +
+// worktree-hygiene rule on the seeded profile.
+func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed dev workers: %v", err)
+	}
+
+	trio := []struct {
+		id     string
+		slug   string
+		expect string // purpose fragment that must be present
+	}{
+		{"01M13DYHKHEF71MVGY07GMGMJ6", "automation-research-planner", "capability landscape"},
+		{"01M13DYJWHCYHWQ1X85J1BWWZ1", "automation-research-analyst", "project codebase"},
+		{"01M13DYM3A7CTY8ECP4R7M33SR", "automation-research-synthesizer", "project codebase"},
+	}
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	for _, tc := range trio {
+		var purpose, roleRef string
+		if err := ttx.QueryRow(ctx,
+			`SELECT purpose, role_ref FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`,
+			tc.id).Scan(&purpose, &roleRef); err != nil {
+			t.Fatalf("query worker %s: %v", tc.slug, err)
+		}
+		if roleRef != "r_se_automation_research" {
+			t.Errorf("%s role_ref = %q, want r_se_automation_research", tc.slug, roleRef)
+		}
+		if !strings.Contains(purpose, tc.expect) {
+			t.Errorf("%s purpose missing %q", tc.slug, tc.expect)
+		}
+		// Project-agnostic: the Orchicon-project bias phrases must be gone.
+		for _, bias := range []string{"the Orchicon codebase", "compare Orchicon against", "competitors to analyze"} {
+			if strings.Contains(purpose, bias) {
+				t.Errorf("%s purpose still carries project bias %q", tc.slug, bias)
+			}
+		}
+		var agents, runtimeRef string
+		if err := ttx.QueryRow(ctx,
+			`SELECT agents_md, runtime_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			tc.id).Scan(&agents, &runtimeRef); err != nil {
+			t.Fatalf("query version %s: %v", tc.slug, err)
+		}
+		if runtimeRef != "orchicon-runtime:web-research" {
+			t.Errorf("%s runtime_ref = %q, want orchicon-runtime:web-research", tc.slug, runtimeRef)
+		}
+		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v22") {
+			t.Errorf("%s agents_md missing seed markers", tc.slug)
+		}
+		if !strings.Contains(agents, "Worktree hygiene") {
+			t.Errorf("%s agents_md missing the worktree hygiene rule", tc.slug)
+		}
+	}
+}
