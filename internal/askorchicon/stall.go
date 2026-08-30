@@ -48,6 +48,20 @@ func askStallNoProgressWindow() time.Duration {
 	return defaultAskStallNoProgressWindow
 }
 
+// resolveChatStallNoProgressWindow returns the effective chat no-progress
+// stall window. The tenant's stall_no_progress_window_seconds setting wins
+// when set, UNLESS the ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW env override is
+// pinned (env beats the DB setting — exactly the precedence executions use in
+// stallWindowsFromManifest, so a chat turn and a worker execution on the same
+// tenant agree on what "no progress" means). 0/unset falls back to the env
+// override, then the 120s default.
+func resolveChatStallNoProgressWindow(settingsSeconds int64) time.Duration {
+	if settingsSeconds > 0 && os.Getenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW") == "" {
+		return time.Duration(settingsSeconds) * time.Second
+	}
+	return askStallNoProgressWindow()
+}
+
 func askStallRepetitionCount() int {
 	if v := os.Getenv("ORCHICON_ASK_STALL_REPETITION_COUNT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -136,10 +150,15 @@ type chatStallMonitor struct {
 	fired bool
 }
 
-func newChatStallMonitor(modelRef string) *chatStallMonitor {
+// newChatStallMonitor builds a stall monitor for one chat turn.
+// settingsNoProgressSeconds is the tenant's stall_no_progress_window_seconds
+// (0 when unset/unknown); the effective window is resolved by
+// resolveChatStallNoProgressWindow so a chat turn honors the same tenant
+// setting executions do.
+func newChatStallMonitor(modelRef string, settingsNoProgressSeconds int64) *chatStallMonitor {
 	return &chatStallMonitor{
 		modelRef:         modelRef,
-		noProgressWindow: askStallNoProgressWindow(),
+		noProgressWindow: resolveChatStallNoProgressWindow(settingsNoProgressSeconds),
 		repetitionCount:  askStallRepetitionCount(),
 		repetitionWindow: askStallRepetitionWindow(),
 		toolWedgeWindow:  askMCPToolWedgeWindow(),

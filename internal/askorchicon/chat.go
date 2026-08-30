@@ -623,6 +623,10 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
+	// The tenant's stall window for THIS turn: read at dispatch time so a
+	// settings change applies to the next turn, and the collector's stall
+	// monitor uses the same value the read path reports as turn_progressing.
+	settings, _ := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
 	ttx.Rollback(ctx)
 
 	// Inject the tenant's enabled projects so the agent always has
@@ -668,6 +672,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				userMsg:        msg,
 				attachments:    attachments,
 				onStreamEvent:  onStreamEvent,
+				stallNoProgressSeconds: settings.StallNoProgressWindowSeconds,
 			})
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
 			// context.Cause on cancellation so Stop / supersede / expiry are
@@ -914,6 +919,10 @@ type turnCollectOpts struct {
 	userMsg        string
 	attachments    []*apiv1.AttachmentInput
 	onStreamEvent  func(*apiv1.ChatStreamResponse)
+	// stallNoProgressSeconds is the tenant's stall_no_progress_window_seconds
+	// read at dispatch time (0 when unset). The turn's stall monitor resolves
+	// its effective no-progress window from it, matching executions.
+	stallNoProgressSeconds int64
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1181,7 +1190,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// ticker polls on a bounded interval (≤30s, ≥1s) so a trip is detected
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
-	monitor := newChatStallMonitor(c.modelRef)
+	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw

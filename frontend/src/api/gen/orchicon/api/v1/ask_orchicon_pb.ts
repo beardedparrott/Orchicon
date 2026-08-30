@@ -131,12 +131,12 @@ export class Conversation extends Message<Conversation> {
 
   /**
    * turn_progressing is the server-confirmed "the model is still genuinely
-   * working" signal. Computed at read time from the running turn's last
-   * activity: true when the turn has produced recent output and is not wedged
-   * on an unresolved tool. The frontend shows "still working…" only when this
-   * is true; when it is false but turn_in_flight is true, the UI can accurately
-   * report "Turn stalled — stop or retry" instead of the misleading "connection
-   * lost — still working" the refresh path used to show.
+   * working" signal (ADR-0002 D3). Computed at read time from the running
+   * turn's last activity: true when the turn has produced recent output and is
+   * not wedged on an unresolved tool. The frontend shows "still working…" only
+   * when this is true; when it is false but turn_in_flight is true, the UI can
+   * accurately report "Turn stalled — stop or retry" instead of the misleading
+   * "connection lost — still working" the refresh path used to show.
    *
    * @generated from field: bool turn_progressing = 13;
    */
@@ -172,6 +172,8 @@ export class Conversation extends Message<Conversation> {
     { no: 10, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
     { no: 11, name: "turn_in_flight", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 12, name: "pending_assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 13, name: "turn_progressing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

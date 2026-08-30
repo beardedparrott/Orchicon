@@ -37,7 +37,7 @@ func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	waitForSend(t, client, 1)
 
 	// Refresh after the RPC returned: the turn is still live and progressing.
-	info := s.turnStatus(convID)
+	info := s.turnStatus(convID, askStallNoProgressWindow())
 	if !info.inFlight {
 		t.Fatal("refresh must see the turn still in flight (detached collector)")
 	}
@@ -59,7 +59,7 @@ func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	}
 	deadline := time.After(5 * time.Second)
 	for {
-		if info := s.turnStatus(convID); !info.inFlight {
+		if info := s.turnStatus(convID, askStallNoProgressWindow()); !info.inFlight {
 			break
 		}
 		select {
