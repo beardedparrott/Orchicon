@@ -954,6 +954,25 @@ function UserGuideTab() {
           </div>
 
           <div>
+            <h3 className="font-medium mb-1">Ideas &amp; automation</h3>
+            <p className="text-muted-foreground">
+              Orchicon can find work for you, not just execute it. A{" "}
+              <strong>recurring work item</strong> re-fires on a cadence — the
+              flagship example is the <strong>Automation Research</strong>{" "}
+              pipeline (Automation → Recurring Items): a three-worker crew
+              (Planner → Analyst → Synthesizer) that surveys the market live,
+              verifies each candidate against external evidence, and distills
+              feature proposals. Proposals land in the <strong>Idea Cloud</strong>{" "}
+              (Automation → Idea Cloud), a triage board separate from your real
+              work items. Each idea carries its evidence and the run that
+              produced it: <strong>promote</strong> it to turn it into real,
+              schedulable work, or <strong>dismiss</strong> it — dismissed ideas
+              are kept as rejected history (the Idea Cloud's Rejected view) so
+              automation never re-proposes them.
+            </p>
+          </div>
+
+          <div>
             <h3 className="font-medium mb-1">When something fails</h3>
             <p className="text-muted-foreground">
               Failures recover automatically by default: capture → summarize →
@@ -993,10 +1012,12 @@ function UserGuideTab() {
         <CardContent className="space-y-5">
           <div>
             <h3 className="font-medium mb-1">Appearance</h3>
-            <p className="text-muted-foreground">
-              Pick light or dark mode and a theme for each. Cosmetic only —
-              nothing here changes platform behavior.
-            </p>
+              <p className="text-muted-foreground">
+                Pick light or dark mode and a theme for each — 20 hand-tuned
+                variants (10 light + 10 dark). Cosmetic only — nothing here
+                changes platform behavior. The whole shell is also usable on a
+                phone.
+              </p>
           </div>
           <div>
             <h3 className="font-medium mb-1">Defaults</h3>
