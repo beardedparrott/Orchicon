@@ -165,6 +165,13 @@ const (
 	// has no children. Reversible via RestoreWorkItem, which returns the
 	// item to the terminal status recorded in archived_from_status.
 	WorkItemArchived = "archived"
+	// WorkItemIdea is a system-managed status set only by the automation
+	// spawn path (a recurring fire with outputs_mode=idea) and by Idea
+	// Cloud promotion (feature 5). An idea is an automation-produced item
+	// awaiting triage; it is excluded from every normal work-item view
+	// (board/tree/list/sequence/workflows/counts). Never user-assignable —
+	// it mirrors WorkItemBlocked/WorkItemSkipped's system-managed rule.
+	WorkItemIdea = "idea"
 )
 
 // WorkItemIsTerminalArchivable reports whether a work item may be
@@ -191,6 +198,79 @@ func WorkItemIsTerminalArchivable(status string) bool {
 // FAILURE and deliberately return false: they keep dependents blocked.
 func WorkItemIsTerminalSuccess(status string) bool {
 	return status == WorkItemSucceeded || status == WorkItemSkipped
+}
+
+// WorkItemIsTerminalNonReplayable reports whether a work item is in a
+// terminal state that can never be re-played via a retry or fresh run
+// re-attachment. A dead run branch is safe to reclaim only when the
+// bound work item (if any) is in this set — or when the run has no
+// bound work item at all. The set is exactly succeeded | skipped |
+// cancelled | archived. Failed and active states (pending/ready/assigned
+// /running/...) are deliberately NOT reclaimable: a failed run with an
+// active item is a retry target.
+func WorkItemIsTerminalNonReplayable(status string) bool {
+	switch status {
+	case WorkItemSucceeded, WorkItemSkipped, WorkItemCancelled, WorkItemArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+// Recurring outputs_mode values (feature 4.1, D4). Stored inside the
+// recurring_schedule JSONB (no dedicated column).
+const (
+	// RecurringOutputsStandard (the default) spawns items in their normal
+	// status with automation provenance stamped.
+	RecurringOutputsStandard = "standard"
+	// RecurringOutputsIdea spawns items in IDEA state (hidden from every
+	// normal work-item list) with automation provenance stamped.
+	RecurringOutputsIdea = "idea"
+	// RecurringOutputsNone spawns no new work items; the fire runs for
+	// side effects only.
+	RecurringOutputsNone = "none"
+)
+
+// IdeaScope values for ListWorkItems (feature 4.1, D5).
+const (
+	// IdeaScopeExclude (the default) hides idea-state items from the
+	// normal Work Items list.
+	IdeaScopeExclude = "exclude"
+	// IdeaScopeOnly returns only idea-state items (the Idea Cloud view,
+	// with provenance carried).
+	IdeaScopeOnly = "only"
+)
+
+// IdeaStateScope values for ListWorkItems (the idea-rejected split). The
+// store key is a free-form string on ListWorkItemsFilter.IdeaStateScope so
+// ListIdeas can select the population; the API layer maps the
+// IdeaStateScope proto enum onto these.
+const (
+	// IdeaStateActive (the default) = the Idea Cloud: idea-state items
+	// awaiting triage (IdeaScope=only semantics).
+	IdeaStateActive = ""
+	// IdeaStateRejected = the rejected graveyard: automation-spawned items
+	// that were dismissed (status='cancelled' WITH spawned provenance — the
+	// exact state DismissIdea produces). Queryable so rejected ideas stay
+	// visible, readable history and the automation dedupe gate can never
+	// re-propose one. Retroactive: every dismissal ever made already
+	// matches, no backfill needed.
+	IdeaStateRejected = "rejected"
+)
+
+// NormalizeRecurringOutputsMode maps an arbitrary outputs_mode string to a
+// canonical value: empty/invalid -> "standard". Exported so the Ask
+// Orchicon tools share the API's boundary normalization (AGENTS.md
+// Ask-Orchicon-sync rule).
+func NormalizeRecurringOutputsMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case RecurringOutputsIdea:
+		return RecurringOutputsIdea
+	case RecurringOutputsNone:
+		return RecurringOutputsNone
+	default:
+		return RecurringOutputsStandard
+	}
 }
 
 // Dependency types — edges in the work DAG
@@ -290,6 +370,7 @@ const (
 	StepKindWorkItem     = "work_item"
 	StepKindProject      = "project"
 	StepKindLoopDecision = "loop_decision"
+	StepKindEnd          = "end"
 )
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):

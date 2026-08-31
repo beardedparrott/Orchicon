@@ -24,9 +24,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
-	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/recovery"
@@ -37,12 +37,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
+	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// 	Dependencies bundles the resources the API layer needs. Constructed
+//	Dependencies bundles the resources the API layer needs. Constructed
+//
 // once by the server and passed to Mount.
 type Dependencies struct {
 	Pool           *db.Pool
@@ -51,6 +54,10 @@ type Dependencies struct {
 	PolicyEngine   *policy.Engine
 	RecoveryEngine *recovery.Engine
 	TelemetryQuery *telemetry.QueryClient
+	// SecretsKEK is the resolved 32-byte KEK for the tenant secrets store
+	// (ORCHICON_SECRETS_KEK override, or the per-instance data-dir key).
+	// nil/len != 32 disables the store (fail-closed at the service layer).
+	SecretsKEK []byte
 	// GrafanaURL is the base URL of the Grafana UI (default
 	// http://localhost:3000). Used by the /grafana reverse proxy so the
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
@@ -60,12 +67,12 @@ type Dependencies struct {
 	// every mode: api.Mount resolves identity through it, so a plane
 	// without one is a programming error (config validation requires an
 	// IdP in every mode and auth.NewHandler never returns nil).
-	AuthHandler          *auth.Handler
-	WebhookDispatcher    *webhook.Dispatcher
-	Mode                 config.DeploymentMode
+	AuthHandler       *auth.Handler
+	WebhookDispatcher *webhook.Dispatcher
+	Mode              config.DeploymentMode
 	// ModelDiscoverer enumerates models from opencode CLI.
-	ModelDiscoverer   *aigateway.ModelDiscoverer
-	MCPDiscoverer     *aigateway.MCPDiscoverer
+	ModelDiscoverer *aigateway.ModelDiscoverer
+	MCPDiscoverer   *aigateway.MCPDiscoverer
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
 	// PostgresDSN is the Postgres connection string for backup/restore.
@@ -82,6 +89,11 @@ type Dependencies struct {
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
 	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	// AbortExecution stops a live execution's opencode session when a human
+	// cancels it, so the model stops generating immediately (prevents the
+	// "terminated but still active" token burn). Nil when the session
+	// transport is unavailable.
+	AbortExecution func(ctx context.Context, execID, reason string) error
 	// HostServe is the always-on host opencode serve. Ask Orchicon
 	// conversation turns run as persistent sessions on it (first message
 	// CreateSession, follow-ups prompt_async on the same session). Nil when
@@ -120,6 +132,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	projSvc := project.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewProjectServiceHandler(projSvc, interceptorOpt))
 
+	// CategoryService (first-class categories).
+	catSvc := category.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
+
 	// WorkerService (docs/07 §3.3).
 	workerSvc := worker.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
@@ -127,6 +143,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
 	// so the WorkItemService can wire the StartWorkflowStarter.
 	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
+	if deps.AbortExecution != nil {
+		workflowSvc.SetAbortExecution(deps.AbortExecution)
+	}
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc, interceptorOpt))
 
 	// WorkItemService (docs/07 §3.2).
@@ -154,6 +173,12 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workItemSvc.SetStopSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StopSequence(ctx, deps.Pool, deps.Log, tenantID, parentID)
 	})
+	if deps.AbortExecution != nil {
+		scheduler.SetStopAbortHook(deps.AbortExecution)
+	}
+	if deps.RuntimeClient != nil {
+		// Reuse any existing runtime lifecycle for reap; scheduler will reap via hook if set
+	}
 	if deps.RuntimeClient != nil {
 		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {
 			imgs, err := deps.RuntimeClient.Images(ctx)
@@ -176,6 +201,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	}
 	if deps.ContinueSession != nil {
 		execSvc.SetContinueSession(deps.ContinueSession)
+	}
+	if deps.AbortExecution != nil {
+		execSvc.SetAbortExecution(deps.AbortExecution)
 	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 
@@ -221,13 +249,31 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// RuntimeImageService — tenant runtime container image specs + build.
 	runtimeImageSvc := runtimeimage.New(deps.Pool, deps.Log, deps.RuntimeClient)
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(runtimeImageSvc, interceptorOpt))
+	// Heal ghost builds stuck in building after stream drops / daemon restarts (boot + periodic).
+	go func() {
+		ctx := context.Background()
+		if _, err := runtimeImageSvc.ReconcileStuckBuilding(ctx, 0); err != nil {
+			deps.Log.Warn("runtime image reconcile (boot) failed", "error", err)
+		}
+	}()
+	go runtimeImageSvc.StartReconciler(context.Background())
+
+	// SecretsService — tenant-scoped encrypted secrets (Tavily etc.).
+	// The KEK is resolved once at server construction (env override or
+	// first-boot generation in the instance data dir); a nil/short key
+	// leaves the store disabled (fail-closed at the service layer).
+	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
-	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
+	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}
 	askSvc.SetHostServe(deps.HostServe)
+	if deps.RuntimeClient != nil {
+		askSvc.SetRuntimeClient(deps.RuntimeClient)
+	}
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin

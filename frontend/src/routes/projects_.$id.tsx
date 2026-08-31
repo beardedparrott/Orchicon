@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { FileBrowser } from "@/components/FileBrowser";
+import { GitStrategySelect, type GitStrategy, protoToGitStrategy } from "@/components/GitStrategySelect";
 
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -59,6 +60,8 @@ function ProjectDetailPage() {
   // container must be restarted before the mount takes effect.
   const [dirChanged, setDirChanged] = useState(false);
   const [draftMaxRuns, setDraftMaxRuns] = useState("");
+  const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy>("local");
+  const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
@@ -69,6 +72,15 @@ function ProjectDetailPage() {
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
+    const raw = (project as any)?.gitStrategy ?? (project as any)?.git_strategy ?? (() => {
+      try {
+        const g = JSON.parse((project as any)?.goals ?? "{}");
+        return g.__git_strategy;
+      } catch { return undefined; }
+    })();
+    const mapped = protoToGitStrategy(raw as any);
+    if (mapped) setDraftGitStrategy(mapped);
+    else setDraftGitStrategy("local");
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -126,7 +138,7 @@ function ProjectDetailPage() {
             onClick={() => navigate({ to: "/projects" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -323,8 +335,8 @@ function ProjectDetailPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             {project.projectDir ? (
-              <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
-                <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
+                <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-500" />
                 <span className="flex-1 truncate">{project.projectDir}</span>
               </div>
             ) : (
@@ -365,6 +377,51 @@ function ProjectDetailPage() {
           initialSelectedFiles={project.contextFiles || []}
           readOnly={!editing}
         />
+      )}
+
+      {/* Git strategy — how worktrees materialize */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Git strategy</CardTitle>
+            <CardDescription>
+              How worktrees materialize after success. Worktrees are always
+              provisioned for isolation — this only controls branch handling.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {editing ? (
+              <>
+                <GitStrategySelect value={draftGitStrategy} onValueChange={(v) => setDraftGitStrategy(v as GitStrategy)} />
+                <Button
+                  variant="outline"
+                  disabled={savingGitStrategy}
+                  onClick={() => {
+                    setSavingGitStrategy(true);
+                    (updateProject.mutate as any)(
+                      { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
+                      { onSettled: () => setSavingGitStrategy(false) },
+                    );
+                  }}
+                >
+                  {savingGitStrategy ? "Saving…" : "Save strategy"}
+                </Button>
+              </>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Current strategy:</span>
+                  <span className="rounded bg-muted px-2 py-1 font-mono text-xs">{draftGitStrategy}</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {draftGitStrategy === "local" && "Push branch only — branch remains on origin for manual review. No PR."}
+                  {draftGitStrategy === "pr" && "Push + PR — auto-creates a PR to remote (GitHub). Requires branch protection."}
+                  {draftGitStrategy === "none" && "Ephemeral — no push. Work vanishes after success; only Results remain."}
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Concurrency guard: per-project max-concurrent-runs + current vs limit */}
@@ -506,9 +563,9 @@ function ProjectDetailPage() {
 function StreamStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     idle: "text-muted-foreground",
-    connecting: "text-yellow-600",
-    open: "text-green-600",
-    reconnecting: "text-yellow-600",
+    connecting: "text-yellow-700 dark:text-yellow-600",
+    open: "text-green-700 dark:text-green-600",
+    reconnecting: "text-yellow-700 dark:text-yellow-600",
     closed: "text-muted-foreground",
     error: "text-destructive",
   };
@@ -579,8 +636,8 @@ function ProjectDirBrowser({ currentDir, onSelect, isSaving }: { currentDir: str
   const [showBrowser, setShowBrowser] = useState(false);
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
-        <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+      <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-2 font-mono text-xs border border-white/10">
+        <Folder aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-500" />
         <span className="flex-1 truncate">{currentDir || "No directory set"}</span>
         <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => setShowBrowser(!showBrowser)}>
           {showBrowser ? "Cancel" : currentDir ? "Change" : "Set directory"}
@@ -608,13 +665,13 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
   return (
     <div className="rounded-md border max-h-[300px] overflow-y-auto">
       <div className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b" onClick={() => onNavigate(parentOf(path))}>
-        <ArrowUp className="h-4 w-4 text-muted-foreground" />
+        <ArrowUp aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
         <span className="text-muted-foreground text-xs">..</span>
       </div>
       {dirs.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>}
       {dirs.map((entry: any) => (
         <div key={entry.path} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0">
-          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+          <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span className="flex-1 truncate" onClick={() => onNavigate(entry.path)}>{entry.name}/</span>
           <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => onSelect(entry.path)} disabled={isSaving}>
             {isSaving ? "Saving…" : "Select"}

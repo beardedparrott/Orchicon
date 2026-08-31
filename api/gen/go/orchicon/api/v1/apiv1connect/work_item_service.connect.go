@@ -48,6 +48,9 @@ const (
 	// WorkItemServiceGetWorkItemProcedure is the fully-qualified name of the WorkItemService's
 	// GetWorkItem RPC.
 	WorkItemServiceGetWorkItemProcedure = "/orchicon.api.v1.WorkItemService/GetWorkItem"
+	// WorkItemServiceGetWorkItemRunHistoryProcedure is the fully-qualified name of the
+	// WorkItemService's GetWorkItemRunHistory RPC.
+	WorkItemServiceGetWorkItemRunHistoryProcedure = "/orchicon.api.v1.WorkItemService/GetWorkItemRunHistory"
 	// WorkItemServiceListWorkItemsProcedure is the fully-qualified name of the WorkItemService's
 	// ListWorkItems RPC.
 	WorkItemServiceListWorkItemsProcedure = "/orchicon.api.v1.WorkItemService/ListWorkItems"
@@ -84,6 +87,15 @@ const (
 	// WorkItemServiceRestoreWorkItemProcedure is the fully-qualified name of the WorkItemService's
 	// RestoreWorkItem RPC.
 	WorkItemServiceRestoreWorkItemProcedure = "/orchicon.api.v1.WorkItemService/RestoreWorkItem"
+	// WorkItemServiceListIdeasProcedure is the fully-qualified name of the WorkItemService's ListIdeas
+	// RPC.
+	WorkItemServiceListIdeasProcedure = "/orchicon.api.v1.WorkItemService/ListIdeas"
+	// WorkItemServicePromoteIdeaProcedure is the fully-qualified name of the WorkItemService's
+	// PromoteIdea RPC.
+	WorkItemServicePromoteIdeaProcedure = "/orchicon.api.v1.WorkItemService/PromoteIdea"
+	// WorkItemServiceDismissIdeaProcedure is the fully-qualified name of the WorkItemService's
+	// DismissIdea RPC.
+	WorkItemServiceDismissIdeaProcedure = "/orchicon.api.v1.WorkItemService/DismissIdea"
 	// WorkItemServiceControlSequenceProcedure is the fully-qualified name of the WorkItemService's
 	// ControlSequence RPC.
 	WorkItemServiceControlSequenceProcedure = "/orchicon.api.v1.WorkItemService/ControlSequence"
@@ -96,6 +108,10 @@ type WorkItemServiceClient interface {
 	CreateWorkItem(context.Context, *connect.Request[v1.CreateWorkItemRequest]) (*connect.Response[v1.CreateWorkItemResponse], error)
 	// GetWorkItem returns a single work item by id.
 	GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error)
+	// GetWorkItemRunHistory returns the per-fire run-history ledger for a
+	// recurring work item, newest first (fire status, start/end, execution
+	// ids, outputs). Used by the recurring-item detail view (4.3) and API.
+	GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error)
 	// ListWorkItems returns a page of work items for a project, optionally
 	// filtered by parent (tree) or status (Kanban).
 	ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error)
@@ -137,6 +153,31 @@ type WorkItemServiceClient interface {
 	// back to the terminal status it was archived from (not pending).
 	// Audited as work_item.restored.
 	RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error)
+	// ListIdeas returns a page of idea-state work items (automation-produced
+	// items awaiting triage, feature 5.1) with their automation provenance
+	// (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
+	// Scoped to status='idea' by construction — it shares the 4.1 idea gate
+	// with ListWorkItems(IdeaScope=only), so membership can never diverge.
+	// idea_state_scope=REJECTED reads the rejected graveyard instead:
+	// dismissed idea spawns (status='cancelled' WITH automation provenance),
+	// retained so rejected ideas stay visible, readable history — and so an
+	// automation's dedupe gate can never re-propose something a human
+	// already rejected.
+	ListIdeas(context.Context, *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error)
+	// PromoteIdea approves an idea: it transitions the idea-state work item
+	// to a normal pending work item (leaves idea state, becomes queryable in
+	// the normal Work Items scope with normal status semantics, and can be
+	// planned/scheduled/run through the existing pipeline). Provenance fields
+	// are retained for display. Audited as work_item.promoted. PromoteIdea is
+	// the ONLY sanctioned path out of idea state (the generic update path is
+	// gated for idea items).
+	PromoteIdea(context.Context, *connect.Request[v1.PromoteIdeaRequest]) (*connect.Response[v1.PromoteIdeaResponse], error)
+	// DismissIdea discards an idea: it transitions the idea-state work item
+	// to cancelled (the soft-delete/cancel terminal, consistent with
+	// DeleteWorkItem), so it leaves idea state and drops out of every active
+	// view. Provenance is retained as a record of where it came from. Audited
+	// as work_item.dismissed.
+	DismissIdea(context.Context, *connect.Request[v1.DismissIdeaRequest]) (*connect.Response[v1.DismissIdeaResponse], error)
 	// ControlSequence drives a sequence parent manually (START / RESUME /
 	// STOP). A parent with children IS a sequence run; these explicit
 	// gestures are what the engine's derived cursor cannot infer on its own:
@@ -170,6 +211,12 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+WorkItemServiceGetWorkItemProcedure,
 			connect.WithSchema(workItemServiceMethods.ByName("GetWorkItem")),
+			connect.WithClientOptions(opts...),
+		),
+		getWorkItemRunHistory: connect.NewClient[v1.GetWorkItemRunHistoryRequest, v1.GetWorkItemRunHistoryResponse](
+			httpClient,
+			baseURL+WorkItemServiceGetWorkItemRunHistoryProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("GetWorkItemRunHistory")),
 			connect.WithClientOptions(opts...),
 		),
 		listWorkItems: connect.NewClient[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse](
@@ -244,6 +291,24 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workItemServiceMethods.ByName("RestoreWorkItem")),
 			connect.WithClientOptions(opts...),
 		),
+		listIdeas: connect.NewClient[v1.ListIdeasRequest, v1.ListIdeasResponse](
+			httpClient,
+			baseURL+WorkItemServiceListIdeasProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("ListIdeas")),
+			connect.WithClientOptions(opts...),
+		),
+		promoteIdea: connect.NewClient[v1.PromoteIdeaRequest, v1.PromoteIdeaResponse](
+			httpClient,
+			baseURL+WorkItemServicePromoteIdeaProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("PromoteIdea")),
+			connect.WithClientOptions(opts...),
+		),
+		dismissIdea: connect.NewClient[v1.DismissIdeaRequest, v1.DismissIdeaResponse](
+			httpClient,
+			baseURL+WorkItemServiceDismissIdeaProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("DismissIdea")),
+			connect.WithClientOptions(opts...),
+		),
 		controlSequence: connect.NewClient[v1.ControlSequenceRequest, v1.ControlSequenceResponse](
 			httpClient,
 			baseURL+WorkItemServiceControlSequenceProcedure,
@@ -255,21 +320,25 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // workItemServiceClient implements WorkItemServiceClient.
 type workItemServiceClient struct {
-	createWorkItem     *connect.Client[v1.CreateWorkItemRequest, v1.CreateWorkItemResponse]
-	getWorkItem        *connect.Client[v1.GetWorkItemRequest, v1.GetWorkItemResponse]
-	listWorkItems      *connect.Client[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse]
-	updateWorkItem     *connect.Client[v1.UpdateWorkItemRequest, v1.UpdateWorkItemResponse]
-	deleteWorkItem     *connect.Client[v1.DeleteWorkItemRequest, v1.DeleteWorkItemResponse]
-	hardDeleteWorkItem *connect.Client[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse]
-	addDependency      *connect.Client[v1.AddDependencyRequest, v1.AddDependencyResponse]
-	removeDependency   *connect.Client[v1.RemoveDependencyRequest, v1.RemoveDependencyResponse]
-	getDependencyGraph *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
-	assignWorker       *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
-	unassignWorker     *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
-	reorderWorkItems   *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
-	archiveWorkItem    *connect.Client[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse]
-	restoreWorkItem    *connect.Client[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse]
-	controlSequence    *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
+	createWorkItem        *connect.Client[v1.CreateWorkItemRequest, v1.CreateWorkItemResponse]
+	getWorkItem           *connect.Client[v1.GetWorkItemRequest, v1.GetWorkItemResponse]
+	getWorkItemRunHistory *connect.Client[v1.GetWorkItemRunHistoryRequest, v1.GetWorkItemRunHistoryResponse]
+	listWorkItems         *connect.Client[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse]
+	updateWorkItem        *connect.Client[v1.UpdateWorkItemRequest, v1.UpdateWorkItemResponse]
+	deleteWorkItem        *connect.Client[v1.DeleteWorkItemRequest, v1.DeleteWorkItemResponse]
+	hardDeleteWorkItem    *connect.Client[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse]
+	addDependency         *connect.Client[v1.AddDependencyRequest, v1.AddDependencyResponse]
+	removeDependency      *connect.Client[v1.RemoveDependencyRequest, v1.RemoveDependencyResponse]
+	getDependencyGraph    *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
+	assignWorker          *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
+	unassignWorker        *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
+	reorderWorkItems      *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
+	archiveWorkItem       *connect.Client[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse]
+	restoreWorkItem       *connect.Client[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse]
+	listIdeas             *connect.Client[v1.ListIdeasRequest, v1.ListIdeasResponse]
+	promoteIdea           *connect.Client[v1.PromoteIdeaRequest, v1.PromoteIdeaResponse]
+	dismissIdea           *connect.Client[v1.DismissIdeaRequest, v1.DismissIdeaResponse]
+	controlSequence       *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
 }
 
 // CreateWorkItem calls orchicon.api.v1.WorkItemService.CreateWorkItem.
@@ -280,6 +349,11 @@ func (c *workItemServiceClient) CreateWorkItem(ctx context.Context, req *connect
 // GetWorkItem calls orchicon.api.v1.WorkItemService.GetWorkItem.
 func (c *workItemServiceClient) GetWorkItem(ctx context.Context, req *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error) {
 	return c.getWorkItem.CallUnary(ctx, req)
+}
+
+// GetWorkItemRunHistory calls orchicon.api.v1.WorkItemService.GetWorkItemRunHistory.
+func (c *workItemServiceClient) GetWorkItemRunHistory(ctx context.Context, req *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error) {
+	return c.getWorkItemRunHistory.CallUnary(ctx, req)
 }
 
 // ListWorkItems calls orchicon.api.v1.WorkItemService.ListWorkItems.
@@ -342,6 +416,21 @@ func (c *workItemServiceClient) RestoreWorkItem(ctx context.Context, req *connec
 	return c.restoreWorkItem.CallUnary(ctx, req)
 }
 
+// ListIdeas calls orchicon.api.v1.WorkItemService.ListIdeas.
+func (c *workItemServiceClient) ListIdeas(ctx context.Context, req *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error) {
+	return c.listIdeas.CallUnary(ctx, req)
+}
+
+// PromoteIdea calls orchicon.api.v1.WorkItemService.PromoteIdea.
+func (c *workItemServiceClient) PromoteIdea(ctx context.Context, req *connect.Request[v1.PromoteIdeaRequest]) (*connect.Response[v1.PromoteIdeaResponse], error) {
+	return c.promoteIdea.CallUnary(ctx, req)
+}
+
+// DismissIdea calls orchicon.api.v1.WorkItemService.DismissIdea.
+func (c *workItemServiceClient) DismissIdea(ctx context.Context, req *connect.Request[v1.DismissIdeaRequest]) (*connect.Response[v1.DismissIdeaResponse], error) {
+	return c.dismissIdea.CallUnary(ctx, req)
+}
+
 // ControlSequence calls orchicon.api.v1.WorkItemService.ControlSequence.
 func (c *workItemServiceClient) ControlSequence(ctx context.Context, req *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {
 	return c.controlSequence.CallUnary(ctx, req)
@@ -354,6 +443,10 @@ type WorkItemServiceHandler interface {
 	CreateWorkItem(context.Context, *connect.Request[v1.CreateWorkItemRequest]) (*connect.Response[v1.CreateWorkItemResponse], error)
 	// GetWorkItem returns a single work item by id.
 	GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error)
+	// GetWorkItemRunHistory returns the per-fire run-history ledger for a
+	// recurring work item, newest first (fire status, start/end, execution
+	// ids, outputs). Used by the recurring-item detail view (4.3) and API.
+	GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error)
 	// ListWorkItems returns a page of work items for a project, optionally
 	// filtered by parent (tree) or status (Kanban).
 	ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error)
@@ -395,6 +488,31 @@ type WorkItemServiceHandler interface {
 	// back to the terminal status it was archived from (not pending).
 	// Audited as work_item.restored.
 	RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error)
+	// ListIdeas returns a page of idea-state work items (automation-produced
+	// items awaiting triage, feature 5.1) with their automation provenance
+	// (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
+	// Scoped to status='idea' by construction — it shares the 4.1 idea gate
+	// with ListWorkItems(IdeaScope=only), so membership can never diverge.
+	// idea_state_scope=REJECTED reads the rejected graveyard instead:
+	// dismissed idea spawns (status='cancelled' WITH automation provenance),
+	// retained so rejected ideas stay visible, readable history — and so an
+	// automation's dedupe gate can never re-propose something a human
+	// already rejected.
+	ListIdeas(context.Context, *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error)
+	// PromoteIdea approves an idea: it transitions the idea-state work item
+	// to a normal pending work item (leaves idea state, becomes queryable in
+	// the normal Work Items scope with normal status semantics, and can be
+	// planned/scheduled/run through the existing pipeline). Provenance fields
+	// are retained for display. Audited as work_item.promoted. PromoteIdea is
+	// the ONLY sanctioned path out of idea state (the generic update path is
+	// gated for idea items).
+	PromoteIdea(context.Context, *connect.Request[v1.PromoteIdeaRequest]) (*connect.Response[v1.PromoteIdeaResponse], error)
+	// DismissIdea discards an idea: it transitions the idea-state work item
+	// to cancelled (the soft-delete/cancel terminal, consistent with
+	// DeleteWorkItem), so it leaves idea state and drops out of every active
+	// view. Provenance is retained as a record of where it came from. Audited
+	// as work_item.dismissed.
+	DismissIdea(context.Context, *connect.Request[v1.DismissIdeaRequest]) (*connect.Response[v1.DismissIdeaResponse], error)
 	// ControlSequence drives a sequence parent manually (START / RESUME /
 	// STOP). A parent with children IS a sequence run; these explicit
 	// gestures are what the engine's derived cursor cannot infer on its own:
@@ -424,6 +542,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		WorkItemServiceGetWorkItemProcedure,
 		svc.GetWorkItem,
 		connect.WithSchema(workItemServiceMethods.ByName("GetWorkItem")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workItemServiceGetWorkItemRunHistoryHandler := connect.NewUnaryHandler(
+		WorkItemServiceGetWorkItemRunHistoryProcedure,
+		svc.GetWorkItemRunHistory,
+		connect.WithSchema(workItemServiceMethods.ByName("GetWorkItemRunHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workItemServiceListWorkItemsHandler := connect.NewUnaryHandler(
@@ -498,6 +622,24 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workItemServiceMethods.ByName("RestoreWorkItem")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workItemServiceListIdeasHandler := connect.NewUnaryHandler(
+		WorkItemServiceListIdeasProcedure,
+		svc.ListIdeas,
+		connect.WithSchema(workItemServiceMethods.ByName("ListIdeas")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workItemServicePromoteIdeaHandler := connect.NewUnaryHandler(
+		WorkItemServicePromoteIdeaProcedure,
+		svc.PromoteIdea,
+		connect.WithSchema(workItemServiceMethods.ByName("PromoteIdea")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workItemServiceDismissIdeaHandler := connect.NewUnaryHandler(
+		WorkItemServiceDismissIdeaProcedure,
+		svc.DismissIdea,
+		connect.WithSchema(workItemServiceMethods.ByName("DismissIdea")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workItemServiceControlSequenceHandler := connect.NewUnaryHandler(
 		WorkItemServiceControlSequenceProcedure,
 		svc.ControlSequence,
@@ -510,6 +652,8 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceCreateWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceGetWorkItemProcedure:
 			workItemServiceGetWorkItemHandler.ServeHTTP(w, r)
+		case WorkItemServiceGetWorkItemRunHistoryProcedure:
+			workItemServiceGetWorkItemRunHistoryHandler.ServeHTTP(w, r)
 		case WorkItemServiceListWorkItemsProcedure:
 			workItemServiceListWorkItemsHandler.ServeHTTP(w, r)
 		case WorkItemServiceUpdateWorkItemProcedure:
@@ -534,6 +678,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceArchiveWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceRestoreWorkItemProcedure:
 			workItemServiceRestoreWorkItemHandler.ServeHTTP(w, r)
+		case WorkItemServiceListIdeasProcedure:
+			workItemServiceListIdeasHandler.ServeHTTP(w, r)
+		case WorkItemServicePromoteIdeaProcedure:
+			workItemServicePromoteIdeaHandler.ServeHTTP(w, r)
+		case WorkItemServiceDismissIdeaProcedure:
+			workItemServiceDismissIdeaHandler.ServeHTTP(w, r)
 		case WorkItemServiceControlSequenceProcedure:
 			workItemServiceControlSequenceHandler.ServeHTTP(w, r)
 		default:
@@ -551,6 +701,10 @@ func (UnimplementedWorkItemServiceHandler) CreateWorkItem(context.Context, *conn
 
 func (UnimplementedWorkItemServiceHandler) GetWorkItem(context.Context, *connect.Request[v1.GetWorkItemRequest]) (*connect.Response[v1.GetWorkItemResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.GetWorkItem is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) GetWorkItemRunHistory(context.Context, *connect.Request[v1.GetWorkItemRunHistoryRequest]) (*connect.Response[v1.GetWorkItemRunHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.GetWorkItemRunHistory is not implemented"))
 }
 
 func (UnimplementedWorkItemServiceHandler) ListWorkItems(context.Context, *connect.Request[v1.ListWorkItemsRequest]) (*connect.Response[v1.ListWorkItemsResponse], error) {
@@ -599,6 +753,18 @@ func (UnimplementedWorkItemServiceHandler) ArchiveWorkItem(context.Context, *con
 
 func (UnimplementedWorkItemServiceHandler) RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.RestoreWorkItem is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) ListIdeas(context.Context, *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ListIdeas is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) PromoteIdea(context.Context, *connect.Request[v1.PromoteIdeaRequest]) (*connect.Response[v1.PromoteIdeaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.PromoteIdea is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) DismissIdea(context.Context, *connect.Request[v1.DismissIdeaRequest]) (*connect.Response[v1.DismissIdeaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.DismissIdea is not implemented"))
 }
 
 func (UnimplementedWorkItemServiceHandler) ControlSequence(context.Context, *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {

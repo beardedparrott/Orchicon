@@ -84,8 +84,15 @@ func validateKindDepth(childKind, parentKind string) error {
 //
 // Errors: db.ErrNotFound when the parent id does not exist in the tenant;
 // any other error is a plain hierarchy violation (CodeInvalidArgument).
-func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string) error {
+func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string, recurringOpt ...bool) error {
 	if parentID == "" {
+		// Flat-recurring items are top-level tasks (kind=task, no parent).
+		// They are exempt from the "only epics are top-level" rule; the flat
+		// shape (task kind, no parent) is enforced separately by
+		// ValidateRecurringFlatness (D1).
+		if len(recurringOpt) > 0 && recurringOpt[0] {
+			return nil
+		}
 		return validateTopLevelKind(childKind)
 	}
 	parent, err := db.GetWorkItem(ctx, tx, tenantID, parentID)
@@ -192,6 +199,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemSkipped
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED:
 		return domain.WorkItemArchived
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA:
+		return domain.WorkItemIdea
 	default:
 		return domain.WorkItemPending
 	}
@@ -235,6 +244,61 @@ func IsActiveRunStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+// IsIdeaStatus reports whether a work item status is the system-managed
+// idea state (feature 4.1/5.1). An idea is an automation-produced item
+// awaiting triage; it is excluded from every normal work-item view and may
+// only leave idea state via PromoteIdea (→ pending) or DismissIdea
+// (→ cancelled). Exported so the Ask Orchicon MCP tools apply the identical
+// not-idea gate as the Connect handlers (AGENTS.md: the tool and the
+// service cannot drift).
+func IsIdeaStatus(status string) bool {
+	return status == domain.WorkItemIdea
+}
+
+// ErrWorkItemIsIdea is the shared guidance returned when a generic
+// mutation path (UpdateWorkItem / DeleteWorkItem / HardDeleteWorkItem /
+// ArchiveWorkItem, or the corresponding Ask Orchicon tools) targets an
+// idea-state work item. Exported so the service handlers wrap it in a
+// FailedPrecondition error and the MCP tools surface the same message.
+func ErrWorkItemIsIdea() error {
+	return errors.New("idea is a system-managed status scoped to the Idea Cloud; act on an idea only via PromoteIdea (approve) or DismissIdea (discard)")
+}
+
+// IsStartableForAutoStart reports whether UPDATE-path auto-start may fire
+// for a work item in this status. Only pre-run statuses may be armed by an
+// edit: pending, scheduled, ready, assigned. Every other status (running,
+// checkpointing, recovering, succeeded, failed, cancelled, skipped,
+// recurring, blocked, archived) is declined — an edit must never resurrect
+// or duplicate work, no matter what stored auto_start_workflow flag says.
+//
+// This is the primary fix for stale legacy rows carrying
+// auto_start_workflow=true (created before migration
+// 20260807120000_work_item_auto_start_default_false.sql): with this gate,
+// such a row is behaviorally inert on the update path even when the edit
+// touches workflow_id. Exported so the Ask Orchicon MCP update tool applies
+// the identical precondition (AGENTS.md: the tool and the service cannot
+// drift). The CREATE path needs no gate — new items always start pending.
+func IsStartableForAutoStart(status string) bool {
+	switch status {
+	case domain.WorkItemPending, domain.WorkItemScheduled,
+		domain.WorkItemReady, domain.WorkItemAssigned:
+		return true
+	default:
+		return false
+	}
+}
+
+// AutoStartDeclinedWarning returns the user-facing explanation carried by
+// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result
+// when an EXPLICIT auto_start_workflow=true was declined because the
+// item's status is not startable. Shared verbatim so the two surfaces
+// never drift.
+func AutoStartDeclinedWarning(status string) string {
+	return fmt.Sprintf("Auto-start was NOT applied: this item's status is %q. "+
+		"Start-immediately-on-save requires the item to be pending, scheduled, ready, or assigned. "+
+		"Your changes were saved.", status)
 }
 
 // validateDependencyType returns the domain type for a proto enum.
@@ -431,11 +495,14 @@ var validDays = map[string]bool{
 // recurringScheduleJSON is the JSON shape stored in the recurring_schedule
 // JSONB column. It mirrors the proto RecurringSchedule for DB round-tripping.
 type recurringScheduleJSON struct {
-	Frequency string   `json:"frequency"`
-	Interval  int      `json:"interval"`
-	Days      []string `json:"days"`
-	StartDate string   `json:"start_date"`
-	StartTime string   `json:"start_time"`
+	Frequency   string   `json:"frequency"`
+	Interval    int      `json:"interval"`
+	Days        []string `json:"days"`
+	StartDate   string   `json:"start_date"`
+	StartTime   string   `json:"start_time"`
+	OutputsMode string   `json:"outputs_mode"`
+	WindowStart string   `json:"window_start,omitempty"`
+	WindowEnd   string   `json:"window_end,omitempty"`
 }
 
 // IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
@@ -448,7 +515,9 @@ func IsRecurringScheduleEmpty(msg *apiv1.RecurringSchedule) bool {
 		msg.Interval == 0 &&
 		len(msg.Days) == 0 &&
 		strings.TrimSpace(msg.StartDate) == "" &&
-		strings.TrimSpace(msg.StartTime) == ""
+		strings.TrimSpace(msg.StartTime) == "" &&
+		strings.TrimSpace(msg.WindowStart) == "" &&
+		strings.TrimSpace(msg.WindowEnd) == ""
 }
 
 // ValidateRecurringSchedule validates a proto RecurringSchedule message and
@@ -491,12 +560,43 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	if _, err := time.Parse("15:04", startTime); err != nil {
 		return nil, fmt.Errorf("recurring_schedule.start_time must be HH:MM; got %q", startTime)
 	}
+	windowStart := strings.TrimSpace(msg.WindowStart)
+	windowEnd := strings.TrimSpace(msg.WindowEnd)
+	if (windowStart == "") != (windowEnd == "") {
+		return nil, errors.New("recurring_schedule.window_start and window_end must be set together")
+	}
+	if windowStart != "" && windowEnd != "" {
+		ws, err := time.Parse("15:04", windowStart)
+		if err != nil {
+			return nil, fmt.Errorf("recurring_schedule.window_start must be HH:MM; got %q", windowStart)
+		}
+		we, err := time.Parse("15:04", windowEnd)
+		if err != nil {
+			return nil, fmt.Errorf("recurring_schedule.window_end must be HH:MM; got %q", windowEnd)
+		}
+		windowStartMin := ws.Hour()*60 + ws.Minute()
+		windowEndMin := we.Hour()*60 + we.Minute()
+		if windowEndMin <= windowStartMin {
+			return nil, errors.New("recurring_schedule.window_end must be after window_start (wrapping midnight is not supported in v1)")
+		}
+		// For daily/weekly/monthly the anchor time must lie inside the window.
+		if freq == "daily" || freq == "weekly" || freq == "monthly" {
+			st, _ := time.Parse("15:04", startTime)
+			m := st.Hour()*60 + st.Minute()
+			if m < windowStartMin || m >= windowEndMin {
+				return nil, errors.New("recurring_schedule.start_time must lie inside the window")
+			}
+		}
+	}
 	schedule := recurringScheduleJSON{
-		Frequency: freq,
-		Interval:  int(msg.Interval),
-		Days:      days,
-		StartDate: startDate,
-		StartTime: startTime,
+		Frequency:   freq,
+		Interval:    int(msg.Interval),
+		Days:        days,
+		StartDate:   startDate,
+		StartTime:   startTime,
+		OutputsMode: domain.NormalizeRecurringOutputsMode(msg.OutputsMode),
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
 	}
 	b, err := json.Marshal(schedule)
 	if err != nil {
@@ -505,10 +605,135 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	return b, nil
 }
 
+// ValidateRecurringFlatness enforces the flat-recurring invariant (D1): a
+// recurring item is a flat top-level task with no parent and no hierarchy
+// participation. kind is only "task" and parent_id is empty. Returns nil
+// when the item is NOT recurring. Exported so the Ask Orchicon tools share
+// the API's boundary validation (AGENTS.md Ask-Orchicon-sync rule).
+func ValidateRecurringFlatness(recurring bool, kind, parentID string) error {
+	if !recurring {
+		return nil
+	}
+	if kind != domain.WorkItemKindTask {
+		return fmt.Errorf("a recurring work item must be flat (kind=task); got kind %q", kind)
+	}
+	if parentID != "" {
+		return errors.New("a recurring work item must be flat and cannot have a parent")
+	}
+	return nil
+}
+
+// ValidateRecurringWorkflowBinding enforces D7: a schedulable recurring
+// LEAF must be bound to a workflow to be schedulable (the recurring fire has
+// nothing to start for a workflow-less leaf). A recurring item WITH children
+// is a sequence parent — it needs no workflow binding (the sequence
+// reconciler fires its children). The rejection is result-state based: it
+// applies to the resulting state (recurring && no children && no workflow)
+// only, so a legacy recurring leaf can still be edited to bind a workflow,
+// and a sequence parent remains valid without one. Exported so the Ask
+// Orchicon tools share the API's boundary validation.
+func ValidateRecurringWorkflowBinding(recurring, hasChildren bool, workflowID string) error {
+	if recurring && !hasChildren && workflowID == "" {
+		return errors.New("a recurring work item must be bound to a workflow to be schedulable; bind a workflow to this item")
+	}
+	return nil
+}
+
+// parseWindow parses the optional daily window from a schedule.
+// Returns hasWindow=false when both fields are empty. When exactly one is
+// set or the format is invalid it returns an error; ComputeNextRunAt treats
+// parse errors as no window (defensive, since Validate should have rejected).
+func parseWindow(schedule *apiv1.RecurringSchedule) (bool, int, int) {
+	ws := strings.TrimSpace(schedule.WindowStart)
+	we := strings.TrimSpace(schedule.WindowEnd)
+	if ws == "" && we == "" {
+		return false, 0, 0
+	}
+	if ws == "" || we == "" {
+		return false, 0, 0
+	}
+	tStart, err := time.Parse("15:04", ws)
+	if err != nil {
+		return false, 0, 0
+	}
+	tEnd, err := time.Parse("15:04", we)
+	if err != nil {
+		return false, 0, 0
+	}
+	sm := tStart.Hour()*60 + tStart.Minute()
+	em := tEnd.Hour()*60 + tEnd.Minute()
+	if em <= sm {
+		return false, 0, 0
+	}
+	return true, sm, em
+}
+
+func isInWindow(t time.Time, startMin, endMin int) bool {
+	m := t.Hour()*60 + t.Minute()
+	return m >= startMin && m < endMin
+}
+
+func nextWindowStart(t time.Time, startMin int) time.Time {
+	m := t.Hour()*60 + t.Minute()
+	if m < startMin {
+		// Later today at window start.
+		h, mm := startMin/60, startMin%60
+		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, time.UTC)
+	}
+	// Next day at window start.
+	h, mm := startMin/60, startMin%60
+	next := t.AddDate(0, 0, 1)
+	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, time.UTC)
+}
+
+// alignToGrid returns the smallest grid-aligned time >= target for the given
+// anchor cadence. Grid is anchor + k*step where step depends on frequency.
+// Anchored-grid-truncated-by-window semantic (A): fires stay on the anchor
+// grid, truncated to the window.
+func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time {
+	switch freq {
+	case "minute":
+		step := time.Duration(interval) * time.Minute
+		diff := target.Sub(anchor)
+		if diff <= 0 {
+			return anchor
+		}
+		remainder := diff % step
+		if remainder == 0 {
+			return target
+		}
+		return target.Add(step - remainder)
+	case "hourly":
+		step := time.Duration(interval) * time.Hour
+		diff := target.Sub(anchor)
+		if diff <= 0 {
+			return anchor
+		}
+		remainder := diff % step
+		if remainder == 0 {
+			return target
+		}
+		return target.Add(step - remainder)
+	default:
+		// daily/weekly/monthly: walk from anchor by steps until >= target.
+		// Cap at 1000 to avoid infinite loops.
+		candidate := anchor
+		for i := 0; i < 1000; i++ {
+			if !candidate.Before(target) {
+				return candidate
+			}
+			candidate = advanceTime(candidate, freq, interval)
+		}
+		return target
+	}
+}
+
 // ComputeNextRunAt computes the first occurrence of a recurring schedule
 // that is >= the given "now" time. The start_date + start_time define the
-// anchor; the frequency/interval/days define the cadence. Returns nil when
-// the schedule is nil (not recurring).
+// anchor; the frequency/interval/days define the cadence. When a daily
+// window is set (window_start/window_end), only fires inside [window_start,
+// window_end) are returned; the anchor grid is truncated by the window
+// (semantic A). Returns nil when the schedule is nil (not recurring).
 func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Time {
 	if schedule == nil {
 		return nil
@@ -524,21 +749,16 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 	if interval < 1 {
 		interval = 1
 	}
+	hasWindow, wsMin, weMin := parseWindow(schedule)
 
 	// For weekly frequency, walk day-by-day so we hit every selected
 	// weekday within each cadence week. Empty days means "every day"
-	// (all 7 weekdays are valid). The previous approach (7*interval-day
-	// jumps from the anchor) only ever landed on the anchor's weekday,
-	// skipping all other selected days.
+	// (all 7 weekdays are valid). Window gating is applied per candidate.
 	if freq == "weekly" {
 		cadenceDays := 7 * interval
 		anchorWeekday := int(anchor.Weekday())
-		// Precompute valid day offsets from the anchor's weekday.
-		// For each selected day, the offset is the number of days after
-		// the anchor's weekday within the same cadence week.
 		validOffsets := make(map[int]bool)
 		if len(schedule.Days) == 0 {
-			// Empty days = every day of the week.
 			for i := 0; i < 7; i++ {
 				validOffsets[i] = true
 			}
@@ -554,25 +774,30 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 			if !candidate.Before(now) {
 				daysSinceAnchor := int(candidate.Sub(anchor).Hours() / 24)
 				if daysSinceAnchor >= 0 && validOffsets[daysSinceAnchor%cadenceDays] {
-					return &candidate
+					if !hasWindow || isInWindow(candidate, wsMin, weMin) {
+						return &candidate
+					}
 				}
 			}
 			candidate = candidate.AddDate(0, 0, 1)
 		}
-		// Fallback: return the anchor even though it may be in the past.
 		return &anchor
 	}
 
-	// Walk forward from the anchor until we find a time >= now.
-	// Cap at 1000 iterations to prevent infinite loops on degenerate inputs.
+	// Non-weekly: walk from anchor, gating by window.
 	candidate := anchor
 	for i := 0; i < 1000; i++ {
-		if !candidate.Before(now) {
-			return &candidate
+		if candidate.Before(now) {
+			candidate = advanceTime(candidate, freq, interval)
+			continue
 		}
-		candidate = advanceTime(candidate, freq, interval)
+		if hasWindow && !isInWindow(candidate, wsMin, weMin) {
+			target := nextWindowStart(candidate, wsMin)
+			candidate = alignToGrid(target, anchor, freq, interval)
+			continue
+		}
+		return &candidate
 	}
-	// Fallback: return the anchor even though it's in the past.
 	return &anchor
 }
 
@@ -627,4 +852,21 @@ func advanceTime(t time.Time, freq string, interval int) time.Time {
 	default:
 		return t.AddDate(0, 0, interval)
 	}
+}
+// ValidateSecretIDs validates per-work-item secret selection: max 10, no empty, no duplicates.
+func ValidateSecretIDs(ids []string) error {
+	if len(ids) > 10 {
+		return fmt.Errorf("too many secrets: max 10, got %d", len(ids))
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" {
+			return fmt.Errorf("secret id must not be empty")
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate secret id %q", id)
+		}
+		seen[id] = true
+	}
+	return nil
 }

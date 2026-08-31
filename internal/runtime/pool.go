@@ -28,7 +28,11 @@ import (
 //
 // The pool is daemon-resident and memory-only: a daemon restart resets it
 // (all containers are removed at start) and the plane's run-start gate +
-// adopt pass re-lease for active runs.
+// adopt pass re-lease for active runs. Leases are SELF-HEALING: every
+// idempotent checkout of an active run renews the lease, so a lease that
+// sits idle past the staleness window belongs to a run that died without
+// releasing (the aborted-run leak class) and is reaped with its container
+// instead of surviving until the next daemon restart.
 type daemonPool struct {
 	d  *Daemon
 	mu sync.Mutex
@@ -91,6 +95,29 @@ func poolEnvKey(req CreateRequest, hostFp string) string {
 	for _, m := range mounts {
 		_, _ = io.WriteString(h, fmt.Sprintf("%s:%s\n", m.Source, m.Dest))
 	}
+	// The serve config (OPENCODE_CONFIG_CONTENT) is baked into the
+	// container at create time and CANNOT change on a live container: it
+	// carries the worktree MCP base dir, the plane channel env, and the
+	// permission rules — all run-scoped. A warm pooled container whose
+	// serve config differs from the requesting run's MUST NOT be reused:
+	// e.g. a container baked before the plane channel existed (or with a
+	// different run's worktree base / plane token) would serve stale,
+	// wrong-scope credentials and tools. Fold the config into the env key
+	// so runs needing a different serve config get a fresh container with
+	// their own baked config. resetAndPool recomputes the key from the
+	// entry's OWN serveCfg, so pooled entries stay consistently keyed.
+	if req.ServeConfig != "" {
+		_, _ = io.WriteString(h, "cfg="+req.ServeConfig+"\n")
+	}
+	// The git strategy is a credential-relevant host input: a "none"
+	// (ephemeral) container is created WITHOUT a push-capable GH_TOKEN and
+	// WITHOUT the git credential mounts, so it must never pool with a
+	// local/pr container that carries them. Fold it into the key so the two
+	// environments stay separate — under the same key a "none" run could
+	// reuse a warm token-bearing container (the pre-fix leak class).
+	if req.GitStrategy != "" {
+		_, _ = io.WriteString(h, "gs="+req.GitStrategy+"\n")
+	}
 	if hostFp != "" {
 		_, _ = io.WriteString(h, "host="+hostFp+"\n")
 	}
@@ -118,13 +145,19 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 	p.mu.Lock()
 	if name, ok := p.leased[runID]; ok {
 		ent := p.entries[name]
-		p.mu.Unlock()
 		if ent != nil {
+			// Lease renewal: idempotent re-checkouts (the run-start gate, the
+			// adapter's dispatch self-heal, and the plane's 30s adopt sweep)
+			// keep an ACTIVE run's lease young. The stale-lease reap keys off
+			// this: a lease idle past the staleness window was abandoned by a
+			// run that can no longer renew it — a lost release, never a live
+			// run.
+			ent.lastUsed = time.Now()
+			p.mu.Unlock()
 			return ent.response(), nil
 		}
 		// Lease points at a dropped entry (shouldn't happen) — clear it and
 		// fall through to a fresh lease.
-		p.mu.Lock()
 		delete(p.leased, runID)
 		p.mu.Unlock()
 	} else {
@@ -293,7 +326,8 @@ func (e *poolEntry) response() *CreateResponse {
 
 // idleReap removes clean containers that have been unused past the idle
 // window, keeping the pool bounded across many projects/images. Leased
-// containers are never touched.
+// containers are exempt unless their lease has gone STALE (see
+// reapStaleLeases) — a live run renews every ≤30s.
 func (p *daemonPool) idleReap() {
 	p.mu.Lock()
 	var stale []*poolEntry
@@ -317,6 +351,10 @@ func (p *daemonPool) idleReap() {
 		delete(p.entries, ent.name)
 		p.mu.Unlock()
 	}
+	// Second pass on the same tick: stale leases (dead run, lost terminal
+	// release) are reaped here so a leak can never outlive the staleness
+	// window — every live run renews within 30s.
+	p.reapStaleLeases()
 }
 
 // resetPool removes EVERY runtime container at daemon start. The pool is
@@ -355,4 +393,70 @@ func (p *daemonPool) poolCap() int {
 		return v
 	}
 	return 1
+}
+
+// reapStaleLeases removes LEASED containers whose lease has not been
+// renewed past the staleness window — the immortality fix for the
+// aborted-run leak class. A lease normally renews on every checkout: the
+// run-start gate, the adapter's dispatch self-heal, and the plane's 30s
+// adopt sweep all re-checkout active runs idempotently (checkout's
+// existing-lease fast path now bumps lastUsed). So a lease idle past the
+// window belongs to a run that terminalized while its release was lost or
+// dropped (ReapForRun is warn-and-drop; a terminal run is never retried) —
+// its container would otherwise survive until the next daemon reset while
+// never being reaped by the idle pass (leased entries were exempt).
+// Defaults to a generous multiple of the 30s renewal cadence; overridable
+// via ORCHICON_RUNTIME_LEASE_MAX. The window must only exceed the renewal
+// cadence — set it generously (hours, not minutes) so a wedged host (GC
+// pause, suspended VM) can never lose a legitimately live run's container.
+func (p *daemonPool) reapStaleLeases() {
+	window := p.leaseMaxAge()
+	if window <= 0 {
+		return
+	}
+	// Snapshot victims under the lock; docker calls happen after unlock.
+	type victim struct {
+		runID, name string
+	}
+	var victims []victim
+	p.mu.Lock()
+	cutoff := time.Now().Add(-window)
+	for runID, name := range p.leased {
+		ent := p.entries[name]
+		switch {
+		case ent == nil:
+			// Dangling lease to a dropped entry — reap the mapping itself.
+			victims = append(victims, victim{runID: runID, name: name})
+		case ent.lastUsed.Before(cutoff):
+			victims = append(victims, victim{runID: runID, name: ent.name})
+		}
+	}
+	p.mu.Unlock()
+	for _, v := range victims {
+		p.d.Log.Warn("pool stale-lease reap: removing abandoned run container",
+			"run", v.runID, "container", v.name,
+			"hint", "run died without releasing (lost terminal reap)")
+		_, _ = p.d.docker("rm", "-f", v.name)
+		p.mu.Lock()
+		// Delete only if the mapping still points at the same container — a
+		// concurrent checkout could have re-leased the run meanwhile.
+		if cur, ok := p.leased[v.runID]; ok && cur == v.name {
+			delete(p.leased, v.runID)
+		}
+		if ent, ok := p.entries[v.name]; ok && ent.leasedBy == v.runID {
+			delete(p.entries, v.name)
+		}
+		p.mu.Unlock()
+	}
+}
+
+// leaseMaxAge resolves the leased-container staleness window
+// (ORCHICON_RUNTIME_LEASE_MAX). Default 30m — every live path renews a
+// lease within 30s (the adopt sweep), so 30m gives an enormous margin over
+// the renewal cadence while bounding any leak to half an hour.
+func (p *daemonPool) leaseMaxAge() time.Duration {
+	if v := p.d.envDuration("ORCHICON_RUNTIME_LEASE_MAX"); v > 0 {
+		return v
+	}
+	return 30 * time.Minute
 }

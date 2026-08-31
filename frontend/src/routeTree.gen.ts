@@ -13,17 +13,24 @@ import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
+import { Route as UsageRouteImport } from './routes/usage'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SchedulesRouteImport } from './routes/schedules'
 import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
+import { Route as RecurringItemsRouteImport } from './routes/recurring-items'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
+import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as IdeaCloudRouteImport } from './routes/idea-cloud'
+import { Route as HomeRouteImport } from './routes/home'
 import { Route as ExecutionsRouteImport } from './routes/executions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CostExplorerRouteImport } from './routes/cost-explorer'
+import { Route as ConversationsRouteImport } from './routes/conversations'
 import { Route as AskOrchiconRouteImport } from './routes/ask-orchicon'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -37,6 +44,8 @@ import { Route as WorkItemsNewRouteImport } from './routes/work-items_.new'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items_.$id'
 import { Route as RuntimeImagesNewRouteImport } from './routes/runtime-images_.new'
 import { Route as RuntimeImagesIdRouteImport } from './routes/runtime-images_.$id'
+import { Route as RecurringItemsNewRouteImport } from './routes/recurring-items_.new'
+import { Route as RecurringItemsIdRouteImport } from './routes/recurring-items_.$id'
 import { Route as RecoveryIdRouteImport } from './routes/recovery_.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects_.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects_.$id'
@@ -66,6 +75,11 @@ const WebhooksRoute = WebhooksRouteImport.update({
   path: '/webhooks',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UsageRoute = UsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TelemetryRoute = TelemetryRouteImport.update({
   id: '/telemetry',
   path: '/telemetry',
@@ -91,6 +105,11 @@ const RuntimeImagesRoute = RuntimeImagesRouteImport.update({
   path: '/runtime-images',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecurringItemsRoute = RecurringItemsRouteImport.update({
+  id: '/recurring-items',
+  path: '/recurring-items',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RecoveryRoute = RecoveryRouteImport.update({
   id: '/recovery',
   path: '/recovery',
@@ -106,9 +125,24 @@ const PoliciesRoute = PoliciesRouteImport.update({
   path: '/policies',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OverviewRoute = OverviewRouteImport.update({
+  id: '/overview',
+  path: '/overview',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IdeaCloudRoute = IdeaCloudRouteImport.update({
+  id: '/idea-cloud',
+  path: '/idea-cloud',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HomeRoute = HomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExecutionsRoute = ExecutionsRouteImport.update({
@@ -119,6 +153,16 @@ const ExecutionsRoute = ExecutionsRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CostExplorerRoute = CostExplorerRouteImport.update({
+  id: '/cost-explorer',
+  path: '/cost-explorer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConversationsRoute = ConversationsRouteImport.update({
+  id: '/conversations',
+  path: '/conversations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AskOrchiconRoute = AskOrchiconRouteImport.update({
@@ -186,6 +230,16 @@ const RuntimeImagesIdRoute = RuntimeImagesIdRouteImport.update({
   path: '/runtime-images/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecurringItemsNewRoute = RecurringItemsNewRouteImport.update({
+  id: '/recurring-items_/new',
+  path: '/recurring-items/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecurringItemsIdRoute = RecurringItemsIdRouteImport.update({
+  id: '/recurring-items_/$id',
+  path: '/recurring-items/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RecoveryIdRoute = RecoveryIdRouteImport.update({
   id: '/recovery_/$id',
   path: '/recovery/$id',
@@ -233,17 +287,24 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -255,6 +316,8 @@ export interface FileRoutesByFullPath {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/recurring-items/$id': typeof RecurringItemsIdRoute
+  '/recurring-items/new': typeof RecurringItemsNewRoute
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -271,17 +334,24 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -293,6 +363,8 @@ export interface FileRoutesByTo {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/recurring-items/$id': typeof RecurringItemsIdRoute
+  '/recurring-items/new': typeof RecurringItemsNewRoute
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -310,17 +382,24 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/conversations': typeof ConversationsRoute
+  '/cost-explorer': typeof CostExplorerRoute
   '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
+  '/home': typeof HomeRoute
+  '/idea-cloud': typeof IdeaCloudRoute
   '/login': typeof LoginRoute
+  '/overview': typeof OverviewRoute
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/recurring-items': typeof RecurringItemsRoute
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
+  '/usage': typeof UsageRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
   '/workers': typeof WorkersRoute
@@ -332,6 +411,8 @@ export interface FileRoutesById {
   '/projects_/$id': typeof ProjectsIdRoute
   '/projects_/new': typeof ProjectsNewRoute
   '/recovery_/$id': typeof RecoveryIdRoute
+  '/recurring-items_/$id': typeof RecurringItemsIdRoute
+  '/recurring-items_/new': typeof RecurringItemsNewRoute
   '/runtime-images_/$id': typeof RuntimeImagesIdRoute
   '/runtime-images_/new': typeof RuntimeImagesNewRoute
   '/work-items_/$id': typeof WorkItemsIdRoute
@@ -350,17 +431,24 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
+    | '/idea-cloud'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -372,6 +460,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/recurring-items/$id'
+    | '/recurring-items/new'
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
@@ -388,17 +478,24 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
+    | '/idea-cloud'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -410,6 +507,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/recurring-items/$id'
+    | '/recurring-items/new'
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
@@ -426,17 +525,24 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/conversations'
+    | '/cost-explorer'
     | '/dashboard'
     | '/executions'
+    | '/home'
+    | '/idea-cloud'
     | '/login'
+    | '/overview'
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/recurring-items'
     | '/runtime-images'
     | '/schedules'
     | '/settings'
     | '/signup'
     | '/telemetry'
+    | '/usage'
     | '/webhooks'
     | '/work-items'
     | '/workers'
@@ -448,6 +554,8 @@ export interface FileRouteTypes {
     | '/projects_/$id'
     | '/projects_/new'
     | '/recovery_/$id'
+    | '/recurring-items_/$id'
+    | '/recurring-items_/new'
     | '/runtime-images_/$id'
     | '/runtime-images_/new'
     | '/work-items_/$id'
@@ -465,17 +573,24 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ApprovalsRoute: typeof ApprovalsRoute
   AskOrchiconRoute: typeof AskOrchiconRoute
+  ConversationsRoute: typeof ConversationsRoute
+  CostExplorerRoute: typeof CostExplorerRoute
   DashboardRoute: typeof DashboardRoute
   ExecutionsRoute: typeof ExecutionsRoute
+  HomeRoute: typeof HomeRoute
+  IdeaCloudRoute: typeof IdeaCloudRoute
   LoginRoute: typeof LoginRoute
+  OverviewRoute: typeof OverviewRoute
   PoliciesRoute: typeof PoliciesRoute
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
+  RecurringItemsRoute: typeof RecurringItemsRoute
   RuntimeImagesRoute: typeof RuntimeImagesRoute
   SchedulesRoute: typeof SchedulesRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   TelemetryRoute: typeof TelemetryRoute
+  UsageRoute: typeof UsageRoute
   WebhooksRoute: typeof WebhooksRoute
   WorkItemsRoute: typeof WorkItemsRoute
   WorkersRoute: typeof WorkersRoute
@@ -487,6 +602,8 @@ export interface RootRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsNewRoute: typeof ProjectsNewRoute
   RecoveryIdRoute: typeof RecoveryIdRoute
+  RecurringItemsIdRoute: typeof RecurringItemsIdRoute
+  RecurringItemsNewRoute: typeof RecurringItemsNewRoute
   RuntimeImagesIdRoute: typeof RuntimeImagesIdRoute
   RuntimeImagesNewRoute: typeof RuntimeImagesNewRoute
   WorkItemsIdRoute: typeof WorkItemsIdRoute
@@ -528,6 +645,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WebhooksRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/usage': {
+      id: '/usage'
+      path: '/usage'
+      fullPath: '/usage'
+      preLoaderRoute: typeof UsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/telemetry': {
       id: '/telemetry'
       path: '/telemetry'
@@ -563,6 +687,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RuntimeImagesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recurring-items': {
+      id: '/recurring-items'
+      path: '/recurring-items'
+      fullPath: '/recurring-items'
+      preLoaderRoute: typeof RecurringItemsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/recovery': {
       id: '/recovery'
       path: '/recovery'
@@ -584,11 +715,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PoliciesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/overview': {
+      id: '/overview'
+      path: '/overview'
+      fullPath: '/overview'
+      preLoaderRoute: typeof OverviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/idea-cloud': {
+      id: '/idea-cloud'
+      path: '/idea-cloud'
+      fullPath: '/idea-cloud'
+      preLoaderRoute: typeof IdeaCloudRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/home': {
+      id: '/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof HomeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/executions': {
@@ -603,6 +755,20 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cost-explorer': {
+      id: '/cost-explorer'
+      path: '/cost-explorer'
+      fullPath: '/cost-explorer'
+      preLoaderRoute: typeof CostExplorerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/conversations': {
+      id: '/conversations'
+      path: '/conversations'
+      fullPath: '/conversations'
+      preLoaderRoute: typeof ConversationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ask-orchicon': {
@@ -696,6 +862,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RuntimeImagesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recurring-items_/new': {
+      id: '/recurring-items_/new'
+      path: '/recurring-items/new'
+      fullPath: '/recurring-items/new'
+      preLoaderRoute: typeof RecurringItemsNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/recurring-items_/$id': {
+      id: '/recurring-items_/$id'
+      path: '/recurring-items/$id'
+      fullPath: '/recurring-items/$id'
+      preLoaderRoute: typeof RecurringItemsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/recovery_/$id': {
       id: '/recovery_/$id'
       path: '/recovery/$id'
@@ -761,17 +941,24 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   ApprovalsRoute: ApprovalsRoute,
   AskOrchiconRoute: AskOrchiconRoute,
+  ConversationsRoute: ConversationsRoute,
+  CostExplorerRoute: CostExplorerRoute,
   DashboardRoute: DashboardRoute,
   ExecutionsRoute: ExecutionsRoute,
+  HomeRoute: HomeRoute,
+  IdeaCloudRoute: IdeaCloudRoute,
   LoginRoute: LoginRoute,
+  OverviewRoute: OverviewRoute,
   PoliciesRoute: PoliciesRoute,
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
+  RecurringItemsRoute: RecurringItemsRoute,
   RuntimeImagesRoute: RuntimeImagesRoute,
   SchedulesRoute: SchedulesRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   TelemetryRoute: TelemetryRoute,
+  UsageRoute: UsageRoute,
   WebhooksRoute: WebhooksRoute,
   WorkItemsRoute: WorkItemsRoute,
   WorkersRoute: WorkersRoute,
@@ -783,6 +970,8 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsIdRoute: ProjectsIdRoute,
   ProjectsNewRoute: ProjectsNewRoute,
   RecoveryIdRoute: RecoveryIdRoute,
+  RecurringItemsIdRoute: RecurringItemsIdRoute,
+  RecurringItemsNewRoute: RecurringItemsNewRoute,
   RuntimeImagesIdRoute: RuntimeImagesIdRoute,
   RuntimeImagesNewRoute: RuntimeImagesNewRoute,
   WorkItemsIdRoute: WorkItemsIdRoute,

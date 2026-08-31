@@ -84,7 +84,7 @@ const ACTION_META: Record<
     label: "Stop",
     icon: Pause,
     title:
-      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs. For a leaf: stops just this item and aborts its run.",
+      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs — confirm to abort running children. For a leaf: stops just this item and aborts its run.",
   },
   [SequenceAction.UNSPECIFIED]: { label: "", icon: Play, title: "" },
 };
@@ -147,7 +147,7 @@ export function SequenceControls({
       {actions.map((action) => {
         const meta = ACTION_META[action];
         const Icon = meta.icon;
-        const destructive = action === SequenceAction.START;
+        const destructive = action === SequenceAction.START || action === SequenceAction.STOP;
         return (
           <button
             key={action}
@@ -178,11 +178,11 @@ export function SequenceControls({
             )}
           >
             {isPending ? (
-              <Loader2 aria-hidden className="h-3 w-3 animate-spin" />
+              <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
             ) : (
-              <Icon aria-hidden className="h-3 w-3" />
+              <Icon aria-hidden="true" className="h-3 w-3" />
             )}
-            {confirming === action ? "Confirm?" : meta.label}
+            {confirming === action ? (action === SequenceAction.STOP ? "Abort running children?" : "Confirm?") : meta.label}
           </button>
         );
       })}

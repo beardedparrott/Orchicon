@@ -502,3 +502,161 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 		t.Fatalf("terminal failed recovery must fail the step with a clear reason, got %v", fail)
 	}
 }
+
+// TestRecoveryGateWorkerChangeFailsFast is AC#8 (R7): a recovery-resumed
+// step whose dead-execution worker differs from the currently-assigned
+// worker must FAIL the step loud with a clear "worker changed" reason —
+// never wedge in the gate trying to resolve a seed for a worker that can
+// never write it. Reassignment (or a worker delete/version bump) between
+// execute-fail and resume-dispatch must re-arbitrate via retry/fail-fast,
+// not hold forever on "recovery seed never became resolvable".
+func TestRecoveryGateWorkerChangeFailsFast(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	ctx := context.Background()
+
+	// The dead execution ran on w_se_devops_engineer; the step has since
+	// been REASSIGNED to w_se_qa_engineer. Rewrite the step run's worker
+	// pin to the new worker, leaving _failed_worker_id (the dead exec's
+	// worker) behind so the R7 check sees a mismatch.
+	sr := env.getStepRun(ctx, env.stepRun.ID)
+	merged := map[string]any{}
+	_ = json.Unmarshal(sr.Result, &merged)
+	if merged["_failed_worker_id"] != "w_se_devops_engineer" {
+		t.Fatalf("fixture must pin _failed_worker_id to the dead exec worker, got %v", merged["_failed_worker_id"])
+	}
+	merged["_worker_id"] = "w_se_qa_engineer"
+	merged["_worker_version"] = float64(2)
+	mj, _ := json.Marshal(merged)
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, approvalTestTenant, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{Result: &mj}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("reassign step worker: %v", err)
+	}
+
+	// A terminal `resumed` recovery must exist so the gate reaches the R7
+	// worker-change check rather than failing via "recovery did not resume".
+	now := time.Now().UTC()
+	if _, err := db.CreateRecoveryExecution(ctx, ttx.Tx, db.RecoveryExecutionRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		ProjectID: env.projectID, TaskID: env.ticketID,
+		FailedExecutionID: env.exec.ID, RecoveryWorkflowID: "wf-recovery",
+		TriggerReason: "step_recovery", Level: 1,
+		Status: domain.RecoveryResumed, CurrentStep: "summarize", EndedAt: &now,
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("create resumed recovery: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit worker-change fixture: %v", err)
+	}
+
+	sr = env.getStepRun(ctx, env.stepRun.ID)
+	ttx2, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx2.Rollback(ctx)
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx2.Tx, approvalTestTenant, env.run, sr)
+	if ready {
+		t.Fatalf("worker-changed step must NOT dispatch against the dead worker's seed")
+	}
+	if fail == nil || !strings.Contains(fail.Error(), "worker changed") {
+		t.Fatalf("worker-changed step must fail fast with a 'worker changed' reason, got %v", fail)
+	}
+}
+
+// ageStepRecoveringSince rewrites the recovering step run's
+// `_recovering_since` to the given time (committed), for RC2 fixtures that
+// must age the STEP's own recovering entry rather than the run's age.
+func (env *recoveryGateTestEnv) ageStepRecoveringSince(ctx context.Context, old time.Time) db.WorkflowStepRunRow {
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		env.t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	sr := env.getStepRun(ctx, env.stepRun.ID)
+	merged := map[string]any{}
+	_ = json.Unmarshal(sr.Result, &merged)
+	merged["_recovering_since"] = old.Format(time.RFC3339Nano)
+	mj, _ := json.Marshal(merged)
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, approvalTestTenant, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{Result: &mj}); err != nil {
+		env.t.Fatalf("age step recovering since: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		env.t.Fatalf("commit aged step: %v", err)
+	}
+	return env.getStepRun(ctx, env.stepRun.ID)
+}
+
+// TestRecoveringStallGuardFailsStuckStep is the regression test for the
+// observed 45-minute "running" limbo: a recovering summarize_restart step
+// whose recovery row never materializes sits in the recovery-dispatch gate
+// forever (no active recovery, no recovery at all), so the run never
+// finalizes and the Retry button never surfaces. The recoveringStallTimeout
+// cap must FAIL the stuck step terminal — keyed off the STEP's own
+// `_recovering_since` timestamp (RC2), NEVER run.StartedAt.
+func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "1m")
+	ctx := context.Background()
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// RC2 — the core regression: a LONG-RUNNING run (StartedAt well past the
+	// stall window) whose recovery trigger has NOT landed yet must HOLD, not
+	// fail. The step run carries a FRESH _recovering_since; run age is
+	// irrelevant to the guard.
+	agedRun := env.run
+	oldRun := time.Now().UTC().Add(-2 * time.Hour)
+	agedRun.StartedAt = &oldRun
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, agedRun, env.stepRun)
+	if ready || fail != nil {
+		t.Fatalf("long-running run + FRESH step ts: (ready=%v, fail=%v), want (false, nil) HOLD — run age must not fail the step", ready, fail)
+	}
+
+	// The genuinely-stuck case: age the STEP's own recovering timestamp past
+	// the cap. The same stuck step must be FAILED terminal instead of
+	// holding a run "running" indefinitely.
+	stuckSR := env.ageStepRecoveringSince(ctx, time.Now().UTC().Add(-2*time.Hour))
+	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, stuckSR)
+	if ready {
+		t.Fatal("aged recovering step MUST NOT dispatch")
+	}
+	if fail == nil || !strings.Contains(fail.Error(), "stuck recovering") {
+		t.Fatalf("aged recovering step must fail with a clear 'stuck recovering' reason, got %v", fail)
+	}
+}
+
+// TestRecoveringStallDisabledHoldsLegacy verifies the cap can be disabled
+// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s): the gate returns to legacy
+// hold-only behavior even for a genuinely aged recovering step.
+func TestRecoveringStallDisabledHoldsLegacy(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "0ms")
+	ctx := context.Background()
+
+	agedSR := env.ageStepRecoveringSince(ctx, time.Now().UTC().Add(-2*time.Hour))
+	agedRun := env.run
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	agedRun.StartedAt = &old
+
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, agedRun, agedSR)
+	if ready {
+		t.Fatal("disabled cap + aged run must not dispatch")
+	}
+	if fail != nil {
+		t.Fatalf("disabled cap must hold legacy (false, nil), got fail=%v", fail)
+	}
+}

@@ -19,6 +19,7 @@ func toolListWorkflowRuns(ctx context.Context, pool *db.Pool, args json.RawMessa
 		Status     string `json:"status"`
 		SortBy     string `json:"sort_by"`
 		SortOrder  string `json:"sort_order"`
+		PageToken  string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -37,14 +38,21 @@ func toolListWorkflowRuns(ctx context.Context, pool *db.Pool, args json.RawMessa
 		Status:     params.Status,
 		SortBy:     params.SortBy,
 		SortOrder:  params.SortOrder,
+		AfterID:    params.PageToken,
+		PageSize:   listCap + 1,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if runs == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, compactWorkflowRun(r))
 	}
-	return json.Marshal(runs)
+	env := newCompactList(out, "get_workflow_run")
+	if len(runs) > listCap {
+		env.setNextPage(runs[listCap-1].ID)
+	}
+	return json.Marshal(env)
 }
 
 func toolGetWorkflowRun(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

@@ -8,10 +8,10 @@ import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
-import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
-import { RecurringSchedule, WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -108,8 +108,8 @@ function NewWorkItemPage() {
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
+  const [secretIds, setSecretIds] = useState<string[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
-  const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
 
   // Changing the kind can invalidate the previously chosen parent: epics
@@ -144,8 +144,8 @@ function NewWorkItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
+      secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
-      recurringSchedule: recurringSchedule,
     });
     navigate({
       to: "/work-items/$id",
@@ -177,7 +177,7 @@ function NewWorkItemPage() {
               <Label htmlFor="project">Project</Label>
               <select
                 id="project"
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
               >
@@ -212,7 +212,7 @@ function NewWorkItemPage() {
                 <Label htmlFor="kind">Kind</Label>
                 <select
                   id="kind"
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                  className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                   {...kindRegister}
                   onChange={(e) => {
                     void kindRegister.onChange(e);
@@ -266,6 +266,8 @@ function NewWorkItemPage() {
               </div>
             )}
 
+            <SecretsPicker value={secretIds} onChange={setSecretIds} />
+
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
               <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
@@ -290,11 +292,6 @@ function NewWorkItemPage() {
                 files or directories for this work item.
               </p>
             )}
-
-            <RecurringScheduleForm
-              value={recurringSchedule}
-              onChange={setRecurringSchedule}
-            />
 
             <div className="space-y-2">
               <Label htmlFor="description">Description (optional)</Label>

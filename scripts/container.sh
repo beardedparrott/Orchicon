@@ -4,7 +4,7 @@
 # The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/
 # Grafana, control plane) runs inside ONE container via `orchicon
 # container` (the binary is the PID-1 supervisor). This script manages
-# two isolated instances — dev and prod (dogfooding) — as two containers
+# two isolated instances — dev and prod — as two containers
 # on offset published ports with separate data volumes.
 #
 # Usage:
@@ -115,6 +115,35 @@ runtime_image_needs_rebuild() {
   [ "$current" != "$ver" ]
 }
 
+# buildkit_available reports whether the host docker can run BuildKit
+# builds (the docker-buildx plugin resolves). We use BuildKit apt cache
+# mounts ONLY when it does; a missing buildx falls back to the classic
+# builder, which needs no plugin and already caches an apt layer that
+# precedes the changing COPY — so the build never fails over a missing
+# cache mount.
+buildkit_available() {
+  docker buildx version >/dev/null 2>&1
+}
+
+# cached_dockerfile writes a transient copy of the given Dockerfile that
+# pushes the apt layer onto a persistent BuildKit cache mount
+# (--mount=type=cache,target=/var/cache/apt) and echoes the path. It is
+# only called when buildkit_available is true; the stock Dockerfile stays
+# classic-builder-safe, so a missing buildx degrades to a plain build. The
+# apt chains in the shipped Dockerfiles open with `RUN groupmod -g 70
+# postgres` (container) or `RUN apt-get update` (runtime) — those are the
+# lines the mount is added to. The generated file lives in /tmp and is
+# removed by the caller.
+cached_dockerfile() {
+  local srcfile="$1" tmp
+  tmp="$(mktemp)"
+  sed -E \
+    -e '1i # syntax=docker/dockerfile:1' \
+    -e 's/^RUN (groupmod -g 70 postgres|apt-get update) \\$/RUN --mount=type=cache,target=\/var\/cache\/apt \1 \\/' \
+    "$srcfile" > "$tmp"
+  printf '%s' "$tmp"
+}
+
 build_image() {
   log_dim "Building $IMAGE from $DOCKERFILE…"
   if [ ! -f "$PROJECT_ROOT/bin/orchicon" ]; then
@@ -122,8 +151,21 @@ build_image() {
     return 1
   fi
   cp "$PROJECT_ROOT/bin/orchicon" "$CONTEXT/orchicon"
-  docker build -f "$DOCKERFILE" -t "$IMAGE" "$CONTEXT"
+
+  # BuildKit apt cache mounts when the host has buildx; otherwise build the
+  # stock Dockerfile with the classic builder. Never hard-require buildx —
+  # a missing plugin just means a plain (still layer-cached) build.
+  local BUILDX=0
+  local MAIN_DF="$DOCKERFILE"
+  if buildkit_available; then
+    BUILDX=1
+    export DOCKER_BUILDKIT=1
+    MAIN_DF="$(cached_dockerfile "$DOCKERFILE")"
+    log_dim "buildx available — building with BuildKit apt cache mounts"
+  fi
+  docker build -f "$MAIN_DF" -t "$IMAGE" "$CONTEXT"
   log_ok "Image $IMAGE built (run 'scripts/container.sh up' to start an instance)"
+  [ "$BUILDX" = "1" ] && rm -f "$MAIN_DF"
 
   # Workflow runtime base image (one short-lived container per active
   # workflow run — see DOCUMENTATION.md §Workflow Runtime Containers).
@@ -140,9 +182,12 @@ build_image() {
   RT_BASE_VERSION="$(runtime_image_version "$RT_DOCKERFILE" "$APP_VERSION")"
 
   if runtime_image_needs_rebuild "$RUNTIME_IMAGE" "$RT_BASE_VERSION"; then
+    local RT_DF="$RT_DOCKERFILE"
+    [ "$BUILDX" = "1" ] && RT_DF="$(cached_dockerfile "$RT_DOCKERFILE")"
     log_dim "Building $RUNTIME_IMAGE from $RT_DOCKERFILE (runtime v$RT_BASE_VERSION)…"
-    docker build --label "org.orchicon.runtime.version=$RT_BASE_VERSION" -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
+    docker build --label "org.orchicon.runtime.version=$RT_BASE_VERSION" -f "$RT_DF" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
     log_ok "Runtime image $RUNTIME_IMAGE built"
+    [ "$BUILDX" = "1" ] && rm -f "$RT_DF"
   else
     log_dim "Runtime image $RUNTIME_IMAGE up to date (runtime v$RT_BASE_VERSION) — skipping"
   fi
@@ -163,7 +208,7 @@ build_image() {
     fi
   fi
 
-  # Orchicon-dev variant (dogfooding): Go/Node/buf/atlas + baked Postgres so
+  # Orchicon-dev variant: Go/Node/buf/atlas + baked Postgres so
   # a worker can build and DB-test the Orchicon repo in-sandbox.
   local RT_DEV_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.dev"
   if [ -f "$RT_DEV_DOCKERFILE" ]; then
@@ -194,17 +239,62 @@ build_image() {
 # start_runtime_daemon ensures the host-side runtime orchestrator is
 # running. It owns the Docker socket and serves the narrow workflow-
 # runtime API over a unix socket (mounted into the supervisor container
-# below). Idempotent — no-op when already up.
+# below). Idempotent — no-op when already up AND fresh: when the running
+# daemon's stable binary copy (the one bind-mounted into every runtime
+# container) predates the just-built bin/orchicon, the daemon is restarted
+# so the containers it spawns stop replaying pre-fix code — the whole fix
+# that makes a plain `make rebuild-dev` pick up new tool behavior without
+# anyone remembering to `make runtime-stop && make runtime-daemon`.
 # The runtime daemon's socket lives inside a bind-mounted DIRECTORY (not a
 # single file) so a daemon restart — which recreates the socket file —
 # never staleness the supervisor container's mount. The container mounts
 # the whole dir at /var/run/orchicon-runtime.
 RUNTIME_SOCKET_DIR="${ORCHICON_RUNTIME_SOCKET_DIR:-/tmp/orchicon-runtime}"
 RUNTIME_SOCKET="${ORCHICON_RUNTIME_SOCKET:-$RUNTIME_SOCKET_DIR/runtime.sock}"
+
+# daemon_is_stale reports whether a RUNNING runtime daemon is serving an
+# OLDER binary than the freshly built bin/orchicon. The daemon copies its
+# executable to a STABLE path next to the socket at startup (copySelf,
+# cmd/orchicon/runtime.go) and bind-mounts THAT copy read-only into every
+# runtime container at /usr/local/bin/orchicon — so the stable copy IS the
+# binary every runtime container executes (the MCP sidecar, the supervisor,
+# the in-container plane). A byte-difference against the just-built
+# bin/orchicon therefore means the running daemon — and every container it
+# has ever pooled — replays pre-fix code while the freshly rebuilt control
+# plane looks new: the 2026-08-31 failure class where a rebuilt instance
+# still spawned runtime containers serving the old toolset. Restarting the
+# daemon fixes both halves at once: copySelf refreshes the stable copy AND
+# the new daemon's start reset (pool resetPool) removes every existing
+# runtime container, so they all re-create with (and key on) the fresh
+# binary. A missing stable copy is stale by definition (the next start
+# re-creates it); `make clean` deleting bin/orchicon does NOT count as
+# stale — the daemon keeps running its own inode and its copy stays valid.
+daemon_is_stale() {
+  local stable="$RUNTIME_SOCKET_DIR/orchicon" fresh="$PROJECT_ROOT/bin/orchicon"
+  [ -f "$fresh" ] || return 1   # nothing fresh to compare — not stale
+  [ -f "$stable" ] || return 0  # daemon started without its stable copy — restart to re-create
+  ! cmp -s "$fresh" "$stable"
+}
+
 start_runtime_daemon() {
   if [ -S "$RUNTIME_SOCKET" ] && curl -s --unix-socket "$RUNTIME_SOCKET" http://runtime/v1/health >/dev/null 2>&1; then
-    log_dim "runtime daemon already up ($RUNTIME_SOCKET)"
-    return 0
+    if daemon_is_stale; then
+      log_warn "runtime daemon is running a STALE binary (its bind-mount copy predates bin/orchicon) — restarting it"
+      log_dim "  every existing runtime container is reaped and re-warmed from the fresh binary on the next run"
+      local _pid
+      _pid=$(pgrep -f "orchicon runtime-daemon" | head -1 || true)
+      if [ -n "$_pid" ]; then
+        kill "$_pid" 2>/dev/null || true
+        # Wait for the old daemon to release the socket before re-listening.
+        for _ in $(seq 1 20); do
+          curl -s --unix-socket "$RUNTIME_SOCKET" http://runtime/v1/health >/dev/null 2>&1 || break
+          sleep 0.25
+        done
+      fi
+    else
+      log_dim "runtime daemon already up and fresh ($RUNTIME_SOCKET)"
+      return 0
+    fi
   fi
   log_dim "starting runtime daemon…"
   # Local dev: pin the daemon to the locally-built runtime image (the
@@ -235,20 +325,34 @@ start_runtime_daemon() {
   return 1
 }
 
-# stop_runtime_daemon removes every runtime container for an instance.
+# stop_runtime_daemon removes every runtime container owned by ONE
+# instance. Both instances share one host daemon, so the removal is
+# instance-scoped (label=orchicon.instance): a dev rebuild must never
+# hard-kill a live prod fire's container mid-run. Killing the DAEMON itself
+# (the `runtime-stop` case below) is the only wholesale action — its next
+# start resets the pool anyway.
 stop_runtime_daemon() {
   local inst="${1:-dev}"
-  docker ps -a --filter label=orchicon.workflow --format '{{.Names}}' | while read -r name; do
+  docker ps -a --filter label=orchicon.workflow --filter "label=orchicon.instance=$inst" --format '{{.Names}}' | while read -r name; do
     docker rm -f "$name" >/dev/null 2>&1 && log_dim "removed runtime $name"
   done
 }
 
-# rebuild_image = down -> build -> up for one instance: the one-command
-# "stop, build, start" loop for a dev/prod container.
+# rebuild_image = down -> build -> reap -> up for one instance: the
+# one-command "stop, build, start" loop for a dev/prod container. The
+# explicit reap after the build is the rebuild-time guarantee: at that
+# point this instance's plane is down, so every runtime container it
+# owns is an orphan by definition (aborted-run leaks, releases lost
+# while the plane was rebuilding) — remove them "just in case" so a
+# rebuild never carries leaked containers across a restart. The other
+# instance's containers are untouched (instance-scoped filter); a stale
+# daemon is restarted by start_runtime_daemon inside up_instance, which
+# additionally resets the whole pool.
 rebuild_image() {
   local inst="${1:-dev}"
   down_instance "$inst"
   build_image
+  stop_runtime_daemon "$inst"
   up_instance "$inst"
 }
 
@@ -472,8 +576,16 @@ case "${1:-}" in
     # The pattern is unique enough not to match this script's own command
     # line (which never contains "orchicon runtime-daemon").
     pid=$(pgrep -f "orchicon runtime-daemon" | head -1)
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null && log_ok "runtime daemon stopped"
-    [ -z "$pid" ] && log_dim "runtime daemon not running"
+    if [ -n "$pid" ]; then
+      # Idempotent: a daemon that already exited (or a lost kill) is still a
+      # successful "stopped" — stop commands must return 0 so `make
+      # runtime-stop && make runtime-daemon` chains (the previous trailing
+      # `[ -z "$pid" ]` evaluated false on the stopped path and returned 1).
+      kill "$pid" 2>/dev/null || true
+      log_ok "runtime daemon stopped"
+    else
+      log_dim "runtime daemon not running"
+    fi
     ;;
   ps)
     docker ps -a --filter label=orchicon-instance --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

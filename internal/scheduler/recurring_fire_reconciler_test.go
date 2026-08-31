@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -892,3 +893,187 @@ func TestRecurringRunFailureAtStartKeepsItemRecurring(t *testing.T) {
 		t.Errorf("run status = %s, want failed (the failed occurrence is recorded)", runRow.Status)
 	}
 }
+
+// listLedger returns the per-fire run-history ledger for a work item.
+func listLedger(t *testing.T, pool *db.Pool, itemID string) []db.RecurringRunHistoryEntry {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, approvalTestTenant, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+// TestRecurringFireRecordsLedgerOnFire verifies a successful fire writes a
+// 'fired' run-history entry on the recurring item (4.2 AC: each fire records
+// a run-history entry). A fire never auto-creates a work item — the dispatch
+// goes through the normal start path and the item remains "recurring".
+func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
+	pool := approvalTestPool(t)
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-ledger",
+		Slug: "recur-ledger-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wfID := seedPublishedWorkflow(t, pool, proj.ID)
+	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
+	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Ledger Item", nil, &wfID, schedule)
+
+	rec := &recurringFireRecorder{}
+	reconciler := NewRecurringFireReconciler(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), rec.startFn())
+	if res := reconciler.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+	if rec.startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", rec.startCalls)
+	}
+
+	entries := listLedger(t, pool, item.ID)
+	if len(entries) != 1 {
+		t.Fatalf("ledger entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status != "fired" {
+		t.Errorf("ledger status = %q, want fired", entries[0].Status)
+	}
+	if entries[0].Error != "" {
+		t.Errorf("ledger error = %q, want empty on a successful fire", entries[0].Error)
+	}
+	if entries[0].FireAt.IsZero() || !entries[0].FireAt.Before(time.Now().Add(1*time.Minute)) {
+		t.Errorf("fire_at = %v, want a recent timestamp", entries[0].FireAt)
+	}
+	if got := mustGet(t, pool, item.ID); got.Status != domain.WorkItemRecurring {
+		t.Errorf("item status = %q, want recurring after fire", got.Status)
+	}
+}
+
+// TestRecurringFireFailedFireRecordsLedgerAndAdvances verifies the failure
+// semantics (4.2 AC): a fire whose dispatch fails writes a 'failed' ledger
+// entry carrying the error, next_run_at is still advanced (advance-before-
+// fire idempotency), and the item stays "recurring" — a failed fire must not
+// wedge the scheduler nor corrupt next_run_at.
+func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
+	pool := approvalTestPool(t)
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-failfire",
+		Slug: "recur-failfire-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wfID := seedPublishedWorkflow(t, pool, proj.ID)
+	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
+	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Fail-Fire Item", nil, &wfID, schedule)
+
+	failStart := func(ctx context.Context, _, _, _, _ string) error {
+		return errors.New("dispatch failed")
+	}
+	reconciler := NewRecurringFireReconciler(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), failStart)
+	if res := reconciler.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+
+	entries := listLedger(t, pool, item.ID)
+	if len(entries) != 1 {
+		t.Fatalf("ledger entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status != "failed" {
+		t.Errorf("ledger status = %q, want failed", entries[0].Status)
+	}
+	if entries[0].Error != "dispatch failed" {
+		t.Errorf("ledger error = %q, want %q", entries[0].Error, "dispatch failed")
+	}
+
+	got := mustGet(t, pool, item.ID)
+	if got.Status != domain.WorkItemRecurring {
+		t.Errorf("item status = %q, want recurring after a failed fire", got.Status)
+	}
+	if got.NextRunAt == nil || !got.NextRunAt.After(time.Now()) {
+		t.Errorf("next_run_at = %v, want advanced to a future occurrence after a failed fire", got.NextRunAt)
+	}
+}
+
+// TestRecurringFireSkipsPausedItem verifies the enable/pause lifecycle
+// (4.2 AC): a paused recurring item (recurring_enabled=false) keeps its
+// schedule + next_run_at but is excluded from the due scan — it does NOT fire
+// and records no ledger entry.
+func TestRecurringFireSkipsPausedItem(t *testing.T) {
+	pool := approvalTestPool(t)
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-paused",
+		Slug: "recur-paused-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wfID := seedPublishedWorkflow(t, pool, proj.ID)
+	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
+	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Paused Item", nil, &wfID, schedule)
+
+	// Pause: recurring_enabled=false. Schedule + next_run_at must be preserved.
+	ttx2, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := db.UpdateWorkItem(ctx, ttx2.Tx, approvalTestTenant, item.ID, item.Version,
+		db.UpdateWorkItemFields{RecurringEnabled: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx2.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if paused.RecurringEnabled {
+		t.Fatal("recurring_enabled = true, want false after pause")
+	}
+	if len(paused.RecurringSchedule) == 0 || paused.NextRunAt == nil {
+		t.Fatal("pause cleared the schedule or next_run_at — pause must preserve them")
+	}
+
+	rec := &recurringFireRecorder{}
+	reconciler := NewRecurringFireReconciler(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), rec.startFn())
+	if res := reconciler.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+	if rec.startCalls != 0 {
+		t.Errorf("start calls = %d, want 0 (paused item must not fire)", rec.startCalls)
+	}
+	if entries := listLedger(t, pool, item.ID); len(entries) != 0 {
+		t.Errorf("ledger entries = %d, want 0 (paused item records no fire)", len(entries))
+	}
+}
+

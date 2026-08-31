@@ -29,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcp"
+	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -59,6 +60,8 @@ func main() {
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "run-context":
+			os.Exit(runRunContext(os.Args[2:], log))
 		case "runtime-daemon":
 			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
 		case "runtime-supervisor":
@@ -260,7 +263,8 @@ Usage:
   %s db restore     Restore from a backup
   %s db prune       Remove backups older than N days
   %s backfill-pr    Backfill real PR URLs for completed git-backed runs
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+  %s run-context    Print a run's .orchicon archive (steps/summary) for context-by-reference
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
   %s version       Print version info
@@ -274,10 +278,48 @@ the container's PID-1 supervisor.
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
+	// Worktree-only mode: a worker's composite file tools (batch_read /
+	// batch_grep / batch_write) run against a base directory and need no
+	// Postgres or valid plane config. The control plane sets
+	// ORCHICON_MCP_WORKTREE_DIR when it wires this sidecar into a worker's
+	// opencode config, so the sidecar can run inside a DB-less runtime.
+	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
+		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd))
+		log.Info("mcp server started (worktree tools, stdio transport)", "worktree", wd)
+		if err := mcpSrv.Run(ctx); err != nil {
+			log.Error("mcp server", "error", err)
+			return 1
+		}
+		return 0
+	}
+
+	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound
+	// worker executions) talks to the REAL instance's Connect API with a
+	// short-lived, role-scoped credential — no Postgres, no sandbox. The
+	// control plane sets ORCHICON_PLANE_URL + ORCHICON_PLANE_TOKEN when it
+	// mints the credential for the run.
+	if url := os.Getenv("ORCHICON_PLANE_URL"); url != "" && os.Getenv("ORCHICON_PLANE_TOKEN") != "" {
+		mcpSrv := mcp.New(log, nil, mcp.NewPlaneRegistry(url, os.Getenv("ORCHICON_PLANE_TOKEN"), log))
+		log.Info("mcp server started (plane channel, stdio transport)", "url", url)
+		if err := mcpSrv.Run(ctx); err != nil {
+			log.Error("mcp server", "error", err)
+			return 1
+		}
+		return 0
+	}
+
 	cfg := config.Default()
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid configuration", "error", err)
 		return 1
+	}
+
+	// Secrets KEK for the MCP surface's secret tools: explicit override
+	// wins, else the per-instance data-dir key (load-or-create on first
+	// boot) — same resolution as the control plane.
+	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
+	if kekErr != nil {
+		log.Warn("secrets KEK unavailable (secret tools disabled)", "error", kekErr)
 	}
 
 	pool, err := db.Open(ctx, cfg.PostgresDSN)
@@ -287,7 +329,7 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	}
 	defer pool.Close()
 
-	toolReg := askorchicon.NewToolRegistry(pool, log)
+	toolReg := askorchicon.NewToolRegistry(pool, log, secretsKEK)
 	mcpSrv := mcp.New(log, pool, mcp.NewAskOrchiconRegistry(toolReg))
 
 	log.Info("mcp server started (stdio transport)")

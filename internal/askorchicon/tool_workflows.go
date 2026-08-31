@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -22,10 +24,11 @@ func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if workflows == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(workflows))
+	for _, w := range workflows {
+		out = append(out, compactWorkflow(w))
 	}
-	return json.Marshal(workflows)
+	return json.Marshal(newCompactList(out, "get_workflow"))
 }
 
 func toolGetWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -87,36 +90,71 @@ func toolGetWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMes
 	})
 }
 
+// toolCreateWorkflow creates a workflow AND its first draft version-1
+// row in one transaction via the shared workflow.CreateWorkflowTx core
+// (the service path's implementation), seeding steps when provided and
+// writing the workflow.created audit row. The workflow is immediately
+// editable and publishable from the UI.
 func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		VersionNote string          `json:"version_note"`
+		Steps       json.RawMessage `json:"steps"`
+		Inputs      json.RawMessage `json:"inputs"`
+		Outputs     json.RawMessage `json:"outputs"`
+		Type        string          `json:"type"`
+		GitStrategy string          `json:"git_strategy"`
+		ProjectID   string          `json:"project_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
-	if params.Name == "" {
+	if strings.TrimSpace(params.Name) == "" {
 		return nil, fmt.Errorf("name is required")
 	}
+	// A present-but-null JSON argument must behave like an absent one.
+	rawJSON := func(raw json.RawMessage) string {
+		if s := strings.TrimSpace(string(raw)); s != "" && s != "null" {
+			return s
+		}
+		return ""
+	}
+	// Workflows have no description column; `description` seeds the draft
+	// version-1 version_note when version_note is empty.
+	versionNote := params.VersionNote
+	if versionNote == "" {
+		versionNote = params.Description
+	}
 	tenantID := tenant.FromContext(ctx)
+	in := workflow.CreateWorkflowInput{
+		TenantID:    tenantID,
+		ProjectID:   strings.TrimSpace(params.ProjectID),
+		Name:        params.Name,
+		Type:        strings.ToLower(strings.TrimSpace(params.Type)),
+		GitStrategy: strings.ToLower(strings.TrimSpace(params.GitStrategy)),
+		VersionNote: versionNote,
+		Steps:       rawJSON(params.Steps),
+		Inputs:      rawJSON(params.Inputs),
+		Outputs:     rawJSON(params.Outputs),
+	}
+	if err := workflow.ValidateCreateWorkflowInput(&in); err != nil {
+		return nil, err
+	}
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	defer ttx.Rollback(ctx)
-	workflow, err := db.CreateWorkflow(ctx, ttx.Tx, db.WorkflowRow{
-		ID:             db.NewID(),
-		TenantID:       tenantID,
-		Name:           params.Name,
-		Status:         "draft",
-		Type:           "one_shot",
-		CurrentVersion: 0,
-	})
+	created, createdVersion, err := workflow.CreateWorkflowTx(ctx, ttx.Tx, in)
 	if err != nil {
 		return nil, err
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(workflow)
+	return rowWithExtra(created, map[string]any{
+		"version":    createdVersion.Version,
+		"version_id": createdVersion.ID,
+	})
 }

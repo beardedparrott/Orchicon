@@ -15,7 +15,8 @@ import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
-import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import type { RecurringRunHistoryEntry } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { RecurringFilter, SequenceAction, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -35,7 +36,7 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean) => {
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }, includeArchived?: boolean, recurringFilter?: RecurringFilter, ideaScope?: IdeaScope) => {
     const key: unknown[] = [...workItemKeys.all, "list", projectId];
     if (parentId !== undefined) key.push(parentId);
     if (status !== undefined) key.push(status);
@@ -43,11 +44,14 @@ export const workItemKeys = {
     // Archive partition is part of the key so the active list and the
     // archive view never share a cache entry (same projectId).
     if (includeArchived === true) key.push("archived");
+    if (recurringFilter !== undefined) key.push(recurringFilter);
+    if (ideaScope !== undefined) key.push(ideaScope);
     return key;
   },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
   graph: (projectId: string) =>
     [...workItemKeys.all, "graph", projectId] as const,
+  runHistory: (id: string) => [...workItemKeys.all, "run-history", id] as const,
 };
 
 // useListWorkItems fetches a page of work items for a project, optionally
@@ -55,13 +59,13 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean; includeArchived?: boolean; recurringFilter?: RecurringFilter; ideaScope?: IdeaScope },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
   const listOpts = { search: opts?.search, sortBy: opts?.sortBy, sortOrder: opts?.sortOrder };
   return useQuery({
-    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived),
+    queryKey: workItemKeys.list(projectId, parentId, status, listOpts, opts?.includeArchived, opts?.recurringFilter, opts?.ideaScope),
     queryFn: async () => {
       const res = await workItemClient.listWorkItems({
         projectId,
@@ -72,6 +76,8 @@ export function useListWorkItems(
         sortOrder: opts?.sortOrder || "",
         pageSize: 1000,
         includeArchived: opts?.includeArchived ?? false,
+        recurringFilter: opts?.recurringFilter,
+        ideaScope: opts?.ideaScope,
       });
       return res.workItems as WorkItem[];
     },
@@ -100,6 +106,23 @@ export function useGetWorkItem(id: string) {
       return res.workItem as WorkItem;
     },
     enabled: !!id,
+  });
+}
+
+// useGetWorkItemRunHistory fetches a recurring item's per-fire run-history
+// ledger (feature 4.2): each fire's dispatch outcome ('fired' | 'failed'),
+// fire timestamp, the produced run's id + status ("" when the fire failed
+// before a run existed), and that run's worker executions (ids, outputs).
+// Newest first. Used by the recurring item detail page's run-history list.
+export function useGetWorkItemRunHistory(id: string) {
+  return useQuery({
+    queryKey: workItemKeys.runHistory(id),
+    queryFn: async () => {
+      const res = await workItemClient.getWorkItemRunHistory({ id });
+      return res.entries as RecurringRunHistoryEntry[];
+    },
+    enabled: !!id,
+    refetchInterval: 5_000,
   });
 }
 
@@ -140,15 +163,21 @@ export function useCreateWorkItem() {
 }
 
 // useUpdateWorkItem updates a work item (partial, optimistic concurrency
-// handled server-side via version CAS).
+// handled server-side via version CAS). Returns the saved item plus the
+// server's auto-start warning: when the request explicitly asked
+// auto_start_workflow=true but the item's status is not startable
+// (pending/scheduled/ready/assigned), the edit IS saved but no run is
+// started and `warning` explains why — surface it so a save with
+// auto-start on a non-startable item reads as an intentional, explained
+// no-op.
 export function useUpdateWorkItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: PartialMessage<UpdateWorkItemRequest>) => {
       const res = await workItemClient.updateWorkItem(input);
-      return res.workItem as WorkItem;
+      return { workItem: res.workItem as WorkItem, warning: res.warning || "" };
     },
-    onSuccess: (item) => {
+    onSuccess: ({ workItem: item }) => {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
       qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
@@ -238,6 +267,38 @@ export function useBatchDeleteWorkItems() {
       await Promise.all(ids.map((id) => workItemClient.hardDeleteWorkItem({ id })));
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workItemKeys.all });
+    },
+  });
+}
+
+// useBatchArchiveWorkItems archives multiple terminal work items by id.
+// Mirrors useBatchDeleteWorkItems but fans out with Promise.allSettled so a
+// single non-archivable item (the server rejects with CodeFailedPrecondition
+// — it is non-terminal or has children) does not abort the rest. The fan-out
+// is intentionally raw: the server is authoritative for both gates, so the
+// client counts successes vs. failures from the returned results rather than
+// duplicating validation. Invalidation-only, no optimistic row removal —
+// parity with the single-item useArchiveWorkItem (which relies on
+// invalidation + the 5s poll).
+export function useBatchArchiveWorkItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((id) => workItemClient.archiveWorkItem({ id })),
+      );
+      const archived = results.filter(
+        (r) => r.status === "fulfilled",
+      ).length;
+      const skipped = results.length - archived;
+      return { archived, skipped, results };
+    },
+    onSuccess: () => {
+      // Invalidate every list query so the active view (tree/board) drops the
+      // archived rows and the Archive view picks them up. Mirrors
+      // useBatchDeleteWorkItems (workItemKeys.all) — correct in the "All
+      // projects" view where projectId is empty.
       qc.invalidateQueries({ queryKey: workItemKeys.all });
     },
   });

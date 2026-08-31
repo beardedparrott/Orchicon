@@ -193,6 +193,16 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_ARCHIVED = 14;
    */
   ARCHIVED = 14,
+
+  /**
+   * System-managed: set only by the automation spawn path (a recurring fire
+   * with outputs_mode=idea) and by Idea Cloud promotion. An idea is an
+   * automation-produced item awaiting triage; it is excluded from every
+   * normal work-item view. Never user-assignable.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_IDEA = 15;
+   */
+  IDEA = 15,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -211,6 +221,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 12, name: "WORK_ITEM_STATUS_BLOCKED" },
   { no: 13, name: "WORK_ITEM_STATUS_SKIPPED" },
   { no: 14, name: "WORK_ITEM_STATUS_ARCHIVED" },
+  { no: 15, name: "WORK_ITEM_STATUS_IDEA" },
 ]);
 
 /**
@@ -492,6 +503,56 @@ export class WorkItem extends Message<WorkItem> {
    */
   archivedFromStatus = "";
 
+  /**
+   * spawned_by is the recurring item id that produced this work item
+   * (empty = not an automation spawn). Server-stamped from the recurring
+   * fire's run_context; never client-supplied.
+   *
+   * @generated from field: string spawned_by = 35;
+   */
+  spawnedBy = "";
+
+  /**
+   * spawned_by_run_id is the workflow run id of the recurring fire's run
+   * that produced this work item (empty = not an automation spawn).
+   * Server-stamped alongside spawned_by.
+   *
+   * @generated from field: string spawned_by_run_id = 36;
+   */
+  spawnedByRunId = "";
+
+  /**
+   * recurring_enabled is the enable/pause flag for a recurring work item.
+   * true = firing (the scheduler due-scan will dispatch it); false = paused
+   * (keeps the recurring_schedule + next_run_at so resume re-arms, but the
+   * scheduler excludes it from the due-scan). Defaults to true.
+   *
+   * @generated from field: bool recurring_enabled = 37;
+   */
+  recurringEnabled = false;
+
+  /**
+   * spawned_by_title is a read-time badge: the title of the spawning
+   * recurring item (spawned_by) resolved by the server for display
+   * ("from automation X"). Empty when the item is not an automation spawn
+   * or when the spawning item no longer exists. Never stored — computed at
+   * read time (feature 5.1) and only populated on the idea-surface reads
+   * (ListIdeas / GetWorkItem) that callers use to render the badge, so the
+   * hot general list path stays untouched.
+   *
+   * @generated from field: string spawned_by_title = 38;
+   */
+  spawnedByTitle = "";
+
+  /**
+   * secret_ids are selected tenant secrets to inject into the runtime container at dispatch.
+   * Stored as JSONB array of secret IDs in work_items.secret_ids.
+   * Max 10 per item; dangling refs fail dispatch.
+   *
+   * @generated from field: repeated string secret_ids = 39;
+   */
+  secretIds: string[] = [];
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -533,6 +594,11 @@ export class WorkItem extends Message<WorkItem> {
     { no: 32, name: "blocked_by", kind: "message", T: WorkItemBlocker, repeated: true },
     { no: 33, name: "archived_at", kind: "message", T: Timestamp },
     { no: 34, name: "archived_from_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 35, name: "spawned_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 36, name: "spawned_by_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 37, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 38, name: "spawned_by_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 39, name: "secret_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {
@@ -649,6 +715,40 @@ export class RecurringSchedule extends Message<RecurringSchedule> {
    */
   startTime = "";
 
+  /**
+   * outputs_mode controls what the recurring fire's run produces:
+   *   standard (default): spawned items land in their normal status with
+   *     provenance stamped.
+   *   idea: spawned items land in IDEA state (hidden from every normal
+   *     work-item list) with provenance stamped.
+   *   none: the fire spawns no new work items.
+   * Stored as a key inside the recurring_schedule JSONB (no new column).
+   *
+   * @generated from field: string outputs_mode = 6;
+   */
+  outputsMode = "";
+
+  /**
+   * Window confines fires to a daily time-of-day interval [window_start, window_end).
+   * Both empty (the default) = no window (legacy 24/7 behaviour). When set, both
+   * MUST be set, validated HH:MM, and represent a half-open interval on the same
+   * calendar day; wrapping midnight is v1-out-of-scope and rejected. Fires use
+   * the anchor-grid-truncated-by-window semantic (A): the interval cadence is
+   * anchored at start_date+start_time and truncated to the window.
+   *
+   * HH:MM, inclusive
+   *
+   * @generated from field: string window_start = 7;
+   */
+  windowStart = "";
+
+  /**
+   * HH:MM, exclusive — must be > window_start
+   *
+   * @generated from field: string window_end = 8;
+   */
+  windowEnd = "";
+
   constructor(data?: PartialMessage<RecurringSchedule>) {
     super();
     proto3.util.initPartial(data, this);
@@ -662,6 +762,9 @@ export class RecurringSchedule extends Message<RecurringSchedule> {
     { no: 3, name: "days", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 4, name: "start_date", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "start_time", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "outputs_mode", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "window_start", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "window_end", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringSchedule {

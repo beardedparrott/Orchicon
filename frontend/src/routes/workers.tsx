@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+
+import { useListRoles } from "@/api/auth";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX, FolderPlus, GripVertical } from "lucide-react";
+import { Trash2, SearchX, FolderPlus, GripVertical, PencilLine } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 
-import { useBatchDeleteWorkers, useListWorkers } from "@/api/workers";
-import { WorkerStatus, type Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
+import {
+  useBatchDeleteWorkers,
+  useBulkUpdateWorkerModel,
+  useListWorkers,
+} from "@/api/workers";
+import { WorkerStatus, type Worker, WorkerVersionStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
+import type { WorkerListItem } from "@/api/gen/orchicon/api/v1/worker_service_pb";
+import { formatModelRef, versionStatusLabel, versionStatusTone } from "@/lib/worker-display";
+import type { BulkUpdateWorkerModelResult } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { BulkChangeWorkerModelDialog } from "@/components/BulkChangeWorkerModelDialog";
 import { CategoryFolder } from "@/components/CategoryFolder";
 import { CategoryDndContext } from "@/components/CategoryDndContext";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
@@ -38,6 +48,10 @@ function WorkersPage() {
   const [sortOrder, setSortOrder] = useState("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showCreateCategory, setShowCreateCategory] = useState(false);
+  const [showChangeModel, setShowChangeModel] = useState(false);
+  const [changeModelResults, setChangeModelResults] = useState<
+    BulkUpdateWorkerModelResult[] | null
+  >(null);
 
   const statusFilter =
     status === "all" ? undefined : (Number(status) as WorkerStatus);
@@ -47,13 +61,20 @@ function WorkersPage() {
     error,
   } = useListWorkers({ search, status: statusFilter, sortBy, sortOrder });
   const batchDelete = useBatchDeleteWorkers();
+  const bulkUpdateModel = useBulkUpdateWorkerModel();
 
   const prefs = useCategoryPreferences("workers");
   const { ensureSeeded } = prefs;
 
   // Seed all workers into categories on first load
+  const { data: roles } = useListRoles();
+  const roleNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of roles ?? []) m.set(r.id, r.name);
+    return m;
+  }, [roles]);
   const workerIds = useMemo(
-    () => (workers ? workers.map((w) => w.id) : []),
+    () => (workers ? workers.map((it) => (it as WorkerListItem).worker!.id) : []),
     [workers],
   );
   useEffect(() => {
@@ -66,14 +87,14 @@ function WorkersPage() {
   const { categorized, uncategorized } = useMemo(() => {
     if (!workers)
       return { categorized: new Map<string, string[]>(), uncategorized: [] };
-    const ids = workers.map((w) => w.id);
+    const ids = workers.map((it) => (it as WorkerListItem).worker!.id);
     return getItemsForCategory(prefs.state, ids);
   }, [prefs.state, workers]);
 
   // Build ordered list of categories with their workers
   const categoryGroups = useMemo(() => {
     if (!workers) return [];
-    const workerMap = new Map(workers.map((w) => [w.id, w]));
+    const workerMap = new Map(workers.map((it) => [(it as WorkerListItem).worker!.id, it as WorkerListItem]));
     const groups: { category: Category; items: typeof workers }[] = [];
 
     const sortedCategories = [...prefs.state.categories].sort(
@@ -120,7 +141,7 @@ function WorkersPage() {
     if (selected.size === workers.length) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(workers.map((w) => w.id)));
+      setSelected(new Set(workers.map((it) => (it as WorkerListItem).worker!.id)));
     }
   };
 
@@ -138,13 +159,38 @@ function WorkersPage() {
     });
   };
 
+  const handleChangeModelOpen = () => {
+    if (selected.size === 0) return;
+    setChangeModelResults(null);
+    setShowChangeModel(true);
+  };
+
+  const handleChangeModelApply = (input: { workerIds: string[]; modelRef: string }) => {
+    bulkUpdateModel.mutate(input, {
+      onSuccess: (res) => {
+        setChangeModelResults(res.results);
+        // Clear selection only after the user dismisses the summary (the
+        // dialog stays open in result-summary mode).
+      },
+    });
+  };
+
+  const handleChangeModelClose = () => {
+    setShowChangeModel(false);
+    setChangeModelResults(null);
+    // Successful apply → clear selection so the bulk bar disappears.
+    if (!bulkUpdateModel.isError && changeModelResults !== null) {
+      setSelected(new Set());
+    }
+  };
+
   const existingCategoryNames = prefs.state.categories.map((c) => c.name);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Workers</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-cyan-400 animate-pulse motion-reduce:animate-none" /> Workers</h1>
           <p className="text-sm text-muted-foreground">
             Reusable, versioned execution profiles. A Worker declares what is
             permitted; the adapter advertises what is possible.
@@ -155,17 +201,17 @@ function WorkersPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search workers…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-full sm:w-64"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-64"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Draft</option>
@@ -176,7 +222,7 @@ function WorkersPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -185,7 +231,7 @@ function WorkersPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
@@ -195,19 +241,29 @@ function WorkersPage() {
           size="sm"
           onClick={() => setShowCreateCategory(true)}
         >
-          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          <FolderPlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
           New Category
         </Button>
         {selected.size > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleBatchDelete}
-            disabled={batchDelete.isPending}
-          >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Delete {selected.size} selected
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleChangeModelOpen}
+            >
+              <PencilLine aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Change model…
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleBatchDelete}
+              disabled={batchDelete.isPending}
+            >
+              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Delete {selected.size} selected
+            </Button>
+          </>
         )}
       </div>
 
@@ -222,7 +278,7 @@ function WorkersPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No workers yet
             </CardTitle>
             <CardDescription>
@@ -254,6 +310,7 @@ function WorkersPage() {
             <CategoryDndContext
               categories={prefs.state.categories}
               onAssign={prefs.assignItem}
+              onReorder={prefs.reorderCategories}
             >
               {categoryGroups.map(({ category, items }) => (
                 <CategoryFolder
@@ -282,13 +339,17 @@ function WorkersPage() {
                     prefs.updateDescription(category.id, desc)
                   }
                   droppableId={category.id}
+                  sortable={prefs.state.categories.length > 1}
                 >
                   <div className="space-y-1">
-                    {items.map((w) => (
+                    {items.map((it) => {
+                      const w = (it as WorkerListItem).worker!;
+                      return (
                       <WorkerRow
                         key={w.id}
-                        worker={w}
+                        item={it as WorkerListItem}
                         checked={selected.has(w.id)}
+                        roleNameById={roleNameById}
                         onToggleSelect={() => toggleSelect(w.id)}
                         onDelete={() => {
                           if (window.confirm("Delete this worker?")) {
@@ -296,7 +357,7 @@ function WorkersPage() {
                           }
                         }}
                       />
-                    ))}
+                    )})}
                   </div>
                 </CategoryFolder>
               ))}
@@ -313,21 +374,38 @@ function WorkersPage() {
         }
         existingNames={existingCategoryNames}
       />
+
+      <BulkChangeWorkerModelDialog
+        open={showChangeModel}
+        onOpenChange={(open) => {
+          if (!open) handleChangeModelClose();
+          else setShowChangeModel(true);
+        }}
+        selectedIds={Array.from(selected)}
+        workers={(workers ?? []).map((it) => (it as WorkerListItem).worker!) as Worker[]}
+        onSubmit={handleChangeModelApply}
+        isPending={bulkUpdateModel.isPending}
+        error={bulkUpdateModel.error as Error | null}
+        results={changeModelResults}
+      />
     </div>
   );
 }
 
 function WorkerRow({
-  worker,
+  item,
   checked,
   onToggleSelect,
   onDelete,
+  roleNameById,
 }: {
-  worker: Worker;
+  item: WorkerListItem;
   checked: boolean;
   onToggleSelect: () => void;
   onDelete: () => void;
+  roleNameById: Map<string, string>;
 }) {
+  const worker = item.worker!;
   // Drag handle is a SIBLING of the <Link>, so clicking the handle can never
   // open the item; only the Card (<Link>) navigates. dnd-kit's listeners live
   // on the handle span, the measured node is the row.
@@ -345,7 +423,7 @@ function WorkerRow({
         aria-label={`Drag ${worker.name} to a category`}
         className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical aria-hidden="true" className="h-4 w-4" />
       </span>
       <input
         type="checkbox"
@@ -378,7 +456,17 @@ function WorkerRow({
                   {worker.purpose}
                 </span>
               )}
+              {worker.roleRef && (
+                <span
+                  className="rounded-full border border-input px-2 py-0.5 font-mono"
+                  title={worker.roleRef}
+                >
+                  {roleNameById.get(worker.roleRef) ?? worker.roleRef}
+                </span>
+              )}
               <span>v{worker.currentVersion}</span>
+              <span className="max-w-[180px] truncate font-mono" title={item.activeModelRef || undefined}>{formatModelRef(item.activeModelRef)}</span>
+              <VersionStatusBadge status={item.activeVersionStatus} />
             </div>
           </CardContent>
         </Card>
@@ -392,6 +480,17 @@ function WorkerRow({
         ✕
       </button>
     </div>
+  );
+}
+
+function VersionStatusBadge({ status }: { status: WorkerVersionStatus }) {
+  const label = versionStatusLabel(status);
+  // Hide badge when no version yet (UNSPECIFIED)
+  if (status === WorkerVersionStatus.UNSPECIFIED) return null;
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", versionStatusTone(status))}>
+      {label}
+    </span>
   );
 }
 

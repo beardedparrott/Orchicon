@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -692,6 +693,19 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			}
 		}
 	}
+	// Guard: workflow-bound dispatches must have a ready or skipped worktree.
+	// A pending/pruned/failed worktree must be re-provisioned — never create
+	// an execution that would run in the project dir (silent fallback).
+	if workflowRunID != "" && worktreeStatus != nil {
+		switch *worktreeStatus {
+		case domain.WorktreePending, domain.WorktreePruned:
+			r.log.Info("holding dispatch: worktree not ready, will re-provision", "task", task.ID, "run", workflowRunID, "status", *worktreeStatus)
+			return nil
+		case domain.WorktreeFailed:
+			r.log.Warn("worktree provisioning failed — holding dispatch", "task", task.ID, "run", workflowRunID, "status", *worktreeStatus)
+			return nil
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -892,11 +906,29 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	}
 	// The execution working directory is the provisioned worktree path when
 	// the run has one (the worker starts already checked out on its branch
-	// inside the worktree), else the project dir. Only worktree_status='ready'
-	// switches the cwd; skipped/failed/pending runs keep the project dir.
+	// inside the worktree), else the project dir. Only `ready` and `skipped`
+	// (intentionally in-place) are allowed to dispatch without a worktree
+	// path; `pending`/`pruned`/`failed` must be re-provisioned and never
+	// silently fall back to the project dir (the observed project-dir
+	// fallback broke branch/PR invariants).
 	execCwd := projectDir
 	if worktreePath != "" {
 		execCwd = worktreePath
+	} else if exec.WorkflowRunID != "" {
+		// Workflow-bound dispatch without a worktree path.
+		switch worktreeStatus {
+		case domain.WorktreePending, domain.WorktreePruned:
+			r.log.Info("holding dispatch: worktree not ready, will re-provision", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		case domain.WorktreeFailed:
+			r.log.Warn("worktree provisioning failed — failing dispatch", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		case domain.WorktreeSkipped, "":
+			// intentionally in-place (non-repo) or undetermined — allow projectDir
+		default:
+			r.log.Warn("holding dispatch: unexpected worktree status without path", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+			return
+		}
 	}
 	// The system prompt is the full context the model sees on every
 	// turn. The WorkflowReconciler builds the composite per step and
@@ -989,7 +1021,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeMax = s.StallNudgeMax
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
-				defaultBudgetOverrides = s.DefaultBudgetOverrides
+				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
 		}
@@ -1387,8 +1419,20 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// and execution detail page). The PR is a fact — extracted regardless
 	// of execution success, so a PR that was created but not merged still
 	// surfaces (the worker may have failed after creating it).
-	prURL, prState := extractPRFields(output)
+	var prURL, prState string
+	if r.skipPRMarkerStamp(ctx, ttx.Tx, exec, succeeded) {
+		// Change 2: for a succeeded PR-requiring git_strategy=pr workflow
+		// step, the WorkflowReconciler's step-success path is the single
+		// authoritative writer of pr_url/pr_state (the deterministic gh
+		// check). Demote the worker-marker parse to a fallback here so it
+		// does not race the verified write. Keep extraction for failed PR
+		// steps (a created-but-unmerged PR is still a fact), standalone
+		// executions, and local/none-strategy steps.
+	} else {
+		prURL, prState = extractPRFields(output)
+	}
 	if exec.WorkflowRunID != "" && (prURL != "" || prState != "") {
+
 		run, err := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
 		if err != nil {
 			if err == db.ErrNotFound {
@@ -1522,6 +1566,48 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 // tracks the run as a whole — individual step executions succeed/fail
 // while the run continues, so they must not flip the item to a terminal
 // state until the run itself ends.
+// skipPRMarkerStamp reports whether the worker-marker PR capture
+// (extractPRFields) should be SKIPPED for this execution. It is true only
+// for a succeeded WORKFLOW-BOUND execution whose step is PR-requiring
+// (requires_pr) and whose run's effective git strategy is "pr": for that
+// case the WorkflowReconciler's step-success path is the single
+// authoritative writer of pr_url/pr_state (the deterministic gh check), so
+// the marker parse is demoted to a fallback and must not race it.
+// Determination is fail-open: any read/parse error or missing config falls
+// back to extraction (never regress standalone or failed-step capture).
+func (r *TaskReconciler) skipPRMarkerStamp(ctx context.Context, tx pgx.Tx, exec db.ExecutionRow, succeeded bool) bool {
+	if !succeeded || exec.WorkflowRunID == "" || exec.WorkflowStepID == "" {
+		return false
+	}
+	run, err := db.GetWorkflowRun(ctx, tx, "tnt_dev", exec.WorkflowRunID)
+	if err != nil {
+		return false // fail-open: keep extraction
+	}
+	// Effective git strategy: workflow-level wins, else project-level,
+	// else "local" — single source of truth (db.EffectiveGitStrategy) so
+	// PR-path semantics never drift from the worktree/runtime layers.
+	if db.EffectiveGitStrategy(ctx, tx, "tnt_dev", run.WorkflowID, run.ProjectID) != "pr" {
+		return false
+	}
+	// Find the step's config in the published workflow version so
+	// requiresPRStep sees the same requires_pr flag the WorkflowReconciler
+	// uses at step-success.
+	config := ""
+	if run.WorkflowID != "" {
+		if ver, verr := db.GetWorkflowVersion(ctx, tx, "tnt_dev", run.WorkflowID, run.WorkflowVersion); verr == nil {
+			if steps, perr := workflow.ParseSteps(ver.Steps); perr == nil {
+				for _, s := range steps {
+					if s.ID == exec.WorkflowStepID {
+						config = s.Config
+						break
+					}
+				}
+			}
+		}
+	}
+	return requiresPRStep(exec.WorkflowStepID, config)
+}
+
 func (r *TaskReconciler) boundToActiveRun(ctx context.Context, tx pgx.Tx, wi db.WorkItemRow) bool {
 	if wi.WorkflowRunID == "" {
 		return false
@@ -1622,6 +1708,41 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 			}
 		}
 		write("touched_files", strings.TrimSpace(sb.String()))
+	}
+
+	// Per-step archive: persist this execution's results to a per-step file
+	// so the delta handoff (execution-history index) can point workers at a
+	// stable, complete per-step record on disk. The run-level summary/status
+	// files are overwritten by each step; these per-step files are never
+	// overwritten, so a later step can `read`/`grep` the exact output of ANY
+	// earlier step (the "read on demand from the archive" contract instead of
+	// re-embedding every past summary into the prompt).
+	if exec.WorkflowStepID != "" {
+		stepDir := filepath.Join(orchDir, "steps")
+		if err := os.MkdirAll(stepDir, 0755); err == nil {
+			stepFile := filepath.Join(stepDir, exec.WorkflowStepID+".md")
+			var b strings.Builder
+			fmt.Fprintf(&b, "# Step archive: %s\n\n", exec.WorkflowStepID)
+			fmt.Fprintf(&b, "Status: %s\n", map[bool]string{true: "success", false: "failure"}[succeeded])
+			b.WriteString("Worker: " + exec.WorkerID + "\n")
+			if summary, ok := results["_summary"].(string); ok && summary != "" {
+				b.WriteString("\n## Summary\n\n" + summary + "\n")
+			}
+			if issues, ok := results["_issues"].(string); ok && issues != "" {
+				b.WriteString("\n## Issues\n\n" + issues + "\n")
+			}
+			if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
+				b.WriteString("\n## Touched files\n\n")
+				for _, f := range files {
+					if s, ok := f.(string); ok {
+						b.WriteString("- " + s + "\n")
+					}
+				}
+			}
+			if err := os.WriteFile(stepFile, []byte(b.String()), 0644); err != nil {
+				r.log.Warn("write per-step .orchicon file", "file", stepFile, "error", err)
+			}
+		}
 	}
 }
 
@@ -2151,18 +2272,18 @@ func extractIssuesLine(output string, results map[string]any) {
 //
 // Rules:
 //
-// - Last occurrence of each line wins (final state is authoritative).
-// - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
-//   stripped before matching — exactly as extractIssuesLine does.
-// - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
-//   an absolute http:// or https:// URL (net/url parse + scheme check).
-// - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
-//   open, merged, draft, closed, none. Unknown values are ignored.
-// - Lines are case-sensitive uppercase (consistent with
-//   ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
-// - Extraction is not gated on execution success: a PR URL is a fact.
-// - Only non-empty fields are written, per-key: a URL-only report must
-//   not clobber a previously recorded state, and vice versa.
+//   - Last occurrence of each line wins (final state is authoritative).
+//   - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
+//     stripped before matching — exactly as extractIssuesLine does.
+//   - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
+//     an absolute http:// or https:// URL (net/url parse + scheme check).
+//   - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
+//     open, merged, draft, closed, none. Unknown values are ignored.
+//   - Lines are case-sensitive uppercase (consistent with
+//     ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
+//   - Extraction is not gated on execution success: a PR URL is a fact.
+//   - Only non-empty fields are written, per-key: a URL-only report must
+//     not clobber a previously recorded state, and vice versa.
 //
 // Returns ("", "") when no valid lines are found.
 func extractPRFields(output string) (prURL, prState string) {
@@ -2203,6 +2324,25 @@ func extractPRFields(output string) (prURL, prState string) {
 			state := strings.ToLower(raw)
 			if validStates[state] {
 				prState = state
+			}
+		}
+	}
+	// Change 3: inline-marker fallback. The line-anchored pass above is the
+	// primary path; when it finds nothing, scan the WHOLE output with a
+	// non-anchored regex so a PR_URL:/PR_STATE: marker glued mid-sentence
+	// (the 4.2 case) is still captured. Last match wins.
+	if prURL == "" {
+		if ms := prURLRe.FindAllStringSubmatch(output, -1); len(ms) > 0 {
+			raw := ms[len(ms)-1][1]
+			if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+				prURL = raw
+			}
+		}
+	}
+	if prState == "" {
+		if ms := prStateMarkerRe.FindAllStringSubmatch(output, -1); len(ms) > 0 {
+			if st := strings.ToLower(ms[len(ms)-1][1]); validStates[st] {
+				prState = st
 			}
 		}
 	}
@@ -2327,7 +2467,7 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			ctxSB.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			ctxSB.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
 			if ctxSB.Len() > 0 {
 				sb.WriteString(ctxSB.String())
 			}
@@ -2338,17 +2478,31 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	if len(task.ContextFiles) > 0 {
 		var files []string
 		_ = json.Unmarshal(task.ContextFiles, &files)
-		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
 			sb.WriteString(r)
 		}
 	}
 
 	// Worker's contract.
 	sb.WriteString("# Instructions\n\n")
-	// Git/branch guidance keyed on the run's worktree_status: a non-repo
-	// (in-place) run is never told to work on a branch. Same block the
-	// workflow composite emits, so the two dispatch paths agree.
-	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
+	// Git/branch guidance keyed on the run's worktree_status AND effective
+	// git strategy: a non-repo (in-place) run is never told to work on a
+	// branch, and a `none` (ephemeral) run is told the worktree is detached
+	// HEAD with nothing pushed. Same block the workflow composite emits, so
+	// the two dispatch paths agree.
+	gitStrategy := db.DefaultGitStrategy
+	if task.WorkflowID != nil || task.ProjectID != "" {
+		tctx := context.Background()
+		if ttx, err := pool.BeginTenantTx(tctx, exec.TenantID); err == nil {
+			wfID := ""
+			if task.WorkflowID != nil {
+				wfID = *task.WorkflowID
+			}
+			gitStrategy = db.EffectiveGitStrategy(tctx, ttx.Tx, exec.TenantID, wfID, task.ProjectID)
+			_ = ttx.Rollback(tctx)
+		}
+	}
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy))
 	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
@@ -2377,12 +2531,77 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 // as the summary (backward compatible).
 const summaryMarker = "ORCHICON WORKER SUMMARY:"
 
-// extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
-// the worker's text. It takes the LAST occurrence of the marker and
-// returns everything after it, trimmed, minus the decision prefix.
-// If the marker is not present, the entire input is returned.
-func extractWorkerSummary(output string) string {
+// placeholderSummaryBody reports whether the text following an
+// ORCHICON WORKER SUMMARY marker is a placeholder/template echo (the worker
+// wrote the marker as an *example* inside a plan — e.g. ending with
+// `ORCHICON WORKER SUMMARY: success — <summary>`) rather than the real
+// sign-off. A placeholder must not advance the workflow on a fake `success`;
+// the lenient fallback (no real marker → full output as summary) already
+// covers genuinely non-compliant workers, so this only filters out the
+// hollow echo. Keep in sync with internal/opencode/session_run.go
+// placeholderMarkerBody.
+func placeholderSummaryBody(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return true
+	}
+	// Inline code (backtick-quoted) markers are seed/instruction echo, never a
+	// real sign-off. The recovery seed writes `` `ORCHICON WORKER SUMMARY:
+	// failure` reason `recovery seed file missing` `` and system prompts quote
+	// `` `ORCHICON WORKER SUMMARY: success` `` as an example. The body right
+	// after the marker is a backtick-wrapped word (e.g. "`failure`", or
+	// "failure` reason ..."), so strip a leading backtick from the first word:
+	// a bare `success`/`failure` in backticks is a placeholder, not a delivery.
+	if first := firstWordAsDecision(rest); first != "" {
+		words := strings.Fields(rest)
+		if len(words) > 0 {
+			raw := words[0]
+			before, _ := strings.CutPrefix(raw, "`")
+			after, afterBacktick := strings.CutSuffix(before, "`")
+			if afterBacktick {
+				lower := strings.ToLower(after)
+				if lower == "success" || lower == "failure" {
+					return true
+				}
+			}
+		}
+	}
+	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
+		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
+		return true
+	}
+	lower := strings.ToLower(rest)
+	switch lower {
+	case "", "success", "failure", "success —", "failure —", "success — <summary>", "failure — <reason>":
+		return true
+	}
+	return false
+}
+
+// lastRealSummaryMarker returns the index of the LAST genuine
+// ORCHICON WORKER SUMMARY marker in output — one whose body is real content,
+// skipping earlier placeholder/template echoes. Returns -1 when the worker
+// only ever wrote the marker as an example, never as an actual sign-off.
+func lastRealSummaryMarker(output string) int {
 	idx := strings.LastIndex(output, summaryMarker)
+	for idx >= 0 {
+		if !placeholderSummaryBody(output[idx+len(summaryMarker):]) {
+			return idx
+		}
+		idx = strings.LastIndex(output[:idx], summaryMarker)
+	}
+	return -1
+}
+
+// extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
+// the worker's text. It takes the LAST GENUINE occurrence of the marker
+// (a marker used as a literal example inside a plan — `success — <summary>` —
+// is treated as absent so a worker that never actually signed off has its
+// full output propagated as the lenient fallback) and returns everything
+// after it, trimmed, minus the decision prefix. If no real marker is
+// present, the entire input is returned.
+func extractWorkerSummary(output string) string {
+	idx := lastRealSummaryMarker(output)
 	if idx < 0 {
 		return strings.TrimSpace(output)
 	}
@@ -2393,10 +2612,10 @@ func extractWorkerSummary(output string) string {
 // extractSummaryDecision reads the first word of the summary block
 // (the text after ORCHICON WORKER SUMMARY:) and returns "success",
 // "failure", any other verbatim first word, or ""
-// if no marker is present. The first word and any separator (—, :,
-// whitespace) are consumed.
+// if no real marker is present (a placeholder echo like
+// "success: <summary>" does not count).
 func extractSummaryDecision(output string) string {
-	idx := strings.LastIndex(output, summaryMarker)
+	idx := lastRealSummaryMarker(output)
 	if idx < 0 {
 		return ""
 	}

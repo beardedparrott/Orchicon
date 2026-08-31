@@ -332,7 +332,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v20', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v22', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v20") {
+	if !strings.Contains(agents, "orchicon.safety=v22") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -381,7 +381,7 @@ func TestSeedVisionWorkersCarryPlaywright(t *testing.T) {
 		for _, want := range []string{
 			"Browser automation (Playwright) — VISUAL verification",
 			"read the screenshot back with your Read tool",
-			"orchicon.safety=v20",
+			"orchicon.safety=v22",
 		} {
 			if !strings.Contains(agents, want) {
 				t.Errorf("%s agents_md missing %q", canned.id, want)
@@ -396,10 +396,10 @@ func TestSeedVisionWorkersCarryPlaywright(t *testing.T) {
 	}
 }
 
-// TestSeedCannedWorkersCarryDevOnlyGuard: every canned worker's agents_md
-// must carry the DEV-ONLY instruction (never touch the PROD instance), the
-// safety marker at the current version, and the develop-first git workflow.
-func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
+// TestSeedCannedWorkersCarrySandboxPlaneGuard: every canned worker's agents_md
+// must carry the sandbox-vs-plane instruction, must NOT carry prod/dev
+// instance wording, and must carry the safety marker at the current version.
+func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 	const cannedID = "w_se_senior_software_engineer"
@@ -413,14 +413,16 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 		cannedID).Scan(&agents); err != nil {
 		t.Fatalf("query canned agents: %v", err)
 	}
-	if !strings.Contains(agents, "DEV-ONLY") {
-		t.Errorf("canned worker must carry the DEV-ONLY prod guard")
+	if !strings.Contains(agents, "Sandbox vs plane") {
+		t.Errorf("canned worker must carry the sandbox-vs-plane instruction")
 	}
-	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
-		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
+	for _, forbid := range []string{"DEV-ONLY", "orchicon-cnt-prod", "orchicon-cnt-dev"} {
+		if strings.Contains(agents, forbid) {
+			t.Errorf("canned worker must not carry prod/dev instance wording (contains %q)", forbid)
+		}
 	}
-	if !strings.Contains(agents, "orchicon.safety=v20") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v20)")
+	if !strings.Contains(agents, "orchicon.safety=v22") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v22)")
 	}
 }
 
@@ -489,7 +491,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v20",
+		"orchicon.safety=v22",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -529,7 +531,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v20",
+		"orchicon.safety=v22",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",
@@ -569,7 +571,7 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 		t.Fatalf("query canned DevOps agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v20",
+		"orchicon.safety=v22",
 		"Merge conflicts — detect AND resolve",
 		"git merge origin/develop",
 		"git add",
@@ -660,7 +662,7 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 		     labels, published_at, created_at)
 		 SELECT $1, 'tnt_dev', worker_id, 2, 'user version', 'published',
 		        runtime_ref, 'google/gemini-2.5-pro', role, skills, behavior,
-		        replace(agents_md, 'orchicon.safety=v20', 'orchicon.safety=v0'),
+		        replace(agents_md, 'orchicon.safety=v22', 'orchicon.safety=v0'),
 		        context_sources, permissions, gated_tools, budget_overrides,
 		        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 		        labels, now(), now()
@@ -692,5 +694,71 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 	}
 	if model := workerVersionModel(t, pool, workerID, 3); model != "google/gemini-2.5-pro" {
 		t.Errorf("roll-forward version must preserve the current version's model_ref, got %q want google/gemini-2.5-pro", model)
+	}
+}
+
+// TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes: the
+// Automation Research trio (Planner/Analyst/Synthesizer) is canned with
+// the automation-research role and project-agnostic purposes — the
+// per-run product targets live in the bound work item's brief, not in the
+// workers. Asserts: role_ref bound, generic wording, no Orchicon-project
+// bias phrases, the web-research runtime image, and the markers +
+// worktree-hygiene rule on the seeded profile.
+func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed dev workers: %v", err)
+	}
+
+	trio := []struct {
+		id     string
+		slug   string
+		expect string // purpose fragment that must be present
+	}{
+		{"01M13DYHKHEF71MVGY07GMGMJ6", "automation-research-planner", "capability landscape"},
+		{"01M13DYJWHCYHWQ1X85J1BWWZ1", "automation-research-analyst", "project codebase"},
+		{"01M13DYM3A7CTY8ECP4R7M33SR", "automation-research-synthesizer", "project codebase"},
+	}
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	for _, tc := range trio {
+		var purpose, roleRef string
+		if err := ttx.QueryRow(ctx,
+			`SELECT purpose, role_ref FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`,
+			tc.id).Scan(&purpose, &roleRef); err != nil {
+			t.Fatalf("query worker %s: %v", tc.slug, err)
+		}
+		if roleRef != "r_se_automation_research" {
+			t.Errorf("%s role_ref = %q, want r_se_automation_research", tc.slug, roleRef)
+		}
+		if !strings.Contains(purpose, tc.expect) {
+			t.Errorf("%s purpose missing %q", tc.slug, tc.expect)
+		}
+		// Project-agnostic: the Orchicon-project bias phrases must be gone.
+		for _, bias := range []string{"the Orchicon codebase", "compare Orchicon against", "competitors to analyze"} {
+			if strings.Contains(purpose, bias) {
+				t.Errorf("%s purpose still carries project bias %q", tc.slug, bias)
+			}
+		}
+		var agents, runtimeRef string
+		if err := ttx.QueryRow(ctx,
+			`SELECT agents_md, runtime_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			tc.id).Scan(&agents, &runtimeRef); err != nil {
+			t.Fatalf("query version %s: %v", tc.slug, err)
+		}
+		if runtimeRef != "orchicon-runtime:web-research" {
+			t.Errorf("%s runtime_ref = %q, want orchicon-runtime:web-research", tc.slug, runtimeRef)
+		}
+		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v22") {
+			t.Errorf("%s agents_md missing seed markers", tc.slug)
+		}
+		if !strings.Contains(agents, "Worktree hygiene") {
+			t.Errorf("%s agents_md missing the worktree hygiene rule", tc.slug)
+		}
 	}
 }

@@ -36,22 +36,11 @@ export enum ConversationMode {
    * @generated from enum value: CONVERSATION_MODE_BRAINSTORM = 1;
    */
   BRAINSTORM = 1,
-
-  /**
-   * ORCHICON is the strictly-governed platform expert persona: it answers
-   * questions about Orchicon and operates on the user's Orchicon data, and
-   * refuses general coding help, personal conversation, or non-Orchicon
-   * topics.
-   *
-   * @generated from enum value: CONVERSATION_MODE_ORCHICON = 2;
-   */
-  ORCHICON = 2,
 }
 // Retrieve enum metadata with: proto3.getEnumType(ConversationMode)
 proto3.util.setEnumType(ConversationMode, "orchicon.api.v1.ConversationMode", [
   { no: 0, name: "CONVERSATION_MODE_UNSPECIFIED" },
   { no: 1, name: "CONVERSATION_MODE_BRAINSTORM" },
-  { no: 2, name: "CONVERSATION_MODE_ORCHICON" },
 ]);
 
 /**
@@ -140,6 +129,29 @@ export class Conversation extends Message<Conversation> {
    */
   pendingAssistantMessageId = "";
 
+  /**
+   * turn_progressing is the server-confirmed "the model is still genuinely
+   * working" signal (ADR-0002 D3). Computed at read time from the running
+   * turn's last activity: true when the turn has produced recent output and is
+   * not wedged on an unresolved tool. The frontend shows "still working…" only
+   * when this is true; when it is false but turn_in_flight is true, the UI can
+   * accurately report "Turn stalled — stop or retry" instead of the misleading
+   * "connection lost — still working" the refresh path used to show.
+   *
+   * @generated from field: bool turn_progressing = 13;
+   */
+  turnProgressing = false;
+
+  /**
+   * turn_last_activity_at is when the running turn last produced activity
+   * (token, reasoning, step, or tool output). Companion to turn_progressing —
+   * lets the frontend compute how long the turn has been quiet (and show a
+   * stale/stopped state) without polling the bus.
+   *
+   * @generated from field: google.protobuf.Timestamp turn_last_activity_at = 14;
+   */
+  turnLastActivityAt?: Timestamp;
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -160,6 +172,8 @@ export class Conversation extends Message<Conversation> {
     { no: 10, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
     { no: 11, name: "turn_in_flight", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 12, name: "pending_assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 13, name: "turn_progressing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

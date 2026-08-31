@@ -18,6 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -25,11 +26,12 @@ import (
 
 // Service implements the AskOrchiconService Connect handler.
 type Service struct {
-	pool         *db.Pool
-	log          *slog.Logger
-	blobStore    blobstore.Store
-	modelDisc    *aigateway.ModelDiscoverer
-	toolRegistry *ToolRegistry
+	pool          *db.Pool
+	log           *slog.Logger
+	blobStore     blobstore.Store
+	modelDisc     *aigateway.ModelDiscoverer
+	toolRegistry  *ToolRegistry
+	runtimeClient *runtime.Client
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
@@ -51,13 +53,13 @@ type Service struct {
 
 var _ apiv1connect.AskOrchiconServiceHandler = (*Service)(nil)
 
-func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer) *Service {
+func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer, secretsKEK []byte) *Service {
 	s := &Service{
 		pool:         pool,
 		log:          log.With("component", "ask_orchicon"),
 		blobStore:    blobStore,
 		modelDisc:    modelDisc,
-		toolRegistry: NewToolRegistry(pool, log),
+		toolRegistry: NewToolRegistry(pool, log, secretsKEK),
 		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()
@@ -115,6 +117,12 @@ func (s *Service) SetHostServe(hs *opencode.HostServe) {
 	s.hostServe = hs
 }
 
+// SetRuntimeClient wires the runtime daemon client for image builds.
+func (s *Service) SetRuntimeClient(rt *runtime.Client) {
+	s.runtimeClient = rt
+	toolRuntimeClient = rt
+}
+
 // registerSessionTools adds tools that depend on service-injected
 // dependencies (beyond pool/log).
 func (s *Service) registerSessionTools() {
@@ -170,14 +178,26 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// Resolve the chat stall window once per request so every conversation's
+	// turn_progressing is computed against the tenant's configured value.
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		turnInFlight, pendingID := s.turnStatus(r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, turnInFlight, pendingID))
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID, stallWindow)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
+	}
+	if cats, err := db.ListCategories(ctx, ttx.Tx, tenantID, "conversation"); err == nil {
+		for _, c := range cats {
+			resp.Categories = append(resp.Categories, &apiv1.Category{Id: c.ID, TenantId: c.TenantID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, Name: c.Name, Description: c.Description, Slug: c.Slug, SortOrder: int32(c.SortOrder)})
+		}
+		if assigns, err := db.ListAssignments(ctx, ttx.Tx, tenantID, "conversation"); err == nil {
+			for _, a := range assigns {
+				resp.Assignments = append(resp.Assignments, &apiv1.CategoryAssignment{EntityId: a.EntityID, CategoryId: a.CategoryID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION})
+			}
+		}
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -204,9 +224,9 @@ func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
 	return connect.NewResponse(&apiv1.GetConversationResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -271,7 +291,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 	return connect.NewResponse(&apiv1.CreateConversationResponse{
-		Conversation: conversationRowToProto(row, 0, preview, false, ""),
+		Conversation: conversationRowToProto(row, 0, preview, turnStatusInfo{}),
 	}), nil
 }
 
@@ -346,6 +366,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.title_updated", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"title": req.Msg.Title})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.title_updated: %w", err))
@@ -355,9 +376,9 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -390,6 +411,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.mode_changed", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"mode": mode})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.mode_changed: %w", err))
@@ -399,9 +421,9 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
-	turnInFlight, pendingID := s.turnStatus(row.ID)
+	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
-		Conversation: conversationRowToProto(row, count, preview, turnInFlight, pendingID),
+		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -562,7 +584,7 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, turnInFlight bool, pendingAssistantMsgID string) *apiv1.Conversation {
+func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, s turnStatusInfo) *apiv1.Conversation {
 	p := &apiv1.Conversation{
 		Id:                        r.ID,
 		TenantId:                  r.TenantID,
@@ -572,34 +594,74 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		Mode:                      conversationModeToProto(r.Mode),
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
-		TurnInFlight:              turnInFlight,
-		PendingAssistantMessageId: pendingAssistantMsgID,
+		TurnInFlight:              s.inFlight,
+		PendingAssistantMessageId: s.pendingMsgID,
+		TurnProgressing:           s.progressing,
+		TurnLastActivityAt:        s.lastActivity,
 		CreatedAt:                 timestamppb.New(r.CreatedAt),
 		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	return p
 }
 
-// turnStatus reports whether a reply turn is currently in flight for a
-// conversation and, if so, the acked assistant message id under which its
-// reply will be persisted. Read from the in-memory turn registry — the same
-// authoritative source as the one-turn gate. This is how a refreshed frontend
-// learns "a turn is running here" and re-attaches the Stop button + the
-// completion poll.
-func (s *Service) turnStatus(convID string) (bool, string) {
+// turnStatusInfo is the server-confirmed snapshot of a conversation's running
+// turn, computed at read time from the in-memory turn registry (the same
+// authoritative source as the one-turn gate). It is what a refreshed frontend
+// uses to re-attach the Stop button + completion poll (turn_in_flight /
+// pending_assistant_message_id) AND to show an ACCURATE
+// progressing-vs-stalled state (turn_progressing / turn_last_activity_at)
+// instead of the misleading "connection lost — still working" (AC2, D3).
+type turnStatusInfo struct {
+	inFlight     bool
+	pendingMsgID string
+	// progressing is true when the running turn is making genuine progress:
+	// it produced activity within the no-progress window and is not wedged on
+	// an unresolved tool. False (while inFlight) ⇒ the turn is stalled/wedged.
+	progressing  bool
+	lastActivity *timestamppb.Timestamp
+}
+
+// turnStatus returns the server-confirmed snapshot of a conversation's running
+// turn. Read from the in-memory turn registry — the same authoritative source
+// as the one-turn gate. This is how a refreshed frontend learns "a turn is
+// running here" and re-attaches the Stop button + the completion poll, plus
+// whether that turn is genuinely progressing or stalled/wedged (D3).
+//
+// noProgressWindow is the effective chat stall window (resolved from the
+// tenant's stall_no_progress_window_seconds via chatStallWindow) so the
+// progressing signal uses the SAME window as the turn's stall monitor — they
+// must agree on when "no progress" starts.
+func (s *Service) turnStatus(convID string, noProgressWindow time.Duration) turnStatusInfo {
 	entry, ok := s.turns.get(convID)
 	if !ok {
-		return false, ""
+		return turnStatusInfo{}
 	}
-	return true, entry.assistantMsgID
+	info := turnStatusInfo{inFlight: true, pendingMsgID: entry.assistantMsgID}
+	if !entry.lastActivity.IsZero() {
+		info.lastActivity = timestamppb.New(entry.lastActivity)
+	}
+	// Progress = recent activity AND the session is not wedged. If the turn
+	// has been quiet for longer than the no-progress window, the server no
+	// longer claims "still working" — the frontend shows a stalled/retry state.
+	info.progressing = !entry.wedged && time.Since(entry.lastActivity) < noProgressWindow
+	return info
+}
+
+// chatStallWindow resolves the tenant's effective chat no-progress stall
+// window from its settings row (best-effort: any read failure falls back to
+// the env/default resolution, matching the dispatch path's behavior).
+func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID string) time.Duration {
+	settings, err := db.GetTenantSettings(ctx, tx, tenantID)
+	if err != nil {
+		return askStallNoProgressWindow()
+	}
+	return resolveChatStallNoProgressWindow(settings.StallNoProgressWindowSeconds)
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'
-// default, 'orchicon'). They are the single source of truth for the mode
-// strings used across the DB layer and the per-mode prompt dispatch.
+// default). Orchicon mode removed 2026-08-26 — only brainstorm remains.
 const (
 	modeBrainstorm = "brainstorm"
-	modeOrchicon   = "orchicon"
 )
 
 // conversationModeFromProto validates + normalizes a proto ConversationMode
@@ -611,8 +673,6 @@ func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
 		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
 		return modeBrainstorm, nil
-	case apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON:
-		return modeOrchicon, nil
 	default:
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unknown conversation mode value %d", int32(m)))
@@ -626,8 +686,6 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 	switch mode {
 	case modeBrainstorm:
 		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
-	case modeOrchicon:
-		return apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON
 	default:
 		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
 	}

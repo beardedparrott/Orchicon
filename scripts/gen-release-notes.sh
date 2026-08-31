@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================================
-# gen-release-notes.sh — UPDATES.md lifecycle helper.
+# gen-release-notes.sh — release narrative + UPDATES.md lifecycle helper.
 #
-# UPDATES.md is the per-PR log that feeds the consolidated GitHub Release
-# body. It uses monotonic row numbers that are NEVER renumbered; the "since
-# last release" boundary is derived from the PREVIOUS RELEASE's UPDATES.md
-# (read from git), so trimming released rows can't shift the boundary.
+# RELEASE_HIGHLIGHTS.md is the curated, reader-facing story for the current
+# release cycle ("what it is, why you'd use it" — whole features, not
+# commits). It feeds BOTH public release surfaces:
+#   - the GitHub Release body (narrative only — the itemized UPDATES.md
+#     rows are an internal track record, deliberately NOT on the release
+#     page), and
+#   - README.md's "Last Release Changes" section (a compact digest — the
+#     first sentence of each "### New:" section plus a link to the release
+#     page).
+#
+# UPDATES.md remains the per-PR engineering log: monotonic row numbers that
+# are NEVER renumbered; the "since last release" boundary is derived from
+# the PREVIOUS RELEASE's UPDATES.md (read from git), so trimming released
+# rows can't shift the boundary.
 #
 # Row format (one row per PR, appended newest-first at the top):
 #   | # | Type | Phase | Summary |
@@ -13,10 +23,11 @@
 #
 # Modes:
 #   scripts/gen-release-notes.sh [VERSION] [PREV_TAG]
-#       Generate the GitHub Release body: every row accumulated since the
-#       previous release, grouped by Type then Phase. Emits markdown to
-#       stdout (empty when there are no new rows). release.yml feeds this
-#       to `gh release create --notes-file`.
+#       Generate the GitHub Release body: the narrative section for the
+#       release from RELEASE_HIGHLIGHTS.md (everything in the first
+#       "## vX.Y.Z" section). Falls back to the old Type → Phase row block
+#       when RELEASE_HIGHLIGHTS.md is absent. Emits markdown to stdout.
+#       release.yml feeds this to `gh release create --notes-file`.
 #
 #   scripts/gen-release-notes.sh --trim [PREV_TAG]
 #       Rewrite UPDATES.md in place, dropping rows already released (row
@@ -24,19 +35,19 @@
 #       Run this on the next develop merge AFTER a release so the file stays
 #       small. Safe to re-run; no-op when there is nothing to trim. Row
 #       numbers are preserved (monotonic) — never renumber. Also syncs
-#       README.md's "Last Release Changes" to the trimmed file.
+#       README.md's "Last Release Changes" (compact digest, not rows).
 #
 #   scripts/gen-release-notes.sh --sync-readme [PREV_TAG]
-#       Rewrite README.md's "## Last Release Changes" section in place to
-#       reflect the current UPDATES.md cycle (rows since the previous
-#       release). README stays in sync with UPDATES automatically — no
-#       separate human step at release time. Public exposure is still
+#       Rewrite README.md's "## Last Release Changes" section in place to a
+#       one-paragraph-level digest of RELEASE_HIGHLIGHTS.md — NOT the full
+#       row list. README stays in sync with the highlights automatically —
+#       no separate human step at release time. Public exposure is still
 #       main-gated (CF Pages + release assets), so this is safe on develop.
 #
-# PREV_TAG resolution: the authoritative source is the GitHub Releases API
-# (only the human's develop→main merge publishes a Release), falling back to
-# a git-only heuristic when gh is unavailable. Pass "none" to include every
-# row (first release / no trim).
+# PREV_TAG resolution (trim mode only): the authoritative source is the
+# GitHub Releases API (only the human's develop→main merge publishes a
+# Release), falling back to a git-only heuristic when gh is unavailable.
+# Pass "none" to include every row (first release / no trim).
 # ============================================================================
 set -euo pipefail
 
@@ -117,8 +128,9 @@ rows() {
   ' UPDATES.md
 }
 
-# render_block turns "id<TAB>type<TAB>phase<TAB>summary" lines into the
-# release-notes markdown: rows grouped by "Type — Phase", newest first.
+# render_block turns "id<TAB>type<TAB>phase<TAB>summary" lines into markdown:
+# rows grouped by "Type — Phase", newest first. (Legacy fallback — used only
+# when RELEASE_HIGHLIGHTS.md does not exist.)
 render_block() {
   awk -F'\t' '
     {
@@ -132,6 +144,78 @@ render_block() {
         printf "### %s — %s\n\n%s", k[1], k[2], bullets[order[i]]
         if (i < n-1) printf "\n"
       }
+    }
+  '
+}
+
+# render_highlights prints the highlights narrative for the given version
+# (the "## <version>" section of RELEASE_HIGHLIGHTS.md, up to but not
+# including the next "## " heading). With no version argument (or when the
+# version has no exact section), it renders the FIRST "## " section — the
+# current release cycle by file contract. Empty when the file has no
+# "## " section. Warns on stderr when an explicitly requested version is
+# missing so a stale heading is visible at release time, then falls back.
+render_highlights() {
+  local version="$1"
+  local highlights_file="${REPO_ROOT}/RELEASE_HIGHLIGHTS.md"
+  [ -f "$highlights_file" ] || return 0
+  local first_section
+  first_section="$(awk '/^## / { print substr($0, 4); exit }' "$highlights_file")"
+  if [ -n "$version" ] && [ "$version" != "$first_section" ]; then
+    echo "::warning::RELEASE_HIGHLIGHTS.md has no '## ${version}' section (current cycle heading is '${first_section}') — using the first section." >&2
+  fi
+  awk '
+    /^## / { if (started++) exit; else { next } }
+    started { print }
+  ' "$highlights_file"
+}
+
+# render_readme_digest turns the highlights narrative into the compact
+# README digest: the feature name + first sentence of each "### New:"
+# section, plus the "Also in this release" bullets and the release-page
+# pointer. NOT the row list — README carries the story in one screen.
+render_readme_digest() {
+  render_highlights "" | awk '
+    BEGIN { in_also = 0; cur = 0 }
+    /^### / {
+      sub(/^### /, "")
+      in_also = 0
+      if ($0 ~ /^New: */) {
+        sub(/^New: */, "")
+        gsub(/ — .*$/, "")
+        bullets[++n] = "**" $0 "**: "
+        pending[n] = 1
+        cur = n
+      } else if ($0 ~ /^Also in this release/) {
+        in_also = 1
+      }
+      next
+    }
+    /^## / { exit }
+    in_also && /^- / {
+      line = $0
+      sub(/^- /, "", line)
+      bullets[++n] = line
+      pending[n] = 0
+      next
+    }
+    /^[[:space:]]*$/ { next }
+    {
+      # First paragraph line of the current "### New:" section completes
+      # its bullet; later paragraphs are dropped.
+      if (cur > 0 && pending[cur]) {
+        text = $0
+        gsub(/^[[:space:]]+/, "", text)
+        idx = index(text, ". ")
+        if (idx > 0) text = substr(text, 1, idx)
+        bullets[cur] = bullets[cur] text
+        pending[cur] = 0
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) if (!pending[i]) print "- " bullets[i]
+      print ""
+      print "Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases)."
     }
   '
 }
@@ -200,13 +284,32 @@ if [ "$MODE" = "trim" ]; then
   mv "$tmp" UPDATES.md
   echo "Trimmed ${removed} released row(s) from UPDATES.md; kept the current cycle (rows ${kept_range})."
 
-  # Keep README.md's "Last Release Changes" in sync with the trimmed file.
-  sync_readme "$(printf '%s\n' "$kept" | render_block)"
+  # Keep README.md's "Last Release Changes" in sync with the highlights
+  # (compact digest — see render_readme_digest; NOT the row list). The
+  # no-version call digests the current-cycle section by contract.
+  sync_readme "$(render_readme_digest "")"
   exit 0
 fi
 
-# body / sync-readme mode: render rows newer than the boundary, grouped by
-# Type then Phase.
+# body / sync-readme mode: prefer the curated highlights narrative; fall
+# back to the itemized row block only when RELEASE_HIGHLIGHTS.md is absent.
+# body / sync-readme mode: README gets the compact highlights digest (never
+# the row list); the release body gets the full narrative — falling back to
+# the itemized row block only when RELEASE_HIGHLIGHTS.md is absent.
+if [ "$MODE" = "sync-readme" ]; then
+  sync_readme "$(render_readme_digest "")"
+  echo "Synced README.md 'Last Release Changes' to the release highlights digest."
+  exit 0
+fi
+
+highlight_block="$(render_highlights "${VERSION:-}")"
+if [ -n "$highlight_block" ]; then
+  printf '## %s\n\n' "${VERSION:-}"
+  # Trim leading blank lines so the heading sits flush against the story.
+  printf '%s\n\n' "$(printf '%s' "$highlight_block" | sed '/./,$!d')"
+  exit 0
+fi
+
 new_rows="$(printf '%s\n' "$(rows)" | awk -F'\t' -v prev="$prev_max" '$1 > prev')"
 if [ -n "$new_rows" ]; then
   block="$(printf '%s\n' "$new_rows" | render_block)"

@@ -264,12 +264,17 @@ jobs:
             echo "::error::Tag ${VERSION} does not exist on origin either"
             exit 1
           fi
-          # Build a list of asset files. softprops/action-gh-release
-          # had a couple of transient API failures under load (one
-          # step returned in <1s with no output — typically a 422
-          # from a stale release-name collision), so we use
-          # `gh release create` directly: it's the same primitive the
-          # action calls, but with explicit retry and clearer errors.
+          # Create the release. The body is the curated narrative from
+          # RELEASE_HIGHLIGHTS.md (scripts/gen-release-notes.sh) — the
+          # reader-facing story, NOT the itemized UPDATES.md rows (those are
+          # the internal engineering track record; README carries a compact
+          # digest). The script finds the previous release via the
+          # Releases API; the current release does not exist yet, so it
+          # resolves to the prior one.
+          #
+          # We use `gh release create` directly (not softprops/action-gh-
+          # release) for the same reasons as before: explicit retry behavior
+          # and clearer errors than the action wrapper under load.
           ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
@@ -283,23 +288,16 @@ jobs:
             echo "Release ${VERSION} already exists — deleting before re-create"
             gh release delete "${VERSION}" --yes
           fi
-          # Create the release. The body is the CONSOLIDATED release-notes
-          # block generated from UPDATES.md (scripts/gen-release-notes.sh) —
-          # every row accumulated on develop since the previous release,
-          # grouped by Type → Phase — instead of GitHub's auto-generated
-          # per-PR notes, so the release page tells one coherent story
-          # (AGENTS.md: README's "Last Release Changes" is the same block,
-          # and UPDATES.md is trimmed to the current cycle on the next
-          # develop merge). The script finds the previous release via the
-          # Releases API; the current release does not exist yet, so it
-          # resolves to the prior one.
+          # (AGENTS.md: README's "Last Release Changes" is the compact
+          # digest of the same story, and UPDATES.md is trimmed to the
+          # current cycle on the next develop merge).
           RELEASE_NOTES="$(bash scripts/gen-release-notes.sh "${VERSION}")"
           if [ -n "${RELEASE_NOTES}" ]; then
             NOTES_FILE="$(mktemp)"
             printf '%s\n' "${RELEASE_NOTES}" > "${NOTES_FILE}"
             NOTES_ARGS=(--notes-file "${NOTES_FILE}")
           else
-            NOTES_ARGS=(--notes "No UPDATES.md rows accumulated since the previous release.")
+            NOTES_ARGS=(--notes "No release highlights found (RELEASE_HIGHLIGHTS.md has no cycle section).")
           fi
           gh release create "${VERSION}" \
             --title "${VERSION}" \

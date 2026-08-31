@@ -150,7 +150,7 @@ function WorkflowsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Workflows</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-sky-400 animate-pulse motion-reduce:animate-none" /> Workflows</h1>
           <p className="text-sm text-muted-foreground">
             Composable execution plans. Drag Workers onto a canvas, wire
             steps together, and run the DAG.
@@ -161,17 +161,17 @@ function WorkflowsPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search workflows…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Draft</option>
@@ -181,7 +181,7 @@ function WorkflowsPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -190,7 +190,7 @@ function WorkflowsPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
@@ -200,7 +200,7 @@ function WorkflowsPage() {
           size="sm"
           onClick={() => setShowCreateCategory(true)}
         >
-          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          <FolderPlus aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
           New Category
         </Button>
         {selected.size > 0 && (
@@ -210,7 +210,7 @@ function WorkflowsPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -227,7 +227,7 @@ function WorkflowsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No workflows yet
             </CardTitle>
             <CardDescription>
@@ -259,6 +259,7 @@ function WorkflowsPage() {
             <CategoryDndContext
               categories={prefs.state.categories}
               onAssign={prefs.assignItem}
+              onReorder={prefs.reorderCategories}
             >
               {categoryGroups.map(({ category, items }) => (
                 <CategoryFolder
@@ -287,6 +288,7 @@ function WorkflowsPage() {
                     prefs.updateDescription(category.id, desc)
                   }
                   droppableId={category.id}
+                  sortable={prefs.state.categories.length > 1}
                 >
                   <div className="space-y-1">
                     {items.map((w) => (
@@ -350,7 +352,7 @@ function WorkflowRow({
         aria-label={`Drag ${workflow.name} to a category`}
         className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical aria-hidden="true" className="h-4 w-4" />
       </span>
       <input
         type="checkbox"

@@ -51,7 +51,7 @@ func chatDBTestPool(t *testing.T) *db.Pool {
 // the injected fake session client (bypassing the real host serve).
 func newChatService(t *testing.T, pool *db.Pool, client *fakeSessionClient) *Service {
 	t.Helper()
-	s := New(pool, slog.Default(), nil, nil)
+	s := New(pool, slog.Default(), nil, nil, nil)
 	s.testServeClient = client
 	return s
 }
@@ -418,6 +418,166 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 	client.sub.feed(busText("ses_1", "done"))
 	client.sub.feed(busIdle("ses_1"))
 	waitForMessage(t, pool, convID, firstAck)
+}
+
+// TestPartialReplyMirroredWhileTurnRuns verifies a refreshed / second-tab
+// client can watch the reply grow: the collector mirrors collected text into
+// the acked assistant message row WHILE the turn is still in flight (the
+// ListMessages poll renders it), and the finalize upserts the complete reply
+// over the partial — exactly one row, terminal content.
+func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// First text chunk — the acked row appears with partial content while the
+	// turn is still running (no idle yet) and still reports in flight.
+	client.sub.feed(busText("ses_1", "part one"))
+	partial := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(partial.Content) != "part one" {
+		t.Fatalf("partial content = %q, want %q (mirrored while the turn runs)", partial.Content, "part one")
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight while the partial row is visible")
+	}
+
+	// Second chunk + idle — the SAME row is upserted to the complete reply.
+	client.sub.feed(busText("ses_1", "part two"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var final *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				final = &msgs[i]
+				break
+			}
+		}
+		if final != nil && strings.TrimSpace(final.Content) == "part one\n\npart two" {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("final reply never upserted over the partial")
+		}
+	}
+
+	// Exactly one row for the acked id (the partial was upserted, not
+	// duplicated) and the turn released.
+	if count := countMessageRows(t, pool, convID, ackID); count != 1 {
+		t.Errorf("acked id has %d rows, want exactly 1 (partial upserted)", count)
+	}
+	if _, ok := s.turns.get(convID); ok {
+		t.Error("turn must be released once the reply finalizes")
+	}
+}
+
+// countMessageRows returns how many rows exist for a message id (partial
+// mirroring must upsert, never duplicate).
+func countMessageRows(t *testing.T, pool *db.Pool, convID, id string) int {
+	t.Helper()
+	n := 0
+	for _, m := range listMessages(t, pool, convID) {
+		if m.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPartialReplyMirrorsTokenDeltas verifies the live mirror streams
+// mid-generation token deltas: a long single part with no completion still
+// grows the partial row, so a re-attached client sees output without waiting
+// for the part to complete (the "nothing until the final message" report).
+// Reasoning deltas/parts grow the thinking tail; deltas never corrupt the
+// durable record (the finalize overwrites the row with the authoritative
+// reply).
+func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A completed reasoning part first (the "last reasoning block" a refresher
+	// sees), then raw deltas for a text part that never completes before the
+	// assertions run.
+	client.sub.feed(busReasoning("ses_1", "thinking hard"))
+	client.sub.feed(busDelta("ses_1", "The "))
+	client.sub.feed(busDelta("ses_1", "answer"))
+	client.sub.feed(busDelta("ses_1", " is "))
+
+	// The partial row grows with the deltas (no part completion, no idle).
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var row *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil && strings.Contains(row.Content, "The answer is") {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("delta text never mirrored into the partial row")
+		}
+	}
+	// The completed reasoning part is mirrored as the thinking tail.
+	msgs := listMessages(t, pool, convID)
+	var row *db.MessageRow
+	for i := range msgs {
+		if msgs[i].ID == ackID {
+			row = &msgs[i]
+			break
+		}
+	}
+	if len(row.Reasoning) == 0 || row.Reasoning[0] != "thinking hard" {
+		t.Errorf("reasoning mirror = %v, want [thinking hard]", row.Reasoning)
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight (deltas are not a completed reply)")
+	}
+
+	// Finalize cleanly so the collector exits: the authoritative reply
+	// replaces the delta text and the turn releases.
+	client.sub.feed(busText("ses_1", "The answer is 42"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline = time.After(5 * time.Second)
+	for {
+		if _, ok := s.turns.get(convID); !ok {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("turn never released after finalize")
+		}
+	}
+	final := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(final.Content) != "The answer is 42" {
+		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
+	}
 }
 
 // TestAbortConversationTurn verifies the Stop path: it cancels the registered

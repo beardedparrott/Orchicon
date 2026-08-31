@@ -22,6 +22,11 @@ service WorkItemService {
   // GetWorkItem returns a single work item by id.
   rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
 
+  // GetWorkItemRunHistory returns the per-fire run-history ledger for a
+  // recurring work item, newest first (fire status, start/end, execution
+  // ids, outputs). Used by the recurring-item detail view (4.3) and API.
+  rpc GetWorkItemRunHistory(GetWorkItemRunHistoryRequest) returns (GetWorkItemRunHistoryResponse);
+
   // ListWorkItems returns a page of work items for a project, optionally
   // filtered by parent (tree) or status (Kanban).
   rpc ListWorkItems(ListWorkItemsRequest) returns (ListWorkItemsResponse);
@@ -75,6 +80,34 @@ service WorkItemService {
   // Audited as work_item.restored.
   rpc RestoreWorkItem(RestoreWorkItemRequest) returns (RestoreWorkItemResponse);
 
+  // ListIdeas returns a page of idea-state work items (automation-produced
+  // items awaiting triage, feature 5.1) with their automation provenance
+  // (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
+  // Scoped to status='idea' by construction — it shares the 4.1 idea gate
+  // with ListWorkItems(IdeaScope=only), so membership can never diverge.
+  // idea_state_scope=REJECTED reads the rejected graveyard instead:
+  // dismissed idea spawns (status='cancelled' WITH automation provenance),
+  // retained so rejected ideas stay visible, readable history — and so an
+  // automation's dedupe gate can never re-propose something a human
+  // already rejected.
+  rpc ListIdeas(ListIdeasRequest) returns (ListIdeasResponse);
+
+  // PromoteIdea approves an idea: it transitions the idea-state work item
+  // to a normal pending work item (leaves idea state, becomes queryable in
+  // the normal Work Items scope with normal status semantics, and can be
+  // planned/scheduled/run through the existing pipeline). Provenance fields
+  // are retained for display. Audited as work_item.promoted. PromoteIdea is
+  // the ONLY sanctioned path out of idea state (the generic update path is
+  // gated for idea items).
+  rpc PromoteIdea(PromoteIdeaRequest) returns (PromoteIdeaResponse);
+
+  // DismissIdea discards an idea: it transitions the idea-state work item
+  // to cancelled (the soft-delete/cancel terminal, consistent with
+  // DeleteWorkItem), so it leaves idea state and drops out of every active
+  // view. Provenance is retained as a record of where it came from. Audited
+  // as work_item.dismissed.
+  rpc DismissIdea(DismissIdeaRequest) returns (DismissIdeaResponse);
+
   // ControlSequence drives a sequence parent manually (START / RESUME /
   // STOP). A parent with children IS a sequence run; these explicit
   // gestures are what the engine's derived cursor cannot infer on its own:
@@ -93,6 +126,26 @@ enum SequenceAction {
   SEQUENCE_ACTION_START = 1; // re-fire the chain from child #1 (destructive)
   SEQUENCE_ACTION_RESUME = 2; // continue from the first non-succeeded child
   SEQUENCE_ACTION_STOP = 3; // park the chain (parent → pending, schedule cleared)
+}
+
+// RecurringFilter scopes ListWorkItems to recurring vs non-recurring items.
+// recurring_schedule IS NOT NULL is the canonical is-recurring signal
+// (status is derived). This is the split for Automation → Recurring Items.
+enum RecurringFilter {
+  RECURRING_FILTER_UNSPECIFIED = 0; // legacy default: EXCLUDE for normal callers
+  RECURRING_FILTER_ALL = 1; // unfiltered (internal/Schedules merge if needed)
+  RECURRING_FILTER_EXCLUDE_RECURRING = 2; // normal Work Items page
+  RECURRING_FILTER_ONLY_RECURRING = 3; // Recurring Items page
+}
+
+// IdeaScope scopes ListWorkItems to idea-state items produced by
+// automations. status = 'idea' is the signal; idea items are excluded from
+// the normal Work Items list by default (the Idea Cloud surfaces them via
+// IDEA_SCOPE_ONLY_IDEA).
+enum IdeaScope {
+  IDEA_SCOPE_UNSPECIFIED = 0; // legacy default: EXCLUDE idea items
+  IDEA_SCOPE_EXCLUDE_IDEA = 1; // normal Work Items page (default)
+  IDEA_SCOPE_ONLY_IDEA = 2; // Idea Cloud: idea-state items with provenance
 }
 
 message CreateWorkItemRequest {
@@ -122,6 +175,14 @@ message CreateWorkItemRequest {
   // Absent/empty = no edges. Validated: same project, target exists, no
   // self-dependency, no cycle.
   repeated string depends_on = 18;
+  // run_context is the calling workflow run's run_context JSONB (feature 4.1,
+  // AC2). A recurring fire writes the automation provenance block into the run
+  // context; a create issued from inside a recurring fire's run carries it so
+  // the created item is stamped spawned_by / spawned_by_run_id and, when the
+  // fire's outputs_mode=idea, lands in IDEA state. Internal platform use; plain
+  // creates leave it empty (backward compatible).
+  string run_context = 19;
+  repeated string secret_ids = 20;
 }
 
 message CreateWorkItemResponse {
@@ -152,6 +213,11 @@ message ListWorkItemsRequest {
   // the dedicated archive view sets it. Additive/regression-free: current
   // data has no archived rows, so the default path is byte-for-byte unchanged.
   bool include_archived = 10;
+  RecurringFilter recurring_filter = 11;
+  // idea_scope filters idea-state items: EXCLUDE (default, matches the
+  // legacy UNSPECIFIED) hides automation-produced ideas from every normal
+  // view; ONLY returns them (the Idea Cloud surface, with provenance).
+  IdeaScope idea_scope = 12;
 }
 
 message ListWorkItemsResponse {
@@ -199,17 +265,34 @@ message UpdateWorkItemRequest {
   // unchanged. Validated: same project, target exists, no self-dependency,
   // no cycle. Edges are independent of parent_id/sort_order.
   optional DependencyIds depends_on = 25;
+  // recurring_enabled pauses/resumes a recurring work item. false = paused:
+  // keeps the recurring_schedule + next_run_at (resume re-arms) but the item
+  // is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
+  optional bool recurring_enabled = 26;
+  // secret_ids replaces the secret selection (set-replace): empty list clears, absent leaves unchanged. Max 10.
+  optional SecretIds secret_ids = 27;
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for
 // UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
 // "clear all" (empty ids) are distinguishable.
+message SecretIds {
+  repeated string ids = 1;
+}
+
 message DependencyIds {
   repeated string ids = 1;
 }
 
 message UpdateWorkItemResponse {
   WorkItem work_item = 1;
+  // Populated when the request explicitly asked auto_start_workflow=true
+  // but the server declined to start (the item's status is not one of
+  // pending/scheduled/ready/assigned — e.g. cancelled or already
+  // finished). The edit itself IS saved; this warning only explains why
+  // no run was started. Empty = auto-start was applied (or was never
+  // requested).
+  string warning = 2;
 }
 
 message DeleteWorkItemRequest {
@@ -309,4 +392,100 @@ message RestoreWorkItemRequest {
 
 message RestoreWorkItemResponse {
   WorkItem work_item = 1; // the restored item, server-confirmed
+}
+
+// GetWorkItemRunHistoryRequest asks for a recurring item's per-fire history.
+message GetWorkItemRunHistoryRequest {
+  string id = 1; // the recurring work item id
+}
+
+// RecurringRunExecution is one worker execution produced by a fire's run.
+message RecurringRunExecution {
+  string id = 1;
+  string status = 2;
+  string step_id = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  string output = 6;
+}
+
+// RecurringRunHistoryEntry is a fire's ledger row joined to its run graph.
+// Status is the fire dispatch outcome ('fired' | 'failed'); run_status is the
+// bound run's status ("" when no run was produced, e.g. a fire that failed
+// before dispatch — its error carries the failure reason).
+message RecurringRunHistoryEntry {
+  string id = 1;
+  google.protobuf.Timestamp fire_at = 2;
+  string status = 3; // 'fired' | 'failed'
+  string workflow_run_id = 4; // set when the fire produced a run; "" otherwise
+  string run_status = 5; // bound run's status; "" when no run was produced
+  google.protobuf.Timestamp run_started_at = 6;
+  google.protobuf.Timestamp run_ended_at = 7;
+  string error = 8; // set on a failed fire (dispatch error)
+  repeated RecurringRunExecution executions = 9;
+}
+
+// GetWorkItemRunHistoryResponse carries the recurring item's fire history,
+// newest first.
+message GetWorkItemRunHistoryResponse {
+  repeated RecurringRunHistoryEntry entries = 1;
+}
+
+// IdeaStateScope selects which population ListIdeas returns.
+// ACTIVE (default) preserves the feature-5.1 behavior byte-for-byte:
+// idea-state items awaiting triage (status='idea'). REJECTED reads the
+// rejected graveyard: automation-spawned items that were DISMISSED
+// (status='cancelled' AND spawned_by_work_item_id IS NOT NULL — the exact
+// state DismissIdea produces). The predicate is retroactive, so every
+// dismissal ever made is visible without a backfill, and the same query
+// powers the automation dedupe gate so a human's rejection is durable
+// memory the next fire can read before spawning.
+enum IdeaStateScope {
+  IDEA_STATE_SCOPE_UNSPECIFIED = 0; // legacy default: ACTIVE
+  IDEA_STATE_SCOPE_ACTIVE = 1; // idea-state items awaiting triage (default)
+  IDEA_STATE_SCOPE_REJECTED = 2; // dismissed idea spawns (rejected history)
+}
+
+// ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
+// work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
+// the same query UX. idea_state_scope selects the population: ACTIVE (the
+// Idea Cloud) or REJECTED (the rejected graveyard — see IdeaStateScope).
+message ListIdeasRequest {
+  string tenant_id = 1;
+  string project_id = 2; // empty = all projects
+  string search = 3; // free-text search across title and description
+  string sort_by = 4; // "title", "priority", "created_at" (default)
+  string sort_order = 5; // "asc" or "desc" (default "asc")
+  string page_token = 6; // id > cursor (stable ULID pagination)
+  int32 page_size = 7;
+  IdeaStateScope idea_state_scope = 8; // default ACTIVE (legacy behavior)
+}
+
+// ListIdeasResponse carries a page of idea-state work items (already
+// populated with automation provenance + the read-time spawned_by_title
+// badge) plus the next page token.
+message ListIdeasResponse {
+  repeated WorkItem ideas = 1;
+  string next_page_token = 2;
+}
+
+// PromoteIdeaRequest identifies the idea-state work item to approve.
+message PromoteIdeaRequest {
+  string id = 1;
+}
+
+// PromoteIdeaResponse carries the promoted work item (now a normal pending
+// item, provenance retained).
+message PromoteIdeaResponse {
+  WorkItem work_item = 1;
+}
+
+// DismissIdeaRequest identifies the idea-state work item to discard.
+message DismissIdeaRequest {
+  string id = 1;
+}
+
+// DismissIdeaResponse carries the dismissed work item (now cancelled).
+message DismissIdeaResponse {
+  WorkItem work_item = 1;
 }

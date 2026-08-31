@@ -188,6 +188,12 @@ table "projects" {
     null = true
     comment = "Cached git origin owner/repo of project_dir; used for deterministic per-branch PR links"
   }
+  column "git_strategy" {
+    type = text
+    null = false
+    default = "local"
+    comment = "How worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral"
+  }
   column "version" {
     type = integer
     null = false
@@ -578,6 +584,73 @@ table "work_items" {
     type = text
     null = false
     default = ""
+  }
+  column "secret_ids" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "prompt_context" {
+    type = jsonb
+    null = true
+  }
+  column "scheduled_start_at" {
+    type = timestamptz
+    null = true
+  }
+  column "auto_start_workflow" {
+    type = boolean
+    null = false
+    default = false
+  }
+  column "context_files" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "acceptance_review" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "recurring_schedule" {
+    type = jsonb
+    null = true
+  }
+  column "next_run_at" {
+    type = timestamptz
+    null = true
+  }
+  column "recurring_enabled" {
+    type = boolean
+    null = false
+    default = true
+  }
+  column "spawned_by_work_item_id" {
+    type = text
+    null = true
+  }
+  column "spawned_by_run_id" {
+    type = text
+    null = true
+  }
+  column "sequence_attempts" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "sequence_last_attempt_at" {
+    type = timestamptz
+    null = true
+  }
+  column "sequence_consecutive_scan_errors" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "sequence_last_progress_at" {
+    type = timestamptz
+    null = true
   }
   column "version" {
     type = integer
@@ -1003,6 +1076,11 @@ table "workflows" {
     type = integer
     null = false
     default = 1
+  }
+  column "git_strategy" {
+    type = text
+    null = true
+    comment = "Override: local|pr|none, NULL=inherit project git_strategy"
   }
   column "created_at" {
     type = timestamptz
@@ -1579,4 +1657,94 @@ table "runtime_images" {
   primary_key { columns = [column.id] }
   index "runtime_images_tenant_idx" { columns = [column.tenant_id] }
   index "runtime_images_tenant_status_idx" { columns = [column.tenant_id, column.status] }
+}
+
+table "tenant_secrets" {
+  schema = schema.public
+  comment = "Tenant-scoped encrypted secrets (API keys etc.) — ciphertext at rest via KEK (docs/09). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "name" {
+    type = text
+    null = false
+  }
+  column "description" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "ciphertext" {
+    type = text
+    null = false
+  }
+  column "key_version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "tenant_secrets_tenant_id_idx" {
+    columns = [column.tenant_id]
+  }
+  index "tenant_secrets_tenant_name_idx" {
+    unique = true
+    columns = [column.tenant_id, column.name]
+  }
+}
+
+
+table "categories" {
+  schema = schema.public
+  comment = "Tenant-scoped categories partitioned by target_type (worker|workflow|conversation)."
+
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "target_type" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "description" { type = text; null = false; default = "" }
+  column "slug" { type = text; null = false }
+  column "sort_order" { type = integer; null = false; default = 0 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+
+  primary_key { columns = [column.id] }
+  index "categories_tenant_target_slug_idx" { unique = true; columns = [column.tenant_id, column.target_type, column.slug] }
+  index "categories_tenant_target_name_idx" { unique = true; columns = [column.tenant_id, column.target_type, column.name] }
+  index "categories_tenant_target_order_idx" { columns = [column.tenant_id, column.target_type, column.sort_order] }
+}
+
+table "category_assignments" {
+  schema = schema.public
+  comment = "Entity -> category assignment, PK is tenant+target_type+entity_id."
+
+  column "tenant_id" { type = text; null = false }
+  column "target_type" { type = text; null = false }
+  column "entity_id" { type = text; null = false }
+  column "category_id" { type = text; null = false }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+
+  primary_key { columns = [column.tenant_id, column.target_type, column.entity_id] }
+  index "category_assignments_category_idx" { columns = [column.tenant_id, column.category_id] }
+  index "category_assignments_entity_idx" { columns = [column.tenant_id, column.entity_id] }
 }

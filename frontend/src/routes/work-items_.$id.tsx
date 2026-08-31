@@ -1,5 +1,5 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArrowLeft, Link2 } from "lucide-react";
 
 import {
@@ -20,8 +20,10 @@ import { useListWorkflows } from "@/api/workflows";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
+import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
-import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
+import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
+import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -63,6 +65,7 @@ function WorkItemDetailPage() {
   const addDependency = useAddDependency(item?.projectId ?? "");
   const removeDependency = useRemoveDependency(item?.projectId ?? "");
   const createWorkItem = useCreateWorkItem();
+  const toast = useToast();
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
   const { data: projects } = useListProjects();
   const navigate = useNavigate();
@@ -84,7 +87,7 @@ function WorkItemDetailPage() {
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
   const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
-  const [editRecurringSchedule, setEditRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
+  const [editSecretIds, setEditSecretIds] = useState<string[]>([]);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -109,6 +112,36 @@ function WorkItemDetailPage() {
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
+
+  // Paste image into description/acceptance: inline as markdown data URL (persisted via updateWorkItem description field)
+  const handlePasteImage = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>, setter: (v: string) => void, current: string) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (!file) continue;
+          if (file.size > 10 * 1024 * 1024) {
+            toast.error(`Image too large (max 10MB): ${file.name || "pasted image"}`);
+            continue;
+          }
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(",")[1] || "";
+            const dataUrl = `data:${file.type || "image/png"};base64,${base64}`;
+            const markdown = `![${file.name || "pasted-image"}](${dataUrl})`;
+            setter(current ? `${current}\n\n${markdown}` : markdown);
+          };
+          reader.readAsDataURL(file);
+          break;
+        }
+      }
+    },
+    [toast],
+  );
 
   // Quick lookup for dependency display
   const itemsById = useMemo(
@@ -229,7 +262,7 @@ function WorkItemDetailPage() {
             onClick={() => navigate({ to: "/work-items" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -255,7 +288,7 @@ function WorkItemDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {!editing && viewMode === "detail" && (
             <Button
               variant="outline"
@@ -287,16 +320,90 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
-                setEditRecurringSchedule(
-                  item.recurringSchedule
-                    ? new RecurringSchedule(item.recurringSchedule)
-                    : undefined,
-                );
+                setEditSecretIds(item.secretIds ?? []);
                 setEditing(true);
               }}
             >
               Edit
             </Button>
+          )}
+          {editing && (
+            <>
+              <Button
+                onClick={() => {
+                  const kindChanging = editKind !== item.kind;
+                  if (kindChanging && editKind !== 1 && !editParentId) {
+                    window.alert(
+                      `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
+                    );
+                    return;
+                  }
+                  if (kindChanging) {
+                    const moving = directChildren.filter(
+                      (c) => depthForKind(c.kind) <= depthForKind(editKind),
+                    );
+                    const lines = [
+                      `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
+                    ];
+                    if (moving.length > 0) {
+                      lines.push(
+                        `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
+                        moving.map((c) => `  • ${c.title}`).join("\n"),
+                      );
+                    }
+                    if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
+                      lines.push(
+                        "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
+                      );
+                    }
+                    if (!window.confirm(lines.join("\n"))) return;
+                  }
+                  updateWorkItem.mutate(
+                    {
+                      id,
+                      title,
+                      description,
+                      acceptanceCriteria,
+                      acceptanceReview,
+                      priority,
+                      contextWindow,
+                      status,
+                      projectId: editProjectId,
+                      workflowId: editWorkflowId,
+                      runtimeImage: editRuntimeImage || undefined,
+                      scheduledStartAt: editScheduledStartAt
+                        ? Timestamp.fromDate(new Date(editScheduledStartAt))
+                        : undefined,
+                      autoStartWorkflow: editAutoStartWorkflow,
+                      parentId: editParentId || undefined,
+                      kind: kindChanging ? editKind : undefined,
+                      contextFiles: { files: editContextFiles },
+                      secretIds: { ids: editSecretIds },
+                      recurringSchedule: kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
+                          ? new RecurringSchedule()
+                          : undefined,
+                    },
+                    {
+                      onSuccess: ({ warning }) => {
+                        setEditing(false);
+                        if (warning) {
+                          toast.error(warning, {
+                            title: "Auto-start not applied",
+                            duration: 9000,
+                          });
+                        }
+                      },
+                    },
+                  );
+                }}
+                disabled={updateWorkItem.isPending || !title.trim()}
+              >
+                {updateWorkItem.isPending ? "Saving…" : "Save changes"}
+              </Button>
+              <Button variant="outline" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </>
           )}
           <Button
             variant="outline"
@@ -506,7 +613,7 @@ function WorkItemDetailPage() {
                 type="datetime-local"
                 value={editScheduledStartAt}
                 onChange={(e) => { setEditScheduledStartAt(e.target.value); if (e.target.value) setEditAutoStartWorkflow(false); }}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -523,23 +630,7 @@ function WorkItemDetailPage() {
         </Card>
       )}
 
-      {editing && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Recurring schedule</CardTitle>
-            <CardDescription>
-              Set a recurrence pattern. Setting this flips the item to
-              recurring status; clearing it resets to non-recurring.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <RecurringScheduleForm
-              value={editRecurringSchedule}
-              onChange={setEditRecurringSchedule}
-            />
-          </CardContent>
-        </Card>
-      )}
+
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -552,12 +643,8 @@ function WorkItemDetailPage() {
                   onChange={(e) => {
                     const next = Number(e.target.value);
                     setStatus(next);
-                    // Switching away from recurring clears the schedule
-                    if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
-                      setEditRecurringSchedule(undefined);
-                    }
                   }}
-                  className="rounded-md border bg-background px-2 py-1 text-sm"
+                  className="rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value={WorkItemStatus.PENDING}>pending</option>
                   <option value={WorkItemStatus.READY}>ready</option>
@@ -605,7 +692,7 @@ function WorkItemDetailPage() {
                       ? "Type cannot change while the item is running"
                       : "Switch to a different work item kind"
                   }
-                  className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-xl glass-input px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <option value={WorkItemKind.EPIC}>Epic</option>
                   <option value={WorkItemKind.FEATURE}>Feature</option>
@@ -744,7 +831,7 @@ function WorkItemDetailPage() {
                 <select
                   value={editWorkflowId}
                   onChange={(e) => setEditWorkflowId(e.target.value)}
-                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value="">-- No workflow --</option>
                   {(workflows ?? []).map((wf) => (
@@ -801,7 +888,9 @@ function WorkItemDetailPage() {
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              onPaste={(e) => handlePasteImage(e, setDescription, description)}
               className="min-h-[80px]"
+              placeholder="Paste images directly (Ctrl+V) — they will be embedded as markdown"
             />
           ) : (
             <Markdown>{item.description}</Markdown>
@@ -819,7 +908,9 @@ function WorkItemDetailPage() {
             <Textarea
               value={acceptanceCriteria}
               onChange={(e) => setAcceptanceCriteria(e.target.value)}
+              onPaste={(e) => handlePasteImage(e, setAcceptanceCriteria, acceptanceCriteria)}
               className="min-h-[80px]"
+              placeholder="Paste images directly (Ctrl+V)"
             />
           ) : (
             <Markdown>{item.acceptanceCriteria}</Markdown>
@@ -888,6 +979,21 @@ function WorkItemDetailPage() {
         );
       })()}
 
+      {/* Secrets — tenant secrets injected into the runtime container at
+          dispatch (never baked into images). Picker only in edit mode;
+          the values are loaded into editSecretIds on Edit and saved via
+          the update payload. */}
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Secrets</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SecretsPicker value={editSecretIds} onChange={setEditSecretIds} />
+          </CardContent>
+        </Card>
+      )}
+
       {/* Project (editable) */}
       {editing && (
         <Card>
@@ -899,7 +1005,7 @@ function WorkItemDetailPage() {
           </CardHeader>
           <CardContent>
             <select
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
               value={editProjectId}
               onChange={(e) => {
                 setEditProjectId(e.target.value);
@@ -919,81 +1025,7 @@ function WorkItemDetailPage() {
         </Card>
       )}
 
-      {/* Edit save/cancel */}
-      {editing && (
-        <div className="flex gap-2">
-          <Button
-            onClick={() => {
-              const kindChanging = editKind !== item.kind;
-              // Epic → non-epic without a parent: force the pick before
-              // enabling Save (ADR-WIT-1 — the server requires it too).
-              if (kindChanging && editKind !== 1 && !editParentId) {
-                window.alert(
-                  `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
-                );
-                return;
-              }
-              if (kindChanging) {
-                // Describe the automatic resolution before confirming
-                // (ADR-WIT-2): children that can no longer sit under the
-                // item move to its parent; non-schedulable kinds clear
-                // worker/schedule/status.
-                const moving = directChildren.filter(
-                  (c) => depthForKind(c.kind) <= depthForKind(editKind),
-                );
-                const lines = [
-                  `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
-                ];
-                if (moving.length > 0) {
-                  lines.push(
-                    `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
-                    moving.map((c) => `  • ${c.title}`).join("\n"),
-                  );
-                }
-                if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
-                  lines.push(
-                    "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
-                  );
-                }
-                if (!window.confirm(lines.join("\n"))) return;
-              }
-              updateWorkItem.mutate(
-                {
-                  id,
-                  title,
-                  description,
-                  acceptanceCriteria,
-                  acceptanceReview,
-                  priority,
-                  contextWindow,
-                  status,
-                  projectId: editProjectId,
-                  workflowId: editWorkflowId,
-                  runtimeImage: editRuntimeImage || undefined,
-                  scheduledStartAt: editScheduledStartAt
-                    ? Timestamp.fromDate(new Date(editScheduledStartAt))
-                    : undefined,
-                  autoStartWorkflow: editAutoStartWorkflow,
-                  parentId: editParentId || undefined,
-                  kind: kindChanging ? editKind : undefined,
-                  contextFiles: { files: editContextFiles },
-                  recurringSchedule:
-                    kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
-                      ? new RecurringSchedule()
-                      : editRecurringSchedule,
-                },
-                { onSuccess: () => setEditing(false) },
-              );
-            }}
-            disabled={updateWorkItem.isPending || !title.trim()}
-          >
-            {updateWorkItem.isPending ? "Saving…" : "Save changes"}
-          </Button>
-          <Button variant="outline" onClick={() => setEditing(false)}>
-            Cancel
-          </Button>
-        </div>
-      )}
+
 
       {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
       <Card>
@@ -1012,7 +1044,7 @@ function WorkItemDetailPage() {
           {item.blockedBy.length > 0 && (
             <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
               <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
-                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                <Link2 aria-hidden="true" className="h-3.5 w-3.5"  />
                 Blocked by
               </h4>
               <ul className="mt-2 space-y-1.5">
@@ -1040,7 +1072,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depTarget">Add dependency to</Label>
               <select
                 id="depTarget"
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
                 value={depTarget}
                 onChange={(e) => setDepTarget(e.target.value)}
               >
@@ -1056,7 +1088,7 @@ function WorkItemDetailPage() {
               <Label htmlFor="depType">Type</Label>
               <select
                 id="depType"
-                className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="flex h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1 text-sm"
                 value={depType}
                 onChange={(e) => setDepType(Number(e.target.value))}
               >

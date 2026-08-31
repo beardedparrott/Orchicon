@@ -35,6 +35,8 @@ const (
 	defaultAskStallNoProgressWindow = 120 * time.Second
 	defaultAskStallRepetitionCount  = 5
 	defaultAskStallRepetitionWindow = 300 * time.Second
+	defaultAskMCPToolWedgeWindow    = 30 * time.Second
+	defaultAskMCPReconnectAttempts  = 1
 )
 
 func askStallNoProgressWindow() time.Duration {
@@ -44,6 +46,20 @@ func askStallNoProgressWindow() time.Duration {
 		}
 	}
 	return defaultAskStallNoProgressWindow
+}
+
+// resolveChatStallNoProgressWindow returns the effective chat no-progress
+// stall window. The tenant's stall_no_progress_window_seconds setting wins
+// when set, UNLESS the ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW env override is
+// pinned (env beats the DB setting — exactly the precedence executions use in
+// stallWindowsFromManifest, so a chat turn and a worker execution on the same
+// tenant agree on what "no progress" means). 0/unset falls back to the env
+// override, then the 120s default.
+func resolveChatStallNoProgressWindow(settingsSeconds int64) time.Duration {
+	if settingsSeconds > 0 && os.Getenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW") == "" {
+		return time.Duration(settingsSeconds) * time.Second
+	}
+	return askStallNoProgressWindow()
 }
 
 func askStallRepetitionCount() int {
@@ -64,6 +80,34 @@ func askStallRepetitionWindow() time.Duration {
 	return defaultAskStallRepetitionWindow
 }
 
+// askMCPToolWedgeWindow bounds how long a single tool call may stay open (started
+// on the serve bus, never resolved) before it is treated as an MCP wedge. The
+// default is generous enough that a legitimately slow tool that still streams
+// activity never trips it (any activity resets the clock), but far shorter than
+// the 120s no_progress window so a wedged tool is healed, not silently timed
+// out. Env override ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW.
+func askMCPToolWedgeWindow() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultAskMCPToolWedgeWindow
+}
+
+// askMCPReconnectAttempts bounds how many times a wedged session is recycled
+// (abort + fresh seeded session + re-dispatch) within one turn before the turn
+// is failed with a clear retryable error (no unbounded loop). Env override
+// ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS.
+func askMCPReconnectAttempts() int {
+	if v := os.Getenv("ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultAskMCPReconnectAttempts
+}
+
 // chatStallMonitor tracks per-turn progress signals and detects stalls. It
 // is fed the already-decoded telemetry events (text / reasoning /
 // step_finish / tool_use) AFTER the message was accepted (sent == true) and
@@ -75,17 +119,28 @@ type chatStallMonitor struct {
 	// when a turn wedges (a rate-limited or unavailable model looks exactly
 	// like a "stuck" model to the user).
 	modelRef string
-	mu sync.Mutex
+	mu       sync.Mutex
 
 	noProgressWindow time.Duration
 	repetitionCount  int
 	repetitionWindow time.Duration
+	toolWedgeWindow  time.Duration
 	now              func() time.Time
 
 	// lastActivity advances on ANY activity signal (text, reasoning,
 	// step_finish, tool_use) — a model that keeps producing output, even
 	// long reasoning, is never reaped.
 	lastActivity time.Time
+
+	// openToolTime is when the current (unresolved) tool call was issued, and
+	// openToolName its name. Zero value = no tool is open. A tool is closed by
+	// a terminating event (step_finish, a completed tool_use, completed text).
+	// The tool-wedge signal (ADR-0002 D2) fires when a tool has been open and
+	// silent for toolWedgeWindow — the exact MCP-wedge signature no_progress
+	// cannot see (tool_use-as-activity only fires on a COMPLETED tool, so a
+	// wedged tool is invisible to it).
+	openToolTime time.Time
+	openToolName string
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args) → timestamps within the window.
@@ -95,12 +150,18 @@ type chatStallMonitor struct {
 	fired bool
 }
 
-func newChatStallMonitor(modelRef string) *chatStallMonitor {
+// newChatStallMonitor builds a stall monitor for one chat turn.
+// settingsNoProgressSeconds is the tenant's stall_no_progress_window_seconds
+// (0 when unset/unknown); the effective window is resolved by
+// resolveChatStallNoProgressWindow so a chat turn honors the same tenant
+// setting executions do.
+func newChatStallMonitor(modelRef string, settingsNoProgressSeconds int64) *chatStallMonitor {
 	return &chatStallMonitor{
 		modelRef:         modelRef,
-		noProgressWindow: askStallNoProgressWindow(),
+		noProgressWindow: resolveChatStallNoProgressWindow(settingsNoProgressSeconds),
 		repetitionCount:  askStallRepetitionCount(),
 		repetitionWindow: askStallRepetitionWindow(),
+		toolWedgeWindow:  askMCPToolWedgeWindow(),
 		now:              time.Now,
 		lastActivity:     time.Now(),
 		sigs:             make(map[string][]time.Time),
@@ -118,8 +179,15 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 	switch etype {
 	case "text", "reasoning", "step_finish":
 		m.lastActivity = now
+		// A completed text/reasoning/step boundary closes any open tool: the
+		// model moved past it, so it is not wedged (ADR-0002 D2).
+		m.openToolTime = time.Time{}
+		m.openToolName = ""
 	case "tool_use":
 		m.lastActivity = now
+		// A completed tool_use resolves the open tool.
+		m.openToolTime = time.Time{}
+		m.openToolName = ""
 		// Signature = tool name + args. Repeating the exact same call (same
 		// tool, same args) is the loop signal (mirrors progress.go). The
 		// opencode v1.x tool part nests the input under `state.input` (see
@@ -152,6 +220,51 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 		kept = append(kept, now)
 		m.sigs[sig] = kept
 	}
+}
+
+// observeToolStart marks a tool call as ISSUED (active on the serve bus but
+// not yet resolved). The chat collector feeds this from the raw bus event for
+// a tool part whose status is not terminal (LegacyEventFromBus only emits a
+// tool_use on completion, so a wedged tool would otherwise be invisible to the
+// stall monitor). name is the tool being called. Only the FIRST open tool is
+// tracked: a single turn blocks on one tool at a time, so a second start while
+// one is open is treated as a fresh open (the model moved on) — kept simple so
+// the wedge signal is precise.
+func (m *chatStallMonitor) observeToolStart(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	// Any tool-start is activity.
+	m.lastActivity = now
+	// Only latch the earliest open time: if a tool is already open, a later
+	// start (e.g. a re-issued call) must not reset the wedge clock.
+	if m.openToolTime.IsZero() {
+		m.openToolTime = now
+		m.openToolName = name
+	} else if m.openToolName != name && !m.openToolTime.IsZero() {
+		// A DIFFERENT tool starting closes the previous open tool (the model
+		// moved on) — but only when the previous one was open.
+		m.openToolTime = now
+		m.openToolName = name
+	}
+}
+
+// toolWedge reports (name, true) when a tool call has been open (issued,
+// never resolved) and silent for the tool-wedge window. This is the AC1
+// MCP-wedge signal: precise, because any activity (token delta, a completed
+// tool, text) resets lastActivity and closes the open tool, so a legitimately
+// slow tool that streams activity never trips it. name is the stalled tool,
+// returned so the surfaced error can name it.
+func (m *chatStallMonitor) toolWedge() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fired || m.openToolTime.IsZero() {
+		return "", false
+	}
+	if m.now().Sub(m.openToolTime) > m.toolWedgeWindow {
+		return m.openToolName, true
+	}
+	return "", false
 }
 
 // stallReason returns a non-empty stall reason when a signal has tripped

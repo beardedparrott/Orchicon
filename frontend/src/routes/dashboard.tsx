@@ -1,4 +1,4 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { useMemo } from "react";
 
 import { Route as rootRoute } from "@/routes/__root";
@@ -42,7 +42,6 @@ function DashboardPage() {
   const modelCount = models?.length ?? 0;
   const totalExecs = executions?.length ?? 0;
 
-  // Workflow run stats from cost data (accurate even after execution deletion)
   const wfRunStats = useMemo(() => {
     const stats = { succeeded: 0, failed: 0, aborted: 0, other: 0 };
     if (!workflowCosts) return stats;
@@ -72,19 +71,25 @@ function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Tile label="Active Projects" value={String(activeProjects)} description="Total projects in the tenant" />
         <Tile label="Total Executions" value={fmtInt(totalExecs)} description="Worker executions (all time)" />
-        <Tile label="Running Executions" value={String(runningExecs)} description="Executions in progress" accent />
+        <Link to="/telemetry" className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/50">
+          <Tile label="Running Executions" value={String(runningExecs)} description="Executions in progress → Telemetry" accent />
+        </Link>
         <Tile label="Available Models" value={String(modelCount)} description="Models from opencode CLI" />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Tile label="Total Spend (USD)" value={`$${totalCost.toFixed(4)}`} description="Lifetime AI model cost" />
-        <Tile label="Total Tokens" value={fmtInt(totalTokens)} description="Lifetime token consumption" />
-        <Tile label="Workflow Runs Succeeded" value={fmtInt(wfRunStats.succeeded)} description="Completed workflow runs" className="text-green-600" />
+        <Link to="/cost-explorer" className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/50">
+          <Tile label="Total Spend (USD)" value={`$${totalCost.toFixed(4)}`} description="Lifetime AI model cost → Cost Explorer" />
+        </Link>
+        <Link to="/cost-explorer" className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary/50">
+          <Tile label="Total Tokens" value={fmtInt(totalTokens)} description="Lifetime token consumption → Cost Explorer" />
+        </Link>
+        <Tile label="Workflow Runs Succeeded" value={fmtInt(wfRunStats.succeeded)} description="Completed workflow runs" className="text-green-700 dark:text-green-600" />
         <Tile label="Workflow Runs Failed" value={fmtInt(wfRunStats.failed)} description="Failed workflow runs" className="text-red-600" />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Tile label="Workflow Runs Aborted" value={fmtInt(wfRunStats.aborted)} description="Aborted workflow runs" className="text-yellow-600" />
+        <Tile label="Workflow Runs Aborted" value={fmtInt(wfRunStats.aborted)} description="Aborted workflow runs" className="text-yellow-700 dark:text-yellow-600" />
         <Tile label="Active Recoveries" value={String(activeRecoveries)} description="Ongoing recovery workflows" />
         <Tile label="Total Recoveries" value={fmtInt(recoveries?.length ?? 0)} description="Recoveries triggered (all time)" />
         <Tile label="Other Workflow Runs" value={fmtInt(wfRunStats.other)} description="Pending/running workflow runs" />
@@ -107,8 +112,8 @@ function Tile({
   className?: string;
 }) {
   return (
-    <div className={cn("rounded-lg border bg-card p-4", accent && "border-primary/30")}>
-      <div className="text-xs uppercase text-muted-foreground">{label}</div>
+    <div className={cn("rounded-2xl glass-panel p-4 h-full", accent && "ring-1 ring-primary/20")}>
+      <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">{label}</div>
       <div className={cn("mt-2 text-3xl font-semibold", className)}>{value}</div>
       {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}
     </div>

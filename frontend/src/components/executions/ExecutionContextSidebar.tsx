@@ -23,6 +23,7 @@ import type { TodoItem } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { TodoStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { TodoPriority } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { useGetExecutionSession, useGetExecutionTodos } from "@/api/executions";
+import { useListOpenCodeModels } from "@/api/aigateway";
 import { cn } from "@/lib/utils";
 
 const EXEC_STATUS_LABELS: Record<number, string> = {
@@ -62,10 +63,11 @@ interface ExecutionContextSidebarProps {
   exec: WorkerExecution;
   events: StreamExecutionEventsResponse[];
   usage: UsageRecord[];
-  /** Approximate context window size. We don't have this from the
-   *  worker definition yet — picked conservatively so the progress
-   *  bar shows useful info even on free models. v0.2 can read
-   *  context_window from the model discovery endpoint. */
+  /** Optional override for the model's context window. When omitted, the
+   *  panel resolves the real window from the model that actually ran (usage
+   *  records' provider+model → model discovery limits.context). If it can't
+   *  be resolved, the panel shows the working set without a fabricated
+   *  percentage/denominator rather than guessing. */
   contextWindow?: number;
   streamStatus?: string;
   /** Execution id — used to backfill tool/message counts from the durable
@@ -76,6 +78,7 @@ interface ExecutionContextSidebarProps {
 
 interface EventStats {
   assistantCount: number; // text events
+  reasoningCount: number; // streamed reasoning chunks (content, not tokens)
   toolCount: number;       // tool_call events (input)
   toolResultCount: number; // tool_call events (output)
   errorCount: number;
@@ -89,7 +92,7 @@ export function ExecutionContextSidebar({
   exec,
   events,
   usage,
-  contextWindow = 200_000,
+  contextWindow,
   streamStatus,
   executionId,
 }: ExecutionContextSidebarProps) {
@@ -99,6 +102,7 @@ export function ExecutionContextSidebar({
   const stats = useMemo<EventStats>(() => {
     const s: EventStats = {
       assistantCount: 0,
+      reasoningCount: 0,
       toolCount: 0,
       toolResultCount: 0,
       errorCount: 0,
@@ -136,12 +140,14 @@ export function ExecutionContextSidebar({
       switch (eventType) {
         case ET.TELEMETRY: {
           let text = payload.text as string | undefined;
+          let isReasoning = false;
           if (text && text.startsWith("{")) {
             try {
               const parsed = JSON.parse(text);
               if (parsed && parsed.kind === "reasoning" && typeof parsed.text === "string") {
                 // Streamed reasoning chunk — unwrap for display.
                 text = parsed.text;
+                isReasoning = true;
               }
             } catch {
               /* keep raw */
@@ -149,6 +155,7 @@ export function ExecutionContextSidebar({
           }
           if (text) {
             s.assistantCount++;
+            if (isReasoning) s.reasoningCount++;
             s.lastAssistantText = text;
             s.lastAssistantAt = ts;
           }
@@ -188,38 +195,129 @@ export function ExecutionContextSidebar({
           if (!s.lastToolName) s.lastToolName = "tool";
         } else if (p.kind === "text") {
           s.assistantCount++;
+        } else if (p.kind === "reasoning") {
+          s.reasoningCount++;
         }
       }
     }
     return s;
   }, [events, transcript]);
 
+  // Resolve the REAL model context window from the model that actually ran.
+  // The usage records carry provider+model; we match that against model
+  // discovery's opencode model and take limits.context. When the panel
+  // received an explicit contextWindow prop (or the model can't be
+  // resolved), fall back to that / unknown rather than fabricating a window.
+  const { data: models } = useListOpenCodeModels();
+  const resolvedContextWindow = useMemo(() => {
+    if (contextWindow && contextWindow > 0) return contextWindow;
+    if (!models || models.length === 0) return 0;
+    // Pick the model from the most recent usage record (provider+model).
+    const latest = usage[usage.length - 1];
+    if (!latest?.provider || !latest?.model) return 0;
+    const ref = `${latest.provider}/${latest.model}`;
+    const found =
+      models.find((m) => m.modelRef === ref) ??
+      models.find((m) => m.id === latest.model);
+    const ctx = found?.limits?.context ? Number(found.limits.context) : 0;
+    return ctx > 0 ? ctx : 0;
+  }, [contextWindow, models, usage]);
+
   // Token usage breakdown from usage_records (AI Gateway dual-write).
-  // We sum across all step_finish events for this execution.
+  // `workingSet` is the PEAK single-step FRESH token count
+  // (prompt+completion+reasoning, cache EXCLUDED) — the largest working set
+  // the model actually held in a single step. It is bounded and
+  // interpretable, and it is what the Context % bar is measured against the
+  // (real) context window. Cache reads are re-sends of already-counted
+  // tokens, so they are deliberately NOT part of the working set — they live
+  // in the cumulative cache-transport section instead.
+  //
+  // `entered` is the CUMULATIVE re-send sum (each usage_records row is the
+  // full per-step_finish request size, so the sum grows with every model
+  // call — a transport/spend figure, NOT the model's working set). It is
+  // surfaced separately as the cumulative bar.
   const usageBreakdown = useMemo(() => {
     let prompt = 0;
     let completion = 0;
-    let total = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let reasoning = 0;
+    let entered = 0;
+    let workingSet = 0;
     let cost = 0;
+    let cumCacheRead = 0;
+    let cumCacheWrite = 0;
+    let cumPrompt = 0;
+    let peakPrompt = 0;
+    let peakCompletion = 0;
+    let peakReasoning = 0;
     for (const r of usage) {
-      prompt += Number(r.promptTokens);
-      completion += Number(r.completionTokens);
-      total += Number(r.totalTokens);
+      const p = Number(r.promptTokens) || 0;
+      const c = Number(r.completionTokens) || 0;
+      const rsn = Number(r.reasoningTokens) || 0;
+      const cr = Number(r.cacheReadTokens) || 0;
+      const cw = Number(r.cacheWriteTokens) || 0;
+      prompt += p;
+      completion += c;
+      cacheRead += cr;
+      cacheWrite += cw;
+      reasoning += rsn;
+      entered += Number(r.totalTokens) || 0;
       cost += Number(r.costUsd);
+      cumCacheRead += cr;
+      cumCacheWrite += cw;
+      cumPrompt += p;
+      // Fresh working set excludes cache reads (re-sends), matching the
+      // budget gate semantics — the model really held p+c+rsn distinct
+      // tokens in this step.
+      const fresh = p + c + rsn;
+      if (fresh > workingSet) {
+        workingSet = fresh;
+        peakPrompt = p;
+        peakCompletion = c;
+        peakReasoning = rsn;
+      }
     }
-    return { prompt, completion, total, cost };
+    // Peak-row FRESH buckets (coherent with `workingSet`).
+    const peakBuckets = {
+      prompt: peakPrompt,
+      completion: peakCompletion,
+      reasoning: peakReasoning,
+    };
+    return { prompt, completion, cacheRead, cacheWrite, reasoning, entered, workingSet, cost, peakBuckets, cumCacheRead, cumCacheWrite, cumPrompt };
   }, [usage]);
 
-  // Context %: total tokens used vs the model's context window.
-  // Falls back to total tokens when no window is known — we still
-  // show a bar that the user can interpret.
-  const totalTokens =
-    usageBreakdown.total || Number(exec.tokenUsage) || 0;
+  // Cache hit-rate: fraction of new input that was served from cache
+  // (cumulative reads vs cumulative fresh input). A real, interpretable
+  // figure for the cache-transport bar.
+  const cacheHitRate =
+    usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt > 0
+      ? Math.round(
+          (usageBreakdown.cumCacheRead /
+            (usageBreakdown.cumCacheRead + usageBreakdown.cumPrompt)) *
+            100,
+        )
+      : 0;
+
+  // Working set is the PEAK FRESH single-step token count. Falls back to
+  // exec.tokenUsage when no usage records exist (a legacy single number).
+  const totalTokens = usageBreakdown.workingSet || Number(exec.tokenUsage) || 0;
   const cost =
     usageBreakdown.cost > 0 ? usageBreakdown.cost : Number(exec.costUsd);
+  // The % bar only exists when the RESOLVED context window is known. When
+  // it isn't, we show the working set with a "window unknown" label instead
+  // of a fabricated percentage.
+  const effectiveContextWindow = resolvedContextWindow;
   const contextPct =
-    contextWindow > 0
-      ? Math.min(100, Math.round((totalTokens / contextWindow) * 100))
+    effectiveContextWindow > 0
+      ? Math.min(100, Math.round((totalTokens / effectiveContextWindow) * 100))
+      : 0;
+  const cumulativePct =
+    effectiveContextWindow > 0
+      ? Math.min(
+          100,
+          Math.round((usageBreakdown.entered / effectiveContextWindow) * 100),
+        )
       : 0;
 
   const statusLabel = EXEC_STATUS_LABELS[exec.status] ?? "unknown";
@@ -238,19 +336,40 @@ export function ExecutionContextSidebar({
       : stats.lastAssistantText
     : "—";
 
-  const rolePct = (n: number) =>
-    totalTokens > 0 ? Math.round((n / totalTokens) * 100) : 0;
+  // Token % bars key off the PEAK FRESH row buckets (prompt+completion+
+  // reasoning, cache excluded) and the cumulative sums — both measured
+  // against the resolved total context window (capped at 100%). Cache
+  // reads/writes are NOT baked in; they're shown separately in the
+  // cumulative cache-transport section.
+  const peakBuckets = usageBreakdown.peakBuckets;
+  const rolePctVsWindow = (n: number) =>
+    effectiveContextWindow > 0
+      ? Math.min(100, Math.round((n / effectiveContextWindow) * 100))
+      : 0;
+
+  // Provider honesty: a model that streams reasoning content but reports
+  // zero reasoning tokens is going through a provider route that doesn't
+  // surface cache/reasoning usage (e.g. ollama-cloud). The zero bars are
+  // then "not reported", not "genuinely zero" — annotate them so they don't
+  // read as a broken calculation next to visible reasoning blocks.
+  const hasReasoningContent = stats.reasoningCount > 0;
+  const reasoningUnreported =
+    hasReasoningContent && usageBreakdown.reasoning === 0;
+  const cacheUnreported =
+    reasoningUnreported &&
+    usageBreakdown.cumCacheRead === 0 &&
+    usageBreakdown.cumCacheWrite === 0;
 
   return (
     <aside className="space-y-3 lg:sticky lg:top-4">
       {/* Context usage card */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Context
           </h3>
           <span className="text-xs font-medium text-muted-foreground">
-            {contextPct}%
+            {effectiveContextWindow > 0 ? `${contextPct}%` : "—"}
           </span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -268,12 +387,47 @@ export function ExecutionContextSidebar({
         </div>
         <div className="mt-1 flex items-baseline justify-between text-xs text-muted-foreground">
           <span className="font-mono">{fmtNum(totalTokens)} tokens</span>
-          <span>of {fmtNum(contextWindow)}</span>
+          <span>
+            {effectiveContextWindow > 0 ? (
+              <>peak working set / {fmtNum(effectiveContextWindow)} window</>
+            ) : (
+              "working set (model window unknown)"
+            )}
+          </span>
         </div>
+        {usageBreakdown.entered > 0 && (
+          <div className="mt-2 border-t pt-1.5">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  cumulativePct > 80
+                    ? "bg-red-500"
+                    : cumulativePct > 50
+                      ? "bg-amber-500"
+                      : "bg-emerald-500",
+                )}
+                style={{ width: `${Math.max(cumulativePct, 2)}%` }}
+              />
+            </div>
+            <div className="mt-1 flex items-baseline justify-between text-xs text-muted-foreground">
+              <span className="font-mono">
+                {fmtNum(usageBreakdown.entered)} tokens
+              </span>
+              <span>
+                {effectiveContextWindow > 0 ? (
+                  <>cumulative / {fmtNum(effectiveContextWindow)} window</>
+                ) : (
+                  "cumulative (model window unknown)"
+                )}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Status card */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="flex items-center justify-between">
           <span
             className={cn(
@@ -316,7 +470,7 @@ export function ExecutionContextSidebar({
       </div>
 
       {/* Message counts */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="rounded-2xl glass-panel p-4">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Messages
@@ -337,20 +491,135 @@ export function ExecutionContextSidebar({
             color="bg-amber-500"
           />
         </div>
-        {usageBreakdown.total > 0 && (
-          <div className="mt-3 space-y-1">
-            <TokenBar
-              label="Input"
-              count={usageBreakdown.prompt}
-              pct={rolePct(usageBreakdown.prompt)}
-              color="bg-blue-500"
-            />
-            <TokenBar
-              label="Output"
-              count={usageBreakdown.completion}
-              pct={rolePct(usageBreakdown.completion)}
-              color="bg-violet-500"
-            />
+        {usageBreakdown.entered > 0 && (
+          <div className="mt-3 space-y-2">
+            <div>
+              <div className="mb-1 text-[10px] text-muted-foreground">
+                Context window (input/output)
+              </div>
+              <TokenBar
+                label="Input"
+                count={peakBuckets.prompt}
+                pct={rolePctVsWindow(peakBuckets.prompt)}
+                color="bg-blue-500"
+              />
+              <TokenBar
+                label="Output"
+                count={peakBuckets.completion}
+                pct={rolePctVsWindow(peakBuckets.completion)}
+                color="bg-violet-500"
+              />
+              <TokenBar
+                label={
+                  reasoningUnreported
+                    ? "Reasoning (not reported)"
+                    : "Reasoning"
+                }
+                count={peakBuckets.reasoning}
+                pct={rolePctVsWindow(peakBuckets.reasoning)}
+                color="bg-amber-500"
+              />
+            </div>
+            <div className="border-t border-dashed pt-1.5">
+              <div className="mb-1 text-[10px] text-muted-foreground">
+                Cumulative (input/output)
+              </div>
+              <TokenBar
+                label="Input"
+                count={usageBreakdown.prompt}
+                pct={rolePctVsWindow(usageBreakdown.prompt)}
+                color="bg-blue-500"
+              />
+              <TokenBar
+                label="Output"
+                count={usageBreakdown.completion}
+                pct={rolePctVsWindow(usageBreakdown.completion)}
+                color="bg-violet-500"
+              />
+              <TokenBar
+                label={
+                  reasoningUnreported
+                    ? "Reasoning (not reported)"
+                    : "Reasoning"
+                }
+                count={usageBreakdown.reasoning}
+                pct={rolePctVsWindow(usageBreakdown.reasoning)}
+                color="bg-amber-500"
+              />
+            </div>
+            {/* Cache — a SEPARATE figure from the working set (cumulative
+                re-sends of already-counted tokens), so it gets its own
+                Read/Write bars + hit-rate %, not a slice of the mix. Always
+                rendered so the cache picture stays visible even when it's
+                zero. */}
+            <div className="border-t border-dashed pt-1.5">
+              <div className="mb-1 flex items-center justify-between text-[10px]">
+                <span className="font-medium uppercase tracking-wider text-muted-foreground">
+                  Cache
+                </span>
+                <span
+                  className={cn(
+                    "font-mono font-medium",
+                    cacheUnreported
+                      ? "text-muted-foreground"
+                      : "text-emerald-700 dark:text-emerald-600",
+                  )}
+                  title={
+                    cacheUnreported
+                      ? "Provider doesn't report cache usage — 0 is not a real hit rate"
+                      : undefined
+                  }
+                >
+                  {cacheUnreported
+                    ? "n/a hit rate"
+                    : `${cacheHitRate}% hit rate`}
+                </span>
+              </div>
+              <TokenBar
+                label="Read (re-sent)"
+                count={usageBreakdown.cumCacheRead}
+                pct={cacheHitRate}
+                color="bg-emerald-500"
+              />
+              <TokenBar
+                label="Write"
+                count={usageBreakdown.cumCacheWrite}
+                pct={
+                  usageBreakdown.cumCacheWrite + usageBreakdown.cumPrompt > 0
+                    ? Math.round(
+                        (usageBreakdown.cumCacheWrite /
+                          (usageBreakdown.cumCacheWrite +
+                            usageBreakdown.cumPrompt)) *
+                          100,
+                      )
+                    : 0
+                }
+                color="bg-teal-500"
+              />
+            </div>
+            {/* Cumulative totals — always shown when any usage was recorded.
+                Cache read/write and reasoning are separate cost buckets and
+                are deliberately NOT folded into the input/output mix, so
+                they get their own explicit totals line. */}
+            <div className="mt-1 border-t border-dashed pt-1.5 text-[10px] text-muted-foreground">
+              Cumulative: {fmtNum(usageBreakdown.prompt)} input ·{" "}
+              {fmtNum(usageBreakdown.completion)} output
+              {[
+                usageBreakdown.reasoning > 0 &&
+                  `${fmtNum(usageBreakdown.reasoning)} reasoning`,
+                usageBreakdown.cumCacheRead > 0 &&
+                  `${fmtNum(usageBreakdown.cumCacheRead)} cache read`,
+                usageBreakdown.cumCacheWrite > 0 &&
+                  `${fmtNum(usageBreakdown.cumCacheWrite)} cache write`,
+                cacheHitRate > 0 && `${cacheHitRate}% hit rate`,
+              ]
+                .filter(Boolean)
+                .map((seg) =>
+                  seg ? (
+                    <span key={seg}> · {seg}</span>
+                  ) : null,
+                )}
+            </div>
           </div>
         )}
       </div>
@@ -364,7 +633,7 @@ export function ExecutionContextSidebar({
 
       {/* Last assistant message preview */}
       {stats.lastAssistantAt && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Last assistant message
           </h3>
@@ -379,7 +648,7 @@ export function ExecutionContextSidebar({
 
       {/* Last tool used */}
       {stats.lastToolName && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Last tool
           </h3>
@@ -396,7 +665,7 @@ export function ExecutionContextSidebar({
 
       {/* Raw events timeline (compact) */}
       {stats.recentTypes.length > 0 && (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="rounded-2xl glass-panel p-4">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Raw events
           </h3>
@@ -439,7 +708,7 @@ function TodoListCard({ todos }: { todos: TodoItem[] }) {
   const total = todos.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl glass-panel p-4">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Todo List

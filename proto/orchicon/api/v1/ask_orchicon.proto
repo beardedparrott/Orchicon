@@ -21,11 +21,6 @@ enum ConversationMode {
   // the user create. General design, coding, and brainstorming are in scope;
   // the Orchicon MCP tool surface is shared with ORCHICON mode.
   CONVERSATION_MODE_BRAINSTORM = 1;
-  // ORCHICON is the strictly-governed platform expert persona: it answers
-  // questions about Orchicon and operates on the user's Orchicon data, and
-  // refuses general coding help, personal conversation, or non-Orchicon
-  // topics.
-  CONVERSATION_MODE_ORCHICON = 2;
 }
 
 // Conversation is a top-level chat session with the Ask Orchicon agent.
@@ -58,6 +53,19 @@ message Conversation {
   // turn_in_flight is true; the frontend polls ListMessages for this id to
   // resolve the restored turn's completion.
   string pending_assistant_message_id = 12;
+  // turn_progressing is the server-confirmed "the model is still genuinely
+  // working" signal (ADR-0002 D3). Computed at read time from the running
+  // turn's last activity: true when the turn has produced recent output and is
+  // not wedged on an unresolved tool. The frontend shows "still working…" only
+  // when this is true; when it is false but turn_in_flight is true, the UI can
+  // accurately report "Turn stalled — stop or retry" instead of the misleading
+  // "connection lost — still working" the refresh path used to show.
+  bool turn_progressing = 13;
+  // turn_last_activity_at is when the running turn last produced activity
+  // (token, reasoning, step, or tool output). Companion to turn_progressing —
+  // lets the frontend compute how long the turn has been quiet (and show a
+  // stale/stopped state) without polling the bus.
+  google.protobuf.Timestamp turn_last_activity_at = 14;
 }
 
 // ChatMessage is a single message within a conversation.

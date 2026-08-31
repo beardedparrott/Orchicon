@@ -35,6 +35,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // Adapter is the OpenCode adapter bridge. It implements
@@ -83,6 +86,14 @@ type Adapter struct {
 	// instantly, poisoning every auto-retry. Reset to zero on any
 	// non-error progress (a successful step / tool call / message).
 	consecutiveSessionErrors int
+
+	// infraModelTurnRecycles counts runtime-container recycles performed
+	// for the infra-model-turn class (a model call that couldn't reach the
+	// model API at the socket/transport layer) within a SINGLE dispatch —
+	// the per-dispatch repair budget for the immediate recycle path. Reset
+	// on any non-error progress so a healthy step never inherits a prior
+	// dispatch's spent budget.
+	infraModelTurnRecycles int
 }
 
 // SessionStoreFunc persists transcript entries for one execution. The
@@ -122,6 +133,32 @@ func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message stri
 	return nil
 }
 
+// AbortExecution tears down a running execution's live opencode session so the
+// model stops generating immediately. It is invoked when a human cancels an
+// execution: the execution row is already transitioned to terminated, and this
+// is what actually stops the token spend (without it the session keeps turning
+// in the background — the "terminated but still active" runaway). It cancels
+// the session's subscription context (ending the run loop) and aborts the
+// opencode session on the serve. Unknown/finished executions are a no-op.
+func (a *Adapter) AbortExecution(ctx context.Context, execID, reason string) error {
+	a.mu.Lock()
+	r := a.sessions[execID]
+	a.mu.Unlock()
+	if r == nil {
+		a.log.Debug("abort execution: no live session", "execution", execID)
+		return nil
+	}
+	a.log.Info("aborting execution session", "execution", execID, "session", r.sessionID, "reason", reason)
+	// Cancel the run loop's subscription context first so the runner unwinds
+	// (its defer cleans up the sessions registry), then abort the opencode
+	// session so the model's current turn stops streaming.
+	r.subCancel()
+	if err := r.client.Abort(ctx, r.sessionID); err != nil {
+		a.log.Warn("abort session failed", "execution", execID, "error", err)
+	}
+	return nil
+}
+
 // sessionsEnabled reports whether the session transport is enabled for an
 // execution. The global kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0
 // disables it everywhere — with the one-shot path removed, a disabled
@@ -148,11 +185,20 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // (the legacy one-shot fallback was removed).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
 	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+		// The composite worktree MCP tools resolve relative paths against
+		// ORCHICON_MCP_WORKTREE_DIR, which must be the execution's working
+		// directory — the run worktree when provisioned, else the project
+		// dir — NOT the project root. Passing the project root here (the
+		// pre-fix behavior) made batch_write land in the main checkout
+		// instead of the run worktree (worktree hygiene violation).
+		// executionDir mirrors the reconciler's cwd resolution, so the
+		// serve config baked for a self-healed/recreated container carries
+		// the same base the run-start gate uses.
 		resp, err := a.rt.Create(ctx, runtime.CreateRequest{
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, executionDir(manifest), manifest.RuntimeWorkflowID, nil),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -194,23 +240,63 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag string) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
 	opts := ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: "",
-		ModelRef:    "",
-		SkipUserMCP: true,
+		AgentName:    workerAgent,
+		AgentPrompt:  workerAgentPrompt,
+		DefaultAgent: workerAgent,
+		ModelRef:     "",
+		SkipUserMCP:  true,
 	}
 	if runtime.IsDevImageTag(imageTag) {
 		opts.TenantID = serveTenantID()
 		opts.OrchiconMCP = true
 		opts.MCPEnv = map[string]string{"ORCHICON_POSTGRES_DSN": runtime.SandboxPostgresDSN}
-		// The MCP sidecar spawns inside the runtime container. Force the
-		// command to the daemon's bind-mount (guaranteed present in every
-		// runtime container) — the plane's own executable path, which
-		// builds this config, is not necessarily present there.
-		opts.MCPBinaryPath = runtimeContainerBinaryPath
+		// The sandbox worker's Orchicon MCP sidecar is told its workflow run so
+		// it can inject the run_context into create calls and stamp recurring-
+		// fire provenance (feature 4.1, AC2).
+		if workflowRunID != "" {
+			opts.MCPEnv["ORCHICON_MCP_WORKFLOW_RUN_ID"] = workflowRunID
+		}
 	}
+	// Plane channel: when the runtime lifecycle minted a role-scoped worker
+	// credential for this run, register the `orchicon-plane` MCP server so
+	// the worker gets `orchicon_plane_*` tools against the REAL instance.
+	// Orthogonal to the sandbox channel (dev images register `orchicon_*`
+	// against the in-container sandbox DB) — a role-bound worker on a dev
+	// image gets both.
+	if len(planeEnv) > 0 {
+		opts.PlaneMCP = true
+		opts.PlaneMCPEnv = planeEnv
+	}
+	// The orchicon binary is bind-mounted read-only at /usr/local/bin/orchicon
+	// in EVERY runtime container (the runtime daemon's own executable,
+	// daemon.go:450) — never baked into the image. So the MCP sidecars always
+	// run from there, regardless of image tag.
+	opts.MCPBinaryPath = runtimeContainerBinaryPath
+
+	// Composite worktree tools (batch_read / batch_grep / batch_write) are LIVE
+	// for ALL runtime images, not just dev. The worktree MCP sidecar is
+	// DB-less and runs from the daemon's bind-mounted binary, so it works on
+	// the base/gui images too — it does not need the sandbox plane. The worker
+	// is handed the batch tools and opencode's built-in read/grep are denied
+	// (see config.go permissionRules), so it is forced onto the batch tools —
+	// the whole point: fewer turns, less re-sent context. WorktreeDir is the
+	// in-container project dir (the runtime daemon starts the serve with cwd
+	// == project dir); ORCHICON_WORKTREE_DIR overrides it, and the serve
+	// process cwd is the last-resort fallback. CompositeTools is only set when
+	// a worktree dir resolves, so the batch MCP is always registered alongside
+	// the read/grep deny (no lockout).
+	opts.WorktreeDir = projectDir
+	if opts.WorktreeDir == "" {
+		opts.WorktreeDir = os.Getenv("ORCHICON_WORKTREE_DIR")
+	}
+	if opts.WorktreeDir == "" {
+		if wd, werr := os.Getwd(); werr == nil {
+			opts.WorktreeDir = wd
+		}
+	}
+	opts.CompositeTools = opts.WorktreeDir != ""
 	return BuildConfigContent(opts)
 }
 
@@ -231,12 +317,51 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 		callbacks: callbacks,
 		client:    client,
 		modelRef:  modelRef,
-		system:    manifest.SystemPrompt,
+		system:    executionSystemPrompt(manifest),
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
+		// Unified warn→escalate→abort ladder. The spend accumulator starts
+		// empty; the merged budget is parsed once (limits + warning schedule).
+		budget:     &budgetAccumulator{},
+		budgetSpec: parseBudgetSpec(manifest.Budgets),
+		startedAt:  time.Now(),
 	}
 	return runner.run()
 }
+
+// executionSystemPrompt returns the per-session system prompt for an
+// execution. When the execution runs inside a workflow runtime container
+// with the composite worktree tools enabled (a runtime container with a
+// project dir), it appends the batch-tool discipline so the worker is
+// steered to `batch_read`/`batch_grep`/`batch_write` instead of the granular
+// built-in tools — the whole point of the composite-tools feature (fewer
+// turns, less re-sent context). Host-serve executions (RuntimeWorkflowID
+// empty) have no composite tools and get the bare worker system prompt.
+func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
+	sp := manifest.SystemPrompt
+	if manifest.WorktreePath != "" {
+		sp += worktreePathDiscipline
+	}
+	if manifest.RuntimeWorkflowID != "" && manifest.ProjectDir != "" {
+		sp += batchToolsDiscipline
+	}
+	return sp
+}
+
+// batchToolsDiscipline steers the worker to the composite context-efficient
+// file tools. It is phrased defensively ("if available") so a worker whose
+// runtime does not expose them falls back to the built-ins without error, and
+// it explicitly forbids the granular tools so the model does not keep reaching
+// for read/grep in batches (the conflicting behaviour the old guidance caused).
+const worktreePathDiscipline = "\n\nAll file reads/writes must use paths relative to the current worktree; the main checkout is not accessible.\n"
+
+const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n" +
+	"Use the composite file tools for ALL file access:\n" +
+	"- `batch_read` reads several files or a whole directory in ONE call.\n" +
+	"- `batch_grep` searches several patterns across the tree in ONE call.\n" +
+	"- `batch_write` applies several create/overwrite/edit/append writes in ONE atomic call.\n" +
+	"- Do NOT use `read`, `grep`, `glob`, `write`, or `edit` for file access when the batch tools are available — they are fallback-only.\n" +
+	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n"
 
 // IsExecutionActive reports whether an in-process execution subprocess is
 // still tracked as running. Used by the execution-liveness reaper to
@@ -252,7 +377,10 @@ func (a *Adapter) IsExecutionActive(execID string) bool {
 }
 
 // UsageRecord is the usage sample the adapter emits on step_finish
-// (docs/04 §6.1 step_finish carries tokens + cost).
+// (docs/04 §6.1 step_finish carries tokens + cost). It is the opencode
+// bridge shape onto the canonical aigateway.UsageInput — the server copies
+// it field-for-field into the gateway's input so the gateway never branches
+// on provider.
 type UsageRecord struct {
 	TenantID         string
 	ProjectID        string
@@ -262,7 +390,10 @@ type UsageRecord struct {
 	Provider         string
 	Model            string
 	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
 	CompletionTokens int64
+	ReasoningTokens  int64
 	CostUSD          float64
 	CorrelationID    string
 	TraceID          string
@@ -286,6 +417,34 @@ func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
+
+// workerAgentPrompt is the MINIMAL system prompt registered for the
+// orchicon-worker agent. It deliberately carries ONLY a tool inventory and
+// tool-call discipline — the worker's actual identity/task/context rides
+// Orchicon's own per-message `system` field. The point is to REPLACE
+// opencode's large built-in `build` agent prompt (which the default agent
+// would otherwise inject into every turn) with this short shell, cutting
+// per-turn tokens. The tool list restores the "which tool fits which job"
+// guidance opencode's build prompt previously supplied, without its
+// verbosity.
+const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
+	"File access tools (use these for all reading, searching, and writing):\n" +
+	"- `batch_read` — read several files or a whole directory in ONE call\n" +
+	"- `batch_grep` — search several patterns across the tree in ONE call\n" +
+	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n\n" +
+	"Other tools:\n" +
+	"- `glob` — find files by pattern\n" +
+	"- `bash` — run a shell command in the project\n" +
+	"- `todowrite` — maintain the live task-progress list (emit it every turn)\n" +
+	"- `webfetch` — fetch web content from a URL\n" +
+	"- `websearch` — search the web (use only if needed)\n" +
+	"- `skill` — load a skill's instructions\n" +
+	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools.\n\n" +
+	"Discipline — read carefully:\n" +
+	"- Do NOT use `read`, `grep`, `write`, or `edit` for file access; they are disabled in favor of the batch tools. Use `glob` only to find paths, never to read.\n" +
+	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n" +
+	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
+	"- Prefer the fewest tool calls that complete the task."
 
 // runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
 // own executable in every runtime container (internal/runtime/daemon.go).
@@ -407,17 +566,26 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	if !a.sessionsEnabled(manifest) {
 		return fmt.Errorf("opencode session transport disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0) — no execution transport available for execution %s", execRow.ID)
 	}
-	client := a.sessionClientFor(ctx, manifest)
-	if client == nil {
-		return fmt.Errorf("no opencode serve available for execution %s (host serve down or runtime container serve unavailable) — execution failed to start", execRow.ID)
-	}
 
-	// The serve converges within a minute of its container starting (cold
-	// start: providers/MCP + the docker-proxy settling). Retry the session
-	// setup with backoff before failing the execution — but never fall
-	// back to a one-shot subprocess.
+	// Session-transport setup with self-heal. The serve converges within a
+	// minute of its container starting (cold start: providers/MCP + the
+	// docker-proxy settling), so session setup retries with backoff — but
+	// never falls back to a one-shot subprocess. On top of the plain backoff
+	// retries, an INFRA failure (see isInfraSessionError: serve unreachable —
+	// connection refused — or POST /session 5xx on a poisoned session store)
+	// triggers a bounded RUNTIME-CONTAINER REPAIR: the run's container is
+	// recycled so the next dispatch builds a fresh serve AND a fresh store.
+	// A poisoned store cannot be fixed by restarting the serve process (the
+	// daemon watchdog reuses the same XDG data dir on disk — the observed
+	// field class), so recycling the container is the only repair that
+	// unblocks the run; the step's on-disk worktree state survives, so the
+	// re-dispatch continues the work rather than starting cold.
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	repairs := 0
+	maxRepairs := sessionRepairBudget()
+	consecutiveInfra := 0
+	infraThreshold := infraRepairThreshold()
+	for attempt := 0; attempt < 4+maxRepairs; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -425,15 +593,99 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 			case <-time.After(time.Duration(attempt) * 2 * time.Second):
 			}
 		}
-		if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
+		// Re-resolve the client every attempt so a repair (container killed)
+		// is picked up: sessionClientFor re-runs Create, which rebuilds the
+		// container and returns the freshly-published serve once it answers
+		// health — the repair's health-gate before re-dispatch.
+		client := a.sessionClientFor(ctx, manifest)
+		if client == nil {
+			// No serve to talk to at all. For a runtime-container run this
+			// is itself an infra condition: recycle and retry (bounded).
+			lastErr = fmt.Errorf("no opencode serve available for execution %s (host serve down or runtime container serve unavailable) — execution failed to start", execRow.ID)
+			consecutiveInfra++
+		} else if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
 			return nil
 		} else {
 			lastErr = err
 			a.log.Info("session transport setup attempt failed — retrying",
-				"execution", execRow.ID, "attempt", attempt+1, "max", 4, "error", err)
+				"execution", execRow.ID, "attempt", attempt+1, "max", 4+maxRepairs, "error", err)
+			if isInfraSessionError(err) {
+				consecutiveInfra++
+			} else {
+				// A worker/model-side failure won't be fixed by recycling
+				// the container — reset the counter so a later transient
+				// infra blip starts fresh (and never nukes the container
+				// on a single infra failure without a worker error in
+				// between).
+				consecutiveInfra = 0
+			}
+		}
+
+		// Infra repair is NOT first-resort: a single infra failure is retried
+		// on the SAME container (a fresh session create — the serve converges,
+		// transient provider hiccups happen), so a HEALTHY parallel step on
+		// the same run container is not torn down by one blip. Only a
+		// PERSISTENT infra failure — consecutiveInfra at the threshold — is
+		// treated as a genuinely broken backend (serve dead / store poisoned)
+		// and repaired by recycling the container: the poisoned store lives
+		// on disk in the container's stable XDG data dir, so only a fresh
+		// container discards it; the step's on-disk worktree survives.
+		// Bounded by sessionRepairBudget.
+		if consecutiveInfra >= infraThreshold && repairs < maxRepairs && a.rt != nil && manifest.RuntimeWorkflowID != "" {
+			repairs++
+			consecutiveInfra = 0
+			a.repairRuntimeContainer(ctx, manifest.RuntimeWorkflowID)
+			continue
+		}
+		// Non-infra, or below the repair threshold, or past the repair
+		// budget: keep the backoff retries; the step's own retry/recovery
+		// loop is the bounded owner of persistent failures.
+	}
+	return fmt.Errorf("session transport setup failed: %w", lastErr)
+}
+
+// infraRepairThreshold is how many CONSECUTIVE infra failures (within one
+// dispatch's session-setup) must occur before the adapter recycles the run's
+// runtime container. Default 2: the first infra failure is retried on the
+// same container so a transient service blip never tears down a healthy
+// parallel step on the same run container; a second consecutive infra
+// failure in the same dispatch indicates a broken backend worth repairing.
+// Overridable via ORCHICON_SESSION_INFRA_THRESHOLD; < 2 means container
+// repair can never be triggered by the consecutive counter (only the repair
+// budget, reached via repeated infra failures across executions, recycles).
+func infraRepairThreshold() int {
+	if v := os.Getenv("ORCHICON_SESSION_INFRA_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
-	return fmt.Errorf("session transport setup failed after 4 attempts: %w", lastErr)
+	return 2
+}
+
+// repairRuntimeContainer is the session-backend infra repair: it kills the run's
+// runtime container so the NEXT dispatch's Create rebuilds it with a fresh
+// opencode serve and a FRESH session store. Restarting the serve process in
+// place cannot heal a poisoned store (the daemon watchdog reuses the same XDG
+// data dir on disk), which is why this is the kernel of "restart the runtime
+// and continue": a Killed container has none of the poisoned on-disk state.
+// The step's worktree (the on-disk work it already did) is untouched.
+//
+// The caller (the dispatch retry loop) re-resolves the SessionClient after
+// this returns; the next sessionClientFor → rt.Create blocks until the fresh
+// serve answers health, which is the repair's health-gate before re-dispatch.
+// Best-effort: a failed kill is logged and the dispatch proceeds to its next
+// attempt (backoff) as today.
+func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string) {
+	if a.rt == nil || workflowID == "" {
+		return
+	}
+	a.log.Warn("session backend unhealthy — recycling runtime container (fresh serve + store)", "run", workflowID)
+	sessionRecycleMetricsSingleton.recordInfraSessionCreate()
+	killCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := a.rt.Kill(killCtx, workflowID); err != nil {
+		a.log.Warn("session-backend repair: recycle runtime container failed", "run", workflowID, "error", err)
+	}
 }
 
 // execStreamState tracks per-execution opencode stream structure so a
@@ -447,6 +699,12 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
+
+	// toolUses counts evtToolUse events for the execution — the real
+	// per-tool-call granularity (a single step/turn can contain several
+	// tool calls before its step_finish). Drives the tool-call dimension of
+	// the unified warn→escalate→abort budget ladder (maybeEnforceLadder).
+	toolUses int
 
 	// writtenFiles accumulates the paths opencode reported as file
 	// modifications (file_diff events). Unlike diff markers parsed out of
@@ -479,6 +737,13 @@ func (s *execStreamState) unfinished() bool {
 // allTokensZero reports whether a step_finish's tokens map is empty or all
 // counts are zero. A real completion carries input/output/cache counts; an
 // interrupted turn (reason "unknown") is emitted with no usage at all.
+//
+// opencode emits cache counts as a nested sub-object ({"cache":{"read":N,
+// "write":M}}), so a cache-served turn has non-zero token counts but an
+// empty input/output at the top level. The old top-level-only scan treated
+// such a turn as "zero" and wrongly flagged a real cache-served completion
+// as a truncated finish. The predicate must look inside the cache sub-object
+// before deciding.
 func allTokensZero(tokens map[string]any) bool {
 	if len(tokens) == 0 {
 		return true
@@ -486,6 +751,13 @@ func allTokensZero(tokens map[string]any) bool {
 	for _, v := range tokens {
 		if n, ok := v.(float64); ok && n > 0 {
 			return false
+		}
+		if m, ok := v.(map[string]any); ok {
+			for _, sub := range m {
+				if n, ok := sub.(float64); ok && n > 0 {
+					return false
+				}
+			}
 		}
 	}
 	return true
@@ -498,7 +770,7 @@ func allTokensZero(tokens map[string]any) bool {
 // dispatch guarantees consistent downstream behavior: progress monitor,
 // usage recording, artifact capture, summary accumulation, and the
 // streaming callbacks.
-func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
+func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState, budget *budgetAccumulator) {
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
 	if monitor != nil {
@@ -529,6 +801,9 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Debug("opencode text", "execution", execID, "text_len", len(text))
 	case evtToolUse:
+		if stats != nil {
+			stats.toolUses++
+		}
 		// opencode v1.x: input + output both arrive in a single
 		// `tool_use` event. The previous dispatch only matched the
 		// legacy `tool_call` / `tool_result` pair — which v1.x never
@@ -554,6 +829,15 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		state, _ := part["state"].(map[string]any)
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
+
+		// Cap tool OUTPUT before it is streamed to the UI / persisted into
+		// the durable transcript (which a follow-up or a recovery-resumed
+		// session re-seeds as context). A single giant output (a `make ci`
+		// build log, a full `git diff`, a huge glob/find listing) otherwise
+		// inflates everything downstream of this execution. Truncate with a
+		// clear marker so the worker/operator knows the tail is available on
+		// the host or project disk without ballooning the transcript.
+		outStr = capToolOutput(outStr)
 
 		// Detect `write` tool calls (opencode built-in file writer)
 		// and route them as artifacts instead of raw tool calls. The
@@ -659,6 +943,11 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
+		// Feed the compact-budget spend accumulator (same token/cost
+		// unpacking recordUsage just used — no second pricing formula).
+		if budget != nil {
+			budget.add(tokens, cost)
+		}
 	case evtFileDiff:
 		// A file_diff event carries the path of a file the session wrote
 		// or edited (part["path"]). Capture it so the worker's written
@@ -814,8 +1103,15 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		return
 	}
 	promptTokens := toInt64(tokens["input"])
+	cacheReadTokens := toInt64(cacheToken(tokens, "read"))
+	cacheWriteTokens := toInt64(cacheToken(tokens, "write"))
 	completionTokens := toInt64(tokens["output"])
-	if promptTokens == 0 && completionTokens == 0 && cost == 0 {
+	reasoningTokens := toInt64(tokens["reasoning"])
+	// A genuinely empty sample (no tokens, no cost) is dropped. A cache-only
+	// turn that was fully served from cache (zero fresh input/output but
+	// non-zero cache read/write) must NOT be dropped — cache spend is real.
+	if promptTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0 &&
+		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
 	}
 	provider, model := parseModelRef(manifest.ModelRef)
@@ -828,13 +1124,28 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		Provider:         provider,
 		Model:            model,
 		PromptTokens:     promptTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
 		CompletionTokens: completionTokens,
+		ReasoningTokens:  reasoningTokens,
 		CostUSD:          cost,
 		WorkflowRunID:    execRow.WorkflowRunID,
 	}
 	if err := a.usageRecorder(ctx, in); err != nil {
 		a.log.Warn("usage record failed", "execution", execRow.ID, "error", err)
 	}
+}
+
+// cacheToken reads a sub-count from the opencode tokens.cache sub-object
+// (e.g. {"cache":{"read":N,"write":M}} → cacheToken(tokens,"read")). opencode
+// emits cache counts as a nested object rather than flat fields, so a plain
+// toInt64(tokens["cache"]) would always be 0. Returns nil when the cache
+// sub-object is absent, which toInt64 turns into 0.
+func cacheToken(tokens map[string]any, key string) any {
+	if cache, ok := tokens["cache"].(map[string]any); ok {
+		return cache[key]
+	}
+	return nil
 }
 
 // extractErrorMessage pulls the human-readable message out of an opencode
@@ -897,6 +1208,78 @@ func toInt64(v any) int64 {
 		return int64(n)
 	}
 	return 0
+}
+
+// maxToolOutputBytes caps a single tool's output before it is persisted to
+// the session transcript / re-enters the model context. opencode passes the
+// FULL tool output (a build log, a directory listing) to OnToolCall; an
+// uncapped output is then re-sent on every later turn — the main amplifier
+// behind the observed ~45k-72k context-per-call across workflow runs. Keep
+// the head of the output (the summary/decision part) and mark the truncation
+// so the worker can grep/read the tail from disk if it needs to. Overridable
+// via ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
+const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
+
+func maxToolOutputBytes() int {
+	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return maxToolOutputBytesDefault
+}
+
+// capToolOutput truncates a tool output to maxToolOutputBytes (128k default),
+// keeping the head + a truncation marker. Returns the string unchanged when
+// under the cap or the cap is disabled.
+func capToolOutput(s string) string {
+	limit := maxToolOutputBytes()
+	if limit < 1 || len(s) <= limit {
+		return s
+	}
+	head := limit - len(toolOutputTruncatedMarker)
+	if head < 1 {
+		head = 1
+	}
+	return s[:head] + toolOutputTruncatedMarker
+}
+
+const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
+
+// capPartOutput applies the tool-output cap to a legacy event's `part`
+// map (the durable-transcript shape). It returns the part unchanged when
+// the part has no tool output. For a tool_use part it returns a shallow
+// copy with state.output replaced by the capped value, so the transcript
+// (re-seeded by follow-ups / recovery-resumed sessions) stays bounded
+// without mutating the event the UI path consumed.
+func capPartOutput(part any) any {
+	m, ok := part.(map[string]any)
+	if !ok {
+		return part
+	}
+	state, ok := m["state"].(map[string]any)
+	if !ok {
+		return part
+	}
+	out, _ := state["output"].(string)
+	if out == "" {
+		return part
+	}
+	capped := capToolOutput(out)
+	if capped == out {
+		return part
+	}
+	cp := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		cp[k] = v
+	}
+	cpState := make(map[string]any, len(state)+1)
+	for k, v := range state {
+		cpState[k] = v
+	}
+	cpState["output"] = capped
+	cp["state"] = cpState
+	return cp
 }
 
 // runSimulation emits synthetic telemetry events so the dispatch flow
@@ -1005,6 +1388,147 @@ func sessionErrorRecycleThreshold() int {
 	}
 	return 3
 }
+
+// sessionRepairBudget bounds the runtime-container repairs the adapter
+// attempts within a SINGLE dispatch when the session backend is infra-broken
+// (serve unreachable — connection refused — or alive-but-poisoned: POST
+// /session returns 5xx because its session store is corrupt). Each repair
+// kills the run's runtime container so the next dispatch rebuilds it with a
+// fresh serve AND a fresh store — a restart-in-place of the serve process
+// (the daemon watchdog) cannot fix a poisoned store because it reuses the
+// same XDG data dir on disk. After the budget is spent the dispatch fails as
+// today (failed_to_start → the step-level retry/recovery loop, which is
+// bounded separately). Overridable via ORCHICON_SESSION_REPAIR_ATTEMPTS; a
+// value < 1 disables the repair (legacy behavior: only backoff retries).
+func sessionRepairBudget() int {
+	if v := os.Getenv("ORCHICON_SESSION_REPAIR_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 3
+}
+
+// isInfraSessionError reports whether a session-transport setup failure is an
+// INFRASTRUCTURE failure — the serve is unreachable or refuses to create
+// sessions — as opposed to a worker/model failure. This is the discriminator
+// for the dispatch repair loop: an infra failure means EVERY re-dispatch
+// fails through the same hole (the observed field class: run 01a742NSHW... on
+// 2026-08-22/23 died when the runtime serve either process-died – dial
+// connection refused – or stayed up but its session store was poisoned with
+// `Failed to execute statement`, so `POST /session` 5xx'd every retry). Such
+// failures are REPAIRED (recycle the container → fresh serve + store → the
+// step continues) instead of counting against the step's retry budget.
+//
+// The signatures match what the SessionClient produces on the session-create
+// path (session.go: doJSON https-5xx + CreateSession dial errors) plus the
+// no-serve case the adapter itself raises. A 4xx is a client error, not an
+// infra failure.
+func isInfraSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no opencode serve available") ||
+		strings.Contains(msg, "opencode serve not healthy") ||
+		strings.Contains(msg, "opencode serve POST /session: http 5")
+}
+
+// isInfraModelTurnError reports whether a MODEL-TURN failure is an
+// INFRASTRUCTURE failure — the session's model call could not reach the
+// model API at the socket/transport layer — as opposed to a per-request or
+// server-decision rejection that must stay on the retry → recovery → human
+// path. This is the discriminator that lets a model-turn socket connect
+// failure recycle the run's runtime container IMMEDIATELY (the next dispatch
+// builds a fresh serve + store) instead of waiting for the 3-consecutive
+// `recycleOnWedgedServe` counter to burn a dead-API session three times.
+//
+// The input is the human-readable reason from a session.error bus event (the
+// observed field: "Cannot connect to API: Unable to connect. Is the computer
+// able to access the url?"), which is the same TCP-class as the session-create
+// path's "connection refused" but surfaces on the model-turn path. It is a
+// string heuristic, so it is guarded FIRST against the per-request /
+// server-decision class: if any guard term is present the message is
+// definitively NOT infra, even if it also carries a socket phrase. Only when
+// no guard matches does the socket/transport class decide.
+func isInfraModelTurnError(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	m := strings.ToLower(msg)
+	// Guard terms: a wrapped provider error that carries a status/auth/quota/
+	// policy rejection must never be reclassified as infra. Checked first so a
+	// message that happens to mention a socket phrase AND "http 400" stays on
+	// the retry path.
+	for _, term := range []string{
+		"http 4", "http 5",
+		"401", "403", "unauthorized", "forbidden",
+		"rate limit", "429",
+		"insufficient", "quota", "policy",
+	} {
+		if strings.Contains(m, term) {
+			return false
+		}
+	}
+	// Socket / transport-layer connect class: the serve tried to reach the
+	// model API and the attempt failed below the HTTP layer.
+	for _, term := range []string{
+		"unable to connect",
+		"connection refused",
+		"dial tcp", "dial udp",
+		"no such host",
+		"i/o timeout",
+		"connection reset",
+		"network unreachable",
+	} {
+		if strings.Contains(m, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionRecycleMetrics holds the OTel counter for runtime-container recycles
+// by reason. A single `orchicon_session_recycle{reason=…}` counter keeps the
+// recycle family (session-create infra, wedged-consecutive, infra-model-turn)
+// observable with one instrument and minimal wiring, mirroring the
+// recoverySeedMetrics best-effort pattern (internal/scheduler/recovery_seed.go).
+// Best-effort: a nil OTel pipeline is a no-op, never an error.
+type sessionRecycleMetrics struct {
+	ensureOnce sync.Once
+	recycled   otelmetric.Int64Counter
+}
+
+func (m *sessionRecycleMetrics) ensure() {
+	m.ensureOnce.Do(func() {
+		c, err := telemetry.Meter().Int64Counter("orchicon_session_recycle",
+			otelmetric.WithDescription("Runtime container recycles by reason"))
+		if err == nil {
+			m.recycled = c
+		}
+	})
+}
+
+func (m *sessionRecycleMetrics) record(reason string, exhausted bool) {
+	m.ensure()
+	if m.recycled != nil {
+		attrs := []attribute.KeyValue{attribute.String("reason", reason)}
+		if reason == "infra_model_turn" {
+			attrs = append(attrs, attribute.Bool("exhausted", exhausted))
+		}
+		m.recycled.Add(context.Background(), 1, otelmetric.WithAttributes(attrs...))
+	}
+}
+
+func (m *sessionRecycleMetrics) recordInfraSessionCreate()   { m.record("infra_session_create", false) }
+func (m *sessionRecycleMetrics) recordWedgedConsecutive()    { m.record("wedged_consecutive", false) }
+func (m *sessionRecycleMetrics) recordInfraModelTurn(v bool) { m.record("infra_model_turn", v) }
+
+// sessionRecycleMetricsSingleton is the shared instance for the recycle
+// counters (single instrument instance avoids duplicate-instrument churn on
+// the OTel Meter).
+var sessionRecycleMetricsSingleton = &sessionRecycleMetrics{}
 
 // projectMount returns the project-dir mount spec for a runtime container
 // (empty when no project dir — the daemon still adds the standard home

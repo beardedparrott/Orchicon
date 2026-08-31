@@ -26,6 +26,7 @@ import {
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
+import { usageKeys } from "@/api/aigateway";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
@@ -60,13 +61,17 @@ function ExecutionDetailPage() {
   // invalidates the detail query so the sidebar's status/cost/duration
   // refreshes as the adapter reports, AND the session transcript so the
   // chat shows the newest recorded parts (including the final message once
-  // the execution completes and the runner flushes the transcript).
+  // the execution completes and the runner flushes the transcript), AND
+  // the usage records so the Context card + token bars go live too (their
+  // query has no refetch interval of its own — it would otherwise sit
+  // stale until a manual refresh).
   const { events, status } = useStreamExecutionEvents({
     executionId: id,
     onEvent: () => {
       qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
       qc.invalidateQueries({ queryKey: executionKeys.session(id) });
       qc.invalidateQueries({ queryKey: executionKeys.todos(id) });
+      qc.invalidateQueries({ queryKey: usageKeys.records(undefined, id) });
     },
   });
 
@@ -109,7 +114,7 @@ function ExecutionDetailPage() {
             onClick={() => navigate({ to: "/executions" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">
@@ -323,7 +328,7 @@ function ExecutionContextFooter({
     ...worktreeTileItems(exec.worktreeStatus, exec.worktreeBranch, exec.worktreePath),
   ];
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className="rounded-2xl glass-panel p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Execution context

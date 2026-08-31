@@ -118,10 +118,10 @@ func newApprovalTestEnv(t *testing.T) *approvalTestEnv {
 	env.run = run
 
 	env.step = workflow.StepWire{
-		ID:   "step-approval",
-		Name: "Approve",
-		Kind: domain.StepKindApproval,
-		Ref:  "w_se_code_approver",
+		ID:     "step-approval",
+		Name:   "Approve",
+		Kind:   domain.StepKindApproval,
+		Ref:    "w_se_code_approver",
 		Config: `{"reviewer":"worker","worker_ref":"w_se_code_approver","max_iterations":3}`,
 	}
 	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
@@ -180,7 +180,7 @@ func TestApprovalDispatchCreatesNoWorkItems(t *testing.T) {
 	runs := map[string]db.WorkflowStepRunRow{env.step.ID: env.stepRun}
 	var dispatched []dispatchReq
 	err = env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
-		env.step, env.stepRun, runs, []workflow.StepWire{env.step}, &dispatched, nil)
+		env.step, env.stepRun, runs, []workflow.StepWire{env.step}, &dispatched, nil, nil)
 	if err != nil {
 		t.Fatalf("dispatchStep: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	runByID := map[string]db.WorkflowStepRunRow{env.step.ID: runningSR}
 	var triggers []recoveryTriggerReq
 	terminal, failed, err := env.reconciler.pollTaskStep(ctx, ttx.Tx, approvalTestTenant,
-		env.run, runningSR, "", runByID, &triggers)
+		&env.run, runningSR, "", runByID, &triggers)
 	if err != nil {
 		t.Fatalf("pollTaskStep: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	// dispatch — again without creating any work item.
 	var dispatched []dispatchReq
 	err = env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
-		env.step, recovering, runByID, []workflow.StepWire{env.step}, &dispatched, nil)
+		env.step, recovering, runByID, []workflow.StepWire{env.step}, &dispatched, nil, nil)
 	if err != nil {
 		t.Fatalf("re-dispatch recovering approval step: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	runs := map[string]db.WorkflowStepRunRow{step.ID: sr}
 	var dispatched []dispatchReq
 	if err := rc.dispatchStep(ctx, ttx.Tx, approvalTestTenant, run,
-		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil); err != nil {
+		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil, nil); err != nil {
 		t.Fatalf("dispatchStep should fail the step, not error out: %v", err)
 	}
 	if len(dispatched) != 0 {
@@ -446,7 +446,7 @@ func TestApprovalDispatchFailsWithoutWorkerRef(t *testing.T) {
 	runs := map[string]db.WorkflowStepRunRow{step.ID: sr}
 	var dispatched []dispatchReq
 	if err := env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
-		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil); err != nil {
+		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil, nil); err != nil {
 		t.Fatalf("dispatchStep should fail the step, not error out: %v", err)
 	}
 	if len(dispatched) != 0 {
@@ -494,7 +494,7 @@ func TestApprovalDispatchFailsWhenApproverUnresolvable(t *testing.T) {
 	runs := map[string]db.WorkflowStepRunRow{step.ID: sr}
 	var dispatched []dispatchReq
 	if err := env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
-		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil); err != nil {
+		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil, nil); err != nil {
 		t.Fatalf("dispatchStep should fail the step, not error out: %v", err)
 	}
 	if len(dispatched) != 0 {
