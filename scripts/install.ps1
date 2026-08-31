@@ -20,7 +20,7 @@
 # port, so this installer never downloads the Windows release binary.
 #
 # Options:
-#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.1.173
+#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "/usr/local/bin"
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
