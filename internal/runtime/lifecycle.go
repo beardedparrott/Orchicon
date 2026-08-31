@@ -228,16 +228,66 @@ func planeTokenTTL() time.Duration {
 }
 
 // planePublicURL is the plane's API base URL as reachable from inside a
-// runtime container (the docker bridge gateway + the instance's published
-// HTTP port). The container has no route to the plane's internal
-// localhost, so the operator sets ORCHICON_PLANE_PUBLIC_URL when the
-// published port differs from the default dev mapping (:8080 → prod
-// publishes :8091).
+// runtime container. Runtime containers share the docker bridge with the
+// plane, so the plane must advertise an address that is reachable from a
+// bridge container — NOT the host's published port.
+//
+// The host's published port (e.g. prod's 0.0.0.0:8091->8080) is only
+// reachable from outside the bridge: a bridge container dialing the gateway
+// IP + published port (172.17.0.1:8091) is dropped by the docker hairpin
+// NAT, so the plane-channel MCP sidecar times out on every call. The plane
+// container's OWN bridge IP + internal port 8080 is reachable directly on
+// the bridge (the same "direct container-IP access, no published port"
+// model the serve path already uses — see daemon.go createContainer).
+//
+// Resolution order:
+//  1. ORCHICON_PLANE_PUBLIC_URL, if set (operator override wins).
+//  2. Container mode (ORCHICON_CONTAINER_MODE=1): the plane's own container
+//     IP + internal port 8080 — identical for dev and prod (both listen on
+//     8080 internally), and correct regardless of the published port.
+//  3. Host mode: the docker bridge gateway + default dev mapping
+//     (172.17.0.1:8080), where the runtime container reaches the host plane
+//     via the gateway.
 func planePublicURL() string {
 	if v := os.Getenv("ORCHICON_PLANE_PUBLIC_URL"); v != "" {
 		return strings.TrimRight(v, "/")
 	}
+	if os.Getenv("ORCHICON_CONTAINER_MODE") == "1" {
+		if ip := containerIPAddress(); ip != "" {
+			return "http://" + ip + ":8080"
+		}
+	}
 	return "http://172.17.0.1:8080"
+}
+
+// containerIPAddress resolves the current container's bridge IP. Docker
+// sets the container hostname to the container ID and writes
+// "<ip> <hostname>" into /etc/hosts, so reading the hostname's entry is the
+// most reliable cross-platform resolution (no `hostname -i` dependency).
+// Returns "" when it cannot be resolved (host mode, or /etc/hosts absent).
+func containerIPAddress() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return ""
+	}
+	return parseHostsIP(string(data), hostname)
+}
+
+// parseHostsIP extracts the IP for a given hostname from an /etc/hosts body
+// (Docker writes "<ip> <hostname>" as the first field pair). Returns "" when
+// the hostname has no entry.
+func parseHostsIP(body, hostname string) string {
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == hostname {
+			return fields[0]
+		}
+	}
+	return ""
 }
 
 // mintPlaneCredential resolves the run's bound worker and, when it is a
@@ -301,11 +351,23 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		}
 		return nil, fmt.Errorf("plane credential: get role: %w", err)
 	}
+	// The API key's identity_id must reference a REAL identities row — the
+	// audit trail stamps every write with the caller's identity via the
+	// identities_actor_identity_fk, and a worker ID is not an identity. Stamp
+	// writes with a per-run SERVICE identity instead (subject "run:<runID>",
+	// idempotently provisioned via GetOrCreateIdentity so concurrent steps
+	// share one row). Entitlements are unchanged — ResolveApiKey authorizes
+	// from the KEY's scopes alone and never unions identity roles, so this
+	// is audit attribution, not privilege widening.
+	ident, _, err := db.GetOrCreateIdentity(ctx, ttx.Tx, run.TenantID, automationIdentitySubject(run.ID), "Automation run "+run.ID, "service")
+	if err != nil {
+		return nil, fmt.Errorf("plane credential: ensure automation identity: %w", err)
+	}
 	plaintext, prefix, hash := auth.GenerateApiKey()
 	expiresAt := time.Now().Add(planeTokenTTL())
 	if _, err := db.CreateApiKey(ctx, ttx.Tx, db.ApiKeyRow{
 		TenantID:   run.TenantID,
-		IdentityID: worker.ID,
+		IdentityID: ident.ID,
 		Name:       "automation:run:" + run.ID,
 		KeyPrefix:  prefix,
 		KeyHash:    hash,
@@ -326,6 +388,15 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
 	}, nil
 }
+
+// automationIdentitySubject returns the identities.subject for a run's
+// per-run automation service identity — the stable (tenant, subject) key
+// that GetOrCreateIdentity provisions the plane-channel API key against.
+// The key's identity_id must reference a REAL identities row: the audit
+// trail stamps every write with actor_identity_id, which is FK'd to
+// identities — a worker ID is not an identity and fails writes with
+// SQLSTATE 23503 (audit_events_actor_identity_fk).
+func automationIdentitySubject(runID string) string { return "run:" + runID }
 
 // resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
 // referenced by any step of the run's workflow version, or "" when the run
