@@ -425,7 +425,7 @@ Orchicon/
 │       ├── main.tsx              # React entry: providers + router
 │       ├── router.tsx            # TanStack Router setup
 │       ├── routeTree.gen.ts      # Auto-generated route tree
-│       ├── index.css             # Global styles + 28 themes (Tailwind + CSS vars)
+│       ├── index.css             # Global styles + 20 themes (Tailwind + CSS vars)
 │       ├── auth/                 # AuthProvider, session management
 │       ├── api/                  # Connect-ES clients, hooks, streaming
 │       │   ├── clients.ts        # 12 generated service clients
@@ -874,7 +874,7 @@ A run's effective git strategy is resolved once, at every layer, from the same s
 
 #### Settings
 1. Navigate to **Settings** (replaces the former Preferences page)
-2. **Appearance**: light/dark mode toggle with 28 theme variants (14 light + 14 dark)
+2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark)
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, the conversation falls back to the **free model** (`opencode/deepseek-v4-flash-free`) — surfaced in the Ask Orchicon header as a fallback warning, since that model is rate-limited and a silent provider 429 looks exactly like a "stuck" turn.
