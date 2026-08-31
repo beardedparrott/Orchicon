@@ -81,6 +81,7 @@ const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated wo
 	"The **real instance** (the plane your work item was created on) holds the actual work items, workers, workflows, runs, and data. " +
 	"Your access to the real instance is **role-scoped through your worker identity**: use only the `orchicon_plane_*` tools for it, and only within the entitlements your role grants. " +
 	"The plane channel is **not image-gated**: `orchicon_plane_*` tools are registered on every runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your role grants access — only the sandbox `orchicon_*` tools require the `:orchicon-dev` image. " +
+	"Plane tool responses are labeled envelopes, not raw protos: verify a write's reported landing state (e.g. a create reporting `idea_state: true`) matches what you intended before reporting success — a bare numeric status or a mismatch is a platform bug, record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI rather than claiming completion. " +
 	"If your worker has a role but no `orchicon_plane_*` tools appear, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do not conclude that real-instance access is dev-runtime-only. " +
 	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
@@ -148,13 +149,17 @@ type cannedWorker struct {
 	RecreateSlugOwner bool
 }
 
-// sandboxPlaneMarker is a distinctive fragment of the current
-// sandboxPlaneBlock. The roll-forward check keys on it (alongside the
-// safety marker) so a wording change to the block reaches existing canned
-// workers on boot — the safety marker alone would leave the old wording in
-// place forever. Bump it to a fragment of the NEW wording whenever the
-// block text changes.
-const sandboxPlaneMarker = "not image-gated"
+// sandboxPlaneMarker is the roll-forward key the seeder checks alongside
+// the safety marker: a canned worker whose current published agents_md
+// lacks this fragment is re-synced to its seed definition on boot. The
+// fragment must exist in sandboxPlaneBlock (the seed content pushed to
+// EVERY canned worker) and NOT in the content already out there — then
+// exactly the stale workers re-roll, and once present everywhere the
+// seeder is idempotent again. This generation pins the labeled-envelope +
+// landing-state-verification wording, added after the plane-channel spawn
+// bug landed idea spawns as plain pending items; future content changes
+// must bump it to a new present-in-seed/absent-in-old fragment.
+const sandboxPlaneMarker = "verify a write's reported landing state"
 
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers: deliverables are committed + pushed to the run branch
@@ -524,16 +529,17 @@ var cannedWorkers = []cannedWorker{
 		Name:        "Automation — Research Synthesizer",
 		Slug:        "automation-research-synthesizer",
 		Description: "Synthesizes each run of the automation research workflow: cross-verifies evidence, writes the brief, and spawns accepted proposals as idea-state work items.",
-		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in research/plan.md. Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
+		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first via orchicon_plane_list_work_items with idea_scope=\"only\" — the normal list hides idea-state items, so a plain backlog search will always wrongly conclude \"absent\" — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in research/plan.md. Idea-state spawning is hierarchy-constrained: only epic may be top-level, so feature proposals attach to an umbrella epic created first (parent_id). Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
 		Role:        cannedWorkerIdentity + "You are the Automation Research Synthesizer. You turn evidence into a prioritized brief and spawn accepted proposals as idea-state work items, applying the mandatory quality contract before anything is spawned.",
 		Skills:      "Synthesis • Cross-verification • Dedupe • Idea-state work item creation • Quality gating",
-		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first, then absence from the project codebase, then open-item dedupe, then weight against the landscape in the plan. Spawn via orchicon_plane_create_work_item only. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first (via orchicon_plane_list_work_items idea_scope=\"only\"), then absence from the project codebase, then open-item dedupe, then weight against the landscape in the plan. Spawn via orchicon_plane_create_work_item only. VERIFY THE LANDING STATE: each create response reports a labeled status plus an idea_state boolean — the item must read \"idea\"/true; anything else is a platform bug: record the observation as a FACTS LEARNED line, do NOT report success, and ship the manifests in the brief for UI spawning instead. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Synthesis & spawning\n\n" +
 			"- Read `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
 			"- Write `research/brief-<date>.md` with spawn-ready manifests (verbatim title + description, evidence URLs with capture dates).\n" +
-			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud first — never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in `research/plan.md`.\n" +
-			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
+			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud FIRST via `orchicon_plane_list_work_items` with `idea_scope:\"only\"` — the normal list server-side HIDES idea-state items, so a plain backlog search always wrongly concludes \"absent\"; never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in `research/plan.md`.\n" +
+			"- **Hierarchy**: only `epic` may be top-level — spawn ONE umbrella epic first, then attach feature proposals to it via `parent_id`.\n" +
+			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). The create response is a labeled envelope: verify it reports `idea_state: true` with spawned provenance — anything else (e.g. a bare numeric status or `idea_state: false`) is a WRONG landing: record the observation as a `FACTS LEARNED:` line, do NOT report success, and ship the manifests in the brief for UI spawning instead. If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
