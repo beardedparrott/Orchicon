@@ -2067,3 +2067,129 @@ func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
 		t.Fatalf("no-item run worktree_branch = %q after sweep, want \"\"", final.WorktreeBranch)
 	}
 }
+
+// TestWorktreeNoneStrategyDetachedProvisionAndPrune is acceptance criterion
+// #3: a `none` (ephemeral) run's worktree is provisioned DETACHED — no named
+// branch is created (worktree_branch=""), so "no branch retained" is a
+// structural property of the worktree shape rather than a cleanup promise.
+// Provision and prune must both reconcile a detached worktree.
+func TestWorktreeNoneStrategyDetachedProvisionAndPrune(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// The run's WorkflowID is a dummy that does not exist, so the effective
+	// strategy resolves from the project. Make it ephemeral (none).
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	proj, err := db.GetProject(ctx, ttx.Tx, approvalTestTenant, env.proj.ID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		t.Fatalf("get project: %v", err)
+	}
+	if _, err := db.UpdateProject(ctx, ttx.Tx, approvalTestTenant, env.proj.ID, proj.Version, db.UpdateProjectFields{GitStrategy: strPtr("none")}); err != nil {
+		ttx.Rollback(ctx)
+		t.Fatalf("set project git_strategy=none: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit project update: %v", err)
+	}
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("worktree_status = %q, want ready", run.WorktreeStatus)
+	}
+	if run.WorktreeBranch != "" {
+		t.Fatalf("none run recorded a branch %q — a detached worktree must record no branch", run.WorktreeBranch)
+	}
+	// No named branch ref was created for the run.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("none run created a named branch %q — detached must create none", env.expectedBranch())
+	}
+	// The run worktree must be registered as detached.
+	if out := gitRun(t, env.repo, "worktree", "list", "--porcelain"); !strings.Contains(out, "detached") {
+		t.Fatalf("none run worktree is not detached; got:\n%s", out)
+	}
+
+	// Prune must reconcile the detached worktree: dir reaped, row pruned,
+	// worktree_path cleared, and no branch ever recorded. assertPruned cannot
+	// be used here — it asserts the branch SURVIVES pruning, which is the
+	// opposite contract for a detached `none` run.
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	run = env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("worktree_status = %q, want pruned", run.WorktreeStatus)
+	}
+	if run.WorktreePath != "" {
+		t.Fatalf("worktree_path = %q, want empty after prune", run.WorktreePath)
+	}
+	if run.WorktreeBranch != "" {
+		t.Fatalf("detached none run recorded a branch %q after prune", run.WorktreeBranch)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("detached worktree dir still exists after prune: %v", err)
+	}
+	if strings.Contains(gitRun(t, env.repo, "worktree", "list"), env.expectedPath()) {
+		t.Fatalf("worktree list still shows %s after prune", env.expectedPath())
+	}
+}
+
+// TestWorktreeDeleteBranchRemovesRemoteOnMerge is acceptance criterion #4:
+// when a provably-merged branch clears the local proof gates (P1 ancestry
+// here; P2/P3 + Gate B unchanged), the REMOTE ref is also deleted via
+// `git push origin --delete` — the general leaked-branch-class prune. The
+// fail-closed ordering means a remote-delete failure never clears local
+// provenance; nothing unmerged is ever deleted (the proof gate runs first).
+func TestWorktreeDeleteBranchRemovesRemoteOnMerge(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Worker work on the branch.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "merged.txt"), []byte("merged work\n"), 0o644); err != nil {
+		t.Fatalf("write merged file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "merged work")
+
+	// Bare origin with develop + the feature branch, then merge the feature
+	// branch into develop ON THE REMOTE (the DevOps worker's gh pr merge).
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
+	gitRun(t, env.repo, "remote", "add", "origin", bare)
+	gitRun(t, env.repo, "push", "origin", "develop")
+	gitRun(t, env.repo, "push", "origin", env.expectedBranch())
+
+	scratch := t.TempDir()
+	gitRun(t, scratch, "clone", bare, filepath.Join(scratch, "work"))
+	work := filepath.Join(scratch, "work")
+	gitRun(t, work, "merge", "origin/"+env.expectedBranch())
+	gitRun(t, work, "push", "origin", "develop")
+
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// Local ref deleted through the proof gate.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("provably-merged branch %q was NOT deleted locally", env.expectedBranch())
+	}
+	// Remote ref deleted (L3 remote half of the prune).
+	if out := gitRun(t, env.repo, "ls-remote", "--heads", "origin", env.expectedBranch()); out != "" {
+		t.Fatalf("provably-merged branch %q was NOT deleted on origin (L3 remote prune); still present: %s", env.expectedBranch(), out)
+	}
+}
