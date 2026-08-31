@@ -24,25 +24,36 @@ import (
 // exposes the whitelisted tools (deny-by-default: the runtime lifecycle
 // mints the credential only for published role-bound workers).
 type planeRegistry struct {
-	log   *slog.Logger
-	runID string
-	token string
-	wi    apiv1connect.WorkItemServiceClient
-	ai    apiv1connect.AIGatewayServiceClient
+	log *slog.Logger
+	// runContext is the owning workflow run's run_context JSONB (the
+	// automation provenance block a recurring fire writes into it), relayed
+	// verbatim on work-item creates. It is injected via ORCHICON_RUN_CONTEXT
+	// at credential-mint time (runtime/lifecycle.go mintPlaneCredential) —
+	// the same trusted control-plane path that mints the scoped token — so
+	// the plane channel stamps idea-state provenance exactly like the
+	// sandbox channel does (feature 4.1 AC2). A bare run ID is NOT a
+	// run_context: ProvenanceFromRunContext unmarshal-fails on it and
+	// stamping silently no-ops (the bug this replaces).
+	runContext []byte
+	token      string
+	wi         apiv1connect.WorkItemServiceClient
+	ai         apiv1connect.AIGatewayServiceClient
 }
 
 // NewPlaneRegistry returns a ToolRegistry backed by the plane's Connect
 // API. url is the plane's public API base (ORCHICON_PLANE_URL); token is
-// the run's scoped worker credential (ORCHICON_PLANE_TOKEN).
+// the run's scoped worker credential (ORCHICON_PLANE_TOKEN); the owning
+// run's run_context JSONB arrives via ORCHICON_RUN_CONTEXT (empty for
+// runs without one — creates then behave as plain human-path creates).
 func NewPlaneRegistry(url, token string, log *slog.Logger) ToolRegistry {
 	rt := &headerAuthTransport{base: http.DefaultTransport, token: token}
 	hc := &http.Client{Transport: rt, Timeout: 60 * time.Second}
 	return &planeRegistry{
-		log:   log,
-		runID: os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID"),
-		token: token,
-		wi:    apiv1connect.NewWorkItemServiceClient(hc, url),
-		ai:    apiv1connect.NewAIGatewayServiceClient(hc, url),
+		log:        log,
+		runContext: []byte(os.Getenv("ORCHICON_RUN_CONTEXT")),
+		token:      token,
+		wi:         apiv1connect.NewWorkItemServiceClient(hc, url),
+		ai:         apiv1connect.NewAIGatewayServiceClient(hc, url),
 	}
 }
 
@@ -66,11 +77,12 @@ func (p *planeRegistry) List() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        "orchicon_plane_list_work_items",
-			Description: "Lists work items in the REAL instance (the plane this run was created on) — role-scoped read of the current backlog. Use this to see what already exists instead of the sandbox tools. Returns a bounded compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or branch to orchicon_plane_get_work_item for full detail.",
+			Description: "Lists work items in the REAL instance (the plane this run was created on) — role-scoped read of the current backlog. Use this to see what already exists instead of the sandbox tools. Returns a bounded compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or branch to orchicon_plane_get_work_item for full detail. Set idea_scope=\"only\" to read the Idea Cloud (idea-state spawns) — required by the automation-spawn dedupe gate (idea-state items are hidden from the normal list).",
 			Properties: map[string]propertySchema{
 				"project_id": {Type: "string", Description: "Project ID filter (optional)"},
 				"search":     {Type: "string", Description: "Free-text search across title and description (optional)"},
 				"status":     {Type: "string", Description: "Status filter (optional): pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering"},
+				"idea_scope": {Type: "string", Description: "\"only\" returns the Idea Cloud (idea-state items; the normal list hides them) (optional)"},
 				"page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
 			},
 		},
@@ -127,6 +139,7 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 		ProjectID string `json:"project_id"`
 		Search    string `json:"search"`
 		Status    string `json:"status"`
+		IdeaScope string `json:"idea_scope"`
 		PageToken string `json:"page_token"`
 	}
 	_ = json.Unmarshal(raw, &a)
@@ -135,6 +148,12 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 		if st, ok := workItemStatusFromString(a.Status); ok {
 			req.Status = &st
 		}
+	}
+	// idea_scope="only" reads the Idea Cloud (idea-state items are hidden
+	// from the normal list server-side) — the plane surface of the
+	// automation-spawn dedupe gate ("check the Idea Cloud first").
+	if strings.TrimSpace(strings.ToLower(a.IdeaScope)) == "only" {
+		req.IdeaScope = apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA
 	}
 	resp, err := p.wi.ListWorkItems(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -224,13 +243,40 @@ func (p *planeRegistry) createWorkItem(ctx context.Context, raw json.RawMessage)
 		Description:        a.Description,
 		AcceptanceCriteria: a.AcceptanceCriteria,
 		Priority:           a.Priority,
-		RunContext:         p.runID,
+		RunContext:         string(p.runContext),
 	}
 	resp, err := p.wi.CreateWorkItem(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(resp.Msg)
+	return compactPlaneWorkItemCreated(resp.Msg), nil
+}
+
+// compactPlaneWorkItemCreated wraps the create response in a compact
+// labeled envelope. The raw proto JSON marshals status as a bare enum
+// NUMBER (`status: 1` = pending), which a worker can misread as
+// confirmation of a different landing state (the concrete failure that
+// motivated this branch: a synthesizer believed status=1 meant IDEA and
+// reported success while every item landed plain pending). Labeled
+// strings + explicit landed-state fields make the result impossible to
+// misinterpret.
+func compactPlaneWorkItemCreated(msg *apiv1.CreateWorkItemResponse) (json.RawMessage, error) {
+	wi := msg.GetWorkItem()
+	if wi == nil {
+		return json.Marshal(map[string]any{"error": "create returned no work item"})
+	}
+	out := map[string]any{
+		"id":          wi.GetId(),
+		"title":       wi.GetTitle(),
+		"kind":        workItemKindLabel(wi.GetKind()),
+		"status":      workItemStatusLabel(wi.GetStatus()),
+		"parent_id":   wi.GetParentId(),
+		"priority":    wi.GetPriority(),
+		"spawned_by":  wi.GetSpawnedBy(),
+		"spawned_run": wi.GetSpawnedByRunId(),
+		"idea_state":  wi.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA,
+	}
+	return json.Marshal(out)
 }
 
 func (p *planeRegistry) getUsage(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {

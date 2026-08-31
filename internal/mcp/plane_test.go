@@ -60,3 +60,81 @@ func TestWorkItemLabelHelpers(t *testing.T) {
 		t.Fatalf("status label = %q", workItemStatusLabel(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SUCCEEDED))
 	}
 }
+
+// TestCompactPlaneWorkItemCreated regression-tests the two 2026-08-31
+// plane-channel defects: (1) the create relay sent a bare run ID where the
+// run_context JSONB belongs — ProvenanceFromRunContext unmarshal-fails on
+// it, stamping silently no-ops, and idea spawns land as plain pending
+// items invisible to the Idea Cloud; (2) the raw proto response showed
+// `status: 1` (PENDING) with no labels, which the worker misread as IDEA
+// confirmation. The compact envelope must carry labeled status + explicit
+// provenance/idea_state fields so a spawn's landing state is verifiable
+// from the tool response alone.
+func TestCompactPlaneWorkItemCreated(t *testing.T) {
+	t.Run("pending create is labeled plainly — never misreadable as idea", func(t *testing.T) {
+		raw, err := compactPlaneWorkItemCreated(&apiv1.CreateWorkItemResponse{
+			WorkItem: &apiv1.WorkItem{
+				Id:     "wi_1",
+				Title:  "Some proposal",
+				Kind:   apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
+				Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env struct {
+			Status    string `json:"status"`
+			IdeaState bool   `json:"idea_state"`
+		}
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.Status != "pending" {
+			t.Fatalf("status label = %q, want the readable string \"pending\" — a bare enum number (1) got misread as IDEA by a spawning worker", env.Status)
+		}
+		if env.IdeaState {
+			t.Fatal("idea_state must be false for a pending item")
+		}
+	})
+
+	t.Run("idea-state create reports landed idea state + provenance", func(t *testing.T) {
+		raw, err := compactPlaneWorkItemCreated(&apiv1.CreateWorkItemResponse{
+			WorkItem: &apiv1.WorkItem{
+				Id:     "wi_2",
+				Title:  "Spawned idea",
+				Kind:   apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
+				Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA,
+				// The server stamps these from the relayed run_context.
+				SpawnedBy:      "01M17F7E4S340KEXQYFZA0PZZ4",
+				SpawnedByRunId: "01M1AW8G6MSBSKZVEAA9XTDVQN",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env struct {
+			Status     string `json:"status"`
+			IdeaState  bool   `json:"idea_state"`
+			SpawnedBy  string `json:"spawned_by"`
+			SpawnedRun string `json:"spawned_run"`
+			Kind       string `json:"kind"`
+			ParentID   string `json:"parent_id"`
+			Priority   int32  `json:"priority"`
+			ID         string `json:"id"`
+			Title      string `json:"title"`
+		}
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.Status != "idea" {
+			t.Fatalf("status label = %q, want \"idea\"", env.Status)
+		}
+		if !env.IdeaState || env.SpawnedBy == "" || env.SpawnedRun == "" {
+			t.Fatalf("idea landing not verifiable: idea_state=%v spawned_by=%q spawned_run=%q", env.IdeaState, env.SpawnedBy, env.SpawnedRun)
+		}
+		if env.Kind != "feature" || env.ID != "wi_2" || env.Title != "Spawned idea" {
+			t.Fatalf("labels = %q/%q/%q", env.Kind, env.ID, env.Title)
+		}
+	})
+}

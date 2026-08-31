@@ -381,12 +381,25 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		return nil, fmt.Errorf("plane credential: commit: %w", err)
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
-	return map[string]string{
+	env := map[string]string{
 		"ORCHICON_PLANE_URL":           planePublicURL(),
 		"ORCHICON_PLANE_TOKEN":         plaintext,
 		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
-	}, nil
+	}
+	// Relay the run's run_context JSONB (the automation provenance block a
+	// recurring fire writes at fire time) so the plane-channel registry can
+	// stamp created work items with spawned_by/spawned_by_run_id and land
+	// outputs_mode=idea creates in IDEA state — feature 4.1 AC2 on the plane
+	// surface. It rides the same trusted mint path as the token itself: the
+	// control plane injects it, the sidecar relays it verbatim on creates.
+	// A bare run ID is not a run_context (ProvenanceFromRunContext parses
+	// JSON) — sending one instead of this made every plane-path idea spawn
+	// silently land as a plain pending item.
+	if len(run.RunContext) > 0 {
+		env["ORCHICON_RUN_CONTEXT"] = string(run.RunContext)
+	}
+	return env, nil
 }
 
 // automationIdentitySubject returns the identities.subject for a run's
