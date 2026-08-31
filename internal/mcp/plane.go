@@ -136,10 +136,11 @@ func (p *planeRegistry) List() []ToolDef {
 		},
 		{
 			Name:        "orchicon_plane_list_idea_items",
-			Description: "Lists the Idea Cloud in the REAL instance (idea-state automation spawns, hidden from the normal list) — the MANDATORY dedupe gate before spawning: check here first so you never propose something that already exists. Returns the bounded compact envelope {count, items} with id/title/kind/status labels.",
+			Description: "Lists the Idea Cloud in the REAL instance — the MANDATORY dedupe gate before spawning: check ACTIVE (default, pending triage) AND REJECTED (previously dismissed spawns) FIRST so you never propose something that already exists or that a human already rejected. Idea-state items are hidden from the normal list. Returns the bounded compact envelope {count, items} with id/title/kind/status labels.",
 			Properties: map[string]propertySchema{
 				"project_id": {Type: "string", Description: "Project ID filter (optional)"},
 				"search":     {Type: "string", Description: "Free-text search across title and description (optional)"},
+				"state":      {Type: "string", Description: "Which idea population to read (optional): \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns — the rejection memory that must be checked before spawning"},
 			},
 		},
 		{
@@ -359,14 +360,32 @@ func (p *planeRegistry) listIdeaItems(ctx context.Context, raw json.RawMessage) 
 	var a struct {
 		ProjectID string `json:"project_id"`
 		Search    string `json:"search"`
+		State     string `json:"state"`
 	}
 	_ = json.Unmarshal(raw, &a)
-	resp, err := p.wi.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+	req := &apiv1.ListWorkItemsRequest{
 		ProjectId: a.ProjectID,
 		Search:    a.Search,
 		PageSize:  planeListCap + 1,
 		IdeaScope: apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA,
-	}))
+	}
+	// state="rejected" reads the rejected graveyard: dismissed idea spawns
+	// (status='cancelled' WITH spawned provenance), surfaced through the
+	// dedicated ListIdeas RPC. The dedupe gate contract is "ACTIVE then
+	// REJECTED before spawning" — a human's rejection is durable memory.
+	if strings.TrimSpace(strings.ToLower(a.State)) == "rejected" {
+		ideaResp, err := p.wi.ListIdeas(ctx, connect.NewRequest(&apiv1.ListIdeasRequest{
+			ProjectId:      a.ProjectID,
+			Search:         a.Search,
+			PageSize:       planeListCap + 1,
+			IdeaStateScope: apiv1.IdeaStateScope_IDEA_STATE_SCOPE_REJECTED,
+		}))
+		if err != nil {
+			return nil, err
+		}
+		return compactPlaneWorkItems(ideaResp.Msg.Ideas)
+	}
+	resp, err := p.wi.ListWorkItems(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

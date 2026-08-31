@@ -158,6 +158,11 @@ type WorkItemServiceClient interface {
 	// (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
 	// Scoped to status='idea' by construction — it shares the 4.1 idea gate
 	// with ListWorkItems(IdeaScope=only), so membership can never diverge.
+	// idea_state_scope=REJECTED reads the rejected graveyard instead:
+	// dismissed idea spawns (status='cancelled' WITH automation provenance),
+	// retained so rejected ideas stay visible, readable history — and so an
+	// automation's dedupe gate can never re-propose something a human
+	// already rejected.
 	ListIdeas(context.Context, *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error)
 	// PromoteIdea approves an idea: it transitions the idea-state work item
 	// to a normal pending work item (leaves idea state, becomes queryable in
@@ -488,6 +493,11 @@ type WorkItemServiceHandler interface {
 	// (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
 	// Scoped to status='idea' by construction — it shares the 4.1 idea gate
 	// with ListWorkItems(IdeaScope=only), so membership can never diverge.
+	// idea_state_scope=REJECTED reads the rejected graveyard instead:
+	// dismissed idea spawns (status='cancelled' WITH automation provenance),
+	// retained so rejected ideas stay visible, readable history — and so an
+	// automation's dedupe gate can never re-propose something a human
+	// already rejected.
 	ListIdeas(context.Context, *connect.Request[v1.ListIdeasRequest]) (*connect.Response[v1.ListIdeasResponse], error)
 	// PromoteIdea approves an idea: it transitions the idea-state work item
 	// to a normal pending work item (leaves idea state, becomes queryable in

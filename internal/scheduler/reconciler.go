@@ -2447,13 +2447,6 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
 	}
 
-	// Cross-fire facts forward: same carry-forward block the workflow
-	// path renders. This path dispatches work items directly (the
-	// TaskReconciler), which includes standalone dispatches of items
-	// whose previous workflow run stamped an acceptance review — the
-	// block renders "" when there is nothing to carry.
-	sb.WriteString(carriedFactsBlock(task.AcceptanceReview))
-
 	// Recovery context: same-worker recovery-resumed dispatch reads the
 	// seed and points at .orchicon/worker.recovery (transcript tail +
 	// already-done directive). A different worker / fresh dispatch gets

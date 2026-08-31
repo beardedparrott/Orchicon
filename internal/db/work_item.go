@@ -258,6 +258,13 @@ type ListWorkItemsFilter struct {
 	// exclude idea-state items from the normal list; "only" = Idea Cloud
 	// view (status='idea', provenance carried).
 	IdeaScope string
+	// IdeaStateScope selects the idea population for the Idea Cloud
+	// surfaces (ListIdeas): "" (default) = active idea-state items;
+	// "rejected" = dismissed idea spawns (status='cancelled' WITH spawned
+	// provenance — the exact state DismissIdea produces), the rejected
+	// history the automation dedupe gate also reads. Only meaningful when
+	// IdeaScope="only".
+	IdeaStateScope string
 	// RecurringFilter scopes the recurring split: ""/"all" = no filter,
 	// "exclude" = only non-recurring (recurring_schedule IS NULL),
 	// "only" = only recurring (recurring_schedule IS NOT NULL).
@@ -289,9 +296,22 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		q += ` AND recurring_schedule IS NULL`
 	}
 	// Idea-state gate: the normal list excludes idea items; the Idea Cloud
-	// view opts in with "only". 'idea' is a literal status (not interpolated).
-	switch f.IdeaScope {
-	case "only":
+	// view opts in with "only". The "only" + idea_state_scope="rejected"
+	// combination reads the rejected graveyard instead of the Idea Cloud:
+	// dismissed spawns are status='cancelled' items that still carry
+	// spawned_by provenance — the exact state DismissIdea writes, so the
+	// predicate is retroactive (every rejection ever made is visible with
+	// no backfill) and shares the provenance columns, never a parallel
+	// schema. A generic (human-created) cancelled item never carries
+	// provenance, so the normal cancelled backlog can never leak into the
+	// graveyard — EXCEPT a previously-approved spawn run to completion and
+	// later cancelled; that reads as "tried and killed," exactly the dedupe
+	// signal the gate wants. 'idea'/'cancelled' are literal statuses (not
+	// interpolated).
+	switch {
+	case f.IdeaScope == "only" && f.IdeaStateScope == "rejected":
+		q += ` AND status = 'cancelled' AND spawned_by_work_item_id IS NOT NULL`
+	case f.IdeaScope == "only":
 		q += ` AND status = 'idea'`
 	default:
 		q += ` AND status <> 'idea'`

@@ -203,6 +203,31 @@ func TestDismissIdea(t *testing.T) {
 			t.Fatal("dismissed idea still appears in the Idea Cloud list")
 		}
 	}
+	// The dismissal must be REACHABLE, not lost: the rejected scope is
+	// exactly the dismissed-spawn state (cancelled + retained provenance).
+	rejResp, err := s.ListIdeas(ctx, connect.NewRequest(&apiv1.ListIdeasRequest{
+		ProjectId:      projectID,
+		PageSize:       100,
+		IdeaStateScope: apiv1.IdeaStateScope_IDEA_STATE_SCOPE_REJECTED,
+	}))
+	if err != nil {
+		t.Fatalf("ListIdeas(REJECTED): %v", err)
+	}
+	foundRejected := false
+	for _, w := range rejResp.Msg.Ideas {
+		if w.Id == idea.ID {
+			if w.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+				t.Fatalf("rejected idea status = %v, want cancelled", w.Status)
+			}
+			if w.SpawnedBy != spawn.ID {
+				t.Fatalf("rejected idea spawned_by = %q, want %q (provenance readable in the graveyard)", w.SpawnedBy, spawn.ID)
+			}
+			foundRejected = true
+		}
+	}
+	if !foundRejected {
+		t.Fatal("dismissed idea missing from the REJECTED scope")
+	}
 }
 
 func TestDismissIdeaRejectsNonIdea(t *testing.T) {
@@ -351,5 +376,93 @@ func TestGenericMutationPathsRejectIdea(t *testing.T) {
 		if !byID[id] {
 			t.Fatalf("idea %s disappeared from the Idea Cloud after a rejected mutation", id)
 		}
+	}
+}
+
+// TestListIdeasRejectedScope pins the Idea Cloud REJECTED section
+// (IdeaStateScope=REJECTED): the graveyard is EXACTLY dismissed idea spawns
+// (status='cancelled' WITH spawned provenance — what DismissIdea writes), a
+// plain (human-created) cancelled item never leaks in, an approved idea
+// that was subsequently cancelled still reads as rejected history ("tried
+// and killed" — the dedupe signal), and the ACTIVE list is unchanged by any
+// of it.
+func TestListIdeasRejectedScope(t *testing.T) {
+	pool, s, ctx, tenantID, projectID := ideaEnv(t)
+	spawn := createPlainItem(t, pool, tenantID, projectID, "Automation R", domain.WorkItemPending)
+
+	// Idea A: dismissed via the sanctioned path -> belongs in REJECTED.
+	dismissed := createIdeaItem(t, pool, tenantID, projectID, "Rejected idea", spawn.ID, "run-r1")
+	if _, err := s.DismissIdea(ctx, connect.NewRequest(&apiv1.DismissIdeaRequest{Id: dismissed.ID})); err != nil {
+		t.Fatalf("DismissIdea: %v", err)
+	}
+
+	// Idea B: promoted (approved) then cancelled like a normal item —
+	// still provenance-carrying, so it reads as rejected history too.
+	approved := createIdeaItem(t, pool, tenantID, projectID, "Approved then cancelled", spawn.ID, "run-r2")
+	if _, err := s.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: approved.ID})); err != nil {
+		t.Fatalf("PromoteIdea: %v", err)
+	}
+	cancelled, err := s.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: approved.ID}))
+	if err != nil {
+		t.Fatalf("DeleteWorkItem on the approved spawn: %v", err)
+	}
+	if cancelled.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+		t.Fatalf("approved spawn status = %v, want cancelled", cancelled.Msg.WorkItem.Status)
+	}
+
+	// A plain human-created cancelled item — NO provenance: must never
+	// leak into the graveyard.
+	plain := createPlainItem(t, pool, tenantID, projectID, "Plain cancelled", domain.WorkItemPending)
+	if _, err := s.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: plain.ID})); err != nil {
+		t.Fatalf("DeleteWorkItem plain: %v", err)
+	}
+
+	// An untouched idea stays in ACTIVE and out of REJECTED.
+	live := createIdeaItem(t, pool, tenantID, projectID, "Live idea", spawn.ID, "run-r3")
+
+	rejResp, err := s.ListIdeas(ctx, connect.NewRequest(&apiv1.ListIdeasRequest{
+		ProjectId:      projectID,
+		PageSize:       100,
+		IdeaStateScope: apiv1.IdeaStateScope_IDEA_STATE_SCOPE_REJECTED,
+	}))
+	if err != nil {
+		t.Fatalf("ListIdeas REJECTED: %v", err)
+	}
+	rejByID := map[string]apiv1.WorkItemStatus{}
+	for _, w := range rejResp.Msg.Ideas {
+		rejByID[w.Id] = w.Status
+	}
+	if st, ok := rejByID[dismissed.ID]; !ok || st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+		t.Fatalf("dismissed idea missing from REJECTED (found=%v status=%v)", ok, st)
+	}
+	if st, ok := rejByID[approved.ID]; !ok || st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+		t.Fatalf("approved-then-cancelled spawn missing from REJECTED (found=%v status=%v) — tried-and-killed must read as rejected history", ok, st)
+	}
+	if _, ok := rejByID[plain.ID]; ok {
+		t.Fatal("plain cancelled item (no provenance) leaked into REJECTED")
+	}
+	if _, ok := rejByID[live.ID]; ok {
+		t.Fatal("live idea-state item must never appear in REJECTED")
+	}
+
+	// The spawn parent badge resolves in the graveyard too.
+	badgeFound := false
+	for _, w := range rejResp.Msg.Ideas {
+		if w.Id == dismissed.ID && w.SpawnedByTitle == "Automation R" {
+			badgeFound = true
+		}
+	}
+	if !badgeFound {
+		t.Fatal("rejected idea's spawned_by_title badge did not resolve")
+	}
+
+	// ACTIVE unchanged: exactly the live idea; the badge on a REJECTED
+	// read never disturbs parity of the idea-side (4.1) gate.
+	actResp, err := s.ListIdeas(ctx, connect.NewRequest(&apiv1.ListIdeasRequest{ProjectId: projectID, PageSize: 100}))
+	if err != nil {
+		t.Fatalf("ListIdeas ACTIVE: %v", err)
+	}
+	if len(actResp.Msg.Ideas) != 1 || actResp.Msg.Ideas[0].Id != live.ID {
+		t.Fatalf("ACTIVE scope = %d ideas, want exactly the live idea", len(actResp.Msg.Ideas))
 	}
 }

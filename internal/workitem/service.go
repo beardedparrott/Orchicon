@@ -600,10 +600,25 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 // from the exclusion gate that keeps ideas out of the normal Work Items
 // scope — the two are the same SQL predicate by construction. The response
 // also attaches depends_on / blocked_by exactly like the general list.
+//
+// IdeaStateScope selects the population: ACTIVE (default) reads the Idea
+// Cloud; REJECTED reads the rejected graveyard — dismissed idea spawns
+// (status='cancelled' WITH spawned provenance), the durable rejection
+// memory the automation dedupe gate reads so a human's rejection is never
+// re-proposed.
 func (s *Service) ListIdeas(ctx context.Context, req *connect.Request[apiv1.ListIdeasRequest]) (*connect.Response[apiv1.ListIdeasResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Map the proto scope enum onto the store key; UNSPECIFIED keeps the
+	// feature-5.1 behavior byte-for-byte (ACTIVE).
+	var stateScope string
+	switch req.Msg.IdeaStateScope {
+	case apiv1.IdeaStateScope_IDEA_STATE_SCOPE_REJECTED:
+		stateScope = domain.IdeaStateRejected
+	default:
+		stateScope = domain.IdeaStateActive
 	}
 	f := db.ListWorkItemsFilter{
 		TenantID:  tenantID,
@@ -615,8 +630,11 @@ func (s *Service) ListIdeas(ctx context.Context, req *connect.Request[apiv1.List
 		SortOrder: req.Msg.SortOrder,
 		// The idea surface always asks for idea-state items. IdeaScope="only"
 		// and the default EXCLUDE share the exact `status = 'idea'` predicate,
-		// so membership parity is guaranteed by construction.
-		IdeaScope: domain.IdeaScopeOnly,
+		// so membership parity is guaranteed by construction. REJECTED swaps
+		// the same gate's population for dismissed spawns (status='cancelled'
+		// WITH provenance) — still never a parallel query.
+		IdeaScope:      domain.IdeaScopeOnly,
+		IdeaStateScope: stateScope,
 	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -709,10 +727,13 @@ func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.Pr
 // DismissIdea discards an idea (feature 5.1): it transitions an idea-state
 // work item to cancelled — the soft-delete/cancel terminal, consistent with
 // DeleteWorkItem — via CAS on the current version. The item leaves idea
-// state (so it drops out of the Idea Cloud list) and becomes a cancelled
-// terminal item no active query surfaces as work; provenance is retained as
-// a record of where it came from. Emits the work_item.dismissed outbox event
-// and the work_item.dismissed audit row in the same transaction.
+// state (so it drops out of the Idea Cloud list) but stays readable as
+// REJECTED history: the cancelled item retains its spawned_by provenance,
+// which is exactly the rejected-graveyard predicate ListIdeas
+// (IDEA_STATE_SCOPE_REJECTED) queries — nothing else needed to land there.
+// The item is a cancelled terminal item no active query surfaces as work.
+// Emits the work_item.dismissed outbox event and the work_item.dismissed
+// audit row in the same transaction.
 func (s *Service) DismissIdea(ctx context.Context, req *connect.Request[apiv1.DismissIdeaRequest]) (*connect.Response[apiv1.DismissIdeaResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {

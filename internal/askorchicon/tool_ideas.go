@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -18,10 +19,14 @@ import (
 // shares, so list membership can never diverge from the exclusion gate that
 // keeps ideas out of the normal Work Items scope — the two are the same SQL
 // predicate by construction. Supports project_id / search / sort / pagination.
+// state="rejected" reads the REJECTED section instead: dismissed idea spawns
+// (status='cancelled' WITH spawned provenance) — the durable rejection
+// history, and the same population the automation dedupe gate checks.
 func toolListIdeas(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
 		Search    string `json:"search"`
+		State     string `json:"state"`
 		SortBy    string `json:"sort_by"`
 		SortOrder string `json:"sort_order"`
 		PageToken string `json:"page_token"`
@@ -43,15 +48,20 @@ func toolListIdeas(ctx context.Context, pool *db.Pool, args json.RawMessage) (js
 	if pageSize <= 0 || pageSize > listCap+1 {
 		pageSize = listCap + 1
 	}
+	stateScope := domain.IdeaStateActive
+	if strings.EqualFold(strings.TrimSpace(params.State), "rejected") {
+		stateScope = domain.IdeaStateRejected
+	}
 	items, err := db.ListWorkItems(ctx, ttx.Tx, db.ListWorkItemsFilter{
-		TenantID:  tenantID,
-		ProjectID: params.ProjectID,
-		Search:    params.Search,
-		SortBy:    params.SortBy,
-		SortOrder: params.SortOrder,
-		PageSize:  pageSize,
-		AfterID:   params.PageToken,
-		IdeaScope: domain.IdeaScopeOnly,
+		TenantID:       tenantID,
+		ProjectID:      params.ProjectID,
+		Search:         params.Search,
+		SortBy:         params.SortBy,
+		SortOrder:      params.SortOrder,
+		PageSize:       pageSize,
+		AfterID:        params.PageToken,
+		IdeaScope:      domain.IdeaScopeOnly,
+		IdeaStateScope: stateScope,
 	})
 	if err != nil {
 		return nil, err

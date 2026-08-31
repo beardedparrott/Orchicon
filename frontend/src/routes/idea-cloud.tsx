@@ -1,12 +1,16 @@
 // Idea Cloud (feature 5.2).
 //
-// List-only page for automation-produced ideas (status=idea). An idea is a
-// work item a recurring fire with "Outputs: ideas" spawned; it is excluded
-// from every normal work-item view until a human triages it here. Approve
-// promotes it to a normal pending work item (it leaves Idea Cloud and
-// appears in Work Items); Dismiss discards it (cancelled). Both are
-// server-enforced status transitions — the card disappears on the next
-// refetch because ListIdeas is scoped to status='idea' by construction.
+// List-only page for automation-produced ideas, with two sections. ACTIVE
+// (default): automation-produced ideas in status=idea — spawned when a
+// recurring fire with "Outputs: ideas" fired, excluded from every normal
+// work-item view until a human triages them here. REJECTED: idea spawns a
+// human dismissed (cancelled + retained provenance), kept as readable
+// history — and as the memory the automation dedupe gate checks before
+// spawning, so a rejected idea is never silently re-proposed. Approve
+// promotes an idea to a normal pending work item (it leaves Idea Cloud and
+// appears in Work Items); Dismiss discards it into Rejected. Both are
+// server-enforced status transitions — the card moves sections on the next
+// refetch because ListIdeas is scoped by server-side status predicates.
 //
 // Cheap-by-design: list-only with per-card expand (click a card to reveal
 // the full description + acceptance criteria). No dedicated detail route.
@@ -49,6 +53,9 @@ function IdeaCloudPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
+  // Which section is shown: the Idea Cloud (active) or the rejected
+  // graveyard. Rejected cards are read-only history — no promote path.
+  const [section, setSection] = useState<"active" | "rejected">("active");
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const hasProjects = projects && projects.length > 0;
@@ -66,6 +73,7 @@ function IdeaCloudPage() {
     search: debouncedSearch || undefined,
     sortBy: sortBy || undefined,
     sortOrder: sortOrder || undefined,
+    state: section,
   });
 
   const selectClass =
@@ -91,13 +99,13 @@ function IdeaCloudPage() {
   const handleDismiss = (idea: WorkItem) => {
     if (
       !window.confirm(
-        `Dismiss this idea?\n\n"${idea.title}" will be cancelled and removed from Idea Cloud.`,
+        `Dismiss this idea?\n\n"${idea.title}" will be cancelled and moved to the Rejected section — it stays visible there as history, and research fires will see it as rejected instead of re-proposing it.`,
       )
     )
       return;
     dismiss.mutate(idea.id, {
       onSuccess: (item) => {
-        toast.success(`Dismissed "${item.title}".`);
+        toast.success(`Dismissed "${item.title}" (moved to Rejected).`);
       },
       onError: (e) => {
         toast.error(`Failed to dismiss: ${String(e)}`);
@@ -118,13 +126,48 @@ function IdeaCloudPage() {
             <span className="font-medium text-foreground"> Approve</span> promotes
             an idea to a normal work item;{" "}
             <span className="font-medium text-foreground">Dismiss</span> discards
-            it.
+            it into Rejected, where it stays as readable history.
           </p>
         </div>
         <LiveRefreshIndicator lastUpdated={dataUpdatedAt} isFetching={isFetching} />
       </div>
 
       <div className="flex flex-wrap items-center gap-3 shrink-0">
+        <div
+          role="tablist"
+          aria-label="Idea section"
+          className="flex h-9 items-center rounded-xl glass-input p-1"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={section === "active"}
+            onClick={() => setSection("active")}
+            className={cn(
+              "h-7 rounded-lg px-3 text-sm transition-colors",
+              section === "active"
+                ? "bg-background shadow-sm font-medium text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Active
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={section === "rejected"}
+            onClick={() => setSection("rejected")}
+            className={cn(
+              "h-7 rounded-lg px-3 text-sm transition-colors",
+              section === "rejected"
+                ? "bg-background shadow-sm font-medium text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Rejected
+          </button>
+        </div>
+
         <select
           value={projectId}
           onChange={(e) => setProjectId(e.target.value)}
@@ -211,7 +254,7 @@ function IdeaCloudPage() {
               </CardHeader>
             </Card>
           )}
-          {!isLoading && !error && empty && (
+          {!isLoading && !error && empty && section === "active" && (
             <Card className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-lime-500/15 text-lime-600 dark:text-lime-300">
                 <Lightbulb aria-hidden="true" className="h-6 w-6" />
@@ -225,12 +268,27 @@ function IdeaCloudPage() {
               </div>
             </Card>
           )}
+          {!isLoading && !error && empty && section === "rejected" && (
+            <Card className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-300">
+                <X aria-hidden="true" className="h-6 w-6" />
+              </span>
+              <div>
+                <p className="font-medium text-foreground">Nothing rejected yet</p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Dismissed ideas land here as history. Research fires read
+                  this section before spawning, so a rejection is remembered.
+                </p>
+              </div>
+            </Card>
+          )}
           {!isLoading && !error && !empty && (
             <ul className="flex flex-col gap-3">
               {(ideas ?? []).map((idea) => (
                 <IdeaCard
                   key={idea.id}
                   idea={idea}
+                  rejected={section === "rejected"}
                   approving={promote.isPending}
                   dismissing={dismiss.isPending}
                   onApprove={() => handleApprove(idea)}
@@ -247,12 +305,14 @@ function IdeaCloudPage() {
 
 function IdeaCard({
   idea,
+  rejected,
   approving,
   dismissing,
   onApprove,
   onDismiss,
 }: {
   idea: WorkItem;
+  rejected: boolean;
   approving: boolean;
   dismissing: boolean;
   onApprove: () => void;
@@ -360,28 +420,38 @@ function IdeaCard({
         </div>
       )}
 
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          size="sm"
-          variant="default"
-          onClick={onApprove}
-          disabled={approving || dismissing}
-        >
-          Approve
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onDismiss}
-          disabled={approving || dismissing}
-          className={cn(
-            isDark ? "text-rose-300 hover:text-rose-200" : "text-rose-600 hover:text-rose-500",
-          )}
-        >
-          <X aria-hidden="true" className="h-3.5 w-3.5" />
-          Dismiss
-        </Button>
-      </div>
+      {rejected ? (
+        // Rejected history is read-only: the sanctioned lifecycle is
+        // promote/dismiss from ACTIVE; a dismissed spawn stays a cancelled
+        // terminal item here.
+        <p className="mt-3 text-xs text-muted-foreground">
+          Rejected — kept as history; research fires check this section before
+          spawning.
+        </p>
+      ) : (
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="default"
+            onClick={onApprove}
+            disabled={approving || dismissing}
+          >
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onDismiss}
+            disabled={approving || dismissing}
+            className={cn(
+              isDark ? "text-rose-300 hover:text-rose-200" : "text-rose-600 hover:text-rose-500",
+            )}
+          >
+            <X aria-hidden="true" className="h-3.5 w-3.5" />
+            Dismiss
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }
