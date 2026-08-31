@@ -249,7 +249,7 @@ func (p *planeRegistry) createWorkItem(ctx context.Context, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	return compactPlaneWorkItemCreated(resp.Msg), nil
+	return compactPlaneWorkItemCreated(resp.Msg)
 }
 
 // compactPlaneWorkItemCreated wraps the create response in a compact
