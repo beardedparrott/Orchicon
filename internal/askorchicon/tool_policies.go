@@ -29,10 +29,11 @@ func toolListPolicies(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	if policies == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(policies))
+	for _, p := range policies {
+		out = append(out, compactPolicy(p))
 	}
-	return json.Marshal(policies)
+	return json.Marshal(newCompactList(out, "get_policy"))
 }
 
 func toolGetPolicy(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

@@ -32,7 +32,9 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	var params struct {
 		ProjectID string `json:"project_id"`
 		Status    string `json:"status"`
+		Kind      string `json:"kind"`
 		Search    string `json:"search"`
+		PageToken string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -47,15 +49,26 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		TenantID:  tenantID,
 		ProjectID: params.ProjectID,
 		Status:    params.Status,
+		Kind:      params.Kind,
 		Search:    params.Search,
+		AfterID:   params.PageToken,
+		// Fetch one extra row so truncation is detected without ever loading
+		// the whole backlog's fat columns (description, acceptance criteria,
+		// budgets, context files…) — the "list is HUGE" bloat.
+		PageSize: listCap + 1,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if items == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(items))
+	for _, r := range items {
+		out = append(out, compactWorkItem(r))
 	}
-	return json.Marshal(items)
+	env := newCompactList(out, "get_work_item")
+	if len(items) > listCap {
+		env.setNextPage(items[listCap-1].ID)
+	}
+	return json.Marshal(env)
 }
 
 func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

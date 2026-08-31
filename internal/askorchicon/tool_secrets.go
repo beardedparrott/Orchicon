@@ -37,10 +37,13 @@ func toolListSecrets(ctx context.Context, pool *db.Pool, kek []byte, args json.R
 	if err != nil {
 		return nil, err
 	}
-	if list == nil {
-		list = []secrets.Secret{}
+	out := make([]any, 0, len(list))
+	for _, s := range list {
+		out = append(out, s) // secrets.Secret is already a value-less compact row
 	}
-	return json.Marshal(map[string]any{"secrets": list, "next_page_token": next})
+	env := newCompactList(out, "")
+	env.NextPageToken = next
+	return json.Marshal(env)
 }
 
 func toolCreateSecret(ctx context.Context, pool *db.Pool, kek []byte, args json.RawMessage) (json.RawMessage, error) {

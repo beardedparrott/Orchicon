@@ -33,9 +33,9 @@ func (r *worktreeRegistry) List() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        "batch_read",
-			Description: "Read several files (or every immediate file in a directory) in a single call. Use this instead of one-at-a-time `read`s. Returns content with a per-file header, hard output caps, and explicit truncation markers so you never need to re-read a file for content you already have. Paths are project-relative.",
+			Description: "Read several files (or every file in a directory subtree) in a single call. Use this instead of one-at-a-time `read`s. Returns content with a per-file header, hard output caps, and explicit truncation markers so you never need to re-read a file for content you already have. Paths are project-relative; a directory is expanded recursively (bounded, skips .git/node_modules/dist/build/vendor).",
 			Properties: map[string]propertySchema{
-				"paths":        {Type: "array", Description: "Project-relative file or directory paths to read in one call."},
+				"paths":        {Type: "array", Description: "Project-relative file or directory paths to read in one call (directories expand recursively)."},
 				"max_bytes":    {Type: "integer", Description: "Total output cap (default 128000)."},
 				"per_file_max": {Type: "integer", Description: "Per-file cap (default 32000)."},
 				"line_numbers": {Type: "boolean", Description: "Prefix each line with its 1-based line number."},
@@ -44,7 +44,7 @@ func (r *worktreeRegistry) List() []ToolDef {
 		},
 		{
 			Name:        "batch_grep",
-			Description: "Search several literal patterns across a subtree in a single call. Use this instead of one pattern per `grep` call. Returns only file:line matches (plus optional context), capped at a bounded number of matches. Paths are project-relative; omit `paths` to search the whole worktree.",
+			Description: "Search several literal patterns across a subtree in a single call. Use this instead of one pattern per `grep` call. Returns only file:line matches (plus optional context), capped at a bounded number of matches. Paths are project-relative; a path naming a directory searches its WHOLE subtree recursively (skips .git/node_modules/dist/build/vendor); omit `paths` to search the whole worktree. If the walk hits its file cap the summary says so.",
 			Properties: map[string]propertySchema{
 				"patterns":      {Type: "array", Description: "Literal substrings to match (non-regex)."},
 				"paths":         {Type: "array", Description: "Project-relative paths/subtree to search (default [\".\"])."},

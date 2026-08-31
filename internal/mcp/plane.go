@@ -66,11 +66,12 @@ func (p *planeRegistry) List() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        "orchicon_plane_list_work_items",
-			Description: "Lists work items in the REAL instance (the plane this run was created on) — role-scoped read of the current backlog. Use this to see what already exists instead of the sandbox tools.",
+			Description: "Lists work items in the REAL instance (the plane this run was created on) — role-scoped read of the current backlog. Use this to see what already exists instead of the sandbox tools. Returns a bounded compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or branch to orchicon_plane_get_work_item for full detail.",
 			Properties: map[string]propertySchema{
 				"project_id": {Type: "string", Description: "Project ID filter (optional)"},
 				"search":     {Type: "string", Description: "Free-text search across title and description (optional)"},
 				"status":     {Type: "string", Description: "Status filter (optional): pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering"},
+				"page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
 			},
 		},
 		{
@@ -126,9 +127,10 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 		ProjectID string `json:"project_id"`
 		Search    string `json:"search"`
 		Status    string `json:"status"`
+		PageToken string `json:"page_token"`
 	}
 	_ = json.Unmarshal(raw, &a)
-	req := &apiv1.ListWorkItemsRequest{ProjectId: a.ProjectID, Search: a.Search, PageSize: 100}
+	req := &apiv1.ListWorkItemsRequest{ProjectId: a.ProjectID, Search: a.Search, PageSize: planeListCap + 1, PageToken: a.PageToken}
 	if a.Status != "" {
 		if st, ok := workItemStatusFromString(a.Status); ok {
 			req.Status = &st
@@ -138,7 +140,45 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(resp.Msg.WorkItems)
+	return compactPlaneWorkItems(resp.Msg.WorkItems)
+}
+
+// planeListCap caps how many items the plane channel's list tools return in
+// one call. A list is for orienting — the worker branches to get_work_item
+// for detail. Unbounded full-message lists were the "the list is HUGE"
+// context bloat on the real backlog.
+const planeListCap = 25
+
+// compactPlaneWorkItems wraps a work-item page in the bounded envelope
+// {count, truncated, note, items} with readable kind/status labels, so the
+// model sees a consumable backlog and knows when to narrow or branch.
+func compactPlaneWorkItems(items []*apiv1.WorkItem) (json.RawMessage, error) {
+	rows := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, map[string]any{
+			"id": it.Id, "title": it.Title,
+			"kind":   workItemKindLabel(it.Kind),
+			"status": workItemStatusLabel(it.Status),
+			"priority": it.Priority,
+		})
+	}
+	out := map[string]any{"count": len(rows), "items": rows}
+	if len(rows) > planeListCap {
+		out["count"] = planeListCap
+		out["truncated"] = true
+		out["items"] = rows[:planeListCap]
+		out["next_page_token"] = items[planeListCap-1].Id
+		out["note"] = fmt.Sprintf("%d more item(s) not shown — pass next_page_token to page through the rest, narrow with the search/status/project filters, or use orchicon_plane_get_work_item for full detail", len(rows)-planeListCap)
+	}
+	return json.Marshal(out)
+}
+
+func workItemKindLabel(k apiv1.WorkItemKind) string {
+	return strings.ToLower(strings.TrimPrefix(k.String(), "WORK_ITEM_KIND_"))
+}
+
+func workItemStatusLabel(s apiv1.WorkItemStatus) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "WORK_ITEM_STATUS_"))
 }
 
 func (p *planeRegistry) getWorkItem(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {

@@ -46,7 +46,6 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev.sh"
       PORTS="-p 8080:8080 -p 3002:3000"
       GRAFANA_URL="http://localhost:8080/grafana"
-      PLANE_PUBLIC_URL="http://172.17.0.1:8080"
       ;;
     prod)
       NAME="orchicon-cnt-prod"
@@ -56,7 +55,6 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev-prod.sh"
       PORTS="-p 8091:8080 -p 3003:3000"
       GRAFANA_URL="http://localhost:8091/grafana"
-      PLANE_PUBLIC_URL="http://172.17.0.1:8091"
       ;;
     *)
       echo "Unknown instance: $inst (use dev|prod)" >&2
@@ -444,7 +442,6 @@ up_instance() {
     --log-opt max-file=7 \
     ${PORTS} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
-    -e ORCHICON_PLANE_PUBLIC_URL="$PLANE_PUBLIC_URL" \
     -e "ORCHICON_HOST_UID=$(id -u)" \
     -e "ORCHICON_HOST_GID=$(id -g)" \
     -e "ORCHICON_HOST_HOME=$HOME" \

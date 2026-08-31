@@ -25,6 +25,7 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 		StartTime  string `json:"start_time"`
 		EndTime    string `json:"end_time"`
 		PageSize   int    `json:"page_size"`
+		PageToken  string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		if err := json.Unmarshal(args, &params); err != nil {
@@ -52,7 +53,7 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 	}
 	defer ttx.Rollback(ctx)
 	rows, err := pool.ListAuditEvents(ctx, tenantID,
-		params.Action, params.ActorID, params.TargetType, params.TargetID, "", params.PageSize,
+		params.Action, params.ActorID, params.TargetType, params.TargetID, params.PageToken, params.PageSize,
 		startTime, endTime)
 	if err != nil {
 		return nil, err
@@ -76,7 +77,7 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 		TraceID         string `json:"trace_id"`
 		OccurredAt      string `json:"occurred_at"`
 	}
-	out := make([]eventView, 0, len(rows))
+	out := make([]any, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, eventView{
 			ID:              r.ID,
@@ -93,7 +94,15 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 			OccurredAt:      r.OccurredAt.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
-	return json.Marshal(out)
+	// The audit list IS the detail (no get_audit_event exists), so the note
+	// points at the list's own filters; rows are capped and pageable via the
+	// returned next_page_token (the DB does composite (occurred_at, id)
+	// keyset pagination).
+	env := newCompactList(out, "")
+	if len(rows) > listCap {
+		env.setNextPage(rows[listCap-1].ID)
+	}
+	return json.Marshal(env)
 }
 
 // parseToolTime parses an optional RFC3339 time filter. The empty string

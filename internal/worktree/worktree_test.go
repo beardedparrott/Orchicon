@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,92 @@ func TestBatchGrepRejectsTraversal(t *testing.T) {
 	base := t.TempDir()
 	if _, err := BatchGrep(base, GrepArgs{Patterns: []string{"x"}, Paths: []string{"../"}}); err == nil {
 		t.Fatal("expected a path-traversal error")
+	}
+}
+
+// TestBatchGrepRecursesIntoSubtree pins the root-cause fix for
+// "batch_grep: no files to search (no matching files for paths: internal)" —
+// a directory path must search its WHOLE subtree, not just its immediate
+// files (internal/ and proto/ contain only subdirectories, so the old
+// immediate-files-only expansion found nothing).
+func TestBatchGrepRecursesIntoSubtree(t *testing.T) {
+	base := t.TempDir()
+	writeFile(t, base, "internal/x/a.go", "package x\n")
+	writeFile(t, base, "internal/x/y/b.go", "package y\nneedle here\n")
+	out, err := BatchGrep(base, GrepArgs{Patterns: []string{"needle"}, Paths: []string{"internal"}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "internal/x/y/b.go") {
+		t.Fatalf("expected a match in the nested file, got:\n%s", out)
+	}
+	if strings.Contains(out, "no files to search") {
+		t.Fatalf("subtree search must not report no files:\n%s", out)
+	}
+}
+
+func TestBatchReadRecursesIntoSubtree(t *testing.T) {
+	base := t.TempDir()
+	writeFile(t, base, "docs/a.md", "alpha\n")
+	writeFile(t, base, "docs/sub/b.md", "beta\n")
+	out, err := BatchRead(base, ReadArgs{Paths: []string{"docs"}, MaxBytes: 100000})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Fatalf("directory expansion should recurse into subdirectories, got:\n%s", out)
+	}
+}
+
+// TestBatchGrepPrunesNoiseDirs verifies the recursive walk skips VCS
+// metadata and vendored/build output — a whole-tree search must never
+// return matches from .git or node_modules.
+func TestBatchGrepPrunesNoiseDirs(t *testing.T) {
+	base := t.TempDir()
+	writeFile(t, base, ".git/config", "needle in git\n")
+	writeFile(t, base, "node_modules/pkg/index.js", "needle in node_modules\n")
+	writeFile(t, base, "src/real.go", "real needle\n")
+	out, err := BatchGrep(base, GrepArgs{Patterns: []string{"needle"}, Paths: []string{"."}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "src/real.go") {
+		t.Fatalf("expected the real match, got:\n%s", out)
+	}
+	if strings.Contains(out, ".git/") || strings.Contains(out, "node_modules/") {
+		t.Fatalf("pruned dirs must not be searched:\n%s", out)
+	}
+}
+
+// TestBatchGrepReportsWalkCap verifies a truncated walk is flagged in the
+// summary, so a partial search is never mistaken for an exhaustive one.
+func TestBatchGrepReportsWalkCap(t *testing.T) {
+	base := t.TempDir()
+	for i := 0; i < defaultMaxGrepFiles+1; i++ {
+		writeFile(t, base, "many/f"+fmt.Sprint(i)+".txt", "x")
+	}
+	out, err := BatchGrep(base, GrepArgs{Patterns: []string{"needle"}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "walk capped at 512 files") {
+		t.Fatalf("expected the walk-cap note in the summary, got:\n%s", out)
+	}
+}
+
+// TestBatchReadReportsWalkCap mirrors the grep cap test for batch_read's
+// read-sized walk caps.
+func TestBatchReadReportsWalkCap(t *testing.T) {
+	base := t.TempDir()
+	for i := 0; i < defaultMaxFiles+1; i++ {
+		writeFile(t, base, "many/f"+fmt.Sprint(i)+".txt", "x")
+	}
+	out, err := BatchRead(base, ReadArgs{Paths: []string{"many"}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(out, "walk capped at 64 files") {
+		t.Fatalf("expected the walk-cap note in the summary, got:\n%s", out)
 	}
 }
 

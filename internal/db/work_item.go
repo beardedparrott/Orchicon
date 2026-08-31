@@ -242,6 +242,7 @@ type ListWorkItemsFilter struct {
 	ProjectID string
 	ParentID  *string // nil = all; empty string = top-level only
 	Status    string  // empty = all statuses
+	Kind      string  // empty = all kinds (epic/feature/task/subtask)
 	Search    string  // ILIKE across title and description
 	SortBy    string  // "title", "priority", "created_at" (default)
 	SortOrder string  // "asc" or "desc" (default "asc")
@@ -306,6 +307,10 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if f.Status != "" {
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
+	}
+	if f.Kind != "" {
+		q += fmt.Sprintf(` AND kind = $%d`, len(args)+1)
+		args = append(args, f.Kind)
 	}
 	if f.Search != "" {
 		q += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, len(args)+1, len(args)+1)

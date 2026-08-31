@@ -24,10 +24,11 @@ func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if workflows == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(workflows))
+	for _, w := range workflows {
+		out = append(out, compactWorkflow(w))
 	}
-	return json.Marshal(workflows)
+	return json.Marshal(newCompactList(out, "get_workflow"))
 }
 
 func toolGetWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

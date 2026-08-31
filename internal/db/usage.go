@@ -88,6 +88,9 @@ type ListUsageRecordsFilter struct {
 	StartTime   time.Time
 	EndTime     time.Time
 	PageSize    int32
+	// AfterID is the keyset cursor: the id of the last record on the
+	// previous page, used for composite (occurred_at, id) pagination.
+	AfterID string
 }
 
 // ListUsageRecords returns usage records matching the filter, ordered
@@ -117,11 +120,12 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		  AND ($6 = '' OR ur.model = $6)
 		  AND ($7::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $7::timestamptz)
 		  AND ($8::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $8::timestamptz)
-		ORDER BY occurred_at DESC
-		LIMIT $9`
+		  AND ($9 = '' OR (ur.occurred_at, ur.id) < (SELECT occurred_at, id FROM usage_records WHERE tenant_id = $1 AND id = $9))
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $10`
 	rows, err := tx.Query(ctx, q,
 		f.TenantID, f.ProjectID, f.TaskID, f.ExecutionID, f.Provider, f.Model,
-		f.StartTime, f.EndTime, f.PageSize,
+		f.StartTime, f.EndTime, f.AfterID, f.PageSize,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: list usage records: %w", err)
