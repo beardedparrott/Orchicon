@@ -139,6 +139,48 @@ proto3.util.setEnumType(IdeaScope, "orchicon.api.v1.IdeaScope", [
 ]);
 
 /**
+ * IdeaStateScope selects which population ListIdeas returns.
+ * ACTIVE (default) preserves the feature-5.1 behavior byte-for-byte:
+ * idea-state items awaiting triage (status='idea'). REJECTED reads the
+ * rejected graveyard: automation-spawned items that were DISMISSED
+ * (status='cancelled' AND spawned_by_work_item_id IS NOT NULL — the exact
+ * state DismissIdea produces). The predicate is retroactive, so every
+ * dismissal ever made is visible without a backfill, and the same query
+ * powers the automation dedupe gate so a human's rejection is durable
+ * memory the next fire can read before spawning.
+ *
+ * @generated from enum orchicon.api.v1.IdeaStateScope
+ */
+export enum IdeaStateScope {
+  /**
+   * legacy default: ACTIVE
+   *
+   * @generated from enum value: IDEA_STATE_SCOPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * idea-state items awaiting triage (default)
+   *
+   * @generated from enum value: IDEA_STATE_SCOPE_ACTIVE = 1;
+   */
+  ACTIVE = 1,
+
+  /**
+   * dismissed idea spawns (rejected history)
+   *
+   * @generated from enum value: IDEA_STATE_SCOPE_REJECTED = 2;
+   */
+  REJECTED = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(IdeaStateScope)
+proto3.util.setEnumType(IdeaStateScope, "orchicon.api.v1.IdeaStateScope", [
+  { no: 0, name: "IDEA_STATE_SCOPE_UNSPECIFIED" },
+  { no: 1, name: "IDEA_STATE_SCOPE_ACTIVE" },
+  { no: 2, name: "IDEA_STATE_SCOPE_REJECTED" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
  */
 export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
@@ -2082,7 +2124,8 @@ export class GetWorkItemRunHistoryResponse extends Message<GetWorkItemRunHistory
 /**
  * ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
  * work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
- * the same query UX.
+ * the same query UX. idea_state_scope selects the population: ACTIVE (the
+ * Idea Cloud) or REJECTED (the rejected graveyard — see IdeaStateScope).
  *
  * @generated from message orchicon.api.v1.ListIdeasRequest
  */
@@ -2132,6 +2175,13 @@ export class ListIdeasRequest extends Message<ListIdeasRequest> {
    */
   pageSize = 0;
 
+  /**
+   * default ACTIVE (legacy behavior)
+   *
+   * @generated from field: orchicon.api.v1.IdeaStateScope idea_state_scope = 8;
+   */
+  ideaStateScope = IdeaStateScope.UNSPECIFIED;
+
   constructor(data?: PartialMessage<ListIdeasRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -2147,6 +2197,7 @@ export class ListIdeasRequest extends Message<ListIdeasRequest> {
     { no: 5, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "idea_state_scope", kind: "enum", T: proto3.getEnumType(IdeaStateScope) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListIdeasRequest {

@@ -43,13 +43,11 @@ func toolListProjects(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	// json.Marshal on a nil slice produces "null". The model reacts poorly
-	// to that — "The tool returned null" — and assumes a failure. Ensure
-	// an empty JSON array is returned instead.
-	if projects == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(projects))
+	for _, p := range projects {
+		out = append(out, compactProject(p))
 	}
-	return json.Marshal(projects)
+	return json.Marshal(newCompactList(out, "get_project"))
 }
 
 func toolGetProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

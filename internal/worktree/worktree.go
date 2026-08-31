@@ -19,6 +19,10 @@
 //
 // Every path is resolved against the worktree base and is path-traversal-safe:
 // absolute paths and any `..` that escapes the base are rejected outright.
+// A path naming a directory is expanded RECURSIVELY into the files it
+// contains (bounded by the file/dir caps), pruning VCS metadata and
+// vendored/build output — so `batch_grep internal` really searches the
+// subtree, and the whole-tree default (paths omitted → ".") stays fast.
 package worktree
 
 import (
@@ -39,7 +43,13 @@ const (
 	defaultPerFileMax = 32_000  // per-file read cap
 	defaultMaxFiles   = 64      // directory expansion file cap
 	defaultMaxMatches = 250     // batch_grep match cap
-	defaultMaxDirs    = 64      // directory expansion entry cap
+	defaultMaxDirs    = 64      // directory expansion dir cap
+	// batch_grep's walk caps are deliberately larger than batch_read's: a
+	// search returns only matches (bounded by maxBytesOut + maxMatches), so
+	// reading more files is cheap — a read-sized 64-file cap would silently
+	// miss most of a real tree (internal/ alone has 322 files).
+	defaultMaxGrepFiles = 512
+	defaultMaxGrepDirs  = 512
 )
 
 // ReadArgs are the batch_read tool inputs.
@@ -127,46 +137,94 @@ func safeResolve(base, rel string) (string, error) {
 	return p, nil
 }
 
-// expandPaths resolves each entry; a directory is expanded to its immediate
-// files (non-recursive, bounded) so `batch_read "docs"` grabs the docs in one
-// call without a full-tree walk. An unsafe path (absolute or traversal) is
-// FATAL — the whole call is rejected so a crafted path can never touch a file
-// outside the worktree. Missing paths are skipped with a note.
-func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []string, skipped []string, err error) {
+// pruneDirName reports whether a directory should be pruned from a
+// recursive walk: VCS metadata and vendored/build output that a worker
+// never wants to read or search (a whole-tree grep over node_modules would
+// otherwise drown in noise).
+func pruneDirName(name string) bool {
+	switch name {
+	case ".git", ".hg", ".svn", ".bzr",
+		"node_modules", "vendor", "dist", "build", ".orchicon-worktrees":
+		return true
+	}
+	return false
+}
+
+// expandPaths resolves each entry; a directory is expanded RECURSIVELY into
+// the regular files it contains (bounded by the file/dir caps, pruning
+// noise dirs via pruneDirName) so `batch_grep "internal"` searches the
+// whole subtree and `batch_read "docs"` grabs the docs in one call. An
+// unsafe path (absolute or traversal) is FATAL — the whole call is
+// rejected so a crafted path can never touch a file outside the worktree.
+// Missing paths are skipped with a note. truncated reports that the walk
+// stopped at a cap with entries left unvisited — callers must surface it so
+// a partial read/search is never mistaken for an exhaustive one.
+func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []string, skipped []string, truncated bool, err error) {
 	seen := map[string]bool{}
 	dirs := 0
-	for _, e := range entries {
-		p, err := safeResolve(base, e)
-		if err != nil {
-			return nil, nil, err
+	var walk func(dir string)
+	walk = func(dir string) {
+		if len(files) >= maxFiles {
+			truncated = true
+			return
 		}
-		info, err := os.Stat(p)
-		if err != nil {
+		des, rerr := os.ReadDir(dir)
+		if rerr != nil {
+			skipped = append(skipped, dir+" ("+rerr.Error()+")")
+			return
+		}
+		for _, de := range des {
+			if len(files) >= maxFiles {
+				truncated = true
+				break
+			}
+			name := de.Name()
+			fp := filepath.Join(dir, name)
+			if de.IsDir() {
+				if pruneDirName(name) {
+					continue
+				}
+				if dirs >= maxDirs {
+					skipped = append(skipped, fp+" (dir cap reached)")
+					truncated = true
+					continue
+				}
+				dirs++
+				walk(fp)
+				continue
+			}
+			// Symlinks and specials are skipped during the walk: a symlink
+			// to a directory could loop forever, and specials are not
+			// readable content. (Explicit named paths below still follow
+			// os.Stat, so a directly-named symlink target is read.)
+			if !de.Type().IsRegular() {
+				continue
+			}
+			if seen[fp] {
+				continue
+			}
+			seen[fp] = true
+			files = append(files, fp)
+		}
+	}
+	for i, e := range entries {
+		p, rerr := safeResolve(base, e)
+		if rerr != nil {
+			return nil, nil, false, rerr
+		}
+		info, serr := os.Stat(p)
+		if serr != nil {
 			skipped = append(skipped, e+" (not found)")
 			continue
 		}
 		if info.IsDir() {
-			dirs++
-			if dirs > maxDirs {
+			if dirs >= maxDirs {
 				skipped = append(skipped, e+" (dir cap reached)")
+				truncated = true
 				continue
 			}
-			des, err := os.ReadDir(p)
-			if err != nil {
-				skipped = append(skipped, e+" ("+err.Error()+")")
-				continue
-			}
-			for _, de := range des {
-				if de.IsDir() {
-					continue
-				}
-				fp := filepath.Join(p, de.Name())
-				if seen[fp] {
-					continue
-				}
-				seen[fp] = true
-				files = append(files, fp)
-			}
+			dirs++
+			walk(p)
 			continue
 		}
 		if !info.Mode().IsRegular() {
@@ -178,12 +236,15 @@ func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []
 		}
 		seen[p] = true
 		files = append(files, p)
-		if len(files) >= maxFiles {
+		// Mark truncation only when the cap leaves more entries unvisited —
+		// an exact-cap read (e.g. 64 named files) is NOT truncated.
+		if len(files) >= maxFiles && i < len(entries)-1 {
+			truncated = true
 			break
 		}
 	}
 	sort.Strings(files)
-	return files, skipped, nil
+	return files, skipped, truncated, nil
 }
 
 // --- batch_read -----------------------------------------------------------
@@ -199,7 +260,7 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 	if perFile <= 0 {
 		perFile = defaultPerFileMax
 	}
-	files, skipped, err := expandPaths(base, args.Paths, defaultMaxFiles, defaultMaxDirs)
+	files, skipped, walkTruncated, err := expandPaths(base, args.Paths, defaultMaxFiles, defaultMaxDirs)
 	if err != nil {
 		return "", err
 	}
@@ -259,6 +320,9 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 	}
 
 	summary := fmt.Sprintf("batch_read: %d file(s)", len(files))
+	if walkTruncated {
+		summary += fmt.Sprintf(", walk capped at %d files", len(files))
+	}
 	if truncated > 0 {
 		summary += fmt.Sprintf(", %d truncated", truncated)
 	}
@@ -290,7 +354,7 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 		maxMatches = defaultMaxMatches
 	}
 
-	files, skipped, err := expandPaths(base, paths, defaultMaxFiles, defaultMaxDirs)
+	files, skipped, truncated, err := expandPaths(base, paths, defaultMaxGrepFiles, defaultMaxGrepDirs)
 	if err != nil {
 		return "", err
 	}
@@ -354,6 +418,9 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 	}
 	out := b.String()
 	summary := fmt.Sprintf("batch_grep: %d match line(s) across %d file(s)", matched, len(files))
+	if truncated {
+		summary += fmt.Sprintf(", walk capped at %d files", len(files))
+	}
 	if len(skipped) > 0 {
 		summary += fmt.Sprintf(", %d skipped", len(skipped))
 	}

@@ -37,6 +37,27 @@ func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 		t.Fatalf("host fingerprint change must invalidate the key")
 	}
 
+	// The serve config (OPENCODE_CONFIG_CONTENT: worktree MCP base dir,
+	// plane channel env, permission rules) is baked into the container at
+	// create time and can never change on a live container. A run whose
+	// serve config differs MUST NOT reuse a warm container baked with a
+	// stale config — a container created before the plane channel existed
+	// (or carrying a different run's worktree base / plane token) would
+	// serve stale, wrong-scope tools and credentials. Empty configs fold
+	// away (identical for non-serve requests).
+	withCfg := CreateRequest{Image: "img:v1", Mounts: req.Mounts, ServeConfig: `{"mcp":{"orchicon-plane":{"enabled":true}}}`}
+	keyCfg := poolEnvKey(withCfg, "hostfp")
+	if keyCfg == key {
+		t.Fatalf("serve config presence must invalidate the key (stale-config reuse)")
+	}
+	if poolEnvKey(withCfg, "hostfp") != keyCfg {
+		t.Fatalf("same serve config must produce the same key")
+	}
+	otherCfg := CreateRequest{Image: "img:v1", Mounts: req.Mounts, ServeConfig: `{"mcp":{"orchicon-plane":{"enabled":true},"orchicon-worktree":{"enabled":true}}}`}
+	if poolEnvKey(otherCfg, "hostfp") == keyCfg {
+		t.Fatalf("different serve config must invalidate the key")
+	}
+
 	// Empty host fingerprint folds away: identical image+mounts still match.
 	noFp := CreateRequest{Image: "img:v1", Mounts: req.Mounts}
 	if poolEnvKey(noFp, "") != poolEnvKey(noFp, "") {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,6 +24,51 @@ import (
 // reconcilers (docs/03 §1). Multi-tenant scheduling arrives with auth.
 const devTenantID = "tnt_dev"
 
+// worktreeDirName mirrors the WorktreeReconciler's namespace under
+// project_dir where per-run worktrees are provisioned
+// (internal/scheduler/worktree_reconciler.go). The runtime layer must know
+// it so the composite worktree MCP tools can be pointed at the run's
+// worktree instead of the project root.
+const worktreeDirName = ".orchicon-worktrees"
+
+// runWorktreeBase resolves the base directory the composite worktree MCP
+// tools (batch_read/batch_grep/batch_write) resolve relative paths against
+// for a run's container serve. For a git-backed project the run gets a
+// provisioned worktree at the deterministic path
+// <projectDir>/.orchicon-worktrees/<runID> and executions run inside it —
+// so the batch tools MUST resolve there, never at the project root (a
+// project-root base silently writes into the main checkout, violating
+// worktree hygiene). Non-repo projects run in place at projectDir. Mirrors
+// the WorktreeReconciler's isInsideWorkTree decision so the baked base
+// matches the execution cwd.
+func runWorktreeBase(ctx context.Context, projectDir, runID string) string {
+	if projectDir == "" {
+		return ""
+	}
+	if isInsideWorkTree(ctx, projectDir) {
+		return filepath.Join(projectDir, worktreeDirName, runID)
+	}
+	return projectDir
+}
+
+// isInsideWorkTree mirrors the WorktreeReconciler's git check
+// (`git rev-parse --is-inside-work-tree` exits 0 and prints "true"). A
+// non-zero exit or "false" output means not a git repo / not a work tree —
+// the non-repo skip signal that keeps the execution in place at projectDir.
+// A missing git binary or nonexistent dir is treated as non-repo (the run
+// proceeds in place), matching the reconciler.
+func isInsideWorkTree(ctx context.Context, projectDir string) bool {
+	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
 // Lifecycle decides WHEN workflow runtime containers are created and
 // reaped based on workflow run state, and gates execution dispatch on the
 // container's opencode serve being proven usable. It talks to the
@@ -35,12 +81,14 @@ type Lifecycle struct {
 	log    *slog.Logger
 	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
 	// container serve from its runtime image tag and in-container project dir.
-	// The Orchicon MCP is registered only for dev images (which boot the
-	// sandbox plane against a sandbox DB); base/gui images get a config
-	// identical to today. The project dir is threaded through because the
-	// composite worktree batch tools (batch_read/grep/write) need a base
-	// directory to resolve against — the project is mounted in-container at
-	// the same absolute path.
+	// The sandbox-scoped Orchicon MCP is registered only for dev images
+	// (which boot the sandbox plane against a sandbox DB); the plane-channel
+	// Orchicon MCP (`orchicon-plane`) is registered on EVERY image when the
+	// run's worker role grants it (planeEnv non-empty) — plane access is
+	// role-gated, never image-gated. The project dir is threaded through
+	// because the composite worktree batch tools (batch_read/grep/write) need
+	// a base directory to resolve against — the project is mounted
+	// in-container at the same absolute path.
 	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
@@ -50,9 +98,10 @@ type Lifecycle struct {
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
 // disable per-workflow runtime containers. serveConfigFor builds the
 // OPENCODE_CONFIG_CONTENT the container's opencode serve boots with from
-// the run's runtime image tag (permission rules only for base/gui images,
-// plus the sandbox-scoped Orchicon MCP for dev images — built by the
-// opencode package).
+// the run's runtime image tag (permission rules for every image, the
+// sandbox-scoped Orchicon MCP for dev images, and the plane-channel
+// Orchicon MCP on any image when the run's worker role grants it — built
+// by the opencode package).
 func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
@@ -117,9 +166,19 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			req.Secrets[k] = v
 		}
 	}
-	// Serve config is built last so the in-container project dir is available
-	// for the composite worktree batch tools (batch_read/grep/write).
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, projectDir, run.ID, planeEnv)
+	// Serve config is built last so the composite worktree batch tools
+	// (batch_read/grep/write) resolve against the RUN'S WORKTREE, not the
+	// project root: the worker's session cwd is the run worktree
+	// (executionDir), so a batch tool resolving relative paths against the
+	// project root silently writes into the main checkout — the worktree
+	// hygiene violation observed in automation runs (research/ pollution in
+	// the develop checkout). The run worktree path is deterministic
+	// (<projectDir>/.orchicon-worktrees/<runID>) for git-backed projects
+	// (the WorktreeReconciler provisions exactly that path); non-repo
+	// projects run in place at the project dir. Mirror the reconciler's
+	// isInsideWorkTree decision so the baked base matches the eventual
+	// execution cwd.
+	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
 	// or the per-instance data-dir key); the daemon blindly injects -e (same
@@ -169,16 +228,66 @@ func planeTokenTTL() time.Duration {
 }
 
 // planePublicURL is the plane's API base URL as reachable from inside a
-// runtime container (the docker bridge gateway + the instance's published
-// HTTP port). The container has no route to the plane's internal
-// localhost, so the operator sets ORCHICON_PLANE_PUBLIC_URL when the
-// published port differs from the default dev mapping (:8080 → prod
-// publishes :8091).
+// runtime container. Runtime containers share the docker bridge with the
+// plane, so the plane must advertise an address that is reachable from a
+// bridge container — NOT the host's published port.
+//
+// The host's published port (e.g. prod's 0.0.0.0:8091->8080) is only
+// reachable from outside the bridge: a bridge container dialing the gateway
+// IP + published port (172.17.0.1:8091) is dropped by the docker hairpin
+// NAT, so the plane-channel MCP sidecar times out on every call. The plane
+// container's OWN bridge IP + internal port 8080 is reachable directly on
+// the bridge (the same "direct container-IP access, no published port"
+// model the serve path already uses — see daemon.go createContainer).
+//
+// Resolution order:
+//  1. ORCHICON_PLANE_PUBLIC_URL, if set (operator override wins).
+//  2. Container mode (ORCHICON_CONTAINER_MODE=1): the plane's own container
+//     IP + internal port 8080 — identical for dev and prod (both listen on
+//     8080 internally), and correct regardless of the published port.
+//  3. Host mode: the docker bridge gateway + default dev mapping
+//     (172.17.0.1:8080), where the runtime container reaches the host plane
+//     via the gateway.
 func planePublicURL() string {
 	if v := os.Getenv("ORCHICON_PLANE_PUBLIC_URL"); v != "" {
 		return strings.TrimRight(v, "/")
 	}
+	if os.Getenv("ORCHICON_CONTAINER_MODE") == "1" {
+		if ip := containerIPAddress(); ip != "" {
+			return "http://" + ip + ":8080"
+		}
+	}
 	return "http://172.17.0.1:8080"
+}
+
+// containerIPAddress resolves the current container's bridge IP. Docker
+// sets the container hostname to the container ID and writes
+// "<ip> <hostname>" into /etc/hosts, so reading the hostname's entry is the
+// most reliable cross-platform resolution (no `hostname -i` dependency).
+// Returns "" when it cannot be resolved (host mode, or /etc/hosts absent).
+func containerIPAddress() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return ""
+	}
+	return parseHostsIP(string(data), hostname)
+}
+
+// parseHostsIP extracts the IP for a given hostname from an /etc/hosts body
+// (Docker writes "<ip> <hostname>" as the first field pair). Returns "" when
+// the hostname has no entry.
+func parseHostsIP(body, hostname string) string {
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == hostname {
+			return fields[0]
+		}
+	}
+	return ""
 }
 
 // mintPlaneCredential resolves the run's bound worker and, when it is a
@@ -242,11 +351,23 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		}
 		return nil, fmt.Errorf("plane credential: get role: %w", err)
 	}
+	// The API key's identity_id must reference a REAL identities row — the
+	// audit trail stamps every write with the caller's identity via the
+	// identities_actor_identity_fk, and a worker ID is not an identity. Stamp
+	// writes with a per-run SERVICE identity instead (subject "run:<runID>",
+	// idempotently provisioned via GetOrCreateIdentity so concurrent steps
+	// share one row). Entitlements are unchanged — ResolveApiKey authorizes
+	// from the KEY's scopes alone and never unions identity roles, so this
+	// is audit attribution, not privilege widening.
+	ident, _, err := db.GetOrCreateIdentity(ctx, ttx.Tx, run.TenantID, automationIdentitySubject(run.ID), "Automation run "+run.ID, "service")
+	if err != nil {
+		return nil, fmt.Errorf("plane credential: ensure automation identity: %w", err)
+	}
 	plaintext, prefix, hash := auth.GenerateApiKey()
 	expiresAt := time.Now().Add(planeTokenTTL())
 	if _, err := db.CreateApiKey(ctx, ttx.Tx, db.ApiKeyRow{
 		TenantID:   run.TenantID,
-		IdentityID: worker.ID,
+		IdentityID: ident.ID,
 		Name:       "automation:run:" + run.ID,
 		KeyPrefix:  prefix,
 		KeyHash:    hash,
@@ -260,13 +381,35 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 		return nil, fmt.Errorf("plane credential: commit: %w", err)
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
-	return map[string]string{
+	env := map[string]string{
 		"ORCHICON_PLANE_URL":           planePublicURL(),
 		"ORCHICON_PLANE_TOKEN":         plaintext,
 		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
-	}, nil
+	}
+	// Relay the run's run_context JSONB (the automation provenance block a
+	// recurring fire writes at fire time) so the plane-channel registry can
+	// stamp created work items with spawned_by/spawned_by_run_id and land
+	// outputs_mode=idea creates in IDEA state — feature 4.1 AC2 on the plane
+	// surface. It rides the same trusted mint path as the token itself: the
+	// control plane injects it, the sidecar relays it verbatim on creates.
+	// A bare run ID is not a run_context (ProvenanceFromRunContext parses
+	// JSON) — sending one instead of this made every plane-path idea spawn
+	// silently land as a plain pending item.
+	if len(run.RunContext) > 0 {
+		env["ORCHICON_RUN_CONTEXT"] = string(run.RunContext)
+	}
+	return env, nil
 }
+
+// automationIdentitySubject returns the identities.subject for a run's
+// per-run automation service identity — the stable (tenant, subject) key
+// that GetOrCreateIdentity provisions the plane-channel API key against.
+// The key's identity_id must reference a REAL identities row: the audit
+// trail stamps every write with actor_identity_id, which is FK'd to
+// identities — a worker ID is not an identity and fails writes with
+// SQLSTATE 23503 (audit_events_actor_identity_fk).
+func automationIdentitySubject(runID string) string { return "run:" + runID }
 
 // resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
 // referenced by any step of the run's workflow version, or "" when the run

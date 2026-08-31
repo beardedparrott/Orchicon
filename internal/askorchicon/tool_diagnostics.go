@@ -85,6 +85,7 @@ func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (jso
 		ProjectID string `json:"project_id"`
 		Provider  string `json:"provider"`
 		Model     string `json:"model"`
+		PageToken string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -98,14 +99,23 @@ func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (jso
 	rows, err := db.ListUsageRecords(ctx, ttx.Tx, db.ListUsageRecordsFilter{
 		TenantID:  tenantID,
 		ProjectID: params.ProjectID,
+		Provider:  params.Provider,
+		Model:     params.Model,
+		AfterID:   params.PageToken,
+		PageSize:  int32(listCap + 1),
 	})
 	if err != nil {
 		return nil, err
 	}
-	if rows == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, compactUsage(r))
 	}
-	return json.Marshal(rows)
+	env := newCompactList(out, "")
+	if len(rows) > listCap {
+		env.setNextPage(rows[listCap-1].ID)
+	}
+	return json.Marshal(env)
 }
 
 func toolGetSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

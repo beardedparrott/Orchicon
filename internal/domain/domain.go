@@ -241,6 +241,23 @@ const (
 	IdeaScopeOnly = "only"
 )
 
+// IdeaStateScope values for ListWorkItems (the idea-rejected split). The
+// store key is a free-form string on ListWorkItemsFilter.IdeaStateScope so
+// ListIdeas can select the population; the API layer maps the
+// IdeaStateScope proto enum onto these.
+const (
+	// IdeaStateActive (the default) = the Idea Cloud: idea-state items
+	// awaiting triage (IdeaScope=only semantics).
+	IdeaStateActive = ""
+	// IdeaStateRejected = the rejected graveyard: automation-spawned items
+	// that were dismissed (status='cancelled' WITH spawned provenance — the
+	// exact state DismissIdea produces). Queryable so rejected ideas stay
+	// visible, readable history and the automation dedupe gate can never
+	// re-propose one. Retroactive: every dismissal ever made already
+	// matches, no backfill needed.
+	IdeaStateRejected = "rejected"
+)
+
 // NormalizeRecurringOutputsMode maps an arbitrary outputs_mode string to a
 // canonical value: empty/invalid -> "standard". Exported so the Ask
 // Orchicon tools share the API's boundary normalization (AGENTS.md

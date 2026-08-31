@@ -53,10 +53,11 @@ func toolListWorkers(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	if workers == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(workers))
+	for _, w := range workers {
+		out = append(out, compactWorker(w))
 	}
-	return json.Marshal(workers)
+	return json.Marshal(newCompactList(out, "get_worker"))
 }
 
 func toolGetWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

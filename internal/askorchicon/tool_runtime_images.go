@@ -41,10 +41,11 @@ func toolListRuntimeImages(ctx context.Context, pool *db.Pool, args json.RawMess
 	if err != nil {
 		return nil, err
 	}
-	if rows == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, compactRuntimeImage(r))
 	}
-	return json.Marshal(rows)
+	return json.Marshal(newCompactList(out, "get_runtime_image"))
 }
 
 func toolGetRuntimeImage(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

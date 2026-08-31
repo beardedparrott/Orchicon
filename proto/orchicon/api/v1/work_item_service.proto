@@ -85,6 +85,11 @@ service WorkItemService {
   // (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge.
   // Scoped to status='idea' by construction — it shares the 4.1 idea gate
   // with ListWorkItems(IdeaScope=only), so membership can never diverge.
+  // idea_state_scope=REJECTED reads the rejected graveyard instead:
+  // dismissed idea spawns (status='cancelled' WITH automation provenance),
+  // retained so rejected ideas stay visible, readable history — and so an
+  // automation's dedupe gate can never re-propose something a human
+  // already rejected.
   rpc ListIdeas(ListIdeasRequest) returns (ListIdeasResponse);
 
   // PromoteIdea approves an idea: it transitions the idea-state work item
@@ -426,9 +431,25 @@ message GetWorkItemRunHistoryResponse {
   repeated RecurringRunHistoryEntry entries = 1;
 }
 
+// IdeaStateScope selects which population ListIdeas returns.
+// ACTIVE (default) preserves the feature-5.1 behavior byte-for-byte:
+// idea-state items awaiting triage (status='idea'). REJECTED reads the
+// rejected graveyard: automation-spawned items that were DISMISSED
+// (status='cancelled' AND spawned_by_work_item_id IS NOT NULL — the exact
+// state DismissIdea produces). The predicate is retroactive, so every
+// dismissal ever made is visible without a backfill, and the same query
+// powers the automation dedupe gate so a human's rejection is durable
+// memory the next fire can read before spawning.
+enum IdeaStateScope {
+  IDEA_STATE_SCOPE_UNSPECIFIED = 0; // legacy default: ACTIVE
+  IDEA_STATE_SCOPE_ACTIVE = 1; // idea-state items awaiting triage (default)
+  IDEA_STATE_SCOPE_REJECTED = 2; // dismissed idea spawns (rejected history)
+}
+
 // ListIdeasRequest scopes the Idea Cloud list (feature 5.1) to idea-state
 // work items. Mirrors ListWorkItemsRequest so the Idea Cloud page reuses
-// the same query UX.
+// the same query UX. idea_state_scope selects the population: ACTIVE (the
+// Idea Cloud) or REJECTED (the rejected graveyard — see IdeaStateScope).
 message ListIdeasRequest {
   string tenant_id = 1;
   string project_id = 2; // empty = all projects
@@ -437,6 +458,7 @@ message ListIdeasRequest {
   string sort_order = 5; // "asc" or "desc" (default "asc")
   string page_token = 6; // id > cursor (stable ULID pagination)
   int32 page_size = 7;
+  IdeaStateScope idea_state_scope = 8; // default ACTIVE (legacy behavior)
 }
 
 // ListIdeasResponse carries a page of idea-state work items (already

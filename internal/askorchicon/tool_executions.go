@@ -16,6 +16,7 @@ func toolListExecutions(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ProjectID string `json:"project_id"`
 		Status    string `json:"status"`
 		TaskID    string `json:"task_id"`
+		PageToken string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -31,14 +32,21 @@ func toolListExecutions(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ProjectID: params.ProjectID,
 		Status:    params.Status,
 		TaskID:    params.TaskID,
+		AfterID:   params.PageToken,
+		PageSize:  listCap + 1,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if execs == nil {
-		return json.RawMessage("[]"), nil
+	out := make([]any, 0, len(execs))
+	for _, e := range execs {
+		out = append(out, compactExecution(e))
 	}
-	return json.Marshal(execs)
+	env := newCompactList(out, "get_execution")
+	if len(execs) > listCap {
+		env.setNextPage(execs[listCap-1].ID)
+	}
+	return json.Marshal(env)
 }
 
 func toolGetExecution(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

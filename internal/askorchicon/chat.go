@@ -1750,10 +1750,14 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 	if err != nil {
 		return ""
 	}
-	var projects []map[string]any
-	if err := json.Unmarshal(raw, &projects); err != nil || len(projects) == 0 {
+	// list_projects returns the compact envelope {count, truncated, items}.
+	var env struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || len(env.Items) == 0 {
 		return ""
 	}
+	projects := env.Items
 	var b strings.Builder
 	for _, p := range projects {
 		name, _ := p["Name"].(string)

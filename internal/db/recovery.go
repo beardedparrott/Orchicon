@@ -195,8 +195,15 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions WHERE tenant_id = $1 AND ($2 = '' OR id < $2)`
-	args := []any{f.TenantID, f.AfterID}
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions WHERE tenant_id = $1`
+	args := []any{f.TenantID}
+	if f.AfterID != "" {
+		// Keyset pagination on the (triggered_at, id) tuple — replaces the old
+		// bare `id < $2` cursor that only approximated the triggered_at DESC
+		// ordering (id and trigger time drift for backfilled/edited rows).
+		q += fmt.Sprintf(` AND (triggered_at, id) < (SELECT triggered_at, id FROM recovery_executions WHERE tenant_id = $1 AND id = $%d)`, len(args)+1)
+		args = append(args, f.AfterID)
+	}
 	if f.ProjectID != "" {
 		q += fmt.Sprintf(` AND project_id = $%d`, len(args)+1)
 		args = append(args, f.ProjectID)
@@ -209,7 +216,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
 	}
-	q += ` ORDER BY triggered_at DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	q += ` ORDER BY triggered_at DESC, id DESC LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {

@@ -180,10 +180,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Work Items ---
 		{
 			Name:        "list_work_items",
-			Description: "List work items for a project or tenant. Supports filter by status, kind, search.",
+			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolListWorkItems,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
 		},
 		{
 			Name:        "get_work_item",
@@ -203,10 +203,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "list_ideas",
-			Description: "List the Idea Cloud (feature 5.1): idea-state work items with their automation provenance (spawned_by + spawned_by_run_id) and a read-time spawned_by_title badge. Idea-state items are system-managed and excluded from the normal Work Items scope; they only become queryable there via promote_idea.",
+			Description: "List the Idea Cloud (feature 5.1): idea-state work items with their automation provenance (spawned_by + spawned_by_run_id) and a read-time SpawnedByTitle badge. Idea-state items are system-managed and excluded from the normal Work Items scope; they only become queryable there via promote_idea. Set state=\"rejected\" to read the REJECTED section instead: previously dismissed idea spawns (durable rejection history — also what the automation dedupe gate checks before spawning). Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolListIdeas,
-			Properties: map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
+			Properties: map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
 		},
 		{
 			Name:        "promote_idea",
@@ -483,10 +483,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Workflow Runs ---
 		{
 			Name:        "list_workflow_runs",
-			Description: "List workflow runs, optionally filtered by workflow_id, project_id, work_item_id, or status.",
+			Description: "List workflow runs, optionally filtered by workflow_id, project_id, work_item_id, or status. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or get_workflow_run for full detail.",
 			Mutating:    false,
 			Fn:          toolListWorkflowRuns,
-			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "project_id": {Type: "string", Description: "Optional project ID filter"}, "work_item_id": {Type: "string", Description: "Optional work item ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "sort_by": {Type: "string", Description: "Optional sort field: id or started_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}},
+			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "project_id": {Type: "string", Description: "Optional project ID filter"}, "work_item_id": {Type: "string", Description: "Optional work item ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "sort_by": {Type: "string", Description: "Optional sort field: id or started_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
 		},
 		{
 			Name:        "get_workflow_run",
@@ -516,10 +516,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Executions ---
 		{
 			Name:        "list_executions",
-			Description: "List executions, optionally filtered by project, status, or workflow run.",
+			Description: "List executions, optionally filtered by project, status, or workflow run. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or get_execution for full detail.",
 			Mutating:    false,
 			Fn:          toolListExecutions,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "task_id": {Type: "string", Description: "Optional work item ID filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
 		},
 		{
 			Name:        "get_execution",
@@ -548,10 +548,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "get_usage",
-			Description: "Get token usage and cost data. Optionally filter by project.",
+			Description: "Get token usage and cost data. Optionally filter by project, provider, or model. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolGetUsage,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "provider": {Type: "string", Description: "Optional provider filter"}, "model": {Type: "string", Description: "Optional model filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
 		},
 
 		// --- Policies ---
@@ -574,10 +574,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Recoveries ---
 		{
 			Name:        "list_recoveries",
-			Description: "List recovery executions, optionally filtered by project or status.",
+			Description: "List recovery executions, optionally filtered by project or status. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolListRecoveries,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
 		},
 
 		// --- Categories ---
@@ -757,7 +757,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Audit ---
 		{
 			Name:        "list_audit_events",
-			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id, start_time, end_time. Read-only.",
+			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id, start_time, end_time. Returns a bounded, compact list — pass next_page_token to page through the rest. Read-only.",
 			Mutating:    false,
 			Fn:          toolListAuditEvents,
 			Properties: map[string]PropertySchema{
@@ -768,6 +768,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"start_time":  {Type: "string", Description: "Optional RFC3339 inclusive lower bound on occurred_at (e.g. 2026-08-15T12:00:00Z)"},
 				"end_time":    {Type: "string", Description: "Optional RFC3339 exclusive upper bound on occurred_at (e.g. 2026-08-15T13:00:00Z)"},
 				"page_size":   {Type: "number", Description: "Optional page size (max 1000, default 100)"},
+				"page_token":  {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
 			},
 		},
 	}

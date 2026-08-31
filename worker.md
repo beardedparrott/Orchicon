@@ -78,8 +78,10 @@ Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and
 
 You may see two Orchicon MCP tool families — they are deliberately separate:
 
-- **`orchicon_*` (sandbox)** — available on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
-- **`orchicon_plane_*` (real instance)** — available when your worker's role grants plane access. Operates on the REAL instance your work item was created on, through the plane API, scoped to your role's entitlements. Use to inspect the real backlog and to create idea-state work items.
+- **`orchicon_plane_*` (real instance)** — available on **every** runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your worker's **role** grants plane access. The image is irrelevant — the gate is your role's entitlements, never the runtime image. Operates on the REAL instance your work item was created on, through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud — check BOTH `state="active"` (pending triage) and `state="rejected"` (previously dismissed spawns; a hit means a human rejected the idea: never re-propose it) before spawning — and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
+- **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
+
+If your worker has a role but you see **no** `orchicon_plane_*` tools, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do **NOT** conclude that real-instance access is dev-runtime-only.
 
 Hard rules: **never** use sandbox tools to inspect real work items; **never** use plane tools for throwaway records or migration tests.
 

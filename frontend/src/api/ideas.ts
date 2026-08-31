@@ -17,6 +17,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 
 import { workItemClient } from "@/api/clients";
 import { workItemKeys } from "@/api/workItems";
+import { IdeaStateScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 // Query keys are centralized so invalidation is type-safe. Invalidation
@@ -38,6 +39,9 @@ export interface ListIdeasOptions {
   search?: string;
   sortBy?: string;
   sortOrder?: string;
+  // "active" (default) = idea-state items awaiting triage (the Idea Cloud);
+  // "rejected" = previously dismissed idea spawns (the rejected section).
+  state?: "active" | "rejected";
   pageSize?: number;
   refetchInterval?: number;
   enabled?: boolean;
@@ -46,12 +50,15 @@ export interface ListIdeasOptions {
 // useListIdeas fetches a page of idea-state items for a project (empty
 // projectId = all projects), optionally with free-text search + sort. It
 // polls every 5s so freshly spawned ideas appear without a manual refresh
-// (ideas arrive asynchronously from recurring fires).
+// (ideas arrive asynchronously from recurring fires). state="rejected"
+// reads the rejected graveyard instead — dismissed spawns stay queryable
+// as history (and as the memory the automation dedupe gate checks).
 export function useListIdeas(projectId: string, opts?: ListIdeasOptions) {
   const listOpts = {
     search: opts?.search,
     sortBy: opts?.sortBy,
     sortOrder: opts?.sortOrder,
+    state: opts?.state ?? "active",
   };
   return useQuery({
     queryKey: ideaKeys.list(projectId, listOpts),
@@ -61,6 +68,10 @@ export function useListIdeas(projectId: string, opts?: ListIdeasOptions) {
         search: opts?.search || "",
         sortBy: opts?.sortBy || "",
         sortOrder: opts?.sortOrder || "",
+        ideaStateScope:
+          opts?.state === "rejected"
+            ? IdeaStateScope.REJECTED
+            : IdeaStateScope.UNSPECIFIED,
         pageSize: opts?.pageSize ?? 1000,
       });
       return res.ideas as WorkItem[];
@@ -93,8 +104,10 @@ export function usePromoteIdea() {
 }
 
 // useDismissIdea discards an idea (CAS idea -> cancelled). On success it
-// invalidates the idea lists (the card leaves Idea Cloud) and the
-// work-item keys so the cancelled item's list views stay consistent.
+// invalidates the idea lists — the card leaves the Idea Cloud AND appears
+// in the Rejected section (the dismissed spawn keeps its provenance and is
+// exactly what the REJECTED scope queries) — plus the work-item keys so
+// the cancelled item's list views stay consistent.
 export function useDismissIdea() {
   const qc = useQueryClient();
   return useMutation({

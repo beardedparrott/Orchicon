@@ -696,8 +696,8 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		runtime_ready, worktree_status, worktree_path, worktree_branch,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
-	args := []any{f.TenantID, f.AfterID}
+		WHERE tenant_id = $1`
+	args := []any{f.TenantID}
 	if f.WorkflowID != "" {
 		q += fmt.Sprintf(` AND workflow_id = $%d`, len(args)+1)
 		args = append(args, f.WorkflowID)
@@ -716,17 +716,42 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 	}
 	if f.SortBy == "started_at" {
 		order := "DESC"
+		cmp := "<"
 		if f.SortOrder == "asc" {
-			order = "ASC"
+			order, cmp = "ASC", ">"
 		}
-		// The id-cursor clause only composes with an id sort; when sorting
-		// by started_at we ignore the cursor and return a single page of
-		// the requested size (callers that sort by started_at fetch one
-		// large page and never paginate).
-		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order + ` LIMIT $` + fmt.Sprint(len(args)+1)
+		// Keyset pagination on the (started_at, id) tuple. started_at is
+		// nullable and sorted NULLS LAST, so a NULL cursor row pages only
+		// within the trailing NULL block (id order), while a non-NULL cursor
+		// also admits the NULL block that sorts after it. RLS scopes the
+		// cursor subqueries inside the tenant tx.
+		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order
+		if f.AfterID != "" {
+			n := len(args) + 1 // the cursor id param
+			q += fmt.Sprintf(` AND (
+				((SELECT started_at FROM workflow_runs wc WHERE wc.tenant_id = $1 AND wc.id = $%d) IS NULL AND started_at IS NULL AND id %s $%d)
+				OR
+				((SELECT started_at FROM workflow_runs wc WHERE wc.tenant_id = $1 AND wc.id = $%d) IS NOT NULL
+					AND ((started_at, id) %s (SELECT started_at, id FROM workflow_runs wc2 WHERE wc2.tenant_id = $1 AND wc2.id = $%d) OR started_at IS NULL))
+			)`, n, cmp, n, n, cmp, n)
+			args = append(args, f.AfterID)
+		}
+		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 		args = append(args, f.PageSize)
 	} else {
-		q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+		order := "DESC"
+		cmp := "<"
+		if f.SortOrder == "asc" {
+			order, cmp = "ASC", ">"
+		}
+		// id-keyset pagination composes exactly with an id sort. (The old
+		// `id > $2` cursor with a DESC default re-returned page 1.)
+		q += ` ORDER BY id ` + order
+		if f.AfterID != "" {
+			q += fmt.Sprintf(` AND id %s $%d`, cmp, len(args)+1)
+			args = append(args, f.AfterID)
+		}
+		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 		args = append(args, f.PageSize)
 	}
 	rows, err := tx.Query(ctx, q, args...)
