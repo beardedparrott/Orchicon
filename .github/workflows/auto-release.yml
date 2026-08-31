@@ -1,15 +1,21 @@
 # Orchicon auto-release workflow.
 #
-# When a PR with the "release" label is merged to main, this workflow
-# bumps the patch version, creates a tag, and dispatches release.yml
-# to build and publish the GitHub Release assets.
+# When a PR with one of the release labels is merged to main, this workflow
+# creates a version tag and dispatches release.yml to build and publish the
+# GitHub Release:
+#   - release        → next patch (vX.Y.N+1, the routine develop bump cadence)
+#   - release-minor  → next minor (vX.(Y+1).0 — a feature release)
+#   - release-major  → next major (v(X+1).0.0)
+# All three compute from the highest existing tag, so a minor/major cut
+# stays monotonic with the develop bump sequence (which continues as
+# vX.Y.<n> on the next develop merge).
 #
 # We use workflow_dispatch (not tag-push chaining) because the default
 # GITHUB_TOKEN blocks recursive workflow triggers — a tag push from one
 # workflow will not fire another workflow's push:tags trigger.
 #
 # Release cadence: workers integrate into `develop` (their PRs NEVER carry
-# the release label and never touch `main`). The HUMAN merges `develop` →
+# a release label and never touch `main`). The HUMAN merges `develop` →
 # `main` (that PR carries the release label) to cut a release from the
 # accumulated changes — releases are deliberate, not per-PR.
 
@@ -26,7 +32,10 @@ permissions:
 
 jobs:
   tag-and-release:
-    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release')
+    if: github.event.pull_request.merged == true && (
+      contains(github.event.pull_request.labels.*.name, 'release')
+      || contains(github.event.pull_request.labels.*.name, 'release-minor')
+      || contains(github.event.pull_request.labels.*.name, 'release-major'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +45,8 @@ jobs:
 
       - name: Determine next version and create tag
         id: version
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
           LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$LATEST_TAG" ]; then
@@ -44,7 +55,13 @@ jobs:
             MAJOR=$(echo "$LATEST_TAG" | sed 's/v//' | cut -d. -f1)
             MINOR=$(echo "$LATEST_TAG" | sed 's/v//' | cut -d. -f2)
             PATCH=$(echo "$LATEST_TAG" | sed 's/v//' | cut -d. -f3)
-            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            if [[ "$LABELS" == *"release-major"* ]]; then
+              NEW_TAG="v$((MAJOR + 1)).0.0"
+            elif [[ "$LABELS" == *"release-minor"* ]]; then
+              NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
+            else
+              NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            fi
           fi
           echo "Bumping from ${LATEST_TAG:-<none>} to ${NEW_TAG}"
           git config user.name "github-actions[bot]"

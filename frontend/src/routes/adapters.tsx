@@ -25,7 +25,7 @@ function AdaptersPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Adapters</h1>
+        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="h-6 w-6 flex items-center justify-center rounded-lg bg-amber-500/20 text-amber-700 dark:text-amber-400 text-sm">◈</span> Adapters</h1>
         <p className="text-sm text-muted-foreground">
           Registered runtime adapters offering execution capabilities. The
           scheduler dispatches work to adapters that match the worker's

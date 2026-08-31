@@ -36,10 +36,26 @@ func TestBuildConfigContentInjectPermissionDeny(t *testing.T) {
 	if got, ok := ext[ScratchDir+"/**"].(string); !ok || got != "allow" {
 		t.Errorf("external_directory[%q] = %#v, want %q", ScratchDir+"/**", ext[ScratchDir+"/**"], "allow")
 	}
+	// The Orchicon run-metadata subtree is allowed (workers in isolated
+	// worktrees must read `.orchicon/<run>/` summary/facts/issues without
+	// hitting a deny on every read).
+	if got, ok := ext[orchidsRunDirPattern].(string); !ok || got != "allow" {
+		t.Errorf("external_directory[%q] = %#v, want allow (run-metadata subtree)", orchidsRunDirPattern, ext[orchidsRunDirPattern])
+	}
 	for _, unsafe := range []string{"/tmp/orchicon*", "/tmp/orchicon", "/tmp/**", "/tmp", "/tmp/opencode-data-*"} {
 		if _, ok := ext[unsafe]; ok {
 			t.Errorf("external_directory must NOT contain a sloppy pattern %q (would widen the carve-out): got %#v", unsafe, ext[unsafe])
 		}
+	}
+
+	// The `task` (subagent) tool is denied for every worker — Orchicon
+	// splices the work itself, and a spawned subagent doubles context.
+	task, ok := perm["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected task deny rule in permission block, got %#v", perm["task"])
+	}
+	if got, ok := task["*"].(string); !ok || got != "deny" {
+		t.Errorf("task[\"*\"] = %#v, want %q", task["*"], "deny")
 	}
 
 	bash, ok := perm["bash"].(map[string]any)

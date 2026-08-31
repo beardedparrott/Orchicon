@@ -1,6 +1,6 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
 import {
   useListRuntimeImages,
@@ -42,19 +42,19 @@ const STATUS_STYLES: Record<number, string> = {
   1: "bg-gray-100 text-gray-700",
   2: "bg-blue-100 text-blue-800",
   3: "bg-green-600 text-white",
-  4: "bg-red-100 text-red-800",
+  4: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
 };
 
 function StatusBadge({ status }: { status: number }) {
   const Icon =
     status === 2 ? (
-      <Loader2 className="h-3 w-3 animate-spin" />
+      <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
     ) : status === 3 ? (
-      <CheckCircle2 className="h-3 w-3" />
+      <CheckCircle2 aria-hidden="true" className="h-3 w-3" />
     ) : status === 4 ? (
-      <XCircle className="h-3 w-3" />
+      <XCircle aria-hidden="true" className="h-3 w-3" />
     ) : (
-      <Boxes className="h-3 w-3" />
+      <Boxes aria-hidden="true" className="h-3 w-3" />
     );
   return (
     <span
@@ -133,15 +133,15 @@ function RuntimeImagesPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search name or slug…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-56"
+          className="h-11 sm:h-9 min-h-[44px] w-full sm:w-56"
         />
         <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          className="rounded-xl glass-input px-3 py-1.5 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
@@ -159,7 +159,7 @@ function RuntimeImagesPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -169,15 +169,15 @@ function RuntimeImagesPage() {
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
       {error && (
-        <p className="text-sm text-destructive">
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">
           Failed to load runtime images: {String(error)}
-        </p>
+        </div>
       )}
       {!isLoading && !error && (!images || images.length === 0) && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No runtime images yet
             </CardTitle>
             <CardDescription>
@@ -235,10 +235,14 @@ function RuntimeImagesPage() {
                     stock
                   </span>
                 )}
-                {img.error && (
-                  <span className="max-w-64 truncate text-xs text-destructive">
-                    {img.error}
+                {img.status === 4 && (img.failureReason || img.error) && (
+                  <span className="flex max-w-64 items-center gap-1 truncate text-xs text-amber-700 dark:text-amber-300" role="alert">
+                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    {img.failureReason || img.error}
                   </span>
+                )}
+                {img.status === 2 && (img.failureReason || img.error) && (
+                  <span className="max-w-64 truncate text-xs text-amber-600">{img.failureReason || img.error}</span>
                 )}
               </CardContent>
             </Card>

@@ -4,7 +4,8 @@
 // Orchicon tools — create projects, manage work items, list workers, etc.
 //
 // Protocol: JSON-RPC 2.0, newline-delimited, stdio transport.
-//   Client sends requests to stdin, server writes responses to stdout.
+//
+//	Client sends requests to stdin, server writes responses to stdout.
 //
 // Tenancy: the server operates on a single tenant per process, taken from
 // the ORCHICON_MCP_TENANT_ID env var. The control plane injects that var via
@@ -23,9 +24,10 @@ import (
 	"os"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
-	"connectrpc.com/connect"
+	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
 // JSON-RPC message types.
@@ -37,10 +39,10 @@ type jsonRPCRequest struct {
 }
 
 type jsonRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      any         `json:"id"`
-	Result  any         `json:"result,omitempty"`
-	Error   *rpcError   `json:"error,omitempty"`
+	JSONRPC string    `json:"jsonrpc"`
+	ID      any       `json:"id"`
+	Result  any       `json:"result,omitempty"`
+	Error   *rpcError `json:"error,omitempty"`
 }
 
 type rpcError struct {
@@ -51,10 +53,10 @@ type rpcError struct {
 
 // Standard JSON-RPC error codes.
 const (
-	codeParse     = -32700
-	codeInvalid   = -32600
-	codeMethod    = -32601
-	codeInternal  = -32603
+	codeParse    = -32700
+	codeInvalid  = -32600
+	codeMethod   = -32601
+	codeInternal = -32603
 )
 
 // MCP method names.
@@ -115,6 +117,10 @@ type Server struct {
 	pool     *db.Pool
 	tools    ToolRegistry
 	tenantID string
+	// runContext is the owning workflow run's run_context, so a work item
+	// created during a recurring fire's run is stamped with the fire's
+	// provenance (feature 4.1, AC2). Nil for a plain MCP.
+	runContext []byte
 }
 
 // New creates an MCP server. The tenant is resolved from the
@@ -129,7 +135,36 @@ func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
 			log.Warn("ORCHICON_MCP_TENANT_ID unset — MCP server scoped to the dev tenant", "tenant_id", tenantID)
 		}
 	}
-	return &Server{log: log, pool: pool, tools: tools, tenantID: tenantID}
+	return &Server{log: log, pool: pool, tools: tools, tenantID: tenantID, runContext: loadRunContext(log, pool, tenantID)}
+}
+
+// loadRunContext resolves the run_context of ORCHICON_MCP_WORKFLOW_RUN_ID (the
+// workflow run whose runtime container hosts this worker) against the MCP's
+// pool, so a work item created during a recurring fire's run is stamped with
+// the fire's provenance block (feature 4.1, AC2). Best-effort: an unset id, a
+// missing run, or a DB error yields nil, so a plain create is unaffected.
+func loadRunContext(log *slog.Logger, pool *db.Pool, tenantID string) []byte {
+	runID := os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID")
+	if runID == "" || pool == nil || tenantID == "" {
+		return nil
+	}
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		if log != nil {
+			log.Warn("mcp: begin tenant tx for run_context", "error", err)
+		}
+		return nil
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		if log != nil {
+			log.Warn("mcp: load run_context", "run", runID, "error", err)
+		}
+		return nil
+	}
+	return run.RunContext
 }
 
 // Run reads JSON-RPC requests from stdin and writes responses to stdout until
@@ -251,6 +286,10 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	// function reads the tenant from context via tenant.FromContext() and
 	// scopes its DB operations accordingly.
 	ctx = tenant.WithID(ctx, s.tenantID)
+	// Inject the owning workflow run's run_context so a work item created
+	// during a recurring fire's run is stamped with automation provenance
+	// (feature 4.1, AC2). No-op (nil) for a plain MCP.
+	ctx = workitem.WithAutomationRunContext(ctx, s.runContext)
 
 	result, err := s.tools.Execute(ctx, s.pool, params.Name, params.Arguments)
 	if err != nil {

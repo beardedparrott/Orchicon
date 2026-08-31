@@ -127,7 +127,7 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-time.After(15 * time.Second):
 		}
 		client := h.Client()
-		if client == nil || client.Healthy(ctx) {
+		if client == nil || client.MCPHealthy(ctx) {
 			backoff = 5 * time.Second
 			continue
 		}
@@ -190,11 +190,12 @@ func (h *HostServe) kill() {
 // field (opencode applies it per turn).
 func (h *HostServe) serveConfig() string {
 	cfg := BuildConfigContent(ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: "",
-		ModelRef:    "",
-		TenantID:    serveTenantID(),
-		OrchiconMCP: true,
+		AgentName:    workerAgent,
+		AgentPrompt:  workerAgentPrompt,
+		DefaultAgent: workerAgent,
+		ModelRef:     "",
+		TenantID:     serveTenantID(),
+		OrchiconMCP:  true,
 	})
 	return cfg
 }

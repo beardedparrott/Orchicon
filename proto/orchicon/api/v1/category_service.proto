@@ -1,0 +1,55 @@
+syntax = "proto3";
+package orchicon.api.v1;
+import "orchicon/api/v1/category.proto";
+
+service CategoryService {
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
+  rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
+  rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
+  rpc AssignToCategory(AssignToCategoryRequest) returns (AssignToCategoryResponse);
+  rpc UnassignFromCategory(UnassignFromCategoryRequest) returns (UnassignFromCategoryResponse);
+  rpc ReorderCategories(ReorderCategoriesRequest) returns (ReorderCategoriesResponse);
+}
+
+message ListCategoriesRequest {
+  CategoryTargetType target_type = 1;
+  string search = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+message ListCategoriesResponse {
+  repeated Category categories = 1;
+  repeated CategoryAssignment assignments = 2;
+  string next_page_token = 3;
+}
+message CreateCategoryRequest {
+  CategoryTargetType target_type = 1;
+  string name = 2;
+  string description = 3;
+}
+message CreateCategoryResponse { Category category = 1; }
+message UpdateCategoryRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+}
+message UpdateCategoryResponse { Category category = 1; }
+message DeleteCategoryRequest { string id = 1; }
+message DeleteCategoryResponse {}
+message AssignToCategoryRequest {
+  string category_id = 1;
+  string entity_id = 2;
+  CategoryTargetType target_type = 3;
+}
+message AssignToCategoryResponse {}
+message UnassignFromCategoryRequest {
+  string entity_id = 1;
+  CategoryTargetType target_type = 2;
+}
+message UnassignFromCategoryResponse {}
+message ReorderCategoriesRequest {
+  CategoryTargetType target_type = 1;
+  repeated string ordered_ids = 2;
+}
+message ReorderCategoriesResponse {}

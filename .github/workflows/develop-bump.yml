@@ -1,0 +1,109 @@
+# Orchicon develop version-bump workflow.
+#
+# Keeps the version tag strictly monotonic so a rebuild (via `git describe
+# --tags`; see Makefile + internal/version) always reports the current code.
+# This — not a manual `git tag -a v0.1.<next>` — is now the canonical
+# per-merge version tick: every time `develop` advances, we tag the exact
+# new tip commit with the next `v0.1.x` (patch+1 over the highest existing
+# version tag) and push it.
+#
+# Why `push` to develop (not pull_request_target): a merged/squashed PR lands
+# as exactly one new commit on develop, so GITHUB_SHA is precisely the commit
+# to tag. `pull_request_target` checks out the base branch and cannot reliably
+# identify "the merge commit" when two merges race.
+#
+# Why this does NOT publish a release:
+#   - A tag pushed via the default GITHUB_TOKEN does not re-trigger the
+#     `push: tags` workflow (the same GITHUB_TOKEN-recursion limitation
+#     auto-release.yml documents — it is why that workflow uses
+#     workflow_dispatch). So `release.yml` does not run from this push.
+#   - `release.yml`'s guard independently skips any tag not reachable from
+#     `main`, so a develop bump tag pushed before the human cuts a release is
+#     never treated as a release.
+#   - Only the human's `develop` → `main` merge carrying the `release` label
+#     (auto-release.yml) publishes a release.
+#
+# Version continuity with releases: auto-release bumps from the highest tag
+# too, so a human release lands one past the last develop bump and develop
+# resumes from there — one monotonic v0.1.x sequence.
+
+name: Develop Bump
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: develop-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Bump version tag
+        id: bump
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+
+          TARGET_SHA="${GITHUB_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          next_tag() {
+            local latest
+            latest="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+            if [ -z "$latest" ]; then
+              echo "v0.1.0"
+              return
+            fi
+            local maj min pat
+            maj="$(echo "$latest" | sed 's/^v//' | cut -d. -f1)"
+            min="$(echo "$latest" | sed 's/^v//' | cut -d. -f2)"
+            pat="$(echo "$latest" | sed 's/^v//' | cut -d. -f3)"
+            echo "v${maj}.${min}.$((pat + 1))"
+          }
+
+          for attempt in 1 2 3 4; do
+            # Always recompute from the latest remote tags so a concurrent
+            # develop merge (serialized by the concurrency group) or a racing
+            # human release cut cannot make us claim an already-taken version.
+            git fetch --tags --force origin >/dev/null 2>&1 || true
+            NEW_TAG="$(next_tag)"
+
+            existing="$(git rev-parse -q --verify "refs/tags/${NEW_TAG}" 2>/dev/null || true)"
+            if [ -n "$existing" ]; then
+              existing_commit="$(git rev-parse "${NEW_TAG}^{}")"
+              if [ "$existing_commit" = "$TARGET_SHA" ]; then
+                echo "Tag ${NEW_TAG} already points at ${TARGET_SHA}; nothing to do."
+                echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Tag ${NEW_TAG} already exists at ${existing_commit:0:12}; bumping past it (attempt ${attempt})."
+              continue
+            fi
+
+            if ! git tag "${NEW_TAG}" "${TARGET_SHA}" 2>/dev/null; then
+              echo "Could not create ${NEW_TAG} (already exists); retrying (attempt ${attempt})."
+              continue
+            fi
+            if git push origin "refs/tags/${NEW_TAG}"; then
+              echo "Created and pushed ${NEW_TAG} at ${TARGET_SHA:0:12}"
+              echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Push of ${NEW_TAG} failed — likely collided with a tag from a concurrent run; retrying (attempt ${attempt})."
+            git tag -d "${NEW_TAG}" 2>/dev/null || true
+          done
+
+          echo "::error::Could not create a fresh version tag after 4 attempts (persistent collision)."
+          exit 1

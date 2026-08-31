@@ -1,6 +1,6 @@
-# AGENTS.developer.md — Orchicon Development Guide
+# developer.md — Orchicon Development Guide
 
-Read on demand by agents working directly with the human developer (and by human contributors). Orchicon workers read `AGENTS.worker.md` instead — their instructions live in their system prompt.
+Read on demand by agents working directly with the human developer (and by human contributors). Orchicon workers read `worker.md` instead — their instructions live in their system prompt (and `worker.md` is injected into their session).
 
 - **Repo**: https://github.com/beardedparrott/Orchicon.git
 - **Language**: Go (control plane) + TypeScript (frontend)
@@ -25,11 +25,11 @@ A **worker running inside Orchicon** operates autonomously: it PRs into `develop
 - `develop` is the integration branch; `main` is release-only and managed by the human. Workers and agents branch off `develop` and PR into `develop` — never `main`.
 - ALWAYS create a new branch before starting work. Never commit to `main` or `develop` (a local pre-commit hook rejects direct commits there; re-create it if missing).
 - Branch naming: `<type>/<short-description>` (`feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`).
-- Before starting work on a new branch, bump the version tag (`git tag -a v0.1.<next> -m "v0.1.<next>"`) so local builds report the current version. `git fetch --tags` before rebuilding after a release merge.
-- PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. PRs must NOT carry the `release` label (that label belongs only on the human's `develop` → `main` release PR).
+- The version tag (`vX.Y.<n>`) is bumped automatically on every merge to `develop` (`.github/workflows/develop-bump.yml`), so local builds report the current version. `git fetch --tags` before rebuilding to pick up the latest tag — `git pull` does not fetch tags.
+- PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. PRs must NOT carry the release labels (`release`, `release-minor`, `release-major` — those belong only on the human's `develop` → `main` release PR: next patch / next minor / next major respectively, computed by `.github/workflows/auto-release.yml`).
 - Commit early and often on your branch. Write clear present-tense messages (`Add project CRUD service and data-access layer`). Stage only the files relevant to the commit.
 - Before starting work, `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
-- Before opening a PR: fetch + rebase onto `origin/develop` if the branch is stale. Update `UPDATES.md` with a new row (typed table format, monotonic row numbers). Do NOT touch README.md's "Last Release Changes" — it is auto-synced from UPDATES.md by `scripts/gen-release-notes.sh --sync-readme`.
+- Before opening a PR: fetch + rebase onto `origin/develop` if the branch is stale. Update `UPDATES.md` with a new row (typed table format, monotonic row numbers). Do NOT touch README.md's "Last Release Changes" — it is auto-synced from RELEASE_HIGHLIGHTS.md (compact digest) by `scripts/gen-release-notes.sh --sync-readme`.
 - Before merging, ask the user again (PR-creation approval ≠ merge approval). After merging, delete the branch.
 
 ## Local development loop
@@ -40,7 +40,7 @@ make container-build                  # build bin/orchicon + the container image
 scripts/container.sh down dev && scripts/container.sh up dev   # restart with the new image
 ```
 
-Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing compose-era Postgres volumes. **The DEV instance is the default and only instance for development work. Never create, mutate, or delete data on the PROD instance.**
+Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing compose-era Postgres volumes. Dev is the default instance for hands-on development; prod runs the pipeline (the work items, workers, and workflows you schedule there). Worker access to an instance's data is role-scoped through the worker's identity, and the `:orchicon-dev` sandbox plane keeps worker DB tests out of real data — there is no dev-vs-prod instance choice a worker must manage.
 
 **Disk hygiene:** the Go build cache grows to tens of GB (`~/.cache/go-build`) and repeated container builds leave dangling Docker images. Reclaim with `make clean` (go cache + `bin/`) and `make clean-docker` (dangling images + stopped containers + unused volumes). The serve/detached log auto-rotates and is pruned via Settings → Defaults → Log management — never `rm` a live log by hand. Run `make clean` at the end of a heavy dev session, and check `make cache-check` before starting work.
 
@@ -51,7 +51,7 @@ Every task follows this sequence:
 1. Read AGENTS.md, then read UPDATES.md to understand the current state, and read the relevant DOCUMENTATION.md sections before touching something unfamiliar.
 2. Create a branch and do the work, committing changes often.
 3. Fully test and verify (see Verification).
-4. Before the final commit on your branch, update `UPDATES.md` with a new row in the typed table format (see UPDATES.md). Do NOT touch README.md's "Last Release Changes" manually — `scripts/gen-release-notes.sh --sync-readme` keeps it in sync. This is the commit that will be PR'd and merged into `develop`.
+4. Before the final commit on your branch, update `UPDATES.md` with a new row in the typed table format (see UPDATES.md). Do NOT touch README.md's "Last Release Changes" manually — `scripts/gen-release-notes.sh --sync-readme` keeps it in sync with RELEASE_HIGHLIGHTS.md. This is the commit that will be PR'd and merged into `develop`.
 5. Follow the Git workflow above.
 6. Inform the user every time UPDATES have been made, in a tabled format.
 
@@ -62,7 +62,7 @@ If architecture or anything referenced in the docs has changed, update the relev
 - Control plane: Go, single binary, k8s-style reconcilers. API: Protobuf + Connect (gRPC + REST + streaming from one schema). DB: PostgreSQL 16 with RLS + transactional outbox. Event bus: NATS JetStream. Telemetry: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics). Deployment: single container (`orchicon container` PID-1 supervisor, `scripts/container.sh` manages dev/prod instances).
 - Runtime adapters: gRPC sidecars (OpenCode first). Adapters are mounted, never baked — the operator installs opencode on the host; `container.sh`/`orchicon install`/the runtime daemon bind-mount `~/.opencode` into the main and runtime containers. Session transport is the adapter contract: worker executions run as persistent opencode sessions (`internal/opencode/session.go`), not one-shot `run` subprocesses.
 - Frontend: TypeScript + React + Vite + Connect-ES + React Flow.
-- Workflow runtime containers: pure per-workflow execution on a warm pool, leased exclusively per run, reset to pristine on release. `:orchicon-dev` images boot a disposable in-container sandbox plane (Postgres → NATS → `orchicon serve` at `http://localhost:8080`) so workers get a consistent environment and the `orchicon_*` MCP tools against the sandbox DB — never the host plane's.
+- Workflow runtime containers: pure per-workflow execution on a warm pool, leased exclusively per run, reset to pristine on release. `:orchicon-dev` images boot a disposable in-container sandbox plane (Postgres → NATS → `orchicon serve` at `http://localhost:8080`) so workers get a consistent environment and the sandbox `orchicon_*` MCP tools against the sandbox DB — never the host plane's. Separately, the plane-channel MCP (`orchicon_plane_*`) is registered on **every** runtime image for role-bound workers — plane access is role-gated, never image-gated.
 - Recovery follows a default 6-step workflow (capture → summarize → preserve → review → plan → resume) with bounded auto-relax and L1→L2→L3 escalation. Policy engine uses OPA (Rego) with bundles from Postgres. Auth is OIDC with API keys (SHA-256 hashed) + RBAC. Webhooks via NATS consumer with HMAC signing and a replayable dead-letter queue.
 
 ## Key invariants (do not violate)
@@ -106,7 +106,7 @@ For Docker/infra changes, verify the full stack boots (healthz + Grafana on :300
 
 ## Install scripts & release
 
-`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev. Windows runs the whole stack inside WSL2 (`install.ps1` provisions WSL2 + Docker-in-WSL and installs the Linux binary into the distro). `site/` + install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container images. Releases are capped at 5 (`prune-releases.yml`); the release body is generated from UPDATES.md by `scripts/gen-release-notes.sh`. When a phase changes what ships in the binary, update the install scripts and release workflow. Verify by running the installer against a draft release at minimum (`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target platform, or `--uninstall` to test cleanup).
+`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev. Windows runs the whole stack inside WSL2 (`install.ps1` provisions WSL2 + Docker-in-WSL and installs the Linux binary into the distro). `site/` + install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container images. Releases are capped at 5 (`prune-releases.yml`); the release body is the curated narrative from RELEASE_HIGHLIGHTS.md rendered by `scripts/gen-release-notes.sh` (README's "Last Release Changes" gets the compact digest via `--sync-readme`); the UPDATES.md rows are the internal engineering log. Release versioning: the develop→main PR's label picks the bump — `release` (next patch), `release-minor` (next minor), `release-major` (next major) — computed by `auto-release.yml` from the highest existing tag. When a phase changes what ships in the binary, update the install scripts and release workflow. Verify by running the installer against a draft release at minimum (`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target platform, or `--uninstall` to test cleanup).
 
 ## E2E & data preservation
 
@@ -130,4 +130,4 @@ Every time you add/change/remove a first-class entity, RPC, or user-facing capab
 
 ## UPDATES.md
 
-Read it before starting any work. All changes are recorded there in the typed table format (`| # | Type | Phase | One-line summary |`), rows appended to the top with monotonic row numbers — never renumber. Type ∈ `Feature | Bug fix | Chore | Docs | Refactor | Test`. Release-notes automation derives the release body from UPDATES.md; README's "Last Release Changes" stays in sync via `gen-release-notes.sh --sync-readme` (on develop, staged; on release, published; after a release, run `--trim`).
+Read it before starting any work. All changes are recorded there in the typed table format (`| # | Type | Phase | One-line summary |`), rows appended to the top with monotonic row numbers — never renumber. Type ∈ `Feature | Bug fix | Chore | Docs | Refactor | Test`. The release body comes from RELEASE_HIGHLIGHTS.md (curated narrative; see scripts/gen-release-notes.sh); README's "Last Release Changes" stays in sync as a compact digest via `gen-release-notes.sh --sync-readme` (on develop, staged; on release, published; after a release, run `--trim` to drop released rows).

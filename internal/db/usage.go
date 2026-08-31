@@ -13,6 +13,11 @@ import (
 // (docs/08 §5.2, docs/09 §3.7). The AI Gateway writes these as the
 // source of truth; OTel metrics mirror them to VictoriaMetrics for fast
 // telemetry queries.
+//
+// CacheReadTokens / CacheWriteTokens / ReasoningTokens are the canonical
+// usage-sample buckets (docs canonical-usage-sample-contract §1). Reason
+// tokens are a sub-bucket of CompletionTokens and are NOT additive to
+// TotalTokens.
 type UsageRecordRow struct {
 	ID               string
 	TenantID         string
@@ -23,7 +28,10 @@ type UsageRecordRow struct {
 	Provider         string
 	Model            string
 	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
 	CompletionTokens int64
+	ReasoningTokens  int64
 	TotalTokens      int64
 	CostUSD          float64
 	CorrelationID    string
@@ -49,19 +57,19 @@ func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (Usag
 		row.CreatedAt = time.Now().UTC()
 	}
 	if row.TotalTokens == 0 {
-		row.TotalTokens = row.PromptTokens + row.CompletionTokens
+		row.TotalTokens = row.PromptTokens + row.CacheReadTokens + row.CacheWriteTokens + row.CompletionTokens
 	}
 	const q = `INSERT INTO usage_records
 		(id, tenant_id, project_id, task_id, execution_id, worker_id,
 		 provider, model, prompt_tokens, completion_tokens, total_tokens,
 		 cost_usd, correlation_id, trace_id, occurred_at, created_at,
-		 workflow_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+		 workflow_run_id, cache_read_tokens, cache_write_tokens, reasoning_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 	if _, err := tx.Exec(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.ExecutionID, row.WorkerID,
 		row.Provider, row.Model, row.PromptTokens, row.CompletionTokens, row.TotalTokens,
 		row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
-		row.WorkflowRunID,
+		row.WorkflowRunID, row.CacheReadTokens, row.CacheWriteTokens, row.ReasoningTokens,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: create usage record: %w", err)
 	}
@@ -80,6 +88,9 @@ type ListUsageRecordsFilter struct {
 	StartTime   time.Time
 	EndTime     time.Time
 	PageSize    int32
+	// AfterID is the keyset cursor: the id of the last record on the
+	// previous page, used for composite (occurred_at, id) pagination.
+	AfterID string
 }
 
 // ListUsageRecords returns usage records matching the filter, ordered
@@ -92,7 +103,8 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		f.PageSize = 100
 	}
 	const q = `SELECT ur.id, ur.tenant_id, ur.project_id, ur.task_id, ur.execution_id, ur.worker_id,
-		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.total_tokens,
+		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.cache_read_tokens,
+		ur.cache_write_tokens, ur.reasoning_tokens, ur.total_tokens,
 		ur.cost_usd, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
 		COALESCE(w.name, '') AS worker_name,
 		COALESCE(wi.title, '') AS task_title
@@ -108,11 +120,12 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		  AND ($6 = '' OR ur.model = $6)
 		  AND ($7::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $7::timestamptz)
 		  AND ($8::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $8::timestamptz)
-		ORDER BY occurred_at DESC
-		LIMIT $9`
+		  AND ($9 = '' OR (ur.occurred_at, ur.id) < (SELECT occurred_at, id FROM usage_records WHERE tenant_id = $1 AND id = $9))
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $10`
 	rows, err := tx.Query(ctx, q,
 		f.TenantID, f.ProjectID, f.TaskID, f.ExecutionID, f.Provider, f.Model,
-		f.StartTime, f.EndTime, f.PageSize,
+		f.StartTime, f.EndTime, f.AfterID, f.PageSize,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: list usage records: %w", err)
@@ -132,14 +145,20 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 // CostSummaryRow is an aggregated cost roll-up at one drill-down level
 // (docs/10 §11: Tenant → Project → Task → Execution).
 type CostSummaryRow struct {
-	GroupKey          string
-	DisplayName       string // human-readable name populated by the service layer
-	TotalTokens       int64
-	PromptTokens      int64
-	CompletionTokens  int64
-	CostUSD           float64
-	ExecutionCount    int32
-	RecordCount       int32
+	GroupKey         string
+	DisplayName      string // human-readable name populated by the service layer
+	TotalTokens      int64
+	PromptTokens     int64
+	CacheReadTokens  int64
+	CompletionTokens int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
+	CostUSD          float64
+	ExecutionCount   int32
+	RecordCount      int32
+	// FinishedAt is the latest occurred_at among the group's usage records
+	// — the group's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // CostRollupLevel selects the group-by column for GetCostRollup.
@@ -179,9 +198,13 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
 		COALESCE(SUM(cost_usd), 0) AS cost_usd,
 		COUNT(DISTINCT execution_id) AS execution_count,
-		COUNT(*) AS record_count
+		COUNT(*) AS record_count,
+		MAX(occurred_at) AS finished_at
 		FROM usage_records
 		WHERE tenant_id = $1
 		  AND ($2 = '' OR project_id = $2)
@@ -200,7 +223,9 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 	for rows.Next() {
 		var r CostSummaryRow
 		if err := rows.Scan(&r.GroupKey, &r.TotalTokens, &r.PromptTokens,
-			&r.CompletionTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+			&r.CompletionTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
+			&r.ReasoningTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+			&r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan cost rollup: %w", err)
 		}
@@ -214,6 +239,9 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 	const q = `SELECT COALESCE(SUM(total_tokens), 0),
 		COALESCE(SUM(prompt_tokens), 0),
 		COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0),
+		COALESCE(SUM(cache_write_tokens), 0),
+		COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(cost_usd), 0),
 		COUNT(DISTINCT execution_id),
 		COUNT(*)
@@ -227,8 +255,9 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 	var r CostSummaryRow
 	r.GroupKey = "total"
 	if err := tx.QueryRow(ctx, q, tenantID, projectID, taskID, executionID, start, end).Scan(
-		&r.TotalTokens, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD,
-		&r.ExecutionCount, &r.RecordCount,
+		&r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
+		&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
+		&r.CostUSD, &r.ExecutionCount, &r.RecordCount,
 	); err != nil {
 		return CostSummaryRow{}, fmt.Errorf("db: cost total: %w", err)
 	}
@@ -238,39 +267,56 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 // WorkflowAggregateRow is a cost roll-up grouped by workflow (across all
 // runs). Used for the top-level "By Workflow" hierarchy.
 type WorkflowAggregateRow struct {
-	WorkflowID     string
-	WorkflowName   string
-	TotalCostUSD   float64
-	TotalTokens    int64
-	RunCount       int32
-	ExecutionCount int32
+	WorkflowID       string
+	WorkflowName     string
+	TotalCostUSD     float64
+	TotalTokens      int64
+	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
+	RunCount         int32
+	ExecutionCount   int32
+	// FinishedAt is the latest occurred_at among the workflow's usage records
+	// — the workflow's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // WorkflowRunCostRow is a cost roll-up grouped by workflow run.
 type WorkflowRunCostRow struct {
-	WorkflowRunID  string
-	WorkflowID     string
-	TotalCostUSD   float64
-	TotalTokens    int64
-	ExecutionCount int32
-	RunStatus      string
+	WorkflowRunID    string
+	WorkflowID       string
+	TotalCostUSD     float64
+	TotalTokens      int64
+	PromptTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
+	ExecutionCount   int32
+	RunStatus        string
 	// WorkItemID is the run's bound work item id (workflow_runs.work_item_id),
 	// empty for one-shot runs with no bound ticket.
 	WorkItemID string
 	// WorkItemName is the current title of the bound work item (LEFT JOINed
 	// from work_items so the run row can display a human-readable name).
 	WorkItemName string
+	// FinishedAt is the latest occurred_at among the run's usage records
+	// — the run's last activity (docs/10 §11 "Finished" sort).
+	FinishedAt time.Time
 }
 
 // WorkflowWorkerCostRow is a per-worker cost summary within one run.
 type WorkflowWorkerCostRow struct {
-	WorkerID        string
-	WorkerName      string
-	TotalCostUSD    float64
-	TotalTokens     int64
-	PromptTokens    int64
+	WorkerID         string
+	WorkerName       string
+	TotalCostUSD     float64
+	TotalTokens      int64
+	PromptTokens     int64
 	CompletionTokens int64
-	ExecutionCount  int32
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
+	ExecutionCount   int32
 }
 
 // GetWorkflowAggregateCosts returns cost grouped by workflow (across all
@@ -283,8 +329,13 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		w.name AS workflow_name,
 		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(ur.prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(ur.cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(ur.cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(ur.reasoning_tokens), 0) AS reasoning_tokens,
 		COUNT(DISTINCT wr.id) AS run_count,
-		COUNT(DISTINCT ur.execution_id) AS execution_count
+		COUNT(DISTINCT ur.execution_id) AS execution_count,
+		MAX(ur.occurred_at) AS finished_at
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
@@ -304,7 +355,9 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 	for rows.Next() {
 		var r WorkflowAggregateRow
 		if err := rows.Scan(&r.WorkflowID, &r.WorkflowName,
-			&r.TotalCostUSD, &r.TotalTokens, &r.RunCount, &r.ExecutionCount,
+			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
+			&r.RunCount, &r.ExecutionCount, &r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow aggregate: %w", err)
 		}
@@ -322,10 +375,15 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		w.id AS workflow_id,
 		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(ur.prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(ur.cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(ur.cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(ur.reasoning_tokens), 0) AS reasoning_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count,
 		wr.status AS run_status,
 		COALESCE(wr.work_item_id, '') AS work_item_id,
-		COALESCE(wrun.title, '') AS work_item_name
+		COALESCE(wrun.title, '') AS work_item_name,
+		MAX(ur.occurred_at) AS finished_at
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
@@ -346,8 +404,10 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 	for rows.Next() {
 		var r WorkflowRunCostRow
 		if err := rows.Scan(&r.WorkflowRunID, &r.WorkflowID,
-			&r.TotalCostUSD, &r.TotalTokens, &r.ExecutionCount, &r.RunStatus,
-			&r.WorkItemID, &r.WorkItemName,
+			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
+			&r.ExecutionCount, &r.RunStatus, &r.WorkItemID, &r.WorkItemName,
+			&r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run cost: %w", err)
 		}
@@ -367,6 +427,9 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		SUM(ur.total_tokens) AS total_tokens,
 		SUM(ur.prompt_tokens) AS prompt_tokens,
 		SUM(ur.completion_tokens) AS completion_tokens,
+		SUM(ur.cache_read_tokens) AS cache_read_tokens,
+		SUM(ur.cache_write_tokens) AS cache_write_tokens,
+		SUM(ur.reasoning_tokens) AS reasoning_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
@@ -385,6 +448,7 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		var r WorkflowWorkerCostRow
 		if err := rows.Scan(&r.WorkerID, &r.WorkerName,
 			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
+			&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
 			&r.ExecutionCount,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow worker cost: %w", err)
@@ -438,7 +502,8 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 	var occurredAt, createdAt pgtype.Timestamptz
 	if err := rows.Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.ExecutionID, &r.WorkerID,
-		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
+		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.CacheReadTokens,
+		&r.CacheWriteTokens, &r.ReasoningTokens, &r.TotalTokens,
 		&r.CostUSD, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
 		&r.WorkerName, &r.TaskTitle,
 	); err != nil {

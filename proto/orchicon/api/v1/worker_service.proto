@@ -10,6 +10,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "orchicon/api/v1/worker.proto";
+import "orchicon/api/v1/category.proto";
 
 service WorkerService {
   // CreateWorker creates a new Worker in draft state with its first
@@ -81,6 +82,14 @@ service WorkerService {
 
   // GetEditLock returns the current edit lock state for a Worker, if any.
   rpc GetEditLock(GetEditLockRequest) returns (GetEditLockResponse);
+
+  // BulkUpdateWorkerModel sets model_ref on each requested Worker and
+  // publishes the affected version in a single round trip (mirrors the
+  // manual edit-then-republish flow but applied atomically per worker).
+  // Per-worker outcomes are returned (updated / skipped / error) so
+  // partial success is observable. Max 100 ids per call (mirrors
+  // BatchDeleteExecutions).
+  rpc BulkUpdateWorkerModel(BulkUpdateWorkerModelRequest) returns (BulkUpdateWorkerModelResponse);
 }
 
 message CreateWorkerRequest {
@@ -109,6 +118,7 @@ message CreateWorkerRequest {
   string skills = 20;
   string behavior = 21;
   string agents_md = 22;
+  string role_ref = 23; // optional RBAC role binding; empty = no plane access
 }
 
 message CreateWorkerResponse {
@@ -121,6 +131,10 @@ message UpdateWorkerRequest {
   string name = 2;
   string description = 3; // Markdown
   string purpose = 4;
+  // Role binding with presence: set to a role id to bind, "" to clear.
+  // Unlike name/description/purpose (draft-only), the role binding is
+  // editable on published workers (it lives on the header, not the version).
+  optional string role_ref = 5;
 }
 
 message UpdateWorkerResponse {
@@ -198,9 +212,28 @@ message ListWorkersRequest {
   string sort_order = 7; // "asc" or "desc" (default "asc")
 }
 
+// WorkerListItem is a single row in the workers list — the header plus
+// the active version's model_ref and publish state so cards render both
+// without an N+1 ListWorkerVersions fetch. The active version is the
+// version pinned by workers.current_version when >0, otherwise the
+// latest version (highest version number). Mirrors GetWorkerResponse's
+// header+version pattern with a minimal projection.
+message WorkerListItem {
+  Worker worker = 1;
+  // active_model_ref is the model_ref of the active version
+  // (worker_versions.model_ref) — matches the ModelPicker provider/id
+  // format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
+  // worker has no versions yet.
+  string active_model_ref = 2;
+  WorkerVersionStatus active_version_status = 3;
+}
+
 message ListWorkersResponse {
-  repeated Worker workers = 1;
+  repeated Worker workers = 1 [deprecated = true];
   string next_page_token = 2;
+  repeated WorkerListItem items = 3;
+  repeated Category categories = 4;
+  repeated CategoryAssignment assignments = 5;
 }
 
 message ListWorkerVersionsRequest {
@@ -297,4 +330,67 @@ message GetEditLockRequest {
 
 message GetEditLockResponse {
   EditLock lock = 1; // empty if no lock held
+}
+
+// BulkUpdateWorkerModelRequest sets model_ref on every requested Worker
+// and publishes the affected version in the same call. The version
+// number does NOT advance — the operation mirrors the manual
+// edit-then-republish flow (existing draft → edited in place;
+// latest published → reverted to draft → edited → republished).
+// Max 100 ids per call. Deprecated / retired / not-found workers are
+// returned as skipped with a reason; per-worker failures do not abort the
+// batch.
+message BulkUpdateWorkerModelRequest {
+  repeated string worker_ids = 1; // max 100
+  string model_ref = 2; // provider/id, e.g. "anthropic/claude-sonnet-4"
+}
+
+message BulkUpdateWorkerModelResponse {
+  repeated BulkUpdateWorkerModelResult results = 1;
+  // Convenience summary for the UI; same numbers the per-worker list
+  // produces.
+  int32 updated_count = 2;
+  int32 skipped_count = 3;
+  int32 error_count = 4;
+}
+
+// BulkUpdateWorkerModelResult is one worker's outcome. Exactly one of
+// updated / skipped / error is set (proto oneof guarantees this).
+message BulkUpdateWorkerModelResult {
+  string worker_id = 1;
+  oneof outcome {
+    BulkUpdateWorkerModelUpdated updated = 2;
+    BulkUpdateWorkerModelSkipped skipped = 3;
+    BulkUpdateWorkerModelError error = 4;
+  }
+}
+
+// BulkUpdateWorkerModelUpdated is the success outcome: model_ref was
+// written to the affected WorkerVersion and the version is now
+// published. `version` is unchanged (no fork).
+message BulkUpdateWorkerModelUpdated {
+  int32 version = 1; // the version number, unchanged
+  string model_ref = 2; // echoes the new model_ref for UI confirmation
+}
+
+// BulkUpdateWorkerModelSkipped names why this worker was not mutated.
+// Deprecated / retired workers cannot be edited via this path; workers
+// with zero versions have nothing to edit; not-found is reserved for
+// ids that no longer exist.
+message BulkUpdateWorkerModelSkipped {
+  BulkUpdateWorkerModelSkipReason reason = 1;
+}
+
+enum BulkUpdateWorkerModelSkipReason {
+  BULK_UPDATE_WORKER_MODEL_SKIP_REASON_UNSPECIFIED = 0;
+  BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NOT_FOUND = 1;
+  BULK_UPDATE_WORKER_MODEL_SKIP_REASON_DEPRECATED = 2;
+  BULK_UPDATE_WORKER_MODEL_SKIP_REASON_RETIRED = 3;
+  BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NO_PUBLISHED_VERSION = 4;
+}
+
+// BulkUpdateWorkerModelError carries a per-worker failure message for
+// the UI; the batch as a whole still returns the full result list.
+message BulkUpdateWorkerModelError {
+  string message = 1;
 }

@@ -55,26 +55,40 @@ import (
 // stallWindows is the set of tunable stall thresholds. Loaded from env at
 // adapter construction so operators can tighten/loosen per environment.
 type stallWindows struct {
-	noProgress    time.Duration
-	noFileDiff    time.Duration
-	textLoop      time.Duration // pure text without meaningful action
-	repetitionN  int
-	repetitionW  time.Duration
+	noProgress  time.Duration
+	noFileDiff  time.Duration
+	textLoop    time.Duration // pure text without meaningful action
+	repetitionN int
+	repetitionW time.Duration
 }
 
 func defaultStallWindows() stallWindows {
 	return stallWindows{
-		noProgress:   envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 300*time.Second),
-		noFileDiff:   envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
-		textLoop:     envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
-		repetitionN:  envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
-		repetitionW:  envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
+		noProgress:  envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 300*time.Second),
+		noFileDiff:  envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
+		textLoop:    envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
+		repetitionN: envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
+		repetitionW: envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
 	}
 }
 
 // stallWindowsFromManifest builds stallWindows from ExecutionManifest
-// settings, with env-var fallback for dev overrides. Zero values in the
-// manifest fall through to env vars, which fall through to code defaults.
+// settings, with env-var fallback for dev overrides. Zero (unset) values in
+// the manifest fall through to env vars, which fall through to code
+// defaults.
+//
+// noFileDiff/textLoop are the two advisory windows Settings documents as
+// "0 = disabled" — but 0 is also the manifest's unset value (a fresh/
+// never-configured tenant_settings row), so a plain `> 0` guard cannot
+// tell "never configured" from "explicitly disabled" and previously just
+// treated both as unset (the built-in default always applied — "0 =
+// disabled" was aspirational, nothing could ever actually disable these).
+// A negative value is unambiguous and needs no schema change: 0/unset →
+// default (safe — a never-configured tenant keeps real stall detection),
+// positive → explicit override, negative → the resulting duration is
+// itself <= 0, which every consumer below (the checker in this file)
+// already gates on `> 0`, so it naturally reads as disabled with no
+// change needed anywhere else.
 func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 	w := defaultStallWindows()
 	if m.StallNoProgressWindowSeconds > 0 {
@@ -82,12 +96,12 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 			w.noProgress = v
 		}
 	}
-	if m.StallNoFileDiffWindowSeconds > 0 {
+	if m.StallNoFileDiffWindowSeconds != 0 {
 		if v := time.Duration(m.StallNoFileDiffWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
 			w.noFileDiff = v
 		}
 	}
-	if m.StallTextLoopWindowSeconds > 0 {
+	if m.StallTextLoopWindowSeconds != 0 {
 		if v := time.Duration(m.StallTextLoopWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
 			w.textLoop = v
 		}
@@ -112,16 +126,16 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 type progressMonitor struct {
 	mu sync.Mutex
 
-	execID  string
-	w       stallWindows
-	now     func() time.Time
+	execID string
+	w      stallWindows
+	now    func() time.Time
 
 	startedAt time.Time
 
-	lastStepFinish     time.Time // step_finish = token progress
-	lastFileDiff       time.Time // file_diff = file progress
+	lastStepFinish       time.Time // step_finish = token progress
+	lastFileDiff         time.Time // file_diff = file progress
 	lastMeaningfulAction time.Time // tool_call / file_diff / step_finish (not just text)
-	lastTokenCt        int64     // cumulative tokens (for no-NEW-token detection)
+	lastTokenCt          int64     // cumulative tokens (for no-NEW-token detection)
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args hash) → timestamps within the window.
@@ -550,29 +564,23 @@ const defaultWallClockTimeout = 3600 * time.Second
 // explicit 0 in the worker OR the tenant default disables the hard timeout
 // (relying solely on stall detection); an unset field falls back to
 // defaultWallClockTimeout so every execution has a hard backstop.
+//
+// The wall-clock dimension shares the single budget parse (parseBudgetSpec)
+// with the compaction gate so both read the same merged budget.
 func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
 	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
 			return time.Now().Add(d), true
 		}
 	}
-	if len(budgets) == 0 {
-		return time.Now().Add(defaultWallClockTimeout), true
-	}
-	var b struct {
-		WallClockSeconds *float64 `json:"wall_clock_seconds"`
-	}
-	if err := json.Unmarshal(budgets, &b); err != nil {
-		// Unparseable budgets — fall back to the default backstop.
-		return time.Now().Add(defaultWallClockTimeout), true
-	}
-	// Absent field → default backstop (3600s).
-	if b.WallClockSeconds == nil {
+	spec := parseBudgetSpec(budgets)
+	// Absent field (or empty/unparseable budgets) → default backstop (3600s).
+	if spec.wallClockSeconds == nil {
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	// Explicit 0 (or negative) disables the hard timeout.
-	if *b.WallClockSeconds <= 0 {
+	if *spec.wallClockSeconds <= 0 {
 		return time.Time{}, false
 	}
-	return time.Now().Add(time.Duration(*b.WallClockSeconds * float64(time.Second))), true
+	return time.Now().Add(time.Duration(*spec.wallClockSeconds * float64(time.Second))), true
 }

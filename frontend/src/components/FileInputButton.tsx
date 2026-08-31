@@ -39,7 +39,7 @@ export function FileInputButton({
     <>
       <input ref={inputRef} type="file" accept={accept} multiple={multiple} onChange={handleFiles} className="hidden" />
       <Button type="button" variant="outline" size="sm" className="text-xs h-7" onClick={() => inputRef.current?.click()}>
-        <FileUp className="h-3 w-3 mr-1" />
+        <FileUp aria-hidden="true" className="h-3 w-3 mr-1" />
         {label}
       </Button>
     </>

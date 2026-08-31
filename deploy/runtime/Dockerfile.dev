@@ -1,5 +1,5 @@
 # Orchicon workflow-runtime DEV image — the canned image for working ON
-# Orchicon (dogfooding) in a worker.
+# Orchicon in a worker.
 #
 # Everything in the base image, plus the toolchain needed to build and
 # test the Orchicon repo in-sandbox:

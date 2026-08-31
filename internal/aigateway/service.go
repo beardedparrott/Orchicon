@@ -26,19 +26,19 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/tenant"
-	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // Service implements the AIGatewayService Connect handler
 // (apiv1connect.AIGatewayServiceHandler).
 type Service struct {
-	pool        *db.Pool
-	log         *slog.Logger
-	subscriber  eventbus.Subscriber
-	metrics     *usageMetrics
-	providers   []*apiv1.AIProvider
-	discoverer  *ModelDiscoverer
+	pool          *db.Pool
+	log           *slog.Logger
+	subscriber    eventbus.Subscriber
+	metrics       *usageMetrics
+	providers     []*apiv1.AIProvider
+	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
@@ -216,12 +216,17 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 	out := make([]*apiv1.WorkflowCostAggregate, 0, len(aggregates))
 	for i := range aggregates {
 		wf := &apiv1.WorkflowCostAggregate{
-			WorkflowId:     aggregates[i].WorkflowID,
-			WorkflowName:   aggregates[i].WorkflowName,
-			TotalCostUsd:   aggregates[i].TotalCostUSD,
-			TotalTokens:    aggregates[i].TotalTokens,
-			RunCount:       aggregates[i].RunCount,
-			ExecutionCount: aggregates[i].ExecutionCount,
+			WorkflowId:       aggregates[i].WorkflowID,
+			WorkflowName:     aggregates[i].WorkflowName,
+			TotalCostUsd:     aggregates[i].TotalCostUSD,
+			TotalTokens:      aggregates[i].TotalTokens,
+			PromptTokens:     aggregates[i].PromptTokens,
+			CacheReadTokens:  aggregates[i].CacheReadTokens,
+			CacheWriteTokens: aggregates[i].CacheWriteTokens,
+			ReasoningTokens:  aggregates[i].ReasoningTokens,
+			RunCount:         aggregates[i].RunCount,
+			ExecutionCount:   aggregates[i].ExecutionCount,
+			FinishedAt:       optTimestamp(aggregates[i].FinishedAt),
 		}
 		// Mid level: individual runs for this workflow.
 		runs, err := db.GetWorkflowRunCosts(ctx, ttx.Tx, tenantID, aggregates[i].WorkflowID, start, end)
@@ -230,13 +235,18 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 		} else {
 			for j := range runs {
 				run := &apiv1.WorkflowRunCost{
-					WorkflowRunId:  runs[j].WorkflowRunID,
-					TotalCostUsd:   runs[j].TotalCostUSD,
-					TotalTokens:    runs[j].TotalTokens,
-					ExecutionCount: runs[j].ExecutionCount,
-					RunStatus:      runs[j].RunStatus,
-					WorkItemId:     runs[j].WorkItemID,
-					WorkItemName:   runs[j].WorkItemName,
+					WorkflowRunId:    runs[j].WorkflowRunID,
+					TotalCostUsd:     runs[j].TotalCostUSD,
+					TotalTokens:      runs[j].TotalTokens,
+					PromptTokens:     runs[j].PromptTokens,
+					CacheReadTokens:  runs[j].CacheReadTokens,
+					CacheWriteTokens: runs[j].CacheWriteTokens,
+					ReasoningTokens:  runs[j].ReasoningTokens,
+					ExecutionCount:   runs[j].ExecutionCount,
+					RunStatus:        runs[j].RunStatus,
+					WorkItemId:       runs[j].WorkItemID,
+					WorkItemName:     runs[j].WorkItemName,
+					FinishedAt:       optTimestamp(runs[j].FinishedAt),
 				}
 				// Leaf level: per-worker cost summary within this run.
 				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)
@@ -245,13 +255,16 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 				} else {
 					for k := range workers {
 						run.Workers = append(run.Workers, &apiv1.WorkflowWorkerCost{
-							WorkerId:        workers[k].WorkerID,
-							WorkerName:      workers[k].WorkerName,
-							TotalCostUsd:    workers[k].TotalCostUSD,
-							TotalTokens:     workers[k].TotalTokens,
-							PromptTokens:    workers[k].PromptTokens,
+							WorkerId:         workers[k].WorkerID,
+							WorkerName:       workers[k].WorkerName,
+							TotalCostUsd:     workers[k].TotalCostUSD,
+							TotalTokens:      workers[k].TotalTokens,
+							PromptTokens:     workers[k].PromptTokens,
 							CompletionTokens: workers[k].CompletionTokens,
-							ExecutionCount:  workers[k].ExecutionCount,
+CacheReadTokens:  workers[k].CacheReadTokens,
+							CacheWriteTokens: workers[k].CacheWriteTokens,
+							ReasoningTokens:  workers[k].ReasoningTokens,
+							ExecutionCount:   workers[k].ExecutionCount,
 						})
 					}
 				}
@@ -339,11 +352,11 @@ func rollupToLevel(r apiv1.UsageRollup) db.CostRollupLevel {
 // cost counters that mirror each usage_records Postgres row to
 // VictoriaMetrics via the OTel collector (docs/08 §5.2).
 type usageMetrics struct {
-	log       *slog.Logger
-	tokens    otelmetric.Int64Counter
-	cost      otelmetric.Float64Counter
+	log        *slog.Logger
+	tokens     otelmetric.Int64Counter
+	cost       otelmetric.Float64Counter
 	executions otelmetric.Int64Counter
-	initOnce  sync.Once
+	initOnce   sync.Once
 }
 
 func newUsageMetrics(log *slog.Logger) *usageMetrics {
@@ -358,13 +371,13 @@ func (m *usageMetrics) ensure() {
 		// canonical names the frontend and TelemetryService query.
 		if t, err := telemetry.Meter().Int64Counter(
 			"orchicon_tokens_consumed",
-			otelmetric.WithDescription("Total tokens consumed per LLM call (docs/08 §5.2)"),
+			otelmetric.WithDescription("Total tokens consumed per LLM call, split by token_class (prompt/cache_read/cache_write/completion) (docs/08 §5.2)"),
 		); err == nil {
 			m.tokens = t
 		}
 		if c, err := telemetry.Meter().Float64Counter(
 			"orchicon_cost_usd",
-			otelmetric.WithDescription("USD cost per LLM call (docs/08 §5.2)"),
+			otelmetric.WithDescription("USD cost per LLM call, split by token_class; per-class cost is a pricing-weighted allocation of a single provider-reported total, not an audited invoice (docs/08 §5.2)"),
 		); err == nil {
 			m.cost = c
 		}
@@ -380,7 +393,20 @@ func (m *usageMetrics) ensure() {
 // emit records a usage sample to the OTel metrics pipeline (the
 // VictoriaMetrics half of the dual-write). Best-effort: a metric error is
 // logged and never blocks the control flow (docs/08 §8 invariant #5).
-func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow) {
+//
+// Since the cache-aware counters ADR (Option A), a sample is split into up
+// to four `token_class` buckets rather than one total:
+//   - orchicon_tokens_consumed{token_class=...} += per-bucket tokens, one
+//     Add per non-zero bucket. The four buckets partition TotalTokens, so
+//     sum by (token_class) reproduces the pre-split total exactly.
+//   - orchicon_cost_usd{token_class=...} += a pricing-weighted share of the
+//     single provider-reported CostUSD, one Add per non-zero share. Shares
+//     are renormalized to sum to CostUSD, so total cost is unchanged.
+//
+// modelCost, when provided, supplies real catalog pricing (USD per 1M
+// tokens) for the cost split; when omitted, documented default multipliers
+// are used as the fallback. ReasoningTokens is never its own class.
+func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost ...*apiv1.ModelCost) {
 	if m == nil {
 		return
 	}
@@ -392,10 +418,28 @@ func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow) {
 		attribute.String("provider", r.Provider),
 		attribute.String("model", r.Model),
 	}
+	tokens := bucketTokens(r)
 	if m.tokens != nil {
-		m.tokens.Add(ctx, r.TotalTokens, otelmetric.WithAttributes(attrs...))
+		for i, class := range usageBucketClasses {
+			if tokens[i] <= 0 {
+				continue
+			}
+			m.tokens.Add(ctx, tokens[i], otelmetric.WithAttributes(withTokenClass(attrs, class)...))
+		}
 	}
 	if m.cost != nil {
-		m.cost.Add(ctx, r.CostUSD, otelmetric.WithAttributes(attrs...))
+		var prices [4]float64
+		if len(modelCost) > 0 && modelCost[0] != nil {
+			prices = bucketPricePerToken(modelCost[0])
+		} else {
+			prices = defaultPriceMultipliers
+		}
+		shares := splitCostByWeight(r.CostUSD, tokens[:], prices[:])
+		for i, class := range usageBucketClasses {
+			if shares[i] <= 0 {
+				continue
+			}
+			m.cost.Add(ctx, shares[i], otelmetric.WithAttributes(withTokenClass(attrs, class)...))
+		}
 	}
 }

@@ -9,6 +9,7 @@ syntax = "proto3";
 
 package orchicon.api.v1;
 
+import "orchicon/api/v1/category.proto";
 import "orchicon/api/v1/ask_orchicon.proto";
 import "orchicon/api/v1/ai_gateway.proto";
 
@@ -113,6 +114,8 @@ message ListConversationsRequest {
 message ListConversationsResponse {
   repeated Conversation conversations = 1;
   string next_page_token = 2;
+  repeated Category categories = 3;
+  repeated CategoryAssignment assignments = 4;
 }
 
 message GetConversationRequest {

@@ -60,6 +60,13 @@ type Service struct {
 	// into the durable transcript. Injected by the server.
 	continueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
 
+	// abortSession stops a live execution's opencode session when a human
+	// cancels it (wired to the opencode adapter's AbortExecution). Without it
+	// the execution row is marked terminated but the model keeps generating —
+	// the "terminated but still active" runaway that burns tokens. Nil = the
+	// cancel only marks the row terminal (no live session transport).
+	abortSession func(ctx context.Context, execID, reason string) error
+
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
 	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
 	// emits an ApprovalRequest, the TaskReconciler registers it here;
@@ -79,6 +86,13 @@ func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, m
 // adapter's ContinueSession). Nil = the RPC is unavailable.
 func (s *Service) SetContinueSession(fn func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)) {
 	s.continueSession = fn
+}
+
+// SetAbortExecution injects the live-session abort hook (the opencode
+// adapter's AbortExecution). Nil = cancelling an execution only marks it
+// terminated (the live session, if any, keeps running).
+func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
+	s.abortSession = fn
 }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
@@ -451,6 +465,14 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	// The execution row is now terminal. Stop the live opencode session so the
+	// model stops generating — otherwise the "terminated but still active"
+	// runaway keeps burning tokens until it natural-finishes.
+	if s.abortSession != nil {
+		if cerr := s.abortSession(ctx, updated.ID, reason); cerr != nil {
+			s.log.Warn("cancel execution: abort live session failed", "execution", updated.ID, "reason", reason, "error", cerr)
+		}
 	}
 	s.log.Info("execution cancelled", "id", updated.ID, "reason", reason)
 	return connect.NewResponse(&apiv1.CancelExecutionResponse{Execution: rowToProto(updated)}), nil

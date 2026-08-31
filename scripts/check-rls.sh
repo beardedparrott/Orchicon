@@ -11,6 +11,12 @@
 # If psql is not on PATH (common on dev hosts) or the URL is unreachable
 # (postgres runs inside the single-container instance, not on the host),
 # falls back to `docker exec` into the dev container instance.
+#
+# When NO database is reachable at all (host psql absent/unreachable AND the
+# instance container is not running) the gate is SKIPPED with a warning and
+# exits 0 — so `make rebuild-dev`/`make ci` does not hard-fail on a dev box
+# where the instance isn't up yet. CI (which always has a reachable DB, and
+# runs after `container up`) still enforces the gate.
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
@@ -21,14 +27,19 @@ fi
 URL="$1"
 CONTAINER="orchicon-cnt-dev"
 
-# Run SQL via psql on the host, or via the dev container instance if psql
-# is absent or the host port is unreachable.
+# Stream SQL results when a DB is reachable (host psql first, then the dev
+# instance container). Returns 3 when no DB is reachable so the caller can
+# skip the gate.
 run_sql() {
   if command -v psql >/dev/null 2>&1 && psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
     psql "$URL" -t -A -F '|'
-  else
-    docker exec -i "$CONTAINER" psql "$URL" -t -A -F '|'
+    return 0
   fi
+  if docker exec -i "$CONTAINER" psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
+    docker exec -i "$CONTAINER" psql "$URL" -t -A -F '|'
+    return 0
+  fi
+  return 3
 }
 
 # Tables that have a tenant_id column but must NOT carry the RLS
@@ -36,6 +47,7 @@ run_sql() {
 # Extend this allowlist only with a documented exception.
 ALLOWLIST_REGEX='^$'
 
+set +e
 violations=$(run_sql <<SQL
 SELECT c.table_name
 FROM information_schema.columns c
@@ -54,6 +66,18 @@ WHERE c.column_name = 'tenant_id'
 ORDER BY c.table_name;
 SQL
 )
+rc=$?
+set -e
+
+if [ "$rc" -eq 3 ]; then
+  echo "RLS gate SKIPPED: no reachable Postgres (host psql unavailable and $CONTAINER not running)." >&2
+  echo "Start the instance (scripts/container.sh up dev) or run with a reachable DB_URL to enforce this gate." >&2
+  exit 0
+fi
+if [ "$rc" -ne 0 ]; then
+  echo "RLS gate ERROR: could not run the RLS query (exit $rc)" >&2
+  exit "$rc"
+fi
 
 if [ -n "$violations" ]; then
   echo "RLS gate FAILED: tenant_id tables missing tenant_isolation policy:" >&2

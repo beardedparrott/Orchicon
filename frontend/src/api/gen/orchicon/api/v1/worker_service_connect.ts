@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, RevertWorkerVersionToDraftRequest, RevertWorkerVersionToDraftResponse, SetActiveWorkerVersionRequest, SetActiveWorkerVersionResponse, UpdateWorkerRequest, UpdateWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, BulkUpdateWorkerModelRequest, BulkUpdateWorkerModelResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, RevertWorkerVersionToDraftRequest, RevertWorkerVersionToDraftResponse, SetActiveWorkerVersionRequest, SetActiveWorkerVersionResponse, UpdateWorkerRequest, UpdateWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -232,6 +232,22 @@ export const WorkerService = {
       name: "GetEditLock",
       I: GetEditLockRequest,
       O: GetEditLockResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * BulkUpdateWorkerModel sets model_ref on each requested Worker and
+     * publishes the affected version in a single round trip (mirrors the
+     * manual edit-then-republish flow but applied atomically per worker).
+     * Per-worker outcomes are returned (updated / skipped / error) so
+     * partial success is observable. Max 100 ids per call (mirrors
+     * BatchDeleteExecutions).
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.BulkUpdateWorkerModel
+     */
+    bulkUpdateWorkerModel: {
+      name: "BulkUpdateWorkerModel",
+      I: BulkUpdateWorkerModelRequest,
+      O: BulkUpdateWorkerModelResponse,
       kind: MethodKind.Unary,
     },
   }

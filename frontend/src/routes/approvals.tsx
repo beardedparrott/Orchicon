@@ -178,22 +178,22 @@ function ApprovalsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Approvals</h1>
+        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" /> Approvals</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Human-in-the-loop approval gates for workflow steps.
         </p>
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search projects, work items, workflows..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
@@ -202,7 +202,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
         >
@@ -211,7 +211,7 @@ function ApprovalsPage() {
           ))}
         </select>
         <select
-          className="h-9 rounded-md border bg-background px-2 text-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
         >
@@ -227,7 +227,7 @@ function ApprovalsPage() {
               onClick={() => handleBulkAction(true)}
               disabled={approveMutation.isPending}
             >
-              <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              <CheckCircle2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Approve {selected.size} selected
             </Button>
             <Button
@@ -236,7 +236,7 @@ function ApprovalsPage() {
               onClick={() => handleBulkAction(false)}
               disabled={approveMutation.isPending}
             >
-              <XCircle className="mr-1 h-3.5 w-3.5" />
+              <XCircle aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Reject {selected.size} selected
             </Button>
           </>
@@ -287,10 +287,10 @@ function ApprovalsPage() {
           const isRejected = item.status === "rejected";
 
           let StatusIcon = Clock;
-          let statusColor = "text-amber-600 bg-amber-50 dark:bg-amber-950/40";
+          let statusColor = "text-amber-700 dark:text-amber-600 bg-amber-50 dark:bg-amber-950/40";
           if (isApproved) {
             StatusIcon = CheckCircle2;
-            statusColor = "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40";
+            statusColor = "text-emerald-700 dark:text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40";
           } else if (isRejected) {
             StatusIcon = XCircle;
             statusColor = "text-red-600 bg-red-50 dark:bg-red-950/40";
@@ -335,8 +335,8 @@ function ApprovalsPage() {
                       to="/workflows/$id/runs/$runId"
                       params={{ id: item.workflowId, runId: item.workflowRunId }}
                     >
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <ExternalLink className="h-4 w-4" />
+                      <Button variant="ghost" size="icon" className="h-11 w-11 min-h-[44px] min-w-[44px]">
+                        <ExternalLink aria-hidden="true" className="h-4 w-4" />
                       </Button>
                     </Link>
                   </div>
@@ -345,7 +345,7 @@ function ApprovalsPage() {
               <CardContent className="space-y-3">
                 {/* Upstream summary */}
                 {item.upstreamSummary && (
-                  <div className="rounded-md border bg-muted/30 p-3">
+                  <div className="rounded-2xl glass-panel p-3">
                     <p className="text-xs font-medium text-muted-foreground">Summary</p>
                     <p className="mt-1 text-sm whitespace-pre-wrap">{item.upstreamSummary}</p>
                   </div>
@@ -376,7 +376,7 @@ function ApprovalsPage() {
                   <div className="space-y-2 border-t pt-3">
                     <textarea
                       placeholder="Reason / feedback (optional) — written to .orchicon/ for the downstream worker. Paste a screenshot (cmd+shift+4 / snip) into this box to attach it."
-                      className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      className="w-full rounded-xl glass-input px-3 py-2 text-sm"
                       rows={2}
                       value={reasonText[item.stepRunId] ?? ""}
                       onChange={(e) =>
@@ -386,14 +386,14 @@ function ApprovalsPage() {
                     />
 
                     {/* Attachments */}
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
                       <Button
                         size="sm"
                         variant="outline"
                         type="button"
                         onClick={() => fileInputs.current[item.stepRunId]?.click()}
                       >
-                        <Paperclip className="mr-1 h-3.5 w-3.5" />
+                        <Paperclip aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
                         Attach files
                       </Button>
                       <span className="text-xs text-muted-foreground">
@@ -424,7 +424,7 @@ function ApprovalsPage() {
                                 className="h-10 w-16 rounded object-cover"
                               />
                             ) : (
-                              <ImagePlus className="h-3.5 w-3.5 text-muted-foreground" />
+                              <ImagePlus aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
                             )}
                             <span className="max-w-40 truncate">{d.att.filename}</span>
                             <button
@@ -433,7 +433,7 @@ function ApprovalsPage() {
                               className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                               aria-label={`Remove ${d.att.filename}`}
                             >
-                              <X className="h-3 w-3" />
+                              <X aria-hidden="true" className="h-3 w-3" />
                             </button>
                           </div>
                         ))}
@@ -446,7 +446,7 @@ function ApprovalsPage() {
                         onClick={() => handleApprove(item.stepRunId, true)}
                         disabled={approveMutation.isPending}
                       >
-                        <CheckCircle2 className="mr-1 h-4 w-4" />
+                        <CheckCircle2 aria-hidden="true" className="mr-1 h-4 w-4" />
                         Approve
                       </Button>
                       <Button
@@ -455,7 +455,7 @@ function ApprovalsPage() {
                         onClick={() => handleApprove(item.stepRunId, false)}
                         disabled={approveMutation.isPending}
                       >
-                        <XCircle className="mr-1 h-4 w-4" />
+                        <XCircle aria-hidden="true" className="mr-1 h-4 w-4" />
                         Reject
                       </Button>
                     </div>
@@ -464,7 +464,7 @@ function ApprovalsPage() {
 
                 {/* Resolved feedback + attachments */}
                 {!isPending && item.reason && (
-                  <div className="rounded-md border bg-muted/30 p-3">
+                  <div className="rounded-2xl glass-panel p-3">
                     <p className="text-xs font-medium text-muted-foreground">Review feedback</p>
                     <p className="mt-1 text-sm whitespace-pre-wrap">{item.reason}</p>
                   </div>

@@ -742,6 +742,42 @@ export class WorkflowCostAggregate extends Message<WorkflowCostAggregate> {
    */
   runs: WorkflowRunCost[] = [];
 
+  /**
+   * prompt_tokens is the fresh-input bucket (input NOT read from cache),
+   * mirroring UsageRecord so the hit ratio can render on this row.
+   *
+   * @generated from field: int64 prompt_tokens = 8;
+   */
+  promptTokens = protoInt64.zero;
+
+  /**
+   * Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+   * cache_read and cache_write are separate cost buckets; reasoning_tokens
+   * is a sub-bucket of completion_tokens (never folded into total_tokens).
+   *
+   * @generated from field: int64 cache_read_tokens = 9;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 10;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 11;
+   */
+  reasoningTokens = protoInt64.zero;
+
+  /**
+   * The latest occurred_at among the workflow's usage records — the time the
+   * workflow last finished activity. Used for the "Finished" sort on the
+   * By Workflow cost panel (docs/10 §11).
+   *
+   * @generated from field: google.protobuf.Timestamp finished_at = 12;
+   */
+  finishedAt?: Timestamp;
+
   constructor(data?: PartialMessage<WorkflowCostAggregate>) {
     super();
     proto3.util.initPartial(data, this);
@@ -757,6 +793,11 @@ export class WorkflowCostAggregate extends Message<WorkflowCostAggregate> {
     { no: 5, name: "run_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 6, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 7, name: "runs", kind: "message", T: WorkflowRunCost, repeated: true },
+    { no: 8, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 9, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 10, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 11, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 12, name: "finished_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowCostAggregate {
@@ -830,6 +871,40 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
    */
   workItemName = "";
 
+  /**
+   * prompt_tokens is the fresh-input bucket (input NOT read from cache),
+   * mirroring UsageRecord so the hit ratio can render on this row.
+   *
+   * @generated from field: int64 prompt_tokens = 9;
+   */
+  promptTokens = protoInt64.zero;
+
+  /**
+   * Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+   *
+   * @generated from field: int64 cache_read_tokens = 10;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 11;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 12;
+   */
+  reasoningTokens = protoInt64.zero;
+
+  /**
+   * The latest occurred_at among the run's usage records — the time the run
+   * last finished activity. Used for the "Finished" sort on the By Workflow
+   * cost panel (docs/10 §11).
+   *
+   * @generated from field: google.protobuf.Timestamp finished_at = 13;
+   */
+  finishedAt?: Timestamp;
+
   constructor(data?: PartialMessage<WorkflowRunCost>) {
     super();
     proto3.util.initPartial(data, this);
@@ -846,6 +921,11 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
     { no: 6, name: "workers", kind: "message", T: WorkflowWorkerCost, repeated: true },
     { no: 7, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "work_item_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 10, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 11, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 12, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 13, name: "finished_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRunCost {
@@ -907,6 +987,24 @@ export class WorkflowWorkerCost extends Message<WorkflowWorkerCost> {
    */
   executionCount = 0;
 
+  /**
+   * Cache/token breakdown fields mirroring UsageRecord (and CostSummary);
+   * prompt_tokens is the fresh-input bucket.
+   *
+   * @generated from field: int64 cache_read_tokens = 8;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_write_tokens = 9;
+   */
+  cacheWriteTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 reasoning_tokens = 10;
+   */
+  reasoningTokens = protoInt64.zero;
+
   constructor(data?: PartialMessage<WorkflowWorkerCost>) {
     super();
     proto3.util.initPartial(data, this);
@@ -922,6 +1020,9 @@ export class WorkflowWorkerCost extends Message<WorkflowWorkerCost> {
     { no: 5, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 6, name: "completion_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 7, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 9, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 10, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowWorkerCost {

@@ -845,9 +845,9 @@ function CopyButton({ text }: { text: string }) {
       title="Copy to clipboard"
     >
       {copied ? (
-        <span className="text-emerald-600 dark:text-emerald-400">Copied!</span>
+        <span className="text-emerald-700 dark:text-emerald-400">Copied!</span>
       ) : (
-        <Copy className="h-3 w-3" />
+        <Copy aria-hidden="true" className="h-3 w-3" />
       )}
     </button>
   );

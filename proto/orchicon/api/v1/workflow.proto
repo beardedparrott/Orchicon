@@ -16,6 +16,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
+import "orchicon/api/v1/project.proto";
 
 // Workflow is the immutable header row for a composable execution plan
 // (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
@@ -30,6 +31,7 @@ message Workflow {
   int32 current_version = 6; // latest version number
   int32 version = 7; // optimistic concurrency (docs/09 §5)
   string type = 10; // "template" or "one_shot" (docs/11 §2.1)
+  GitStrategy git_strategy = 11;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
 }
@@ -137,6 +139,7 @@ message WorkflowStepRun {
 // draft → published → running → completed | failed | aborted.
 // A workflow is "running" while any run is in progress; the header
 // status reflects the published template, not individual runs.
+
 enum WorkflowStatus {
   WORKFLOW_STATUS_UNSPECIFIED = 0;
   WORKFLOW_STATUS_DRAFT = 1;
@@ -167,6 +170,7 @@ enum WorkflowVersionStatus {
 //   - project: a passive marker for the project that scopes the
 //     downstream work items. Sets the workflow's project_id on the
 //     first reconcile pass.
+//   - end: terminal sink, always succeeds when deps satisfied
 enum StepKind {
   STEP_KIND_UNSPECIFIED = 0;
   STEP_KIND_TASK = 1;
@@ -177,6 +181,7 @@ enum StepKind {
   STEP_KIND_WORK_ITEM = 6;
   STEP_KIND_PROJECT = 7;
   STEP_KIND_LOOP_DECISION = 8; // loop decision: inspect upstream result, branch to loop or success
+  STEP_KIND_END = 9; // end: terminal sink, always succeeds when deps satisfied
 }
 
 // WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):

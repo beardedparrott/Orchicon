@@ -1,6 +1,7 @@
 import {
   Bot,
   FileText,
+  Flag,
   GitBranch,
   GitFork,
   LifeBuoy,
@@ -21,6 +22,7 @@ export const STEP_KIND = {
   PROJECT: 7,
   LOOP_DECISION: 8,
   POLICY: 9,
+  END: 10,
 } as const;
 
 // Wire-format kind strings — must match Go domain constants exactly.
@@ -36,6 +38,7 @@ export const STEP_KIND_WIRE: Record<number, string> = {
   [STEP_KIND.PROJECT]: "project",
   [STEP_KIND.LOOP_DECISION]: "loop_decision",
   [STEP_KIND.POLICY]: "policy",
+  [STEP_KIND.END]: "end",
 };
 
 // Display labels (capitalized, user-facing).
@@ -49,6 +52,7 @@ export const STEP_KIND_DISPLAY_LABELS: Record<number, string> = {
   7: "Project",
   8: "Loop Decision",
   9: "Policy",
+  10: "End",
 };
 
 // Backward-compatible short labels for the run view and legacy use.
@@ -62,6 +66,7 @@ export const STEP_KIND_LABELS: Record<number, string> = {
   7: "project",
   8: "loop_decision",
   9: "policy",
+  10: "end",
 };
 
 export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
@@ -73,6 +78,8 @@ export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
   6: StepKind.WORK_ITEM,
   7: StepKind.PROJECT,
   8: StepKind.LOOP_DECISION,
+  9: StepKind.APPROVAL,
+  10: StepKind.END,
 };
 
 export const STR_TO_KIND: Record<string, number> = {
@@ -85,6 +92,7 @@ export const STR_TO_KIND: Record<string, number> = {
   project: 7,
   loop_decision: 8,
   policy: 9,
+  end: 10,
 };
 
 export const KIND_TO_STR = (k: number): string => STEP_KIND_WIRE[k] ?? "task";
@@ -99,6 +107,7 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   7: FileText,
   8: Repeat2,
   9: ShieldCheck,
+  10: Flag,
 };
 
 export const KIND_ACCENT: Record<number, string> = {
@@ -111,6 +120,7 @@ export const KIND_ACCENT: Record<number, string> = {
   [STEP_KIND.PROJECT]: "indigo",
   [STEP_KIND.LOOP_DECISION]: "cyan",
   [STEP_KIND.POLICY]: "amber",
+  [STEP_KIND.END]: "emerald",
 };
 
 export const ACCENT_STROKE: Record<string, string> = {

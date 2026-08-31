@@ -130,22 +130,55 @@ export function useBuildRuntimeImage() {
       let finalError = "";
       let finalTag = "";
       let skipped = false;
+      let failureReason = "";
+      let failedStep = "";
+      let logTail = "";
+      let failureCategory = "";
       for await (const chunk of runtimeImageClient.buildRuntimeImage({ id, version })) {
         if (chunk.log) onLog(chunk.log);
         if (chunk.status !== 0) {
           finalStatus = chunk.status;
           finalError = chunk.error;
           finalTag = chunk.tag;
+          failureReason = (chunk as any).failureReason || "";
+          failedStep = (chunk as any).failedStep || "";
+          logTail = (chunk as any).logTail || "";
+          failureCategory = (chunk as any).failureCategory || "";
         }
         if (chunk.skipped) skipped = true;
       }
       if (finalStatus === 4 || finalError) {
-        throw new Error(finalError || "image build failed");
+        const err: any = new Error(failureReason || finalError || "image build failed");
+        err.failureReason = failureReason; err.failedStep = failedStep; err.logTail = logTail; err.failureCategory = failureCategory;
+        throw err;
       }
-      return { status: finalStatus, tag: finalTag, skipped };
+      return { status: finalStatus, tag: finalTag, skipped, failureReason, failedStep, logTail, failureCategory };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: runtimeImageKeys.all });
     },
+  });
+}
+
+
+// useCancelRuntimeImageBuild cancels an in-flight build.
+export function useCancelRuntimeImageBuild() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; version: number }) => {
+      const res = await runtimeImageClient.cancelRuntimeImageBuild(args);
+      return res.runtimeImage as RuntimeImage;
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: runtimeImageKeys.all }); },
+  });
+}
+export function useResetRuntimeImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; version: number }) => {
+      const res = await runtimeImageClient.resetRuntimeImage(args);
+      return res.runtimeImage as RuntimeImage;
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: runtimeImageKeys.all }); },
   });
 }

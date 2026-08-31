@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // baseImageLabel marks an image as derived from the Orchicon runtime base.
@@ -196,6 +197,7 @@ func (d *Daemon) validateBuild(req BuildRequest) error {
 // ALWAYS rewritten to the daemon's base image and the runtime-base label
 // injected — the base-inclusion guarantee is enforced here, not documented.
 func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRequest) {
+	w.Header().Set("X-Accel-Buffering", "no")
 	df := rewriteDockerfileBase(req.Dockerfile, d.Image, req.SpecVersion)
 
 	// Build context: a temp dir under the daemon's writable area holding
@@ -227,10 +229,27 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		httpError(w, http.StatusInternalServerError, "docker build: "+err.Error())
 		return
 	}
+	// Register active build for cancel probe.
+	d.buildMu.Lock()
+	if d.activeBuilds == nil {
+		d.activeBuilds = make(map[string]*exec.Cmd)
+	}
+	d.activeBuilds[req.Tag] = cmd
+	d.buildMu.Unlock()
+	defer func() {
+		d.buildMu.Lock()
+		delete(d.activeBuilds, req.Tag)
+		d.buildMu.Unlock()
+	}()
 	go func() {
 		<-r.Context().Done()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+		// Give docker build a moment to finish and flush exit event before killing.
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-timer.C:
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
 		}
 	}()
 
@@ -285,6 +304,62 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 // label next to the runtime-base label so the built image records which
 // spec version it was built from (audit/trace; the label is inherited
 // through FROM like the base label).
+
+// handleBuildCancel implements cancel/probe for in-flight builds:
+//   DELETE /v1/images/build?tag=<tag> -> cancel (kills docker build)
+//   GET    /v1/images/build?tag=<tag> -> probe (building/not-building)
+func (d *Daemon) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
+	tag := r.URL.Query().Get("tag")
+	if tag == "" {
+		httpError(w, http.StatusBadRequest, "tag required")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		d.buildMu.Lock()
+		_, building := d.activeBuilds[tag]
+		d.buildMu.Unlock()
+		if building {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "building"})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "idle"})
+		}
+	case http.MethodDelete:
+		d.buildMu.Lock()
+		cmd, ok := d.activeBuilds[tag]
+		d.buildMu.Unlock()
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "not-building"})
+			return
+		}
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+	default:
+		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (d *Daemon) handleImageInspect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ref := r.URL.Query().Get("ref")
+	if ref == "" || !imageTagPattern.MatchString(ref) {
+		httpError(w, http.StatusBadRequest, "bad image ref")
+		return
+	}
+	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "org.orchicon.runtime.spec-version"}}`, ref)
+	if err != nil {
+		writeJSON(w, http.StatusOK, ImageInspect{Exists: false})
+		return
+	}
+	// docker inspect succeeded => image exists; empty string means no label
+	writeJSON(w, http.StatusOK, ImageInspect{Exists: true, SpecVersion: strings.TrimSpace(out)})
+}
+
 func rewriteDockerfileBase(dockerfile, base string, specVersion int) string {
 	var body []string
 	for _, line := range strings.Split(dockerfile, "\n") {

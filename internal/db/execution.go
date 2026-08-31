@@ -167,11 +167,6 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 		WHERE we.tenant_id = $1`
 	args := []any{f.TenantID}
 	argIdx := 2
-	if f.AfterID != "" {
-		q += fmt.Sprintf(` AND ($%d = '' OR we.id > $%[1]d)`, argIdx)
-		args = append(args, f.AfterID)
-		argIdx++
-	}
 	if f.ProjectID != "" {
 		q += fmt.Sprintf(` AND we.project_id = $%d`, argIdx)
 		args = append(args, f.ProjectID)
@@ -204,19 +199,34 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	}
 	// Validate sort column to prevent SQL injection.
 	sortColumn := "we.created_at"
+	sortColumnBare := "created_at"
 	switch f.SortBy {
 	case "status":
-		sortColumn = "we.status"
+		sortColumn, sortColumnBare = "we.status", "status"
 	case "worker_id":
-		sortColumn = "we.worker_id"
+		sortColumn, sortColumnBare = "we.worker_id", "worker_id"
 	case "created_at":
-		sortColumn = "we.created_at"
+		sortColumn, sortColumnBare = "we.created_at", "created_at"
 	}
 	sortDir := "DESC"
 	if f.SortOrder == "asc" {
 		sortDir = "ASC"
 	}
-	q += fmt.Sprintf(` ORDER BY %s %s`, sortColumn, sortDir)
+	if f.AfterID != "" {
+		// Keyset pagination on the (sort key, id) tuple of the cursor row.
+		// This replaces the old bare `id > $n` cursor, which contradicted the
+		// default created_at DESC ordering and re-returned page 1 on page 2.
+		cmp := "<"
+		if f.SortOrder == "asc" {
+			cmp = ">"
+		}
+		q += fmt.Sprintf(` AND (we.%s, we.id) %s (
+			SELECT we2.%s, we2.id FROM worker_executions we2
+			WHERE we2.tenant_id = $1 AND we2.id = $%d)`, sortColumnBare, cmp, sortColumnBare, argIdx)
+		args = append(args, f.AfterID)
+		argIdx++
+	}
+	q += fmt.Sprintf(` ORDER BY %s %s, we.id %s`, sortColumn, sortDir, sortDir)
 	q += fmt.Sprintf(` LIMIT $%d`, argIdx)
 	args = append(args, f.PageSize)
 	argIdx++

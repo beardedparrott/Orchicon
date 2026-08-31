@@ -1,10 +1,12 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ArrowLeft, Hammer, Trash2, Save } from "lucide-react";
+import { ArrowLeft, Hammer, Trash2, Save, XCircle } from "lucide-react";
 
 import {
   useGetRuntimeImage,
   useBuildRuntimeImage,
+  useCancelRuntimeImageBuild,
+  useResetRuntimeImage,
   useUpdateRuntimeImage,
   useDeleteRuntimeImage,
 } from "@/api/runtimeImages";
@@ -19,6 +21,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { BuildLogViewer } from "@/components/BuildLogViewer";
+import { RuntimeImageFailureAlert } from "@/components/RuntimeImageFailureAlert";
 import { Route as rootRoute } from "@/routes/__root";
 import type { RuntimeImage as RuntimeImageProto } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
@@ -51,6 +55,8 @@ function RuntimeImageDetailPage() {
   const buildImage = useBuildRuntimeImage();
   const updateImage = useUpdateRuntimeImage();
   const deleteImage = useDeleteRuntimeImage();
+  const cancelBuild = useCancelRuntimeImageBuild();
+  const resetImage = useResetRuntimeImage();
 
   const [editMode, setEditMode] = useState(false);
   const [name, setName] = useState("");
@@ -141,8 +147,9 @@ function RuntimeImageDetailPage() {
         // carried no log (do not overwrite the server's own line).
         setBuildLog((prev) => prev || "Runtime image is already up to date — no rebuild needed.");
       }
-    } catch (e) {
-      setBuildError(String(e));
+    } catch (e: any) {
+      setBuildError(e?.failureReason || String(e));
+      if (e?.logTail) setBuildLog((prev) => prev + "\n" + e.logTail);
     }
   };
 
@@ -154,8 +161,9 @@ function RuntimeImageDetailPage() {
   };
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (error) return <p className="text-sm text-destructive">Failed to load: {String(error)}</p>;
+  if (error) return <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">Failed to load: {String(error)}</div>;
   if (!img) return <p className="text-sm text-muted-foreground">Not found.</p>;
+
 
   const d = draft!;
   const deploying = buildImage.isPending;
@@ -165,7 +173,7 @@ function RuntimeImageDetailPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={() => navigate({ to: "/runtime-images" })}>
-            <ArrowLeft className="mr-1 h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="mr-1 h-4 w-4" />
             Back
           </Button>
           <div>
@@ -182,17 +190,27 @@ function RuntimeImageDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!editMode && (
+      {!editMode && (
             <>
               <Button variant="outline" onClick={startEdit}>
                 Edit
               </Button>
               <Button onClick={handleBuild} disabled={deploying || img.status === 2}>
-                <Hammer className="mr-1 h-4 w-4" />
+                <Hammer aria-hidden="true" className="mr-1 h-4 w-4" />
                 {deploying ? "Building…" : "Deploy"}
               </Button>
+              {img.status === 2 && (
+                <>
+                  <Button variant="outline" onClick={() => cancelBuild.mutate({ id: img.id, version: img.version })} disabled={cancelBuild.isPending}>
+                    <XCircle className="mr-1 h-4 w-4" /> Cancel
+                  </Button>
+                  <Button variant="outline" onClick={() => resetImage.mutate({ id: img.id, version: img.version })} disabled={resetImage.isPending}>
+                    Reset
+                  </Button>
+                </>
+              )}
               <Button variant="destructive" onClick={handleDelete} disabled={deleteImage.isPending}>
-                <Trash2 className="mr-1 h-4 w-4" />
+                <Trash2 aria-hidden="true" className="mr-1 h-4 w-4" />
                 Delete
               </Button>
             </>
@@ -200,10 +218,14 @@ function RuntimeImageDetailPage() {
         </div>
       </div>
 
-      {img.error && (
-        <p className="text-sm text-destructive">Last build error: {img.error}</p>
+      {img.status === 4 && (img.failureReason || img.error) && (
+        <RuntimeImageFailureAlert reason={img.failureReason || img.error} failedStep={img.failedStep} logTail={img.logTail} buildLog={img.buildLog} category={img.failureCategory} />
+      )}
+      {img.status === 2 && img.failureReason && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">{img.failureReason} {img.failureReason.includes("still running") ? "— build still running on daemon" : ""}</div>
       )}
 
+      {(buildLog || img.buildLog) && !editMode && <BuildLogViewer log={buildLog || img.buildLog} />}
       {!editMode && (
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>
@@ -305,7 +327,7 @@ function RuntimeImageDetailPage() {
               )}
               <div className="flex gap-2">
                 <Button onClick={handleSave} disabled={updateImage.isPending}>
-                  <Save className="mr-1 h-4 w-4" />
+                  <Save aria-hidden="true" className="mr-1 h-4 w-4" />
                   Save
                 </Button>
                 <Button variant="outline" onClick={() => setEditMode(false)}>
@@ -325,18 +347,13 @@ function RuntimeImageDetailPage() {
         </div>
       )}
 
-      {buildError && <p className="text-sm text-destructive">Error: {buildError}</p>}
-
-      {buildLog && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Build Log</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">{buildLog}</pre>
-          </CardContent>
-        </Card>
+      {buildError && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">
+          {buildError}
+        </div>
       )}
+
+
 
       <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <Link to="/runtime-images" className="hover:underline">

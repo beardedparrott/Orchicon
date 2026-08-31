@@ -605,6 +605,7 @@ type ApiKeyRow struct {
 	KeyHash    string
 	Scopes     []string
 	Status     string
+	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
 	Version    int
 	CreatedAt  time.Time
@@ -624,11 +625,11 @@ func CreateApiKey(ctx context.Context, tx pgx.Tx, r ApiKeyRow) (ApiKeyRow, error
 		return ApiKeyRow{}, fmt.Errorf("db: marshal scopes: %w", err)
 	}
 	var scopesBytes []byte
-	const q = `INSERT INTO api_keys (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, last_used_at, version, created_at, updated_at`
-	err = tx.QueryRow(ctx, q, r.ID, r.TenantID, r.IdentityID, r.Name, r.KeyPrefix, r.KeyHash, scopes, r.Status).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+	const q = `INSERT INTO api_keys (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at, last_used_at, version, created_at, updated_at`
+	err = tx.QueryRow(ctx, q, r.ID, r.TenantID, r.IdentityID, r.Name, r.KeyPrefix, r.KeyHash, scopes, r.Status, r.ExpiresAt).Scan(
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -640,13 +641,13 @@ func CreateApiKey(ctx context.Context, tx pgx.Tx, r ApiKeyRow) (ApiKeyRow, error
 
 // GetApiKey fetches a single API key by id within the tenant scope.
 func GetApiKey(ctx context.Context, tx pgx.Tx, tenantID, id string) (ApiKeyRow, error) {
-	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status,
+	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at,
 		last_used_at, version, created_at, updated_at
 		FROM api_keys WHERE id = $1 AND tenant_id = $2`
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -665,7 +666,7 @@ func ListApiKeys(ctx context.Context, tx pgx.Tx, tenantID, identityID string, pa
 	if pageSize <= 0 || pageSize > 1000 {
 		pageSize = 100
 	}
-	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status,
+	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at,
 		last_used_at, version, created_at, updated_at
 		FROM api_keys
 		WHERE tenant_id = $1 AND ($2 = '' OR identity_id = $2) AND ($3 = '' OR id > $3)
@@ -680,7 +681,7 @@ func ListApiKeys(ctx context.Context, tx pgx.Tx, tenantID, identityID string, pa
 		var r ApiKeyRow
 		var scopesBytes []byte
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash,
-			&scopesBytes, &r.Status, &r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&scopesBytes, &r.Status, &r.ExpiresAt, &r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan api key: %w", err)
 		}
 		r.Scopes = scanEntitlements(scopesBytes)
@@ -694,11 +695,11 @@ func ListApiKeys(ctx context.Context, tx pgx.Tx, tenantID, identityID string, pa
 func UpdateApiKeyStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status string, expectedVersion int) (ApiKeyRow, error) {
 	const q = `UPDATE api_keys SET status = $1, updated_at = now(), version = version + 1
 		WHERE tenant_id = $2 AND id = $3 AND version = $4
-		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, last_used_at, version, created_at, updated_at`
+		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at, last_used_at, version, created_at, updated_at`
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, status, tenantID, id, expectedVersion).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -716,11 +717,11 @@ func UpdateApiKeyStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status str
 func RotateApiKeyHash(ctx context.Context, tx pgx.Tx, tenantID, id, prefix, hash string, expectedVersion int) (ApiKeyRow, error) {
 	const q = `UPDATE api_keys SET key_prefix = $1, key_hash = $2, status = 'active', updated_at = now(), version = version + 1
 		WHERE tenant_id = $3 AND id = $4 AND version = $5
-		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, last_used_at, version, created_at, updated_at`
+		RETURNING id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at, last_used_at, version, created_at, updated_at`
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := tx.QueryRow(ctx, q, prefix, hash, tenantID, id, expectedVersion).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -738,13 +739,13 @@ func RotateApiKeyHash(ctx context.Context, tx pgx.Tx, tenantID, id, prefix, hash
 // for API-key bearer tokens. The read is not RLS-scoped (the middleware
 // does not yet know the tenant); this is the bootstrap resolution.
 func LookupApiKeyByHash(ctx context.Context, p *Pool, hash string) (ApiKeyRow, error) {
-	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status,
+	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at,
 		last_used_at, version, created_at, updated_at
-		FROM api_keys WHERE key_hash = $1 AND status = 'active'`
+		FROM api_keys WHERE key_hash = $1 AND status = 'active' AND (expires_at IS NULL OR expires_at > now())`
 	var r ApiKeyRow
 	var scopesBytes []byte
 	err := p.QueryRow(ctx, q, hash).Scan(
-		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status,
+		&r.ID, &r.TenantID, &r.IdentityID, &r.Name, &r.KeyPrefix, &r.KeyHash, &scopesBytes, &r.Status, &r.ExpiresAt,
 		&r.LastUsedAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

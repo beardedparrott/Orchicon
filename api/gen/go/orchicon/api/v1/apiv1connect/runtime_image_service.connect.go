@@ -60,6 +60,12 @@ const (
 	// RuntimeImageServiceBuildRuntimeImageProcedure is the fully-qualified name of the
 	// RuntimeImageService's BuildRuntimeImage RPC.
 	RuntimeImageServiceBuildRuntimeImageProcedure = "/orchicon.api.v1.RuntimeImageService/BuildRuntimeImage"
+	// RuntimeImageServiceCancelRuntimeImageBuildProcedure is the fully-qualified name of the
+	// RuntimeImageService's CancelRuntimeImageBuild RPC.
+	RuntimeImageServiceCancelRuntimeImageBuildProcedure = "/orchicon.api.v1.RuntimeImageService/CancelRuntimeImageBuild"
+	// RuntimeImageServiceResetRuntimeImageProcedure is the fully-qualified name of the
+	// RuntimeImageService's ResetRuntimeImage RPC.
+	RuntimeImageServiceResetRuntimeImageProcedure = "/orchicon.api.v1.RuntimeImageService/ResetRuntimeImage"
 	// RuntimeImageServiceListAvailableRuntimeImagesProcedure is the fully-qualified name of the
 	// RuntimeImageService's ListAvailableRuntimeImages RPC.
 	RuntimeImageServiceListAvailableRuntimeImagesProcedure = "/orchicon.api.v1.RuntimeImageService/ListAvailableRuntimeImages"
@@ -85,6 +91,10 @@ type RuntimeImageServiceClient interface {
 	// BuildRuntimeImage runs `docker build` on the daemon, streaming log
 	// chunks until the image is ready or the build fails.
 	BuildRuntimeImage(context.Context, *connect.Request[v1.BuildRuntimeImageRequest]) (*connect.ServerStreamForClient[v1.BuildRuntimeImageResponse], error)
+	// CancelRuntimeImageBuild cancels an in-flight build (building -> failed).
+	CancelRuntimeImageBuild(context.Context, *connect.Request[v1.CancelRuntimeImageBuildRequest]) (*connect.Response[v1.CancelRuntimeImageBuildResponse], error)
+	// ResetRuntimeImage resets a stuck building image to failed (orphan escape hatch).
+	ResetRuntimeImage(context.Context, *connect.Request[v1.ResetRuntimeImageRequest]) (*connect.Response[v1.ResetRuntimeImageResponse], error)
 	// ListAvailableRuntimeImages returns the merged dropdown list for the
 	// work-item runtime_image field: the daemon's stock images (base + any
 	// ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
@@ -144,6 +154,18 @@ func NewRuntimeImageServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(runtimeImageServiceMethods.ByName("BuildRuntimeImage")),
 			connect.WithClientOptions(opts...),
 		),
+		cancelRuntimeImageBuild: connect.NewClient[v1.CancelRuntimeImageBuildRequest, v1.CancelRuntimeImageBuildResponse](
+			httpClient,
+			baseURL+RuntimeImageServiceCancelRuntimeImageBuildProcedure,
+			connect.WithSchema(runtimeImageServiceMethods.ByName("CancelRuntimeImageBuild")),
+			connect.WithClientOptions(opts...),
+		),
+		resetRuntimeImage: connect.NewClient[v1.ResetRuntimeImageRequest, v1.ResetRuntimeImageResponse](
+			httpClient,
+			baseURL+RuntimeImageServiceResetRuntimeImageProcedure,
+			connect.WithSchema(runtimeImageServiceMethods.ByName("ResetRuntimeImage")),
+			connect.WithClientOptions(opts...),
+		),
 		listAvailableRuntimeImages: connect.NewClient[v1.ListAvailableRuntimeImagesRequest, v1.ListAvailableRuntimeImagesResponse](
 			httpClient,
 			baseURL+RuntimeImageServiceListAvailableRuntimeImagesProcedure,
@@ -167,6 +189,8 @@ type runtimeImageServiceClient struct {
 	updateRuntimeImage         *connect.Client[v1.UpdateRuntimeImageRequest, v1.UpdateRuntimeImageResponse]
 	deleteRuntimeImage         *connect.Client[v1.DeleteRuntimeImageRequest, v1.DeleteRuntimeImageResponse]
 	buildRuntimeImage          *connect.Client[v1.BuildRuntimeImageRequest, v1.BuildRuntimeImageResponse]
+	cancelRuntimeImageBuild    *connect.Client[v1.CancelRuntimeImageBuildRequest, v1.CancelRuntimeImageBuildResponse]
+	resetRuntimeImage          *connect.Client[v1.ResetRuntimeImageRequest, v1.ResetRuntimeImageResponse]
 	listAvailableRuntimeImages *connect.Client[v1.ListAvailableRuntimeImagesRequest, v1.ListAvailableRuntimeImagesResponse]
 	getStockImageTemplate      *connect.Client[v1.GetStockImageTemplateRequest, v1.GetStockImageTemplateResponse]
 }
@@ -201,6 +225,16 @@ func (c *runtimeImageServiceClient) BuildRuntimeImage(ctx context.Context, req *
 	return c.buildRuntimeImage.CallServerStream(ctx, req)
 }
 
+// CancelRuntimeImageBuild calls orchicon.api.v1.RuntimeImageService.CancelRuntimeImageBuild.
+func (c *runtimeImageServiceClient) CancelRuntimeImageBuild(ctx context.Context, req *connect.Request[v1.CancelRuntimeImageBuildRequest]) (*connect.Response[v1.CancelRuntimeImageBuildResponse], error) {
+	return c.cancelRuntimeImageBuild.CallUnary(ctx, req)
+}
+
+// ResetRuntimeImage calls orchicon.api.v1.RuntimeImageService.ResetRuntimeImage.
+func (c *runtimeImageServiceClient) ResetRuntimeImage(ctx context.Context, req *connect.Request[v1.ResetRuntimeImageRequest]) (*connect.Response[v1.ResetRuntimeImageResponse], error) {
+	return c.resetRuntimeImage.CallUnary(ctx, req)
+}
+
 // ListAvailableRuntimeImages calls orchicon.api.v1.RuntimeImageService.ListAvailableRuntimeImages.
 func (c *runtimeImageServiceClient) ListAvailableRuntimeImages(ctx context.Context, req *connect.Request[v1.ListAvailableRuntimeImagesRequest]) (*connect.Response[v1.ListAvailableRuntimeImagesResponse], error) {
 	return c.listAvailableRuntimeImages.CallUnary(ctx, req)
@@ -229,6 +263,10 @@ type RuntimeImageServiceHandler interface {
 	// BuildRuntimeImage runs `docker build` on the daemon, streaming log
 	// chunks until the image is ready or the build fails.
 	BuildRuntimeImage(context.Context, *connect.Request[v1.BuildRuntimeImageRequest], *connect.ServerStream[v1.BuildRuntimeImageResponse]) error
+	// CancelRuntimeImageBuild cancels an in-flight build (building -> failed).
+	CancelRuntimeImageBuild(context.Context, *connect.Request[v1.CancelRuntimeImageBuildRequest]) (*connect.Response[v1.CancelRuntimeImageBuildResponse], error)
+	// ResetRuntimeImage resets a stuck building image to failed (orphan escape hatch).
+	ResetRuntimeImage(context.Context, *connect.Request[v1.ResetRuntimeImageRequest]) (*connect.Response[v1.ResetRuntimeImageResponse], error)
 	// ListAvailableRuntimeImages returns the merged dropdown list for the
 	// work-item runtime_image field: the daemon's stock images (base + any
 	// ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
@@ -284,6 +322,18 @@ func NewRuntimeImageServiceHandler(svc RuntimeImageServiceHandler, opts ...conne
 		connect.WithSchema(runtimeImageServiceMethods.ByName("BuildRuntimeImage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runtimeImageServiceCancelRuntimeImageBuildHandler := connect.NewUnaryHandler(
+		RuntimeImageServiceCancelRuntimeImageBuildProcedure,
+		svc.CancelRuntimeImageBuild,
+		connect.WithSchema(runtimeImageServiceMethods.ByName("CancelRuntimeImageBuild")),
+		connect.WithHandlerOptions(opts...),
+	)
+	runtimeImageServiceResetRuntimeImageHandler := connect.NewUnaryHandler(
+		RuntimeImageServiceResetRuntimeImageProcedure,
+		svc.ResetRuntimeImage,
+		connect.WithSchema(runtimeImageServiceMethods.ByName("ResetRuntimeImage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	runtimeImageServiceListAvailableRuntimeImagesHandler := connect.NewUnaryHandler(
 		RuntimeImageServiceListAvailableRuntimeImagesProcedure,
 		svc.ListAvailableRuntimeImages,
@@ -310,6 +360,10 @@ func NewRuntimeImageServiceHandler(svc RuntimeImageServiceHandler, opts ...conne
 			runtimeImageServiceDeleteRuntimeImageHandler.ServeHTTP(w, r)
 		case RuntimeImageServiceBuildRuntimeImageProcedure:
 			runtimeImageServiceBuildRuntimeImageHandler.ServeHTTP(w, r)
+		case RuntimeImageServiceCancelRuntimeImageBuildProcedure:
+			runtimeImageServiceCancelRuntimeImageBuildHandler.ServeHTTP(w, r)
+		case RuntimeImageServiceResetRuntimeImageProcedure:
+			runtimeImageServiceResetRuntimeImageHandler.ServeHTTP(w, r)
 		case RuntimeImageServiceListAvailableRuntimeImagesProcedure:
 			runtimeImageServiceListAvailableRuntimeImagesHandler.ServeHTTP(w, r)
 		case RuntimeImageServiceGetStockImageTemplateProcedure:
@@ -345,6 +399,14 @@ func (UnimplementedRuntimeImageServiceHandler) DeleteRuntimeImage(context.Contex
 
 func (UnimplementedRuntimeImageServiceHandler) BuildRuntimeImage(context.Context, *connect.Request[v1.BuildRuntimeImageRequest], *connect.ServerStream[v1.BuildRuntimeImageResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RuntimeImageService.BuildRuntimeImage is not implemented"))
+}
+
+func (UnimplementedRuntimeImageServiceHandler) CancelRuntimeImageBuild(context.Context, *connect.Request[v1.CancelRuntimeImageBuildRequest]) (*connect.Response[v1.CancelRuntimeImageBuildResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RuntimeImageService.CancelRuntimeImageBuild is not implemented"))
+}
+
+func (UnimplementedRuntimeImageServiceHandler) ResetRuntimeImage(context.Context, *connect.Request[v1.ResetRuntimeImageRequest]) (*connect.Response[v1.ResetRuntimeImageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RuntimeImageService.ResetRuntimeImage is not implemented"))
 }
 
 func (UnimplementedRuntimeImageServiceHandler) ListAvailableRuntimeImages(context.Context, *connect.Request[v1.ListAvailableRuntimeImagesRequest]) (*connect.Response[v1.ListAvailableRuntimeImagesResponse], error) {

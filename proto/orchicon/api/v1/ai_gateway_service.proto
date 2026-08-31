@@ -131,6 +131,19 @@ message WorkflowCostAggregate {
   int32 run_count = 5;
   int32 execution_count = 6;
   repeated WorkflowRunCost runs = 7;
+  // prompt_tokens is the fresh-input bucket (input NOT read from cache),
+  // mirroring UsageRecord so the hit ratio can render on this row.
+  int64 prompt_tokens = 8;
+  // Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+  // cache_read and cache_write are separate cost buckets; reasoning_tokens
+  // is a sub-bucket of completion_tokens (never folded into total_tokens).
+  int64 cache_read_tokens = 9;
+  int64 cache_write_tokens = 10;
+  int64 reasoning_tokens = 11;
+  // The latest occurred_at among the workflow's usage records — the time the
+  // workflow last finished activity. Used for the "Finished" sort on the
+  // By Workflow cost panel (docs/10 §11).
+  google.protobuf.Timestamp finished_at = 12;
 }
 
 // WorkflowRunCost is a single run within a workflow. Expand to see
@@ -147,6 +160,17 @@ message WorkflowRunCost {
   // Current title of the bound work item (resolved server-side), used as the
   // human-readable run label in the "By Workflow" cost breakdown.
   string work_item_name = 8;
+  // prompt_tokens is the fresh-input bucket (input NOT read from cache),
+  // mirroring UsageRecord so the hit ratio can render on this row.
+  int64 prompt_tokens = 9;
+  // Cache/token breakdown fields mirroring UsageRecord (and CostSummary).
+  int64 cache_read_tokens = 10;
+  int64 cache_write_tokens = 11;
+  int64 reasoning_tokens = 12;
+  // The latest occurred_at among the run's usage records — the time the run
+  // last finished activity. Used for the "Finished" sort on the By Workflow
+  // cost panel (docs/10 §11).
+  google.protobuf.Timestamp finished_at = 13;
 }
 
 // WorkflowWorkerCost is the aggregated cost for one worker type within
@@ -159,4 +183,9 @@ message WorkflowWorkerCost {
   int64 prompt_tokens = 5;
   int64 completion_tokens = 6;
   int32 execution_count = 7;
+  // Cache/token breakdown fields mirroring UsageRecord (and CostSummary);
+  // prompt_tokens is the fresh-input bucket.
+  int64 cache_read_tokens = 8;
+  int64 cache_write_tokens = 9;
+  int64 reasoning_tokens = 10;
 }

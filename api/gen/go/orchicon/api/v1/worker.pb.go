@@ -159,6 +159,7 @@ type Worker struct {
 	Version        int32                  `protobuf:"varint,10,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	RoleRef        string                 `protobuf:"bytes,13,opt,name=role_ref,json=roleRef,proto3" json:"role_ref,omitempty"` // RBAC role binding (header-level); empty = no plane access (deny-by-default)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -275,6 +276,13 @@ func (x *Worker) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Worker) GetRoleRef() string {
+	if x != nil {
+		return x.RoleRef
+	}
+	return ""
 }
 
 // WorkerVersion is the immutable snapshot of a Worker's mutable fields
@@ -572,7 +580,7 @@ var File_orchicon_api_v1_worker_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1corchicon/api/v1/worker.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa8\x03\n" +
+	"\x1corchicon/api/v1/worker.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc3\x03\n" +
 	"\x06Worker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -589,7 +597,8 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xbb\x06\n" +
+	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x19\n" +
+	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xbb\x06\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +

@@ -11,7 +11,7 @@ import { workerClient } from "@/api/clients";
 import type { Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerVersion } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
-import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersionRequest } from "@/api/gen/orchicon/api/v1/worker_service_pb";
+import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersionRequest, WorkerListItem } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof.
@@ -25,6 +25,8 @@ export const workerKeys = {
 };
 
 // useListWorkers fetches a page of workers for the resolved tenant.
+// Returns WorkerListItem[] so cards get active_model_ref + version status
+// in one round-trip — no per-worker ListWorkerVersions fetch.
 export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; sortBy?: string; sortOrder?: string }) {
   return useQuery({
     queryKey: workerKeys.list(opts ? { status: opts.status, search: opts.search, sortBy: opts.sortBy, sortOrder: opts.sortOrder } : undefined),
@@ -36,7 +38,19 @@ export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; 
         sortBy: opts?.sortBy || "",
         sortOrder: opts?.sortOrder || "",
       });
-      return res.workers as Worker[];
+      // Prefer items (enriched) with fallback to legacy workers during rollout.
+      if ((res as any).items && (res as any).items.length > 0) {
+        return (res as any).items as WorkerListItem[];
+      }
+      if ((res as any).workers && (res as any).workers.length > 0) {
+        // Legacy fallback: synthesize items with empty model/status.
+        return (res as any).workers.map((w: Worker) => ({
+          worker: w,
+          activeModelRef: "",
+          activeVersionStatus: 0,
+        })) as WorkerListItem[];
+      }
+      return [] as WorkerListItem[];
     },
     refetchInterval: 5_000,
   });
@@ -194,11 +208,30 @@ export function useBatchDeleteWorkers() {
   });
 }
 
-// useUpdateWorker updates the mutable header fields of a draft worker.
+// useBulkUpdateWorkerModel sets model_ref on every requested worker and
+// publishes the affected version in a single round trip. Per-worker
+// outcomes (updated / skipped / error) are returned in the response so
+// the caller can render a per-worker result summary.
+export function useBulkUpdateWorkerModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerIds: string[]; modelRef: string }) => {
+      const res = await workerClient.bulkUpdateWorkerModel(input);
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
+// useUpdateWorker updates the mutable header fields of a worker. name,
+// description, and purpose are draft-only; roleRef (the role binding) is
+// additionally editable on published workers.
 export function useUpdateWorker() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string }) => {
+    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string; roleRef?: string }) => {
       const res = await workerClient.updateWorker(req);
       return res.worker;
     },

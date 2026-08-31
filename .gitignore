@@ -40,8 +40,9 @@ tmp/
 data/
 .dev/
 .vite/
-# Go build/test scratch (GOTMPDIR) — the container's /tmp is noexec, so
-# builds with a default GOTMPDIR fail to run test binaries.
+# In-worktree Go build/test scratch + cache dirs — workers set
+# GOCACHE/GOTMPDIR inside the worktree so they stay tidy and get cleaned
+# up; these are never committed.
 .gotmp/
 .go-tmp/
 .gtmp/
@@ -54,6 +55,8 @@ data/
 # Per-project scratch dirs written by the control plane (run results,
 # safety lint). Never committed.
 /.orchicon/
+# Worktrees Orchicon creates during work-item context. Never committed.
+/.orchicon-worktrees/
 
 # Architecture notes (worker-generated design summaries). Ephemeral per-work-item
 # artifacts — never committed so they can't confuse future workers.
@@ -67,3 +70,6 @@ site/install.ps1
 deploy/container/orchicon
 deploy/runtime/orchicon
 .playwright-mcp/
+
+# Orchicon: ignore nested step worktrees (parallel-branch children)
+01*/

@@ -117,6 +117,9 @@ type UsageEvent struct {
 	CostUsd          float64                `protobuf:"fixed64,12,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	OccurredAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
 	CorrelationId    string                 `protobuf:"bytes,14,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	CacheReadTokens  int64                  `protobuf:"varint,15,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64                  `protobuf:"varint,16,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64                  `protobuf:"varint,17,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -249,6 +252,27 @@ func (x *UsageEvent) GetCorrelationId() string {
 	return ""
 }
 
+func (x *UsageEvent) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *UsageEvent) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *UsageEvent) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
 // AIProvider is a configured LLM provider known to the gateway.
 type AIProvider struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -339,6 +363,9 @@ type UsageRecord struct {
 	OccurredAt       *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
 	WorkerName       string                 `protobuf:"bytes,15,opt,name=worker_name,json=workerName,proto3" json:"worker_name,omitempty"` // human-readable worker name (JOINed from workers table)
 	TaskTitle        string                 `protobuf:"bytes,16,opt,name=task_title,json=taskTitle,proto3" json:"task_title,omitempty"`    // human-readable work item title (JOINed from work_items table)
+	CacheReadTokens  int64                  `protobuf:"varint,17,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64                  `protobuf:"varint,18,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64                  `protobuf:"varint,19,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -485,6 +512,27 @@ func (x *UsageRecord) GetTaskTitle() string {
 	return ""
 }
 
+func (x *UsageRecord) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *UsageRecord) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *UsageRecord) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
 // at a drill-down level (docs/10 §11 cost explorer).
 type CostSummary struct {
@@ -505,7 +553,17 @@ type CostSummary struct {
 	Children []*CostSummary `protobuf:"bytes,12,rep,name=children,proto3" json:"children,omitempty"`
 	// Human-readable display name for the group_key. Populated on the backend
 	// so all sections (drill-down, usage table, etc.) show meaningful names.
-	DisplayName   string `protobuf:"bytes,13,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	DisplayName string `protobuf:"bytes,13,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// Cache/token breakdown fields mirroring UsageRecord. cache_read and
+	// cache_write are separate cost buckets; reasoning_tokens is a sub-bucket
+	// of completion_tokens (never folded into total_tokens).
+	CacheReadTokens  int64 `protobuf:"varint,14,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `protobuf:"varint,15,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int64 `protobuf:"varint,16,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
+	// The latest occurred_at among the group's usage records — the time the
+	// drill-down group last finished activity. Used for the "Finished" sort
+	// on the cost explorer rollup tabs (docs/10 §11).
+	FinishedAt    *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -629,6 +687,34 @@ func (x *CostSummary) GetDisplayName() string {
 		return x.DisplayName
 	}
 	return ""
+}
+
+func (x *CostSummary) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *CostSummary) GetCacheWriteTokens() int64 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *CostSummary) GetReasoningTokens() int64 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
+}
+
+func (x *CostSummary) GetFinishedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return nil
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
@@ -1084,7 +1170,7 @@ var File_orchicon_api_v1_ai_gateway_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\n" +
-	" orchicon/api/v1/ai_gateway.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd7\x03\n" +
+	" orchicon/api/v1/ai_gateway.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdc\x04\n" +
 	"\n" +
 	"UsageEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
@@ -1103,13 +1189,16 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\bcost_usd\x18\f \x01(\x01R\acostUsd\x12;\n" +
 	"\voccurred_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12%\n" +
-	"\x0ecorrelation_id\x18\x0e \x01(\tR\rcorrelationId\"b\n" +
+	"\x0ecorrelation_id\x18\x0e \x01(\tR\rcorrelationId\x12*\n" +
+	"\x11cache_read_tokens\x18\x0f \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\x10 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\x11 \x01(\x03R\x0freasoningTokens\"b\n" +
 	"\n" +
 	"AIProvider\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x16\n" +
-	"\x06models\x18\x04 \x03(\tR\x06models\"\x98\x04\n" +
+	"\x06models\x18\x04 \x03(\tR\x06models\"\x9d\x05\n" +
 	"\vUsageRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1131,7 +1220,10 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\vworker_name\x18\x0f \x01(\tR\n" +
 	"workerName\x12\x1d\n" +
 	"\n" +
-	"task_title\x18\x10 \x01(\tR\ttaskTitle\"\x97\x04\n" +
+	"task_title\x18\x10 \x01(\tR\ttaskTitle\x12*\n" +
+	"\x11cache_read_tokens\x18\x11 \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\x12 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\xd9\x05\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +
@@ -1148,7 +1240,12 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\n" +
 	"window_end\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x128\n" +
 	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren\x12!\n" +
-	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\"\x8e\x03\n" +
+	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\x12*\n" +
+	"\x11cache_read_tokens\x18\x0e \x01(\x03R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\x0f \x01(\x03R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\x10 \x01(\x03R\x0freasoningTokens\x12;\n" +
+	"\vfinished_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"finishedAt\"\x8e\x03\n" +
 	"\rOpenCodeModel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
@@ -1240,14 +1337,15 @@ var file_orchicon_api_v1_ai_gateway_proto_depIdxs = []int32{
 	10, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
 	10, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
 	4,  // 4: orchicon.api.v1.CostSummary.children:type_name -> orchicon.api.v1.CostSummary
-	6,  // 5: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
-	7,  // 6: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
-	8,  // 7: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	10, // 5: orchicon.api.v1.CostSummary.finished_at:type_name -> google.protobuf.Timestamp
+	6,  // 6: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
+	7,  // 7: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
+	8,  // 8: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ai_gateway_proto_init() }

@@ -122,9 +122,13 @@ type RuntimeImage struct {
 	// Spec version the current ready image was actually built from (0 = never
 	// built). When built_version == version the image is up to date and Deploy
 	// short-circuits; a lagging built_version means a rebuild is pending.
-	BuiltVersion  int32 `protobuf:"varint,19,opt,name=built_version,json=builtVersion,proto3" json:"built_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BuiltVersion    int32  `protobuf:"varint,19,opt,name=built_version,json=builtVersion,proto3" json:"built_version,omitempty"`
+	FailureReason   string `protobuf:"bytes,20,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	FailedStep      string `protobuf:"bytes,21,opt,name=failed_step,json=failedStep,proto3" json:"failed_step,omitempty"`
+	LogTail         string `protobuf:"bytes,22,opt,name=log_tail,json=logTail,proto3" json:"log_tail,omitempty"`
+	FailureCategory string `protobuf:"bytes,23,opt,name=failure_category,json=failureCategory,proto3" json:"failure_category,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RuntimeImage) Reset() {
@@ -290,11 +294,39 @@ func (x *RuntimeImage) GetBuiltVersion() int32 {
 	return 0
 }
 
+func (x *RuntimeImage) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *RuntimeImage) GetFailedStep() string {
+	if x != nil {
+		return x.FailedStep
+	}
+	return ""
+}
+
+func (x *RuntimeImage) GetLogTail() string {
+	if x != nil {
+		return x.LogTail
+	}
+	return ""
+}
+
+func (x *RuntimeImage) GetFailureCategory() string {
+	if x != nil {
+		return x.FailureCategory
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_runtime_image_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\n" +
-	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x80\x05\n" +
+	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8e\x06\n" +
 	"\fRuntimeImage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -319,7 +351,12 @@ const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x16\n" +
 	"\x06source\x18\x12 \x01(\tR\x06source\x12#\n" +
-	"\rbuilt_version\x18\x13 \x01(\x05R\fbuiltVersion*\xbe\x01\n" +
+	"\rbuilt_version\x18\x13 \x01(\x05R\fbuiltVersion\x12%\n" +
+	"\x0efailure_reason\x18\x14 \x01(\tR\rfailureReason\x12\x1f\n" +
+	"\vfailed_step\x18\x15 \x01(\tR\n" +
+	"failedStep\x12\x19\n" +
+	"\blog_tail\x18\x16 \x01(\tR\alogTail\x12)\n" +
+	"\x10failure_category\x18\x17 \x01(\tR\x0ffailureCategory*\xbe\x01\n" +
 	"\x12RuntimeImageStatus\x12$\n" +
 	" RUNTIME_IMAGE_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aRUNTIME_IMAGE_STATUS_DRAFT\x10\x01\x12!\n" +

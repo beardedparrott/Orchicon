@@ -13,13 +13,15 @@ import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { CostSummary } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { WorkflowCostAggregate } from "@/api/gen/orchicon/api/v1/ai_gateway_service_pb";
 
 export const usageKeys = {
   all: ["usage"] as const,
   providers: ["usage", "providers"] as const,
   models: ["usage", "models"] as const,
   mcps: ["usage", "mcps"] as const,
-  records: (projectId?: string) => ["usage", "records", projectId] as const,
+  records: (projectId?: string, executionId?: string, taskId?: string) =>
+    ["usage", "records", projectId, executionId, taskId] as const,
   cost: (rollup?: UsageRollup, projectId?: string, taskId?: string) =>
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
@@ -64,7 +66,7 @@ export function useGetUsage(opts?: {
   model?: string;
 }) {
   return useQuery({
-    queryKey: usageKeys.records(opts?.projectId),
+    queryKey: usageKeys.records(opts?.projectId, opts?.executionId, opts?.taskId),
     queryFn: async () => {
       const res = await aiGatewayClient.getUsage({
         pageSize: 100,
@@ -84,7 +86,7 @@ export function useGetWorkflowCosts() {
     queryKey: ["usage", "workflow-costs"],
     queryFn: async () => {
       const res = await aiGatewayClient.getWorkflowCosts({});
-      return (res.workflows ?? []) as any[];
+      return (res.workflows ?? []) as WorkflowCostAggregate[];
     },
   });
 }

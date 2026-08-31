@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 import { z } from "zod";
-import { Trash2, SearchX } from "lucide-react";
+import { Trash2, SearchX, PlayCircle } from "lucide-react";
 
 import { useBatchDeleteExecutions, useListExecutions } from "@/api/executions";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
@@ -106,7 +106,7 @@ function ExecutionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Executions</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><PlayCircle aria-hidden="true" className="h-6 w-6 text-emerald-700 dark:text-emerald-400" /><span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" /> Executions</h1>
           <p className="text-sm text-muted-foreground">
             Worker executions — concrete invocations of a Worker against a
             Task on a runtime adapter.
@@ -120,17 +120,17 @@ function ExecutionsPage() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search worker, task, workflow..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           {EXEC_STATUS_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -139,7 +139,7 @@ function ExecutionsPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="status">Status</option>
@@ -148,7 +148,7 @@ function ExecutionsPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="desc">Desc</option>
           <option value="asc">Asc</option>
@@ -160,7 +160,7 @@ function ExecutionsPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -177,7 +177,7 @@ function ExecutionsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No executions found
             </CardTitle>
           </CardHeader>
@@ -326,10 +326,10 @@ function HealthBadge({ health, status }: { health: number; status: number }) {
     4: "terminating",
   };
   const styles: Record<number, string> = {
-    1: "text-green-600",
-    2: "text-yellow-600",
+    1: "text-green-700 dark:text-green-600",
+    2: "text-yellow-700 dark:text-yellow-600",
     3: "text-red-600",
-    4: "text-orange-600",
+    4: "text-orange-700 dark:text-orange-600",
   };
   return <span className={cn("text-xs font-medium", styles[health] ?? "")}>● {labels[health] ?? "unknown"}</span>;
 }

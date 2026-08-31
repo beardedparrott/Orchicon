@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX } from "lucide-react";
+import { Trash2, SearchX, Folder } from "lucide-react";
 
 import { useBatchDeleteProjects, useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
@@ -73,7 +73,7 @@ function ProjectsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><Folder aria-hidden="true" className="h-6 w-6 text-cyan-700 dark:text-cyan-400" /> Projects</h1>
           <p className="text-sm text-muted-foreground">
             The persistent source of truth and trust boundary for work
             state.
@@ -84,17 +84,17 @@ function ProjectsPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
         <Input
           placeholder="Search projects..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs min-w-0"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="all">All</option>
           <option value="1">Drafting</option>
@@ -105,7 +105,7 @@ function ProjectsPage() {
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="created_at">Created</option>
           <option value="name">Name</option>
@@ -114,7 +114,7 @@ function ProjectsPage() {
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value)}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
         >
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
@@ -126,7 +126,7 @@ function ProjectsPage() {
             onClick={handleBatchDelete}
             disabled={batchDelete.isPending}
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
             Delete {selected.size} selected
           </Button>
         )}
@@ -143,7 +143,7 @@ function ProjectsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
+              <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               No projects yet
             </CardTitle>
             <CardDescription>

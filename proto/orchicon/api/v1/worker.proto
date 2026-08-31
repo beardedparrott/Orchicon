@@ -27,6 +27,7 @@ message Worker {
   int32 version = 10; // optimistic concurrency (docs/09 §5)
   google.protobuf.Timestamp created_at = 11;
   google.protobuf.Timestamp updated_at = 12;
+  string role_ref = 13; // RBAC role binding (header-level); empty = no plane access (deny-by-default)
 }
 
 // WorkerVersion is the immutable snapshot of a Worker's mutable fields

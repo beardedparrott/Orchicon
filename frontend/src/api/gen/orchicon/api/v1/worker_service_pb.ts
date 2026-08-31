@@ -13,7 +13,46 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
-import { EditLock, Worker, WorkerStatus, WorkerVersion } from "./worker_pb.js";
+import { EditLock, Worker, WorkerStatus, WorkerVersion, WorkerVersionStatus } from "./worker_pb.js";
+import { Category, CategoryAssignment } from "./category_pb.js";
+
+/**
+ * @generated from enum orchicon.api.v1.BulkUpdateWorkerModelSkipReason
+ */
+export enum BulkUpdateWorkerModelSkipReason {
+  /**
+   * @generated from enum value: BULK_UPDATE_WORKER_MODEL_SKIP_REASON_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NOT_FOUND = 1;
+   */
+  NOT_FOUND = 1,
+
+  /**
+   * @generated from enum value: BULK_UPDATE_WORKER_MODEL_SKIP_REASON_DEPRECATED = 2;
+   */
+  DEPRECATED = 2,
+
+  /**
+   * @generated from enum value: BULK_UPDATE_WORKER_MODEL_SKIP_REASON_RETIRED = 3;
+   */
+  RETIRED = 3,
+
+  /**
+   * @generated from enum value: BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NO_PUBLISHED_VERSION = 4;
+   */
+  NO_PUBLISHED_VERSION = 4,
+}
+// Retrieve enum metadata with: proto3.getEnumType(BulkUpdateWorkerModelSkipReason)
+proto3.util.setEnumType(BulkUpdateWorkerModelSkipReason, "orchicon.api.v1.BulkUpdateWorkerModelSkipReason", [
+  { no: 0, name: "BULK_UPDATE_WORKER_MODEL_SKIP_REASON_UNSPECIFIED" },
+  { no: 1, name: "BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NOT_FOUND" },
+  { no: 2, name: "BULK_UPDATE_WORKER_MODEL_SKIP_REASON_DEPRECATED" },
+  { no: 3, name: "BULK_UPDATE_WORKER_MODEL_SKIP_REASON_RETIRED" },
+  { no: 4, name: "BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NO_PUBLISHED_VERSION" },
+]);
 
 /**
  * @generated from message orchicon.api.v1.CreateWorkerRequest
@@ -150,6 +189,13 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
    */
   agentsMd = "";
 
+  /**
+   * optional RBAC role binding; empty = no plane access
+   *
+   * @generated from field: string role_ref = 23;
+   */
+  roleRef = "";
+
   constructor(data?: PartialMessage<CreateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -180,6 +226,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerRequest {
@@ -268,6 +315,15 @@ export class UpdateWorkerRequest extends Message<UpdateWorkerRequest> {
    */
   purpose = "";
 
+  /**
+   * Role binding with presence: set to a role id to bind, "" to clear.
+   * Unlike name/description/purpose (draft-only), the role binding is
+   * editable on published workers (it lives on the header, not the version).
+   *
+   * @generated from field: optional string role_ref = 5;
+   */
+  roleRef?: string;
+
   constructor(data?: PartialMessage<UpdateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -280,6 +336,7 @@ export class UpdateWorkerRequest extends Message<UpdateWorkerRequest> {
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "purpose", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerRequest {
@@ -1022,11 +1079,73 @@ export class ListWorkersRequest extends Message<ListWorkersRequest> {
 }
 
 /**
+ * WorkerListItem is a single row in the workers list — the header plus
+ * the active version's model_ref and publish state so cards render both
+ * without an N+1 ListWorkerVersions fetch. The active version is the
+ * version pinned by workers.current_version when >0, otherwise the
+ * latest version (highest version number). Mirrors GetWorkerResponse's
+ * header+version pattern with a minimal projection.
+ *
+ * @generated from message orchicon.api.v1.WorkerListItem
+ */
+export class WorkerListItem extends Message<WorkerListItem> {
+  /**
+   * @generated from field: orchicon.api.v1.Worker worker = 1;
+   */
+  worker?: Worker;
+
+  /**
+   * active_model_ref is the model_ref of the active version
+   * (worker_versions.model_ref) — matches the ModelPicker provider/id
+   * format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
+   * worker has no versions yet.
+   *
+   * @generated from field: string active_model_ref = 2;
+   */
+  activeModelRef = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.WorkerVersionStatus active_version_status = 3;
+   */
+  activeVersionStatus = WorkerVersionStatus.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<WorkerListItem>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkerListItem";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker", kind: "message", T: Worker },
+    { no: 2, name: "active_model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "active_version_status", kind: "enum", T: proto3.getEnumType(WorkerVersionStatus) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkerListItem {
+    return new WorkerListItem().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkerListItem | PlainMessage<WorkerListItem> | undefined, b: WorkerListItem | PlainMessage<WorkerListItem> | undefined): boolean {
+    return proto3.util.equals(WorkerListItem, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListWorkersResponse
  */
 export class ListWorkersResponse extends Message<ListWorkersResponse> {
   /**
-   * @generated from field: repeated orchicon.api.v1.Worker workers = 1;
+   * @generated from field: repeated orchicon.api.v1.Worker workers = 1 [deprecated = true];
+   * @deprecated
    */
   workers: Worker[] = [];
 
@@ -1034,6 +1153,21 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
    * @generated from field: string next_page_token = 2;
    */
   nextPageToken = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkerListItem items = 3;
+   */
+  items: WorkerListItem[] = [];
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.Category categories = 4;
+   */
+  categories: Category[] = [];
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.CategoryAssignment assignments = 5;
+   */
+  assignments: CategoryAssignment[] = [];
 
   constructor(data?: PartialMessage<ListWorkersResponse>) {
     super();
@@ -1045,6 +1179,9 @@ export class ListWorkersResponse extends Message<ListWorkersResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "workers", kind: "message", T: Worker, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "items", kind: "message", T: WorkerListItem, repeated: true },
+    { no: 4, name: "categories", kind: "message", T: Category, repeated: true },
+    { no: 5, name: "assignments", kind: "message", T: CategoryAssignment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkersResponse {
@@ -1807,6 +1944,319 @@ export class GetEditLockResponse extends Message<GetEditLockResponse> {
 
   static equals(a: GetEditLockResponse | PlainMessage<GetEditLockResponse> | undefined, b: GetEditLockResponse | PlainMessage<GetEditLockResponse> | undefined): boolean {
     return proto3.util.equals(GetEditLockResponse, a, b);
+  }
+}
+
+/**
+ * BulkUpdateWorkerModelRequest sets model_ref on every requested Worker
+ * and publishes the affected version in the same call. The version
+ * number does NOT advance — the operation mirrors the manual
+ * edit-then-republish flow (existing draft → edited in place;
+ * latest published → reverted to draft → edited → republished).
+ * Max 100 ids per call. Deprecated / retired / not-found workers are
+ * returned as skipped with a reason; per-worker failures do not abort the
+ * batch.
+ *
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelRequest
+ */
+export class BulkUpdateWorkerModelRequest extends Message<BulkUpdateWorkerModelRequest> {
+  /**
+   * max 100
+   *
+   * @generated from field: repeated string worker_ids = 1;
+   */
+  workerIds: string[] = [];
+
+  /**
+   * provider/id, e.g. "anthropic/claude-sonnet-4"
+   *
+   * @generated from field: string model_ref = 2;
+   */
+  modelRef = "";
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 2, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelRequest {
+    return new BulkUpdateWorkerModelRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelRequest {
+    return new BulkUpdateWorkerModelRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelRequest {
+    return new BulkUpdateWorkerModelRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelRequest | PlainMessage<BulkUpdateWorkerModelRequest> | undefined, b: BulkUpdateWorkerModelRequest | PlainMessage<BulkUpdateWorkerModelRequest> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelResponse
+ */
+export class BulkUpdateWorkerModelResponse extends Message<BulkUpdateWorkerModelResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.BulkUpdateWorkerModelResult results = 1;
+   */
+  results: BulkUpdateWorkerModelResult[] = [];
+
+  /**
+   * Convenience summary for the UI; same numbers the per-worker list
+   * produces.
+   *
+   * @generated from field: int32 updated_count = 2;
+   */
+  updatedCount = 0;
+
+  /**
+   * @generated from field: int32 skipped_count = 3;
+   */
+  skippedCount = 0;
+
+  /**
+   * @generated from field: int32 error_count = 4;
+   */
+  errorCount = 0;
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "results", kind: "message", T: BulkUpdateWorkerModelResult, repeated: true },
+    { no: 2, name: "updated_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "skipped_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "error_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelResponse {
+    return new BulkUpdateWorkerModelResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelResponse {
+    return new BulkUpdateWorkerModelResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelResponse {
+    return new BulkUpdateWorkerModelResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelResponse | PlainMessage<BulkUpdateWorkerModelResponse> | undefined, b: BulkUpdateWorkerModelResponse | PlainMessage<BulkUpdateWorkerModelResponse> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelResponse, a, b);
+  }
+}
+
+/**
+ * BulkUpdateWorkerModelResult is one worker's outcome. Exactly one of
+ * updated / skipped / error is set (proto oneof guarantees this).
+ *
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelResult
+ */
+export class BulkUpdateWorkerModelResult extends Message<BulkUpdateWorkerModelResult> {
+  /**
+   * @generated from field: string worker_id = 1;
+   */
+  workerId = "";
+
+  /**
+   * @generated from oneof orchicon.api.v1.BulkUpdateWorkerModelResult.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: orchicon.api.v1.BulkUpdateWorkerModelUpdated updated = 2;
+     */
+    value: BulkUpdateWorkerModelUpdated;
+    case: "updated";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.BulkUpdateWorkerModelSkipped skipped = 3;
+     */
+    value: BulkUpdateWorkerModelSkipped;
+    case: "skipped";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.BulkUpdateWorkerModelError error = 4;
+     */
+    value: BulkUpdateWorkerModelError;
+    case: "error";
+  } | { case: undefined; value?: undefined } = { case: undefined };
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelResult>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelResult";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "updated", kind: "message", T: BulkUpdateWorkerModelUpdated, oneof: "outcome" },
+    { no: 3, name: "skipped", kind: "message", T: BulkUpdateWorkerModelSkipped, oneof: "outcome" },
+    { no: 4, name: "error", kind: "message", T: BulkUpdateWorkerModelError, oneof: "outcome" },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelResult {
+    return new BulkUpdateWorkerModelResult().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelResult {
+    return new BulkUpdateWorkerModelResult().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelResult {
+    return new BulkUpdateWorkerModelResult().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelResult | PlainMessage<BulkUpdateWorkerModelResult> | undefined, b: BulkUpdateWorkerModelResult | PlainMessage<BulkUpdateWorkerModelResult> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelResult, a, b);
+  }
+}
+
+/**
+ * BulkUpdateWorkerModelUpdated is the success outcome: model_ref was
+ * written to the affected WorkerVersion and the version is now
+ * published. `version` is unchanged (no fork).
+ *
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelUpdated
+ */
+export class BulkUpdateWorkerModelUpdated extends Message<BulkUpdateWorkerModelUpdated> {
+  /**
+   * the version number, unchanged
+   *
+   * @generated from field: int32 version = 1;
+   */
+  version = 0;
+
+  /**
+   * echoes the new model_ref for UI confirmation
+   *
+   * @generated from field: string model_ref = 2;
+   */
+  modelRef = "";
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelUpdated>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelUpdated";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelUpdated {
+    return new BulkUpdateWorkerModelUpdated().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelUpdated {
+    return new BulkUpdateWorkerModelUpdated().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelUpdated {
+    return new BulkUpdateWorkerModelUpdated().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelUpdated | PlainMessage<BulkUpdateWorkerModelUpdated> | undefined, b: BulkUpdateWorkerModelUpdated | PlainMessage<BulkUpdateWorkerModelUpdated> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelUpdated, a, b);
+  }
+}
+
+/**
+ * BulkUpdateWorkerModelSkipped names why this worker was not mutated.
+ * Deprecated / retired workers cannot be edited via this path; workers
+ * with zero versions have nothing to edit; not-found is reserved for
+ * ids that no longer exist.
+ *
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelSkipped
+ */
+export class BulkUpdateWorkerModelSkipped extends Message<BulkUpdateWorkerModelSkipped> {
+  /**
+   * @generated from field: orchicon.api.v1.BulkUpdateWorkerModelSkipReason reason = 1;
+   */
+  reason = BulkUpdateWorkerModelSkipReason.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelSkipped>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelSkipped";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "reason", kind: "enum", T: proto3.getEnumType(BulkUpdateWorkerModelSkipReason) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelSkipped {
+    return new BulkUpdateWorkerModelSkipped().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelSkipped {
+    return new BulkUpdateWorkerModelSkipped().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelSkipped {
+    return new BulkUpdateWorkerModelSkipped().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelSkipped | PlainMessage<BulkUpdateWorkerModelSkipped> | undefined, b: BulkUpdateWorkerModelSkipped | PlainMessage<BulkUpdateWorkerModelSkipped> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelSkipped, a, b);
+  }
+}
+
+/**
+ * BulkUpdateWorkerModelError carries a per-worker failure message for
+ * the UI; the batch as a whole still returns the full result list.
+ *
+ * @generated from message orchicon.api.v1.BulkUpdateWorkerModelError
+ */
+export class BulkUpdateWorkerModelError extends Message<BulkUpdateWorkerModelError> {
+  /**
+   * @generated from field: string message = 1;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<BulkUpdateWorkerModelError>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BulkUpdateWorkerModelError";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BulkUpdateWorkerModelError {
+    return new BulkUpdateWorkerModelError().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelError {
+    return new BulkUpdateWorkerModelError().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BulkUpdateWorkerModelError {
+    return new BulkUpdateWorkerModelError().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BulkUpdateWorkerModelError | PlainMessage<BulkUpdateWorkerModelError> | undefined, b: BulkUpdateWorkerModelError | PlainMessage<BulkUpdateWorkerModelError> | undefined): boolean {
+    return proto3.util.equals(BulkUpdateWorkerModelError, a, b);
   }
 }
 

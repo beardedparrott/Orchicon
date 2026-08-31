@@ -246,7 +246,7 @@ export function WorkItemsBoard({
     updateStatus.mutate(
       { id: item.id, status: targetStatus as WorkItemStatus },
       {
-        onSuccess: (updated) => {
+        onSuccess: ({ workItem: updated }) => {
           // Server confirms — update with the real server data
           qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
             if (!old) return old;
@@ -315,7 +315,7 @@ export function WorkItemsBoard({
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-full flex-1 animate-pulse rounded-lg border bg-card/50"
+            className="h-full flex-1 animate-pulse rounded-2xl glass-panel/50"
           />
         ))}
       </div>
@@ -333,7 +333,7 @@ export function WorkItemsBoard({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SearchX className="h-5 w-5 text-muted-foreground" />
+            <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
             {hasQuery ? "No matching work items" : "No work items yet"}
           </CardTitle>
           <CardDescription>
@@ -370,7 +370,7 @@ export function WorkItemsBoard({
       autoScroll={false}
     >
       <div
-        className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
+        className="flex flex-1 gap-3 overflow-x-auto snap-x snap-mandatory rounded-lg border bg-muted/20 p-3 -mx-3 sm:mx-0 px-3"
         style={{ minHeight: "calc(100vh - 280px)" }}
       >
         {BOARD_COLUMNS.map((col) => {
@@ -411,7 +411,7 @@ export function WorkItemsBoard({
             />
             {dragCount > 1 && (
               <span
-                aria-hidden
+                aria-hidden="true"
                 className="absolute -right-2 -top-2 flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground shadow-md"
               >
                 +{dragCount - 1}
@@ -479,7 +479,7 @@ function BoardColumn({
       ref={setNodeRef}
       aria-label={`${column.label} column${isReadOnly ? " (system-managed)" : ""}`}
       className={cn(
-        "flex flex-1 snap-start flex-col rounded-lg border transition-colors",
+        "flex flex-1 min-w-[300px] sm:min-w-[280px] snap-start flex-col rounded-lg border transition-colors",
         isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
         isReadOnly
           ? "border-dashed bg-muted/30 opacity-75"
@@ -488,7 +488,7 @@ function BoardColumn({
     >
       <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-lg border-b bg-card/90 px-3 py-2.5 backdrop-blur">
         <span
-          aria-hidden
+          aria-hidden="true"
           className={cn("h-2.5 w-2.5 rounded-full", statusMeta(column.status).dot)}
         />
         <div className="flex flex-col">
@@ -502,7 +502,7 @@ function BoardColumn({
         {isReadOnly && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <Lock aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
+              <Lock aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
             </TooltipTrigger>
             <TooltipContent>System-managed — only set by workflows</TooltipContent>
           </Tooltip>
@@ -715,7 +715,7 @@ function SortableCard({
                 className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronRight
-                  className={cn(
+                  aria-hidden="true" className={cn(
                     "h-3 w-3 transition-transform",
                     expanded && "rotate-90",
                   )}

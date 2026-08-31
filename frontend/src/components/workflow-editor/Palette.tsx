@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Flag,
   GitBranch,
   GitFork,
   Info,
@@ -118,6 +119,17 @@ export function Palette({ readOnly, mode = "full" }: { readOnly: boolean; mode?:
           readOnly={readOnly}
         />
       </Section>
+      <Section title="Completion" icon={Flag} subtitle="Terminate the run">
+        <DraggableTile
+          label="End"
+          sublabel="Terminal sink"
+          icon={Flag}
+          kindAccent="emerald"
+          payload={{ kind: STEP_KIND.END, name: "End" }}
+          description="Terminal sink. Depends on upstream; always succeeds when dependencies are satisfied. The run completes when End fires."
+          readOnly={readOnly}
+        />
+      </Section>
       <PaletteFooter />
     </div>
   );
@@ -138,7 +150,7 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-md border bg-card/40">
+    <div className="rounded-2xl glass-panel">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -146,11 +158,11 @@ function Section({
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-muted-foreground" aria-hidden />
+          <ChevronDown aria-hidden="true" className="h-3 w-3 text-muted-foreground"  />
         ) : (
-          <ChevronRight className="h-3 w-3 text-muted-foreground" aria-hidden />
+          <ChevronRight aria-hidden="true" className="h-3 w-3 text-muted-foreground"  />
         )}
-        <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+        <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <span className="text-xs font-semibold uppercase tracking-wide text-foreground">
           {title}
         </span>
@@ -210,7 +222,7 @@ function DraggableTile({
             draggable={!readOnly}
             onDragStart={readOnly ? undefined : setData}
             className={cn(
-              "group flex cursor-grab items-start gap-2 rounded-md border bg-background p-2 text-xs shadow-sm transition-colors",
+              "group flex cursor-grab items-start gap-2 rounded-xl glass-input p-2 text-xs shadow-sm transition-colors",
               "hover:border-foreground/30 hover:bg-accent/40 active:cursor-grabbing",
               readOnly && "cursor-not-allowed opacity-50",
               ACCENT_BORDER[kindAccent],
@@ -224,7 +236,7 @@ function DraggableTile({
                 "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded",
                 ACCENT_BG[kindAccent],
               )}
-              aria-hidden
+              aria-hidden="true"
             >
               <Icon className="h-3 w-3" />
             </span>
@@ -252,7 +264,7 @@ function DraggableTile({
 function PaletteFooter() {
   return (
     <p className="flex items-start gap-1.5 px-1 pt-1 text-[10px] leading-snug text-muted-foreground">
-      <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+      <Info aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0"  />
       <span>
         Draw an edge <span className="font-mono">A → B</span> to make{" "}
         <span className="font-mono">B</span> depend on{" "}

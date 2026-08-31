@@ -19,13 +19,9 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { GitStrategy } from "./project_pb.js";
 
 /**
- * Workflow lifecycle states (docs/02 §2.4):
- * draft → published → running → completed | failed | aborted.
- * A workflow is "running" while any run is in progress; the header
- * status reflects the published template, not individual runs.
- *
  * @generated from enum orchicon.api.v1.WorkflowStatus
  */
 export enum WorkflowStatus {
@@ -107,6 +103,7 @@ proto3.util.setEnumType(WorkflowVersionStatus, "orchicon.api.v1.WorkflowVersionS
  *   - project: a passive marker for the project that scopes the
  *     downstream work items. Sets the workflow's project_id on the
  *     first reconcile pass.
+ *   - end: terminal sink, always succeeds when deps satisfied
  *
  * @generated from enum orchicon.api.v1.StepKind
  */
@@ -157,6 +154,13 @@ export enum StepKind {
    * @generated from enum value: STEP_KIND_LOOP_DECISION = 8;
    */
   LOOP_DECISION = 8,
+
+  /**
+   * end: terminal sink, always succeeds when deps satisfied
+   *
+   * @generated from enum value: STEP_KIND_END = 9;
+   */
+  END = 9,
 }
 // Retrieve enum metadata with: proto3.getEnumType(StepKind)
 proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
@@ -169,6 +173,7 @@ proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
   { no: 6, name: "STEP_KIND_WORK_ITEM" },
   { no: 7, name: "STEP_KIND_PROJECT" },
   { no: 8, name: "STEP_KIND_LOOP_DECISION" },
+  { no: 9, name: "STEP_KIND_END" },
 ]);
 
 /**
@@ -359,6 +364,11 @@ export class Workflow extends Message<Workflow> {
   type = "";
 
   /**
+   * @generated from field: orchicon.api.v1.GitStrategy git_strategy = 11;
+   */
+  gitStrategy = GitStrategy.UNSPECIFIED;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 8;
    */
   createdAt?: Timestamp;
@@ -384,6 +394,7 @@ export class Workflow extends Message<Workflow> {
     { no: 6, name: "current_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 7, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
     { no: 8, name: "created_at", kind: "message", T: Timestamp },
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
   ]);

@@ -39,6 +39,7 @@ import {
   ContextSourcesSection,
   GatedToolsSection,
   PermissionsSection,
+  PlaneRoleField,
 } from "@/components/WorkerFormSections";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
@@ -62,9 +63,11 @@ const DEFAULT_PERMISSIONS = `{
 }`;
 
 const DEFAULT_BUDGETS = `{
-  "max_prompt_tokens": 0,
-  "max_completion_tokens": 0,
-  "max_cost_usd": 0
+  "tokens": 500000,
+  "cost_usd": 0.5,
+  "wall_clock_seconds": 3600,
+  "tool_call_count": 100,
+  "compact_max_turns": 12
 }`;
 
 // Fields on UpdateWorkerVersionRequest — only version-level fields,
@@ -196,7 +199,7 @@ function WorkerDetailPage() {
             onClick={() => navigate({ to: "/workers" })}
             className="shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
@@ -212,7 +215,7 @@ function WorkerDetailPage() {
             force a horizontal scroll on phones. Each button stays its
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl glass-panel p-3 border border-white/10">
           {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && selectedVersion.status === 2 && (
             <Button variant="outline" onClick={() => setActiveVersion.mutate({ workerId: id, version: selectedVersion.version })}>
               {setActiveVersion.isPending ? "Setting…" : "Make Active"}
@@ -515,6 +518,29 @@ function WorkerDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Plane role binding — visible for draft AND published workers (the
+          role binding is the only header field editable when published). */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plane role</CardTitle>
+          <CardDescription>
+            Role-scopes this worker&apos;s access to the real instance
+            (orchicon_plane_* tools). Effective for published workers; saved
+            immediately.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PlaneRoleField
+            value={worker.roleRef ?? ""}
+            onChange={(v) => {
+              if (v !== (worker.roleRef ?? "")) {
+                updateWorker.mutate({ id: worker.id, roleRef: v });
+              }
+            }}
+          />
+        </CardContent>
+      </Card>
 
       {/* Inline editor for draft versions */}
       {isEditingEnabled && (

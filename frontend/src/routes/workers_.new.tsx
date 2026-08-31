@@ -22,6 +22,7 @@ import {
   ContextSourcesSection,
   GatedToolsSection,
   PermissionsSection,
+  PlaneRoleField,
 } from "@/components/WorkerFormSections";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -60,6 +61,7 @@ const createWorkerSchema = z.object({
     .or(z.literal("")),
   description: z.string().max(16000, "Description is too long").optional(),
   purpose: z.string().max(16000, "Purpose is too long").optional(),
+  roleRef: z.string().max(200, "Role is too long").optional(),
   runtimeRef: z
     .string()
     .min(1, "Runtime ref is required")
@@ -120,10 +122,11 @@ const DEFAULT_PERMISSIONS = `{
 }`;
 
 const DEFAULT_BUDGETS = `{
-  "tokens": 1000000,
-  "cost_usd": 10,
+  "tokens": 500000,
+  "cost_usd": 0.5,
   "wall_clock_seconds": 3600,
-  "tool_call_count": 100
+  "tool_call_count": 100,
+  "compact_max_turns": 12
 }`;
 
 function NewWorkerPage() {
@@ -142,6 +145,7 @@ function NewWorkerPage() {
       slug: "",
       description: "",
       purpose: "",
+      roleRef: "",
       runtimeRef: "opencode",
       modelRef: "",
       role: "",
@@ -169,6 +173,7 @@ function NewWorkerPage() {
       slug: values.slug || undefined,
       description: values.description || undefined,
       purpose: values.purpose || undefined,
+      roleRef: values.roleRef || undefined,
       runtimeRef: values.runtimeRef,
       modelRef: values.modelRef,
       role: values.role,
@@ -250,6 +255,11 @@ function NewWorkerPage() {
                 </p>
               )}
             </div>
+
+            <PlaneRoleField
+              value={watch("roleRef") ?? ""}
+              onChange={(v) => setValue("roleRef", v, { shouldDirty: true })}
+            />
 
             <div className="space-y-2">
               <Label htmlFor="description">Description</Label>

@@ -208,6 +208,23 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 
 // ----- QueryMetrics (VictoriaMetrics /api/v1/query_range) -----
 
+// tokenClassSplitMetrics are the OTel counter families that now carry a
+// token_class label (prompt/cache_read/cache_write/completion) per the
+// cache-aware counters ADR
+// (architecture-notes/otel-metrics-cache-aware-token-cost-counters.md). A
+// bare label select on these names matches up to four series (one per class),
+// so a total/deterministic read must re-aggregate across classes. We wrap the
+// selector in sum(...) to collapse them back into a single total series, which
+// preserves the pre-split total semantics while the per-class breakdown stays
+// available to Grafana via sum by (token_class). This is the only safe form
+// for consumers that read a single latest point (the telemetry "Metric values"
+// panel) — otherwise they would report one arbitrary bucket instead of the
+// total.
+var tokenClassSplitMetrics = map[string]bool{
+	"orchicon_tokens_consumed": true,
+	"orchicon_cost_usd":        true,
+}
+
 // QueryMetrics runs one PromQL range query per metric name against
 // VictoriaMetrics. Resource attributes are added as series labels by the
 // collector (resource_to_telemetry_conversion), so the tenant filter is
@@ -238,6 +255,9 @@ func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f Metri
 		selector := fmt.Sprintf("%s{orchicon_tenant_id=%q}", name, tenantID)
 		if f.ProjectID != "" {
 			selector = fmt.Sprintf("%s{orchicon_tenant_id=%q,project=%q}", name, tenantID, f.ProjectID)
+		}
+		if tokenClassSplitMetrics[name] {
+			selector = fmt.Sprintf("sum(%s)", selector)
 		}
 		q := url.Values{}
 		q.Set("query", selector)
