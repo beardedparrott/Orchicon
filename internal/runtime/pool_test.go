@@ -7,6 +7,43 @@ import "testing"
 // same environment always produces the same key (warm reuse) and a change to
 // ANY input produces a different key (fresh create). Mount order must not
 // matter (the key hashes a sorted mount set).
+// TestPoolEnvKeyGitStrategyIsolation is the L1 pool gate: a `none`
+// (ephemeral) container is created WITHOUT a push-capable GH_TOKEN and
+// WITHOUT the git credential mounts, while a `local`/`pr` container carries
+// them. The two must never pool — a `none` run reusing a warm token-bearing
+// container is exactly the pre-fix credential-leak class (a stale container
+// would serve a push-capable token to an ephemeral run). Same strategy must
+// still hit the warm pool.
+func TestPoolEnvKeyGitStrategyIsolation(t *testing.T) {
+	base := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/a", Dest: "/b"}}}
+
+	baseLocal := base
+	baseLocal.GitStrategy = "local"
+	baseNone := base
+	baseNone.GitStrategy = "none"
+	basePR := base
+	basePR.GitStrategy = "pr"
+
+	keyLocal := poolEnvKey(baseLocal, "hostfp")
+	keyNone := poolEnvKey(baseNone, "hostfp")
+
+	if keyLocal == keyNone {
+		t.Fatalf("local and none strategies must not pool (same key %q)", keyLocal)
+	}
+	if poolEnvKey(baseLocal, "hostfp") != keyLocal {
+		t.Fatalf("same local strategy must produce the same key")
+	}
+	if poolEnvKey(baseNone, "hostfp") != keyNone {
+		t.Fatalf("same none strategy must produce the same key")
+	}
+	if poolEnvKey(basePR, "hostfp") == keyNone {
+		t.Fatalf("pr and none strategies must not pool")
+	}
+	if keyLocal == "" || keyNone == "" {
+		t.Fatalf("strategized requests must produce a non-empty key")
+	}
+}
+
 func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 	req := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/a", Dest: "/b"}}}
 	key := poolEnvKey(req, "hostfp")

@@ -136,8 +136,14 @@ func StablePromptPrefix(runtimeImage string) string {
 }
 
 // GitGuidanceBlock emits the per-run git/branch guidance section, keyed on
-// the run's worktree_status (the same signal that drives the execution cwd).
+// the run's worktree_status (the same signal that drives the execution cwd)
+// and the run's effective git strategy.
 //
+//   - none (ephemeral) → the ephemeral discipline block: the worktree is a
+//     detached HEAD, no branch is created, nothing is pushed to origin, and
+//     no remote branch is retained. This supersedes any canned "commit +
+//     push" text that a seeded AGENTS.md may still carry — the guardrail is
+//     the prompt that actually reaches the worker.
 //   - ready → the develop-first git discipline block: work on the branch
 //     recorded for this run (never push/PR/merge to main).
 //   - anything else (skipped/pending/failed/pruned, or no project) → an
@@ -148,7 +154,12 @@ func StablePromptPrefix(runtimeImage string) string {
 // unconditional prefix block + canned AGENTS.md blocks), so a non-repo run is
 // never instructed to work on a branch. Returns "" when the run is git-backed
 // but no branch is recorded yet (ready with empty branch is not expected).
-func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir string) string {
+func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy string) string {
+	if gitStrategy == "none" {
+		return "\n## Git discipline\n" +
+			"- This run is **ephemeral** (`git_strategy=none`): the run worktree is a **detached HEAD** — no branch is created, nothing is pushed to origin, and no remote branch is retained.\n" +
+			"- Do **not** create a branch, commit a branch, or push anything to origin. Work directly in the detached run worktree; leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
+	}
 	if worktreeStatus == domain.WorktreeReady && worktreeBranch != "" {
 		return "\n## Git discipline\n" +
 			"- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n" +
@@ -169,13 +180,14 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir string) string 
 // WorkItemAttachmentsManifest returns a markdown block listing work item attachments for the worker prompt.
 // It is the Channel B visibility (file-materialized + manifest line) per ADR-4.
 func WorkItemAttachmentsManifest(attachments []WorkItemAttachmentRow, workItemID string) string {
-    if len(attachments)==0 { return "" }
-    var b strings.Builder
-    b.WriteString("## Work item attachments\n")
-    for _, a := range attachments {
-        b.WriteString(fmt.Sprintf("- %s (%s, %d bytes) at .orchicon/work-item-attachments/%s/%s\n", a.Name, a.MimeType, a.SizeBytes, workItemID, a.Name))
-    }
-    b.WriteString("\n")
-    return b.String()
+	if len(attachments) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Work item attachments\n")
+	for _, a := range attachments {
+		b.WriteString(fmt.Sprintf("- %s (%s, %d bytes) at .orchicon/work-item-attachments/%s/%s\n", a.Name, a.MimeType, a.SizeBytes, workItemID, a.Name))
+	}
+	b.WriteString("\n")
+	return b.String()
 }
-

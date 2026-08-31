@@ -398,7 +398,7 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 	// Simulate a git-backed run: worktree_status=ready, a recorded branch,
 	// and a project dir. The block is keyed purely on these params, so a
 	// direct call with the params set exercises the git path.
-	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj")
+	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", db.DefaultGitStrategy)
 	for _, want := range []string{
 		"## Git discipline",
 		"`feat/my-branch`",
@@ -417,6 +417,31 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 // TestOrchiconLocationNote verifies the helper that tells workers where
 // the .orchicon/ directory lives: with a projectDir it interpolates the
 // absolute path; without it falls back to a generic note.
+// TestGitGuidanceNoneEphemeral is acceptance criterion #6's composite side:
+// a `none` (ephemeral) run must get the detached-HEAD block that explicitly
+// forbids create/commit/push — even when the run row is ready with a project
+// dir — so the per-dispatch guide supersedes any canned "commit + push to the
+// run branch" text a seeded AGENTS.md may still carry.
+func TestGitGuidanceNoneEphemeral(t *testing.T) {
+	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "none")
+	for _, want := range []string{
+		"## Git discipline",
+		"`git_strategy=none`",
+		"detached HEAD",
+		"Do **not** create a branch, commit a branch, or push anything to origin",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("none guidance missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "commit + push to the run branch") {
+		t.Errorf("none run must not carry the canned commit+push contract; got:\n%s", out)
+	}
+	if strings.Contains(out, "branch created off `develop`") {
+		t.Errorf("none run must not get the develop-first branch block; got:\n%s", out)
+	}
+}
+
 func TestOrchiconLocationNote(t *testing.T) {
 	got := orchiconLocationNote("")
 	for _, want := range []string{

@@ -121,6 +121,19 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 		WorkflowID: run.ID,
 		Image:      run.RuntimeImage,
 	}
+	// Effective git strategy (workflow > project > "local") resolved up
+	// front so the daemon can gate the push credential for a "none" run.
+	// Single source of truth (db.EffectiveGitStrategy) — the same function
+	// the worktree reconciler uses for detached-HEAD provisioning — so the
+	// runtime container's credential gate always agrees with the run's
+	// strategy.
+	strategyTx, serr := l.pool.BeginTenantTx(ctx, run.TenantID)
+	if serr == nil {
+		req.GitStrategy = db.EffectiveGitStrategy(ctx, strategyTx.Tx, run.TenantID, run.WorkflowID, run.ProjectID)
+		_ = strategyTx.Rollback(ctx)
+	} else {
+		req.GitStrategy = db.DefaultGitStrategy
+	}
 	var projectDir string
 	if run.ProjectID != "" {
 		ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)

@@ -1583,19 +1583,10 @@ func (r *TaskReconciler) skipPRMarkerStamp(ctx context.Context, tx pgx.Tx, exec 
 	if err != nil {
 		return false // fail-open: keep extraction
 	}
-	// Effective git strategy: workflow-level wins, else project-level.
-	strategy := ""
-	if run.WorkflowID != "" {
-		if wf, werr := db.GetWorkflow(ctx, tx, "tnt_dev", run.WorkflowID); werr == nil && wf.GitStrategy != nil && *wf.GitStrategy != "" {
-			strategy = *wf.GitStrategy
-		}
-	}
-	if strategy == "" && run.ProjectID != "" {
-		if proj, perr := db.GetProject(ctx, tx, "tnt_dev", run.ProjectID); perr == nil && proj.GitStrategy != "" {
-			strategy = proj.GitStrategy
-		}
-	}
-	if strategy != "pr" {
+	// Effective git strategy: workflow-level wins, else project-level,
+	// else "local" — single source of truth (db.EffectiveGitStrategy) so
+	// PR-path semantics never drift from the worktree/runtime layers.
+	if db.EffectiveGitStrategy(ctx, tx, "tnt_dev", run.WorkflowID, run.ProjectID) != "pr" {
 		return false
 	}
 	// Find the step's config in the published workflow version so
@@ -2494,10 +2485,24 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 
 	// Worker's contract.
 	sb.WriteString("# Instructions\n\n")
-	// Git/branch guidance keyed on the run's worktree_status: a non-repo
-	// (in-place) run is never told to work on a branch. Same block the
-	// workflow composite emits, so the two dispatch paths agree.
-	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
+	// Git/branch guidance keyed on the run's worktree_status AND effective
+	// git strategy: a non-repo (in-place) run is never told to work on a
+	// branch, and a `none` (ephemeral) run is told the worktree is detached
+	// HEAD with nothing pushed. Same block the workflow composite emits, so
+	// the two dispatch paths agree.
+	gitStrategy := db.DefaultGitStrategy
+	if task.WorkflowID != nil || task.ProjectID != "" {
+		tctx := context.Background()
+		if ttx, err := pool.BeginTenantTx(tctx, exec.TenantID); err == nil {
+			wfID := ""
+			if task.WorkflowID != nil {
+				wfID = *task.WorkflowID
+			}
+			gitStrategy = db.EffectiveGitStrategy(tctx, ttx.Tx, exec.TenantID, wfID, task.ProjectID)
+			_ = ttx.Rollback(tctx)
+		}
+	}
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy))
 	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
