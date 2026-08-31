@@ -49,7 +49,7 @@ var stockVariants = []stockVariant{
 	{File: "deploy/runtime/Dockerfile.gui", Variant: "gui", Name: "Runtime GUI image (:gui)",
 		Desc: "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."},
 	{File: "deploy/runtime/Dockerfile.dev", Variant: "dev", Name: "Orchicon development image (:orchicon-dev)",
-		Desc: "Go, Node, buf, atlas, baked PostgreSQL 15 + nats-server: the supervisor boots a full disposable Orchicon control plane in the container at start (Postgres -> NATS -> orchicon serve), so workers get the orchicon_* MCP tools, localhost:5432 DB tests, and http://localhost:8080 — all isolated from the host plane."},
+		Desc: "Go, Node, buf, atlas, baked PostgreSQL 15 + nats-server: the supervisor boots a full disposable Orchicon control plane in the container at start (Postgres -> NATS -> orchicon serve), so workers get the orchicon_* MCP tools, localhost:5432 DB tests, and http://localhost:8080 — all isolated from the host plane (dogfooding)."},
 }
 
 // SeedCannedImages ensures one canned "stock" runtime image row exists per

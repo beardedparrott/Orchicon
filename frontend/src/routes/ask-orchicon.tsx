@@ -1,4 +1,4 @@
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { createRoute } from "@tanstack/react-router";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   Plus,
@@ -7,19 +7,14 @@ import {
   Mic,
   Square,
   RefreshCw,
+  Settings2,
   Brain,
   Pencil,
   FolderPlus,
   ChevronRight,
   GripVertical,
-  MessageSquare,
-  PanelRight,
-  PanelRightClose,
-  History,
-  Sparkles,
 } from "lucide-react";
 
-import { Link } from "@tanstack/react-router";
 import { Route as rootRoute } from "@/routes/__root";
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -59,7 +54,6 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -72,9 +66,6 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/ask-orchicon",
-  validateSearch: (search: Record<string, unknown>) => ({
-    conversationId: (search.conversationId as string | undefined) ?? null,
-  }),
   component: AskOrchiconPage,
 });
 
@@ -167,12 +158,6 @@ interface ConvStream {
   // detached collector keeps running server-side, so the slot stays attached
   // (Stop + interject remain) and completion is resolved via the poll.
   reconnecting: boolean;
-  // turnProgressing is the server-confirmed "still genuinely working" signal
-  // (Conversation.turn_progressing) captured when a refresh re-attaches the
-  // reconnecting slot. True => show "still working…"; false (while reconnecting)
-  // => the turn is stalled/wedged, so show an accurate "stalled" state instead
-  // of the misleading "connection lost — still working".
-  turnProgressing: boolean;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
   // sentText is the message text captured at send time, held in-memory so the
@@ -186,7 +171,6 @@ const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
   reconnecting: false,
-  turnProgressing: false,
   optimisticUserMsg: null,
   pendingReplyId: null,
   sentText: null,
@@ -199,42 +183,8 @@ const EMPTY_STREAM: ConvStream = {
 // "Ask Orchicon is stuck" (a silent provider 429 looks like a stall).
 const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
 
-// Ticks Date.now() every `intervalMs` while truthy, frozen otherwise. Used to
-// render live "last activity Ns ago" elapsed time in the reconnecting banner
-// without running a timer (and re-rendering the tree) when nothing needs it.
-function useNow(intervalMs: number | false): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!intervalMs) return;
-    const t = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(t);
-  }, [intervalMs]);
-  return now;
-}
-
-// "12s" / "3m 05s" / "1h 12m" — elapsed-time label for the activity ticker.
-function formatElapsed(totalSecs: number): string {
-  const s = Math.max(0, Math.floor(totalSecs));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${String(m % 60).padStart(2, "0")}m`;
-}
-
 function AskOrchiconPage() {
-  const search = Route.useSearch() as { conversationId: string | null };
-  const navigate = useNavigate();
-  const activeConvId = search.conversationId ?? null;
-  const setActiveConvId = useCallback(
-    (id: string | null) => {
-      navigate({
-        to: "/ask-orchicon",
-        search: { conversationId: id ?? undefined } as never,
-      });
-    },
-    [navigate],
-  );
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const toast = useToast();
   // Mode state — defaults to BRAINSTORM; synced from activeConv when available.
   const [localMode, setLocalMode] = useState<ConversationMode>(
@@ -293,55 +243,8 @@ function AskOrchiconPage() {
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [overFolderId, setOverFolderId] = useState<string | null>(null);
 
-  // Category preferences for conversations (seed into Software Development once)
-  const convPrefs = useCategoryPreferences("conversations");
-  const [panelCollapsed, setPanelCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("orchicon_conversation_panel_collapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const togglePanel = useCallback(() => {
-    setPanelCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("orchicon_conversation_panel_collapsed", String(next));
-      } catch {}
-      return next;
-    });
-  }, []);
-  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
-  const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const lastMobileTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const openMobileSheet = useCallback(() => {
-    lastMobileTriggerRef.current = mobileTriggerRef.current;
-    setMobileSheetOpen(true);
-  }, []);
-  const closeMobileSheet = useCallback(() => {
-    setMobileSheetOpen(false);
-    requestAnimationFrame(() => {
-      (lastMobileTriggerRef.current ?? mobileTriggerRef.current)?.focus();
-    });
-  }, []);
-  useEffect(() => {
-    if (!mobileSheetOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMobileSheetOpen(false);
-        requestAnimationFrame(() => {
-          (lastMobileTriggerRef.current ?? mobileTriggerRef.current)?.focus();
-        });
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = prev;
-    };
-  }, [mobileSheetOpen]);
+  // Category preferences for conversations (no auto-seed)
+  const convPrefs = useCategoryPreferences("conversations", { noSeed: true });
 
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
@@ -361,7 +264,6 @@ function AskOrchiconPage() {
   const isStreaming = activeStream?.isStreaming ?? false;
   const isThinking = activeStream?.isThinking ?? false;
   const reconnecting = activeStream?.reconnecting ?? false;
-  const turnProgressing = activeStream?.turnProgressing ?? false;
   const optimisticUserMsg = activeStream?.optimisticUserMsg ?? null;
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
@@ -380,24 +282,6 @@ function AskOrchiconPage() {
   );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
-
-  // Server-reported turn state for the ACTIVE conversation, freshest source
-  // first. The conversations list polls every 3s while any turn is running;
-  // GetConversation is fetched once per conversation, so it only fills gaps
-  // before the first poll lands.
-  const serverTurnInFlight =
-    conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
-    activeConv?.turnInFlight ??
-    false;
-  const turnLastActivityAt =
-    conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
-    activeConv?.turnLastActivityAt ??
-    null;
-  // 1s ticker while the reconnecting banner is live so the "last activity"
-  // line updates in place; frozen (no timer) otherwise.
-  const liveNow = useNow(
-    isStreaming && reconnecting && turnProgressing ? 1000 : false,
-  );
 
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition
@@ -444,20 +328,12 @@ function AskOrchiconPage() {
   }, [activeConv?.mode]);
 
   // The reply (or error) is persisted under the acked assistant message id.
-  // When it appears via polling AND the turn is no longer in flight, the turn
-  // is over — clear the ACTIVE conversation's stream slot (other conversations
-  // keep their own state, so a turn running while you browse elsewhere stays
-  // intact). When the acked message came back as an ERROR (reply failed after
-  // ack), the sent text is copied to the clipboard and the composer is
-  // signalled to put it back in the box so the user never loses what they
-  // typed.
-  //
-  // The server mirrors the running reply into the acked row as it is collected
-  // (partial content), so a row under pendingReplyId can exist WHILE the turn
-  // is still running — a refreshed / second-tab client watches it grow via the
-  // 2s ListMessages poll. The turn registry is the terminal authority:
-  // finalizing only when serverTurnInFlight is false keeps a partial row from
-  // collapsing the re-attached streaming state (Stop button + banner) early.
+  // When it appears via polling, the turn is over — clear the ACTIVE
+  // conversation's stream slot (other conversations keep their own state,
+  // so a turn running while you browse elsewhere stays intact). When the
+  // acked message came back as an ERROR (reply failed after ack), the sent
+  // text is copied to the clipboard and the composer is signalled to put it
+  // back in the box so the user never loses what they typed on a failed reply.
   //
   // This effect does NOT depend on `streams` (which changes on every streaming
   // chunk): clearing the slot on every chunk while the local stream is still
@@ -471,7 +347,6 @@ function AskOrchiconPage() {
     if (liveStreamRef.current[activeConvId]) return;
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
-    if (serverTurnInFlight) return;
     if (acked.metadata?.error) {
       // Reply failed after the message was acked. The composer already cleared
       // on send (the message is persisted in history), but copy the sent text
@@ -502,7 +377,7 @@ function AskOrchiconPage() {
     }));
     delete sentTextRef.current[activeConvId];
     qc.invalidateQueries({ queryKey: askKeys.conversations });
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast, serverTurnInFlight]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -514,12 +389,13 @@ function AskOrchiconPage() {
   // stream until it completes.
   //
   // The server's turn flag can LAG the persisted reply by up to a poll cycle
-  // (the registry entry is removed before the reply row is written). The acked
-  // assistant message row is mirrored as the reply is collected, so a row's
-  // presence does NOT mean the turn is done — re-arm whenever the server
-  // reports the turn in flight with a pending id, and let the completion
-  // effect (which waits for turn_in_flight to clear) resolve the slot once the
-  // final reply lands.
+  // (the registry entry is removed before the reply row is written). Re-arming
+  // a turn whose reply is already persisted would ping-pong with the completion
+  // effect — clearing here, re-arming there — flickering the Stop button and
+  // re-sticking the scroll on every toggle. The acked assistant message only
+  // ever exists in messages once the reply is persisted (never as a placeholder
+  // at ack time), so skip re-arming when it is present: the turn is genuinely
+  // done and the stale flag will clear on the next conversations poll.
   useEffect(() => {
     if (!activeConvId) return;
     const server = conversations?.find((c) => c.id === activeConvId);
@@ -531,7 +407,7 @@ function AskOrchiconPage() {
       server?.pendingAssistantMessageId ||
       activeConv?.pendingAssistantMessageId ||
       "";
-    if (!pendingId) return;
+    if (pendingId && messages?.some((m) => m.id === pendingId)) return;
     setStream(activeConvId, (prev) => {
       if (prev.isStreaming) return prev;
       return {
@@ -539,29 +415,11 @@ function AskOrchiconPage() {
         isStreaming: true,
         isThinking: true,
         reconnecting: true,
-        turnProgressing:
-          server?.turnProgressing ?? activeConv?.turnProgressing ?? false,
         pendingReplyId: pendingId || prev.pendingReplyId,
         items: [],
       };
     });
-  }, [activeConvId, activeConv, conversations, streams, setStream]);
-
-  // Keep the slot's turnProgressing fresh while a server turn is re-attached:
-  // it is set once at re-arm, but the server recomputes it on every
-  // conversations poll (3s) against the tenant's stall window. Syncing it lets
-  // the banner flip from "still working" to "turn stalled" without a manual
-  // refresh, and keeps the "still working" claim honest.
-  useEffect(() => {
-    if (!activeConvId) return;
-    const server = conversations?.find((c) => c.id === activeConvId);
-    const sp = server?.turnProgressing ?? activeConv?.turnProgressing;
-    if (sp === undefined) return;
-    setStream(activeConvId, (prev) => {
-      if (!prev.isStreaming || prev.turnProgressing === sp) return prev;
-      return { ...prev, turnProgressing: sp };
-    });
-  }, [activeConvId, conversations, activeConv, setStream]);
+  }, [activeConvId, activeConv, conversations, streams, messages, setStream]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -857,14 +715,10 @@ function AskOrchiconPage() {
   const handleSendMessage = useCallback(
     async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       if (!text.trim() || !activeConvId) return false;
-      if (isStreaming || serverTurnInFlight) {
+      if (isStreaming) {
         // Send while streaming = interject: interrupt the current reply and
         // redirect the model (the server aborts the session + supersedes the
         // turn), never the "another reply already processing" dead-end.
-        // serverTurnInFlight covers the case where THIS browser's slot is
-        // idle but the turn is running server-side (started here before a
-        // refresh, or in another tab/device): the poll may not have re-armed
-        // the slot yet, but a send must still interject, not double-start.
         const ok = await interjectStreaming(activeConvId, text, attachments);
         if (!ok) {
           copyTextToClipboard(text);
@@ -877,7 +731,7 @@ function AskOrchiconPage() {
       }
       return ok;
     },
-    [activeConvId, isStreaming, serverTurnInFlight, sendStreaming, interjectStreaming],
+    [activeConvId, isStreaming, sendStreaming, interjectStreaming],
   );
 
   const handleRetry = useCallback((): Promise<boolean> => {
@@ -916,33 +770,9 @@ function AskOrchiconPage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  // Click-suppression standard (mirrors CategoryDndContext): after a dnd-kit
-  // drag the browser dispatches a synthetic click whose propagation path is
-  // only [target -> document], so a document capture-phase listener is the
-  // only reliable place to consume it — otherwise the release click lands on
-  // the row/folder under the pointer and selects/toggles it mid-drop.
-  const suppressClickRef = useRef(false);
-  useEffect(() => {
-    const onCaptureClick = (e: MouseEvent) => {
-      if (suppressClickRef.current) {
-        e.preventDefault();
-        e.stopPropagation();
-        suppressClickRef.current = false;
-      }
-    };
-    document.addEventListener("click", onCaptureClick, true);
-    return () => document.removeEventListener("click", onCaptureClick, true);
-  }, []);
-  const armClickSuppressionBackstop = useCallback(() => {
-    window.setTimeout(() => {
-      suppressClickRef.current = false;
-    }, 300);
-  }, []);
-
   // Handle drag start
   const handleDragStart = useCallback(
     (event: { active: { id: string | number } }) => {
-      suppressClickRef.current = true;
       setActiveDragId(String(event.active.id));
       setOverFolderId(null);
     },
@@ -965,9 +795,6 @@ function AskOrchiconPage() {
   // Handle drag end (assign conversation to folder)
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
-      // Backstop: keep the flag set long enough that the drag's post-mouseup
-      // click lands inside it, then clear (mirrors CategoryDndContext).
-      armClickSuppressionBackstop();
       const { active, over } = event;
       setActiveDragId(null);
       setOverFolderId(null);
@@ -985,30 +812,14 @@ function AskOrchiconPage() {
         }
       }
     },
-    [convPrefs, armClickSuppressionBackstop],
+    [convPrefs],
   );
-
-  // A cancelled drag (e.g. Escape) still ends with a possible click under the
-  // pointer — arm the same backstop so a stray click is suppressed and the
-  // flag clears shortly after (mirrors CategoryDndContext).
-  const handleDragCancel = useCallback(() => {
-    armClickSuppressionBackstop();
-    setActiveDragId(null);
-    setOverFolderId(null);
-  }, [armClickSuppressionBackstop]);
 
   // Build categorized conversation groups
   const categorizedConversations = useMemo(() => {
     if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
     return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
   }, [conversations, convPrefs.state]);
-
-  // Seed existing conversations into "Software Development" once on first load
-  useEffect(() => {
-    if (conversations && conversations.length > 0) {
-      convPrefs.ensureSeeded(conversations.map((c) => c.id));
-    }
-  }, [conversations]);
 
   // Map for quick lookup of conversations by id. Carries the server-reported
   // turn state so the sidebar can show which conversations are busy.
@@ -1032,40 +843,20 @@ function AskOrchiconPage() {
   }, [messages, isStreaming, groupedStream]);
 
   return (
-    <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
+    <div className="flex h-[calc(100vh-3.5rem)] gap-0">
       {/* Main chat area — centered column */}
-      <div className="flex flex-1 flex-col min-h-0 min-w-0">
+      <div className="flex flex-1 flex-col min-w-0">
         {!activeConvId ? (
-          /* --- Greeting state: centered + header on mobile --- */
-          <div className="flex flex-1 flex-col min-h-0">
-            {/* Greeting header — mobile only, provides conversations affordance */}
-            <div className="flex items-center justify-between border-b px-4 sm:px-6 py-3 shrink-0 gap-2 lg:hidden">
-              <span className="text-sm font-medium">Ask Orchicon</span>
-              <button
-                ref={mobileTriggerRef}
-                onClick={openMobileSheet}
-                aria-label="Conversations"
-                data-testid="ask-conversation-sheet-trigger-greeting"
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground lg:hidden shrink-0"
-              >
-                <PanelRight aria-hidden="true" className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="flex flex-1 items-center justify-center px-4 pb-2">
+          /* --- Greeting state: centered vertical + horizontal --- */
+          <div className="flex flex-1 items-center justify-center px-4">
             <div className="w-full max-w-2xl space-y-8">
               <div className="text-center space-y-4">
-                <div className="flex justify-center">
-                  <span className="inline-flex items-center gap-2 glass-panel rounded-full px-3.5 py-1.5 text-xs uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
-                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                    Intelligent Orchestration
-                  </span>
-                </div>
-                <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight">
-                  <span className="text-foreground">Orchestrate </span>
-                  <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">with intention</span>
+                <h1 className="text-4xl font-extrabold tracking-tight text-foreground md:text-5xl">
+                  What would you like to create today?
                 </h1>
-                <p className="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto font-light leading-relaxed text-balance">
-                  Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control.
+                <p className="text-base text-muted-foreground max-w-lg mx-auto md:text-lg">
+                  Ask Orchicon anything — create projects, manage work items,
+                  brainstorm ideas, or get help with your codebase.
                 </p>
               </div>
                <ChatInputField
@@ -1093,35 +884,32 @@ function AskOrchiconPage() {
                 }}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
-                placeholder="Ask Orchicon Anything..."
+                placeholder="Ask Orchicon anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
               />
-            </div>
             </div>
           </div>
         ) : (
           /* --- Active conversation: scroll + pinned input --- */
           <div className="flex flex-1 flex-col min-h-0">
             {/* Chat header */}
-            <div className="flex items-center justify-between border-b px-4 sm:px-6 py-3 shrink-0 gap-2">
+            <div className="flex items-center justify-between border-b px-6 py-3 shrink-0">
               <div className="flex items-center gap-2 min-w-0">
-                <button
-                  ref={mobileTriggerRef}
-                  onClick={openMobileSheet}
-                  aria-label="Conversations"
-                  data-testid="ask-conversation-sheet-trigger"
-                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground lg:hidden shrink-0"
-                >
-                  <PanelRight aria-hidden="true" className="h-5 w-5" />
-                </button>
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
-                <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
-                  <Brain aria-hidden="true" className="h-2.5 w-2.5" />
-                  Brainstorm
-                </span>
+                {localMode === ConversationMode.BRAINSTORM ? (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                    <Brain className="h-2.5 w-2.5" />
+                    Brainstorm
+                  </span>
+                ) : (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+                    <Settings2 className="h-2.5 w-2.5" />
+                    Orchicon
+                  </span>
+                )}
                 {/* The model answering this conversation — surfaced so a
                     silent fallback to the free model is never invisible. */}
                 <span
@@ -1141,7 +929,7 @@ function AskOrchiconPage() {
                 </span>
               </div>
               <Button variant="ghost" size="sm" onClick={handleNewChat}>
-                <Plus aria-hidden="true" className="h-4 w-4" />
+                <Plus className="h-4 w-4" />
               </Button>
             </div>
 
@@ -1152,7 +940,7 @@ function AskOrchiconPage() {
                 actionable "your model config is missing". */}
             {isUsingFallbackModel && (
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-                <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
+                <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
                   No Ask Orchicon model is configured — answering with the free
                   fallback model (<span className="font-mono">{effectiveModel}</span>),
@@ -1234,7 +1022,7 @@ function AskOrchiconPage() {
                   <div className="flex justify-start">
                     <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
-                        <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        <span className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
                         <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                           Orchicon is thinking
                           {isUsingFallbackModel && (
@@ -1253,34 +1041,13 @@ function AskOrchiconPage() {
                 {/* Reconnecting notice — the acked turn's socket dropped but
                     the detached collector keeps running server-side. The Stop
                     button + interject input stay available and the poll
-                    resolves completion. Shown only while the server confirms
-                    the turn is genuinely progressing; when the turn is
-                    stalled/wedged (turnProgressing false) the UI reports an
-                    accurate stalled state instead of "still working". */}
+                    resolves completion. */}
                 {isStreaming && reconnecting && (
-                  <div className="flex flex-col items-center gap-1">
+                  <div className="flex justify-center">
                     <p className="text-xs text-muted-foreground">
-                      {turnProgressing
-                        ? "Connection interrupted — still working… Output continues below. You can interject or stop this reply."
-                        : "Turn stalled — the model stopped responding. You can stop this reply and try again."}
+                      Connection lost — still working… You can interject or
+                      stop this reply.
                     </p>
-                    {/* Live "last activity Ns ago" ticker from the server's
-                        turn_last_activity_at (refreshed by the 3s conversations
-                        poll) so a re-attached turn proves it is alive — a long,
-                        quiet model run looks hung without this. */}
-                    {turnProgressing && turnLastActivityAt && (
-                      <p
-                        className="text-[11px] text-muted-foreground/70"
-                        data-testid="turn-last-activity"
-                      >
-                        Last activity{" "}
-                        {formatElapsed(
-                          (liveNow - turnLastActivityAt.toDate().getTime()) /
-                            1000,
-                        )}{" "}
-                        ago
-                      </p>
-                    )}
                   </div>
                 )}
 
@@ -1289,12 +1056,12 @@ function AskOrchiconPage() {
             </ChatScrollContainer>
 
             {/* Input — fixed at bottom */}
-            <div className="shrink-0 border-t pb-2">
+            <div className="shrink-0 border-t">
               <ChatInputField
                 onSend={handleSendMessage}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
-                placeholder="Ask Orchicon Anything..."
+                placeholder="Ask Orchicon anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
@@ -1305,46 +1072,29 @@ function AskOrchiconPage() {
         )}
       </div>
 
-      {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
-      {!panelCollapsed ? (
-        <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
-          <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
-            <div className="flex items-center space-x-2 text-muted-foreground">
-              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
-              <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <button
-                onClick={() => setFolderDialogOpen(true)}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New folder"
-                aria-label="New folder"
-              >
-                <FolderPlus aria-hidden="true" className="w-4 h-4" />
-              </button>
-              <Link
-                to="/ask-orchicon"
-                search={{ conversationId: undefined } as never}
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New Chat"
-                aria-label="New conversation"
-              >
-                <Plus aria-hidden="true" className="w-4 h-4" />
-              </Link>
-              <button
-                onClick={togglePanel}
-                aria-expanded={!panelCollapsed}
-                aria-controls="conversation-history-panel"
-                aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
-                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
-                title="Collapse Panel"
-              >
-                <PanelRightClose aria-hidden="true" className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Right sidebar — conversations panel (w-80 per ADR-001) */}
+      <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l bg-card overflow-y-auto">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <span className="text-sm font-medium">Conversations</span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFolderDialogOpen(true)}
+              title="New folder"
+            >
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleNewChat}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
           </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {convsLoading && (
             <p className="text-xs text-center text-muted-foreground py-4">
               Loading...
@@ -1358,11 +1108,9 @@ function AskOrchiconPage() {
 
           <DndContext
             sensors={dndSensors}
-            collisionDetection={pointerWithin}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
-            onDragCancel={handleDragCancel}
           >
             <SortableContext
               items={conversations?.map((c) => c.id) ?? []}
@@ -1439,82 +1187,14 @@ function AskOrchiconPage() {
             </DragOverlay>
           </DndContext>
         </div>
-          <div className="p-2 border-t border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-slate-900/30 shrink-0">
-            <button
-              onClick={handleNewChat}
-              className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 rounded-xl bg-accent/50 hover:bg-accent text-muted-foreground hover:text-foreground text-xs font-medium transition border border-border/50"
-            >
-              <History aria-hidden="true" className="w-3.5 h-3.5 text-muted-foreground" />
-              <span>View All History</span>
-            </button>
-          </div>
-        </aside>
-      ) : (
-        <button
-          onClick={togglePanel}
-          aria-expanded={!panelCollapsed}
-          aria-controls="conversation-history-panel"
-          aria-label="Expand conversation history"
-          title="Expand Conversations"
-          className="hidden lg:flex h-fit p-2 glass-panel rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition self-start focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
-        >
-          <PanelRight aria-hidden="true" className="h-4 w-4" />
-        </button>
-      )}
-
-      {/* Mobile conversation sheet — route-scoped, lg:hidden per ADR-M10-01 */}
-      {mobileSheetOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Conversations">
-          <div className="absolute inset-0 bg-black/50" onClick={closeMobileSheet} aria-hidden="true" />
-          <div className="absolute inset-y-0 right-0 w-[85vw] max-w-[360px] h-[100dvh] max-h-[100dvh] pb-[env(safe-area-inset-bottom,0px)] glass-panel rounded-l-2xl flex flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl animate-in slide-in-from-right duration-200">
-            <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
-              <div className="flex items-center space-x-2 text-muted-foreground">
-                <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
-                <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
-                <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
-              {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
-              <DndContext sensors={dndSensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
-                <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
-                  {convPrefs.state.categories.map((category) => {
-                    const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
-                    const isCollapsed = convPrefs.collapsed.has(category.id);
-                    const isOver = overFolderId === category.id;
-                    const isRenaming = renamingFolderId === category.id;
-                    return (
-                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} />
-                    );
-                  })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={convPrefs.state.categories.length > 0} />
-                </SortableContext>
-                <DragOverlay dropAnimation={null}>
-                  {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
-                </DragOverlay>
-              </DndContext>
-            </div>
-            <div className="p-2 border-t border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-slate-900/30 shrink-0">
-              <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="w-full flex items-center justify-center space-x-2 py-3 px-3 rounded-xl bg-accent/50 hover:bg-accent text-muted-foreground hover:text-foreground text-xs font-medium transition border border-border/50 min-h-[44px]">
-                <History aria-hidden="true" className="w-3.5 h-3.5 text-muted-foreground" />
-                <span>View All History</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      </aside>
 
       {/* Create Category Dialog */}
       <CreateCategoryDialog
         open={folderDialogOpen}
         onOpenChange={setFolderDialogOpen}
-        onCreate={(name, description) => {
-          convPrefs.createCategory(name, description);
+        onCreate={(name) => {
+          convPrefs.createCategory(name);
           setFolderDialogOpen(false);
         }}
         existingNames={convPrefs.state.categories.map((c) => c.name)}
@@ -1559,7 +1239,7 @@ function MessageBubble({
           )}
           {onRetry && (
             <Button variant="outline" size="sm" onClick={onRetry} className="mt-2">
-              <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />
               Retry
             </Button>
           )}
@@ -1577,14 +1257,10 @@ function MessageBubble({
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
-      {/* A running turn's mirrored partial row can hold reasoning but no text
-          yet (the model is still thinking) — skip the empty bubble shell. */}
-      {message.content && (
-        <AssistantBubble
-          text={message.content}
-          label="Orchicon"
-        />
-      )}
+      <AssistantBubble
+        text={message.content}
+        label="Orchicon"
+      />
     </>
   );
 }
@@ -1641,40 +1317,8 @@ function ChatInputField({
     [],
   );
 
-  // --- attachment constants (server is authoritative: 5 / 10MB / 20MB) ---
-  const MAX_ATTACHMENTS = 5;
-  const MAX_FILE_BYTES = 10 * 1024 * 1024;
-  const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-  const ACCEPTED_EXTS = new Set([
-    "png","jpg","jpeg","gif","webp","svg","bmp","pdf","txt","md","mdx","json","csv","yaml","yml","html","css","js","ts","tsx","go","py","rs","java","sh","xml","log",
-  ]);
-  const getExt = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
-  const isAllowedFile = (file: File): boolean => {
-    const mime = (file.type || "").toLowerCase();
-    const ext = getExt(file.name);
-    if (mime.startsWith("image/")) return true;
-    if (mime.startsWith("text/")) return true;
-    if (mime.includes("json") || mime.includes("csv") || mime.includes("pdf") || mime.includes("xml") || mime.includes("yaml")) return true;
-    if (ext && ACCEPTED_EXTS.has(ext)) return true;
-    // empty mime but known extension — allow
-    if (!mime && ext && ACCEPTED_EXTS.has(ext)) return true;
-    return false;
-  };
-
-  const [pendingReads, setPendingReads] = useState(0);
-
   const handleSubmit = useCallback(async () => {
-    // The sending lock only guards a double-click on a FRESH send. While a
-    // turn is streaming, `sending` stays true for the whole turn (onSend
-    // resolves only when the stream ends), so locking unconditionally would
-    // swallow every interject attempt mid-reply — the box already cleared on
-    // submit, so a submit during a stream IS a deliberate interject
-    // (interrupt + redirect), not an accidental duplicate.
-    if (sending && !isStreaming) return;
-    if (pendingReads > 0) {
-      useToastStore.getState().push({ kind: "info", message: `Still loading ${pendingReads} file(s)...` });
-      return;
-    }
+    if (sending) return;
     const sentText = text.trim();
     const sentAttachments = attachments.length > 0 ? attachments : undefined;
     if (sentText || attachments.length > 0) {
@@ -1697,7 +1341,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend, pendingReads, isStreaming]);
+  }, [sending, text, attachments, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1711,182 +1355,20 @@ function ChatInputField({
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
-      let queuedCount = 0;
-      let queuedBytes = 0;
-      for (const file of Array.from(files)) {
-        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
-          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
-          break;
-        }
-        if (!isAllowedFile(file)) {
-          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
-          continue;
-        }
-        if (file.size > MAX_FILE_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
-          continue;
-        }
-        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
-          continue;
-        }
-        queuedCount++;
-        queuedBytes += file.size;
-        setPendingReads((n) => n + 1);
-        const reader = new FileReader();
-        reader.onload = () => {
-          const input = new AttachmentInput();
-          input.name = file.name;
-          // infer mime when empty via extension
-          let mime = file.type;
-          if (!mime) {
-            const ext = getExt(file.name);
-            if (ext === "json") mime = "application/json";
-            else if (ext === "csv") mime = "text/csv";
-            else if (ext === "pdf") mime = "application/pdf";
-            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
-            else if (ext === "txt") mime = "text/plain";
-            else mime = "application/octet-stream";
-          }
-          input.mimeType = mime;
-          input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.onerror = () => {
-          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.readAsArrayBuffer(file);
-      }
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const input = new AttachmentInput();
+        input.name = file.name;
+        input.mimeType = file.type;
+        input.data = new Uint8Array(reader.result as ArrayBuffer);
+        setAttachments((prev) => [...prev, input]);
+      };
+      reader.readAsArrayBuffer(file);
       e.target.value = "";
     },
-    [attachments],
-  );
-
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const imageFiles: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.kind === "file" && item.type.startsWith("image/")) {
-          const file = item.getAsFile();
-          if (file) imageFiles.push(file);
-        }
-      }
-      if (imageFiles.length === 0) return;
-      e.preventDefault();
-      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
-      let queuedCount = 0;
-      let queuedBytes = 0;
-      for (const file of imageFiles) {
-        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
-          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
-          break;
-        }
-        if (file.size > MAX_FILE_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `Image too large (max 10MB): ${file.name || "pasted image"}` });
-          continue;
-        }
-        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
-          continue;
-        }
-        queuedCount++;
-        queuedBytes += file.size;
-        setPendingReads((n) => n + 1);
-        const reader = new FileReader();
-        reader.onload = () => {
-          const input = new AttachmentInput();
-          input.name = file.name || `pasted-image-${Date.now()}.png`;
-          input.mimeType = file.type || "image/png";
-          input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.onerror = () => {
-          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name || "pasted image"}` });
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.readAsArrayBuffer(file);
-      }
-    },
-    [attachments],
-  );
-
-  const [dragOver, setDragOver] = useState(false);
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(true);
-  }, []);
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-  }, []);
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragOver(false);
-      const files = e.dataTransfer?.files;
-      if (!files) return;
-      const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
-      let queuedCount = 0;
-      let queuedBytes = 0;
-      for (const file of Array.from(files)) {
-        if (attachments.length + queuedCount >= MAX_ATTACHMENTS) {
-          useToastStore.getState().push({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
-          break;
-        }
-        if (!isAllowedFile(file)) {
-          useToastStore.getState().push({ kind: "error", message: `Unsupported file type: ${file.name}` });
-          continue;
-        }
-        if (file.size > MAX_FILE_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `File too large (max 10MB): ${file.name}` });
-          continue;
-        }
-        if (existingTotal + queuedBytes + file.size > MAX_TOTAL_BYTES) {
-          useToastStore.getState().push({ kind: "error", message: `Attachments too large (max 20MB total)` });
-          continue;
-        }
-        queuedCount++;
-        queuedBytes += file.size;
-        setPendingReads((n) => n + 1);
-        const reader = new FileReader();
-        reader.onload = () => {
-          const input = new AttachmentInput();
-          input.name = file.name;
-          let mime = file.type;
-          if (!mime) {
-            const ext = getExt(file.name);
-            if (ext === "json") mime = "application/json";
-            else if (ext === "csv") mime = "text/csv";
-            else if (ext === "pdf") mime = "application/pdf";
-            else if (ext === "md" || ext === "mdx") mime = "text/markdown";
-            else if (ext === "txt") mime = "text/plain";
-            else mime = "application/octet-stream";
-          }
-          input.mimeType = mime;
-          input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.onerror = () => {
-          useToastStore.getState().push({ kind: "error", message: `Failed to read ${file.name}` });
-          setPendingReads((n) => Math.max(0, n - 1));
-        };
-        reader.readAsArrayBuffer(file);
-      }
-    },
-    [attachments],
+    [],
   );
 
   const [isRecording, setIsRecording] = useState(false);
@@ -1949,37 +1431,18 @@ function ChatInputField({
         const blob = new Blob(audioChunksRef.current, {
           type: "audio/webm",
         });
-        if (blob.size > MAX_FILE_BYTES) {
-          pushToast({ kind: "error", message: `Audio too large (max 10MB)` });
-          return;
-        }
-        const existingTotal = attachments.reduce((s, a) => s + (a.data?.length ?? 0), 0);
-        if (existingTotal + blob.size > MAX_TOTAL_BYTES) {
-          pushToast({ kind: "error", message: `Attachments too large (max 20MB total)` });
-          return;
-        }
-        if (attachments.length >= MAX_ATTACHMENTS) {
-          pushToast({ kind: "error", message: `Too many attachments (max ${MAX_ATTACHMENTS})` });
-          return;
-        }
-        setPendingReads((n) => n + 1);
         const reader = new FileReader();
         reader.onload = () => {
           const input = new AttachmentInput();
           input.name = "voice_input.webm";
           input.mimeType = "audio/webm";
           input.data = new Uint8Array(reader.result as ArrayBuffer);
-          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, input]));
-          setPendingReads((n) => Math.max(0, n - 1));
+          setAttachments((prev) => [...prev, input]);
           pushToast({
             kind: "success",
             message:
               "Audio recorded and attached. Send your message to have Orchicon process it.",
           });
-        };
-        reader.onerror = () => {
-          pushToast({ kind: "error", message: "Failed to read audio" });
-          setPendingReads((n) => Math.max(0, n - 1));
         };
         reader.readAsArrayBuffer(blob);
       };
@@ -2000,7 +1463,7 @@ function ChatInputField({
         message: "Microphone access denied or unavailable.",
       });
     }
-  }, [attachments]);
+  }, []);
 
   const handleStopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
@@ -2010,75 +1473,44 @@ function ChatInputField({
 
   return (
     <div className="p-4">
-      {pendingReads > 0 && (
-        <div className="mb-2 text-xs text-muted-foreground animate-pulse" aria-live="polite">
-          Loading {pendingReads} file(s)...
-        </div>
-      )}
       {attachments.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
-          {attachments.map((a, i) => {
-            const isImage = a.mimeType?.startsWith("image/");
-            let previewUrl: string | undefined;
-            try {
-              if (isImage && a.data && a.data.length > 0) {
-                // Use data URL (no object URL leak) — small preview, auto-revoked on remove
-                let binary = "";
-                const bytes = a.data as unknown as Uint8Array;
-                for (let k = 0; k < bytes.length; k++) binary += String.fromCharCode(bytes[k]);
-                // chunk to avoid stack overflow on large images
-                previewUrl = `data:${a.mimeType};base64,${btoa(binary)}`;
-              }
-            } catch {}
-            return (
-              <span
-                key={i}
-                className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+          {attachments.map((a, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs"
+            >
+              <Paperclip className="h-3 w-3" />
+              {a.name}
+              <button
+                onClick={() =>
+                  setAttachments((prev) =>
+                    prev.filter((_, j) => j !== i),
+                  )
+                }
+                className="ml-1 text-muted-foreground hover:text-foreground"
               >
-                {isImage && previewUrl ? (
-                  <img src={previewUrl} alt={a.name} className="h-8 w-8 rounded object-cover" />
-                ) : (
-                  <Paperclip aria-hidden="true" className="h-3 w-3" />
-                )}
-                <span className="max-w-[120px] truncate">{a.name}</span>
-                <span className="text-muted-foreground">{a.data ? `${(a.data.length / 1024).toFixed(1)}KB` : ""}</span>
-                <button
-                  onClick={() =>
-                    setAttachments((prev) => prev.filter((_, j) => j !== i))
-                  }
-                  className="ml-1 text-muted-foreground hover:text-foreground"
-                >
-                  ×
-                </button>
-              </span>
-            );
-          })}
+                ×
+              </button>
+            </span>
+          ))}
         </div>
       )}
-      <div
-        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
+      <div className="rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 overflow-hidden">
         {/* Textarea area */}
-        <div className="flex items-end gap-2 px-1 pb-1">
-          <Sparkles aria-hidden="true" className="h-4 w-4 text-cyan-700 dark:text-cyan-400 shrink-0 mb-1.5" />
+        <div className="flex items-end gap-1 px-3 pt-3 pb-1">
           <button
-            type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 rounded-md border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 p-1.5 text-muted-foreground hover:text-cyan-700 dark:hover:text-cyan-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent"
             title="Attach file"
-            aria-label="Attach file"
           >
-            <Paperclip aria-hidden="true" className="h-4 w-4" />
+            <Paperclip className="h-4 w-4" />
           </button>
           <textarea
             ref={inputRef}
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
             placeholder={placeholder}
             rows={1}
             className="flex-1 resize-none bg-transparent px-1 py-0 text-sm leading-6 outline-none placeholder:text-muted-foreground min-h-[24px] max-h-[192px]"
@@ -2093,7 +1525,7 @@ function ChatInputField({
             )}
             title={isRecording ? "Stop recording" : "Voice input"}
           >
-            <Mic aria-hidden="true" className="h-4 w-4" />
+            <Mic className="h-4 w-4" />
           </button>
         </div>
         {/* Bottom toolbar — send/stop on left, mode dropdown on the right */}
@@ -2103,25 +1535,22 @@ function ChatInputField({
               <>
                 <Button
                   onClick={handleSubmit}
-                  disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
+                  disabled={!text.trim() && attachments.length === 0}
                   size="sm"
-                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
-                  title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : "Send interrupts the current reply and redirects the model"}
+                  title="Send interrupts the current reply and redirects the model"
                 >
                   Send
                 </Button>
                 <Button onClick={onStop} variant="destructive" size="sm">
-                  <Square aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
+                  <Square className="h-3.5 w-3.5 mr-1" />
                   Stop
                 </Button>
               </>
             ) : (
               <Button
                 onClick={handleSubmit}
-                disabled={pendingReads > 0 || (!text.trim() && attachments.length === 0)}
+                disabled={!text.trim() && attachments.length === 0}
                 size="sm"
-                className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border-0 disabled:opacity-50"
-                title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : undefined}
               >
                 Send
               </Button>
@@ -2141,11 +1570,7 @@ function ChatInputField({
         ref={fileInputRef}
         type="file"
         className="hidden"
-        accept="image/*,text/*,.json,.md,.mdx,.csv,.pdf,.txt,.yaml,.yml,.html,.css,.js,.ts,.tsx,.go,.py,.rs,.java,.sh,.xml,.log"
-        multiple
         onChange={handleFileSelect}
-        aria-hidden="true"
-        tabIndex={-1}
       />
     </div>
   );
@@ -2209,10 +1634,10 @@ function ConversationItem({
       <button
         onClick={onSelect}
         className={cn(
-          "w-full text-left rounded-xl p-2.5 text-sm transition border",
+          "w-full text-left rounded-md px-3 py-2 text-sm transition-colors",
           isActive
-            ? "bg-cyan-500/10 border-cyan-500/30 text-foreground"
-            : "border-transparent text-muted-foreground hover:bg-accent hover:border-border hover:text-foreground",
+            ? "bg-accent text-accent-foreground"
+            : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
         )}
       >
         <div className="flex items-start gap-2">
@@ -2222,7 +1647,7 @@ function ConversationItem({
             {...listeners}
             className="shrink-0 mt-0.5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 text-muted-foreground"
           >
-            <GripVertical aria-hidden="true" className="h-3 w-3" />
+            <GripVertical className="h-3 w-3" />
           </span>
           <div className="flex-1 min-w-0">
             {isRenaming ? (
@@ -2245,7 +1670,7 @@ function ConversationItem({
                     className="shrink-0 relative flex h-1.5 w-1.5"
                     title="Reply in progress"
                   >
-                    <span aria-hidden="true" className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
                     <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500" />
                   </span>
                 )}
@@ -2270,7 +1695,7 @@ function ConversationItem({
                     className="shrink-0 cursor-pointer text-destructive hover:text-destructive-foreground"
                     title="Stop this reply"
                   >
-                    <Square aria-hidden="true" className="h-3 w-3 fill-current" />
+                    <Square className="h-3 w-3 fill-current" />
                   </span>
                 )}
               </div>
@@ -2288,14 +1713,14 @@ function ConversationItem({
                 className="text-muted-foreground hover:text-foreground"
                 title="Rename"
               >
-                <Pencil aria-hidden="true" className="h-3 w-3" />
+                <Pencil className="h-3 w-3" />
               </button>
               <button
                 onClick={onDelete}
                 className="text-muted-foreground hover:text-destructive"
                 title="Delete"
               >
-                <Trash2 aria-hidden="true" className="h-3 w-3" />
+                <Trash2 className="h-3 w-3" />
               </button>
             </span>
           )}
@@ -2381,7 +1806,7 @@ function FolderItem({
           className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground"
         >
           <ChevronRight
-            aria-hidden="true" className={cn(
+            className={cn(
               "h-3 w-3 transition-transform",
               !isCollapsed && "rotate-90",
             )}
@@ -2409,14 +1834,14 @@ function FolderItem({
               className="text-muted-foreground hover:text-foreground"
               title="Rename folder"
             >
-              <Pencil aria-hidden="true" className="h-3 w-3" />
+              <Pencil className="h-3 w-3" />
             </button>
             <button
               onClick={onDelete}
               className="text-muted-foreground hover:text-destructive"
               title="Delete folder"
             >
-              <Trash2 aria-hidden="true" className="h-3 w-3" />
+              <Trash2 className="h-3 w-3" />
             </button>
           </span>
         )}

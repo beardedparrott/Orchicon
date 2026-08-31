@@ -33,21 +33,7 @@ const (
 	// improvement). Beyond the cap the worker is told to read the file
 	// from disk. The project-directory read tool uses the same cap as its
 	// default read bound.
-	MaxInlineFileBytes = 64 * 1024 // 64 KiB — a big single file stays on disk
-	// MaxInlineContextBytes is the CUMULATIVE budget for ALL inlined
-	// context (file contents + directory listings) rendered into one prompt
-	// section. Each inlined byte is re-sent to the model on EVERY tool call
-	// of the run, so the sum — not any single file — is what inflates
-	// context. Beyond this budget later paths degrade to a "read from disk"
-	// note instead of inlining, keeping the section bounded.
-	MaxInlineContextBytes = 384 * 1024 // 384 KiB ≈ ~90k tokens max per context section
-	// ManifestInlineMaxBytes is the per-file inline floor for the manifest
-	// renderer (RenderManifest): files at or under this size are inlined so
-	// a worker can never be blind to a small, core file; files larger than
-	// this become manifest entries (path + size + "read on demand") instead
-	// of being dumped wholesale. This is the context-by-reference win —
-	// only what the model actually needs gets fetched, the index is cheap.
-	ManifestInlineMaxBytes = 4 * 1024 // 4 KiB ≈ ~1k tokens per small file
+	MaxInlineFileBytes = 256 * 1024 // 256 KiB
 )
 
 // noiseDirNames are VCS/build/runtime-cache directories skipped when
@@ -301,16 +287,7 @@ func Render(rootNote string, paths []string, projectDir string) string {
 		fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(rootNote))
 	}
 	wroteAny := false
-	// Cumulative budget: track total rendered bytes so a large set of
-	// context files can't blow the prompt (every inlined byte is re-sent on
-	// every tool call). Beyond the budget, later paths degrade to a note.
-	budget := &renderBudget{remaining: MaxInlineContextBytes}
 	for _, p := range paths {
-		if budget.exhausted() {
-			fmt.Fprintf(&sb, "**Note:** context budget reached — stop inlisting further files; read `%s` from disk when needed\n\n", p)
-			wroteAny = true
-			continue
-		}
 		resolved := Resolve(p, projectDir)
 		if resolved == "" {
 			continue
@@ -322,11 +299,11 @@ func Render(rootNote string, paths []string, projectDir string) string {
 			continue
 		}
 		if info.IsDir() {
-			wroteAny = renderDirectory(&sb, resolved, budget) || wroteAny
+			wroteAny = renderDirectory(&sb, resolved) || wroteAny
 			continue
 		}
 		if info.Mode().IsRegular() {
-			wroteAny = renderFile(&sb, resolved, budget) || wroteAny
+			wroteAny = renderFile(&sb, resolved) || wroteAny
 			continue
 		}
 		fmt.Fprintf(&sb, "**Note:** `%s` is not a regular file or directory\n\n", resolved)
@@ -338,132 +315,12 @@ func Render(rootNote string, paths []string, projectDir string) string {
 	return sb.String()
 }
 
-// RenderManifest is the context-by-reference renderer. Instead of inlining
-// every file's full contents into the prompt (each byte is re-sent on every
-// tool call of the run), it produces a compact MANIFEST of the available
-// context:
-//
-//   - Small regular files (<= ManifestInlineMaxBytes) are inlined so a
-//     worker can never be blind to a core file.
-//   - Larger files become a manifest entry: `path (N bytes)` with an
-//     instruction to READ ON DEMAND only what the task needs.
-//   - Directories become a bounded listing of their files with sizes, with
-//     the same "read what you need" instruction (no more "read EVERY file").
-//
-// The renderer is agnostic — it works for any project shape (a Go repo, an
-// automation workflow, a research folder) because it only inspects real
-// paths/sizes via WalkDir/Stat. The cumulative budget still applies so a huge
-// selection cannot blow the prompt.
-//
-// Returns the rendered section (possibly empty). Errors in a single path
-// degrade to a note; rendering never fails the prompt build.
-func RenderManifest(rootNote string, paths []string, projectDir string) string {
-	var sb strings.Builder
-	if len(paths) == 0 {
-		return ""
-	}
-	if strings.TrimSpace(rootNote) != "" {
-		fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(rootNote))
-		sb.WriteString("The following context is available inside the project directory. Small, essential files are inlined below; everything else is listed as a manifest of path + size. **Read only the files your task needs** using your read/grep tools — do not dump large files wholesale. This keeps your context lean and fast.\n\n")
-	}
-	wroteAny := false
-	budget := &renderBudget{remaining: MaxInlineContextBytes}
-	initLen := sb.Len()
-	for _, p := range paths {
-		if budget.exhausted() {
-			fmt.Fprintf(&sb, "**Note:** manifest budget reached — read `%s` from disk only if needed\n\n", p)
-			wroteAny = true
-			continue
-		}
-		resolved := Resolve(p, projectDir)
-		if resolved == "" {
-			continue
-		}
-		info, err := os.Stat(resolved)
-		if err != nil {
-			fmt.Fprintf(&sb, "**Note:** could not read `%s`: %v\n\n", resolved, err)
-			wroteAny = true
-			budget.charge(&sb, initLen)
-			continue
-		}
-		if info.IsDir() {
-			wroteAny = renderDirectoryManifest(&sb, resolved, budget) || wroteAny
-			continue
-		}
-		if info.Mode().IsRegular() {
-			if info.Size() <= int64(ManifestInlineMaxBytes) {
-				wroteAny = renderFile(&sb, resolved, budget) || wroteAny
-			} else {
-				before := sb.Len()
-				fmt.Fprintf(&sb, "- `%s` (%d bytes) — **read this file on demand** if the task needs it\n", resolved, info.Size())
-				budget.charge(&sb, before)
-				wroteAny = true
-			}
-			continue
-		}
-		fmt.Fprintf(&sb, "**Note:** `%s` is not a regular file or directory\n\n", resolved)
-		wroteAny = true
-		budget.charge(&sb, initLen)
-	}
-	if !wroteAny {
-		return ""
-	}
-	return sb.String()
-}
-
-// renderDirectoryManifest lists a directory's entries (bounded) as a
-// manifest with sizes, telling the worker to read only what it needs.
-func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBudget) bool {
-	before := sb.Len()
-	entries, err := WalkDir(path, MaxContextFiles)
-	if err != nil {
-		fmt.Fprintf(sb, "**Note:** could not list `%s`: %v\n\n", path, err)
-		budget.charge(sb, before)
-		return true
-	}
-	fmt.Fprintf(sb, "## %s (directory — read on demand)\n\n", path)
-	sb.WriteString("Directory context. Read the specific files you need for the task; do not read the whole directory. The listing below is a manifest (path + size):\n\n")
-	for _, e := range entries {
-		st, serr := os.Stat(e)
-		size := int64(0)
-		if serr == nil {
-			size = st.Size()
-		}
-		fmt.Fprintf(sb, "- `%s` (%d bytes)\n", e, size)
-	}
-	if len(entries) >= MaxContextFiles {
-		sb.WriteString("- … and more files (use your tools to browse the directory)\n")
-	}
-	sb.WriteString("\n")
-	budget.charge(sb, before)
-	return true
-}
-
-// renderBudget tracks the remaining cumulative-inline bytes for a context
-// section. Costs are charged against the FULL rendered length (directive +
-// file body + headers), because that is what actually re-enters the model on
-// every turn.
-type renderBudget struct {
-	remaining int
-}
-
-func (b *renderBudget) charge(sb *strings.Builder, before int) {
-	b.remaining -= (sb.Len() - before)
-	if b.remaining < 0 {
-		b.remaining = 0
-	}
-}
-
-func (b *renderBudget) exhausted() bool { return b.remaining <= 0 }
-
-// renderFile inlines a single context file's contents, capped per-file and
-// against the section budget. Returns true when a section was written.
-func renderFile(sb *strings.Builder, path string, budget *renderBudget) bool {
-	before := sb.Len()
+// renderFile inlines a single context file's contents, capped. Returns
+// true when a section was written.
+func renderFile(sb *strings.Builder, path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not read `%s`: %v\n\n", path, err)
-		budget.charge(sb, before)
 		return true
 	}
 	fmt.Fprintf(sb, "## %s\n\n```\n", path)
@@ -477,20 +334,17 @@ func renderFile(sb *strings.Builder, path string, budget *renderBudget) bool {
 		}
 	}
 	sb.WriteString("```\n\n")
-	budget.charge(sb, before)
 	return true
 }
 
 // renderDirectory emits the "directory as context" block: an explicit
 // instruction that the path is a directory (read every file below, do
-// NOT open the directory path itself) followed by the bounded file listing.
+// NOT open the directory itself) followed by the bounded file listing.
 // Returns true when a section was written.
-func renderDirectory(sb *strings.Builder, path string, budget *renderBudget) bool {
-	before := sb.Len()
+func renderDirectory(sb *strings.Builder, path string) bool {
 	entries, err := WalkDir(path, MaxContextFiles)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not list `%s`: %v\n\n", path, err)
-		budget.charge(sb, before)
 		return true
 	}
 	fmt.Fprintf(sb, "## %s (directory)\n\n", path)

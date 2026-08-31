@@ -30,15 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-- **Autonomous research & the Idea Cloud**: Orchicon can now run its own product research and propose what to build next.
-- **Cost discipline, built in**: v0.2.0 treats token spend as a first-class constraint.
-- **A sleeker, faster interface**: The control plane UI has been redesigned for clarity and speed: a cleaner shell and navigation, category folders for organizing workers, workflows, and conversations, drag-and-drop that just works, and an expanded theme system — 20 hand-tuned themes across light and dark.
-- **Runtime reliability**: self-healing container pools (stale daemons and leaked containers eliminated), stale-binary detection, and runs that self-heal across backend failures instead of wedging.
-- **Scheduler resilience**: cancel/abort actually stops the model session; recovery survives DAG pass limits; PR-merge loops and orphaned branch references fixed.
-- **Automation pipeline hardening**: role-scoped plane access with deny-by-default security, loud failures instead of silent no-ops, and a dedicated Rejected view for the Idea Cloud.
-- **Developer experience**: one-command full rebuild (`make rebuild-dev` / `rebuild-prod`), automatic version tagging on develop, BuildKit-cached container builds.
+### v0.1.293
 
-Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
+1. **Auth & security foundation** — embedded OIDC IdP (zitadel/oidc v3) as the default, OIDC base auth in every mode, anonymous bypass removed end-to-end, frontend route guards + login redirect, admin identity CRUD, sign-up via embedded IdP, tenant architecture (deployment-scoped), no-lockout admin bootstrap. New: first-admin via local IdP sign-up replaces the `admin`/`admin` default — one unified "first admin" guard across local and external OIDC; RBAC roles CRUD with an entitlement picker and a Manage Identity Roles admin UI (the `admin` role is immutable).
+2. **Audit trail** — new `audit_events` table + actor-based trail on every mutating RPC and auth action (transactional outbox), time-range filters, Admin audit view, `list_audit_events` in Ask Orchicon.
+3. **Scheduling & workflow engine** — recurring schedules, new `blocked` status + dependency gates, DB-level DAG cycle enforcement, concurrent step-run dispatch, sequential multi-workflow runs. New: archive/restore work items with a dedicated archive view.
+4. **Parallel worktree/PR work** — per-run worktree provisioning, parallel board view with run/branch state, PR links end-to-end (worker-output `PR_URL`/`PR_STATE` capture + idempotent `orchicon backfill-pr`), retry branch reuse, and success-only branch deletion.
+5. **Ask Orchicon maturity, prompt efficiency & execution UX** — turn lifecycle, draft handling, conversation folders/rename, reasoning stream, modes, new AGENTS.md routing line + planner-first rule; stable prompt prefix for KV-cache reuse, tool-output discipline + summary caps; live todo list + elapsed timers, theme palette, category folders; stall detection reworked to nudge-first advisory routing with result-aware repetition.
 
 ## Installation
 

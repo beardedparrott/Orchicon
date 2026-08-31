@@ -62,37 +62,13 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 
 	row := db.ProjectRow{
-		ID:          db.NewID(),
-		TenantID:    tenantID,
-		Name:        name,
-		Slug:        slug,
-		Status:      domain.ProjectDrafting,
-		Goals:       goals,
-		GitStrategy: func() string {
-			if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
-				switch msg.ProtoReflect().Get(fd).Enum() {
-				case 1:
-					return "local"
-				case 2:
-					return "pr"
-				case 3:
-					return "none"
-				}
-			}
-			// fallback: check goals for __git_strategy (when proto not yet regenerated)
-			if len(msg.Goals) > 0 {
-				for _, gf := range msg.Goals {
-					if gf.Key == "__git_strategy" {
-						if gf.Value == "local" || gf.Value == "pr" || gf.Value == "none" {
-							return gf.Value
-						}
-					}
-				}
-			}
-			return "local"
-		}(),
+		ID:       db.NewID(),
+		TenantID: tenantID,
+		Name:     name,
+		Slug:     slug,
+		Status:   domain.ProjectDrafting,
+		Goals:    goals,
 	}
-
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -230,50 +206,16 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.ContextFiles = &filesJSON
 	}
-		if msg.MaxConcurrentRuns != nil {
+	if msg.MaxConcurrentRuns != nil {
 		limit := int(*msg.MaxConcurrentRuns)
 		if limit < 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max_concurrent_runs must be >= 0"))
 		}
 		fields.MaxConcurrentRuns = &limit
 	}
-	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
-		enumVal := msg.ProtoReflect().Get(fd).Enum()
-		var s string
-		switch enumVal {
-		case 1:
-			s = "local"
-		case 2:
-			s = "pr"
-		case 3:
-			s = "none"
-		default:
-			s = "local"
-		}
-		fields.GitStrategy = &s
-	} else if msg.Goals != nil {
-		for _, gf := range msg.Goals.Fields {
-			if gf.Key == "__git_strategy" && (gf.Value == "local" || gf.Value == "pr" || gf.Value == "none") {
-				fields.GitStrategy = &gf.Value
-				// remove the pseudo-goal from goals so it doesn't persist as a real goal
-				filtered := make([]*apiv1.GoalField, 0, len(msg.Goals.Fields))
-				for _, g := range msg.Goals.Fields {
-					if g.Key != "__git_strategy" {
-						filtered = append(filtered, g)
-					}
-				}
-				if len(filtered) != len(msg.Goals.Fields) {
-					goals, _ := convertGoalsToJSON(filtered)
-					fields.Goals = &goals
-				}
-				break
-			}
-		}
-	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil {
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
-
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {

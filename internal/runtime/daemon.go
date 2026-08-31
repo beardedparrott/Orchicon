@@ -63,9 +63,6 @@ type Daemon struct {
 	// race `docker run` on the same name (the pool names are unique, but
 	// serializing the docker create path keeps docker itself calm).
 	createMu sync.Mutex
-	// activeBuilds tracks in-flight docker builds by tag so Cancel can kill them.
-	buildMu      sync.Mutex
-	activeBuilds map[string]*exec.Cmd
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
 	dockerFn  func(args ...string) (string, error)                          // overrides docker()
@@ -105,17 +102,6 @@ type CreateRequest struct {
 	// and returns ServePort/ServePassword in the response.
 	ServeConfig string `json:"serve_config,omitempty"`
 	ProjectDir  string `json:"project_dir,omitempty"`
-	// Secrets are tenant secrets to inject as container env at create time.
-	// Decrypted plane-side, never stored in image; same pattern as GH_TOKEN.
-	Secrets map[string]string `json:"secrets,omitempty"`
-	// GitStrategy is the effective workflow git strategy (local|pr|none)
-	// resolved for the run. It gates whether the runtime container is given
-	// a push-capable GH_TOKEN and the git identity/credential mounts: a
-	// "none" (ephemeral, detached-HEAD) run must never be able to push, so
-	// it gets neither and cannot create a branch ref locally or on origin.
-	// Empty does not default here — the daemon treats "" as "not none" so a
-	// request that omits it retains today's conditional token injection.
-	GitStrategy string `json:"git_strategy,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -155,8 +141,6 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/runtimes", d.handleRuntimes)
 	mux.HandleFunc("/v1/runtimes/", d.handleRuntime)
 	mux.HandleFunc("/v1/images", d.handleImages)
-	mux.HandleFunc("/v1/images/inspect", d.handleImageInspect)
-	mux.HandleFunc("/v1/images/build", d.handleBuildCancel)
 	return mux
 }
 
@@ -368,15 +352,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
 		"--memory", d.Memory,
-		// /tmp is a private tmpfs sized to TmpfsSize. It must be `exec`:
-		// Docker's `--tmpfs` default is noexec, which makes Go's default
-		// TMPDIR unusable (test binaries fail `fork/exec ... permission
-		// denied`) and defeats the execution-guard shim that lives under
-		// /tmp/orchicon-guard-*. The runtime user already has full
-		// write+exec access across the chowned ephemeral rootfs, so /tmp
-		// being exec adds no host-escape surface — noexec was incidental
-		// Docker defaulting, not a security boundary.
-		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
+		"--tmpfs", "/tmp:rw,size=" + d.TmpfsSize,
 	}
 	// NO port publish: the plane reaches the container's opencode serve
 	// DIRECTLY on the docker bridge via the container IP (the serve binds
@@ -405,14 +381,6 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// by the daemon, not the plane, so the control plane can never request
 	// them.
 	if d.HostHome != "" {
-		// Git identity/credential + push-capable GH_TOKEN are gated on the
-		// run's effective git strategy: a "none" (ephemeral detached-HEAD)
-		// run must never be able to create or push a branch, so it gets NO
-		// .gitconfig/.git-credentials/gh mounts and NO GH_TOKEN. The
-		// opencode model-auth mounts (config, provider auth, adapter CLI)
-		// stay universal — a "none" run still needs model auth and the
-		// adapter to work; only the push surface is removed.
-		gitCreds := req.GitStrategy != "none"
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
 		}
@@ -422,44 +390,36 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".opencode")+":"+filepath.Join(d.HostHome, ".opencode")+":ro")
 		}
-		if gitCreds {
-			for _, f := range []string{".gitconfig", ".git-credentials"} {
-				if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
-					args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
-				}
+		for _, f := range []string{".gitconfig", ".git-credentials"} {
+			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
+				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
 			}
-			// GitHub CLI auth + state (read-only — PR/merge workers run
-			// `gh pr create`/`gh repo create`). Without the hosts.yml mount
-			// gh reports "not authenticated" inside the container even though
-			// the operator is logged in on the host.
-			if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
-			}
-			if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
-			}
-			// The operator's gh token often lives in the OS keyring, which is
-			// NOT available inside containers — hosts.yml alone has no token,
-			// so `gh` reports "not authenticated". Resolve the host's effective
-			// token and pass it as GH_TOKEN so PR/merge workers can actually
-			// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
-			// d.ghToken() is TTL-cached and shared with the pool key fingerprint
-			// so the container's env and the pool key always agree on the token
-			// (no wasteful fresh-create from a mid-checkout rotation race).
-			if tok := d.ghToken(); tok != "" {
-				args = append(args, "-e", "GH_TOKEN="+tok)
-			}
+		}
+		// GitHub CLI auth + state (read-only — PR/merge workers run
+		// `gh pr create`/`gh repo create`). Without the hosts.yml mount
+		// gh reports "not authenticated" inside the container even though
+		// the operator is logged in on the host.
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
 		}
 		args = append(args, "-e", "HOME="+d.HostHome)
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.
 		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	}
-	for k, v := range req.Secrets {
-		if k == "" || v == "" {
-			continue
+		// The operator's gh token often lives in the OS keyring, which is
+		// NOT available inside containers — hosts.yml alone has no token,
+		// so `gh` reports "not authenticated". Resolve the host's effective
+		// token and pass it as GH_TOKEN so PR/merge workers can actually
+		// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
+		// d.ghToken() is TTL-cached and shared with the pool key fingerprint
+		// so the container's env and the pool key always agree on the token
+		// (no wasteful fresh-create from a mid-checkout rotation race).
+		if tok := d.ghToken(); tok != "" {
+			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
-		args = append(args, "-e", k+"="+v)
 	}
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon
@@ -586,39 +546,17 @@ func (d *Daemon) ghToken() string {
 
 // hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
 // read-once HOST inputs baked into every runtime container at create time:
-// the DAEMON BINARY (bind-mounted read-only at /usr/local/bin/orchicon —
-// the MCP sidecar and supervisor inside the container run it; a warm pooled
-// container pinned to a pre-fix binary served the 2026-08-31 04:12 spawn
-// with a stale create envelope that a spawning worker misread as IDEA
-// confirmation), opencode config, provider auth, the adapter install, and
-// the resolved GH token (see hostfp.go). The warm pool folds it into the
-// environment key, so ANY change to a read-once host input — a rebuilt
-// binary included — forces the next checkout to create a fresh container
-// instead of reusing a warm one serving the stale value. The binary term is
-// ALWAYS present ("absent" when the exe cannot be stat'd), so the key never
-// silently reverts to image+mounts on a fingerprint gap; bind-mount
-// resolution at docker run time additionally picks up a rebuilt binary for
-// freshly-created containers.
+// opencode config, provider auth, the adapter install, and the resolved GH
+// token (see hostfp.go). The warm pool folds it into the environment key, so
+// ANY change to a read-once host input forces the next checkout to create a
+// fresh container instead of reusing a warm one serving the stale value.
+// Returns "" when HostHome is unset or nothing applies — the pool key then
+// reduces to image+mounts (today's behavior).
 func (d *Daemon) hostInputsFingerprint() string {
-	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime
-	// container (createContainer hard-fails without it), so it must color
-	// the pool key even when HostHome is unset.
-	var binFp string
-	if st, err := os.Stat(d.ExePath); err == nil && !st.IsDir() {
-		// Content hash of the daemon's own executable (hashFileContent
-		// returns a distinct sentinel when the file exists but cannot be
-		// read — never an empty "absent" value). A missing/unreadable
-		// binary still changes the fingerprint, so the pool misses toward
-		// a fresh container — the safe direction.
-		binFp = fmt.Sprintf("size=%d|%s", st.Size(), hashFileContent(d.ExePath))
-	} else {
-		binFp = "absent"
+	if d.HostHome == "" {
+		return ""
 	}
-	hostFp := ""
-	if d.HostHome != "" {
-		hostFp = hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
-	}
-	return hostFp + "|" + binFp
+	return hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
 }
 
 // startServe asks the in-container supervisor to bring up `opencode

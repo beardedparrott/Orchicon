@@ -1,27 +1,22 @@
-// Server-backed category store with local collapsed cache + one-time localStorage seeder.
+// Category folder organization for Workers and Workflows pages.
 //
-// Categories and assignments are now tenant-scoped server state via CategoryService
-// (target_type partitioned: worker | workflow | conversation). Collapse state
-// stays local (not server-meaningful). The old localStorage keys
-// `orchicon.categories.{workers,workflows,conversations}` become a cache +
-// one-time seeder on first load after deploy. This fixes mobile persistence:
-// sheet close / viewport change / reload no longer loses state because
-// categories are fetched from the server on every mount.
+// Categories are a frontend-only organizational layer — they do NOT
+// affect the backend data model. Workers and workflows remain flat on
+// the server; the UI groups them by a locally-stored category assignment.
+//
+// Follows the `work-items-preferences.ts` versioned envelope pattern.
+// All access is wrapped in try/catch for private/blocked storage modes.
+// Unknown/malformed JSON falls back to defaults; the `v` field is the
+// migration hook.
+//
+// Storage keys (prefix `orchicon.categories.`):
+//   {page}                    → {v:1, categories: Category[], assignments: Record<string,string>}
+//   {page}.collapsed          → {v:1, ids: string[]}
+//
+// Seed data: on first load (no localStorage), all items are assigned to
+// "Software Development" category. Categories are collapsed by default.
 
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import {
-  useListCategories,
-  useCreateCategory,
-  useUpdateCategory,
-  useDeleteCategory,
-  useAssignToCategory,
-  useUnassignFromCategory,
-  useReorderCategories,
-  type CategoryTargetType,
-  type CategoryDTO,
-} from "@/api/categories";
-import { categoryClient } from "@/api/clients";
-import { CategoryTargetType as ProtoTargetType } from "@/api/gen/orchicon/api/v1/category_pb";
+import { useCallback, useEffect, useState } from "react";
 
 const PREFIX = "orchicon.categories.";
 const VERSION = 1;
@@ -35,35 +30,38 @@ export interface Category {
 
 export interface CategoryState {
   categories: Category[];
-  assignments: Record<string, string>;
+  assignments: Record<string, string>; // entityId → categoryId
 }
+
+const SEED_CATEGORY: Category = {
+  id: "cat_software_dev",
+  name: "Software Development",
+  description: "General-purpose workers and workflows for software development tasks",
+  order: 0,
+};
 
 export type CategoryPage = "workers" | "workflows" | "conversations";
 
-function pageToTarget(page: CategoryPage): CategoryTargetType {
-  if (page === "workers") return "worker";
-  if (page === "workflows") return "workflow";
-  return "conversation";
-}
+// ---------------------------------------------------------------------------
+// Low-level safe storage helpers
+// ---------------------------------------------------------------------------
 
-function protoTarget(page: CategoryPage): ProtoTargetType {
-  const t = pageToTarget(page);
-  if (t === "worker") return ProtoTargetType.WORKER;
-  if (t === "workflow") return ProtoTargetType.WORKFLOW;
-  return ProtoTargetType.CONVERSATION;
-}
-
-function dtoToCategory(dto: CategoryDTO): Category {
-  return { id: dto.id, name: dto.name, description: dto.description || undefined, order: dto.sortOrder ?? 0 };
-}
-
-// --- local collapsed helpers (stays local) ---
 function readRaw(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
+
 function writeRaw(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable (private/blocked) — preference just won't persist */
+  }
 }
+
 function parseEnvelope<T>(key: string): T | undefined {
   const raw = readRaw(key);
   if (!raw) return undefined;
@@ -71,212 +69,227 @@ function parseEnvelope<T>(key: string): T | undefined {
     const parsed = JSON.parse(raw) as { v?: number } & T;
     if (parsed.v !== VERSION) return undefined;
     return parsed;
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
-function writeEnvelope(key: string, value: object): void {
-  writeRaw(key, JSON.stringify({ v: VERSION, ...value }));
-}
+
 function hasEnvelope(key: string): boolean {
   return readRaw(key) !== null;
 }
 
-export function loadCollapsedState(page: CategoryPage): Set<string> {
-  const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${page}.collapsed`);
-  if (Array.isArray(parsed?.ids)) return new Set(parsed!.ids.filter((id) => typeof id === "string"));
-  return new Set<string>();
-}
-export function saveCollapsedState(page: CategoryPage, ids: Set<string>): void {
-  writeEnvelope(`${PREFIX}${page}.collapsed`, { ids: Array.from(ids) });
+function writeEnvelope(key: string, value: object): void {
+  writeRaw(key, JSON.stringify({ v: VERSION, ...value }));
 }
 
-// Kept for tests / fallback: read local cache if server is unreachable.
+// ---------------------------------------------------------------------------
+// Pure serialize/parse — exported for unit tests
+// ---------------------------------------------------------------------------
+
 export function loadCategoryState(page: CategoryPage, noSeed?: boolean): CategoryState {
+  if (noSeed) {
+    const parsed = parseEnvelope<CategoryState>(`${PREFIX}${page}`);
+    if (!parsed || !Array.isArray(parsed.categories)) {
+      return { categories: [], assignments: {} };
+    }
+    return {
+      categories: parsed.categories,
+      assignments: parsed.assignments && typeof parsed.assignments === "object"
+        ? parsed.assignments
+        : {},
+    };
+  }
   const parsed = parseEnvelope<CategoryState>(`${PREFIX}${page}`);
   if (!parsed || !Array.isArray(parsed.categories)) {
-    if (noSeed) return { categories: [], assignments: {} };
-    return { categories: [], assignments: {} };
+    return { categories: [SEED_CATEGORY], assignments: {} };
   }
   return {
     categories: parsed.categories,
-    assignments: parsed.assignments && typeof parsed.assignments === "object" ? parsed.assignments : {},
+    assignments: parsed.assignments && typeof parsed.assignments === "object"
+      ? parsed.assignments
+      : {},
   };
 }
+
 export function saveCategoryState(page: CategoryPage, state: CategoryState): void {
   writeEnvelope(`${PREFIX}${page}`, state);
 }
 
-const SEED_DONE_KEY = "orchicon.categories.seeded.";
-function hasSeeded(page: CategoryPage): boolean {
-  try { return localStorage.getItem(SEED_DONE_KEY + page) === "1"; } catch { return true; }
-}
-function markSeeded(page: CategoryPage) {
-  try { localStorage.setItem(SEED_DONE_KEY + page, "1"); } catch { /* ignore */ }
-}
-
-// Assignment seeding runs independently of the category-migration seeder: it
-// populates unassigned items into the default folder on first load so
-// workers/workflows/conversations have a home before any manual
-// categorization (pre-PR parity). It needs its own done-key because the
-// migration seeder above marks `seeded` as soon as ANY category exists
-// server-side, even when nothing has been assigned yet.
-const ASSIGN_SEED_DONE_KEY = "orchicon.categories.assign-seeded.";
-function hasAssignSeeded(page: CategoryPage): boolean {
-  try { return localStorage.getItem(ASSIGN_SEED_DONE_KEY + page) === "1"; } catch { return true; }
-}
-function markAssignSeeded(page: CategoryPage) {
-  try { localStorage.setItem(ASSIGN_SEED_DONE_KEY + page, "1"); } catch { /* ignore */ }
+export function loadCollapsedState(page: CategoryPage, noSeed?: boolean): Set<string> {
+  const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${page}.collapsed`);
+  if (Array.isArray(parsed?.ids)) {
+    return new Set(parsed!.ids.filter((id) => typeof id === "string"));
+  }
+  // First load (no saved collapsed state): default ALL categories to collapsed.
+  const categoryState = loadCategoryState(page, noSeed);
+  return new Set(categoryState.categories.map((c) => c.id));
 }
 
-export function seedAssignments(page: CategoryPage, entityIds: string[]): CategoryState {
+export function saveCollapsedState(page: CategoryPage, ids: Set<string>): void {
+  writeEnvelope(`${PREFIX}${page}.collapsed`, { ids: Array.from(ids) });
+}
+
+// ---------------------------------------------------------------------------
+// Seed: assigns all items to "Software Development" if no assignments exist
+// ---------------------------------------------------------------------------
+
+export function seedAssignments(
+  page: CategoryPage,
+  entityIds: string[],
+): CategoryState {
+  // Only seed when no localStorage envelope exists (first load).
+  // Never re-assign items that lost their assignment (e.g. after
+  // deleting a category) — they stay in Uncategorized even if
+  // the assignments object is empty.
   if (hasEnvelope(`${PREFIX}${page}`)) {
     return loadCategoryState(page);
   }
+  // First load: assign everything to Software Development
   const assignments: Record<string, string> = {};
-  for (const id of entityIds) assignments[id] = "cat_software_dev";
-  const state: CategoryState = { categories: [{ id: "cat_software_dev", name: "Software Development", description: "General-purpose workers and workflows for software development tasks", order: 0 }], assignments };
+  for (const id of entityIds) {
+    assignments[id] = SEED_CATEGORY.id;
+  }
+  const state = { categories: [SEED_CATEGORY], assignments };
   saveCategoryState(page, state);
   return state;
 }
 
-// --- Hook ---
+// ---------------------------------------------------------------------------
+// Hook — one call site per route
+// ---------------------------------------------------------------------------
+
 export interface CategoryPreferences {
   state: CategoryState;
   collapsed: Set<string>;
   toggleCollapsed: (categoryId: string) => void;
-  createCategory: (name: string, description?: string) => Category | void;
+  createCategory: (name: string, description?: string) => Category;
   renameCategory: (categoryId: string, newName: string) => void;
   deleteCategory: (categoryId: string) => void;
   updateDescription: (categoryId: string, description: string) => void;
   assignItem: (entityId: string, categoryId: string) => void;
-  reorderCategories: (orderedIds: string[]) => void;
   ensureSeeded: (entityIds: string[]) => void;
-  isLoading: boolean;
 }
 
-export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: boolean }): CategoryPreferences {
-  const targetType = pageToTarget(page);
-  const { data, isLoading } = useListCategories(targetType);
+export function useCategoryPreferences(
+  page: CategoryPage,
+  options?: { noSeed?: boolean },
+): CategoryPreferences {
+  const [state, setState] = useState<CategoryState>(() => loadCategoryState(page, options?.noSeed));
+  const [collapsed, setCollapsedState] = useState<Set<string>>(() => loadCollapsedState(page, options?.noSeed));
 
-  const createMut = useCreateCategory(targetType);
-  const updateMut = useUpdateCategory(targetType);
-  const deleteMut = useDeleteCategory(targetType);
-  const assignMut = useAssignToCategory(targetType);
-  const unassignMut = useUnassignFromCategory(targetType);
-  const reorderMut = useReorderCategories(targetType);
-
-  const [collapsed, setCollapsedState] = useState<Set<string>>(() => loadCollapsedState(page));
-  useEffect(() => { setCollapsedState(loadCollapsedState(page)); }, [page]);
-
-  const seedingRef = useRef(false);
+  // Reload when page changes
   useEffect(() => {
-    if (options?.noSeed) return;
-    if (seedingRef.current) return;
-    if (isLoading) return;
-    if (hasSeeded(page)) return;
-    const local = loadCategoryState(page);
-    const serverEmpty = !data || data.categories.length === 0;
-    if (!serverEmpty) { markSeeded(page); return; }
-    if (!local.categories.length && Object.keys(local.assignments).length === 0) { markSeeded(page); return; }
-    seedingRef.current = true;
-    (async () => {
-      const idMap = new Map<string, string>();
-      for (const cat of local.categories) {
-        try {
-          const res = await categoryClient.createCategory({ targetType: protoTarget(page), name: cat.name, description: cat.description ?? "" });
-          const serverId = (res.category as unknown as { id: string })?.id ?? "";
-          if (serverId) idMap.set(cat.id, serverId);
-        } catch { /* best-effort */ }
+    setState(loadCategoryState(page, options?.noSeed));
+    setCollapsedState(loadCollapsedState(page, options?.noSeed));
+  }, [page, options?.noSeed]);
+
+  const toggleCollapsed = useCallback(
+    (categoryId: string) => {
+      setCollapsedState((prev) => {
+        const next = new Set(prev);
+        if (next.has(categoryId)) next.delete(categoryId);
+        else next.add(categoryId);
+        saveCollapsedState(page, next);
+        return next;
+      });
+    },
+    [page],
+  );
+
+  const createCategory = useCallback(
+    (name: string, description?: string): Category => {
+      const id = `cat_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")}_${Date.now()}`;
+      const newCat: Category = {
+        id,
+        name,
+        description,
+        order: state.categories.length,
+      };
+      const next = { ...state, categories: [...state.categories, newCat] };
+      setState(next);
+      saveCategoryState(page, next);
+      // New folders are collapsed by default
+      setCollapsedState((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        saveCollapsedState(page, next);
+        return next;
+      });
+      return newCat;
+    },
+    [page, state],
+  );
+
+  const renameCategory = useCallback(
+    (categoryId: string, newName: string) => {
+      const next = {
+        ...state,
+        categories: state.categories.map((c) =>
+          c.id === categoryId ? { ...c, name: newName } : c,
+        ),
+      };
+      setState(next);
+      saveCategoryState(page, next);
+    },
+    [page, state],
+  );
+
+  const deleteCategory = useCallback(
+    (categoryId: string) => {
+      // Move items to uncategorized (delete their assignment)
+      const assignments = { ...state.assignments };
+      for (const [entityId, catId] of Object.entries(assignments)) {
+        if (catId === categoryId) {
+          delete assignments[entityId];
+        }
       }
-      for (const [entityId, localCatId] of Object.entries(local.assignments)) {
-        const serverCatId = idMap.get(localCatId);
-        if (!serverCatId) continue;
-        try {
-          await categoryClient.assignToCategory({ categoryId: serverCatId, entityId, targetType: protoTarget(page) });
-        } catch { /* ignore */ }
+      const next = {
+        categories: state.categories.filter((c) => c.id !== categoryId),
+        assignments,
+      };
+      setState(next);
+      saveCategoryState(page, next);
+    },
+    [page, state],
+  );
+
+  const updateDescription = useCallback(
+    (categoryId: string, description: string) => {
+      const next = {
+        ...state,
+        categories: state.categories.map((c) =>
+          c.id === categoryId ? { ...c, description } : c,
+        ),
+      };
+      setState(next);
+      saveCategoryState(page, next);
+    },
+    [page, state],
+  );
+
+  const assignItem = useCallback(
+    (entityId: string, categoryId: string) => {
+      const assignments = { ...state.assignments };
+      if (!categoryId) {
+        // Move to uncategorized: remove the assignment
+        delete assignments[entityId];
+      } else {
+        assignments[entityId] = categoryId;
       }
-      markSeeded(page);
-      seedingRef.current = false;
-    })();
-  }, [page, data, isLoading, options?.noSeed]);
-
-  const state: CategoryState = useMemo(() => {
-    const categories = (data?.categories ?? []).map(dtoToCategory).sort((a, b) => a.order - b.order);
-    const assignments: Record<string, string> = {};
-    for (const a of data?.assignments ?? []) {
-      assignments[a.entityId] = a.categoryId;
-    }
-    try { saveCategoryState(page, { categories, assignments }); } catch { /* ignore */ }
-    return { categories, assignments };
-  }, [data, page]);
-
-  const toggleCollapsed = useCallback((categoryId: string) => {
-    setCollapsedState((prev) => {
-      const next = new Set(prev);
-      if (next.has(categoryId)) next.delete(categoryId); else next.add(categoryId);
-      saveCollapsedState(page, next);
-      return next;
-    });
-  }, [page]);
-
-  const createCategory = useCallback((name: string, description?: string) => {
-    createMut.mutate({ name, description });
-    return undefined;
-  }, [createMut]);
-
-  const renameCategory = useCallback((categoryId: string, newName: string) => {
-    updateMut.mutate({ id: categoryId, name: newName });
-  }, [updateMut]);
-
-  const deleteCategory = useCallback((categoryId: string) => {
-    deleteMut.mutate(categoryId);
-  }, [deleteMut]);
-
-  const updateDescription = useCallback((categoryId: string, description: string) => {
-    updateMut.mutate({ id: categoryId, description });
-  }, [updateMut]);
-
-  const assignItem = useCallback((entityId: string, categoryId: string) => {
-    if (!categoryId) unassignMut.mutate(entityId);
-    else assignMut.mutate({ categoryId, entityId });
-  }, [assignMut, unassignMut]);
-
-  const reorderCategories = useCallback((orderedIds: string[]) => {
-    reorderMut.mutate(orderedIds);
-  }, [reorderMut]);
+      const next = { ...state, assignments };
+      setState(next);
+      saveCategoryState(page, next);
+    },
+    [page, state],
+  );
 
   const ensureSeeded = useCallback(
     (entityIds: string[]) => {
       if (options?.noSeed) return;
-      if (hasAssignSeeded(page)) return;
-      if (!entityIds || entityIds.length === 0) return;
-      // Never re-seed a tenant that already has manual assignments.
-      if (Object.keys(state.assignments).length > 0) {
-        markAssignSeeded(page);
-        return;
-      }
-      const unassigned = entityIds.filter((id) => !state.assignments[id]);
-      if (unassigned.length === 0) {
-        markAssignSeeded(page);
-        return;
-      }
-      const seedInto = (categoryId: string) => {
-        for (const id of unassigned) {
-          assignMut.mutate({ categoryId, entityId: id });
-        }
-      };
-      if (state.categories.length > 0) {
-        seedInto(state.categories[0].id);
-        markAssignSeeded(page);
-        return;
-      }
-      // No folder exists yet — create the default one, then seed into it.
-      createMut.mutate(
-        { name: "Software Development", description: "General-purpose workers, workflows, and conversations for software development tasks" },
-        { onSuccess: (cat) => { if (cat) seedInto(cat.id); } },
-      );
-      markAssignSeeded(page);
+      const seeded = seedAssignments(page, entityIds);
+      setState(seeded);
     },
-    [options?.noSeed, assignMut, createMut, state, page],
+    [page, options?.noSeed],
   );
 
   return {
@@ -288,21 +301,31 @@ export function useCategoryPreferences(page: CategoryPage, options?: { noSeed?: 
     deleteCategory,
     updateDescription,
     assignItem,
-    reorderCategories,
     ensureSeeded,
-    isLoading,
   };
 }
 
-export function getItemsForCategory(state: CategoryState, allItemIds: string[]): { categorized: Map<string, string[]>; uncategorized: string[] } {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+export function getItemsForCategory(
+  state: CategoryState,
+  allItemIds: string[],
+): { categorized: Map<string, string[]>; uncategorized: string[] } {
   const categorized = new Map<string, string[]>();
   const uncategorized: string[] = [];
+
   for (const id of allItemIds) {
     const catId = state.assignments[id];
     if (catId) {
       const list = categorized.get(catId);
-      if (list) list.push(id); else categorized.set(catId, [id]);
-    } else uncategorized.push(id);
+      if (list) list.push(id);
+      else categorized.set(catId, [id]);
+    } else {
+      uncategorized.push(id);
+    }
   }
+
   return { categorized, uncategorized };
 }

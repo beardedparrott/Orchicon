@@ -73,8 +73,6 @@ func TestValidateSessionTTLs(t *testing.T) {
 		{"access at maximum (86400)", 86400, 0, false},
 		{"refresh below minimum (299)", 900, 299, true},
 		{"refresh at minimum (300)", 900, 300, false},
-		{"refresh at minimum above access — allowed", 300, 300, false},
-		{"refresh above access — accepted", 300, 900, false},
 		{"refresh above maximum (31536001)", 900, 31536001, true},
 		{"refresh at maximum (31536000)", 900, 31536000, false},
 		{"refresh equal to access — rejected", 900, 900, true},

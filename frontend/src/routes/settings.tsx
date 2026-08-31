@@ -1,4 +1,3 @@
-import * as React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
 import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock } from "lucide-react";
@@ -8,7 +7,6 @@ import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 import { LIGHT_THEMES, DARK_THEMES } from "@/lib/themes";
 import { useThemeStore } from "@/lib/theme-store";
-import { emptyWarnings, parseBudgetDefaults, buildBudgetDefaults, defaultCompactTiers, type BudgetWarnings, type CompactTiers } from "@/lib/budget-defaults";
 import { useGetSettings, useUpdateSettings, useGetBackups, useCreateBackup, useRestoreBackup, useDeleteBackup } from "@/api/settings";
 import { useListDirPath } from "@/api/projectFiles";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -21,7 +19,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -35,13 +33,12 @@ function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-px">
+      <div className="flex flex-wrap gap-2 border-b pb-px">
         {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
           ["session", "Session", Clock],
           ["backups", "Backups", Database],
-          ["secrets", "Secrets", Database],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
           <button
@@ -64,7 +61,6 @@ function SettingsPage() {
       {tab === "defaults" && <DefaultsTab />}
       {tab === "session" && <SessionTab />}
       {tab === "backups" && <BackupsTab />}
-      {tab === "secrets" && <SecretsTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
   );
@@ -296,7 +292,7 @@ function BackupsTab() {
         <CardContent className="space-y-4">
           <div className="flex items-center gap-3">
             <Button onClick={handleCreateBackup} disabled={createBackup.isPending}>
-              <Download aria-hidden="true" className="mr-2 h-4 w-4" />
+              <Download className="mr-2 h-4 w-4" />
               {createBackup.isPending ? "Creating…" : "Create backup now"}
             </Button>
           </div>
@@ -331,7 +327,7 @@ function BackupsTab() {
                               onClick={() => handleRestore(b.name)}
                               disabled={restoring === b.name || deleting === b.name}
                             >
-                              <RotateCcw aria-hidden="true" className="mr-1 h-3 w-3" />
+                              <RotateCcw className="mr-1 h-3 w-3" />
                               {restoring === b.name ? "Restoring…" : "Restore"}
                             </Button>
                             <Button
@@ -341,7 +337,7 @@ function BackupsTab() {
                               disabled={deleting === b.name || restoring === b.name}
                               className="text-destructive hover:text-destructive"
                             >
-                              <Trash2 aria-hidden="true" className="mr-1 h-3 w-3" />
+                              <Trash2 className="mr-1 h-3 w-3" />
                               {deleting === b.name ? "Deleting…" : "Delete"}
                             </Button>
                           </div>
@@ -361,13 +357,13 @@ function BackupsTab() {
       </Card>
 
       {message && (
-        <div className="rounded-2xl glass-panel px-4 py-2 text-sm border border-white/10">{message}</div>
+        <div className="rounded-md border bg-muted px-4 py-2 text-sm">{message}</div>
       )}
 
       {!loadingSettings && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving || loadingSettings}>
-            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
+            <Save className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save backup settings"}
           </Button>
         </div>
@@ -398,7 +394,7 @@ function AppearanceTab() {
                     : "border-border text-muted-foreground hover:border-muted-foreground/50",
                 )}
               >
-                <Sun aria-hidden="true" className="h-4 w-4" />
+                <Sun className="h-4 w-4" />
                 Light
               </button>
               <button
@@ -410,7 +406,7 @@ function AppearanceTab() {
                     : "border-border text-muted-foreground hover:border-muted-foreground/50",
                 )}
               >
-                <Moon aria-hidden="true" className="h-4 w-4" />
+                <Moon className="h-4 w-4" />
                 Dark
               </button>
             </div>
@@ -420,7 +416,7 @@ function AppearanceTab() {
 
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Sun aria-hidden="true" className="h-4 w-4" />
+          <Sun className="h-4 w-4" />
           LIGHT THEMES
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -440,7 +436,7 @@ function AppearanceTab() {
 
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <Moon aria-hidden="true" className="h-4 w-4" />
+          <Moon className="h-4 w-4" />
           DARK THEMES
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -479,9 +475,6 @@ function DefaultsTab() {
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
-  const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
-  const [draftCompactTiers, setDraftCompactTiers] = useState<CompactTiers>(defaultCompactTiers);
-  const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftLogDirectory, setDraftLogDirectory] = useState("");
@@ -509,9 +502,6 @@ function DefaultsTab() {
       setDraftBudgetCost(budget.costUsd);
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
-      setDraftCompactMaxTurns(budget.compactMaxTurns);
-      setDraftCompactTiers(budget.compactTiers);
-      setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftLogDirectory(settings.logDirectory ?? "");
@@ -542,9 +532,6 @@ function DefaultsTab() {
           draftBudgetCost,
           draftBudgetWallClock,
           draftBudgetToolCalls,
-          draftCompactMaxTurns,
-          draftCompactTiers,
-          draftWarn,
         ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
@@ -565,7 +552,7 @@ function DefaultsTab() {
       {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
 
       {!isLoading && (
-        <Card className="relative z-20">
+        <Card>
           <CardHeader>
             <CardTitle>Default models</CardTitle>
             <CardDescription>
@@ -617,14 +604,14 @@ function DefaultsTab() {
               />
               <StallField
                 label="No file diff window (seconds)"
-                description="No file modifications within this window. Empty/0 = built-in default (900) — a fresh tenant keeps real stall detection. Set a negative value (e.g. -1) to disable this check."
+                description="No file modifications within this window. 0 = disabled"
                 value={draftNoFileDiff}
                 onChange={setDraftNoFileDiff}
                 placeholder="900"
               />
               <StallField
                 label="Text loop window (seconds)"
-                description="No meaningful action within this window. Empty/0 = built-in default (600) — a fresh tenant keeps real stall detection. Set a negative value (e.g. -1) to disable this check."
+                description="No meaningful action within this window. 0 = disabled"
                 value={draftTextLoop}
                 onChange={setDraftTextLoop}
                 placeholder="600"
@@ -684,14 +671,14 @@ function DefaultsTab() {
             <div className="grid gap-4 sm:grid-cols-2">
               <StallField
                 label="Token limit"
-                description="Max tokens per execution. Empty = built-in default (500,000)."
+                description="Max tokens per execution. Empty = built-in default (1,000,000)."
                 value={draftBudgetTokens}
                 onChange={setDraftBudgetTokens}
                 placeholder="1000000"
               />
               <StallField
                 label="Cost limit (USD)"
-                description="Max spend per execution. Empty = built-in default ($0.50)."
+                description="Max spend per execution. Empty = built-in default ($10)."
                 value={draftBudgetCost}
                 onChange={setDraftBudgetCost}
                 placeholder="10"
@@ -705,29 +692,12 @@ function DefaultsTab() {
               />
               <StallField
                 label="Tool call limit"
-                description="Max tool calls per execution — a hard stop (unlike the token/cost/turn gates below, a tool call already made can't be undone by compacting). Empty = built-in default (100). Set 0 to disable."
+                description="Max tool calls per execution. Empty = built-in default (100)."
                 value={draftBudgetToolCalls}
                 onChange={setDraftBudgetToolCalls}
                 placeholder="100"
               />
-              <StallField
-                label="Compact interval (turns)"
-                description="Force a context compact at least every N turns, regardless of cost — bounds cumulative cache-read resend on long chatty sessions even when per-turn spend stays cheap. Empty = built-in default (30). Set 0 to rely on the cost/token gates only."
-                value={draftCompactMaxTurns}
-                onChange={setDraftCompactMaxTurns}
-                placeholder="30"
-              />
             </div>
-
-            <BudgetWarningsEditor
-              value={draftWarn}
-              onChange={setDraftWarn}
-            />
-
-            <CompactTiersEditor
-              value={draftCompactTiers}
-              onChange={setDraftCompactTiers}
-            />
           </CardContent>
         </Card>
       )}
@@ -856,7 +826,7 @@ function DefaultsTab() {
       {!isLoading && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving}>
-            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
+            <Save className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </div>
@@ -871,7 +841,7 @@ function UserGuideTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <BookOpen aria-hidden="true" className="h-5 w-5" />
+            <BookOpen className="h-5 w-5" />
             Orchicon User Guide
           </CardTitle>
           <CardDescription>
@@ -954,25 +924,6 @@ function UserGuideTab() {
           </div>
 
           <div>
-            <h3 className="font-medium mb-1">Ideas &amp; automation</h3>
-            <p className="text-muted-foreground">
-              Orchicon can find work for you, not just execute it. A{" "}
-              <strong>recurring work item</strong> re-fires on a cadence — the
-              flagship example is the <strong>Automation Research</strong>{" "}
-              pipeline (Automation → Recurring Items): a three-worker crew
-              (Planner → Analyst → Synthesizer) that surveys the market live,
-              verifies each candidate against external evidence, and distills
-              feature proposals. Proposals land in the <strong>Idea Cloud</strong>{" "}
-              (Automation → Idea Cloud), a triage board separate from your real
-              work items. Each idea carries its evidence and the run that
-              produced it: <strong>promote</strong> it to turn it into real,
-              schedulable work, or <strong>dismiss</strong> it — dismissed ideas
-              are kept as rejected history (the Idea Cloud's Rejected view) so
-              automation never re-proposes them.
-            </p>
-          </div>
-
-          <div>
             <h3 className="font-medium mb-1">When something fails</h3>
             <p className="text-muted-foreground">
               Failures recover automatically by default: capture → summarize →
@@ -1002,7 +953,7 @@ function UserGuideTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SlidersHorizontal aria-hidden="true" className="h-5 w-5" />
+            <SlidersHorizontal className="h-5 w-5" />
             Settings explained
           </CardTitle>
           <CardDescription>
@@ -1012,12 +963,10 @@ function UserGuideTab() {
         <CardContent className="space-y-5">
           <div>
             <h3 className="font-medium mb-1">Appearance</h3>
-              <p className="text-muted-foreground">
-                Pick light or dark mode and a theme for each — 20 hand-tuned
-                variants (10 light + 10 dark). Cosmetic only — nothing here
-                changes platform behavior. The whole shell is also usable on a
-                phone.
-              </p>
+            <p className="text-muted-foreground">
+              Pick light or dark mode and a theme for each. Cosmetic only —
+              nothing here changes platform behavior.
+            </p>
           </div>
           <div>
             <h3 className="font-medium mb-1">Defaults</h3>
@@ -1151,7 +1100,7 @@ function SessionTab() {
       {!isLoading && (
         <div className="flex justify-end">
           <Button onClick={handleSave} disabled={saving}>
-            <Save aria-hidden="true" className="mr-2 h-4 w-4" />
+            <Save className="mr-2 h-4 w-4" />
             {saving ? "Saving…" : "Save session settings"}
           </Button>
         </div>
@@ -1220,7 +1169,7 @@ function ThemeCard({
         <span className="text-sm font-medium">{theme.name}</span>
         {active && (
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-            <Check aria-hidden="true" className="h-3 w-3" />
+            <Check className="h-3 w-3" />
           </span>
         )}
       </div>
@@ -1228,202 +1177,45 @@ function ThemeCard({
   );
 }
 
-// ─── Budget warnings (warn → escalate → final ladder) ─────────────────────
-//
-// Each dimension (tokens/cost/tool-calls/time) has three thresholds, as
-// fractions of its limit, and three escalating message templates. The
-// thresholds are applied uniformly; messages may be left blank to fall back
-// to Orchicon's built-in demanding copy.
-
-function BudgetWarningsEditor({
-  value,
-  onChange,
-}: {
-  value: BudgetWarnings;
-  onChange: (v: BudgetWarnings) => void;
-}) {
-  const setFrac = (dim: keyof BudgetWarnings, idx: number, v: string) => {
-    const next: BudgetWarnings = { ...value, [dim]: { ...value[dim], fracs: [...value[dim].fracs] } };
-    next[dim].fracs[idx] = v;
-    onChange(next);
-  };
-  const setMsg = (dim: keyof BudgetWarnings, idx: number, v: string) => {
-    const next: BudgetWarnings = { ...value, [dim]: { ...value[dim], msgs: [...value[dim].msgs] } };
-    next[dim].msgs[idx] = v;
-    onChange(next);
-  };
-  return (
-    <div className="mt-4 border-t pt-4">
-      <h4 className="text-sm font-medium">Budget warnings (warn → escalate → final)</h4>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Each dimension warns before its limit, escalating to a hard abort at 100%. Set the
-        three thresholds as fractions of the limit (e.g. 0.5 = 50%). Messages are injected
-        into the session at each stage; blank = built-in demanding copy.
-      </p>
-      {([
-        ["tokens", "Token warnings"],
-        ["costUsd", "Cost warnings"],
-        ["toolCallCount", "Tool-call warnings"],
-        ["wallClockSeconds", "Time warnings"],
-      ] as const).map(([dim, label]) => (
-        <div key={dim} className="mt-2 space-y-2">
-          <label className="mb-0.5 block text-xs font-medium text-muted-foreground">{label}</label>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {(["warn", "escalate", "final"] as const).map((tier, idx) => (
-              <div key={tier}>
-                <label className="mb-0.5 block text-xs text-muted-foreground capitalize">{tier} threshold</label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="1"
-                  value={value[dim].fracs[idx]}
-                  onChange={(e) => setFrac(dim, idx, e.target.value)}
-                  placeholder={["0.25", "0.5", "0.75"][idx]}
-                />
-              </div>
-            ))}
-          </div>
-          {(["warn", "escalate", "final"] as const).map((tier, idx) => (
-            <div key={tier}>
-              <label className="mb-0.5 block text-xs text-muted-foreground capitalize">{tier} message</label>
-              <Input
-                type="text"
-                value={value[dim].msgs[idx]}
-                onChange={(e) => setMsg(dim, idx, e.target.value)}
-                placeholder={`Message sent at the ${tier} stage`}
-              />
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
+// Parse the tenant default_budget_overrides JSON into form strings.
+function parseBudgetDefaults(raw?: string): {
+  tokens: string;
+  costUsd: string;
+  wallClockSeconds: string;
+  toolCallCount: string;
+} {
+  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "" };
+  if (!raw) return empty;
+  try {
+    const m = JSON.parse(raw);
+    return {
+      tokens: m.tokens != null ? String(m.tokens) : "",
+      costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
+      wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
+      toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
+    };
+  } catch {
+    return empty;
+  }
 }
 
-// ─── Compaction policy (per budget-ladder tier) ────────────────────────────
-//
-// Each budget-ladder tier (warn / escalate / final) can ALSO trigger a context
-// compact, or only inject its warning message. Compaction is lossy — it
-// collapses the working detail and forces the worker to re-read/re-derive,
-// which is itself more tool calls and more re-sent context. So it is an
-// explicit operator choice per tier, not a hidden side effect of crossing a
-// spend threshold. Reads/writes the budget JSON `compact_tiers` array.
-
-function CompactTiersEditor({
-  value,
-  onChange,
-}: {
-  value: CompactTiers;
-  onChange: (v: CompactTiers) => void;
-}) {
-  const setTier = (idx: number, v: boolean) => {
-    const next: CompactTiers = [...value];
-    next[idx] = v;
-    onChange(next);
-  };
-  const tiers: [string, string, string][] = [
-    [
-      "warn",
-      "Warn",
-      "Compact the session when the worker first crosses a warning tier (~25% of a limit). Off by default — the earliest stage is the most disruptive to interrupt, and the worker can still correct course without a destructive collapse.",
-    ],
-    [
-      "escalate",
-      "Escalate",
-      "Compact when the worker is deeply into budget (~50% of a limit). On by default — shrinking the re-sent working set before the hard abort.",
-    ],
-    [
-      "final",
-      "Final",
-      "Compact at the final warning (~75% of a limit), just before the hard abort. On by default so re-sent context is as small as possible right before the stop.",
-    ],
-  ];
-  return (
-    <div className="mt-4 border-t pt-4">
-      <h4 className="text-sm font-medium">Compaction policy (per warning tier)</h4>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Choose which warning tiers also collapse the session. Compaction is lossy
-        and interrupts the worker mid-flight, so it is off at the earliest tier by
-        default and on only once the worker is genuinely deep in budget. Turning
-        all three off leaves the turn-count hygiene gate + the hard abort as the
-        only context-management mechanisms.
-      </p>
-      <div className="mt-3 space-y-2">
-        {tiers.map(([key, label, desc], idx) => (
-          <label key={key} className="flex items-start gap-3">
-            <input
-              type="checkbox"
-              checked={value[idx]}
-              onChange={(e) => setTier(idx, e.target.checked)}
-              className="mt-1 h-4 w-4 shrink-0 rounded border-input accent-primary"
-            />
-            <span>
-              <span className="text-sm font-medium">{label}</span>
-              <span className="block text-xs text-muted-foreground">{desc}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
+// Build the default_budget_overrides JSON from the four form fields. Empty
+// fields are omitted so the worker/tenant fall back to built-in defaults.
+function buildBudgetDefaults(
+  tokens: string,
+  costUsd: string,
+  wallClockSeconds: string,
+  toolCallCount: string,
+): string {
+  const out: Record<string, number> = {};
+  if (tokens !== "") out.tokens = Number(tokens);
+  if (costUsd !== "") out.cost_usd = Number(costUsd);
+  if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
+  if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
+  return JSON.stringify(out);
 }
 
 // ─── Backup directory browser (server-side filesystem tree) ───────
-
-
-function SecretsTab() {
-  const [secrets, setSecrets] = React.useState<any[]>([]);
-  const [name, setName] = React.useState("");
-  const [value, setValue] = React.useState("");
-  const [desc, setDesc] = React.useState("");
-  const [msg, setMsg] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
-
-  const load = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const { secretsClient } = await import("@/api/clients");
-      const res: any = await secretsClient.listSecrets({});
-      setSecrets(res.secrets || []);
-    } catch (e: any) { setMsg(String(e.message||e)) } finally { setLoading(false) }
-  }, []);
-  React.useEffect(() => { load() }, [load]);
-
-  const create = async () => {
-    setMsg(null);
-    try {
-      const { secretsClient } = await import("@/api/clients");
-      await secretsClient.createSecret({ name, value, description: desc });
-      setName(""); setValue(""); setDesc(""); load(); setMsg("Secret created.");
-    } catch (e: any) { setMsg(String(e.message||e)) }
-  };
-  const del = async (id: string) => {
-    if (!confirm("Delete secret?")) return;
-    const { secretsClient } = await import("@/api/clients");
-    await secretsClient.deleteSecret({ id });
-    load();
-  };
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader><CardTitle>Secrets</CardTitle><CardDescription>Tenant-scoped encrypted secrets (e.g. TAVILY_API_KEY). Values are encrypted at rest (AES-256-GCM) and injected as container env at dispatch. Never stored in plaintext.</CardDescription></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-2 sm:grid-cols-3">
-            <Input placeholder="NAME (e.g. TAVILY_API_KEY)" value={name} onChange={(e:any)=>setName(e.target.value.toUpperCase())} />
-            <Input placeholder="value" type="password" value={value} onChange={(e:any)=>setValue(e.target.value)} />
-            <Input placeholder="description" value={desc} onChange={(e:any)=>setDesc(e.target.value)} />
-          </div>
-          <Button onClick={create} disabled={!name||!value}>Create secret</Button>
-          {msg && <p className="text-sm text-muted-foreground">{msg}</p>}
-          {loading ? <p className="text-sm">Loading…</p> : (
-            <table className="w-full text-sm"><thead><tr className="text-muted-foreground text-left"><th>Name</th><th>Description</th><th></th></tr></thead><tbody>{secrets.map((s:any)=>(<tr key={s.id} className="border-t"><td className="font-mono py-2">{s.name}</td><td>{s.description}</td><td><Button variant="outline" size="sm" onClick={()=>del(s.id)}>Delete</Button></td></tr>))}</tbody></table>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
 
 interface BackupDirBrowserProps {
   path: string;
@@ -1457,14 +1249,14 @@ function BackupDirBrowser({ path, onSelect, onNavigate }: BackupDirBrowserProps)
         className="flex items-center gap-2 border-b px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer"
         onClick={() => onNavigate(parentOf(path))}
       >
-        <ArrowUp aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+        <ArrowUp className="h-4 w-4 text-muted-foreground" />
         <span className="truncate text-xs text-muted-foreground">..</span>
         <span className="ml-auto truncate font-mono text-xs text-muted-foreground">{path}</span>
       </div>
 
       {isLoading && (
         <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-          <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+          <Loader2 className="h-4 w-4 animate-spin" />
           Loading…
         </div>
       )}
@@ -1482,7 +1274,7 @@ function BackupDirBrowser({ path, onSelect, onNavigate }: BackupDirBrowserProps)
           key={entry.path}
           className="flex items-center gap-2 border-b px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer last:border-0"
         >
-          <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
+          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
           <span
             className="flex-1 truncate"
             onClick={() => onNavigate(entry.path)}

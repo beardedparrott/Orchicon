@@ -48,42 +48,96 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 
 // CreateWorker validates input, inserts the worker header + its first
 // draft version, and enqueues a worker.created event — all in one
-// tenant-scoped transaction. The transactional create lives in
-// CreateWorkerTx (create.go) so the AskOrchicon tool path shares the
-// exact same implementation (one create core, no drift).
+// tenant-scoped transaction.
 func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.CreateWorkerRequest]) (*connect.Response[apiv1.CreateWorkerResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	in := CreateWorkerInput{
-		TenantID:            tenantID,
-		Name:                msg.Name,
-		Slug:                msg.Slug,
-		Description:         msg.Description,
-		Purpose:             msg.Purpose,
-		RoleRef:             msg.RoleRef,
-		VersionNote:         msg.VersionNote,
-		RuntimeRef:          msg.RuntimeRef,
-		ModelRef:            msg.ModelRef,
-		Role:                msg.Role,
-		Skills:              msg.Skills,
-		Behavior:            msg.Behavior,
-		AgentsMD:            msg.AgentsMd,
-		SystemPrompt:        msg.SystemPrompt,
-		ContextSources:      msg.ContextSources,
-		Permissions:         msg.Permissions,
-		GatedTools:          msg.GatedTools,
-		BudgetOverrides:     msg.BudgetOverrides,
-		Labels:              msg.Labels,
-		ExecutionPolicyRef:  msg.ExecutionPolicyRef,
-		ConcurrencyLimit:    int(msg.ConcurrencyLimit),
-		RecoveryWorkflowRef: msg.RecoveryWorkflowRef,
-	}
-	if err := ValidateCreateWorkerInput(&in); err != nil {
+	name, err := validateName(msg.Name)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	slug, err := normalizeSlug(msg.Slug, name)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	description, err := validateTextField(msg.Description, maxDescLen, "description")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	purpose, err := validateTextField(msg.Purpose, maxPurposeLen, "purpose")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	versionNote, err := validateTextField(msg.VersionNote, maxVersionNoteLen, "version_note")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	runtimeRef, err := validateTextField(msg.RuntimeRef, maxNameLen, "runtime_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	modelRef, err := validateTextField(msg.ModelRef, maxNameLen, "model_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	systemPrompt, err := validateTextField(msg.SystemPrompt, maxPromptLen, "system_prompt")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	role, err := validateTextField(msg.Role, maxPromptLen, "role")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	skills, err := validateTextField(msg.Skills, maxPromptLen, "skills")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	behavior, err := validateTextField(msg.Behavior, maxPromptLen, "behavior")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	agentsMD, err := validateTextField(msg.AgentsMd, maxPromptLen, "agents_md")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	executionPolicyRef, err := validateTextField(msg.ExecutionPolicyRef, maxNameLen, "execution_policy_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	recoveryWorkflowRef, err := validateTextField(msg.RecoveryWorkflowRef, maxNameLen, "recovery_workflow_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	contextSources, err := validateJSONField(msg.ContextSources, "[]", "context_sources", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	permissions, err := validateJSONField(msg.Permissions, "{}", "permissions", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	gatedTools, err := validateJSONField(msg.GatedTools, "[]", "gated_tools", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	budgetOverrides, err := validateJSONField(msg.BudgetOverrides, "{}", "budget_overrides", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	labels, err := validateJSONField(msg.Labels, "{}", "labels", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	concurrencyLimit := int(msg.ConcurrencyLimit)
+	if concurrencyLimit < 0 {
+		concurrencyLimit = 0
+	}
+
+	workerID := db.NewID()
+	versionID := db.NewID()
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -91,24 +145,80 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	defer ttx.Rollback(ctx)
 
-	// A role binding must reference a role that exists in this tenant.
-	if in.RoleRef != "" {
-		if _, err := db.GetRole(ctx, ttx.Tx, tenantID, in.RoleRef); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("role_ref: role %q not found in tenant", in.RoleRef))
-			}
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
+	// Dedupe the slug against the tenant so clones and re-created workers
+	// never hit the unique workers_tenant_slug_idx constraint: append -2, -3,
+	// ... until the slug is free.
+	slug, err = uniqueSlug(ctx, ttx.Tx, tenantID, slug)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	created, createdVersion, err := CreateWorkerTx(ctx, ttx.Tx, in)
+	workerRow := db.WorkerRow{
+		ID:             workerID,
+		TenantID:       tenantID,
+		Name:           name,
+		Slug:           slug,
+		Description:    description,
+		Purpose:        purpose,
+		Status:         domain.WorkerDraft,
+		CurrentVersion: 0,
+		CreatedBy:      "", // populated when auth lands (Phase 9)
+	}
+	created, err := db.CreateWorker(ctx, ttx.Tx, workerRow)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+
+	// Structured prompt fields are the source of truth for the version; the
+	// composed system_prompt is derived so the DB column always matches what
+	// dispatch would send. Legacy clients that only send system_prompt keep
+	// working (structured fields stay empty and the raw prompt is stored).
+	versionRow := db.WorkerVersionRow{
+		ID:                  versionID,
+		TenantID:            tenantID,
+		WorkerID:            workerID,
+		Version:             1,
+		VersionNote:         versionNote,
+		Status:              domain.WorkerVersionDraft,
+		RuntimeRef:          runtimeRef,
+		ModelRef:            modelRef,
+		Role:                role,
+		Skills:              skills,
+		Behavior:            behavior,
+		AgentsMD:            agentsMD,
+		ContextSources:      contextSources,
+		Permissions:         permissions,
+		GatedTools:          gatedTools,
+		BudgetOverrides:     budgetOverrides,
+		ExecutionPolicyRef:  executionPolicyRef,
+		ConcurrencyLimit:    concurrencyLimit,
+		RecoveryWorkflowRef: recoveryWorkflowRef,
+		Labels:              labels,
+	}
+	if role == "" && skills == "" && behavior == "" && agentsMD == "" {
+		versionRow.SystemPrompt = systemPrompt
+	} else {
+		versionRow.SystemPrompt = composeWorkerPrompt(versionRow)
+	}
+	createdVersion, err := db.CreateWorkerVersion(ctx, ttx.Tx, versionRow)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.created", created, createdVersion); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.created", "worker", created.ID,
+		nil, audit.Snapshot(map[string]any{
+			"id": created.ID, "name": created.Name, "slug": created.Slug, "status": created.Status,
+			"version": createdVersion.Version, "model_ref": createdVersion.ModelRef,
+		})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("worker created", "id", created.ID, "tenant", tenantID, "slug", created.Slug)
+	s.log.Info("worker created", "id", created.ID, "tenant", tenantID, "slug", slug)
 	return connect.NewResponse(&apiv1.CreateWorkerResponse{
 		Worker:  workerRowToProto(created),
 		Version: versionRowToProto(createdVersion),
@@ -305,25 +415,6 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 		}
 		fields.Purpose = &purpose
 	}
-	// The role binding is the only header field editable on a published
-	// worker: it lives on the header (not the version) and is what gates
-	// plane access. name/description/purpose stay draft-only.
-	if msg.RoleRef != nil {
-		roleRef := msg.GetRoleRef()
-		if current.Status != domain.WorkerDraft && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("only the role binding can be changed on a published worker"))
-		}
-		if roleRef != "" {
-			if _, err := db.GetRole(ctx, ttx.Tx, tenantID, roleRef); err != nil {
-				if errors.Is(err, db.ErrNotFound) {
-					return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("role_ref: role %q not found in tenant", roleRef))
-				}
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-		}
-		fields.RoleRef = &roleRef
-	}
 
 	updated, err := db.UpdateWorker(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
@@ -478,263 +569,6 @@ func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.R
 	return connect.NewResponse(&apiv1.RevertWorkerVersionToDraftResponse{}), nil
 }
 
-// maxBulkUpdateWorkerModel is the upper bound on ids per BulkUpdateWorkerModel
-// call; mirrors BatchDeleteExecutions (internal/execution/service.go).
-const maxBulkUpdateWorkerModel = 100
-
-// BulkUpdateWorkerModel sets model_ref on every requested Worker and
-// publishes the affected version in a single round trip. It mirrors the
-// manual edit-then-republish flow:
-//   - if the worker has a draft version, model_ref is updated in place
-//     and the version is published;
-//   - if the worker is published with no draft, the latest published
-//     version is reverted to draft, model_ref is set, and it is republished.
-//
-// Version numbers do NOT advance (no fork); current_version follows the
-// latest published version via UpdateWorkerCurrentVersion (same CAS as
-// PublishWorkerVersion). Per-worker logic runs in its own tenant
-// transaction so a failure in one row does not roll back the others —
-// the contract is partial success. Each mutation writes a
-// `worker.published` outbox row (one per affected worker) and a
-// `worker.bulk_model_updated` audit row; the batch as a whole emits one
-// `worker.bulk_model_updated_batch` audit row with the summary counts.
-func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Request[apiv1.BulkUpdateWorkerModelRequest]) (*connect.Response[apiv1.BulkUpdateWorkerModelResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if len(req.Msg.WorkerIds) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_ids must not be empty"))
-	}
-	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
-	}
-	modelRef, err := validateTextField(req.Msg.ModelRef, maxNameLen, "model_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	if modelRef == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref must not be empty"))
-	}
-
-	resp := &apiv1.BulkUpdateWorkerModelResponse{}
-	for _, id := range req.Msg.WorkerIds {
-		if id == "" {
-			continue
-		}
-		result, err := s.bulkUpdateOneWorker(ctx, tenantID, id, modelRef)
-		if err != nil {
-			// Per-worker logic never returns a hard error — it converts
-			// failures into an Error outcome. This branch is a defensive
-			// fallback so a future change cannot accidentally abort the
-			// whole batch.
-			s.log.Warn("bulk_update_worker_model: per-worker outcome errored", "worker_id", id, "error", err)
-			resp.Results = append(resp.Results, &apiv1.BulkUpdateWorkerModelResult{
-				WorkerId: id,
-				Outcome: &apiv1.BulkUpdateWorkerModelResult_Error{
-					Error: &apiv1.BulkUpdateWorkerModelError{Message: err.Error()},
-				},
-			})
-			resp.ErrorCount++
-			continue
-		}
-		resp.Results = append(resp.Results, result)
-		switch result.Outcome.(type) {
-		case *apiv1.BulkUpdateWorkerModelResult_Updated:
-			resp.UpdatedCount++
-		case *apiv1.BulkUpdateWorkerModelResult_Skipped:
-			resp.SkippedCount++
-		case *apiv1.BulkUpdateWorkerModelResult_Error:
-			resp.ErrorCount++
-		}
-	}
-
-	if err := s.recordBulkAudit(ctx, tenantID, modelRef, req.Msg.WorkerIds, resp); err != nil {
-		s.log.Warn("bulk_update_worker_model: batch audit row failed", "error", err)
-	}
-
-	s.log.Info("bulk_update_worker_model completed",
-		"total", len(resp.Results),
-		"updated", resp.UpdatedCount,
-		"skipped", resp.SkippedCount,
-		"errors", resp.ErrorCount,
-		"model_ref", modelRef)
-	return connect.NewResponse(resp), nil
-}
-
-// bulkUpdateOneWorker runs the per-worker update-or-revert-and-publish
-// flow in its own tenant transaction. Failures are converted into
-// per-worker outcomes (Skipped / Error) so the batch keeps going.
-func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, modelRef string) (*apiv1.BulkUpdateWorkerModelResult, error) {
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer ttx.Rollback(ctx)
-
-	worker, err := db.GetWorker(ctx, ttx.Tx, tenantID, workerID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NOT_FOUND), nil
-		}
-		return nil, fmt.Errorf("get worker: %w", err)
-	}
-	switch worker.Status {
-	case domain.WorkerDeprecated:
-		return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_DEPRECATED), nil
-	case domain.WorkerRetired:
-		return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_RETIRED), nil
-	}
-
-	latest, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, workerID, false)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return skippedOutcome(workerID, apiv1.BulkUpdateWorkerModelSkipReason_BULK_UPDATE_WORKER_MODEL_SKIP_REASON_NO_PUBLISHED_VERSION), nil
-		}
-		return nil, fmt.Errorf("get latest worker version: %w", err)
-	}
-
-	updatedVer, err := s.applyModelChange(ctx, ttx.Tx, worker, latest, modelRef)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
-	return &apiv1.BulkUpdateWorkerModelResult{
-		WorkerId: workerID,
-		Outcome: &apiv1.BulkUpdateWorkerModelResult_Updated{
-			Updated: &apiv1.BulkUpdateWorkerModelUpdated{
-				Version:  int32(updatedVer.Version),
-				ModelRef: updatedVer.ModelRef,
-			},
-		},
-	}, nil
-}
-
-// applyModelChange applies the per-version update+publish flow:
-//   - draft: set model_ref on the row in place, then publish.
-//   - published: revert to draft, set model_ref, then republish.
-//
-// In both branches the version number is preserved and UpdateWorkerCurrentVersion
-// is called so current_version follows the latest published version (mirrors
-// PublishWorkerVersion).
-func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
-	var (
-		before    db.WorkerVersionRow
-		after     db.WorkerVersionRow
-		auditVer  int
-		eventType string
-	)
-
-	switch latest.Status {
-	case domain.WorkerVersionDraft:
-		before = latest
-		merged := latest
-		merged.ModelRef = modelRef
-		updated, err := db.UpdateDraftVersion(ctx, tx, merged)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("update draft version: %w", err)
-		}
-		published, err := db.PublishWorkerVersion(ctx, tx, worker.TenantID, worker.ID, updated.Version)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("publish draft version: %w", err)
-		}
-		updatedWorker, err := db.UpdateWorkerCurrentVersion(ctx, tx, worker.TenantID, worker.ID, worker.Version, published.Version)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("update worker current_version: %w", err)
-		}
-		after = published
-		auditVer = published.Version
-		eventType = "worker.published"
-		if err := enqueueWorkerEvent(ctx, tx, eventType, updatedWorker, published); err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("enqueue %s: %w", eventType, err)
-		}
-	case domain.WorkerVersionPublished:
-		before = latest
-		if err := db.RevertWorkerVersionToDraft(ctx, tx, worker.TenantID, latest.ID); err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("revert published version: %w", err)
-		}
-		// Re-read the (now-draft) row so the audit and outbox payloads
-		// reflect the post-revert state.
-		reverted, err := db.GetWorkerVersionByID(ctx, tx, worker.TenantID, worker.ID, latest.ID)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("re-read reverted version: %w", err)
-		}
-		merged := reverted
-		merged.ModelRef = modelRef
-		updatedDraft, err := db.UpdateDraftVersion(ctx, tx, merged)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("update reverted draft: %w", err)
-		}
-		published, err := db.PublishWorkerVersion(ctx, tx, worker.TenantID, worker.ID, updatedDraft.Version)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("republish: %w", err)
-		}
-		updatedWorker, err := db.UpdateWorkerCurrentVersion(ctx, tx, worker.TenantID, worker.ID, worker.Version, published.Version)
-		if err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("update worker current_version: %w", err)
-		}
-		after = published
-		auditVer = published.Version
-		eventType = "worker.published"
-		if err := enqueueWorkerEvent(ctx, tx, eventType, updatedWorker, published); err != nil {
-			return db.WorkerVersionRow{}, fmt.Errorf("enqueue %s: %w", eventType, err)
-		}
-	default:
-		return db.WorkerVersionRow{}, fmt.Errorf("unsupported latest version status %q for bulk update", latest.Status)
-	}
-
-	// Per-mutation audit row. Use the action suffix that matches the
-	// single-worker publish flow so the granular trail is comparable.
-	if err := recordAudit(ctx, tx, worker.TenantID, "worker.bulk_model_updated", "worker", worker.ID,
-		audit.Snapshot(workerVersionAuditSnapshot(before)),
-		audit.Snapshot(workerVersionAuditSnapshot(after))); err != nil {
-		return db.WorkerVersionRow{}, fmt.Errorf("audit worker.bulk_model_updated: %w", err)
-	}
-	_ = auditVer
-	return after, nil
-}
-
-// skippedOutcome is a small constructor that packages the per-worker
-// Skipped outcome with its reason.
-func skippedOutcome(workerID string, reason apiv1.BulkUpdateWorkerModelSkipReason) *apiv1.BulkUpdateWorkerModelResult {
-	return &apiv1.BulkUpdateWorkerModelResult{
-		WorkerId: workerID,
-		Outcome: &apiv1.BulkUpdateWorkerModelResult_Skipped{
-			Skipped: &apiv1.BulkUpdateWorkerModelSkipped{Reason: reason},
-		},
-	}
-}
-
-// recordBulkAudit writes a single audit row that ties the batch together.
-// It runs in its own (very small) tenant transaction so a failure here
-// never rolls back the per-worker work — the per-mutation audit rows
-// already form the granular trail.
-func (s *Service) recordBulkAudit(ctx context.Context, tenantID, modelRef string, ids []string, resp *apiv1.BulkUpdateWorkerModelResponse) error {
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return fmt.Errorf("begin audit tx: %w", err)
-	}
-	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.bulk_model_updated_batch", "worker", tenantID,
-		nil,
-		audit.Snapshot(map[string]any{
-			"model_ref":     modelRef,
-			"count":         len(ids),
-			"updated_count": resp.UpdatedCount,
-			"skipped_count": resp.SkippedCount,
-			"error_count":   resp.ErrorCount,
-		})); err != nil {
-		return fmt.Errorf("audit worker.bulk_model_updated_batch: %w", err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit audit tx: %w", err)
-	}
-	return nil
-}
-
 // GetWorker returns a single worker header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {
@@ -786,34 +620,16 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	rows, err := db.ListWorkersWithActiveVersion(ctx, ttx.Tx, f)
+	workers, err := db.ListWorkers(ctx, ttx.Tx, f)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.ListWorkersResponse{}
-	for _, r := range rows {
-		item := &apiv1.WorkerListItem{
-			Worker:              workerRowToProto(r.WorkerRow),
-			ActiveModelRef:      r.ActiveModelRef,
-			ActiveVersionStatus: workerVersionStatusToProto(r.ActiveVersionStatus),
-		}
-		resp.Items = append(resp.Items, item)
-		// Keep deprecated workers populated for wire-compat during rollout.
-		resp.Workers = append(resp.Workers, item.Worker)
+	for _, w := range workers {
+		resp.Workers = append(resp.Workers, workerRowToProto(w))
 	}
-	if len(rows) > 0 {
-		resp.NextPageToken = rows[len(rows)-1].ID
-	}
-	// Enrich with worker categories (each response only carries its own target_type set).
-	if cats, err := db.ListCategories(ctx, ttx.Tx, tenantID, "worker"); err == nil {
-		for _, c := range cats {
-			resp.Categories = append(resp.Categories, &apiv1.Category{Id: c.ID, TenantId: c.TenantID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER, Name: c.Name, Description: c.Description, Slug: c.Slug, SortOrder: int32(c.SortOrder)})
-		}
-		if assigns, err := db.ListAssignments(ctx, ttx.Tx, tenantID, "worker"); err == nil {
-			for _, a := range assigns {
-				resp.Assignments = append(resp.Assignments, &apiv1.CategoryAssignment{EntityId: a.EntityID, CategoryId: a.CategoryID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER})
-			}
-		}
+	if len(workers) > 0 {
+		resp.NextPageToken = workers[len(workers)-1].ID
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -1222,12 +1038,11 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // for the audit trail.
 func workerAuditSnapshot(w db.WorkerRow) map[string]any {
 	return map[string]any{
-		"id":       w.ID,
-		"name":     w.Name,
-		"slug":     w.Slug,
-		"status":   w.Status,
-		"role_ref": w.RoleRef,
-		"version":  w.Version,
+		"id":      w.ID,
+		"name":    w.Name,
+		"slug":    w.Slug,
+		"status":  w.Status,
+		"version": w.Version,
 	}
 }
 
@@ -1384,7 +1199,6 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 		Slug:           w.Slug,
 		Description:    w.Description,
 		Purpose:        w.Purpose,
-		RoleRef:        w.RoleRef,
 		Status:         workerStatusToProto(w.Status),
 		CurrentVersion: int32(w.CurrentVersion),
 		CreatedBy:      w.CreatedBy,

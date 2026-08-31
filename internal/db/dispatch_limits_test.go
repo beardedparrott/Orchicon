@@ -39,53 +39,6 @@ func openTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// TestUpdateTenantSettingsNilBudgetOverrides verifies the upsert tolerates a
-// caller that leaves DefaultBudgetOverrides unset (nil). The column is jsonb
-// NOT NULL, and a literal NULL in the INSERT branch violates the constraint
-// BEFORE the ON CONFLICT arbiter engages — so the fix coerces nil/empty to
-// '{}'. Regression for the MCP update_settings tool (which builds the row
-// without the budget field): every write returned "no row returned".
-func TestUpdateTenantSettingsNilBudgetOverrides(t *testing.T) {
-	pool := openTestPool(t)
-	ctx := context.Background()
-	const tenant = "tnt_dev"
-
-	ttx, err := pool.BeginTenantTx(ctx, tenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ttx.Rollback(ctx)
-
-	// Nil budget overrides (the former bug) + a stall change.
-	row, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
-		StallNoProgressWindowSeconds: 600,
-	})
-	if err != nil {
-		t.Fatalf("update with nil budget overrides failed: %v", err)
-	}
-	if row.StallNoProgressWindowSeconds != 600 {
-		t.Fatalf("stall_no_progress = %d, want 600", row.StallNoProgressWindowSeconds)
-	}
-	// The budget column must still hold valid JSON ('{}') — never NULL.
-	if len(row.DefaultBudgetOverrides) == 0 {
-		t.Fatalf("DefaultBudgetOverrides came back empty after nil-input update")
-	}
-	// Round-trip: GetTenantSettings must return the persisted stall value.
-	got, err := db.GetTenantSettings(ctx, ttx.Tx, tenant)
-	if err != nil {
-		t.Fatalf("get tenant settings: %v", err)
-	}
-	if got.StallNoProgressWindowSeconds != 600 {
-		t.Fatalf("reloaded stall_no_progress = %d, want 600", got.StallNoProgressWindowSeconds)
-	}
-	// Reset the field so the shared tnt_dev row stays clean.
-	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
-		StallNoProgressWindowSeconds: 0,
-	}); err != nil {
-		t.Fatalf("reset tenant settings: %v", err)
-	}
-}
-
 // TestDispatchLimitSettingsRoundTrip verifies tenant_settings and projects
 // persist max_concurrent_runs and GetDispatchLimitValues reads both back.
 func TestDispatchLimitSettingsRoundTrip(t *testing.T) {

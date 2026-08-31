@@ -199,7 +199,7 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 		"## Safety rules (HARD limits)",
 		"## Efficiency — minimize tool output and tool calls",
 		"Minimize tool output.",
-		"Batch your tool calls — split calls are FORBIDDEN.",
+		"Batch your tool calls.",
 		"## Runtime environment",
 	} {
 		if !strings.Contains(prefix, want) {
@@ -218,10 +218,9 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 // TestCompositePromptTodoListDirectives verifies every worker's composite
 // prompt carries the Todo list guidance block in the stable prefix — the
 // todowrite tool is available in the opencode runtime toolset, and the
-// prompt must tell the worker to use it proactively AND incrementally
+// prompt must tell the worker to use it proactively for multi-step work
 // (acceptance: proactive use for 3+ steps, one in_progress at a time,
-// immediate completion, full-list replacement semantics, per-turn
-// incremental maintenance so the live UI panel reflects progress).
+// immediate completion, full-list replacement semantics).
 func TestCompositePromptTodoListDirectives(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -239,9 +238,6 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 		"`completed`",
 		"`cancelled`",
 		"pending | in_progress | completed | cancelled",
-		"EVERY turn",
-		"after every tool call",
-		"Before your first action",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
@@ -274,36 +270,9 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 		"git status --short",
 		"git log --oneline -5",
 		"`grep` `touched_files`",
-		"Batch your tool calls — split calls are FORBIDDEN.",
-		"every split call multiplies cost",
+		"Batch your tool calls.",
+		"fewer, larger calls are dramatically cheaper",
 		"you MUST verify state with actual tool calls and never fabricate output",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
-		}
-	}
-}
-
-// TestCompositePromptStepOutputDiscipline verifies every worker's composite
-// prompt carries the step-output contract in the stable prefix: gather
-// context in one batched pass, deliver the decision + delta (not the
-// verification narrative), and verify once then stop. This is the
-// turns-to-success lever — each tool call re-sends the whole conversation, so
-// the number of turns dominates cost more than output size.
-func TestCompositePromptStepOutputDiscipline(t *testing.T) {
-	ctx := context.Background()
-	item := db.WorkItemRow{Title: "Step output discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
-	worker := db.WorkerVersionRow{Role: "Engineer"}
-	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"## Step output — deliver the decision and the delta, not the journey",
-		"Gather context in one pass.",
-		"Deliver the decision + delta, not the verification.",
-		"Verify once, then stop.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
@@ -398,7 +367,7 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 	// Simulate a git-backed run: worktree_status=ready, a recorded branch,
 	// and a project dir. The block is keyed purely on these params, so a
 	// direct call with the params set exercises the git path.
-	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", db.DefaultGitStrategy)
+	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj")
 	for _, want := range []string{
 		"## Git discipline",
 		"`feat/my-branch`",
@@ -417,31 +386,6 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 // TestOrchiconLocationNote verifies the helper that tells workers where
 // the .orchicon/ directory lives: with a projectDir it interpolates the
 // absolute path; without it falls back to a generic note.
-// TestGitGuidanceNoneEphemeral is acceptance criterion #6's composite side:
-// a `none` (ephemeral) run must get the detached-HEAD block that explicitly
-// forbids create/commit/push — even when the run row is ready with a project
-// dir — so the per-dispatch guide supersedes any canned "commit + push to the
-// run branch" text a seeded AGENTS.md may still carry.
-func TestGitGuidanceNoneEphemeral(t *testing.T) {
-	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "none")
-	for _, want := range []string{
-		"## Git discipline",
-		"`git_strategy=none`",
-		"detached HEAD",
-		"Do **not** create a branch, commit a branch, or push anything to origin",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("none guidance missing %q; got:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "commit + push to the run branch") {
-		t.Errorf("none run must not carry the canned commit+push contract; got:\n%s", out)
-	}
-	if strings.Contains(out, "branch created off `develop`") {
-		t.Errorf("none run must not get the develop-first branch block; got:\n%s", out)
-	}
-}
-
 func TestOrchiconLocationNote(t *testing.T) {
 	got := orchiconLocationNote("")
 	for _, want := range []string{

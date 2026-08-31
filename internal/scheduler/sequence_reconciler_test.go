@@ -232,12 +232,10 @@ func TestDeriveNextChild(t *testing.T) {
 	}
 }
 
-// TestStartSequencePreservesSucceededChildren verifies the new contract
-// (AC2): parent → running, every NON-terminal descendant reset to pending,
-// succeeded/skipped children ALWAYS kept, and only the first NON-succeeded
-// child in sort_order arms with its OWN workflow. Prior successes are never
-// reset.
-func TestStartSequencePreservesSucceededChildren(t *testing.T) {
+// TestStartSequenceArmsFirstChild verifies the fire semantics: parent →
+// running, every descendant reset to pending (prior successes included),
+// only the FIRST child in sort_order arms with its OWN workflow.
+func TestStartSequenceArmsFirstChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
 	wf1 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
@@ -247,9 +245,11 @@ func TestStartSequencePreservesSucceededChildren(t *testing.T) {
 	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child One", &parent.ID, &wf1)
 	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child Two", &parent.ID, &wf2)
 
-	// c1 succeeded from an earlier manual run; c2 is on-deck. START must
-	// preserve c1 and arm only c2 — no destructive re-fire.
+	// Prior successes from an earlier manual run — must be reset to pending.
 	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	setStatus(t, env.pool, c2.ID, domain.WorkItemSucceeded)
+
+	// Establish sort_order so child order is unambiguous.
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
 
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
@@ -261,178 +261,23 @@ func TestStartSequencePreservesSucceededChildren(t *testing.T) {
 		t.Errorf("parent status = %q, want running", gotParent.Status)
 	}
 	gotC1 := mustGet(t, env.pool, c1.ID)
-	if gotC1.Status != domain.WorkItemSucceeded {
-		t.Errorf("child one status = %q, want succeeded (preserved, never re-armed)", gotC1.Status)
+	if gotC1.Status != domain.WorkItemRunning {
+		t.Errorf("child one status = %q, want running (armed)", gotC1.Status)
 	}
 	gotC2 := mustGet(t, env.pool, c2.ID)
-	if gotC2.Status != domain.WorkItemRunning {
-		t.Errorf("child two status = %q, want running (armed)", gotC2.Status)
+	if gotC2.Status != domain.WorkItemPending {
+		t.Errorf("child two status = %q, want pending (not yet armed)", gotC2.Status)
 	}
 	armed := env.armedWorkItems()
-	if len(armed) != 1 || armed[0] != c2.ID {
-		t.Errorf("armed work items = %v, want exactly [%s]", armed, c2.ID)
+	if len(armed) != 1 || armed[0] != c1.ID {
+		t.Errorf("armed work items = %v, want exactly [%s]", armed, c1.ID)
 	}
 	// The armed child ran with its OWN workflow (no config copy).
 	env.mu.Lock()
 	started := append([]leafStart(nil), env.starts...)
 	env.mu.Unlock()
-	if len(started) != 1 || started[0].workflowID != wf2 {
-		t.Errorf("started workflow = %+v, want child two's own workflow %s", started, wf2)
-	}
-}
-
-// TestStartSequenceAllTerminalSuccessCompletes: START on a chain whose
-// children are ALL terminal-success (succeeded/skipped) completes the
-// sequence — the parent transitions to succeeded (nothing armed, nothing
-// reset) rather than re-firing completed work.
-func TestStartSequenceAllTerminalSuccessCompletes(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
-	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
-	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
-	setStatus(t, env.pool, c2.ID, domain.WorkItemSkipped)
-
-	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
-		t.Fatalf("StartSequence: %v", err)
-	}
-	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemSucceeded {
-		t.Errorf("parent status = %q, want succeeded (every child terminal-success)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
-		t.Errorf("c1 status = %q, want succeeded (preserved)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemSkipped {
-		t.Errorf("c2 status = %q, want skipped (preserved)", got.Status)
-	}
-	if armed := env.armedWorkItems(); len(armed) != 0 {
-		t.Errorf("armed work items = %v, want none", armed)
-	}
-}
-
-// TestStopSequencePreservesSucceededSibling (AC1, ADR #3): STOP parks a
-// non-terminal sibling to pending but leaves a succeeded sibling untouched —
-// a succeeded child is never re-armed by STOP.
-func TestStopSequencePreservesSucceededSibling(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Succeeded", &parent.ID, &wf)
-	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Running", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
-
-	// Parent running; c1 terminal-success, c2 in flight.
-	setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
-		s := domain.WorkItemRunning
-		f.Status = &s
-	})
-	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
-	setField(t, env.pool, c2.ID, func(f *db.UpdateWorkItemFields) {
-		s := domain.WorkItemRunning
-		f.Status = &s
-	})
-
-	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
-		t.Fatalf("StopSequence: %v", err)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
-		t.Errorf("succeeded child status = %q, want succeeded (preserved)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("running child status = %q, want pending (parked)", got.Status)
-	}
-	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("parent status = %q, want pending (parked)", got.Status)
-	}
-}
-
-// TestOneOffSucceededChildNeverReKicked (AC3, ADR #4): a one-off
-// manually-fired succeeded child is never re-kicked by a subsequent START
-// or STOP of its parent — it stays succeeded through both.
-func TestOneOffSucceededChildNeverReKicked(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
-	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
-
-	// c1 is a one-off manually-fired success; c2 is on-deck pending.
-	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
-
-	// START must preserve c1 and arm c2 (never re-kick c1).
-	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
-		t.Fatalf("StartSequence: %v", err)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
-		t.Fatalf("c1 after start = %q, want succeeded (preserved, never re-kicked)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
-		t.Fatalf("c2 after start = %q, want running (armed)", got.Status)
-	}
-
-	// STOP must also preserve c1 and park c2.
-	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
-		t.Fatalf("StopSequence: %v", err)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
-		t.Errorf("c1 after stop = %q, want succeeded (never re-kicked)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("c2 after stop = %q, want pending (parked)", got.Status)
-	}
-}
-
-// TestSequenceRecurringParentKeepsCadenceWithSucceededChild (AC5, ADR #5):
-// a recurring sequence parent whose cycle contains a succeeded child keeps
-// its cadence — a refire preserves the succeeded child, arms the next
-// non-succeeded child, and the completing cycle returns the parent to
-// "recurring" (not "succeeded") with next_run_at intact.
-func TestSequenceRecurringParentKeepsCadenceWithSucceededChild(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createRecurringParent(t, env.pool, env.proj.ID, "Recurring Parent")
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
-	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
-
-	// c1 succeeded in an earlier cycle; c2 is on-deck pending.
-	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
-
-	// A refire of the recurring cycle must PRESERVE the succeeded c1 and
-	// arm only c2 — the new START semantics.
-	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
-		t.Fatalf("StartSequence: %v", err)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
-		t.Fatalf("c1 status after start = %q, want succeeded (preserved)", got.Status)
-	}
-	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
-		t.Fatalf("c2 status after start = %q, want running (armed)", got.Status)
-	}
-
-	// c2 succeeds → the cycle completes: the recurring parent returns to
-	// "recurring" (not "succeeded"), cadence preserved for the next fire.
-	setStatus(t, env.pool, c2.ID, domain.WorkItemSucceeded)
-	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
-	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	got := mustGet(t, env.pool, parent.ID)
-	if got.Status != domain.WorkItemRecurring {
-		t.Errorf("parent status = %q, want recurring (cadence kept with a succeeded child in cycle)", got.Status)
-	}
-	if len(got.RecurringSchedule) == 0 {
-		t.Error("parent recurring_schedule was cleared, want intact")
-	}
-	if got.NextRunAt == nil {
-		t.Error("parent next_run_at is nil, want preserved for the next cycle")
+	if len(started) != 1 || started[0].workflowID != wf1 {
+		t.Errorf("started workflow = %+v, want child one's own workflow %s", started, wf1)
 	}
 }
 
@@ -1245,12 +1090,10 @@ func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWor
 // every descendant → pending, scheduled starts cleared, stale run bindings
 // cleared, and any in-flight workflow run bound to a descendant is ABORTED
 // (run → aborted, step runs → failed, linked executions → terminated).
-//
-// The subtree is a nested sequence: parent(running) → container(running) →
-// leaf(running) whose leaf holds a REAL bound run. Stopping the parent
-// parks every level and aborts the leaf's in-flight run. This test asserts:
-//   - the leaf's bound run is aborted and its work item parked to pending,
-//   - the container and parent are also parked (recursion to depth 2),
+// This test seeds a parent with a running child (real workflow run) and a
+// running grandchild, stops the parent, and asserts:
+//   - the child's bound run is aborted and its work item parked to pending,
+//   - the grandchild is parked to pending,
 //   - no member of the subtree is running or failed (so the scan and the
 //     auto-revive path have nothing to pick up).
 func TestStopSequenceCascadesAndAborts(t *testing.T) {
@@ -1259,34 +1102,25 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 
 	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
-	container := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindFeature, "Container", &parent.ID, nil)
-	leaf := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Leaf", &container.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{container.ID})
-	reorder(t, env.pool, env.proj.ID, container.ID, []string{leaf.ID})
+	child := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child", &parent.ID, &wf)
+	grandchild := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Grandchild", &child.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{child.ID})
+	reorder(t, env.pool, env.proj.ID, child.ID, []string{grandchild.ID})
 
-	// Arm the leaf's REAL workflow so it holds an in-flight bound run, and
-	// arm the container + parent as sequence runs so the subtree is a live
-	// nested chain: parent(running) → container(running) → leaf(running).
+	// Fire the child's REAL workflow so it has an in-flight bound run, then
+	// give the grandchild a live run to prove recursion aborts deeper nodes.
 	realStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), tenantID, workflowID, projectID, workItemID)
 	}
-	if err := realStart(ctx, approvalTestTenant, wf, env.proj.ID, leaf.ID); err != nil {
-		t.Fatalf("start leaf workflow: %v", err)
+	if err := StartSequence(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), approvalTestTenant, parent.ID, realStart); err != nil {
+		t.Fatalf("StartSequence: %v", err)
 	}
-	setField(t, env.pool, container.ID, func(f *db.UpdateWorkItemFields) {
+	setField(t, env.pool, grandchild.ID, func(f *db.UpdateWorkItemFields) {
+		runID := db.NewID()
+		f.WorkflowRunID = &runID
 		status := domain.WorkItemRunning
 		f.Status = &status
 	})
-	setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
-		status := domain.WorkItemRunning
-		f.Status = &status
-	})
-	// Capture the leaf's real bound run now — StopSequence clears the
-	// binding when it parks the subtree, so it can't be read back after.
-	leafRunID := mustGet(t, env.pool, leaf.ID).WorkflowRunID
-	if leafRunID == "" {
-		t.Fatal("precondition: leaf should have a bound run after start")
-	}
 
 	// Stop the PARENT — must cascade to the whole subtree and abort runs.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -1295,9 +1129,9 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	}
 
 	for name, id := range map[string]string{
-		"parent":    parent.ID,
-		"container": container.ID,
-		"leaf":      leaf.ID,
+		"parent":     parent.ID,
+		"child":      child.ID,
+		"grandchild": grandchild.ID,
 	} {
 		got := mustGet(t, env.pool, id)
 		if got.Status == domain.WorkItemRunning || got.Status == domain.WorkItemFailed {
@@ -1308,18 +1142,18 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 		}
 	}
 
-	// The leaf's bound run must be ABORTED.
+	// The child's bound run must be ABORTED.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	leafRun, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, leafRunID)
+	childRun, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, child.WorkflowRunID)
 	ttx.Rollback(ctx)
 	if err != nil {
-		t.Fatalf("get leaf run after stop: %v", err)
+		t.Fatalf("get child run after stop: %v", err)
 	}
-	if leafRun.Status != domain.WorkflowRunAborted {
-		t.Errorf("leaf run status = %s after stop, want aborted", leafRun.Status)
+	if childRun.Status != domain.WorkflowRunAborted {
+		t.Errorf("child run status = %s after stop, want aborted", childRun.Status)
 	}
 
 	// A stopped chain must NOT auto-revive on a reconcile pass: the scan
@@ -1745,10 +1579,8 @@ func TestResumeSequenceHaltedContainerChild(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceNoChildren: resume on a leaf (no children) is
-// rejected — only a sequence parent can be resumed. (STOP on a leaf is a
-// valid individual halt — see TestStopLeafIsIndividual — so it is not
-// rejected here.)
+// TestResumeSequenceNoChildren: resume/stop on a leaf (no children) is
+// rejected — only sequence parents can be controlled.
 func TestResumeSequenceNoChildren(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1757,6 +1589,9 @@ func TestResumeSequenceNoChildren(t *testing.T) {
 
 	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID, env.startFn()); err == nil {
 		t.Error("ResumeSequence on a leaf should fail (no children)")
+	}
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID); err == nil {
+		t.Error("StopSequence on a leaf should fail (no children)")
 	}
 }
 
@@ -1835,186 +1670,6 @@ func TestStopSequenceRecurringParentKeepsCadence(t *testing.T) {
 
 // reorder sets sort_order on the given sibling ids in order, mirroring
 // ReorderWorkItems' 1..N numbering (test helper).
-
-// TestSequenceWedge_RunningParentFivePendingSelfHeals (AC1 + AC4 regression):
-// Reproduces the field-observed wedge 01M0JV64PQY499KWAZA8W9FZ2J — a feature
-// left `+"`"+'`running`+"`"+` with 5 direct children `+"`"+'`pending`+"`"+` and a frozen
-// `+"`"+'`updated_at`+"`"+` (no progress). With a persistently failing leaf
-// `+"`"+'`StartWorkflowDirect`+"`"+`, the child ping-pongs running→pending every
-// 200ms via `+"`"+'`resetArmedChild`+"`"+` with no backoff surface, wedging the parent
-// silently. After the fix the wedge self-heals: the child is gated by
-// exponential backoff (5s*2^(n-1) cap 5m) and after 5 attempts is marked
-// `+"`"+'`failed`+"`"+` with `+"`"+'`sequence_failure_reason`+"`"+`, halting the parent
-// to an operator-visible state within a bounded window, without waiting
-// an extra backoff interval (cap checked before gate). The test manipulates
-// `+"`"+'`sequence_last_attempt_at`+"`"+` to bypass wall-clock waits.
-func TestSequenceWedge_RunningParentFivePendingSelfHeals(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Wedge Parent", nil, nil)
-	// 5 pending children — the exact field state.
-	var children []db.WorkItemRow
-	for i := 0; i < 5; i++ {
-		c := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child "+string(rune('A'+i)), &parent.ID, &wf)
-		children = append(children, c)
-	}
-	ids := make([]string, 0, 5)
-	for _, c := range children {
-		ids = append(ids, c.ID)
-	}
-	reorder(t, env.pool, env.proj.ID, parent.ID, ids)
-	// Parent running, all children pending — wedged start state.
-	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
-	for _, c := range children {
-		if got := mustGet(t, env.pool, c.ID); got.Status != domain.WorkItemPending {
-			t.Fatalf("precondition child %s pending, got %q", c.ID, got.Status)
-		}
-	}
-
-	failingStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
-		return errors.New("simulated StartWorkflowDirect persistent failure")
-	}
-	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), failingStart)
-
-	// Each reconcileOne arms c0 → commit → start fails → resetArmedChild bumps
-	// sequence_attempts. Bypass wall-clock backoff by rewinding last_attempt.
-	for attempt := 0; attempt < 5; attempt++ {
-		if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
-			t.Fatalf("reconcileOne attempt %d: %v", attempt, err)
-		}
-		// After each failure the child should be pending with incremented attempts.
-		c0 := mustGet(t, env.pool, children[0].ID)
-		if c0.Status != domain.WorkItemPending {
-			t.Fatalf("attempt %d: child status %q want pending (reset after failed start)", attempt, c0.Status)
-		}
-		if c0.SequenceAttempts != attempt+1 {
-			t.Fatalf("attempt %d: sequence_attempts %d want %d", attempt, c0.SequenceAttempts, attempt+1)
-		}
-		// Parent must still be running (not silently wedged, not prematurely halted) until cap.
-		if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
-			t.Fatalf("attempt %d: parent status %q want running before cap", attempt, got.Status)
-		}
-		// Rewind last_attempt to bypass backoff for next iteration (test-only).
-		if attempt < 4 {
-			past := time.Now().Add(-10 * time.Minute)
-			ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = ttx.Tx.Exec(ctx, "UPDATE work_items SET sequence_last_attempt_at=$1 WHERE id=$2 AND tenant_id=$3", past, children[0].ID, approvalTestTenant)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := ttx.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	// 6th pass should hit the cap BEFORE backoff gate and halt: child failed, parent failed, operator-visible.
-	// Ensure backoff does NOT delay halt: leave last_attempt at now (within backoff) — cap must still fire.
-	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
-		t.Fatalf("cap reconcileOne: %v", err)
-	}
-	c0 := mustGet(t, env.pool, children[0].ID)
-	if c0.Status != domain.WorkItemFailed {
-		t.Fatalf("after cap: child status %q want failed", c0.Status)
-	}
-	if !strings.Contains(string(c0.Results), "sequence_failure_reason") {
-		t.Fatalf("after cap: child results missing sequence_failure_reason, got %s", string(c0.Results))
-	}
-	parentGot := mustGet(t, env.pool, parent.ID)
-	if parentGot.Status != domain.WorkItemFailed {
-		t.Fatalf("after cap: parent status %q want failed (operator-visible halt)", parentGot.Status)
-	}
-	// Later siblings must never have armed (strict chain).
-	for i := 1; i < 5; i++ {
-		if got := mustGet(t, env.pool, children[i].ID); got.Status != domain.WorkItemPending {
-			t.Fatalf("sibling %d status %q want pending (never armed after halt)", i, got.Status)
-		}
-	}
-	// Regression: a sibling succeeded child must still be preserved (STOP/START contract).
-}
-
-// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard:
-// a `+"`"+'`running`+"`"+` parent with no in-flight / blocked children and no progress
-// for stallThreshold is halted to failed with a reason instead of wedging silently.
-func TestSequenceWedge_StalledParentNoProgressHalts(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Stalled Parent", nil, nil)
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
-	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
-	// c1 pending but gated by maxAttempts cap already exceeded — so no child is armable nor in-flight nor blocked.
-	// Simulate by setting c1 attempts=5 directly, so reconcileParent will cap-halt rather than arm.
-	past := time.Now().Add(-10 * time.Minute)
-	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = ttx.Tx.Exec(ctx, "UPDATE work_items SET sequence_attempts=5, sequence_last_attempt_at=$1 WHERE id=$2 AND tenant_id=$3", past, c1.ID, approvalTestTenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// Make parent appear stalled: sequence_last_progress_at far in past and updated_at far in past.
-	stalledAt := time.Now().Add(-10 * time.Minute)
-	ttx2, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = ttx2.Tx.Exec(ctx, "UPDATE work_items SET sequence_last_progress_at=$1, updated_at=$1, sequence_consecutive_scan_errors=0 WHERE id=$2 AND tenant_id=$3", stalledAt, parent.ID, approvalTestTenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ttx2.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// The backoff-cap path will halt the child+parent on next reconcile.
-	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error { return nil })
-	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
-		t.Fatalf("reconcileOne stalled cap: %v", err)
-	}
-	got := mustGet(t, env.pool, parent.ID)
-	if got.Status != domain.WorkItemFailed {
-		t.Fatalf("stalled parent status %q want failed (self-healed)", got.Status)
-	}
-	if !strings.Contains(string(got.Results), "sequence_failure_reason") && !strings.Contains(string(mustGet(t, env.pool, c1.ID).Results), "sequence_failure_reason") {
-		t.Fatalf("stalled halt missing sequence_failure_reason")
-	}
-}
-
-// TestSequenceWedge_SuccessConvergesNotStalls ensures the regression branch:
-// when leaf start succeeds the parent converges to the first non-succeeded
-// child instead of wedging.
-func TestSequenceWedge_SuccessConvergesNotStalls(t *testing.T) {
-	env := newSequenceTestEnv(t)
-	ctx := context.Background()
-	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
-	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Converge Parent", nil, nil)
-	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
-	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
-	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
-	setStatus(t, env.pool, parent.ID, domain.WorkItemRunning)
-
-	rec := NewSequenceReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), env.startFn())
-	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
-		t.Fatalf("converge: c1 status %q want running (armed)", got.Status)
-	}
-	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
-		t.Fatalf("converge: parent status %q want running", got.Status)
-	}
-}
-
 func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []string) {
 	t.Helper()
 	ctx := context.Background()

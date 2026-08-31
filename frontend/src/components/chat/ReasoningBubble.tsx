@@ -48,14 +48,14 @@ export function ReasoningBubble({
           />
           reasoning
           {streaming ? (
-            <span className="text-violet-700 dark:text-violet-500/70"> · thinking…</span>
+            <span className="text-violet-500/70"> · thinking…</span>
           ) : (
-            <span className="text-violet-700 dark:text-violet-500/70">
+            <span className="text-violet-500/70">
               {" "}
               · {charCount} chars
             </span>
           )}
-          <span className="ml-auto text-violet-700 dark:text-violet-500/60 text-xs">
+          <span className="ml-auto text-violet-500/60 text-xs">
             {open ? "hide" : "show"}
           </span>
         </button>

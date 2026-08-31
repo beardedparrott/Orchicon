@@ -32,15 +32,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -52,20 +49,6 @@ const defaultServeUsername = "opencode"
 // ServePasswordEnv is the env var the host serve / runtime supervisor
 // sets to protect its HTTP API with basic auth.
 const ServePasswordEnv = "OPENCODE_SERVER_PASSWORD"
-
-// defaultMCPProbeTimeout bounds a single MCP-usability probe so a slow (but
-// alive) serve is not treated as wedged by the watchdog and restarted in a
-// churn. Env override ORCHICON_ASK_MCP_PROBE_TIMEOUT is a dev/test knob.
-const defaultMCPProbeTimeout = 8 * time.Second
-
-func askMCPProbeTimeout() time.Duration {
-	if v := os.Getenv("ORCHICON_ASK_MCP_PROBE_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			return d
-		}
-	}
-	return defaultMCPProbeTimeout
-}
 
 // BusEvent is one event from the opencode server's /event SSE stream.
 // The shape matches the SDK's event objects ({id, type, properties}).
@@ -82,14 +65,7 @@ type SessionClient struct {
 	username  string
 	password  string
 	directory string
-	// hc is the client for short-lived API calls. It uses a DEDICATED
-	// http.Transport (ADR-0002 D5) so this serve's connections never contend
-	// on the package-level http.DefaultTransport shared by every SessionClient.
-	hc *http.Client
-	// sseHC is the client for long-lived /event SSE subscriptions. It uses a
-	// separate keep-alive-disabled transport so a parked stream never occupies
-	// the API idle pool (D5).
-	sseHC *http.Client
+	hc        *http.Client
 }
 
 // ErrSessionNotFound marks a 404 from the serve for a session-scoped
@@ -103,44 +79,14 @@ var ErrSessionNotFound = errors.New("opencode serve: session not found")
 // directory is the project path every session created through this client
 // is scoped to (may be empty for an unscoped client).
 func NewSessionClient(baseURL, password, directory string) *SessionClient {
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	// Dedicated transport (ADR-0002 D5). Every SessionClient used to be built
-	// with &http.Client{}, which SHARES the package-level http.DefaultTransport
-	// (MaxIdleConnsPerHost=2, MaxIdleConns=100). With many concurrent sessions
-	// each doing an API call plus a long-lived /event stream against the ONE
-	// host serve, that pooled to 2 idle conns a host and sessions contended.
-	// A dedicated transport sized to the concurrent-session ceiling isolates
-	// this serve's traffic from every other client's. There is deliberately
-	// NO per-request global timeout: the /event subscription is long-lived and
-	// API calls carry their own context deadlines.
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          256,
-		MaxIdleConnsPerHost:   256,
-		MaxConnsPerHost:       256,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
-	}
-	// /event SSE pushes ONE long-lived stream per subscription; keep-alive is
-	// pointless and a parked stream must never land in the shared idle pool.
-	// A separate keep-alive-disabled client keeps long-lived streams off the
-	// API pool (D5).
-	sseTransport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		DisableKeepAlives:   true,
-		MaxIdleConnsPerHost: 256,
-	}
 	return &SessionClient{
-		baseURL:   baseURL,
+		baseURL:   strings.TrimSuffix(baseURL, "/"),
 		username:  defaultServeUsername,
 		password:  password,
 		directory: directory,
-		hc:        &http.Client{Transport: transport},
-		sseHC:     &http.Client{Transport: sseTransport},
+		// No global timeout: the /event subscription is long-lived. API
+		// calls carry their own per-request context deadlines.
+		hc: &http.Client{},
 	}
 }
 
@@ -163,12 +109,12 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// probeServe exercises the serve's full readiness surface: it must answer
-// /global/health AND accept a real session-create round-trip. A cold-starting
-// serve answers health before its session machinery is up, so health alone is
-// not "usable" for dispatch. The probe session is aborted after creation so no
-// probe residue accumulates.
-func (c *SessionClient) probeServe(ctx context.Context) error {
+// ProbeUsable is the L1 serve-readiness probe (the workflow run-start gate):
+// the serve must answer /global/health AND accept a real session-create
+// round-trip. A cold-starting serve answers health before its session
+// machinery is up, so health alone is not "usable" for dispatch. The probe
+// session is aborted after creation so no probe residue accumulates.
+func (c *SessionClient) ProbeUsable(ctx context.Context) error {
 	if !c.Healthy(ctx) {
 		return fmt.Errorf("opencode serve not healthy (%s)", c.baseURL)
 	}
@@ -178,33 +124,6 @@ func (c *SessionClient) probeServe(ctx context.Context) error {
 	}
 	_ = c.Abort(ctx, sid)
 	return nil
-}
-
-// ProbeUsable is the L1 serve-readiness probe (the workflow run-start gate):
-// the serve must answer /global/health AND accept a real session-create
-// round-trip. A cold-starting serve answers health before its session
-// machinery is up, so health alone is not "usable" for dispatch.
-func (c *SessionClient) ProbeUsable(ctx context.Context) error {
-	return c.probeServe(ctx)
-}
-
-// MCPHealthy reports whether the serve's MCP-enabled agent session machinery is
-// usable (ADR-0002 D1 — the MCP watchdog). The Orchicon MCP is loaded into the
-// serve at startup, and a wedged/unusable MCP is INVISIBLE to /global/health
-// (which only proves the process is up). A session-create round-trip exercises
-// the serve's agent session + MCP configuration; a session that cannot be
-// created/aborted means the serve is not usable for dispatch. This is the
-// plane-level watchdog gate: `HostServe.Watch` restarts a serve that passes
-// /global/health but fails MCP usability, healing a single wedged MCP for every
-// session on the serve (MCP is per-serve).
-//
-// Failure-tolerant: bounded by a short timeout so a single slow probe does not
-// churn the watchdog into restarts (the watchdog's own backoff absorbs
-// transient slowness). Returns true only on a definitive success.
-func (c *SessionClient) MCPHealthy(ctx context.Context) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, askMCPProbeTimeout())
-	defer cancel()
-	return c.probeServe(probeCtx) == nil
 }
 
 // CreateSession creates a session on the serve, scoped to the client's
@@ -245,38 +164,10 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 // must be sent with every message). modelRef is "provider/model" (empty =
 // the session's current model).
 func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
-	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
-}
-
-// SendMessageWithAttachments appends a user message with optional image/file parts.
-// Text is always first; image parts are added as base64 data URLs for vision models.
-func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	parts := []map[string]any{}
-	if text != "" {
-		parts = append(parts, map[string]any{"type": "text", "text": text})
-	}
-	for _, a := range attachments {
-		if a.MimeType == "" {
-			a.MimeType = "application/octet-stream"
-		}
-		// Opencode serve accepts file/image parts as data URLs; use image type for images.
-		if len(a.Data) > 0 {
-			b64 := base64.StdEncoding.EncodeToString(a.Data)
-			dataURL := "data:" + a.MimeType + ";base64," + b64
-			if isImageMime(a.MimeType) {
-				parts = append(parts, map[string]any{"type": "image", "mimeType": a.MimeType, "data": b64, "url": dataURL})
-			} else {
-				parts = append(parts, map[string]any{"type": "file", "mimeType": a.MimeType, "url": dataURL, "filename": a.Name})
-			}
-		}
-	}
-	if len(parts) == 0 {
-		parts = append(parts, map[string]any{"type": "text", "text": text})
-	}
 	body := map[string]any{
-		"parts": parts,
+		"parts": []map[string]any{{"type": "text", "text": text}},
 	}
 	if system != "" {
 		body["system"] = system
@@ -286,21 +177,11 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 			body["model"] = map[string]any{"providerID": provider, "modelID": model}
 		}
 	}
+	// 204 No Content on success.
 	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/prompt_async", body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
-}
-
-// AttachmentPart is a single attachment forwarded to the session.
-type AttachmentPart struct {
-	Name     string
-	MimeType string
-	Data     []byte
-}
-
-func isImageMime(m string) bool {
-	return len(m) >= 6 && m[:6] == "image/"
 }
 
 // Abort cancels the session's running turn. The session (and its history)
@@ -310,27 +191,6 @@ func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 	defer cancel()
 	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/abort", map[string]any{}); err != nil {
 		return fmt.Errorf("opencode session abort: %w", err)
-	}
-	return nil
-}
-
-// Compact collapses the session's context by summarizing the collapsed
-// head (the lossy compaction collapsed region), invoked when the
-// execution's accumulated spend breaches its budget (soft-first, no hard
-// abort). It POSTs /session/{id}/summarize with the session's RESOLVED
-// provider/model so the compaction runs under the model the session
-// actually uses (the acceptance criterion). The route is verified live
-// (opencode 1.18.21): 200 true, then the SSE bus emits `compaction` and
-// `session.compacted`. Best-effort — a failure never fails the execution.
-//
-// The opencode summarize contract uses camelCase keys: `providerID`,
-// `modelID` (unlike SendMessage's snake_case `provider_id`).
-func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, modelID string) error {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	body := map[string]any{"providerID": providerID, "modelID": modelID}
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/summarize", body); err != nil {
-		return fmt.Errorf("opencode session compact: %w", err)
 	}
 	return nil
 }
@@ -356,7 +216,7 @@ func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.sseHC.Do(req)
+	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("opencode session subscribe: %w", err)
 	}
@@ -364,7 +224,7 @@ func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
 		resp.Body.Close()
 		return nil, fmt.Errorf("opencode session subscribe: http %d", resp.StatusCode)
 	}
-	sub := &Subscription{events: make(chan BusEvent, 1024), done: make(chan struct{}), once: make(chan struct{}), body: resp.Body}
+	sub := &Subscription{events: make(chan BusEvent, 256), done: make(chan struct{}), once: make(chan struct{}), body: resp.Body}
 	go sub.read(ctx, resp.Body)
 	return sub, nil
 }
@@ -420,35 +280,9 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 		}
 		var evt BusEvent
 		if err := json.Unmarshal(data.Bytes(), &evt); err == nil && evt.Type != "" {
-			if evt.Type == "session.idle" {
-				// session.idle is the SOLE completion signal for a turn — the event
-				// a collector uses to mark a reply complete. Dropping it on a full
-				// buffer would make a completed turn appear timed out (ADR-0002 D6
-				// WATCH): the collector sits waiting for a completion that was
-				// silently discarded, then fails that turn as a stale timeout. Never
-				// drop a completion signal: deliver it, blocking only until the
-				// consumer drains a slot or the subscription closes. It is rare (one
-				// per turn end), so this cannot park the reader on the bus.
-				select {
-				case s.events <- evt:
-				case <-s.once:
-					return
-				}
-			} else {
-				select {
-				case s.events <- evt:
-				case <-s.once:
-					return
-				default:
-					// Bus full — DROP the event (ADR-0002 D6). The /event bus is
-					// telemetry/liveness only; the durable record is the persisted
-					// transcript/reply, so a dropped telemetry event never loses
-					// data. Before this, a slow consumer parked its own SSE reader
-					// on the full channel, stalling its connection and (with every
-					// session subscribing to the one bus) affecting other sessions
-					// on the same serve. Dropping makes backpressure per-session,
-					// not a drive-wide stall.
-				}
+			select {
+			case s.events <- evt:
+			case <-s.once:
 			}
 		}
 		data.Reset()
@@ -523,64 +357,6 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 	return nil, false
 }
 
-// TokenDeltaInfoFromBus reports whether a bus event is a mid-generation token
-// delta and returns the incremental text plus the part kind it belongs to
-// ("text", "reasoning", or "" when the event does not carry a kind — callers
-// treat "" as text). It accepts both the modern `message.part.delta` shape
-// (the serve's text-delta / reasoning-delta stream) and the legacy
-// `message.part.updated`-with-delta shape (older serves). Deltas are
-// LIVENESS evidence AND the live partial-reply mirror: callers feed them to
-// the progress monitors and may show them while the turn runs, but they must
-// NOT be appended to the durable record — completed parts carry that, and the
-// turn's finalize overwrites the partial row with the authoritative reply (a
-// generation would otherwise create thousands of tiny transcript rows).
-func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
-	props := evt.Properties
-	switch evt.Type {
-	case "message.part.delta":
-		// Modern shape: {sessionID, messageID, partID, field, delta}. The
-		// serve streams text and reasoning through the SAME field "text"
-		// (the field is text for both), so the kind is best-effort; other
-		// fields (e.g. "metadata") are not token progress.
-		field, _ := props["field"].(string)
-		if field != "" && field != "text" && field != "reasoning" {
-			return "", "", false
-		}
-		delta, _ := props["delta"].(string)
-		if delta == "" {
-			return "", "", false
-		}
-		return delta, field, true
-	case "message.part.updated":
-		// Legacy shape: a text/reasoning part with a `delta` subobject and
-		// NO time.end (a completed part is not a delta — let the normal
-		// LegacyEventFromBus path handle it).
-		part, _ := props["part"].(map[string]any)
-		if part == nil {
-			return "", "", false
-		}
-		ptype, _ := part["type"].(string)
-		if ptype != "text" && ptype != "reasoning" {
-			return "", "", false
-		}
-		if tm, _ := part["time"].(map[string]any); tm != nil {
-			if _, hasEnd := tm["end"]; hasEnd {
-				return "", "", false
-			}
-		}
-		delta, _ := part["delta"].(map[string]any)
-		if delta == nil {
-			return "", "", false
-		}
-		text, _ := delta["text"].(string)
-		if text == "" {
-			return "", "", false
-		}
-		return text, ptype, true
-	}
-	return "", "", false
-}
-
 // TokenDeltaFromBus reports whether a bus event is a mid-generation token
 // delta (streamed text/reasoning) and returns the incremental text. It
 // accepts both the modern `message.part.delta` shape (the serve's
@@ -592,8 +368,49 @@ func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
 // parts carry the durable record, and a generation would otherwise create
 // thousands of tiny transcript rows).
 func TokenDeltaFromBus(evt BusEvent) (deltaText string, ok bool) {
-	text, _, ok := TokenDeltaInfoFromBus(evt)
-	return text, ok
+	props := evt.Properties
+	switch evt.Type {
+	case "message.part.delta":
+		// Modern shape: {sessionID, messageID, partID, field, delta}. The
+		// serve streams text and reasoning through the SAME field "text";
+		// other fields (e.g. "metadata") are not token progress.
+		field, _ := props["field"].(string)
+		if field != "" && field != "text" && field != "reasoning" {
+			return "", false
+		}
+		delta, _ := props["delta"].(string)
+		if delta == "" {
+			return "", false
+		}
+		return delta, true
+	case "message.part.updated":
+		// Legacy shape: a text/reasoning part with a `delta` subobject and
+		// NO time.end (a completed part is not a delta — let the normal
+		// LegacyEventFromBus path handle it).
+		part, _ := props["part"].(map[string]any)
+		if part == nil {
+			return "", false
+		}
+		ptype, _ := part["type"].(string)
+		if ptype != "text" && ptype != "reasoning" {
+			return "", false
+		}
+		if tm, _ := part["time"].(map[string]any); tm != nil {
+			if _, hasEnd := tm["end"]; hasEnd {
+				return "", false
+			}
+		}
+		delta, _ := part["delta"].(map[string]any)
+		if delta == nil {
+			return "", false
+		}
+		text, _ := delta["text"].(string)
+		if text == "" {
+			return "", false
+		}
+		return text, true
+	}
+	return "", false
 }
 
 // newRequest builds an authenticated request, scoping it to the client's

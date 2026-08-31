@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -120,23 +119,6 @@ func askServeDownGrace() time.Duration {
 	return defaultServeDownGrace
 }
 
-// defaultAskMaxConcurrentTurns bounds how many Ask Orchicon turns may run
-// concurrently across all conversations (ADR-0002 D7 — session admission
-// bound). A turn would exceed the cap is rejected with a clear
-// CodeResourceExhausted error instead of degrading under contention on the
-// shared serve bus + connection pool. Env override
-// ORCHICON_ASK_MAX_CONCURRENT_TURNS.
-const defaultAskMaxConcurrentTurns = 16
-
-func askMaxConcurrentTurns() int {
-	if v := os.Getenv("ORCHICON_ASK_MAX_CONCURRENT_TURNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return defaultAskMaxConcurrentTurns
-}
-
 // opencodeEvent is a single JSON event from opencode's stdout.
 type opencodeEvent struct {
 	Type string         `json:"type"`
@@ -185,17 +167,6 @@ type turnEntry struct {
 	// re-attach to the running turn (Stop + completion poll), not just know
 	// that one exists.
 	assistantMsgID string
-	// wedged records that this turn's session wedged on an unresolved tool call
-	// (MCP wedge, AC1). Read by InterjectConversationTurn so a mid-run
-	// interjection recycles a wedged session to a fresh one rather than
-	// dispatching onto (or queuing behind) the wedged turn (ADr-0002 D4).
-	wedged bool
-	// lastActivity is when the running turn last produced output (token,
-	// reasoning, step, or tool activity). Updated by the collector on each
-	// activity signal; read by turnStatus to compute the server-confirmed
-	// turn_progressing / turn_last_activity_at the frontend uses to show an
-	// accurate "still working" vs "stalled" state after a refresh (AC2, D3).
-	lastActivity time.Time
 }
 
 // turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
@@ -239,7 +210,7 @@ func (r *turnRegistry) register(convID, tenant, assistantMsgID string, cancel co
 	}
 	r.nextTok++
 	token := r.nextTok
-	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID, lastActivity: time.Now()}
+	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID}
 	return token, true
 }
 
@@ -253,41 +224,6 @@ func (r *turnRegistry) get(convID string) (turnEntry, bool) {
 	defer r.mu.Unlock()
 	entry, ok := r.turns[convID]
 	return entry, ok
-}
-
-// len reports the number of conversations with an in-flight turn. Used by the
-// admission bound (ADR-0002 D7) to reject dispatch beyond the concurrent-turn
-// cap with a clear error instead of degrading under contention.
-func (r *turnRegistry) len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.turns)
-}
-
-// markWedged records that a turn's session wedged on an unresolved tool (AC1),
-// keyed by the caller's token so a stale marker from a superseded turn never
-// clobbers the replacement. Read by InterjectConversationTurn (D4).
-func (r *turnRegistry) markWedged(convID string, token uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if entry, ok := r.turns[convID]; ok && entry.token == token {
-		entry.wedged = true
-		r.turns[convID] = entry
-	}
-}
-
-// markActivity records that a running turn last produced output at now,
-// advancing the server-confirmed turn_progressing signal the frontend reads to
-// distinguish a genuinely-working turn from a stalled/wedged one (AC2, D3).
-// Keyed by the caller's token so a stale marker from a superseded turn never
-// clobbers the replacement.
-func (r *turnRegistry) markActivity(convID string, token uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if entry, ok := r.turns[convID]; ok && entry.token == token {
-		entry.lastActivity = time.Now()
-		r.turns[convID] = entry
-	}
 }
 
 // cancel fires the collector's cancellation for a conversation (if any) with
@@ -457,15 +393,8 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// sessionIDOverride is the session the new turn dispatches on. Normally
-	// the conversation's persisted session; set to "" below (forcing a fresh
-	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
-	// interjection lands on a healthy session rather than the stuck one.
-	useSessionID := conv.SessionID
-
 	// --- 0.5. Supersede an in-flight turn (interject only). ---
 	if opts.supersede {
-		prevEntry, prevOk := s.turns.get(convID)
 		if token, ok := s.turns.cancel(convID, errTurnSuperseded); ok {
 			s.turns.remove(convID, token)
 			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
@@ -477,51 +406,10 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				_ = client.Abort(context.WithoutCancel(ctx), conv.SessionID)
 			}
 		}
-		// D4 (mid-run interjection on a wedged session): the superseded turn
-		// was wedged on an unresolved tool (MCP wedge) — its session is stuck,
-		// so dispatching the interjection onto it would wedge the new turn
-		// too. Force a fresh seeded session: the collector creates one (and
-		// seeds the DB history) when sessionID is empty, so the interjection
-		// is answered by a healthy session and never silently dropped.
-		if prevOk && prevEntry.wedged {
-			useSessionID = ""
-			s.log.Warn("interjection recycling a wedged session to a fresh one", "conversation", convID, "old_session", conv.SessionID)
-		}
-	}
-
-	// --- 0.8 Validate attachments (size/count caps — server is authoritative) ---
-	if len(attachments) > 5 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
-	}
-	var totalBytes int
-	for _, a := range attachments {
-		if len(a.Data) > 10*1024*1024 {
-			return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
-		}
-		totalBytes += len(a.Data)
-	}
-	if totalBytes > 20*1024*1024 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
 	}
 
 	// --- 1. Register the turn. ---
-	// The acked assistant message id is generated up front so the registry
-	// entry can carry it — a refreshed page re-attaches to the running turn
-	// via Conversation.pending_assistant_message_id, which is read from this
-	// entry.
-	assistantID := db.NewID()
-	// D7 (session admission bound): reject dispatch beyond the concurrent-turn
-	// cap with a clear CodeResourceExhausted error instead of degrading under
-	// contention on the shared serve bus + connection pool. A re-dispatch onto
-	// a conversation that ALREADY has a running turn is not counted against the
-	// cap — it is handled by the one-turn gate below (register returns false).
-	// Checked BEFORE the detached collector context is created so a rejected
-	// dispatch never allocates an un-cancelled context (lostcancel).
-	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
-		return "", nil, connect.NewError(connect.CodeResourceExhausted,
-			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
-	}
-	// The turn is registered before the user message is persisted so a
+	// The turn is registered BEFORE the user message is persisted so a
 	// rejected second send (one turn per conversation) never orphans a
 	// persisted user message. The detached context keeps the collector alive
 	// across a stream disconnect / tab close; only the turn registry's
@@ -529,6 +417,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// below, the turn is released.
 	detached := context.WithoutCancel(ctx)
 	turnCtx, cancelTurn := context.WithCancelCause(detached)
+	// The acked assistant message id is generated up front so the registry
+	// entry can carry it — a refreshed page re-attaches to the running turn
+	// via Conversation.pending_assistant_message_id, which is read from this
+	// entry.
+	assistantID := db.NewID()
 	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -540,13 +433,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
-	// Persist attachments as JSON so history + recreation carries them.
-	attachmentsJSON := []byte("[]")
-	if len(attachments) > 0 {
-		if j, err := json.Marshal(attachments); err == nil {
-			attachmentsJSON = j
-		}
-	}
 	userMsg := db.MessageRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -555,7 +441,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		Content:        msg,
 		ToolCalls:      []byte("[]"),
 		ToolResults:    []byte("[]"),
-		Attachments:    attachmentsJSON,
+		Attachments:    []byte("[]"),
 		Metadata:       []byte("{}"),
 		Reasoning:      []string{},
 	}
@@ -623,10 +509,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
-	// The tenant's stall window for THIS turn: read at dispatch time so a
-	// settings change applies to the next turn, and the collector's stall
-	// monitor uses the same value the read path reports as turn_progressing.
-	settings, _ := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
 	ttx.Rollback(ctx)
 
 	// Inject the tenant's enabled projects so the agent always has
@@ -658,79 +540,20 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	if client := s.hostServeClient(); client != nil {
-		// Partial-reply mirror: the collector's onPartial callbacks feed a
-		// throttled flusher that upserts the running turn's collected
-		// text/reasoning under the ACKED assistant message id. A client that
-		// lost the live stream (refresh, another tab/device) polls ListMessages
-		// and watches the reply grow instead of a bare spinner. The flusher is
-		// cancelled and drained BEFORE the finalize so the complete reply
-		// always lands last (no stale partial can clobber it). Its own tiny
-		// tenant tx keeps it off the collector's hot path.
-		partialMu := &sync.Mutex{}
-		partialDirty := false
-		var partialText string
-		var partialReasoning []string
-		partialCtx, partialCancel := context.WithCancel(detached)
-		partialDone := make(chan struct{})
-		go func() {
-			defer close(partialDone)
-			for {
-				partialMu.Lock()
-				dirty := partialDirty
-				text := partialText
-				rsn := append([]string(nil), partialReasoning...)
-				if dirty {
-					partialDirty = false
-				}
-				partialMu.Unlock()
-				if dirty {
-					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn)
-					continue
-				}
-				select {
-				case <-partialCtx.Done():
-					return
-				case <-time.After(250 * time.Millisecond):
-				}
-			}
-		}()
-		onPartial := func(text string, reasoning []string) {
-			partialMu.Lock()
-			partialText = text
-			partialReasoning = append([]string(nil), reasoning...)
-			partialDirty = true
-			partialMu.Unlock()
-		}
-
 		go func() {
 			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
-				client:                  client,
-				tenantID:                tenantID,
-				convID:                  convID,
-				token:                   token,
-				assistantMsgID:          assistantID,
-				sessionID:               useSessionID,
-				modelRef:                modelRef,
-				seedSystem:              seedSystem,
-				reuseSystem:             reuseSystem,
-				userMsg:                 msg,
-				attachments:             attachments,
-				onStreamEvent:           onStreamEvent,
-				stallNoProgressSeconds:  settings.StallNoProgressWindowSeconds,
-				onPartial:               onPartial,
+				client:         client,
+				tenantID:       tenantID,
+				convID:         convID,
+				token:          token,
+				assistantMsgID: assistantID,
+				sessionID:      conv.SessionID,
+				modelRef:       modelRef,
+				seedSystem:     seedSystem,
+				reuseSystem:    reuseSystem,
+				userMsg:        msg,
+				onStreamEvent:  onStreamEvent,
 			})
-			// Drain the partial mirror before finalizing: stop the flusher,
-			// wait for any in-flight write, then write whatever is still dirty
-			// so the finalize below is the LAST write to the row.
-			partialCancel()
-			<-partialDone
-			partialMu.Lock()
-			dirty := partialDirty
-			pText, pReasoning := partialText, append([]string(nil), partialReasoning...)
-			partialMu.Unlock()
-			if dirty {
-				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning)
-			}
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
 			// context.Cause on cancellation so Stop / supersede / expiry are
 			// distinguished:
@@ -826,7 +649,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
 // Orchicon agent. It carries the mode's identity block (BuildSystemPrompt),
 // the enabled-projects context, the tools list, and this message's
-// attachments. mode selects the persona (brainstorm only — orchicon removed); it is the
+// attachments. mode selects the persona (brainstorm | orchicon); it is the
 // conversation's persisted mode read at turn-dispatch time.
 //
 // When includeHistory is true the DB conversation history is ALSO injected
@@ -870,20 +693,11 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 
 	if len(attachments) > 0 {
 		b.WriteString("## Attachments\n")
-		imageCount := 0
 		for _, a := range attachments {
-			if strings.HasPrefix(a.MimeType, "image/") {
-				imageCount++
-				b.WriteString(fmt.Sprintf("- Image: %s (%s, %d bytes) — forwarded as vision input to the model\n", a.Name, a.MimeType, len(a.Data)))
-				continue
-			}
 			b.WriteString(fmt.Sprintf("File: %s (%s, %d bytes)\n", a.Name, a.MimeType, len(a.Data)))
 			if strings.HasPrefix(a.MimeType, "text/") || strings.HasPrefix(a.MimeType, "application/json") || strings.HasSuffix(a.Name, ".md") {
 				b.WriteString("```\n" + string(a.Data) + "\n```\n")
 			}
-		}
-		if imageCount > 0 {
-			b.WriteString(fmt.Sprintf("(%d image(s) sent as vision parts to the model)\n", imageCount))
 		}
 		b.WriteString("\n")
 	}
@@ -964,29 +778,28 @@ func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, co
 // across serve restarts, so the session identity here is the starting point,
 // not the final one.
 type turnCollectOpts struct {
-	client         sessionTurnClient
-	tenantID       string
-	convID         string
+	client   sessionTurnClient
+	tenantID string
+	convID   string
+	// token is this turn's registry token, carried so the collector's
+	// deferred remove(convID, token) can never clobber a replacement turn
+	// (token-guarded removal — the supersede race is eliminated by
+	// construction).
 	token          uint64
 	assistantMsgID string
-	sessionID      string
-	modelRef       string
-	seedSystem     string
-	reuseSystem    string
-	userMsg        string
-	attachments    []*apiv1.AttachmentInput
-	onStreamEvent  func(*apiv1.ChatStreamResponse)
-	// stallNoProgressSeconds is the tenant's stall_no_progress_window_seconds
-	// read at dispatch time (0 when unset). The turn's stall monitor resolves
-	// its effective no-progress window from it, matching executions.
-	stallNoProgressSeconds int64
-	// onPartial mirrors the running turn's collected text/reasoning into the
-	// acked assistant message row (throttled by the caller) so a client that
-	// lost the live stream — refresh, another tab, another device — can watch
-	// the reply grow via ListMessages instead of a bare spinner. The finalize
-	// upserts the complete reply over the partial row. Nil when the dispatch
-	// path has no partial mirror (e.g. the no-serve fast-fail).
-	onPartial func(text string, reasoning []string)
+	// sessionID is the persisted opencode session id (empty on a first
+	// message, recreated on serve loss when the serve no longer knows it).
+	sessionID string
+	modelRef  string
+	// seedSystem is the system prompt for a fresh session (DB history
+	// included); reuseSystem is the steady-state follow-up system (no
+	// history — it already lives in the session).
+	seedSystem  string
+	reuseSystem string
+	userMsg     string
+	// onStreamEvent is called for each streaming text/reasoning chunk
+	// from the bus. Safe for concurrent use (non-blocking send).
+	onStreamEvent func(*apiv1.ChatStreamResponse)
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -998,7 +811,6 @@ const (
 	turnRecreated                        // session 404'd — a fresh seeded session was created
 	turnReattach                         // bus lost after a live connection — retry after a backoff
 	turnServeDown                        // the serve never accepted a connection this attempt
-	turnToolWedge                        // a tool call was issued but never resolved — the session is wedged (recycle)
 )
 
 type turnAttemptResult struct {
@@ -1006,39 +818,7 @@ type turnAttemptResult struct {
 	text      string
 	reasoning []string
 	newSid    string
-	// wedgeTool names the tool whose call wedged (set only for turnToolWedge).
-	wedgeTool string
 	err       error
-}
-
-// activeToolName returns the name of a tool call that is issued but not yet
-// resolved, from a raw bus event. The serve emits a tool part with
-// state.status "running"/"pending" (non-terminal) while the tool executes;
-// LegacyEventFromBus drops these (it only maps completed/errored tools to
-// "tool_use"), so the chat collector uses this to feed the stall monitor's
-// tool-wedge signal (AC1). ok=false means the event is not an unresolved tool.
-func activeToolName(evt opencode.BusEvent) (string, bool) {
-	if evt.Type != "message.part.updated" {
-		return "", false
-	}
-	props := evt.Properties
-	part, _ := props["part"].(map[string]any)
-	if part == nil {
-		return "", false
-	}
-	if ptype, _ := part["type"].(string); ptype != "tool" {
-		return "", false
-	}
-	state, _ := part["state"].(map[string]any)
-	status, _ := state["status"].(string)
-	if status == "completed" || status == "error" {
-		return "", false
-	}
-	tool, _ := part["tool"].(string)
-	if tool == "" {
-		return "", false
-	}
-	return tool, true
 }
 
 // collectConversationReply is the detached reply collector for one chat
@@ -1068,10 +848,6 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	sid = c.sessionID
 	system := c.reuseSystem
 	recreated := false
-	// reconnects counts the bounded session recycles performed on an MCP
-	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
-	// session is healed once (or a small bound) instead of looping.
-	reconnects := 0
 
 	// A first message (no persisted session id) creates the session up front
 	// and persists the id immediately; follow-ups reuse the persisted one. A
@@ -1117,33 +893,6 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			return res.text, reasoning, sid, res.err
 		case turnRecreated:
 			sid = res.newSid
-			system = c.seedSystem
-			recreated = true
-			everLive = true
-			s.persistConversationSessionID(ctx, c.tenantID, c.convID, sid)
-		case turnToolWedge:
-			// A tool call was issued on the session but never resolved (MCP
-			// wedge — AC1). Heal, don't fail: abort the wedged session, create
-			// a FRESH seeded session, and re-dispatch the SAME user message
-			// once (bounded by the reconnect budget). The reply window applies
-			// and the turn continues transparently on a healthy session.
-			// Record the wedge so a mid-run interjection (D4) recycles rather
-			// than dispatching onto the (now-stuck) session.
-			s.turns.markWedged(c.convID, c.token)
-			if reconnects >= askMCPReconnectAttempts() {
-				return res.text, reasoning, sid, fmt.Errorf("the conversation session wedged on a tool (%s) and could not be recovered after %d attempt(s) — please retry", res.wedgeTool, reconnects+1)
-			}
-			oldSid := sid
-			reconnects++
-			s.log.Warn("ask orchicon session wedged on a tool — recycling to a fresh session",
-				"conversation", c.convID, "old_session", oldSid, "tool", res.wedgeTool, "reconnects", reconnects)
-			// Interrupt the stuck model NOW (idempotent best-effort).
-			_ = c.client.Abort(context.WithoutCancel(ctx), oldSid)
-			fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
-			if cerr != nil {
-				return res.text, reasoning, sid, fmt.Errorf("recreate conversation session after tool wedge: %w", cerr)
-			}
-			sid = fresh
 			system = c.seedSystem
 			recreated = true
 			everLive = true
@@ -1215,23 +964,8 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// and ignored.
 	sendCh := make(chan error, 1)
 	go func() {
-		var sendErr error
-		// If attachments contain images/files, use the extended sender when available.
-		if len(c.attachments) > 0 {
-			if sc, ok := c.client.(*opencode.SessionClient); ok {
-				parts := make([]opencode.AttachmentPart, 0, len(c.attachments))
-				for _, a := range c.attachments {
-					parts = append(parts, opencode.AttachmentPart{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
-				}
-				sendErr = sc.SendMessageWithAttachments(subCtx, sid, system, c.modelRef, c.userMsg, parts)
-			} else {
-				sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
-			}
-		} else {
-			sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
-		}
-		if sendErr != nil {
-			sendCh <- sendErr
+		if err := c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg); err != nil {
+			sendCh <- err
 			return
 		}
 		sendCh <- nil
@@ -1239,28 +973,6 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 
 	var reply strings.Builder
 	var reasoning []string
-	// Live-delta buffers for the partial-reply mirror: completed parts are
-	// authoritative (reply/reasoning), but between parts the model streams
-	// token deltas — those stream into liveText/liveReasoning so a re-attached
-	// client sees output grow live instead of freezing until the next part
-	// completes. Each completed part RESETS its live buffer (the part's text
-	// subsumes the deltas that built it, so the mirror never double-counts).
-	var liveText strings.Builder
-	var liveReasoning strings.Builder
-	// lastMirror throttles how often the drain loop snapshots the live buffers
-	// into the partial mirror (the flusher further throttles the DB writes).
-	var lastMirror time.Time
-	// mirrorSnapshot builds the live partial snapshot for onPartial:
-	// authoritative completed parts + the delta tail. The reasoning tail is
-	// appended as ONE growing entry (the frontend joins reasoning parts into a
-	// single thinking bubble).
-	mirrorSnapshot := func() (string, []string) {
-		rsn := append([]string(nil), reasoning...)
-		if liveReasoning.Len() > 0 {
-			rsn = append(rsn, liveReasoning.String())
-		}
-		return reply.String() + liveText.String(), rsn
-	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
 	// only fires while the message is still un-accepted, so a wedged serve
@@ -1276,7 +988,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// ticker polls on a bounded interval (≤30s, ≥1s) so a trip is detected
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
-	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
+	monitor := newChatStallMonitor(c.modelRef)
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -1307,15 +1019,6 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
 			}
 		case <-stallTicker.C:
-			// First, the AC1 MCP-wedge signal: a tool call issued but never
-			// resolved. This is UNLIKE no_progress/repetition — it is healed
-			// (the collector recycles to a fresh session and re-dispatches the
-			// same message), not failed. The monitor's toolWedge is precise: a
-			// slow tool that still streams activity never trips it.
-			if tool, wedged := monitor.toolWedge(); wedged {
-				s.log.Warn("ask orchicon turn wedged on a tool call", "conversation", c.convID, "session", sid, "model", c.modelRef, "tool", tool)
-				return turnAttemptResult{kind: turnToolWedge, reasoning: reasoning, wedgeTool: tool, err: fmt.Errorf("tool %s did not respond", tool)}
-			}
 			if reason := monitor.stallReason(); reason != "" {
 				// The model has stopped making progress: interrupt it NOW
 				// (the same abort the Stop button uses) and fail the turn
@@ -1391,43 +1094,13 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// them to the stall monitor so a long, slow generation on
 				// a local model resets the no_progress clock instead of
 				// false-tripping the stall. Deltas must NOT flow into the
-				// durable reply text / reasoning / stream events (completed
-				// parts carry the durable record — TokenDeltaFromBus).
-				if delta, kind, ok := opencode.TokenDeltaInfoFromBus(evt); ok {
+				// reply text / reasoning / stream events (completed parts
+				// carry the durable record — TokenDeltaFromBus).
+				if _, ok := opencode.TokenDeltaFromBus(evt); ok {
 					// observe("text") resets lastActivity — for "text" the
 					// monitor ignores the part, so pass nil (no per-delta
 					// allocation).
 					monitor.observe("text", nil)
-					s.turns.markActivity(c.convID, c.token)
-					// Mirror the delta into the live partial row (throttled):
-					// completed parts alone would freeze the mirror between
-					// parts, so a re-attached client would see NO output while
-					// the model streams a long part — the exact 'nothing until
-					// the final message' report. Reasoning deltas grow the
-					// thinking tail; text (or unknown-kind) deltas stream as
-					// text. The finalize overwrites the row with the
-					// authoritative reply, so deltas never corrupt it.
-					if kind == "reasoning" {
-						liveReasoning.WriteString(delta)
-					} else {
-						liveText.WriteString(delta)
-					}
-					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
-						lastMirror = time.Now()
-						snapText, snapRsn := mirrorSnapshot()
-						c.onPartial(snapText, snapRsn)
-					}
-					continue
-				}
-				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
-				// serve emits a tool part with a non-terminal status before the
-				// tool resolves; LegacyEventFromBus drops these (it only maps
-				// completed/errored tools to "tool_use"), so a wedged tool
-				// would otherwise be invisible to the stall monitor. Feed an
-				// explicit tool start so the monitor can detect the wedge.
-				if tool, ok2 := activeToolName(evt); ok2 {
-					monitor.observeToolStart(tool)
-					s.turns.markActivity(c.convID, c.token)
 					continue
 				}
 				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
@@ -1436,20 +1109,11 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// Activity resets the stall clock: text, reasoning,
 					// step_finish and tool_use all count as progress.
 					monitor.observe(t, part)
-					s.turns.markActivity(c.convID, c.token)
 					switch t {
 					case "text":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reply.WriteString(text)
 							reply.WriteString("\n\n")
-							// The completed part subsumes the deltas that
-							// built it — reset the live text tail so the
-							// mirror doesn't double-count.
-							liveText.Reset()
-							if c.onPartial != nil {
-								snapText, snapRsn := mirrorSnapshot()
-								c.onPartial(snapText, snapRsn)
-							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
 									Event: &apiv1.ChatStreamResponse_TextChunk{
@@ -1461,11 +1125,6 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					case "reasoning":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reasoning = append(reasoning, text)
-							liveReasoning.Reset()
-							if c.onPartial != nil {
-								snapText, snapRsn := mirrorSnapshot()
-								c.onPartial(snapText, snapRsn)
-							}
 							if c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
 									Event: &apiv1.ChatStreamResponse_Reasoning{
@@ -1525,7 +1184,7 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,
 	}
-	if _, err := db.UpsertMessage(ctx, ttx.Tx, assistantMsg); err != nil {
+	if _, err := db.CreateMessage(ctx, ttx.Tx, assistantMsg); err != nil {
 		s.log.Warn("persist conversation reply", "conversation", convID, "error", err)
 		return
 	}
@@ -1535,41 +1194,6 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		s.log.Warn("persist conversation reply: commit", "conversation", convID, "error", err)
-	}
-}
-
-// upsertPartialMessage writes the running turn's partial reply under the acked
-// assistant message id (best-effort, its own tiny tenant tx so the collector's
-// hot loop never blocks on the DB). Only visible while the turn is in flight:
-// the finalize (persistConversationReply) upserts the complete reply over it.
-func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string) {
-	if s.pool == nil {
-		return
-	}
-	metaJSON, _ := json.Marshal(map[string]any{"model_ref": modelRef})
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		s.log.Warn("upsert partial message: begin tx", "conversation", convID, "error", err)
-		return
-	}
-	defer ttx.Rollback(ctx)
-	if _, err := db.UpsertMessage(ctx, ttx.Tx, db.MessageRow{
-		ID:             assistantMsgID,
-		TenantID:       tenantID,
-		ConversationID: convID,
-		Role:           "assistant",
-		Content:        content,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
-		Attachments:    []byte("[]"),
-		Metadata:       metaJSON,
-		Reasoning:      reasoning,
-	}); err != nil {
-		s.log.Warn("upsert partial message", "conversation", convID, "error", err)
-		return
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		s.log.Warn("upsert partial message: commit", "conversation", convID, "error", err)
 	}
 }
 
@@ -1750,14 +1374,10 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 	if err != nil {
 		return ""
 	}
-	// list_projects returns the compact envelope {count, truncated, items}.
-	var env struct {
-		Items []map[string]any `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil || len(env.Items) == 0 {
+	var projects []map[string]any
+	if err := json.Unmarshal(raw, &projects); err != nil || len(projects) == 0 {
 		return ""
 	}
-	projects := env.Items
 	var b strings.Builder
 	for _, p := range projects {
 		name, _ := p["Name"].(string)

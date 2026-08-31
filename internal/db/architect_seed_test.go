@@ -36,8 +36,8 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		}
 		// The SDLC Architect templates parallelize PR review + QA under an
 		// explicit Parallel step feeding a single fan-in loop gate, plus the
-		// Architect entry step and a final conflict loop-decision — 11 steps.
-		const wantSteps = 11
+		// Architect entry step and a final conflict loop-decision — 10 steps.
+		const wantSteps = 10
 		if len(steps) != wantSteps {
 			t.Errorf("%s: expected %d steps, got %d", label, wantSteps, len(steps))
 		}

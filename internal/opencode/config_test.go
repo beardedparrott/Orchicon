@@ -40,120 +40,6 @@ func TestBuildConfigContentRegistersOrchiconMCP(t *testing.T) {
 	}
 }
 
-func TestBuildConfigContentCompositeWorktreeTools(t *testing.T) {
-	out := BuildConfigContent(ConfigOptions{
-		AgentName:      workerAgent,
-		AgentPrompt:    workerAgentPrompt,
-		DefaultAgent:   workerAgent,
-		CompositeTools: true,
-		WorktreeDir:    "/worktree",
-	})
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("config content is not valid JSON: %v", err)
-	}
-	mcp, ok := cfg["mcp"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected mcp block, got %#v", cfg["mcp"])
-	}
-	wt, ok := mcp["orchicon-worktree"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected orchicon-worktree MCP entry, got %#v", mcp["orchicon-worktree"])
-	}
-	cmd, _ := wt["command"].([]any)
-	if len(cmd) != 2 || cmd[1] != "mcp" {
-		t.Fatalf("worktree MCP command = %#v, want [<orchicon-binary>, mcp]", wt["command"])
-	}
-	env, ok := wt["environment"].(map[string]any)
-	if !ok || env["ORCHICON_MCP_WORKTREE_DIR"] != "/worktree" {
-		t.Fatalf("worktree MCP environment = %#v, want ORCHICON_MCP_WORKTREE_DIR=/worktree", wt["environment"])
-	}
-
-	// The built-in read/grep must be denied so the worker uses the batch tools.
-	perm, ok := cfg["permission"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected permission block, got %#v", cfg["permission"])
-	}
-	if read, ok := perm[readToolDeny].(map[string]any); !ok || read["*"] != "deny" {
-		t.Fatalf("read must be denied when composite tools are on, got %#v", perm[readToolDeny])
-	}
-	if grep, ok := perm[grepToolDeny].(map[string]any); !ok || grep["*"] != "deny" {
-		t.Fatalf("grep must be denied when composite tools are on, got %#v", perm[grepToolDeny])
-	}
-}
-
-func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
-	out := BuildConfigContent(ConfigOptions{AgentName: workerAgent, AgentPrompt: workerAgentPrompt, DefaultAgent: workerAgent})
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("config content is not valid JSON: %v", err)
-	}
-	perm, ok := cfg["permission"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected permission block, got %#v", cfg["permission"])
-	}
-	if _, exists := perm[readToolDeny]; exists {
-		t.Fatalf("read must NOT be denied by default, got %#v", perm[readToolDeny])
-	}
-	if _, exists := perm[grepToolDeny]; exists {
-		t.Fatalf("grep must NOT be denied by default, got %#v", perm[grepToolDeny])
-	}
-}
-
-// TestRuntimeServeConfigCompositeToolsLiveOnDev verifies the composite
-// worktree tools are LIVE on dev runtime images: with a resolved project dir
-// the config registers the orchicon-worktree MCP AND denies the built-in
-// read/grep so the worker is forced onto batch_read/batch_grep. A base/gui
-// image (or an unresolved project dir) must NOT emit the deny, so a worker is
-// never locked out of file access with no batch tool to fall back on.
-func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
-	var devCfg map[string]any
-	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
-		t.Fatalf("dev config not valid JSON: %v", err)
-	}
-	mcp, ok := devCfg["mcp"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected mcp block on dev config: %s", dev)
-	}
-	if _, ok := mcp["orchicon-worktree"].(map[string]any); !ok {
-		t.Fatalf("expected orchicon-worktree MCP on dev config: %s", dev)
-	}
-	perm, ok := devCfg["permission"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected permission block on dev config: %s", dev)
-	}
-	if read, _ := perm[readToolDeny].(map[string]any); read["*"] != "deny" {
-		t.Fatalf("dev config must deny read (live composite), got %#v", perm[readToolDeny])
-	}
-	if grep, _ := perm[grepToolDeny].(map[string]any); grep["*"] != "deny" {
-		t.Fatalf("dev config must deny grep (live composite), got %#v", perm[grepToolDeny])
-	}
-
-	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
-	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
-	// DB MCP (`orchicon`) stays dev-only.
-	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil)
-	var bcfg map[string]any
-	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
-		t.Fatalf("base config not valid JSON: %v", err)
-	}
-	bmcp, ok := bcfg["mcp"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected mcp block on base config (composite worktree), got: %s", base)
-	}
-	if _, ok := bmcp["orchicon-worktree"]; !ok {
-		t.Fatalf("expected orchicon-worktree MCP on base config (composite live), got: %s", base)
-	}
-	if _, ok := bmcp["orchicon"]; ok {
-		t.Fatalf("sandbox DB MCP (`orchicon`) must stay dev-only, got on base: %s", base)
-	}
-	bperm, _ := bcfg["permission"].(map[string]any)
-	if bperm[readToolDeny] == nil {
-		t.Fatalf("base config must deny read (composite live), got: %s", base)
-	}
-}
-
 func TestBuildConfigContentSkipsOrchiconMCP(t *testing.T) {
 	out := BuildConfigContent(ConfigOptions{
 		AgentName:   "orchicon-worker",
@@ -202,75 +88,10 @@ func TestBuildConfigContentMCPEnvAndBinaryPath(t *testing.T) {
 	}
 }
 
-// TestRuntimeServeConfigPlaneChannelOnEveryImage pins the plane-channel
-// guarantee: whenever the run's worker role grants plane access (planeEnv
-// non-empty — minted by the runtime lifecycle per run), the `orchicon-plane`
-// MCP server is registered in the serve config on EVERY runtime image —
-// base, gui, web-research, orchicon-dev — because plane access is
-// ROLE-gated, never image-gated. This is the regression lock behind "the
-// idea MCP tools are truly going to be available to any runtime container":
-// the dedicated idea tools (orchicon_plane_list_idea_items /
-// orchicon_plane_create_idea_item) live inside that plane registry, so the
-// tools' availability reduces to this registration surviving for every
-// image tag. The sidecar runs from the daemon bind-mounted binary
-// (never baked), so the tools on the wire are whatever the freshly built
-// binary ships — paired with the pool's binary fingerprint, a rebuilt
-// binary forces a fresh container so the registry contents are always
-// current.
-func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
-	planeEnv := map[string]string{
-		"ORCHICON_PLANE_URL":   "http://172.17.0.3:8080",
-		"ORCHICON_PLANE_TOKEN": "test-plane-token",
-	}
-	for _, tag := range []string{
-		"orchicon-runtime:local",
-		"orchicon-runtime:local-gui",
-		"orchicon-runtime:web-research",
-		"orchicon-runtime:orchicon-dev",
-	} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv)
-		var cfg map[string]any
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("%s config not valid JSON: %v", tag, err)
-		}
-		mcp, ok := cfg["mcp"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s config missing mcp block with planeEnv set: %s", tag, out)
-		}
-		plane, ok := mcp["orchicon-plane"].(map[string]any)
-		if !ok {
-			t.Fatalf("orchicon-plane MCP must register on EVERY image when planeEnv is present (got missing on %s): %s", tag, out)
-		}
-		cmd, _ := plane["command"].([]any)
-		if len(cmd) != 2 || cmd[0] != runtimeContainerBinaryPath || cmd[1] != "mcp" {
-			t.Fatalf("plane MCP command = %#v, want [%s, mcp]", plane["command"], runtimeContainerBinaryPath)
-		}
-		env, _ := plane["environment"].(map[string]any)
-		if env["ORCHICON_PLANE_TOKEN"] != "test-plane-token" {
-			t.Fatalf("plane MCP env = %#v, want the minted credential", env)
-		}
-	}
-
-	// Deny-by-default is preserved: no planeEnv → no plane channel on any
-	// image (a worker whose role grants nothing gets no plane tools).
-	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "orchicon-runtime:web-research"} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil)
-		var cfg map[string]any
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("%s config not valid JSON: %v", tag, err)
-		}
-		if m, ok := cfg["mcp"].(map[string]any); ok {
-			if _, exists := m["orchicon-plane"]; exists {
-				t.Fatalf("orchicon-plane MCP must stay deny-by-default (registered on %s without planeEnv): %s", tag, out)
-			}
-		}
-	}
-}
-
 func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	// Dev image: the container serve must register the Orchicon MCP against
 	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev")
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -294,7 +115,7 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 
 	// Base/gui image: no sandbox plane, no MCP — behavior identical to today.
 	for _, tag := range []string{"ghcr.io/beardedparrott/orchicon-runtime:latest", "orchicon-runtime:gui-latest"} {
-		base := RuntimeServeConfig(tag, "", "", nil)
+		base := RuntimeServeConfig(tag)
 		var baseCfg map[string]any
 		if err := json.Unmarshal([]byte(base), &baseCfg); err != nil {
 			t.Fatalf("base config not valid JSON: %v", err)
@@ -303,119 +124,6 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 			if _, exists := m["orchicon"]; exists {
 				t.Errorf("orchicon MCP registered on non-dev image %s: %s", tag, base)
 			}
-		}
-	}
-}
-
-// TestBuildConfigContentCompactionPruneEnabled verifies every serve config —
-// host serve AND runtime-container serve — enables opencode context
-// compaction pruning, so a long step does not keep re-sending every past
-// tool output (read/grep/bash results) on every turn. Prune is
-// capability-safe: it removes stale tool RESULTS, not tool definitions,
-// prompts, or decisions; it does not enable lossy auto-compaction.
-func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
-	// Host serve path.
-	host := BuildConfigContent(ConfigOptions{AgentName: workerAgent})
-	var hostCfg map[string]any
-	if err := json.Unmarshal([]byte(host), &hostCfg); err != nil {
-		t.Fatalf("host config not valid JSON: %v", err)
-	}
-	comp, ok := hostCfg["compaction"].(map[string]any)
-	if !ok {
-		t.Fatalf("host serve config missing compaction block: %s", host)
-	}
-	if comp["prune"] != true {
-		t.Errorf("host serve compaction.prune = %#v, want true", comp["prune"])
-	}
-	// `auto` (opencode's OWN lossy auto-compaction) must be explicitly OFF so
-	// opencode is not a second, independent compaction driver on top of
-	// Orchicon's budget ladder — which would interrupt the worker mid-flight.
-	// Leaving it at opencode's default risks exactly that double-compaction.
-	if comp["auto"] != false {
-		t.Errorf("host serve compaction.auto = %#v, want false", comp["auto"])
-	}
-
-	// Runtime-container serve (dev image, the SDLC runs) + base image.
-	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "ghcr.io/beardedparrott/orchicon-runtime:latest"} {
-		out := RuntimeServeConfig(tag, "/worktree", "", nil)
-		var cfg map[string]any
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("runtime config not valid JSON: %v", err)
-		}
-		comp, ok := cfg["compaction"].(map[string]any)
-		if !ok {
-			t.Fatalf("runtime config %s missing compaction block: %s", tag, out)
-		}
-		if comp["prune"] != true {
-			t.Errorf("runtime %s compaction.prune = %#v, want true", tag, comp["prune"])
-		}
-	}
-}
-
-// TestBuildConfigContentWorkerDefaultAgent verifies worker serves register a
-// minimal `orchicon-worker` agent prompt AND set it as default_agent, so
-// sessions do not run under opencode's large built-in `build` prompt. This
-// is the per-turn token win: Orchicon's real system prompt still rides the
-// per-message `system` field; the agent prompt is just a tool-guideline shell.
-func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
-	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("runtime config not valid JSON: %v", err)
-	}
-	if cfg["default_agent"] != workerAgent {
-		t.Fatalf("default_agent = %#v, want %q", cfg["default_agent"], workerAgent)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected agent block, got %#v", cfg["agent"])
-	}
-	wa, ok := agents[workerAgent].(map[string]any)
-	if !ok {
-		t.Fatalf("expected %q agent entry, got %#v", workerAgent, agents[workerAgent])
-	}
-	prompt, ok := wa["prompt"].(string)
-	if !ok || prompt == "" {
-		t.Fatalf("expected a non-empty %q prompt, got %#v", workerAgent, wa["prompt"])
-	}
-	// The prompt must be the minimal tool-guideline shell, not the full
-	// Orchicon system prompt (which rides the per-message system field).
-	if len(prompt) > 2000 {
-		t.Fatalf("worker agent prompt should be a short shell, got %d chars", len(prompt))
-	}
-}
-
-// TestBuildConfigContentToolOutputAndBatchTool verifies the emitted config
-// carries the tool-output size settings (tool_output.max_bytes/max_lines —
-// the "smart size" settings that let a worker read a large file in ONE call
-// instead of chunking it into many small reads, which is itself the re-send
-// amplification) and the experimental batch_tool flag (ask opencode to emit
-// independent tool calls in a single assistant turn). These are the two
-// settings the worker is told to use to collapse the number of round-trips.
-// They are only effective when opencode honors them, so this test is a
-// regression lock on the config that is actually handed to opencode.
-func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
-	for name, out := range map[string]string{
-		"host serve":  BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
-		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil),
-	} {
-		var cfg map[string]any
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("%s config not valid JSON: %v", name, err)
-		}
-		to, ok := cfg["tool_output"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s config missing tool_output block: %s", name, out)
-		}
-		if to["max_bytes"] != float64(512000) {
-			t.Errorf("%s tool_output.max_bytes = %#v, want 512000", name, to["max_bytes"])
-		}
-		exp, ok := cfg["experimental"].(map[string]any)
-		if !ok {
-			t.Fatalf("%s config missing experimental block: %s", name, out)
-		}
-		if exp["batch_tool"] != true {
-			t.Errorf("%s experimental.batch_tool = %#v, want true", name, exp["batch_tool"])
 		}
 	}
 }

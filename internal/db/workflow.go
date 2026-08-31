@@ -22,8 +22,7 @@ type WorkflowRow struct {
 	Name           string
 	CurrentVersion int
 	Status         string
-	Type           string  // "one_shot" or "template"
-	GitStrategy    *string // nil=inherit, values local|pr|none
+	Type           string // "one_shot" or "template"
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -35,17 +34,17 @@ type WorkflowRow struct {
 // changes create a new version. The steps field is a JSON array of Step
 // messages (validated at the API boundary).
 type WorkflowVersionRow struct {
-	ID          string
-	TenantID    string
-	WorkflowID  string
-	Version     int
-	VersionNote string
-	Status      string
-	Steps       []byte // jsonb: array of Step messages
-	Inputs      []byte // jsonb
-	Outputs     []byte // jsonb
-	PublishedAt *time.Time
-	CreatedAt   time.Time
+	ID                 string
+	TenantID           string
+	WorkflowID         string
+	Version            int
+	VersionNote        string
+	Status             string
+	Steps              []byte // jsonb: array of Step messages
+	Inputs             []byte // jsonb
+	Outputs            []byte // jsonb
+	PublishedAt        *time.Time
+	CreatedAt          time.Time
 }
 
 // WorkflowRunRow is the data-access shape of a workflow_runs table row
@@ -98,54 +97,6 @@ func PrFromRunContext(runContext []byte) (prURL, prState string) {
 	return prURL, prState
 }
 
-// ProvenanceFromRunContext extracts the automation provenance block that a
-// recurring fire writes into the run's run_context at fire time (feature 4.1,
-// D3): spawned_by (the recurring item id), spawned_by_run_id (this run's id)
-// and outputs_mode (standard/idea/none). The create path reads it to stamp a
-// newly created work item. Best-effort: missing or non-string keys yield zero
-// values, so a run with no provenance block is treated as a plain run.
-func ProvenanceFromRunContext(runContext []byte) (spawnedByWorkItemID, spawnedByRunID, outputsMode string) {
-	if len(runContext) == 0 {
-		return "", "", ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(runContext, &m); err != nil {
-		return "", "", ""
-	}
-	if v, ok := m["spawned_by"].(string); ok {
-		spawnedByWorkItemID = v
-	}
-	if v, ok := m["spawned_by_run_id"].(string); ok {
-		spawnedByRunID = v
-	}
-	if v, ok := m["outputs_mode"].(string); ok {
-		outputsMode = v
-	}
-	return spawnedByWorkItemID, spawnedByRunID, outputsMode
-}
-
-// MergeRunContext merges add into existing run_context JSONB, returning the
-// merged bytes. A nil/empty existing is treated as {}. Returns ok=false on
-// marshal failure (the caller keeps the original). Exported so the workflow
-// start path can stamp provenance into the run context after the run is
-// created (the run id is only known after creation).
-func MergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
-	out := map[string]any{}
-	if len(existing) > 0 {
-		if err := json.Unmarshal(existing, &out); err != nil {
-			out = map[string]any{}
-		}
-	}
-	for k, v := range add {
-		out[k] = v
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return nil, false
-	}
-	return b, true
-}
-
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs
 // table row (docs/09 §3.4). The runtime state of a single step within
 // a WorkflowRun. iteration and superseded_by track loop decision
@@ -182,16 +133,16 @@ type WorkflowStepRunRow struct {
 // starts at 1; current_version starts at 0 (no published versions yet).
 func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow, error) {
 	const q = `INSERT INTO workflows
-		(id, tenant_id, project_id, name, current_version, status, type, git_strategy)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+		(id, tenant_id, project_id, name, current_version, status, type)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
-		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type, w.GitStrategy,
+		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.Name, &row.CurrentVersion,
-		&row.Status, &row.Type, &row.GitStrategy, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.Status, &row.Type, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return WorkflowRow{}, fmt.Errorf("db: create workflow: %w", err)
@@ -201,13 +152,13 @@ func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow,
 
 // GetWorkflow fetches a single workflow by id within the tenant scope.
 func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRow, error) {
-	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type,
 		version, created_at, updated_at
 		FROM workflows WHERE id = $1 AND tenant_id = $2`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -279,7 +230,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type,
 		version, created_at, updated_at
 		FROM workflows
 		WHERE %s
@@ -295,7 +246,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		var w WorkflowRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-			&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow: %w", err)
 		}
@@ -336,12 +287,12 @@ func UpdateWorkflowStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, e
 	const q = `UPDATE workflows
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -357,12 +308,12 @@ func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 	const q = `UPDATE workflows
 		SET name = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, name).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -375,36 +326,16 @@ func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 
 // UpdateWorkflowCurrentVersion bumps the current_version pointer to the
 // newly published version. Uses optimistic concurrency on the header.
-func UpdateWorkflowGitStrategy(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, gitStrategy *string) (WorkflowRow, error) {
-	const q = `UPDATE workflows
-		SET git_strategy = $4, updated_at = now(), version = version + 1
-		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
-	var w WorkflowRow
-	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, gitStrategy).Scan(
-		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return WorkflowRow{}, ErrNotFound
-	}
-	if err != nil {
-		return WorkflowRow{}, fmt.Errorf("db: update workflow git_strategy: %w", err)
-	}
-	return w, nil
-}
-
 func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion, newVersion int) (WorkflowRow, error) {
 	const q = `UPDATE workflows
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -696,8 +627,8 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		runtime_ready, worktree_status, worktree_path, worktree_branch,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
-		WHERE tenant_id = $1`
-	args := []any{f.TenantID}
+		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
+	args := []any{f.TenantID, f.AfterID}
 	if f.WorkflowID != "" {
 		q += fmt.Sprintf(` AND workflow_id = $%d`, len(args)+1)
 		args = append(args, f.WorkflowID)
@@ -716,42 +647,17 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 	}
 	if f.SortBy == "started_at" {
 		order := "DESC"
-		cmp := "<"
 		if f.SortOrder == "asc" {
-			order, cmp = "ASC", ">"
+			order = "ASC"
 		}
-		// Keyset pagination on the (started_at, id) tuple. started_at is
-		// nullable and sorted NULLS LAST, so a NULL cursor row pages only
-		// within the trailing NULL block (id order), while a non-NULL cursor
-		// also admits the NULL block that sorts after it. RLS scopes the
-		// cursor subqueries inside the tenant tx.
-		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order
-		if f.AfterID != "" {
-			n := len(args) + 1 // the cursor id param
-			q += fmt.Sprintf(` AND (
-				((SELECT started_at FROM workflow_runs wc WHERE wc.tenant_id = $1 AND wc.id = $%d) IS NULL AND started_at IS NULL AND id %s $%d)
-				OR
-				((SELECT started_at FROM workflow_runs wc WHERE wc.tenant_id = $1 AND wc.id = $%d) IS NOT NULL
-					AND ((started_at, id) %s (SELECT started_at, id FROM workflow_runs wc2 WHERE wc2.tenant_id = $1 AND wc2.id = $%d) OR started_at IS NULL))
-			)`, n, cmp, n, n, cmp, n)
-			args = append(args, f.AfterID)
-		}
-		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
+		// The id-cursor clause only composes with an id sort; when sorting
+		// by started_at we ignore the cursor and return a single page of
+		// the requested size (callers that sort by started_at fetch one
+		// large page and never paginate).
+		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order + ` LIMIT $` + fmt.Sprint(len(args)+1)
 		args = append(args, f.PageSize)
 	} else {
-		order := "DESC"
-		cmp := "<"
-		if f.SortOrder == "asc" {
-			order, cmp = "ASC", ">"
-		}
-		// id-keyset pagination composes exactly with an id sort. (The old
-		// `id > $2` cursor with a DESC default re-returned page 1.)
-		q += ` ORDER BY id ` + order
-		if f.AfterID != "" {
-			q += fmt.Sprintf(` AND id %s $%d`, cmp, len(args)+1)
-			args = append(args, f.AfterID)
-		}
-		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
+		q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
 		args = append(args, f.PageSize)
 	}
 	rows, err := tx.Query(ctx, q, args...)
@@ -1346,208 +1252,6 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 	return out, rows.Err()
 }
 
-// ListTerminalRunsWithPrunedBranches returns COMPLETED workflow runs whose
-// worktree was already pruned but that still record a worktree branch
-// (worktree_status = 'pruned' + non-empty worktree_branch). These are the
-// orphan-branch class: the existing prune pass only reaps 'ready' worktrees
-// and deletes their branch at that moment; a branch that survived pruning
-// (e.g. the run completed after its worktree was taken down by an earlier
-// pass, or a squash merge landed after the prune pass) is never revisited,
-// leaving a dead local ref. Only COMPLETED runs are reclaimable (success-only
-// deletion: a failed/aborted run keeps its branch for a retry to re-attach
-// to it). Batch-capped like the other scan surfaces.
-func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
-	if limit <= 0 {
-		limit = 16
-	}
-	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
-			version, started_at, ended_at, created_at, updated_at
-		FROM workflow_runs
-		WHERE tenant_id = $1 AND status = 'completed'
-		  AND worktree_status = 'pruned' AND worktree_branch <> ''
-		ORDER BY created_at ASC
-		LIMIT $2`
-	rows, err := tx.Query(ctx, q, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("db: list terminal runs with pruned branches: %w", err)
-	}
-	defer rows.Close()
-	var out []WorkflowRunRow
-	for rows.Next() {
-		var r WorkflowRunRow
-		var wiID *string
-		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
-			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
-			&r.Version, &r.StartedAt, &r.EndedAt,
-			&r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("db: scan terminal run (pruned branch): %w", err)
-		}
-		if wiID != nil {
-			r.WorkItemID = *wiID
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// ListTerminalStepRunsWithPrunedBranches returns workflow step runs whose
-// branch worktree was already pruned but that still record a worktree branch,
-// belonging to a COMPLETED run — the orphan step-branch class. The existing
-// step prune pass only re-claims 'ready' worktrees and deletes the branch for
-// the step run at that moment; a step run pruned earlier (a superseded loop
-// iteration, or pruned before its run completed) is never revisited, so its
-// branch — which is provably ours and merged once the run completed — survives
-// as a dead local ref. Only step runs of a COMPLETED run are reclaimable.
-// Batch-capped like the scan surface.
-func ListTerminalStepRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
-	if limit <= 0 {
-		limit = 16
-	}
-	const q = `SELECT s.id, s.tenant_id, s.workflow_run_id, s.step_id, s.step_name,
-		s.step_kind, s.status, s.attempt, s.result, s.worker_execution_id,
-		s.iteration, s.superseded_by, s.worktree_status, s.worktree_path, s.worktree_branch,
-		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
-		FROM workflow_step_runs s
-		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
-		WHERE s.tenant_id = $1 AND r.status = 'completed'
-		  AND s.worktree_status = 'pruned' AND s.worktree_branch <> ''
-		ORDER BY s.created_at ASC
-		LIMIT $2`
-	rows, err := tx.Query(ctx, q, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("db: list terminal step runs with pruned branches: %w", err)
-	}
-	defer rows.Close()
-	var out []WorkflowStepRunRow
-	for rows.Next() {
-		var s WorkflowStepRunRow
-		var supBy *string
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
-			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-			&s.WorkerExecutionID,
-			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
-			&s.StartedAt, &s.EndedAt, &s.Version,
-			&s.CreatedAt, &s.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("db: scan terminal step run (pruned branch): %w", err)
-		}
-		if supBy != nil {
-			s.SupersededBy = *supBy
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-// ListTerminalRunsWithPrunedBranchesInclusive returns terminal
-// workflow runs (completed/failed/aborted) whose worktree was already
-// pruned but that still record a worktree branch, FILTERED to the
-// reclaimable window: a run is reclaimable when it is completed (always)
-// or when it is failed/aborted and the bound work item is terminal
-// non-replayable (succeeded/skipped/cancelled/archived) or the run has
-// no bound work item at all. Non-reclaimable failed/aborted rows (active
-// work item) are excluded so the sweep's ORDER BY ... LIMIT page never
-// pins on them (stuck-page fix). Keeps the original completed-only
-// func for audit; this is the sweep's inclusive window.
-func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
-	if limit <= 0 {
-		limit = 16
-	}
-	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
-		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
-		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
-			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
-		FROM workflow_runs r
-		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
-		WHERE r.tenant_id = $1 AND r.status IN ('completed', 'failed', 'aborted')
-		  AND r.worktree_status = 'pruned' AND r.worktree_branch <> ''
-		  AND (r.status = 'completed' OR r.work_item_id IS NULL OR r.work_item_id = '' OR wi.id IS NULL OR wi.status IN ('succeeded', 'skipped', 'cancelled', 'archived'))
-		ORDER BY r.created_at ASC
-		LIMIT $2`
-	rows, err := tx.Query(ctx, q, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("db: list terminal runs with pruned branches (inclusive): %w", err)
-	}
-	defer rows.Close()
-	var out []WorkflowRunRow
-	for rows.Next() {
-		var r WorkflowRunRow
-		var wiID *string
-		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
-			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
-			&r.Version, &r.StartedAt, &r.EndedAt,
-			&r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("db: scan terminal run (pruned branch inclusive): %w", err)
-		}
-		if wiID != nil {
-			r.WorkItemID = *wiID
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// ListTerminalStepRunsWithPrunedBranchesInclusive returns workflow step
-// runs whose branch worktree was already pruned but that still record a
-// worktree branch, belonging to a terminal run (completed/failed/aborted),
-// FILTERED to the reclaimable window: the parent run is completed (always
-// reclaimable) or failed/aborted with a terminal non-replayable work item
-// (or no bound work item). Excludes non-reclaimable failed/aborted rows
-// so the sweep page advances. Mirror of the run inclusive query.
-func ListTerminalStepRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
-	if limit <= 0 {
-		limit = 16
-	}
-	const q = `SELECT s.id, s.tenant_id, s.workflow_run_id, s.step_id, s.step_name,
-		s.step_kind, s.status, s.attempt, s.result, s.worker_execution_id,
-		s.iteration, s.superseded_by, s.worktree_status, s.worktree_path, s.worktree_branch,
-		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
-		FROM workflow_step_runs s
-		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
-		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
-		WHERE s.tenant_id = $1 AND r.status IN ('completed', 'failed', 'aborted')
-		  AND s.worktree_status = 'pruned' AND s.worktree_branch <> ''
-		  AND (r.status = 'completed' OR r.work_item_id IS NULL OR r.work_item_id = '' OR wi.id IS NULL OR wi.status IN ('succeeded', 'skipped', 'cancelled', 'archived'))
-		ORDER BY s.created_at ASC
-		LIMIT $2`
-	rows, err := tx.Query(ctx, q, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("db: list terminal step runs with pruned branches (inclusive): %w", err)
-	}
-	defer rows.Close()
-	var out []WorkflowStepRunRow
-	for rows.Next() {
-		var s WorkflowStepRunRow
-		var supBy *string
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
-			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-			&s.WorkerExecutionID,
-			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
-			&s.StartedAt, &s.EndedAt, &s.Version,
-			&s.CreatedAt, &s.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("db: scan terminal step run (pruned branch inclusive): %w", err)
-		}
-		if supBy != nil {
-			s.SupersededBy = *supBy
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
 // ListBackfillPRRuns returns git-backed terminal workflow runs whose
 // run_context has no pr_url yet — the one-shot PR backfill target set
 // (architecture-notes/backfill-real-pr-urls-on-completed-runs-link-only-to-the-actual-pr.md).
@@ -1564,15 +1268,7 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
 		  AND worktree_status IN ('ready', 'pruned') AND worktree_branch <> ''
-		  AND (
-			(run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
-			OR EXISTS (
-				SELECT 1 FROM worker_executions e
-				WHERE e.workflow_run_id = workflow_runs.id
-				  AND e.tenant_id = workflow_runs.tenant_id
-				  AND (e.pr_url IS NULL OR e.pr_url = '')
-			)
-		  )
+		  AND (run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
 		ORDER BY created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {

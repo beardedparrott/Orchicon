@@ -39,7 +39,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,12 +53,6 @@ import (
 // worktreeDirName is the subdirectory under project_dir where per-run
 // working trees live.
 const worktreeDirName = ".orchicon-worktrees"
-
-// stagingPrefix names the transient sibling directory used to stage a
-// nested branch worktree out of a run container during adoption
-// (stagingDirName). These are never run namespaces and are never swept as
-// orphans.
-const stagingPrefix = "_stage-"
 
 // gitCmdTimeout bounds every git subprocess the reconciler spawns.
 const gitCmdTimeout = 30 * time.Second
@@ -242,21 +235,6 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
 		}
 	}
-	// Sweep orphaned branch refs: a COMPLETED run (or a step run of one)
-	// whose worktree was already pruned still records worktree_branch, but the
-	// prune pass only ran (and deleted the branch) for 'ready' worktrees at
-	// prune time. A branch that survived that moment — e.g. the run completed
-	// before the squash-aware merge gate landed, or a parallel/superseded step
-	// run was pruned-early while a later iteration carried the merge — is
-	// never revisited and leaks as a dead local ref. Reclaim any such branch
-	// that is provably merged into the base (success-only: never on a failed /
-	// aborted run's branch, which a retry re-attaches to).
-	r.sweepOrphanBranches(ctx, tenantID)
-	// ADR 2.3: reclaim stale .orchicon-worktrees/<id> dirs that are no longer
-	// valid git worktrees and have no DB row referencing them, then restore
-	// any terminal skipped run's shared checkout (ADR 2.2).
-	r.sweepOrphanDirs(ctx, tenantID)
-	r.sweepSkippedTerminalRuns(ctx, tenantID)
 	return reconciler.Result{}
 }
 
@@ -285,247 +263,6 @@ func (r *WorktreeReconciler) isParallelBranchChildStepRun(ctx context.Context, t
 		return false
 	}
 	return parallelBranchChildIDs(steps)[stepID]
-}
-
-// orphanBranchSweepLimit bounds how many orphaned branch refs the sweep
-// reclaims per scan pass, mirroring the other batch-capped scan surfaces.
-// Branch deletion is idempotent, so an over-budget scan simply continues on
-// the next tick.
-const orphanBranchSweepLimit = 32
-
-// sweepOrphanBranches reclaims dead local branch refs left behind by the
-// prune path. It runs at the end of every scan, after the terminal-run and
-// terminal-step-run prune passes:
-//
-//   - Runs/step-runs with worktree_status='ready' are handled by the prune
-//     passes (which delete the branch for a COMPLETED run at prune time).
-//   - Runs/step-runs whose worktree was ALREADY pruned ('pruned' +
-//     recorded branch) are exactly the ones the prune passes skip — but their
-//     branch may still exist locally. That class leaks (observed: 30+ local
-//     refs, all merged into develop) because nothing revisits a pruned row.
-//
-// The sweep reuses the SAME proof-deletion gate as pruneOne (deleteBranch →
-// branchProvablyMerged → success-only), so it never deletes unmerged work,
-// never touches protected/current branches, and only reaps branches whose run
-// actually completed. A branch still attached to a live worktree is left to
-// the prune pass (never swept while in use).
-func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string) {
-	// Runs whose worktree was pruned but branch still recorded — inclusive
-	// window (completed always reclaimable; failed/aborted reclaimable only
-	// when the bound work item is terminal non-replayable or absent). The
-	// inclusive query LEFT JOINs work_items so non-reclaimable rows never
-	// pin the ORDER BY ... LIMIT page.
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		r.log.Warn("worktree: orphan sweep begin tx failed", "error", err)
-		return
-	}
-	runs, err := db.ListTerminalRunsWithPrunedBranchesInclusive(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
-	ttx.Rollback(ctx)
-	if err != nil {
-		r.log.Warn("worktree: orphan sweep list runs failed", "error", err)
-		return
-	}
-	for _, run := range runs {
-		if err := r.sweepOrphanRun(ctx, tenantID, run); err != nil {
-			r.log.Warn("worktree: orphan sweep run branch failed",
-				"run", run.ID, "branch", run.WorktreeBranch, "error", err)
-		}
-	}
-
-	// Step runs (parallel-branch children) of reclaimable runs, same class.
-	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		r.log.Warn("worktree: orphan sweep begin tx (step) failed", "error", err)
-		return
-	}
-	steps, err := db.ListTerminalStepRunsWithPrunedBranchesInclusive(ctx, ttx.Tx, tenantID, orphanBranchSweepLimit)
-	ttx.Rollback(ctx)
-	if err != nil {
-		r.log.Warn("worktree: orphan sweep list step runs failed", "error", err)
-		return
-	}
-	for _, sr := range steps {
-		if err := r.sweepOrphanStepBranch(ctx, tenantID, sr); err != nil {
-			r.log.Warn("worktree: orphan sweep step branch failed",
-				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
-		}
-	}
-}
-
-// sweepOrphanRun attempts to reclaim a pruned-run branch. Two gates:
-//
-//	Gate A (completed): same proof-deletion gate as pruneOne (deleteBranch →
-//	branchProvablyMerged). Never deletes unmerged work.
-//
-//	Gate B (failed/aborted with terminal work item or no item):
-//	work-item-terminal proof — bypasses branchProvablyMerged but still
-//	enforces provably-ours / not-protected / not-current / not-attached /
-//	exists. Failed with an active work item is retained for retry.
-//
-// The inclusive query guarantees only reclaimable rows reach here; the
-// Go-level reclaimability check is the defense-in-depth policy.
-func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
-	if run.WorktreeBranch == "" {
-		return nil
-	}
-	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
-	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
-		return nil // can't verify — never delete on uncertainty
-	}
-	// A branch still attached to a live worktree is in use — leave it to
-	// the prune pass (which deletes it at prune time).
-	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, run.WorktreeBranch); err != nil {
-		return nil
-	} else if attached {
-		return nil
-	}
-	switch run.Status {
-	case domain.WorkflowRunCompleted:
-		_, prState := db.PrFromRunContext(run.RunContext)
-		// Gate A — provably merged.
-		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
-			return err
-		}
-		if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
-			return r.clearSweptRunBranch(ctx, tenantID, run)
-		}
-		return nil
-	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
-		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
-			return nil // retry target — keep
-		}
-		// Gate B — work-item-terminal proof (no merged check).
-		if err := r.deleteDeadBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
-			return err
-		}
-		if !r.branchExists(ctx, projectDir, run.WorktreeBranch) {
-			return r.clearSweptRunBranch(ctx, tenantID, run)
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
-// clearSweptRunBranch clears the worktree_branch on a COMPLETED run whose
-// branch was provably reclaimed by the orphan sweep. The orphan query selects
-// rows by `worktree_status='pruned' AND worktree_branch<>”` (ASC, LIMIT N);
-// WITHOUT clearing the branch, a swept row matches the query forever and the
-// per-scan page never advances to newer orphans (the observed stuck-backlog:
-// 116 swept rows pinned the MODE first-32 slot and starved 16 newer ones).
-// Clearing the recorded branch lets the sweep walk forward one page at a time.
-func (r *WorktreeReconciler) clearSweptRunBranch(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer ttx.Rollback(ctx)
-	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, run.ID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("get run: %w", err)
-	}
-	if cur.WorktreeBranch == "" {
-		return ttx.Commit(ctx)
-	}
-	fields := db.UpdateWorkflowRunFields{WorktreeBranch: strPtr("")}
-	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, cur.Version, fields); err != nil {
-		return fmt.Errorf("clear swept run branch: %w", err)
-	}
-	r.log.Info("worktree: orphan sweep cleared run branch", "run", run.ID, "branch", run.WorktreeBranch)
-	return ttx.Commit(ctx)
-}
-
-// sweepOrphanStepBranch is sweepOrphanRun for a parallel-branch child step
-// run. Gate A (completed) uses the merged proof; Gate B (failed/aborted
-// with terminal work item or no item) uses work-item-terminal proof.
-func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
-	if sr.WorktreeBranch == "" {
-		return nil
-	}
-	run, err := r.loadRun(ctx, tenantID, sr.WorkflowRunID)
-	if err != nil {
-		return nil
-	}
-	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
-	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
-		return nil
-	}
-	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, sr.WorktreeBranch); err != nil {
-		return nil
-	} else if attached {
-		return nil
-	}
-	switch run.Status {
-	case domain.WorkflowRunCompleted:
-		_, prState := db.PrFromRunContext(run.RunContext)
-		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
-			return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
-		}
-		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
-			return r.clearSweptStepBranch(ctx, tenantID, sr)
-		}
-		return nil
-	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
-		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
-			return nil
-		}
-		if err := r.deleteDeadBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
-			return fmt.Errorf("step branch %s: %w", sr.WorktreeBranch, err)
-		}
-		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
-			return r.clearSweptStepBranch(ctx, tenantID, sr)
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
-// clearSweptStepBranch clears the worktree_branch on a completed step run
-// whose branch was provably reclaimed by the orphan sweep (mirror of
-// clearSweptRunBranch — see its doc for the stuck-backlog rationale).
-func (r *WorktreeReconciler) clearSweptStepBranch(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer ttx.Rollback(ctx)
-	cur, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("get step run: %w", err)
-	}
-	if cur.WorktreeBranch == "" {
-		return ttx.Commit(ctx)
-	}
-	fields := db.UpdateWorkflowStepRunFields{WorktreeBranch: strPtr("")}
-	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, cur.Version, fields); err != nil {
-		return fmt.Errorf("clear swept step branch: %w", err)
-	}
-	r.log.Info("worktree: orphan sweep cleared step run", "step_run", sr.ID, "branch", sr.WorktreeBranch)
-	return ttx.Commit(ctx)
-}
-
-// branchAttachedToWorktree reports whether branch currently has a live
-// worktree attached (git worktree list). A branch with a registered worktree
-// is in use — never swept, never deleted while its worktree exists.
-func (r *WorktreeReconciler) branchAttachedToWorktree(ctx context.Context, projectDir, branch string) (bool, error) {
-	wts, err := listWorktrees(ctx, projectDir)
-	if err != nil {
-		return false, err
-	}
-	for i := range wts {
-		if wts[i].branch == branch {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // reconcileOne provisions a single run's isolated working tree and records
@@ -557,16 +294,10 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		// recorded branch. If it does, we're done; if it vanished, fall
 		// through and re-provision.
 		if r.worktreeMatches(ctx, run.ProjectID, run.WorktreePath, run.WorktreeBranch) {
-			r.ensureRunWorktreeStepIgnore(ctx, run.WorktreePath)
 			return nil
 		}
-	case domain.WorktreePruned:
-		if isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
-	case domain.WorktreeSkipped, domain.WorktreeFailed:
-		// Recorded decisions are respected: a skipped or failed run
+	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
+		// Recorded decisions are respected: a skipped, failed or pruned run
 		// is never re-provisioned by the loop. (A human may reset the row.)
 		return nil
 	}
@@ -583,16 +314,7 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	}
 
 	path := filepath.Join(projectDir, worktreeDirName, runID)
-	// For a `none` (ephemeral) run, NO named branch is created — the
-	// worktree is detached HEAD, so "no branch retained" is structural
-	// (a detached worktree creates no ref that can leak locally or
-	// remotely). The strategy is resolved once here and used for both the
-	// branch name and the detached-vs-named provisioning decision.
-	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
-	branch := ""
-	if strategy != "none" {
-		branch = r.branchName(ctx, tenantID, run)
-	}
+	branch := r.branchName(ctx, tenantID, run)
 
 	// Resolve the base ref up front so the container-adopt path (Phase 3,
 	// case 2) can create the run worktree without re-entering Phase 4.
@@ -649,7 +371,7 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 				return fmt.Errorf("worktree: inspect container %s: %w", path, cerr)
 			}
 			if isContainer {
-				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base, strategy == "none"); aerr != nil {
+				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base); aerr != nil {
 					return fmt.Errorf("worktree: adopt run container at %s: %w", path, aerr)
 				}
 				return r.recordReady(ctx, tenantID, runID, path, branch)
@@ -665,30 +387,19 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	// Phase 4 — create or attach against the resolved base ref. When the
 	// deterministic branch already exists (a retried run reusing its branch),
 	// provisionWorktree ATTACHES to it so the branch's existing commits carry
-	// over — never `-b`, which fails on an existing branch. For a `none` run
-	// the worktree is provisioned DETACHED (no named branch at all).
-	var perr error
-	if strategy == "none" {
-		perr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
-	} else {
-		perr = r.provisionWorktree(ctx, projectDir, path, branch, base)
-	}
-	if perr != nil {
-		if isAlreadyTrackedErr(perr) {
+	// over — never `-b`, which fails on an existing branch.
+	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
+		if isAlreadyTrackedErr(err) {
 			// A concurrent pass won the create race — converge on the
 			// worktree git now has at our path.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
 				return r.recordReady(ctx, tenantID, runID, path, branch)
 			}
 		}
-		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", perr))
+		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", err))
 	}
 
-	if err := r.recordReady(ctx, tenantID, runID, path, branch); err != nil {
-		return err
-	}
-	r.ensureRunWorktreeStepIgnore(ctx, path)
-	return nil
+	return r.recordReady(ctx, tenantID, runID, path, branch)
 }
 
 // reconcileStepRunOne provisions a single parallel-branch step run's
@@ -727,29 +438,10 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 		// recorded branch. If it does, we're done; if it vanished, fall
 		// through and re-provision.
 		if r.worktreeMatches(ctx, run.ProjectID, sr.WorktreePath, sr.WorktreeBranch) {
-			// Ensure parallel-branch worktrees inherit the latest run branch tip.
-			// If the step worktree was provisioned before the SSE committed to the
-			// run branch, its branch will be behind run.WorktreeBranch. Fast-forward
-			// it so QA/PR reviewers see the implementation without manual merges.
-			if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" && sr.WorktreeBranch != "" && sr.WorktreeBranch != run.WorktreeBranch {
-				projectDir, _, found := r.resolveGitBacked(ctx, tenantID, run.ProjectID)
-				if found {
-					if r.isAncestor(ctx, projectDir, sr.WorktreeBranch, run.WorktreeBranch) {
-						if err := r.fastForwardBranch(ctx, projectDir, sr.WorktreePath, sr.WorktreeBranch, run.WorktreeBranch); err != nil {
-							r.log.Warn("worktree: fast-forward step branch to run branch failed", "step_run", stepRunID, "step_branch", sr.WorktreeBranch, "run_branch", run.WorktreeBranch, "error", err)
-						}
-					}
-				}
-			}
 			return nil
 		}
-	case domain.WorktreePruned:
-		if isTerminalStepRun(sr) || isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
-	case domain.WorktreeSkipped, domain.WorktreeFailed:
-		// Recorded decisions are respected: a skipped or failed
+	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
+		// Recorded decisions are respected: a skipped, failed or pruned
 		// step run is never re-provisioned by the loop.
 		return nil
 	}
@@ -766,15 +458,7 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 	}
 
 	path := filepath.Join(projectDir, worktreeDirName, runID, stepRunID)
-	// `none` (ephemeral): the branch child worktree is detached HEAD too —
-	// no named branch, so a parallel-branch child can never create a ref
-	// that leaks. The DAG gate is status-based (WorktreeStatus), so a
-	// detached branch child does not regress parallel-branch steps.
-	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
-	branch := ""
-	if strategy != "none" {
-		branch = r.branchWorktreeName(ctx, tenantID, run, sr)
-	}
+	branch := r.branchWorktreeName(ctx, tenantID, run, sr)
 
 	// Phase 3 — converge against what git actually has at the expected
 	// path (mirrors reconcileOne's repair/fail-closed logic).
@@ -812,28 +496,21 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 
 	// Phase 4 — resolve the base ref and create. The base is the run's
 	// branch when the run worktree exists (preserving lineage); otherwise
-	// the repo's default ref. For a `none` run the branch child worktree
-	// is provisioned DETACHED (no named branch).
+	// the repo's default ref.
 	base := ""
 	if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" {
 		base = run.WorktreeBranch
 	} else {
 		base = r.resolveBaseRef(ctx, projectDir)
 	}
-	var perr error
-	if strategy == "none" {
-		perr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
-	} else {
-		perr = r.provisionWorktree(ctx, projectDir, path, branch, base)
-	}
-	if perr != nil {
-		if isAlreadyTrackedErr(perr) {
+	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
+		if isAlreadyTrackedErr(err) {
 			// A concurrent pass won the create race — converge.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
 				return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
 			}
 		}
-		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", perr))
+		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", err))
 	}
 
 	return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
@@ -942,31 +619,16 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 			"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
 	}
 
-	// Branch deletion — Gate A (completed: merged) or Gate B (failed/aborted with terminal item).
+	// AC: on run SUCCESS only, delete the branch the reconciler provably
+	// created for this step run. Never on failure/cancellation — a failed
+	// run keeps its step branches so a retry re-attaches to them. Gated on
+	// the branch being merged into the base, never the current branch, and
+	// never main/develop.
 	if run.Status == domain.WorkflowRunCompleted {
-		_, prState := db.PrFromRunContext(run.RunContext)
-		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
+		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
 			r.log.Warn("worktree: branch worktree branch deletion failed",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
 		}
-	} else if run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
-		if r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
-			if err := r.deleteDeadBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
-				r.log.Warn("worktree: dead step branch deletion failed",
-					"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
-			}
-		}
-	}
-
-	// Reap a now-empty run-namespaced container left behind once its
-	// registered/nested worktrees are all gone (orphan sweep). This must run
-	// after the step worktree above is removed so an empty <runID>/ is seen.
-	r.sweepOrphanContainers(ctx, projectDir)
-
-	// ADR 2.3: verify physical removal before DB transition.
-	if occupied, _ := r.dirOccupied(path); occupied {
-		r.log.Warn("worktree: step prune verification failed — path still exists", "run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
-		return nil
 	}
 
 	return r.markStepPruned(ctx, tenantID, sr.ID, "")
@@ -1092,43 +754,15 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 		r.log.Warn("worktree: git worktree prune failed", "run", run.ID, "error", err)
 	}
 
-	// Branch deletion — two gates:
-	// Gate A (completed): provably merged (squash-aware).
-	// Gate B (failed/aborted with terminal work item or no item): work-item-terminal proof.
+	// AC: on SUCCESS only, delete the branch the reconciler provably created
+	// for this run. The branch is never deleted on failure/cancellation — a
+	// failed run keeps its branch so a retry re-attaches to it (carry-over of
+	// partial work). Deletion is gated on the branch being merged into the
+	// base, never the current branch, and never main/develop.
 	if run.Status == domain.WorkflowRunCompleted {
-		_, prState := db.PrFromRunContext(run.RunContext)
-		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
+		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
 			r.log.Warn("worktree: branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
 		}
-	} else if run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
-		if r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
-			if err := r.deleteDeadBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
-				r.log.Warn("worktree: dead branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
-			}
-		}
-	}
-
-	// Reap a now-empty run-namespaced container left behind once its
-	// registered/nested worktrees are all gone (orphan sweep; also reaps the
-	// ones past manual cleanups left). Runs after the registered run worktree
-	// removal above.
-	r.sweepOrphanContainers(ctx, projectDir)
-
-	// ADR 2.3: verify physical removal before DB state transition. If the
-	// worktree path still exists (refused non-artifact dir, or a stale dir
-	// left behind) or the branch still exists when it should have been
-	// deleted (completed + provably merged), keep the row ready and retry
-	// next scan — never clear DB while dirt remains.
-	if occupied, _ := r.dirOccupied(path); occupied {
-		r.log.Warn("worktree: prune verification failed — path still exists", "run", run.ID, "path", path)
-		return nil
-	}
-	if run.Status == domain.WorkflowRunCompleted && run.WorktreeBranch != "" && r.branchExists(ctx, projectDir, run.WorktreeBranch) {
-		// Branch should have been deleted (provably merged). If it still
-		// exists the deleteBranch gate refused — leave the sweep to reclaim it.
-		// Do not block the run's pruned transition on branch deletion; the
-		// orphan sweep will reclaim it. So we do not gate here beyond logging.
-		r.log.Info("worktree: branch still exists after prune (orphan sweep will reclaim)", "run", run.ID, "branch", run.WorktreeBranch)
 	}
 
 	return r.markPruned(ctx, tenantID, run.ID, "")
@@ -1227,21 +861,6 @@ func (r *WorktreeReconciler) resolveGitBacked(ctx context.Context, tenantID, pro
 // title, else the workflow name, else the project name.
 func (r *WorktreeReconciler) branchName(ctx context.Context, tenantID string, run db.WorkflowRunRow) string {
 	return branchNameFor(r.slugSource(ctx, tenantID, run), run.ID)
-}
-
-// effectiveGitStrategy resolves the run's effective git strategy
-// (workflow > project > "local") in a short read-only transaction. It is
-// the single source of truth for whether a run is ephemeral ("none") — the
-// same resolver the runtime daemon uses for the credential gate — so the
-// detached-HEAD decision here always agrees with the push-credential
-// decision there.
-func (r *WorktreeReconciler) effectiveGitStrategy(ctx context.Context, tenantID string, run db.WorkflowRunRow) string {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return db.DefaultGitStrategy
-	}
-	defer ttx.Rollback(ctx)
-	return db.EffectiveGitStrategy(ctx, ttx.Tx, tenantID, run.WorkflowID, run.ProjectID)
 }
 
 // branchNameFor is the pure branch-name constructor: <kebab-slug>-<suffix>.
@@ -1573,57 +1192,6 @@ func (r *WorktreeReconciler) childIsOrchiconOwned(parent string, e os.DirEntry, 
 	return false
 }
 
-// sweepOrphanContainers removes run-namespaced container directories under
-// .orchicon-worktrees/ that are EMPTY and provably ours. After a terminal
-// run's registered/nested worktrees are pruned, an empty <runID>/ can be
-// left behind (a parallel-branch step run was provisioned first without a
-// run worktree, or a past manual cleanup left it) — this reaps it. Never
-// touches: a still-registered worktree (a live run/step worktree has a
-// checked-out tree, so it is not empty), a non-empty provably-ours container
-// (it still holds live nested worktrees), any foreign content (isOrchicon
-// Container fails closed), or a staging dir (_stage-*, mid-adoption).
-func (r *WorktreeReconciler) sweepOrphanContainers(ctx context.Context, projectDir string) {
-	root := filepath.Join(projectDir, worktreeDirName)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		r.log.Warn("worktree: orphan sweep: cannot list containers", "error", err)
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), stagingPrefix) {
-			continue
-		}
-		child := filepath.Join(root, e.Name())
-		ours, oerr := r.isOrchiconContainer(ctx, projectDir, child)
-		if oerr != nil || !ours {
-			continue // foreign or unresolvable — never touch non-native content
-		}
-		// A live registered worktree is never empty (its checked-out tree is
-		// present); if it somehow is, leave it alone.
-		if wt, werr := r.worktreeAt(ctx, projectDir, child); werr != nil || wt != nil {
-			continue
-		}
-		empty, eerr := dirEmpty(child)
-		if eerr != nil || !empty {
-			continue // still holds nested worktrees/artifacts — not an orphan
-		}
-		if rerr := os.Remove(child); rerr != nil {
-			r.log.Warn("worktree: orphan sweep: remove failed", "path", child, "error", rerr)
-			continue
-		}
-		r.log.Info("worktree: orphan sweep removed empty run container", "path", child)
-	}
-}
-
-// dirEmpty reports whether path exists and contains no entries.
-func dirEmpty(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false, err
-	}
-	return len(entries) == 0, nil
-}
-
 // adoptRunContainer repairs the run-worktree race: when a parallel-branch
 // step run was provisioned first, <path> (the runID dir) is a plain
 // container holding nested branch worktrees at <path>/<child>. git refuses
@@ -1634,7 +1202,7 @@ func dirEmpty(path string) (bool, error) {
 // registered worktrees) or os.Rename of provably-ours artifacts mutates the
 // filesystem. On success both the run worktree and every nested branch
 // worktree are registered and intact at their recorded paths.
-func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, path, branch, base string, detached bool) error {
+func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, path, branch, base string) error {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err
@@ -1671,16 +1239,8 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 		moves = append(moves, staged{from: child, to: stagePath, move: ok})
 	}
 
-	// 2. <path> is now empty — create the run worktree into it. For a
-	// `none` run the run worktree is provisioned DETACHED (no named branch);
-	// otherwise the deterministic branch is created as today.
-	var createErr error
-	if detached {
-		createErr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
-	} else {
-		createErr = r.addWorktree(ctx, projectDir, path, branch, base)
-	}
-	if createErr != nil {
+	// 2. <path> is now empty — create the run worktree into it.
+	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
 		// Best-effort rollback: move already-staged children back so a
 		// later pass can retry cleanly.
 		for _, m := range moves {
@@ -1690,7 +1250,7 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 				_ = os.Rename(m.to, m.from)
 			}
 		}
-		return createErr
+		return err
 	}
 
 	// 3. Move the nested children back into the run worktree.
@@ -1712,7 +1272,7 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 // the container, and the "_stage-" prefix keeps it out of the run
 // namespace so git's worktree list never mistakes it for a real worktree.
 func stagingDirName(child string) string {
-	return stagingPrefix + child
+	return "_stage-" + child
 }
 
 // removeWorktreeArtifact removes a provably-ours partial worktree directory
@@ -1783,23 +1343,6 @@ func (r *WorktreeReconciler) provisionWorktree(ctx context.Context, projectDir, 
 	return r.addWorktree(ctx, projectDir, path, branch, base)
 }
 
-// provisionDetachedWorktree creates a detached-HEAD worktree at path from
-// base (`git worktree add --detach <path> <base>`). It is the `none`
-// (ephemeral) strategy's structural guarantee: no named branch is created,
-// so there is no ref to leak locally or on origin — "no branch retained"
-// is a property of the worktree shape, not a cleanup promise. base may be
-// "" to start the detached worktree at HEAD.
-func (r *WorktreeReconciler) provisionDetachedWorktree(ctx context.Context, projectDir, path, base string) error {
-	args := []string{"worktree", "add", "--detach", path}
-	if base != "" {
-		args = append(args, base)
-	}
-	if _, err := runGit(ctx, projectDir, args...); err != nil {
-		return err
-	}
-	return nil
-}
-
 // addWorktree runs `git worktree add <path> -b <branch> [<base>]` with
 // argv-only arguments (never a shell string). base may be "" to start the
 // branch at HEAD.
@@ -1865,70 +1408,11 @@ func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDi
 	return false
 }
 
-// isWorkItemReclaimable reports whether a failed/aborted run's branch is
-// reclaimable: the run has no bound work item, the work item no longer
-// exists, or the work item is terminal non-replayable (succeeded/skipped/
-// cancelled/archived). A failed run with an active work item is a retry
-// target and must be retained.
-func (r *WorktreeReconciler) isWorkItemReclaimable(ctx context.Context, tenantID, workItemID string) bool {
-	if workItemID == "" {
-		return true
-	}
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		r.log.Warn("worktree: isWorkItemReclaimable begin tx failed", "error", err)
-		return false
-	}
-	defer ttx.Rollback(ctx)
-	wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, workItemID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return true
-		}
-		r.log.Warn("worktree: isWorkItemReclaimable get work item failed", "work_item", workItemID, "error", err)
-		return false
-	}
-	_ = ttx.Commit(ctx)
-	return domain.WorkItemIsTerminalNonReplayable(wi.Status)
-}
-
-// deleteDeadBranch deletes a branch for a dead (failed/aborted) run whose
-// work item is terminal. It bypasses branchProvablyMerged but still
-// enforces every other safety gate: provably ours (recorded name),
-// not protected, not current/HEAD, not attached to a live worktree, and
-// exists. Logs with reason "work-item-terminal" so it is auditable
-// separately from the merged proof.
-func (r *WorktreeReconciler) deleteDeadBranch(ctx context.Context, projectDir, branch string) error {
-	if branch == "" || isProtectedBranch(branch) {
-		return nil
-	}
-	if cur := r.currentBranch(ctx, projectDir); cur != "" && cur == branch {
-		r.log.Warn("worktree: refusing to delete the current branch", "branch", branch)
-		return nil
-	}
-	if !r.branchExists(ctx, projectDir, branch) {
-		return nil
-	}
-	if attached, err := r.branchAttachedToWorktree(ctx, projectDir, branch); err != nil {
-		return err
-	} else if attached {
-		r.log.Warn("worktree: refusing to delete branch still attached to a worktree", "branch", branch)
-		return nil
-	}
-	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
-		return fmt.Errorf("git branch -D %s: %w", branch, err)
-	}
-	r.log.Info("worktree: deleted dead branch", "branch", branch, "reason", "work-item-terminal")
-	return nil
-}
-
 // deleteBranch deletes a branch ref after a successful run, gated on the
 // branch being provably ours (the deterministic name recorded on the row),
-// not protected, not the current branch, and provably landed in the base.
-// prState is the run's authoritative PR state from run_context ("" when not
-// recorded); it feeds the squash-aware proof gate (branchProvablyMerged).
-// Idempotent by construction: a missing branch is success.
-func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branch, prState string) error {
+// not protected, not the current branch, and merged into the base. Idempotent
+// by construction: a missing branch is success.
+func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branch string) error {
 	if branch == "" || isProtectedBranch(branch) {
 		return nil
 	}
@@ -1939,212 +1423,14 @@ func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branc
 	if !r.branchExists(ctx, projectDir, branch) {
 		return nil // already gone — idempotent
 	}
-	merged, reason := r.branchProvablyMerged(ctx, projectDir, branch, prState)
-	if !merged {
-		r.log.Warn("worktree: refusing to delete branch (not provably merged)",
-			"branch", branch, "reason", reason)
+	if !r.branchMergedIntoBase(ctx, projectDir, branch) {
+		r.log.Warn("worktree: refusing to delete unmerged branch", "branch", branch)
 		return nil
-	}
-	// L3 — remote half of the prune: when a remote ref exists, delete it
-	// FIRST, fail-closed. A remote-delete failure returns an error WITHOUT
-	// deleting the local branch, so the row keeps its WorktreeBranch
-	// provenance and the orphan sweep retries both — nothing is deleted on
-	// doubt. When the probe is inconclusive (no origin / no network), skip
-	// the remote delete but still allow a provably-merged LOCAL delete.
-	// The P1/P2/P3 proof + Gate B ran above, so nothing unmerged is ever
-	// deleted locally or remotely.
-	if exists, determined := r.branchRemoteExists(ctx, projectDir, branch); determined && exists {
-		if _, err := runGit(ctx, projectDir, "push", "origin", "--delete", branch); err != nil {
-			return fmt.Errorf("git push origin --delete %s: %w", branch, err)
-		}
-		r.log.Info("worktree: deleted remote branch after successful run", "branch", branch)
-	} else if !determined {
-		r.log.Info("worktree: remote branch probe inconclusive; skipping remote delete (local delete proceeds)", "branch", branch)
 	}
 	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
 		return fmt.Errorf("git branch -D %s: %w", branch, err)
 	}
-	r.log.Info("worktree: deleted branch after successful run", "branch", branch, "reason", reason)
-	return nil
-}
-
-// branchProvablyMerged reports whether a branch's tip provably landed in the
-// integration base, so a squash-merged PR (whose branch tip is never an
-// ancestor of the base) is still reclaimed on terminal success. This is a
-// tri-state proof, not a single ancestry boolean: uncertainty never deletes.
-//
-//   - P1 (ancestry): the branch tip is an ancestor of develop/origin/develop.
-//   - P2 (authoritative PR merged): the run row records pr_state == "merged"
-//     (worker-authored after a successful `gh pr merge --squash`) AND the
-//     branch tip is not newer than the base tip (nothing was committed after
-//     the merge). Preferred.
-//   - P3 (remote branch gone, fallback): only when the run row records no
-//     pr_state, the remote PR branch ref is provably gone (fail-closed — a
-//     network/lookup failure keeps the branch) AND the branch tip is not
-//     newer than the base tip (no proof the branch's unique commits were
-//     landed).
-//
-// reason names the proof that applied (or "uncertain"), and is logged so a
-// human can audit which gate authorized a prune.
-func (r *WorktreeReconciler) branchProvablyMerged(ctx context.Context, projectDir, branch, prState string) (bool, string) {
-	// P1 — fast path: the branch tip is an ancestor of the base. The fetch
-	// raises the remote base ref before the check, so a stale local develop
-	// never hides a merged branch.
-	if r.branchMergedIntoBase(ctx, projectDir, branch) {
-		return true, "ancestry"
-	}
-	// P2 — authoritative PR merged (the squash path): pr_state is worker-
-	// written only after a successful merge, so it is the strongest signal.
-	if prState == "merged" {
-		if r.branchTipNotNewerThanBase(ctx, projectDir, branch) {
-			return true, "pr_state=merged"
-		}
-		r.log.Warn("worktree: pr_state=merged but branch tip newer than base; keeping",
-			"branch", branch)
-		return false, "pr_state=merged-but-tip-newer"
-	}
-	// P3 — fallback when the run row carries no pr_state: a branch whose
-	// remote ref is gone is treated as merged, but only on a successful
-	// probe AND when its tip is not newer than the base (no proof its unique
-	// commits landed). A failed probe is uncertain (keep) — never delete on
-	// a lookup failure or on unproven commits.
-	if prState == "" {
-		r.log.Info("worktree: no pr_state; probing remote branch ref", "branch", branch)
-		if r.remoteBranchRefGone(ctx, projectDir, branch) && r.branchTipNotNewerThanBase(ctx, projectDir, branch) {
-			return true, "remote-branch-gone"
-		}
-		return false, "uncertain"
-	}
-	return false, "uncertain"
-}
-
-// branchTipNotNewerThanBase reports whether branch's tip committer date is
-// not newer than the base tip's (origin/develop preferred, else local
-// develop). A squash merge lands a NEW base commit dated after the last
-// branch commit, so a provably-squashed branch has tip <= base. A branch
-// tip strictly NEWER than the base carries commits that were never merged
-// (uploaded after the merge) — treat as uncertain and keep. Any read
-// failure returns false so a branch is never deleted on uncertainty.
-func (r *WorktreeReconciler) branchTipNotNewerThanBase(ctx context.Context, projectDir, branch string) bool {
-	branchDate := r.commitDate(ctx, projectDir, branch)
-	if branchDate == 0 {
-		return false
-	}
-	var baseDate int64
-	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", "origin/develop"); err == nil {
-		baseDate = r.commitDate(ctx, projectDir, "origin/develop")
-	} else {
-		baseDate = r.commitDate(ctx, projectDir, "develop")
-	}
-	if baseDate == 0 {
-		return false
-	}
-	return branchDate <= baseDate
-}
-
-// commitDate returns the unix committer timestamp of the tip of ref, or 0
-// when the ref cannot be resolved (never delete on a failed read).
-func (r *WorktreeReconciler) commitDate(ctx context.Context, projectDir, ref string) int64 {
-	out, err := runGit(ctx, projectDir, "log", "-1", "--format=%ct", ref)
-	if err != nil {
-		return 0
-	}
-	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
-// remoteBranchRefGone reports whether the remote PR branch ref is gone,
-// used as the P3 fallback ONLY when the run row records no pr_state. It
-// prunes stale remote-tracking refs, then treats the branch as gone when
-// origin/<branch> no longer resolves. Fail-closed: a fetch/lookup failure
-// (no origin, no network) returns false so a branch is never deleted on an
-// unsuccessful probe — a weaker signal than pr_state, so it must never
-// delete on doubt.
-func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir, branch string) bool {
-	if _, err := runGit(ctx, projectDir, "fetch", "--prune", "origin"); err != nil {
-		r.log.Warn("worktree: remote-branch-gone probe fetch failed; keeping branch",
-			"branch", branch, "error", err)
-		return false
-	}
-	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", "origin/"+branch); err != nil {
-		return true
-	}
-	return false
-}
-
-// branchRemoteExists reports whether a remote ref refs/heads/<branch>
-// exists on origin. It returns (exists, determined):
-//   - determined=false means the probe could NOT confirm (origin absent /
-//     network down) — the caller must SKIP the remote `--delete` but still
-//     allow a provably-merged LOCAL delete (the Design Approver's
-//     refinement: fail-closed for deletion, but never deadlock local
-//     cleanup on a missing origin).
-//   - determined=true means the probe spoke to origin and exists is
-//     authoritative.
-//
-// It is the L3 gate that decides whether `git push origin --delete` is even
-// attempted; it never deletes on doubt.
-func (r *WorktreeReconciler) branchRemoteExists(ctx context.Context, projectDir, branch string) (bool, bool) {
-	if branch == "" {
-		return false, true
-	}
-	out, err := runGit(ctx, projectDir, "ls-remote", "--heads", "origin", branch)
-	if err != nil {
-		// origin absent / network down — cannot confirm. Skip the remote
-		// delete (do not block a provably-merged local delete).
-		r.log.Warn("worktree: remote branch probe failed; skipping remote delete",
-			"branch", branch, "error", err)
-		return false, false
-	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == "refs/heads/"+branch {
-			return true, true
-		}
-	}
-	return false, true
-}
-
-// isAncestor reports whether branch a is an ancestor of branch b (a..b fast-forwardable).
-func (r *WorktreeReconciler) isAncestor(ctx context.Context, projectDir, a, b string) bool {
-	_, err := runGit(ctx, projectDir, "merge-base", "--is-ancestor", a, b)
-	return err == nil
-}
-
-// ensureRunWorktreeStepIgnore creates a .gitignore at the run worktree root that ignores nested step worktrees.
-func (r *WorktreeReconciler) ensureRunWorktreeStepIgnore(ctx context.Context, runWorktreePath string) {
-	// Create a .gitignore at the run worktree root that ignores nested step worktrees.
-	// Step worktrees are at <runID>/<stepRunID> where stepRunID is a ULID (01...).
-	// Without this, `git status` in the run worktree shows step dirs as untracked,
-	// and `git add .` would include sibling step files. The ignore is best-effort.
-	ignorePath := runWorktreePath + "/.gitignore"
-	content := "# Orchicon: ignore nested step worktrees (parallel-branch children)\n01*/\n"
-	if data, err := os.ReadFile(ignorePath); err == nil {
-		if strings.Contains(string(data), "01*/") {
-			return
-		}
-		content = string(data) + "\n" + content
-	}
-	_ = os.WriteFile(ignorePath, []byte(content), 0644)
-}
-
-// fastForwardBranch fast-forwards stepBranch to runBranch tip. The step worktree
-// is checked out on stepBranch, so we first try `git -C <stepPath> merge --ff-only <runBranch>`.
-// If that fails (e.g. worktree not at path), fall back to `git branch -f <stepBranch> <runBranch>`.
-func (r *WorktreeReconciler) fastForwardBranch(ctx context.Context, projectDir, stepPath, stepBranch, runBranch string) error {
-	if stepPath != "" {
-		if _, err := runGit(ctx, stepPath, "merge", "--ff-only", runBranch); err == nil {
-			r.log.Info("worktree: fast-forwarded step branch to run branch", "step_branch", stepBranch, "run_branch", runBranch)
-			return nil
-		}
-	}
-	if _, err := runGit(ctx, projectDir, "branch", "-f", stepBranch, runBranch); err != nil {
-		return err
-	}
-	r.log.Info("worktree: fast-forwarded step branch via branch -f", "step_branch", stepBranch, "run_branch", runBranch)
+	r.log.Info("worktree: deleted branch after successful run", "branch", branch)
 	return nil
 }
 
@@ -2155,49 +1441,34 @@ func (r *WorktreeReconciler) fastForwardBranch(ctx context.Context, projectDir, 
 // run that terminalized mid-provision is not spuriously touched (the
 // worktree still exists for the cleanup companion to reap).
 func (r *WorktreeReconciler) recordReady(ctx context.Context, tenantID, runID, path, branch string) error {
-	// Retry on optimistic-lock version conflicts (ErrNotFound from WHERE version=...).
-	// Two parallel step completions racing on the same run can both read v3,
-	// one wins v3->v4, the other gets 0 rows. Re-read and retry instead of
-	// failing the workflow (mirrors ControlSequence STOP fix).
-	for attempt := 0; attempt < 3; attempt++ {
-		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			return fmt.Errorf("begin tx: %w", err)
-		}
-		run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
-		if err != nil {
-			ttx.Rollback(ctx)
-			if errors.Is(err, db.ErrNotFound) {
-				return nil
-			}
-			return fmt.Errorf("get run: %w", err)
-		}
-		// Already provisioned by a concurrent pass — converge, don't fight.
-		if run.WorktreeStatus == domain.WorktreeReady {
-			if err := ttx.Commit(ctx); err != nil {
-				return fmt.Errorf("commit: %w", err)
-			}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			return nil
 		}
-		_, err = db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			WorktreeStatus: strPtr(domain.WorktreeReady),
-			WorktreePath:   strPtr(path),
-			WorktreeBranch: strPtr(branch),
-		})
-		if err != nil {
-			ttx.Rollback(ctx)
-			if errors.Is(err, db.ErrNotFound) && attempt < 2 {
-				continue
-			}
-			return fmt.Errorf("record worktree ready: %w", err)
-		}
-		if err := ttx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit: %w", err)
-		}
-		r.log.Info("worktree provisioned", "run", runID, "path", path, "branch", branch)
-		return nil
+		return fmt.Errorf("get run: %w", err)
 	}
-	return fmt.Errorf("record worktree ready: version conflict after retries")
+	// Already provisioned by a concurrent pass — converge, don't fight.
+	if run.WorktreeStatus == domain.WorktreeReady {
+		return ttx.Commit(ctx)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+		WorktreeStatus: strPtr(domain.WorktreeReady),
+		WorktreePath:   strPtr(path),
+		WorktreeBranch: strPtr(branch),
+	}); err != nil {
+		return fmt.Errorf("record worktree ready: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	r.log.Info("worktree provisioned", "run", runID, "path", path, "branch", branch)
+	return nil
 }
 
 // markSkipped records that the project is not git-backed so the run
@@ -2241,26 +1512,6 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 	// scan pass re-admits it once a slot frees. Only 'skipped' transitions
 	// consult the gate — 'ready'/'failed' carry no in-place token.
 	if status == domain.WorktreeSkipped {
-		// ADR 2.2 pre-dispatch clean check: never dispatch in-place against a
-		// dirty git checkout. If the project dir is a git work tree and is
-		// dirty, refuse admission and mark failed instead — the checkout must
-		// be cleaned manually. This converts silent pollution into an explicit
-		// failure (AC: git pull never fails with local changes).
-		if run.ProjectID != "" {
-			if dir := r.lookupProjectDir(ctx, tenantID, run.ProjectID); dir != "" && r.isInsideWorkTree(ctx, dir) && r.isDirtyWorkTree(ctx, dir) {
-				r.log.Warn("worktree: refusing in-place dispatch — checkout dirty", "run", runID, "project_dir", dir)
-				// Mark failed instead of skipped so the run does not proceed in place.
-				fields := db.UpdateWorkflowRunFields{WorktreeStatus: strPtr(domain.WorktreeFailed)}
-				reasonDirty := "checkout dirty — refusing in-place dispatch; clean the working tree and retry"
-				if merged, ok := mergeRunContext(run.RunContext, map[string]any{"worktree_error": reasonDirty}); ok {
-					fields.RunContext = &merged
-				}
-				if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, fields); err != nil {
-					return fmt.Errorf("mark worktree failed (dirty): %w", err)
-				}
-				return ttx.Commit(ctx)
-			}
-		}
 		admitted, aerr := r.admitInPlace(ctx, ttx.Tx, tenantID, run)
 		if aerr != nil {
 			return fmt.Errorf("admit in-place run: %w", aerr)
@@ -2357,49 +1608,37 @@ func (r *WorktreeReconciler) markPruned(ctx context.Context, tenantID, runID, re
 // terminalized mid-provision is not spuriously touched (the worktree still
 // exists for the prune pass to reap).
 func (r *WorktreeReconciler) recordStepReady(ctx context.Context, tenantID, stepRunID, path, branch string) error {
-	for attempt := 0; attempt < 3; attempt++ {
-		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			return fmt.Errorf("begin tx: %w", err)
-		}
-		sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
-		if err != nil {
-			ttx.Rollback(ctx)
-			if errors.Is(err, db.ErrNotFound) {
-				return nil
-			}
-			return fmt.Errorf("get step run: %w", err)
-		}
-		// Already provisioned by a concurrent pass — converge, don't fight.
-		if sr.WorktreeStatus == domain.WorktreeReady {
-			if err := ttx.Commit(ctx); err != nil {
-				return fmt.Errorf("commit: %w", err)
-			}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			return nil
 		}
-		if isTerminalStepRun(sr) {
-			ttx.Rollback(ctx)
-			return nil
-		}
-		_, err = db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID, sr.Version, db.UpdateWorkflowStepRunFields{
-			WorktreeStatus: strPtr(domain.WorktreeReady),
-			WorktreePath:   strPtr(path),
-			WorktreeBranch: strPtr(branch),
-		})
-		if err != nil {
-			ttx.Rollback(ctx)
-			if errors.Is(err, db.ErrNotFound) && attempt < 2 {
-				continue
-			}
-			return fmt.Errorf("record step worktree ready: %w", err)
-		}
-		if err := ttx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit: %w", err)
-		}
-		r.log.Info("worktree: branch worktree provisioned", "step_run", stepRunID, "path", path, "branch", branch)
+		return fmt.Errorf("get step run: %w", err)
+	}
+	// Already provisioned by a concurrent pass — converge, don't fight.
+	if sr.WorktreeStatus == domain.WorktreeReady {
+		return ttx.Commit(ctx)
+	}
+	if isTerminalStepRun(sr) {
 		return nil
 	}
-	return fmt.Errorf("record step worktree ready: version conflict after retries")
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID, sr.Version, db.UpdateWorkflowStepRunFields{
+		WorktreeStatus: strPtr(domain.WorktreeReady),
+		WorktreePath:   strPtr(path),
+		WorktreeBranch: strPtr(branch),
+	}); err != nil {
+		return fmt.Errorf("record step worktree ready: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	r.log.Info("worktree: branch worktree provisioned", "step_run", stepRunID, "path", path, "branch", branch)
+	return nil
 }
 
 // markStepSkipped records that no branch worktree will be provisioned for
@@ -2537,219 +1776,6 @@ func (r *WorktreeReconciler) markStepPruned(ctx context.Context, tenantID, stepR
 	}
 	r.log.Info("worktree: branch worktree pruned", "step_run", stepRunID, "branch", sr.WorktreeBranch)
 	return nil
-}
-
-// isDirtyWorkTree reports whether the git work tree at projectDir has
-// uncommitted changes (modified/deleted) or untracked non-ignored files.
-// It runs `git status --porcelain` and treats any output as dirty.
-func (r *WorktreeReconciler) isDirtyWorkTree(ctx context.Context, projectDir string) bool {
-	out, err := runGit(ctx, projectDir, "status", "--porcelain")
-	if err != nil {
-		// If git status fails, assume dirty to fail-closed (never dispatch
-		// in-place on uncertainty).
-		return true
-	}
-	return strings.TrimSpace(out) != ""
-}
-
-// restoreWorkTree restores a git checkout to a clean state: `git reset --hard HEAD`
-// plus `git clean -fd` (not -fdx — preserve ignored build artifacts; the
-// observed stray file _batch_test2.go is untracked non-ignored and is removed
-// by -fd, while .gotmp etc. remain). Returns an error if verification after
-// restore still shows dirty.
-func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir string) error {
-	if _, err := runGit(ctx, projectDir, "reset", "--hard", "HEAD"); err != nil {
-		return fmt.Errorf("git reset --hard HEAD: %w", err)
-	}
-	if _, err := runGit(ctx, projectDir, "clean", "-fd"); err != nil {
-		return fmt.Errorf("git clean -fd: %w", err)
-	}
-	if r.isDirtyWorkTree(ctx, projectDir) {
-		return fmt.Errorf("checkout still dirty after restore")
-	}
-	return nil
-}
-
-// sweepOrphanDirs removes stale .orchicon-worktrees/<id> directories that
-// are not valid git worktrees and have no DB row referencing them. This
-// reclaims the observed stale dirs that prune left behind (no .git pointer).
-func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID string) {
-	// Collect all projects with a project_dir so we sweep each repo once.
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return
-	}
-	// Use raw query to list projects with project_dir set — avoid loading all
-	// project rows via ListProjects and filter in Go.
-	rows, err := ttx.Tx.Query(ctx, `SELECT project_dir FROM projects WHERE tenant_id = $1 AND project_dir <> ''`, tenantID)
-	if err != nil {
-		ttx.Rollback(ctx)
-		return
-	}
-	var dirs []string
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err == nil && d != "" {
-			dirs = append(dirs, d)
-		}
-	}
-	rows.Close()
-	ttx.Rollback(ctx)
-	seen := make(map[string]bool)
-	for _, dir := range dirs {
-		if seen[dir] {
-			continue
-		}
-		seen[dir] = true
-		if !r.isInsideWorkTree(ctx, dir) {
-			continue
-		}
-		root := filepath.Join(dir, worktreeDirName)
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			continue
-		}
-		// Build set of valid worktree paths from git worktree list.
-		wts, _ := listWorktrees(ctx, dir)
-		validPaths := make(map[string]bool, len(wts))
-		for _, wt := range wts {
-			validPaths[filepath.Clean(wt.path)] = true
-		}
-		// Also collect DB-referenced paths (run-level ready worktrees) to avoid
-		// deleting a just-provisioned path that git hasn't registered yet.
-		ttx2, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err == nil {
-			if readyRuns, err := r.listReadyRunPaths(ctx, ttx2.Tx, tenantID, dir); err == nil {
-				for _, rp := range readyRuns {
-					validPaths[filepath.Clean(rp)] = true
-				}
-			}
-			ttx2.Rollback(ctx)
-		}
-		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), stagingPrefix) {
-				continue
-			}
-			child := filepath.Join(root, e.Name())
-			if validPaths[filepath.Clean(child)] {
-				continue
-			}
-			// A run-namespaced path whose DB row is not ready (pruned/terminal)
-			// and not a registered worktree is an orphan. Only delete if it is
-			// not a registered worktree and not an orchicon-owned container with
-			// live children.
-			if wt, _ := r.worktreeAt(ctx, dir, child); wt != nil {
-				continue
-			}
-			// If it's an orchicon container with live children, skip.
-			if fi, err := os.Stat(child); err == nil && fi.IsDir() {
-				if isContainer, _ := r.isOrchiconContainer(ctx, dir, child); isContainer {
-					if occupied, _ := r.dirOccupied(child); occupied {
-						// Check if container has any orchicon-owned child that is
-						// still registered — keep it.
-						entries2, _ := os.ReadDir(child)
-						hasLive := false
-						for _, ce := range entries2 {
-							nested := filepath.Join(child, ce.Name())
-							if validPaths[filepath.Clean(nested)] {
-								hasLive = true
-								break
-							}
-							if wt2, _ := r.worktreeAt(ctx, dir, nested); wt2 != nil {
-								hasLive = true
-								break
-							}
-						}
-						if hasLive {
-							continue
-						}
-					}
-				}
-			}
-			// Orphan dir — remove if it's a worktree artifact or empty, else
-			// leave (never delete arbitrary user data). The observed stale dirs
-			// are empty or contain only a stale .git artifact without a valid
-			// worktree registration.
-			if r.isOrchiconWorktreeArtifact(child) {
-				if err := r.removeWorktreeArtifact(child); err == nil {
-					r.log.Info("worktree: orphan dir sweep removed artifact", "path", child)
-				}
-				continue
-			}
-			if empty, _ := dirEmpty(child); empty {
-				if err := os.Remove(child); err == nil {
-					r.log.Info("worktree: orphan dir sweep removed empty dir", "path", child)
-				}
-				continue
-			}
-			// For any other orphan directory, try to remove via git worktree prune
-			// housekeeping; otherwise leave it for manual inspection.
-			r.log.Warn("worktree: orphan dir sweep found stale dir (not artifact, not empty)", "path", child)
-		}
-	}
-}
-
-// listReadyRunPaths returns worktree_path for runs in ready state whose
-// project_dir matches the given dir (used to protect a just-provisioned
-// path from the orphan dir sweep).
-func (r *WorktreeReconciler) listReadyRunPaths(ctx context.Context, tx pgx.Tx, tenantID, projectDir string) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT worktree_path FROM workflow_runs WHERE tenant_id = $1 AND worktree_path <> '' AND worktree_status = 'ready'`, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err == nil {
-			// Only consider paths under this project_dir's worktree root.
-			if strings.HasPrefix(p, projectDir+string(filepath.Separator)) {
-				out = append(out, p)
-			}
-		}
-	}
-	return out, rows.Err()
-}
-
-// sweepSkippedTerminalRuns restores the shared checkout for any terminal
-// skipped run (in-place fallback). For git-backed projects the checkout must
-// be clean after a skipped run; run `reset --hard HEAD && clean -fd` and
-// verify clean. Best-effort — failures are logged but don't block the scan.
-func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenantID string) {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return
-	}
-	rows, err := ttx.Tx.Query(ctx, `SELECT id, project_id, worktree_status, status FROM workflow_runs WHERE tenant_id = $1 AND worktree_status = 'skipped' AND status IN ('completed','failed','aborted')`, tenantID)
-	if err != nil {
-		ttx.Rollback(ctx)
-		return
-	}
-	type rec struct{ id, projectID string }
-	var recs []rec
-	for rows.Next() {
-		var id, projectID, ws, st string
-		if err := rows.Scan(&id, &projectID, &ws, &st); err == nil {
-			recs = append(recs, rec{id, projectID})
-		}
-	}
-	rows.Close()
-	ttx.Rollback(ctx)
-	for _, rec := range recs {
-		dir := r.lookupProjectDir(ctx, tenantID, rec.projectID)
-		if dir == "" || !r.isInsideWorkTree(ctx, dir) {
-			continue
-		}
-		if !r.isDirtyWorkTree(ctx, dir) {
-			continue
-		}
-		r.log.Warn("worktree: restoring dirty checkout after skipped terminal run", "run", rec.id, "dir", dir)
-		if err := r.restoreWorkTree(ctx, dir); err != nil {
-			r.log.Warn("worktree: restore after skipped run failed", "run", rec.id, "error", err)
-		} else {
-			r.log.Info("worktree: restored checkout after skipped run", "run", rec.id)
-		}
-	}
 }
 
 // mergeStepRunContext folds a worktree_error into a step run's result

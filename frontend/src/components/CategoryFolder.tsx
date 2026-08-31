@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type CSSProperties, type ReactNode } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   ChevronRight,
   FolderClosed,
@@ -7,9 +7,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import { GripVertical } from "lucide-react";
+import { useDroppable } from "@dnd-kit/core";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -30,9 +28,7 @@ interface CategoryFolderProps {
    * DnD), so non-DnD callers are unaffected.
    */
   droppableId?: string;
-  /** When true, folder header is drag-reorderable via Sortable. */
-  sortable?: boolean;
-  children: ReactNode;
+  children: React.ReactNode;
 }
 
 export function CategoryFolder({
@@ -44,21 +40,14 @@ export function CategoryFolder({
   onDelete,
   onUpdateDescription,
   droppableId,
-  sortable,
   children,
 }: CategoryFolderProps) {
-  // Single droppable registration per folder: useSortable's internal
-  // droppable IS the folder's drop target. (An extra useDroppable with the
-  // same id used to collide in dnd-kit's container map — the later
-  // registration wins — and when the sortable was disabled its node ref was
-  // never populated, so the folder had no measured rect and drops silently
-  // no-op'd whenever there was only one category, the default seeded state.)
-  const sortableEnabled = sortable && category.id !== "uncategorized";
-  const sortableState = useSortable({
-    id: droppableId ?? category.id,
-    disabled: !sortableEnabled,
+  // Unconditional hook call; disabled when no droppableId is given so the
+  // component stays usable outside a DndContext.
+  const { setNodeRef, isOver } = useDroppable({
+    id: droppableId ?? "",
+    disabled: !droppableId,
   });
-  const { setNodeRef, isOver } = sortableState;
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
@@ -97,43 +86,22 @@ export function CategoryFolder({
 
   const isUncategorized = category.id === "uncategorized";
 
-  const folderStyle: CSSProperties | undefined = sortableEnabled
-    ? { transform: CSS.Transform.toString(sortableState.transform), transition: sortableState.transition }
-    : undefined;
-  const setRefs = (el: HTMLDivElement | null) => {
-    // Always attach the node ref (droppable + draggable) so the folder's
-    // droppable is measured even when it is not drag-reorderable.
-    setNodeRef(el);
-  };
   return (
     <div
-      ref={setRefs}
-      style={folderStyle}
+      ref={setNodeRef}
       className={cn(
         "mt-3 first:mt-0 transition-shadow",
         isOver && "rounded-lg ring-2 ring-ring bg-accent/30",
-        sortableEnabled && sortableState.isDragging && "opacity-50",
       )}
     >
       <div
         className={cn(
           "group flex items-center gap-2 rounded-lg px-3 py-2 transition-colors",
-          "glass-panel hover:bg-white/5 border border-white/10",
+          "bg-muted/50 hover:bg-muted/80",
         )}
         onMouseEnter={() => setShowActions(true)}
         onMouseLeave={() => setShowActions(false)}
       >
-        {sortableEnabled && (
-          <button
-            type="button"
-            className="cursor-grab active:cursor-grabbing p-1 text-muted-foreground hover:text-foreground"
-            aria-label={`Drag to reorder ${category.name}`}
-            {...sortableState.attributes}
-            {...sortableState.listeners}
-          >
-            <GripVertical aria-hidden="true" className="h-3.5 w-3.5" />
-          </button>
-        )}
         <button
           type="button"
           onClick={onToggle}
@@ -142,15 +110,15 @@ export function CategoryFolder({
           aria-controls={`folder-content-${category.id}`}
         >
           <ChevronRight
-            aria-hidden="true" className={cn(
+            className={cn(
               "h-4 w-4 text-muted-foreground transition-transform duration-200",
               !isCollapsed && "rotate-90",
             )}
           />
           {isCollapsed ? (
-            <FolderClosed aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+            <FolderClosed className="h-4 w-4 text-muted-foreground" />
           ) : (
-            <FolderOpen aria-hidden="true" className="h-4 w-4 text-muted-foreground" />
+            <FolderOpen className="h-4 w-4 text-muted-foreground" />
           )}
         </button>
 
@@ -194,7 +162,7 @@ export function CategoryFolder({
                 className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                 title="Rename folder"
               >
-                <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+                <Pencil className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
@@ -202,7 +170,7 @@ export function CategoryFolder({
                 className="rounded p-1 text-muted-foreground hover:text-destructive hover:bg-accent transition-colors"
                 title="Delete folder"
               >
-                <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+                <Trash2 className="h-3.5 w-3.5" />
               </button>
             </>
           )}
@@ -258,7 +226,7 @@ export function CategoryFolder({
             }}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
           >
-            <FolderPlus aria-hidden="true" className="h-3 w-3" />
+            <FolderPlus className="h-3 w-3" />
             Add description
           </button>
         </div>

@@ -61,7 +61,7 @@ export function ChatScrollContainer({
           onClick={jumpToBottom}
           className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs shadow-md hover:bg-accent"
         >
-          <ArrowDown aria-hidden="true" className="h-3 w-3" />
+          <ArrowDown className="h-3 w-3" />
           jump to latest
         </button>
       )}

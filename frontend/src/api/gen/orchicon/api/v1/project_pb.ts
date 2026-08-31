@@ -62,45 +62,6 @@ proto3.util.setEnumType(ProjectStatus, "orchicon.api.v1.ProjectStatus", [
 ]);
 
 /**
- * GitStrategy controls how worktrees materialize changes.
- * Worktrees are always provisioned for isolation; this selects the
- * post-success materialization:
- *   - local: commit in worktree → push branch to origin (no PR)
- *   - pr:    push branch + create PR (requires remote/GitHub)
- *   - none:  don't push at all — worktree pruned, no branch retained
- *
- * @generated from enum orchicon.api.v1.GitStrategy
- */
-export enum GitStrategy {
-  /**
-   * @generated from enum value: GIT_STRATEGY_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: GIT_STRATEGY_LOCAL = 1;
-   */
-  LOCAL = 1,
-
-  /**
-   * @generated from enum value: GIT_STRATEGY_PR = 2;
-   */
-  PR = 2,
-
-  /**
-   * @generated from enum value: GIT_STRATEGY_NONE = 3;
-   */
-  NONE = 3,
-}
-// Retrieve enum metadata with: proto3.getEnumType(GitStrategy)
-proto3.util.setEnumType(GitStrategy, "orchicon.api.v1.GitStrategy", [
-  { no: 0, name: "GIT_STRATEGY_UNSPECIFIED" },
-  { no: 1, name: "GIT_STRATEGY_LOCAL" },
-  { no: 2, name: "GIT_STRATEGY_PR" },
-  { no: 3, name: "GIT_STRATEGY_NONE" },
-]);
-
-/**
  * GoalField is a single key-value pair describing a project goal.
  *
  * @generated from message orchicon.api.v1.GoalField
@@ -281,11 +242,6 @@ export class Project extends Message<Project> {
    */
   repoSlug = "";
 
-  /**
-   * @generated from field: orchicon.api.v1.GitStrategy git_strategy = 14;
-   */
-  gitStrategy = GitStrategy.UNSPECIFIED;
-
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -307,7 +263,6 @@ export class Project extends Message<Project> {
     { no: 11, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 12, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 13, name: "repo_slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 14, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {
@@ -461,11 +416,6 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
    */
   requestId = "";
 
-  /**
-   * @generated from field: orchicon.api.v1.GitStrategy git_strategy = 6;
-   */
-  gitStrategy = GitStrategy.UNSPECIFIED;
-
   constructor(data?: PartialMessage<CreateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -479,7 +429,6 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
     { no: 3, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "goals", kind: "message", T: GoalField, repeated: true },
     { no: 5, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateProjectRequest {
@@ -715,11 +664,6 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
    */
   maxConcurrentRuns?: number;
 
-  /**
-   * @generated from field: optional orchicon.api.v1.GitStrategy git_strategy = 9;
-   */
-  gitStrategy?: GitStrategy;
-
   constructor(data?: PartialMessage<UpdateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -736,7 +680,6 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
     { no: 6, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 7, name: "context_files", kind: "message", T: ContextFiles, opt: true },
     { no: 8, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
-    { no: 9, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy), opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateProjectRequest {

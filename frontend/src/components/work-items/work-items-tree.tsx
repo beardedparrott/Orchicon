@@ -220,7 +220,7 @@ export function WorkItemsTree({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <SearchX aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
+            <SearchX className="h-5 w-5 text-muted-foreground" />
             {hasQuery ? "No matching work items" : "No work items yet"}
           </CardTitle>
           <CardDescription>
@@ -336,9 +336,10 @@ function TreeNode({
   // `treeData.matches`).
   const selectable = !(filterActive && ancestorIds.has(item.id) && !matchIds.has(item.id));
 
-  const fullSubtree = [item.id, ...collectSubtreeIds(item.id, childrenOf)];
-  const visibleSubtree = filterActive ? fullSubtree.filter((id) => matchIds.has(id)) : fullSubtree;
-  const subtreeState = subtreeSelectionState(visibleSubtree, selected);
+  const subtreeState = subtreeSelectionState(
+    [item.id, ...collectSubtreeIds(item.id, childrenOf)],
+    selected,
+  );
   const triState = hasChildren && subtreeState === "indeterminate";
   const checked = subtreeState === "checked";
 
@@ -484,12 +485,12 @@ function SortableTreeRow({
       {Array.from({ length: depth }, (_, i) => (
         <span
           key={i}
-          aria-hidden="true"
+          aria-hidden
           className="h-6 w-[18px] shrink-0 border-l border-dashed border-border/60"
         />
       ))}
       <GripVertical
-        aria-hidden="true"
+        aria-hidden
         className={cn(
           "h-3.5 w-3.5 shrink-0 text-muted-foreground/60",
           dragDisabled && "opacity-0",
@@ -527,7 +528,7 @@ function SortableTreeRow({
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ChevronRight
-            aria-hidden="true" className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
+            className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
           />
         </button>
       ) : (
@@ -554,7 +555,7 @@ function SortableTreeRow({
           <span className="hidden items-center gap-1.5 md:inline-flex" title={runs[0].worktreeBranch || "PR"}>
             {runs[0].worktreeBranch && (
               <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
-                <GitBranch aria-hidden="true" className="h-3 w-3 shrink-0"  />
+                <GitBranch className="h-3 w-3 shrink-0" aria-hidden />
                 <span className="max-w-[8rem] truncate">{runs[0].worktreeBranch}</span>
               </span>
             )}

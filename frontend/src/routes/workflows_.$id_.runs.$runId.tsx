@@ -333,7 +333,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               disabled={retryFailed.isPending}
               title="Reset the run back to pending, re-arm the failed/skipped/blocked step runs, and re-dispatch from where it left off (steps that already succeeded are kept)."
             >
-              <RefreshCw aria-hidden="true" className="mr-1 h-4 w-4" />
+              <RefreshCw className="mr-1 h-4 w-4" />
               {retryFailed.isPending ? "Retrying…" : "Retry failed step"}
             </Button>
           )}
@@ -344,7 +344,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               disabled={forceProgress.isPending}
               title="Force the run past its current step run(s), regardless of their status — use when a run is stuck 'running' after a reconcile error rolled back a completed step."
             >
-              <FastForward aria-hidden="true" className="mr-1 h-4 w-4" />
+              <FastForward className="mr-1 h-4 w-4" />
               {forceProgress.isPending ? "Forcing…" : "Force next step"}
             </Button>
           )}
@@ -361,14 +361,14 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       </div>
 
       {run.startedAt && (
-        <div className="flex items-center gap-2 rounded-xl glass-panel px-3 py-1.5 border border-white/10">
+        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-1.5">
           <LiveDuration startedAt={run.startedAt} endedAt={run.endedAt} />
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
 
       {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
-        <div className="rounded-2xl glass-panel p-4">
+        <div className="rounded-xl border bg-card p-4 shadow-sm">
           <h3 className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             <span>Worktree</span>
             {run && (
@@ -390,7 +390,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       )}
 
       {/* run canvas with live step transitions */}
-      <div className="h-[600px] rounded-2xl glass-panel">
+      <div className="h-[600px] rounded-lg border bg-card">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -744,7 +744,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: true, reason, reviewedBy: "" })}
               disabled={approveMutation.isPending}
             >
-              <CheckCircle2 aria-hidden="true" className="mr-1 h-4 w-4" />
+              <CheckCircle2 className="mr-1 h-4 w-4" />
               Approve
             </Button>
             <Button
@@ -753,7 +753,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: false, reason, reviewedBy: "" })}
               disabled={approveMutation.isPending}
             >
-              <XCircle aria-hidden="true" className="mr-1 h-4 w-4" />
+              <XCircle className="mr-1 h-4 w-4" />
               Reject
             </Button>
             <Button
@@ -762,7 +762,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
               onClick={() => retryMutation.mutate({ stepRunId: stepRun.id, workflowRunId: runId })}
               disabled={retryMutation.isPending}
             >
-              <RefreshCw aria-hidden="true" className="mr-1 h-4 w-4" />
+              <RefreshCw className="mr-1 h-4 w-4" />
               Retry step
             </Button>
           </div>
@@ -773,7 +773,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
       {isResolved && decision !== "" && (
         <div className="mt-2 border-t border-yellow-200 pt-2 text-xs dark:border-yellow-800">
           <span className="text-muted-foreground">Decision: </span>
-          <span className={cn("font-medium", decision === "approved" ? "text-emerald-700 dark:text-emerald-600" : "text-red-600")}>
+          <span className={cn("font-medium", decision === "approved" ? "text-emerald-600" : "text-red-600")}>
             {decision}
           </span>
         </div>
@@ -854,7 +854,7 @@ function RunStepNode({
             position={Position.Bottom}
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-500"
           />
-          <span className="pointer-events-none absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-700 dark:text-emerald-400">
+          <span className="pointer-events-none absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
             success
           </span>
           <Handle
@@ -863,7 +863,7 @@ function RunStepNode({
             position={Position.Right}
             className="!h-2.5 !w-2.5 !border-2 !border-background !bg-rose-500"
           />
-          <span className="pointer-events-none absolute -right-9 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-700 dark:text-rose-400">
+          <span className="pointer-events-none absolute -right-9 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-600 dark:text-rose-400">
             loop
           </span>
         </>
@@ -921,9 +921,9 @@ function StepStatusPill({ status }: { status: number }) {
 function StreamStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     idle: "text-muted-foreground",
-    connecting: "text-yellow-700 dark:text-yellow-600",
-    open: "text-green-700 dark:text-green-600",
-    reconnecting: "text-yellow-700 dark:text-yellow-600",
+    connecting: "text-yellow-600",
+    open: "text-green-600",
+    reconnecting: "text-yellow-600",
     closed: "text-muted-foreground",
     error: "text-destructive",
   };
@@ -943,12 +943,12 @@ function StreamStatusBadge({ status }: { status: string }) {
 }
 
 function EventDot({ eventType }: { eventType: string }) {
-  if (eventType.includes("succeeded")) return <span className="text-sm text-green-700 dark:text-green-600">✓</span>;
+  if (eventType.includes("succeeded")) return <span className="text-sm text-green-600">✓</span>;
   if (eventType.includes("failed")) return <span className="text-sm text-red-600">✗</span>;
-  if (eventType.includes("ready")) return <span className="text-sm text-yellow-700 dark:text-yellow-600">●</span>;
+  if (eventType.includes("ready")) return <span className="text-sm text-yellow-600">●</span>;
   if (eventType.includes("started") || eventType.includes("running")) return <span className="text-sm text-blue-600">▶</span>;
   if (eventType.includes("blocked")) return <span className="text-sm text-red-700">⛔</span>;
-  if (eventType.includes("approval")) return <span className="text-sm text-amber-700 dark:text-amber-600">⚠</span>;
+  if (eventType.includes("approval")) return <span className="text-sm text-amber-600">⚠</span>;
   return <span className="text-sm text-muted-foreground">•</span>;
 }
 

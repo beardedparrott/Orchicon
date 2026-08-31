@@ -77,11 +77,6 @@ type WorkItemRow struct {
 	// used by the scheduler due-scan cursor. NULL = not recurring or
 	// no next occurrence yet.
 	NextRunAt *time.Time
-	// RecurringEnabled is the recurrence on/off flag. false = paused: the
-	// item keeps its recurring_schedule + next_run_at but is excluded from
-	// the due-scan (enable/pause lifecycle), so a pause preserves the
-	// schedule and resume re-arms from it. Default true.
-	RecurringEnabled bool
 	// ArchivedAt is set when the work item is archived (NULL = active).
 	// Every active work-item read filters archived_at IS NULL; the
 	// dedicated archive view opts in via ListWorkItems include_archived
@@ -91,25 +86,9 @@ type WorkItemRow struct {
 	// archived. RestoreWorkItem returns the item to this status (not
 	// pending). NULL = never archived.
 	ArchivedFromStatus *string
-	// SpawnedByWorkItemID is the recurring item id that produced this
-	// work item (empty = not an automation spawn). Server-stamped from
-	// the recurring fire's run_context; never client-supplied (feature 4.1).
-	SpawnedByWorkItemID *string
-	// SpawnedByRunID is the workflow run id of the recurring fire's run
-	// that produced this work item (empty = not an automation spawn).
-	SpawnedByRunID *string
-	SecretIDs   []byte // jsonb array of secret IDs to inject at dispatch (max 10)
-	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
-	SequenceAttempts int
-	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
-	SequenceLastAttemptAt *time.Time
-	// SequenceConsecutiveScanErrors is consecutive reconcile errors as a parent (P2 heartbeat).
-	SequenceConsecutiveScanErrors int
-	// SequenceLastProgressAt is last time this parent made forward progress (child armed/completed/failed).
-	SequenceLastProgressAt *time.Time
-	Version                int
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	Version            int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CreateWorkItem inserts a new work item within the given tenant
@@ -127,21 +106,21 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	if w.ContextFiles == nil {
 		w.ContextFiles = []byte("[]")
 	}
-	if w.SecretIDs == nil {
-		w.SecretIDs = []byte("[]")
-	}
-	// New items always start recurrence-enabled: nothing in the create path
-	// represents "create already-paused" — pause is a later UpdateWorkItem.
-	w.RecurringEnabled = true
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
-		RETURNING ` + WorkItemSelectCols
+		 recurring_schedule, next_run_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
+			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+			workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		recurring_schedule, next_run_at,
+		version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
@@ -149,9 +128,17 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
-		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
-		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
-	).Scan(WorkItemScanPtrs(&row)...)
+		w.RecurringSchedule, w.NextRunAt,
+	).Scan(
+		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
+		&row.Description, &row.AcceptanceCriteria, &row.AcceptanceReview, &row.Status, &row.AssignedWorkerRef,
+		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
+		&row.Priority, &row.Budgets, &row.ContextWindow, &row.SortOrder, &row.Results,
+		&row.PromptContext,
+		&row.ScheduledStartAt, &row.AutoStartWorkflow, &row.RuntimeImage, &row.ContextFiles,
+		&row.RecurringSchedule, &row.NextRunAt,
+		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+	)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
 	}
@@ -167,10 +154,8 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	workflow_run_id, workflow_step_id,
 	priority, budgets, context_window, sort_order, results, prompt_context,
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-	recurring_schedule, next_run_at, recurring_enabled,
+	recurring_schedule, next_run_at,
 	archived_at, archived_from_status,
-	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
-	spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 	version, created_at, updated_at`
 
 // WorkItemScanPtrs returns a slice of Scan pointers matching
@@ -184,10 +169,8 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
+		&w.RecurringSchedule, &w.NextRunAt,
 		&w.ArchivedAt, &w.ArchivedFromStatus,
-		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
-		&w.SpawnedByWorkItemID, &w.SpawnedByRunID, &w.SecretIDs,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	}
 }
@@ -207,34 +190,6 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 	return w, nil
 }
 
-// SpawnedByTitles resolves the titles of the given work item ids within the
-// tenant — a single batched lookup used to render the "from automation X"
-// badge (feature 5.1). The ids are the spawned_by provenance ids carried by
-// automation-produced idea items. Returns a map of id -> title; ids that no
-// longer exist (the spawning item was deleted) are simply absent, so callers
-// can render an empty badge. An empty id set is a no-op (returns an empty
-// map) so callers never pay a round-trip when nothing is actionable.
-func SpawnedByTitles(ctx context.Context, tx pgx.Tx, tenantID string, ids []string) (map[string]string, error) {
-	out := make(map[string]string)
-	if len(ids) == 0 {
-		return out, nil
-	}
-	const q = `SELECT id, title FROM work_items WHERE tenant_id = $1 AND id = ANY($2)`
-	rows, err := tx.Query(ctx, q, tenantID, ids)
-	if err != nil {
-		return nil, fmt.Errorf("db: spawned-by titles: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, title string
-		if err := rows.Scan(&id, &title); err != nil {
-			return nil, fmt.Errorf("db: scan spawned-by title: %w", err)
-		}
-		out[id] = title
-	}
-	return out, rows.Err()
-}
-
 // ListWorkItemsFilter scopes a list query to a tenant + project,
 // optionally filtered by parent (tree view) or status (Kanban).
 type ListWorkItemsFilter struct {
@@ -242,7 +197,6 @@ type ListWorkItemsFilter struct {
 	ProjectID string
 	ParentID  *string // nil = all; empty string = top-level only
 	Status    string  // empty = all statuses
-	Kind      string  // empty = all kinds (epic/feature/task/subtask)
 	Search    string  // ILIKE across title and description
 	SortBy    string  // "title", "priority", "created_at" (default)
 	SortOrder string  // "asc" or "desc" (default "asc")
@@ -254,21 +208,6 @@ type ListWorkItemsFilter struct {
 	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
 	//     archive view.
 	IncludeArchived bool
-	// IdeaScope scopes the idea-state split (feature 4.1): ""/"exclude" =
-	// exclude idea-state items from the normal list; "only" = Idea Cloud
-	// view (status='idea', provenance carried).
-	IdeaScope string
-	// IdeaStateScope selects the idea population for the Idea Cloud
-	// surfaces (ListIdeas): "" (default) = active idea-state items;
-	// "rejected" = dismissed idea spawns (status='cancelled' WITH spawned
-	// provenance — the exact state DismissIdea produces), the rejected
-	// history the automation dedupe gate also reads. Only meaningful when
-	// IdeaScope="only".
-	IdeaStateScope string
-	// RecurringFilter scopes the recurring split: ""/"all" = no filter,
-	// "exclude" = only non-recurring (recurring_schedule IS NULL),
-	// "only" = only recurring (recurring_schedule IS NOT NULL).
-	RecurringFilter string
 }
 
 // ListWorkItems returns a page of work items for a project, ordered by
@@ -289,33 +228,6 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	} else {
 		q += ` AND archived_at IS NULL`
 	}
-	switch f.RecurringFilter {
-	case "only":
-		q += ` AND recurring_schedule IS NOT NULL`
-	case "exclude":
-		q += ` AND recurring_schedule IS NULL`
-	}
-	// Idea-state gate: the normal list excludes idea items; the Idea Cloud
-	// view opts in with "only". The "only" + idea_state_scope="rejected"
-	// combination reads the rejected graveyard instead of the Idea Cloud:
-	// dismissed spawns are status='cancelled' items that still carry
-	// spawned_by provenance — the exact state DismissIdea writes, so the
-	// predicate is retroactive (every rejection ever made is visible with
-	// no backfill) and shares the provenance columns, never a parallel
-	// schema. A generic (human-created) cancelled item never carries
-	// provenance, so the normal cancelled backlog can never leak into the
-	// graveyard — EXCEPT a previously-approved spawn run to completion and
-	// later cancelled; that reads as "tried and killed," exactly the dedupe
-	// signal the gate wants. 'idea'/'cancelled' are literal statuses (not
-	// interpolated).
-	switch {
-	case f.IdeaScope == "only" && f.IdeaStateScope == "rejected":
-		q += ` AND status = 'cancelled' AND spawned_by_work_item_id IS NOT NULL`
-	case f.IdeaScope == "only":
-		q += ` AND status = 'idea'`
-	default:
-		q += ` AND status <> 'idea'`
-	}
 	if f.ParentID != nil {
 		if *f.ParentID == "" {
 			q += fmt.Sprintf(` AND parent_id IS NULL`)
@@ -327,10 +239,6 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if f.Status != "" {
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
-	}
-	if f.Kind != "" {
-		q += fmt.Sprintf(` AND kind = $%d`, len(args)+1)
-		args = append(args, f.Kind)
 	}
 	if f.Search != "" {
 		q += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, len(args)+1, len(args)+1)
@@ -415,7 +323,13 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 // a retried child (the derived cursor's next sibling) can revive the
 // chain automatically.
 func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
-	const q = `SELECT ` + WorkItemSelectCols + `
+	const q = `SELECT w.id, w.tenant_id, w.project_id, w.parent_id, w.kind, w.title, description,
+		acceptance_criteria, acceptance_review, w.status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		recurring_schedule, next_run_at,
+		version, created_at, updated_at
 		FROM work_items w
 		WHERE w.tenant_id = $1
 		  AND w.status IN ('running', 'failed')
@@ -549,16 +463,6 @@ type UpdateWorkItemFields struct {
 	// and next_run_at = NULL. Used when status changes to non-recurring
 	// or when the kind switches to a non-schedulable kind.
 	ClearRecurringSchedule bool
-	// RecurringEnabled toggles the recurrence on/off flag. nil = unchanged
-	// (field-mask semantics). Setting false pauses the recurrence while
-	// preserving the schedule + next_run_at; setting true resumes it.
-	RecurringEnabled *bool
-	// SpawnedByWorkItemID and SpawnedByRunID stamp automation provenance
-	// (feature 4.1). Set only by the spawn path; never via the generic
-	// update (nil = unchanged).
-	SpawnedByWorkItemID *string
-	SpawnedByRunID      *string
-	SecretIDs         *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -708,73 +612,15 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 			setIdx++
 		}
 	}
-	if f.RecurringEnabled != nil {
-		q += fmt.Sprintf(`, recurring_enabled = $%d`, setIdx)
-		args = append(args, *f.RecurringEnabled)
-		setIdx++
-	}
-	if f.SpawnedByWorkItemID != nil {
-		q += fmt.Sprintf(`, spawned_by_work_item_id = $%d`, setIdx)
-		args = append(args, *f.SpawnedByWorkItemID)
-		setIdx++
-	}
-	if f.SpawnedByRunID != nil {
-		q += fmt.Sprintf(`, spawned_by_run_id = $%d`, setIdx)
-		args = append(args, *f.SpawnedByRunID)
-		setIdx++
-	}
-	if f.SecretIDs != nil {
-		q += fmt.Sprintf(`, secret_ids = $%d`, setIdx)
-		args = append(args, *f.SecretIDs)
-		setIdx++
-	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING ` + WorkItemSelectCols
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if isWorkItemVersionConflict(ctx, tx, tenantID, id) {
-			return WorkItemRow{}, ErrVersionConflict
-		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: update work item: %w", err)
-	}
-	return w, nil
-}
-
-// isWorkItemVersionConflict probes whether a work item row exists but the
-// version did not match. Used to distinguish a stale version (ErrVersionConflict)
-// from a genuinely missing row (ErrNotFound) inside the same transaction.
-func isWorkItemVersionConflict(ctx context.Context, tx pgx.Tx, tenantID, id string) bool {
-	var exists bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_items WHERE tenant_id=$1 AND id=$2 AND archived_at IS NULL)`, tenantID, id).Scan(&exists)
-	return err == nil && exists
-}
-
-// ParkWorkItem parks a work item unconditionally (no version check). It is
-// the tolerant fallback for STOP's optimistic-lock race: parking
-// (status → pending/recurring, schedule cleared, run binding cleared) is
-// idempotent, so an unconditional UPDATE is safe when a bounded retry of
-// the versioned path still races. The caller guards succeeded/skipped at
-// the scheduler layer so this never overwrites terminal-success.
-func ParkWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
-	const q = `UPDATE work_items
-		SET status = CASE WHEN recurring_schedule IS NOT NULL THEN 'recurring' ELSE 'pending' END,
-			scheduled_start_at = NULL,
-			workflow_run_id = '',
-			updated_at = now(),
-			version = version + 1
-		WHERE tenant_id = $1 AND id = $2 AND archived_at IS NULL
-		RETURNING ` + WorkItemSelectCols
-	var w WorkItemRow
-	err := tx.QueryRow(ctx, q, tenantID, id).Scan(WorkItemScanPtrs(&w)...)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return WorkItemRow{}, ErrNotFound
-	}
-	if err != nil {
-		return WorkItemRow{}, fmt.Errorf("db: park work item: %w", err)
 	}
 	return w, nil
 }
@@ -794,9 +640,6 @@ func ArchiveWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if isWorkItemVersionConflict(ctx, tx, tenantID, id) {
-			return WorkItemRow{}, ErrVersionConflict
-		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {
@@ -819,12 +662,6 @@ func RestoreWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Restoring an archived row: probe the archived partition distinctly
-		var exists bool
-		_ = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_items WHERE tenant_id=$1 AND id=$2)`, tenantID, id).Scan(&exists)
-		if exists {
-			return WorkItemRow{}, ErrVersionConflict
-		}
 		return WorkItemRow{}, ErrNotFound
 	}
 	if err != nil {

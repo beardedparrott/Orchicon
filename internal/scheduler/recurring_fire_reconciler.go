@@ -6,11 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/workitem"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
 // RecurringFireReconciler scans for work items with status 'recurring' and
@@ -25,14 +24,8 @@ type RecurringFireReconciler struct {
 	pool     *db.Pool
 	log      *slog.Logger
 	start    StartWorkflowFn
-	startCtx StartWorkflowRunContextFn // optional: stamps automation provenance into the run context
-	sequence StartSequenceFn           // optional: fires sequence parents with children
+	sequence StartSequenceFn // optional: fires sequence parents with children
 }
-
-// StartWorkflowRunContextFn starts a workflow run for a bound work item and
-// carries an extra run_context map the recurring fire uses to stamp
-// automation provenance into the run (feature 4.1, D3).
-type StartWorkflowRunContextFn func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, runContext map[string]any) error
 
 // NewRecurringFireReconciler creates a new RecurringFireReconciler.
 func NewRecurringFireReconciler(pool *db.Pool, log *slog.Logger, start StartWorkflowFn) *RecurringFireReconciler {
@@ -43,11 +36,6 @@ func NewRecurringFireReconciler(pool *db.Pool, log *slog.Logger, start StartWork
 // work item has children and no bound workflow. Optional — without it a
 // sequence parent is skipped with a warning.
 func (r *RecurringFireReconciler) SetSequenceStarter(fn StartSequenceFn) { r.sequence = fn }
-
-// SetRunContextStarter injects the provenance-aware fire path. Optional —
-// without it the reconciler falls back to the plain start (no provenance
-// block written into the run context).
-func (r *RecurringFireReconciler) SetRunContextStarter(fn StartWorkflowRunContextFn) { r.startCtx = fn }
 
 func (r *RecurringFireReconciler) Kind() string { return "recurring_fire" }
 
@@ -75,7 +63,6 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 	                WHERE c.tenant_id = w.tenant_id AND c.parent_id = w.id) AS has_children
 	       FROM work_items w
 	     WHERE w.status = 'recurring'
-	       AND w.recurring_enabled
 	       AND w.next_run_at IS NOT NULL
 	       AND w.next_run_at BETWEEN now() - interval '5 minutes' AND now()
 	     LIMIT 100`
@@ -118,7 +105,7 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 		// Defensive guard: skip items currently in an active run state.
 		// Redundant with the status='recurring' scan predicate (recurring
 		// items are never running/checkpointing/recovering while due), but
-		// protects against races where the status flips between scan and fire.
+	// protects against races where the status flips between scan and fire.
 		if ref.hasChildren {
 			if r.sequence == nil {
 				r.log.Warn("recurring_fire: sequence parent fired but no sequence starter wired",
@@ -136,12 +123,9 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 			if err := r.sequence(ctx, ref.tenantID, ref.id); err != nil {
 				r.log.Error("recurring_fire: start sequence failed",
 					"work_item", ref.id, "error", err)
-				r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", err.Error())
 			} else {
 				r.log.Info("recurring_fire: sequence started",
 					"work_item", ref.id)
-				r.recordFire(ctx, ref.tenantID, ref.id, "fired",
-					r.fireWorkflowRunID(ctx, ref.tenantID, ref.id), "")
 			}
 			continue
 		}
@@ -158,29 +142,12 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 				"work_item", ref.id, "error", err)
 			continue
 		}
-		// Stamp automation provenance into the run_context so any work item
-		// created during this run is tagged spawned_by (this recurring item)
-		// + the run id and, when outputs_mode=idea, lands in IDEA state
-		// (feature 4.1, D3). Falls back to a plain start when the
-		// provenance-aware starter is not wired.
-		var fireErr error
-		if r.startCtx != nil {
-			fireErr = r.startCtx(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id, map[string]any{
-				"spawned_by":   ref.id,
-				"outputs_mode": recurringOutputsMode(ref.recurringSchedule),
-			})
-		} else {
-			fireErr = r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id)
-		}
-		if fireErr != nil {
+		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {
 			r.log.Error("recurring_fire: start workflow failed",
-				"work_item", ref.id, "workflow", *ref.workflowID, "error", fireErr)
-			r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", fireErr.Error())
+				"work_item", ref.id, "workflow", *ref.workflowID, "error", err)
 		} else {
 			r.log.Info("recurring_fire: workflow started",
 				"work_item", ref.id, "workflow", *ref.workflowID)
-			r.recordFire(ctx, ref.tenantID, ref.id, "fired",
-				r.fireWorkflowRunID(ctx, ref.tenantID, ref.id), "")
 		}
 	}
 
@@ -212,62 +179,6 @@ func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 	return ttx.Commit(ctx)
 }
 
-// recordFire writes one recurring_run_history ledger row for a fired item in
-// its own short transaction (independent of the dispatch tx). Best-effort: on
-// a ledger write failure the fire outcome is still consistent (next_run_at was
-// already advanced) and the error is logged — it must never wedge the pass.
-func (r *RecurringFireReconciler) recordFire(ctx context.Context,
-	tenantID, itemID, status, workflowRunID, errMsg string) {
-
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		r.log.Error("recurring_fire: record fire: begin tx",
-			"work_item", itemID, "error", err)
-		return
-	}
-	defer ttx.Rollback(ctx)
-
-	var runID *string
-	if workflowRunID != "" {
-		runID = &workflowRunID
-	}
-	if _, err := db.CreateRecurringRunHistory(ctx, ttx.Tx, db.RecurringRunHistoryRow{
-		ID:            db.NewID(),
-		TenantID:      tenantID,
-		WorkItemID:    itemID,
-		FireAt:        time.Now().UTC(),
-		Status:        status,
-		WorkflowRunID: runID,
-		Error:         errMsg,
-	}); err != nil {
-		r.log.Error("recurring_fire: record fire failed",
-			"work_item", itemID, "status", status, "error", err)
-		return
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		r.log.Error("recurring_fire: record fire commit",
-			"work_item", itemID, "error", err)
-	}
-}
-
-// fireWorkflowRunID reads back the workflow_run_id the just-started run bound
-// to the item (StartWorkflowDirect sets it on the item at dispatch). For a
-// sequence parent StartSequence clears the parent's workflow binding (children
-// each run their own workflows) so this returns "" — the ledger still records
-// the fire fact; the run graph join is per-child.
-func (r *RecurringFireReconciler) fireWorkflowRunID(ctx context.Context, tenantID, itemID string) string {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return ""
-	}
-	defer ttx.Rollback(ctx)
-	w, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, itemID)
-	if err != nil {
-		return ""
-	}
-	return w.WorkflowRunID
-}
-
 // computeRecurringNextRunAt parses a raw recurring_schedule JSONB value and
 // returns the next occurrence at-or-after now. Returns nil when the schedule
 // is empty or unparseable (the caller keeps whatever next_run_at it has).
@@ -292,20 +203,4 @@ func ensureRecurringNextRun(scheduleJSON []byte, nextRunAt *time.Time, now time.
 		return nil
 	}
 	return computeRecurringNextRunAt(scheduleJSON, now)
-}
-
-// recurringOutputsMode extracts the outputs_mode from a recurring_schedule JSONB
-// value. Missing/invalid values normalize to the default "standard".
-func recurringOutputsMode(scheduleJSON []byte) string {
-	if len(scheduleJSON) == 0 {
-		return domain.RecurringOutputsStandard
-	}
-	var m map[string]any
-	if err := json.Unmarshal(scheduleJSON, &m); err != nil {
-		return domain.RecurringOutputsStandard
-	}
-	if v, ok := m["outputs_mode"].(string); ok {
-		return domain.NormalizeRecurringOutputsMode(v)
-	}
-	return domain.RecurringOutputsStandard
 }

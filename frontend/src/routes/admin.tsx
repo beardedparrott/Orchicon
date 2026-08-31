@@ -419,7 +419,7 @@ function IdentitiesTab() {
           <select
             value={createType}
             onChange={(e) => setCreateType(e.target.value as "user" | "service")}
-            className="rounded-xl glass-input px-3 py-2 text-sm"
+            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
             aria-label="Identity type"
           >
             <option value="user">User</option>
@@ -453,15 +453,15 @@ function IdentitiesTab() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3 rounded-2xl glass-panel p-3 border border-white/10">
+      <div className="flex flex-wrap items-center gap-3">
         <Input
           placeholder="Search identities…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full sm:max-w-xs min-w-0"
+          className="max-w-xs"
         />
         <select
-          className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 text-sm"
+          className="h-9 rounded-md border bg-background px-2 text-sm"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           aria-label="Status filter"
@@ -603,8 +603,8 @@ function IdentitiesTab() {
         ref={editDialogRef}
         onClose={handleEditCancel}
         className={cn(
-          "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
-          "w-[calc(100vw-2rem)] max-w-md",
+          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+          "w-full max-w-md",
         )}
         onClick={(e) => {
           if (e.target === editDialogRef.current) handleEditCancel();
@@ -750,7 +750,7 @@ function EntitlementPicker({
           {RBAC_RESOURCES.map((res) => (
             <div
               key={res}
-              className="flex items-center justify-between rounded-xl glass-input px-3 py-2"
+              className="flex items-center justify-between rounded-md border bg-background px-3 py-2"
             >
               <span className="text-sm font-medium">{res}</span>
               <div className="flex items-center gap-3">
@@ -784,7 +784,7 @@ function EntitlementPicker({
             {RBAC_GRANULAR_ACTIONS.map((a) => (
               <label
                 key={a}
-                className="flex items-center gap-1.5 rounded-xl glass-input px-3 py-1.5 text-xs"
+                className="flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs"
               >
                 <input
                   type="checkbox"
@@ -1020,7 +1020,7 @@ function RolesTab() {
         </p>
         <div className="flex flex-wrap gap-2">
           <select
-            className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1.5 text-sm"
+            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
             value={mgrIdentityId}
             onChange={(e) => {
               setMgrIdentityId(e.target.value);
@@ -1036,7 +1036,7 @@ function RolesTab() {
             ))}
           </select>
           <select
-            className="h-11 sm:h-9 min-h-[44px] rounded-xl glass-input px-3 py-1.5 text-sm"
+            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
             value={mgrRoleId}
             onChange={(e) => setMgrRoleId(e.target.value)}
             aria-label="Role"
@@ -1093,7 +1093,7 @@ function RolesTab() {
         ref={roleDialogRef}
         onClose={cancelRole}
         className={cn(
-          "rounded-2xl glass-menu text-foreground p-0 shadow-2xl backdrop:bg-black/50",
+          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
           "w-full max-w-2xl",
         )}
         onClick={(e) => {
@@ -1377,7 +1377,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-action">Action</Label>
           <Input
             id="audit-action"
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
+            className="mt-1 h-9 w-44 font-mono text-xs"
             placeholder="e.g. work_item.created"
             value={draft.action}
             onChange={set("action")}
@@ -1387,7 +1387,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-actor">Actor</Label>
           <Input
             id="audit-actor"
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
+            className="mt-1 h-9 w-44 font-mono text-xs"
             placeholder="identity id"
             value={draft.actorId}
             onChange={set("actorId")}
@@ -1397,7 +1397,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-target-type">Target type</Label>
           <Input
             id="audit-target-type"
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-36 font-mono text-xs"
+            className="mt-1 h-9 w-36 font-mono text-xs"
             placeholder="e.g. work_item"
             value={draft.targetType}
             onChange={set("targetType")}
@@ -1407,7 +1407,7 @@ function AuditEventsView() {
           <Label htmlFor="audit-target-id">Target ID</Label>
           <Input
             id="audit-target-id"
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-44 font-mono text-xs"
+            className="mt-1 h-9 w-44 font-mono text-xs"
             placeholder="entity id"
             value={draft.targetId}
             onChange={set("targetId")}
@@ -1420,7 +1420,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.from}
             onChange={set("from")}
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-52 rounded-xl glass-input px-3 text-sm"
+            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
           />
         </div>
         <div>
@@ -1430,7 +1430,7 @@ function AuditEventsView() {
             type="datetime-local"
             value={draft.to}
             onChange={set("to")}
-            className="mt-1 h-11 sm:h-9 min-h-[44px] w-52 rounded-xl glass-input px-3 text-sm"
+            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
           />
         </div>
         <div className="flex items-center gap-2">

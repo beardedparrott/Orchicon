@@ -10,7 +10,7 @@ import (
 // TestChatStallMonitorNoProgress verifies the no_progress signal: a monitor
 // fed no activity for longer than the window trips once with a stall reason.
 func TestChatStallMonitorNoProgress(t *testing.T) {
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
 	m.noProgressWindow = 100 * time.Millisecond
 	base := time.Now()
 	m.now = func() time.Time { return base }
@@ -38,7 +38,7 @@ func TestChatStallMonitorNoProgress(t *testing.T) {
 // reasoning, step_finish, tool_use) resets the no-progress clock — a model
 // producing output, even a long reasoning streak, is never reaped.
 func TestChatStallMonitorActivityResetsClock(t *testing.T) {
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
 	m.noProgressWindow = 100 * time.Millisecond
 	base := time.Now()
 	m.now = func() time.Time { return base }
@@ -65,7 +65,7 @@ func TestChatStallMonitorActivityResetsClock(t *testing.T) {
 // tool_use signature repeated more than the count within the window trips,
 // while distinct signatures (or a single call) never do.
 func TestChatStallMonitorRepetition(t *testing.T) {
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
 	m.noProgressWindow = time.Hour
 	m.repetitionWindow = time.Hour
 	m.repetitionCount = 3
@@ -87,7 +87,7 @@ func TestChatStallMonitorRepetition(t *testing.T) {
 	}
 
 	// Distinct signatures must not trip: reset and feed 10 different calls.
-	m2 := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m2 := newChatStallMonitor("opencode/deepseek-v4-flash-free")
 	m2.noProgressWindow = time.Hour
 	m2.repetitionWindow = time.Hour
 	m2.repetitionCount = 3
@@ -108,7 +108,7 @@ func TestChatStallMonitorRepetition(t *testing.T) {
 // tripped the repetition detector. Distinct state.input values must produce
 // distinct signatures.
 func TestChatStallMonitorRepetitionOpenCodeShape(t *testing.T) {
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free")
 	m.noProgressWindow = time.Hour
 	m.repetitionWindow = time.Hour
 	m.repetitionCount = 3

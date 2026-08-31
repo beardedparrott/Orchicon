@@ -2,11 +2,9 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -15,24 +13,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
-
-const (
-	sequenceMaxAttempts          = 5
-	sequenceMaxConsecutiveErrors = 5
-	sequenceStallThreshold       = 5 * time.Minute
-	sequencePerParentTimeout     = 10 * time.Second
-)
-
-func sequenceBackoff(attempts int) time.Duration {
-	if attempts <= 0 {
-		return 0
-	}
-	d := time.Duration(5*(1<<(attempts-1))) * time.Second
-	if d > 5*time.Minute {
-		d = 5 * time.Minute
-	}
-	return d
-}
 
 // SequenceReconciler is the sequence engine for sequential multi-workflow
 // runs (architecture-notes/sequential-multi-workflow-runs.md §2).
@@ -46,9 +26,8 @@ func sequenceBackoff(attempts int) time.Duration {
 // resumes correctly (idempotent derived cursor — acceptance criterion
 // "Reconciliation stability").
 //
-//   - fire (scheduled / run-instant): parent → running, every NON-terminal
-//     descendant resets to pending (succeeded/skipped are always kept),
-//     the first non-succeeded child arms (flips straight to running,
+//   - fire (scheduled / run-instant): parent → running, every descendant
+//     resets to pending, the first child arms (flips straight to running,
 //     its OWN bound workflow starts — no ready/assigned dance, no config
 //     copy).
 //   - advance: child succeeds → next non-succeeded sibling arms.
@@ -116,178 +95,11 @@ func (r *SequenceReconciler) scan(ctx context.Context, tenantID string) reconcil
 		if i >= 16 {
 			break
 		}
-		pCtx, cancel := context.WithTimeout(ctx, sequencePerParentTimeout)
-		err := r.reconcileOne(pCtx, tenantID, p.ID)
-		cancel()
-		if err != nil {
-			if r.log != nil {
-				r.log.Warn("sequence: reconcile parent failed", "parent", p.ID, "error", err)
-			}
-			// Version-conflict / CAS races are transient and must not count as wedge heartbeat.
-			if !errors.Is(err, db.ErrNotFound) && !reIsCASConflict(err) {
-				r.recordScanError(ctx, tenantID, p.ID, err)
-			} else if r.log != nil {
-				r.log.Warn("sequence: transient reconcile conflict, not counting as wedge", "parent", p.ID, "error", err)
-			}
-		} else {
-			r.clearScanError(ctx, tenantID, p.ID)
+		if err := r.reconcileOne(ctx, tenantID, p.ID); err != nil {
+			r.log.Warn("sequence: reconcile parent failed", "parent", p.ID, "error", err)
 		}
 	}
-	// Stalled-parent liveness guard (E): parent with no progress for 5m and no in-flight/blocked child → halt.
-	r.checkStalledParents(ctx, tenantID, parents)
 	return reconciler.Result{}
-}
-
-func (r *SequenceReconciler) recordScanError(ctx context.Context, tenantID, parentID string, recErr error) {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return
-	}
-	defer ttx.Rollback(ctx)
-	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
-	if err != nil {
-		return
-	}
-	// Heartbeat: always bump updated_at even on error so frozen detection is reliable.
-	newCount := parent.SequenceConsecutiveScanErrors + 1
-	now := time.Now().UTC()
-	// Use direct SQL to atomically bump counters without version race: we already hold fresh parent.
-	// Update via helper that bypasses optimistic check for system heartbeat: use fresh version.
-	if newCount >= sequenceMaxConsecutiveErrors {
-		// Halt parent as failed with reason.
-		reason := fmt.Sprintf("reconcile wedged: %v", recErr)
-		results := parent.Results
-		if len(results) == 0 {
-			results = []byte("{}")
-		}
-		var m map[string]any
-		_ = json.Unmarshal(results, &m)
-		if m == nil {
-			m = map[string]any{}
-		}
-		m["sequence_failure_reason"] = reason
-		b, _ := json.Marshal(m)
-		status := domain.WorkItemFailed
-		if len(parent.RecurringSchedule) > 0 {
-			status = domain.WorkItemRecurring
-		}
-		// Direct update with fresh version.
-		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{Status: &status, Results: &b}); err == nil {
-			_ = ttx.Commit(ctx)
-			if r.log != nil {
-				r.log.Warn("sequence: parent halted after consecutive errors", "parent", parentID, "consecutive", newCount, "error", recErr)
-			}
-			return
-		}
-	}
-	// Otherwise just bump error counter and heartbeat.
-	// Use raw SQL to avoid version conflict on heartbeat: update updated_at + error count.
-	// Fall back to UpdateWorkItem with fresh version; if CAS fails next scan will retry.
-	_, _ = ttx.Tx.Exec(ctx, `UPDATE work_items SET sequence_consecutive_scan_errors=$1, updated_at=now(), version=version+1 WHERE id=$2 AND tenant_id=$3`, newCount, parentID, tenantID)
-	_ = ttx.Commit(ctx)
-	_ = now
-}
-
-func (r *SequenceReconciler) clearScanError(ctx context.Context, tenantID, parentID string) {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return
-	}
-	defer ttx.Rollback(ctx)
-	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
-	if err != nil {
-		return
-	}
-	if parent.SequenceConsecutiveScanErrors == 0 && parent.SequenceLastProgressAt != nil {
-		return
-	}
-	now := time.Now().UTC()
-	// Reset error counter and mark progress. Use versioned update; failure is benign.
-	_, _ = ttx.Tx.Exec(ctx, `UPDATE work_items SET sequence_consecutive_scan_errors=0, sequence_last_progress_at=$1, updated_at=now(), version=version+1 WHERE id=$2 AND tenant_id=$3`, now, parentID, tenantID)
-	_ = ttx.Commit(ctx)
-}
-
-func (r *SequenceReconciler) checkStalledParents(ctx context.Context, tenantID string, parents []db.WorkItemRow) {
-	now := time.Now().UTC()
-	for _, p := range parents {
-		// Re-read fresh snapshot: the scan's parents slice is stale by the time
-		// per-parent reconciles ran, so threshold + status must be evaluated on
-		// fresh row (review fix: stale snapshot).
-		freshSnap, err := func() (db.WorkItemRow, error) {
-			ttx2, err := r.pool.BeginTenantTx(ctx, tenantID)
-			if err != nil {
-				return db.WorkItemRow{}, err
-			}
-			defer ttx2.Rollback(ctx)
-			return db.GetWorkItem(ctx, ttx2.Tx, tenantID, p.ID)
-		}()
-		if err != nil {
-			continue
-		}
-		lastProg := freshSnap.SequenceLastProgressAt
-		ref := freshSnap.UpdatedAt
-		if lastProg != nil {
-			ref = *lastProg
-		}
-		if now.Sub(ref) < sequenceStallThreshold {
-			continue
-		}
-		if freshSnap.Status != domain.WorkItemRunning {
-			continue
-		}
-		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			continue
-		}
-		children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, p.ID)
-		if err != nil {
-			ttx.Rollback(ctx)
-			continue
-		}
-		hasInFlight := false
-		hasBlocked := false
-		for _, c := range children {
-			switch c.Status {
-			case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady, domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled, domain.WorkItemRecurring:
-				hasInFlight = true
-			case domain.WorkItemBlocked:
-				hasBlocked = true
-			}
-		}
-		if hasInFlight || hasBlocked {
-			ttx.Rollback(ctx)
-			continue
-		}
-		// No in-flight nor blocked but still running with no progress → stalled.
-		fresh, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, p.ID)
-		if err != nil {
-			ttx.Rollback(ctx)
-			continue
-		}
-		results := fresh.Results
-		if len(results) == 0 {
-			results = []byte("{}")
-		}
-		var m map[string]any
-		_ = json.Unmarshal(results, &m)
-		if m == nil {
-			m = map[string]any{}
-		}
-		m["sequence_failure_reason"] = "stalled: no progress for 5m"
-		b, _ := json.Marshal(m)
-		status := domain.WorkItemFailed
-		if len(fresh.RecurringSchedule) > 0 {
-			status = domain.WorkItemRecurring
-		}
-		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, p.ID, fresh.Version, db.UpdateWorkItemFields{Status: &status, Results: &b}); err == nil {
-			_ = ttx.Commit(ctx)
-			if r.log != nil {
-				r.log.Warn("sequence: parent stalled, halting", "parent", p.ID, "last_progress", ref)
-			}
-		} else {
-			ttx.Rollback(ctx)
-		}
-	}
 }
 
 // reconcileOne advances a single sequence parent. The state change is
@@ -310,10 +122,8 @@ func (r *SequenceReconciler) reconcileOne(ctx context.Context, tenantID, parentI
 	}
 	for _, s := range starts {
 		if err := r.start(ctx, s.tenantID, s.workflowID, s.projectID, s.itemID); err != nil {
-			if r.log != nil {
-				r.log.Error("sequence: start child workflow failed",
-					"child", s.itemID, "workflow", s.workflowID, "error", err)
-			}
+			r.log.Error("sequence: start child workflow failed",
+				"child", s.itemID, "workflow", s.workflowID, "error", err)
 			// Self-heal: the child was flipped to running in the committed
 			// tx; a failed start must not strand it as running-with-no-run
 			// (the derived cursor would wait on it forever). Reset to
@@ -419,20 +229,11 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 	// so this converges automatically. The failure pre-scan above
 	// guarantees no failed/cancelled child remains when this fires.
 	if parent.Status == domain.WorkItemFailed {
-		fresh, err := db.GetWorkItem(ctx, tx, tenantID, parentID)
-		if err != nil {
-			return nil, err
-		}
-		if fresh.Status == domain.WorkItemFailed {
-			status := domain.WorkItemRunning
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, fresh.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			}); err != nil {
-				if errors.Is(err, db.ErrNotFound) {
-					return nil, fmt.Errorf("revive CAS conflict: %w", err)
-				}
-				return nil, fmt.Errorf("revive sequence parent: %w", err)
-			}
+		status := domain.WorkItemRunning
+		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+			Status: &status,
+		}); err != nil {
+			return nil, fmt.Errorf("revive sequence parent: %w", err)
 		}
 	}
 
@@ -483,35 +284,6 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 			// In flight (or human-managed): wait for the current child.
 			continue
 		case domain.WorkItemPending, domain.WorkItemBlocked:
-			// Backoff gate (P1): cap check BEFORE backoff gate so halt is not delayed by ~80s (review fix).
-			if c.SequenceAttempts >= sequenceMaxAttempts {
-				// Cap exceeded → mark child failed so chain halts visibly (no backoff delay).
-				reason := fmt.Sprintf("start failed %d times", c.SequenceAttempts)
-				results := c.Results
-				if len(results) == 0 {
-					results = []byte("{}")
-				}
-				var m map[string]any
-				_ = json.Unmarshal(results, &m)
-				if m == nil {
-					m = map[string]any{}
-				}
-				m["sequence_failure_reason"] = reason
-				b, _ := json.Marshal(m)
-				status := domain.WorkItemFailed
-				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{Status: &status, Results: &b}); err != nil {
-					return nil, fmt.Errorf("cap child failed: %w", err)
-				}
-				if err := failSequenceChain(ctx, tx, tenantID, c); err != nil {
-					return nil, err
-				}
-				return nil, nil
-			}
-			if c.SequenceAttempts > 0 && c.SequenceLastAttemptAt != nil {
-				if time.Since(*c.SequenceLastAttemptAt) < sequenceBackoff(c.SequenceAttempts) {
-					continue
-				}
-			}
 			// Chain gate (strict children only): the child's position in
 			// the chain is reached only when its immediate predecessor is
 			// terminal-success (succeeded or skipped). Dependency-governed
@@ -657,10 +429,8 @@ func failSequenceChain(ctx context.Context, tx pgx.Tx, tenantID string, failed d
 	return nil
 }
 
-// resetSubtree sets every non-terminal descendant of parentID to pending,
-// recursively. Succeeded/skipped descendants are ALWAYS terminal and are
-// never reset (their subtree is already done too) — a START re-arms the
-// first non-succeeded child and preserves prior successes.
+// resetSubtree sets every descendant of parentID to pending, recursively.
+// Prior successes from earlier manual runs are reset too (fire semantics).
 // Descendants with an IN-FLIGHT bound run (running/checkpointing/
 // recovering) are skipped with their whole subtree — the derived cursor
 // waits for them instead of double-arming.
@@ -674,10 +444,6 @@ func resetSubtree(ctx context.Context, tx pgx.Tx, tenantID, parentID string) err
 		case domain.WorkItemPending:
 		case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
 			continue // in-flight bound run — leave it and its subtree
-		case domain.WorkItemSucceeded, domain.WorkItemSkipped:
-			// Terminal-success descendants are always kept — never reset to
-			// pending, never recursed (their subtree is already done too).
-			continue
 		default:
 			status := domain.WorkItemPending
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
@@ -694,9 +460,8 @@ func resetSubtree(ctx context.Context, tx pgx.Tx, tenantID, parentID string) err
 }
 
 // StartSequence implements StartSequenceFn: it fires a sequence run for a
-// parent work item with children — parent → running, every NON-terminal
-// descendant reset to pending (succeeded/skipped are always preserved),
-// first non-succeeded child armed. Validation of the subtree
+// parent work item with children — parent → running, every descendant
+// reset to pending, first child armed. Validation of the subtree
 // (workflows bound, no one-shots) is the CALLER's responsibility and runs
 // before this (schedule-time validation, architecture-notes §3).
 //
@@ -722,8 +487,7 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 		return errors.New("cannot start a sequence on a work item with no children")
 	}
 
-	// Parent → running; every NON-terminal descendant resets to pending
-	// (succeeded/skipped are always preserved). Also clear a
+	// Parent → running; every descendant resets to pending. Also clear a
 	// stale workflow binding on the parent: a parent with children IS a
 	// sequence container (its own workflow_id is ignored — children each
 	// run their own workflows), and leaving the stale binding would keep
@@ -838,15 +602,6 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	return nil
 }
 
-// stopAbortHook is the post-commit live-session abort hook for StopSequence.
-var stopAbortHook func(ctx context.Context, execID, reason string) error
-var stopRuntime RuntimeLifecycle
-
-// SetStopAbortHook injects the live-session abort hook used by StopSequence.
-func SetStopAbortHook(fn func(ctx context.Context, execID, reason string) error) { stopAbortHook = fn }
-// SetStopRuntime injects the runtime lifecycle used to reap containers after Stop.
-func SetStopRuntime(rl RuntimeLifecycle) { stopRuntime = rl }
-
 // StopSequence halts a work item and, when it is a sequence parent, its
 // whole subtree: every descendant → pending (a RECURRING item keeps its
 // cadence), scheduled starts cleared, and any in-flight workflow run bound
@@ -854,135 +609,68 @@ func SetStopRuntime(rl RuntimeLifecycle) { stopRuntime = rl }
 // executions → terminated). A leaf (no children) is halted on its own —
 // its bound run (if any) is aborted and it is parked to pending.
 //
-// After commit it kills live sessions/containers for all aborted executions
-// so Stop is a real kill-switch within seconds. Wedged runs (all steps
-// succeeded but run still running) are also cleared via the same abort
-// path (AbortRunInTx forces terminal).
-//
 // The parked state is deliberately NOT running/failed: the sequence scan
 // only advances running/failed parents and the auto-revive path only
 // resurrects a FAILED parent, so a stopped chain (or leaf) stays stopped
-// until explicitly STARTed/RESUMEd.
+// until explicitly STARTed/RESUMEd. This is how a chain is halted without
+// destroying history — children can then be run standalone, and Resume
+// re-enters from the first non-succeeded child.
 func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string) error {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer ttx.Rollback(ctx)
-	var abortedExecs []string
-	var abortedRunIDs []string
-	if err := haltWorkItemCollect(ctx, ttx.Tx, tenantID, parentID, &abortedExecs, &abortedRunIDs); err != nil {
+
+	if err := haltWorkItem(ctx, ttx.Tx, tenantID, parentID); err != nil {
 		return err
 	}
-	if err := ttx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-	if stopAbortHook != nil {
-		for _, eid := range abortedExecs {
-			if err := stopAbortHook(context.Background(), eid, "sequence stopped"); err != nil && log != nil {
-				log.Warn("stop: abort live session failed", "execution", eid, "error", err)
-			}
-		}
-	}
-	if stopRuntime != nil {
-		for _, rid := range abortedRunIDs {
-			if err := stopRuntime.ReapForRun(context.Background(), rid); err != nil && log != nil {
-				log.Warn("stop: reap runtime failed", "run", rid, "error", err)
-			}
-		}
-	}
-	return nil
+	return ttx.Commit(ctx)
 }
 
-// haltWorkItem is the legacy non-collecting wrapper kept for tests.
+// haltWorkItem parks a single work item (pending, schedule cleared) and,
+// for a sequence parent, recursively halts every descendant. Any in-flight
+// workflow run bound to the item or a descendant is aborted via
+// AbortRunInTx (run → aborted, step runs → failed, executions →
+// terminated) with the bound work item left pending so it can be re-run.
 func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error {
-	var dummyExecs []string
-	var dummyRuns []string
-	return haltWorkItemCollect(ctx, tx, tenantID, itemID, &dummyExecs, &dummyRuns)
-}
-
-// haltWorkItemCollect parks a single work item and recursively halts every descendant.
-// Any in-flight bound run is aborted via AbortRunInTx (wedged runs where all steps
-// are succeeded but run still running are also cleared). Collected exec/run IDs
-// are appended to the provided slices for post-commit container kill.
-func haltWorkItemCollect(ctx context.Context, tx pgx.Tx, tenantID, itemID string, execs *[]string, runIDs *[]string) error {
 	item, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	if domain.WorkItemIsTerminalSuccess(item.Status) {
-		return nil
-	}
+	// Abort any in-flight bound run on this item (a leaf task with a live
+	// run, or a bound container). Idempotent: terminal runs are skipped.
+	// The bound work item is left PENDING so it can be re-run standalone.
 	if item.WorkflowRunID != "" {
-		aborted, err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID, domain.WorkItemPending)
-		switch {
-		case err == nil:
-			*execs = append(*execs, aborted...)
-			*runIDs = append(*runIDs, item.WorkflowRunID)
-		case errors.Is(err, db.ErrNotFound):
-		default:
+		if err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
+			domain.WorkItemPending); err != nil {
 			return fmt.Errorf("abort bound run %s: %w", item.WorkflowRunID, err)
 		}
 	}
+	// Recurse into children (a parent IS a sequence container).
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return fmt.Errorf("list children: %w", err)
 	}
 	for _, c := range children {
-		if err := haltWorkItemCollect(ctx, tx, tenantID, c.ID, execs, runIDs); err != nil {
+		if err := haltWorkItem(ctx, tx, tenantID, c.ID); err != nil {
 			return err
 		}
 	}
-	return parkWorkItemResilient(ctx, tx, tenantID, itemID)
-}
 
-// parkWorkItemResilient parks a single item with bounded optimistic-lock
-// retry and an unconditional fallback. It re-reads the fresh row on each
-// attempt so a concurrent sequence-engine bump does not abort the whole
-// STOP transaction with a misleading "db: not found".
-func parkWorkItemResilient(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error {
-	const maxRetries = 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		fresh, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
-		if err != nil {
-			return err
-		}
-		if domain.WorkItemIsTerminalSuccess(fresh.Status) {
-			return nil
-		}
-		status := domain.WorkItemPending
-		if len(fresh.RecurringSchedule) > 0 {
-			status = domain.WorkItemRecurring
-		}
-		empty := ""
-		_, err = db.UpdateWorkItem(ctx, tx, tenantID, itemID, fresh.Version, db.UpdateWorkItemFields{
-			Status:                &status,
-			ClearScheduledStartAt: true,
-			WorkflowRunID:         &empty,
-		})
-		if err == nil {
-			return nil
-		}
-		if errors.Is(err, db.ErrVersionConflict) {
-			continue
-		}
-		if errors.Is(err, db.ErrNotFound) {
-			return err
-		}
-		return fmt.Errorf("park work item %s: %w", itemID, err)
+	// Park this item: pending (a RECURRING item keeps its cadence armed),
+	// schedule cleared, stale run binding cleared so a later START/RESUME
+	// can dispatch fresh.
+	status := domain.WorkItemPending
+	if len(item.RecurringSchedule) > 0 {
+		status = domain.WorkItemRecurring
 	}
-	// Fallback: unconditional park without version (tolerant path).
-	fresh, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
-	if err != nil {
-		return err
-	}
-	if domain.WorkItemIsTerminalSuccess(fresh.Status) {
-		return nil
-	}
-	if _, err := db.ParkWorkItem(ctx, tx, tenantID, itemID); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return err
-		}
+	empty := ""
+	if _, err := db.UpdateWorkItem(ctx, tx, tenantID, itemID, item.Version, db.UpdateWorkItemFields{
+		Status:                &status,
+		ClearScheduledStartAt: true,
+		WorkflowRunID:         &empty,
+	}); err != nil {
 		return fmt.Errorf("park work item %s: %w", itemID, err)
 	}
 	return nil
@@ -995,10 +683,8 @@ func parkWorkItemResilient(ctx context.Context, tx pgx.Tx, tenantID, itemID stri
 func fireLeafStarts(ctx context.Context, pool *db.Pool, log *slog.Logger, starts []leafStart, start StartWorkflowFn) {
 	for _, s := range starts {
 		if err := start(ctx, s.tenantID, s.workflowID, s.projectID, s.itemID); err != nil {
-			if log != nil {
-				log.Warn("sequence: start child workflow failed",
-					"child", s.itemID, "workflow", s.workflowID, "error", err)
-			}
+			log.Warn("sequence: start child workflow failed",
+				"child", s.itemID, "workflow", s.workflowID, "error", err)
 			// Self-heal (same rationale as the reconciler path): a failed
 			// start must not strand the child as running-with-no-run.
 			resetArmedChild(ctx, pool, s.tenantID, s.itemID)
@@ -1011,7 +697,6 @@ func fireLeafStarts(ctx context.Context, pool *db.Pool, log *slog.Logger, starts
 // touches a child that is still running with no bound workflow run (i.e.
 // the failed start left it mid-arm) — a child whose run actually started
 // is left alone.
-// It increments sequence_attempts and records last_attempt time for backoff gating (P1).
 func resetArmedChild(ctx context.Context, pool *db.Pool, tenantID, childID string) {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1025,21 +710,10 @@ func resetArmedChild(ctx context.Context, pool *db.Pool, tenantID, childID strin
 	if child.Status != domain.WorkItemRunning || child.WorkflowRunID != "" {
 		return
 	}
-	// Increment attempt counter + heartbeat via direct SQL (avoid version dance for system field).
-	now := time.Now().UTC()
-	_, _ = ttx.Tx.Exec(ctx, `UPDATE work_items SET status='pending', sequence_attempts=sequence_attempts+1, sequence_last_attempt_at=$1, updated_at=now(), version=version+1 WHERE id=$2 AND tenant_id=$3 AND status='running' AND workflow_run_id=''`, now, childID, tenantID)
-	_ = ttx.Commit(ctx)
-}
-
-// reIsCASConflict reports whether err is an optimistic-concurrency version conflict
-// (db.ErrNotFound from UpdateWorkItem version check or the explicit revive CAS string).
-func reIsCASConflict(err error) bool {
-	if errors.Is(err, db.ErrVersionConflict) {
-		return true
+	status := domain.WorkItemPending
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, childID, child.Version, db.UpdateWorkItemFields{
+		Status: &status,
+	}); err == nil {
+		_ = ttx.Commit(ctx)
 	}
-	if errors.Is(err, db.ErrNotFound) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "CAS conflict") || strings.Contains(s, "version") && strings.Contains(s, "concurrency")
 }

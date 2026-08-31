@@ -18,7 +18,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -41,13 +40,6 @@ type Service struct {
 	log        *slog.Logger
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedWorkflowServiceHandler
-
-	// abortSession stops a terminated execution's live opencode session when a
-	// run is aborted (wired to the opencode adapter's AbortExecution). Without
-	// it, aborting a run leaves every in-flight worker session generating in
-	// the background — the "terminated but still active" token burn. Nil =
-	// abort only marks the executions terminal.
-	abortSession func(ctx context.Context, execID, reason string) error
 }
 
 // Compile-time assertion that Service satisfies the handler interface.
@@ -58,49 +50,42 @@ func New(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
 	return &Service{pool: pool, log: log, subscriber: sub}
 }
 
-// SetAbortExecution injects the live-session abort hook (the opencode
-// adapter's AbortExecution). Nil = aborting a run only marks its executions
-// terminal.
-func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
-	s.abortSession = fn
-}
-
 // CreateWorkflow validates input, inserts the workflow header + its first
 // draft version, and enqueues a workflow.created event — all in one
-// tenant-scoped transaction. The transactional create lives in
-// CreateWorkflowTx (create.go) so the AskOrchicon tool path shares the
-// exact same implementation (one create core, no drift).
+// tenant-scoped transaction.
 func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1.CreateWorkflowRequest]) (*connect.Response[apiv1.CreateWorkflowResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	in := CreateWorkflowInput{
-		TenantID:    tenantID,
-		ProjectID:   msg.ProjectId,
-		Name:        msg.Name,
-		Type:        msg.Type,
-		VersionNote: msg.VersionNote,
-		Steps:       msg.Steps,
-		Inputs:      msg.Inputs,
-		Outputs:     msg.Outputs,
-	}
-	// git_strategy is a proto enum; map a present value to its domain
-	// string (absent/unspecified inherits).
-	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
-		switch msg.ProtoReflect().Get(fd).Enum() {
-		case 1:
-			in.GitStrategy = "local"
-		case 2:
-			in.GitStrategy = "pr"
-		case 3:
-			in.GitStrategy = "none"
-		}
-	}
-	if err := ValidateCreateWorkflowInput(&in); err != nil {
+	name, err := validateName(msg.Name)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	versionNote, err := validateTextField(msg.VersionNote, maxVersionNoteLen, "version_note")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	steps, err := validateStepsField(msg.Steps)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	inputs, err := validateJSONField(msg.Inputs, "{}", "inputs", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	outputs, err := validateJSONField(msg.Outputs, "{}", "outputs", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// project_id is optional (empty for tenant-level templates). Trim
+	// whitespace; no further validation — it's a ULID reference checked
+	// by the data-access layer's FK-free convention.
+	projectID := msg.ProjectId
+
+	workflowID := db.NewID()
+	versionID := db.NewID()
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -108,23 +93,63 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
-	// Preserve the exact FailedPrecondition mapping for a missing/inactive
-	// project; CreateWorkflowTx re-checks inside the same transaction for
-	// the tool path (one extra indexed lookup, exact RPC parity).
+	// Only active projects may host workflows (docs/02 §2.1).
 	if msg.ProjectId != "" {
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
 		}
 	}
 
-	created, createdVersion, err := CreateWorkflowTx(ctx, ttx.Tx, in)
+	workflowType := msg.Type
+	if workflowType == "" {
+		if projectID == "" {
+			workflowType = domain.WorkflowTypeTemplate
+		} else {
+			workflowType = domain.WorkflowTypeOneShot
+		}
+	}
+	workflowRow := db.WorkflowRow{
+		ID:             workflowID,
+		TenantID:       tenantID,
+		ProjectID:      projectID,
+		Name:           name,
+		Type:           workflowType,
+		Status:         domain.WorkflowDraft,
+		CurrentVersion: 0,
+	}
+	created, err := db.CreateWorkflow(ctx, ttx.Tx, workflowRow)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+
+	// First version is always version 1, in draft state (docs/02 §2.4).
+	versionRow := db.WorkflowVersionRow{
+		ID:          versionID,
+		TenantID:    tenantID,
+		WorkflowID:  workflowID,
+		Version:     1,
+		VersionNote: versionNote,
+		Status:      domain.WorkflowVersionDraft,
+		Steps:       steps,
+		Inputs:      inputs,
+		Outputs:     outputs,
+	}
+	createdVersion, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.created", created, createdVersion, db.WorkflowRunRow{}, ""); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.created", "workflow", created.ID,
+		nil, audit.Snapshot(workflowVersionAuditSnapshot(createdVersion))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("workflow created", "id", created.ID, "tenant", tenantID, "name", in.Name)
+	s.log.Info("workflow created", "id", created.ID, "tenant", tenantID, "name", name)
 	return connect.NewResponse(&apiv1.CreateWorkflowResponse{
 		Workflow: workflowRowToProto(created),
 		Version:  versionRowToProto(createdVersion),
@@ -417,16 +442,6 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 	if len(workflows) > 0 {
 		resp.NextPageToken = workflows[len(workflows)-1].ID
 	}
-	if cats, err := db.ListCategories(ctx, ttx.Tx, tenantID, "workflow"); err == nil {
-		for _, c := range cats {
-			resp.Categories = append(resp.Categories, &apiv1.Category{Id: c.ID, TenantId: c.TenantID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW, Name: c.Name, Description: c.Description, Slug: c.Slug, SortOrder: int32(c.SortOrder)})
-		}
-		if assigns, err := db.ListAssignments(ctx, ttx.Tx, tenantID, "workflow"); err == nil {
-			for _, a := range assigns {
-				resp.Assignments = append(resp.Assignments, &apiv1.CategoryAssignment{EntityId: a.EntityID, CategoryId: a.CategoryID, TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW})
-			}
-		}
-	}
 	return connect.NewResponse(resp), nil
 }
 
@@ -547,6 +562,11 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if req.Msg.WorkflowId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
 	}
+	name, err := validateName(req.Msg.Name)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -557,45 +577,10 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	updated := current
-	// Handle git_strategy override if present (optional enum). Use reflection so old generated code still compiles.
-	if fd := req.Msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && req.Msg.ProtoReflect().Has(fd) {
-		enumVal := req.Msg.ProtoReflect().Get(fd).Enum()
-		var gs *string
-		switch enumVal {
-		case 1:
-			s := "local"
-			gs = &s
-		case 2:
-			s := "pr"
-			gs = &s
-		case 3:
-			s := "none"
-			gs = &s
-		default:
-			gs = nil
-		}
-		var err2 error
-		updated, err2 = db.UpdateWorkflowGitStrategy(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, updated.Version, gs)
-		if err2 != nil {
-			return nil, mapDBError(err2)
-		}
+	updated, err := db.UpdateWorkflowName(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, name)
+	if err != nil {
+		return nil, mapDBError(err)
 	}
-	if req.Msg.Name != "" {
-		name, err := validateName(req.Msg.Name)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		var err2 error
-		updated, err2 = db.UpdateWorkflowName(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, updated.Version, name)
-		if err2 != nil {
-			return nil, mapDBError(err2)
-		}
-	}
-	if updated.ID == current.ID && updated.Version == current.Version {
-		updated = current
-	}
-
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.updated", "workflow", updated.ID,
 		audit.Snapshot(workflowAuditSnapshot(current)), audit.Snapshot(workflowAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.updated: %w", err))
@@ -603,7 +588,7 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("workflow updated", "id", updated.ID, "name", updated.Name)
+	s.log.Info("workflow updated", "id", updated.ID, "name", name)
 	return connect.NewResponse(&apiv1.UpdateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
 }
 
@@ -748,8 +733,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("run is already terminal (status=%s)", current.Status))
 	}
-	abortedExecs, err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled)
-	if err != nil {
+	if err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled); err != nil {
 		return nil, mapDBError(err)
 	}
 	updated, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
@@ -767,16 +751,6 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	// The executions are now terminal in the DB. Abort their live opencode
-	// sessions so the model stops generating — without this, aborting a run
-	// leaves every in-flight worker session turning in the background.
-	if s.abortSession != nil {
-		for _, eid := range abortedExecs {
-			if aerr := s.abortSession(ctx, eid, "workflow run aborted"); aerr != nil {
-				s.log.Warn("abort live session on run abort failed", "execution", eid, "error", aerr)
-			}
-		}
-	}
 	s.log.Info("workflow run aborted", "run_id", updated.ID, "reason", reason)
 	return connect.NewResponse(&apiv1.AbortWorkflowResponse{Run: runRowToProto(updated)}), nil
 }
@@ -789,39 +763,33 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 // by the AbortWorkflow RPC and the sequence engine's StopSequence — a
 // single abort path so behavior can't drift. It is intentionally NOT a
 // method: the sequence reconciler calls it inside its own transaction.
-// AbortRunInTx aborts a workflow run: the run → aborted, in-flight step runs
-// → failed, and linked running/dispatching worker executions → terminated. It
-// returns the IDs of the executions it terminated so the caller can abort
-// their live sessions (a terminated execution's opencode session would
-// otherwise keep generating — the "terminated but still active" bug).
-func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) ([]string, error) {
+func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) error {
 	now := time.Now().UTC()
 	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
-		return nil, nil // already terminal — nothing to abort
+		return nil // already terminal — nothing to abort
 	}
 	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, runID, current.Version, db.UpdateWorkflowRunFields{
 		Status:  strPtr(domain.WorkflowRunAborted),
 		EndedAt: &now,
 	}); err != nil {
-		return nil, err
+		return err
 	}
 	// Cancel any in-flight step runs and terminate linked worker executions.
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, runID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var abortedExecs []string
 	for _, sr := range stepRuns {
 		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady || sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunApprovalPending {
 			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunFailed),
 				EndedAt: &now,
 			}); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		// Terminate linked worker executions.
@@ -836,9 +804,8 @@ func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatu
 						EndedAt:      &now,
 						ErrorMessage: strPtr("workflow run aborted"),
 					}); err != nil {
-						return nil, err
+						return err
 					}
-					abortedExecs = append(abortedExecs, exec.ID)
 				}
 			}
 		}
@@ -851,7 +818,7 @@ func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatu
 			})
 		}
 	}
-	return abortedExecs, nil
+	return nil
 }
 
 // GetWorkflowRun returns a single WorkflowRun by id.
@@ -1263,24 +1230,14 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		}
 		emptyResult := []byte("{}")
 		attempt := 0
-		fields := db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:            strPtr(domain.StepRunPending),
 			Result:            &emptyResult,
 			WorkerExecutionID: strPtr(""),
 			Attempt:           &attempt,
 			StartedAt:         &now,
 			ClearEndedAt:      true,
-		}
-		// Re-provision pruned worktrees on retry: keep the branch for
-		// re-attach but reset status to pending and clear the stale path
-		// so the WorktreeReconciler re-creates the worktree before dispatch.
-		if sr.WorktreeStatus == domain.WorktreePruned {
-			pending := domain.WorktreePending
-			emptyPath := ""
-			fields.WorktreeStatus = &pending
-			fields.WorktreePath = &emptyPath
-		}
-		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, fields)
+		})
 		if err != nil {
 			return nil, mapDBError(err)
 		}
@@ -1296,21 +1253,10 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 
 	// Flip the run back to pending so the reconciler's pending→running block
 	// re-resolves the runtime image and re-creates the (reaped) container.
-	// If the run's worktree was pruned, reset it to pending (keep branch)
-	// so the WorktreeReconciler re-provisions the worktree before any
-	// re-dispatched step runs. Without this the re-armed steps would fall
-	// back to the project dir.
-	runFields := db.UpdateWorkflowRunFields{
+	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		Status:       strPtr(domain.WorkflowRunPending),
 		ClearEndedAt: true,
-	}
-	if run.WorktreeStatus == domain.WorktreePruned {
-		pending := domain.WorktreePending
-		emptyPath := ""
-		runFields.WorktreeStatus = &pending
-		runFields.WorktreePath = &emptyPath
-	}
-	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, runFields)
+	})
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -1842,7 +1788,7 @@ func stepRunStatusToProto(status string) apiv1.StepRunStatus {
 }
 
 func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
-	wf := &apiv1.Workflow{
+	return &apiv1.Workflow{
 		Id:             w.ID,
 		TenantId:       w.TenantID,
 		ProjectId:      w.ProjectID,
@@ -1854,24 +1800,6 @@ func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
 		CreatedAt:      timestamppb.New(w.CreatedAt),
 		UpdatedAt:      timestamppb.New(w.UpdatedAt),
 	}
-	if w.GitStrategy != nil {
-		fd := wf.ProtoReflect().Descriptor().Fields().ByName("git_strategy")
-		if fd != nil {
-			var v protoreflect.EnumNumber
-			switch *w.GitStrategy {
-			case "local":
-				v = 1
-			case "pr":
-				v = 2
-			case "none":
-				v = 3
-			default:
-				v = 0
-			}
-			wf.ProtoReflect().Set(fd, protoreflect.ValueOfEnum(v))
-		}
-	}
-	return wf
 }
 
 func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
@@ -1978,50 +1906,4 @@ func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, t
 	ctx = tenant.WithID(ctx, tenantID)
 	_, err := s.StartWorkflow(ctx, req)
 	return err
-}
-
-// StartWorkflowDirectWithContext starts a workflow run for a bound work item
-// and stamps the given extra run_context into the run's run_context. It is
-// the provenance-aware variant used by the recurring fire so that any work
-// item created during the run is tagged with spawned_by / spawned_by_run_id /
-// outputs_mode (feature 4.1, D3). The run id is only known after creation, so
-// it is merged back into the run_context post-create (best-effort).
-func StartWorkflowDirectWithContext(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string, extra map[string]any) error {
-	rc := "{}"
-	if len(extra) > 0 {
-		if b, err := json.Marshal(extra); err == nil {
-			rc = string(b)
-		}
-	}
-	s := New(pool, log, nil)
-	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
-		WorkflowId: workflowID,
-		ProjectId:  projectID,
-		WorkItemId: workItemID,
-		RunContext: rc,
-	})
-	ctx = tenant.WithID(ctx, tenantID)
-	resp, err := s.StartWorkflow(ctx, req)
-	if err != nil {
-		return err
-	}
-	run := resp.Msg.GetRun()
-	if run == nil || run.GetId() == "" {
-		return nil
-	}
-	// Merge the (now-known) run id into the run_context for provenance.
-	ttx, terr := pool.BeginTenantTx(ctx, tenantID)
-	if terr != nil {
-		return nil // best-effort: provenance isn't worth failing the fire
-	}
-	defer ttx.Rollback(ctx)
-	if r, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, run.GetId()); gerr == nil {
-		merged, ok := db.MergeRunContext(r.RunContext, map[string]any{"spawned_by_run_id": run.GetId()})
-		if ok {
-			if _, uerr := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.GetId(), r.Version, db.UpdateWorkflowRunFields{RunContext: &merged}); uerr == nil {
-				_ = ttx.Commit(ctx)
-			}
-		}
-	}
-	return nil
 }

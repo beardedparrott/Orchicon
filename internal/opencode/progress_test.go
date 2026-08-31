@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // clock is a controllable now() for tests.
@@ -424,76 +422,5 @@ func TestIsFatalStall(t *testing.T) {
 		if isFatalStall(r) {
 			t.Errorf("isFatalStall(%q) = true, want false (advisory-first)", r)
 		}
-	}
-}
-
-// TestStallWindowsFromManifestUnsetAppliesDefault verifies a fresh/
-// never-configured manifest (every Stall* field zero — the real state of a
-// tenant_settings row that's never been touched in Settings) yields the
-// real built-in defaults, not a disabled check. This is the safety case:
-// zero must never silently mean "off".
-func TestStallWindowsFromManifestUnsetAppliesDefault(t *testing.T) {
-	w := stallWindowsFromManifest(scheduler.ExecutionManifest{})
-	def := defaultStallWindows()
-	if w.noFileDiff != def.noFileDiff {
-		t.Fatalf("noFileDiff = %v, want built-in default %v", w.noFileDiff, def.noFileDiff)
-	}
-	if w.textLoop != def.textLoop {
-		t.Fatalf("textLoop = %v, want built-in default %v", w.textLoop, def.textLoop)
-	}
-	if w.noFileDiff <= 0 || w.textLoop <= 0 {
-		t.Fatal("built-in default must be a positive, live window — unset must never resolve to disabled")
-	}
-}
-
-// TestStallWindowsFromManifestPositiveOverrides verifies an explicit
-// positive value overrides the built-in default.
-func TestStallWindowsFromManifestPositiveOverrides(t *testing.T) {
-	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
-		StallNoFileDiffWindowSeconds: 120,
-		StallTextLoopWindowSeconds:   90,
-	})
-	if w.noFileDiff != 120*time.Second {
-		t.Fatalf("noFileDiff = %v, want 120s", w.noFileDiff)
-	}
-	if w.textLoop != 90*time.Second {
-		t.Fatalf("textLoop = %v, want 90s", w.textLoop)
-	}
-}
-
-// TestStallWindowsFromManifestNegativeDisables verifies the fix: a negative
-// value (unambiguous, unlike 0 which doubles as "unset") actually disables
-// the check, closing the gap where Settings claimed "0 = disabled" but nothing
-// enforced it (0 and unset were indistinguishable, so the built-in default
-// always applied regardless of what the operator typed). newProgressMonitor
-// + a full stall check confirms it end-to-end: no trip even when the window
-// has obviously elapsed and no file diff / meaningful action occurred.
-func TestStallWindowsFromManifestNegativeDisables(t *testing.T) {
-	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
-		StallNoFileDiffWindowSeconds: -1,
-		StallTextLoopWindowSeconds:   -1,
-	})
-	if w.noFileDiff > 0 {
-		t.Fatalf("noFileDiff = %v, want <= 0 (disabled)", w.noFileDiff)
-	}
-	if w.textLoop > 0 {
-		t.Fatalf("textLoop = %v, want <= 0 (disabled)", w.textLoop)
-	}
-
-	c := &clock{t: time.Now()}
-	m := newProgressMonitor("exe_disabled_stall", w)
-	m.now = c.now
-	m.startedAt = c.t
-	m.lastStepFinish = c.t
-	m.lastFileDiff = c.t
-	m.lastMeaningfulAction = c.t
-	// Advance 2 hours — far past what the built-in noFileDiff (15min) and
-	// textLoop (10min) defaults would have tolerated, isolating the test to
-	// those two dimensions by also advancing lastStepFinish (so no_progress,
-	// which this manifest leaves live at its default, never trips).
-	c.t = c.t.Add(2 * time.Hour)
-	m.lastStepFinish = c.t
-	if reason := m.check(); reason != "" {
-		t.Fatalf("expected no stall with noFileDiff/textLoop disabled, got %q", reason)
 	}
 }

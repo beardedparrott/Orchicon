@@ -32,9 +32,7 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	var params struct {
 		ProjectID string `json:"project_id"`
 		Status    string `json:"status"`
-		Kind      string `json:"kind"`
 		Search    string `json:"search"`
-		PageToken string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -49,26 +47,15 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		TenantID:  tenantID,
 		ProjectID: params.ProjectID,
 		Status:    params.Status,
-		Kind:      params.Kind,
 		Search:    params.Search,
-		AfterID:   params.PageToken,
-		// Fetch one extra row so truncation is detected without ever loading
-		// the whole backlog's fat columns (description, acceptance criteria,
-		// budgets, context files…) — the "list is HUGE" bloat.
-		PageSize: listCap + 1,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]any, 0, len(items))
-	for _, r := range items {
-		out = append(out, compactWorkItem(r))
+	if items == nil {
+		return json.RawMessage("[]"), nil
 	}
-	env := newCompactList(out, "get_work_item")
-	if len(items) > listCap {
-		env.setNextPage(items[listCap-1].ID)
-	}
-	return json.Marshal(env)
+	return json.Marshal(items)
 }
 
 func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -91,29 +78,6 @@ func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(item)
 }
 
-func toolGetWorkItemRunHistory(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	var params struct {
-		WorkItemID string `json:"work_item_id"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
-	}
-	if params.WorkItemID == "" {
-		return nil, fmt.Errorf("work_item_id is required")
-	}
-	tenantID := tenant.FromContext(ctx)
-	ttx, err := pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer ttx.Rollback(ctx)
-	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, tenantID, params.WorkItemID)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(entries)
-}
-
 func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID          string   `json:"project_id"`
@@ -130,11 +94,6 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
 		RuntimeImage       string   `json:"runtime_image"`
 		ContextFiles       []string `json:"context_files"`
-		// run_context is the calling workflow run's run_context JSONB (feature
-		// 4.1, AC2): a recurring fire writes the provenance block into it, and a
-		// create issued from inside a recurring fire's run carries it so the
-		// created item is stamped with automation provenance.
-		RunContext string `json:"run_context"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -252,16 +211,6 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
-	// Stamp automation provenance (feature 4.1, AC2): a create inside a
-	// recurring fire's run carries the run_context (passed on the call or
-	// injected into the context by the sandbox Orchicon MCP from the run's
-	// run_context), so the created item is stamped spawned_by /
-	// spawned_by_run_id and, when outputs_mode=idea, lands in IDEA state.
-	rc := []byte(params.RunContext)
-	if len(rc) == 0 {
-		rc = workitem.RunContextFrom(ctx)
-	}
-	workitem.ApplyAutomationProvenance(&row, rc)
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, row)
 	if err != nil {
 		return nil, err
@@ -281,8 +230,6 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			toolLogger.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
 		}
 	}
-	// ADR-4 reference-only: if caller passes copy_attachments helper, it would invoke copyAttachmentsByReference here (kept wired for worker visibility)
-	_ = copyAttachmentsByReference
 	return json.Marshal(created)
 }
 
@@ -291,20 +238,20 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// explicit zero/empty value, exactly like the proto optional fields
 	// the Connect Update handler reads.
 	var params struct {
-		ID                 string    `json:"id"`
-		Title              *string   `json:"title"`
-		Description        *string   `json:"description"`
-		AcceptanceCriteria *string   `json:"acceptance_criteria"`
-		AcceptanceReview   *string   `json:"acceptance_review"`
-		Status             *string   `json:"status"`
-		Priority           *int      `json:"priority"`
-		Budgets            *string   `json:"budgets"`
-		ContextWindow      *int      `json:"context_window"`
-		ProjectID          *string   `json:"project_id"`
-		WorkflowID         *string   `json:"workflow_id"`
-		ParentID           *string   `json:"parent_id"`
-		ScheduledStartAt   *string   `json:"scheduled_start_at"`
-		AutoStartWorkflow  *bool     `json:"auto_start_workflow"`
+		ID                 string  `json:"id"`
+		Title              *string `json:"title"`
+		Description        *string `json:"description"`
+		AcceptanceCriteria *string `json:"acceptance_criteria"`
+		AcceptanceReview   *string `json:"acceptance_review"`
+		Status             *string `json:"status"`
+		Priority           *int    `json:"priority"`
+		Budgets            *string `json:"budgets"`
+		ContextWindow      *int    `json:"context_window"`
+		ProjectID          *string `json:"project_id"`
+		WorkflowID         *string `json:"workflow_id"`
+		ParentID           *string `json:"parent_id"`
+		ScheduledStartAt   *string `json:"scheduled_start_at"`
+		AutoStartWorkflow  *bool   `json:"auto_start_workflow"`
 		WorkflowRunID      *string   `json:"workflow_run_id"`
 		RuntimeImage       *string   `json:"runtime_image"`
 		Kind               *string   `json:"kind"`
@@ -325,12 +272,6 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
 	if err != nil {
 		return nil, err
-	}
-	// Ideas are system-managed (feature 4.1): the generic update tool must
-	// never move an idea out of idea state — only PromoteIdea / DismissIdea
-	// are sanctioned. Mirrors the Connect Update handler guard.
-	if workitem.IsIdeaStatus(current.Status) {
-		return nil, workitem.ErrWorkItemIsIdea()
 	}
 	// Context files must live inside the effective project's directory (the
 	// only path guaranteed mounted where workers run) — same rule as the
@@ -507,16 +448,12 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// a parent. When a kind switch is in flight, the explicit parent was
 	// already validated against the NEW kind inside ResolveKindSwitch, so
 	// this block is skipped (the old kind's rules no longer apply).
-	// Flat-recurring exemption (D1 parity with the Connect Update path): a
-	// recurring item is a flat top-level task, so hierarchy validation for
-	// the top-level (empty parent) case is skipped.
-	itemIsRecurring := current.RecurringSchedule != nil
 	if params.ParentID != nil && kindSwitchPlan == nil {
 		effectiveProject := current.ProjectID
 		if update.ProjectID != nil && *update.ProjectID != "" {
 			effectiveProject = *update.ProjectID
 		}
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject, itemIsRecurring); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject); err != nil {
 			return nil, err
 		}
 	} else if params.ParentID == nil && update.ProjectID != nil && *update.ProjectID != "" && *update.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -526,7 +463,7 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID, itemIsRecurring); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID); err != nil {
 			return nil, err
 		}
 	}
@@ -641,50 +578,23 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	// Auto-start workflow after commit, with the same guard the Connect
 	// Update handler applies: bound, no scheduled time, auto-start true,
-	// not a kind-switch (unless the user explicitly asked), any prior run
-	// is terminal, AND the item's status is startable both before this
-	// edit and after it (architecture-notes/fix-update-path-auto-start-…).
-	// A cancelled/terminal/in-flight item is never re-armed by an edit: a
-	// stale stored flag declines silently; an explicit auto_start_workflow
-	// request declines with an explicit warning carried in the tool result.
-	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
-		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
-	autoStartWarning := ""
-	if wouldAutoStart {
-		effectiveStatus := current.Status
-		if update.Status != nil {
-			effectiveStatus = *update.Status
-		}
-		if workitem.IsStartableForAutoStart(current.Status) && workitem.IsStartableForAutoStart(effectiveStatus) {
-			shouldStart := true
-			if updated.WorkflowRunID != "" {
-				var runStatus string
-				if err := pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
-					if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
-						shouldStart = false
-					}
+	// not a kind-switch (unless the user explicitly asked), and any prior
+	// run is terminal.
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchInFlight && !userExplicitlyAutoStarts) {
+		shouldStart := true
+		if updated.WorkflowRunID != "" {
+			var runStatus string
+			if err := pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
+				if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
+					shouldStart = false
 				}
 			}
-			if shouldStart {
-				if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
-					toolLogger.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
-				}
-			}
-		} else if userExplicitlyAutoStarts {
-			autoStartWarning = workitem.AutoStartDeclinedWarning(effectiveStatus)
-		} else {
-			toolLogger.Info("auto-start declined: item not in a startable status",
-				"work_item", updated.ID, "status", effectiveStatus)
 		}
-	}
-	// The tool result is raw JSON (no proto response), so an explicit
-	// auto-start decline must carry its warning as a sibling field of the
-	// item — MCP parity with UpdateWorkItemResponse.warning.
-	if autoStartWarning != "" {
-		return json.Marshal(struct {
-			db.WorkItemRow
-			Warning string `json:"warning"`
-		}{WorkItemRow: updated, Warning: autoStartWarning})
+		if shouldStart {
+			if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+				toolLogger.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+			}
+		}
 	}
 	return json.Marshal(updated)
 }
@@ -812,11 +722,6 @@ func toolDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	// An idea must be dismissed via DismissIdea (cancelled + audited as
-	// work_item.dismissed), not soft-deleted through the generic path.
-	if workitem.IsIdeaStatus(current.Status) {
-		return nil, workitem.ErrWorkItemIsIdea()
-	}
 	status := domain.WorkItemCancelled
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, db.UpdateWorkItemFields{
 		Status: &status,
@@ -851,11 +756,6 @@ func toolArchiveWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessag
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
 	if err != nil {
 		return nil, err
-	}
-	// An idea is never terminal-archivable; route it through DismissIdea so
-	// the dismissal is audited as work_item.dismissed rather than archived.
-	if workitem.IsIdeaStatus(current.Status) {
-		return nil, workitem.ErrWorkItemIsIdea()
 	}
 	if !domain.WorkItemIsTerminalArchivable(current.Status) {
 		return nil, fmt.Errorf("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first")
@@ -973,10 +873,10 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"status":          "scheduled",
-		"work_item_id":    params.ID,
-		"work_item_title": current.Title,
-		"scheduled_start": params.ScheduledTime,
+		"status":           "scheduled",
+		"work_item_id":     params.ID,
+		"work_item_title":  current.Title,
+		"scheduled_start":  params.ScheduledTime,
 	})
 }
 
@@ -1258,37 +1158,4 @@ func replaceWordNumbers(s string) string {
 		}
 		return match
 	})
-}
-
-// copyAttachmentsByReference copies chat message attachments (by blob_ref share) onto a work item.
-// It is the server-side copy-by-reference helper (ADR-4) — no LLM byte echo.
-// copyChatAttachmentsToWorkItem is the MCP-visible wrapper for copyAttachmentsByReference (ADR-4 reference-only). Agent calls this when user asks to include images.
-func copyChatAttachmentsToWorkItem(ctx context.Context, pool *db.Pool, args []byte) ([]byte, error) {
-	return nil, nil
-}
-
-func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, workItemID, projectID string, blobRefs []string, names []string, mimeTypes []string) error {
-	if len(blobRefs) == 0 {
-		return nil
-	}
-	ttx, err := pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	defer ttx.Rollback(ctx)
-	for i, ref := range blobRefs {
-		name := "attachment"
-		if i < len(names) {
-			name = names[i]
-		}
-		mime := "application/octet-stream"
-		if i < len(mimeTypes) {
-			mime = mimeTypes[i]
-		}
-		row := db.WorkItemAttachmentRow{ID: db.NewID(), TenantID: tenantID, WorkItemID: workItemID, ProjectID: projectID, Name: name, MimeType: mime, SizeBytes: 0, BlobRef: ref}
-		if _, err := db.CreateWorkItemAttachment(ctx, ttx.Tx, row); err != nil {
-			return err
-		}
-	}
-	return ttx.Commit(ctx)
 }

@@ -13,14 +13,7 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import {
-  useBatchArchiveWorkItems,
-  useBatchDeleteWorkItems,
-  useGetDependencyGraph,
-  useListWorkItems,
-  useReorderWorkItems,
-  useRestoreWorkItem,
-} from "@/api/workItems";
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems, useRestoreWorkItem } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
@@ -33,7 +26,6 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
-import { useBatchRunWorkItems } from "@/components/work-items/batch-run";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
   KIND_FILTER_OPTIONS,
@@ -54,7 +46,6 @@ import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
-import { RecurringFilter, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -91,9 +82,7 @@ function WorkItemsPage() {
 
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
-  const batchArchive = useBatchArchiveWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
-  const runWorkItems = useBatchRunWorkItems(projectId);
   const toast = useToast();
   const reorder = useReorderWorkItems();
   const restoreWorkItem = useRestoreWorkItem(projectId);
@@ -142,10 +131,6 @@ function WorkItemsPage() {
     // every active view (tree/board) leaves this false so archived items
     // never surface in them.
     includeArchived: view === "archive",
-    recurringFilter: RecurringFilter.EXCLUDE_RECURRING,
-    // Idea-state items are automation-produced and hidden from every normal
-    // work-item view; exclude them explicitly (AC: no idea leakage).
-    ideaScope: IdeaScope.EXCLUDE_IDEA,
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
@@ -191,14 +176,18 @@ function WorkItemsPage() {
     [items, kinds, statuses, debouncedSearch],
   );
 
-  // A filter is "active" only when the selection differs from the full
-  // option list (the default = show everything) or a search is typed. An
-  // all-selected type/status filter is NOT a query: it must not dim rows,
-  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
-  const hasQuery =
-    debouncedSearch !== "" ||
-    kinds.length !== KIND_FILTER_OPTIONS.length ||
-    statuses.length !== STATUS_FILTER_OPTIONS.length;
+  // Selection (design §5.1): cascade selection uses the FULL items list
+  // so checking/unchecking a parent always affects ALL its children
+  // regardless of active filters. The `childrenOf` callback must walk
+  // the complete hierarchy (not just filtered treeItems) so that
+  // cascade toggles reach descendants that may be hidden by the current
+  // kind/status/search filter.
+  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
+  const childrenOf = useCallback(
+    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
+    [items],
+  );
+  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
 
   // The header select-all + count operate over the MATCHES (the items
   // that actually pass the filters), never the dimmed ancestor container
@@ -206,18 +195,6 @@ function WorkItemsPage() {
   // filtered-out epics/features for bulk delete.
   const visibleItems = view === "tree" ? treeData.matches : filteredItems;
   const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
-  const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
-
-  // Selection (design §5.1): cascade selection — when a filter is active
-  // the parent toggle is scoped to the currently-viewable descendants
-  // only (visibleIdsSet + hasQuery), so hidden items are never selected.
-  // With no filter, the full subtree is used (AC5).
-  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
-  const childrenOf = useCallback(
-    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
-    [items],
-  );
-  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, visibleIdsSet, hasQuery, resetKey);
   const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
 
   const handleToggleAll = () => toggleAll(visibleIds);
@@ -231,66 +208,23 @@ function WorkItemsPage() {
     });
   };
 
-  // Bulk "Archive" (mirrors handleBatchDelete): confirm naming the count,
-  // fan out the archive fan-out, clear the selection on completion, and
-  // report the archived/skipped split. The server is authoritative for the
-  // two gates (terminal-only, no children), so skipped items are the ones
-  // the server rejected — reported as one generic bucket (design D2).
-  const handleBatchArchive = () => {
-    if (selected.size === 0) return;
-    const count = selected.size;
-    if (
-      !window.confirm(
-        `Archive ${count} work item${count === 1 ? "" : "s"}? Only terminal items without children can be archived; the rest are skipped.`,
-      )
-    ) return;
-    batchArchive.mutate(Array.from(selected), {
-      onSuccess: (res) => {
-        setSelected(new Set());
-        if (res.skipped > 0) {
-          toast.success(
-            `Archived ${res.archived}, skipped ${res.skipped} (non-terminal or has children)`,
-          );
-        } else {
-          toast.success(`Archived ${res.archived}`);
-        }
-      },
-    });
-  };
-
   // Bulk "Move to…" (ADR-WI-5): the selection toolbar's keyboard path for
   // multi-move, sharing the exact gates + mutation path with board
   // multi-drag.
   const itemsById = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
-
-  // Ids that have at least one direct child — used to detect sequence
-  // parents (a task/subtask with children runs its children in chain order)
-  // so the Run button can start them without a workflow binding.
-  const parentIdSet = useMemo(
-    () => new Set((items ?? []).filter((i) => i.parentId !== "").map((i) => i.parentId)),
-    [items],
-  );
-
   const handleMoveSelected = (targetStatus: number) => {
     if (selected.size === 0) return;
     void moveItems(Array.from(selected), targetStatus, { itemsById, blockState });
   };
 
-  // Bulk "Run" (ADR-WI-9): act on the visible-selected set only — the header
-  // select-all and parent cascade can mark filtered-out descendants, but Run
-  // must only touch the currently-visible rows (AC-3). The label uses the
-  // visible-selected count so it never over-promises (AC-1).
-  const visibleSelectedCount = useMemo(
-    () => [...selected].filter((id) => visibleIdsSet.has(id)).length,
-    [selected, visibleIdsSet],
-  );
-  const handleRunSelected = () => {
-    if (selected.size === 0) return;
-    const runIds = [...selected].filter((id) => visibleIdsSet.has(id));
-    void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
-  };
-
-
+  // A filter is "active" only when the selection differs from the full
+  // option list (the default = show everything) or a search is typed. An
+  // all-selected type/status filter is NOT a query: it must not dim rows,
+  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
+  const hasQuery =
+    debouncedSearch !== "" ||
+    kinds.length !== KIND_FILTER_OPTIONS.length ||
+    statuses.length !== STATUS_FILTER_OPTIONS.length;
 
   // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
   // items list (not the filtered set) so collapsing a filtered-out
@@ -316,7 +250,7 @@ function WorkItemsPage() {
   const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
 
   return (
-    <div className="flex flex-col gap-6 min-h-0" style={{ minHeight: "calc(100vh - 64px)" }}>
+    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
       <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>
@@ -367,13 +301,8 @@ function WorkItemsPage() {
         onToggleAll={handleToggleAll}
         onDeleteSelected={handleBatchDelete}
         deletePending={batchDelete.isPending}
-        onArchiveSelected={handleBatchArchive}
-        archivePending={batchArchive.isPending}
         onMoveSelected={handleMoveSelected}
         movePending={movePending}
-        onRunSelected={handleRunSelected}
-        runPending={runWorkItems.isPending}
-        visibleSelectedCount={visibleSelectedCount}
       />
 
       {!hasProjects && (
@@ -473,7 +402,7 @@ function LiveRefreshIndicator({
     <div
       role="timer"
       aria-label={`Auto-refreshes every 5 seconds. Last refreshed at ${time}`}
-      className="flex items-center gap-2 rounded-2xl glass-panel px-3 py-2"
+      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
     >
       <span
         className={cn(

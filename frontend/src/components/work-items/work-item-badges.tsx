@@ -27,7 +27,7 @@ export function KindBadge({ kind, className }: { kind: number; className?: strin
   const meta = kindMeta(kind);
   return (
     <span
-      aria-hidden="true"
+      aria-hidden
       className={cn(
         "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-bold",
         isDark ? meta.badgeDark : meta.badge,
@@ -54,7 +54,7 @@ export function KindPill({ kind, className }: { kind: number; className?: string
         className,
       )}
     >
-      <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
       {meta.label}
     </span>
   );
@@ -72,7 +72,7 @@ export function StatusPill({ status, className }: { status: number; className?: 
         className,
       )}
     >
-      <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
       {meta.label}
     </span>
   );
@@ -82,7 +82,7 @@ export function StatusPill({ status, className }: { status: number; className?: 
 export function KindDot({ kind, className }: { kind: number; className?: string }) {
   return (
     <span
-      aria-hidden="true"
+      aria-hidden
       className={cn("h-2.5 w-2.5 shrink-0 rounded-full", kindMeta(kind).dot, className)}
     />
   );
@@ -169,7 +169,7 @@ export function RecurringBadge({
         className,
       )}
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-fuchsia-500" />
+      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-fuchsia-500" />
       {label}
     </span>
   );

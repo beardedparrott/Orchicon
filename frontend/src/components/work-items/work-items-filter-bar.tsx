@@ -11,7 +11,7 @@
 // (design-notes/visual-and-functional-tweaks-to-work-items-page.md,
 // ADR-WI-2/ADR-WI-6): OR within a group, AND across groups, empty = all.
 
-import { Archive as ArchiveIcon, ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Play, Search, Trash2 } from "lucide-react";
+import { Archive as ArchiveIcon, ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
@@ -62,17 +62,9 @@ export interface WorkItemsFilterBarProps {
   onToggleAll: () => void;
   onDeleteSelected: () => void;
   deletePending: boolean;
-  /** Bulk Archive (mirrors bulk delete): archive every selected item. */
-  onArchiveSelected: () => void;
-  archivePending: boolean;
   /** Bulk "Move to…" — operates on the selected set (ADR-WI-5). */
   onMoveSelected: (targetStatus: number) => void;
   movePending: boolean;
-  /** Bulk "Run" (ADR-WI-9): start the visible-selected set. */
-  onRunSelected: () => void;
-  runPending: boolean;
-  /** Count of selected items that are currently visible (the button label). */
-  visibleSelectedCount: number;
 }
 
 export function WorkItemsFilterBar({
@@ -102,16 +94,11 @@ export function WorkItemsFilterBar({
   onToggleAll,
   onDeleteSelected,
   deletePending,
-  onArchiveSelected,
-  archivePending,
   onMoveSelected,
   movePending,
-  onRunSelected,
-  runPending,
-  visibleSelectedCount,
 }: WorkItemsFilterBarProps) {
   const selectClass =
-    "h-9 rounded-xl glass-input px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring";
+    "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
     <div className="flex flex-wrap items-center gap-3 shrink-0">
@@ -139,14 +126,14 @@ export function WorkItemsFilterBar({
 
       <div className="relative min-w-[160px] flex-1">
         <Search
-          aria-hidden="true"
+          aria-hidden
           className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           placeholder="Search title or description…"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
-          className="h-11 sm:h-9 min-h-[44px] w-full pl-8"
+          className="h-9 w-full pl-8"
         />
       </div>
 
@@ -205,7 +192,7 @@ export function WorkItemsFilterBar({
           )}
           onClick={() => onViewChange("tree")}
         >
-          <FolderTree aria-hidden="true" className="h-3.5 w-3.5" />
+          <FolderTree aria-hidden className="h-3.5 w-3.5" />
           Tree
         </button>
         <button
@@ -219,7 +206,7 @@ export function WorkItemsFilterBar({
           )}
           onClick={() => onViewChange("board")}
         >
-          <Columns3 aria-hidden="true" className="h-3.5 w-3.5" />
+          <Columns3 aria-hidden className="h-3.5 w-3.5" />
           Board
         </button>
         <button
@@ -233,7 +220,7 @@ export function WorkItemsFilterBar({
           )}
           onClick={() => onViewChange("archive")}
         >
-          <ArchiveIcon aria-hidden="true" className="h-3.5 w-3.5" />
+          <ArchiveIcon aria-hidden className="h-3.5 w-3.5" />
           Archive
         </button>
       </div>
@@ -248,7 +235,7 @@ export function WorkItemsFilterBar({
           title="Expand all work items"
           className="inline-flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         >
-          <ChevronsDownUp aria-hidden="true" className="h-3.5 w-3.5" />
+          <ChevronsDownUp aria-hidden className="h-3.5 w-3.5" />
           Expand all
         </button>
         <button
@@ -258,7 +245,7 @@ export function WorkItemsFilterBar({
           title="Collapse all work items"
           className="inline-flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         >
-          <ChevronsUpDown aria-hidden="true" className="h-3.5 w-3.5" />
+          <ChevronsUpDown aria-hidden className="h-3.5 w-3.5" />
           Collapse all
         </button>
       </div>
@@ -302,33 +289,13 @@ export function WorkItemsFilterBar({
               ))}
             </select>
             <Button
-              variant="default"
-              size="sm"
-              onClick={onRunSelected}
-              disabled={runPending}
-              title="Start all selected work items"
-            >
-              <Play aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Run {visibleSelectedCount}
-            </Button>
-            <Button
               variant="destructive"
               size="sm"
               onClick={onDeleteSelected}
               disabled={deletePending}
             >
-              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
               Delete {selectedCount} selected
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={onArchiveSelected}
-              disabled={archivePending}
-              title="Archive all selected work items"
-            >
-              <ArchiveIcon aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Archive {selectedCount} selected
             </Button>
           </>
         )}

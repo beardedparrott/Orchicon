@@ -23,7 +23,7 @@ export interface RecurringScheduleFormProps {
 
 function isSchedulePopulated(s: RecurringSchedule | undefined): s is RecurringSchedule {
   if (!s) return false;
-  return !!s.frequency || s.interval > 0 || s.days.length > 0 || !!s.startDate || !!s.startTime || !!s.windowStart || !!s.windowEnd;
+  return !!s.frequency || s.interval > 0 || s.days.length > 0 || !!s.startDate || !!s.startTime;
 }
 
 export function RecurringScheduleForm({
@@ -45,8 +45,6 @@ export function RecurringScheduleForm({
   const days = value?.days ?? [];
   const startDate = value?.startDate ?? "";
   const startTime = value?.startTime ?? "";
-  const windowStart = value?.windowStart ?? "";
-  const windowEnd = value?.windowEnd ?? "";
 
   const emit = (patch: Partial<RecurringSchedule>) => {
     const base = value ?? new RecurringSchedule();
@@ -102,7 +100,7 @@ export function RecurringScheduleForm({
       )}
 
       {enabled && value && (
-        <div className="space-y-3 rounded-2xl glass-panel p-3">
+        <div className="space-y-3 rounded-md border bg-muted/30 p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label htmlFor="recurringFrequency">Frequency</Label>
@@ -111,7 +109,7 @@ export function RecurringScheduleForm({
                 value={frequency}
                 onChange={(e) => emit({ frequency: e.target.value })}
                 disabled={disabled}
-                className="flex h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 py-1 text-sm"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
               >
                 {FREQUENCIES.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -134,7 +132,7 @@ export function RecurringScheduleForm({
                     emit({ interval: Math.max(1, Number(e.target.value) || 1) })
                   }
                   disabled={disabled}
-                  className="h-11 sm:h-9 min-h-[44px] w-20"
+                  className="h-9 w-20"
                 />
                 <span className="text-sm text-muted-foreground">
                   {frequency === "minute"
@@ -198,7 +196,7 @@ export function RecurringScheduleForm({
                 value={startDate}
                 onChange={(e) => emit({ startDate: e.target.value })}
                 disabled={disabled}
-                className="h-11 sm:h-9 min-h-[44px]"
+                className="h-9"
               />
             </div>
             <div className="space-y-1">
@@ -209,40 +207,9 @@ export function RecurringScheduleForm({
                 value={startTime}
                 onChange={(e) => emit({ startTime: e.target.value })}
                 disabled={disabled}
-                className="h-11 sm:h-9 min-h-[44px]"
+                className="h-9"
               />
             </div>
-          </div>
-
-          <div className="space-y-1">
-            <Label>Time window (optional)</Label>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label htmlFor="recurringWindowStart" className="text-xs">Window start</Label>
-                <Input
-                  id="recurringWindowStart"
-                  type="time"
-                  value={windowStart}
-                  onChange={(e) => emit({ windowStart: e.target.value })}
-                  disabled={disabled}
-                  className="h-11 sm:h-9 min-h-[44px]"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="recurringWindowEnd" className="text-xs">Window end</Label>
-                <Input
-                  id="recurringWindowEnd"
-                  type="time"
-                  value={windowEnd}
-                  onChange={(e) => emit({ windowEnd: e.target.value })}
-                  disabled={disabled}
-                  className="h-11 sm:h-9 min-h-[44px]"
-                />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Fires only between these times each day; leave empty for 24/7.
-            </p>
           </div>
         </div>
       )}
@@ -254,7 +221,6 @@ export function RecurringScheduleForm({
           {value.days.length > 0 && ` (${value.days.join(", ")})`}
           {value.startDate && ` starting ${value.startDate}`}
           {value.startTime && ` at ${value.startTime}`}
-          {value.windowStart && value.windowEnd && ` (${value.windowStart}–${value.windowEnd})`}
         </div>
       )}
     </div>
@@ -271,6 +237,5 @@ export function formatRecurrence(schedule: RecurringSchedule | undefined): strin
   parts.push(schedule.frequency);
   if (schedule.interval > 1) parts.push(`every ${schedule.interval}`);
   if (schedule.days.length > 0) parts.push(`(${schedule.days.join(", ")})`);
-  if (schedule.windowStart && schedule.windowEnd) parts.push(`${schedule.windowStart}–${schedule.windowEnd}`);
   return parts.join(" ");
 }

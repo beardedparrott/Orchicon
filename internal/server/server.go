@@ -17,10 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -40,7 +38,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
-	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
@@ -81,15 +78,6 @@ type Server struct {
 func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
-	}
-
-	// Secrets KEK: an explicit ORCHICON_SECRETS_KEK override wins; otherwise
-	// load-or-create the per-instance key in the data dir on first boot so
-	// the store works out of the box with no container/env changes and
-	// survives restarts and rebuilds exactly like the instance database.
-	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
-	if kekErr != nil {
-		log.Warn("secrets KEK unavailable (secrets store disabled)", "error", kekErr)
 	}
 
 	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
@@ -265,26 +253,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// The adapter calls the recorder via a closure to stay decoupled
 	// from the aigateway package (docs/04 §6.0: thin bridge).
 	usageRecorder := aigateway.NewUsageRecorder(pool, log)
-	// Cost authority lives in the gateway: resolve catalog pricing per
-	// provider/model from the discoverer (TTL-cached, stale-on-error) so the
-	// recorded CostUSD is cache-aware instead of trusting the adapter-reported
-	// cost verbatim. The discoverer reuses its cache and returns a stale cache
-	// on error rather than failing, so the recording path never blocks on a
-	// subprocess and falls back to adapter cost on any miss/error.
-	usageRecorder.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
-		models, err := modelDiscoverer.ListModels(ctx, provider)
-		if err != nil {
-			return nil, false
-		}
-		ref := provider + "/" + model
-		for _, m := range models {
-			if (strings.EqualFold(m.ProviderId, provider) && strings.EqualFold(m.Id, model)) ||
-				strings.EqualFold(m.ModelRef, ref) {
-				return m.Cost, m.Cost != nil
-			}
-		}
-		return nil, false
-	})
 	adapterBridge.SetUsageRecorder(func(ctx context.Context, in opencode.UsageRecord) error {
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,
@@ -295,10 +263,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			Provider:         in.Provider,
 			Model:            in.Model,
 			PromptTokens:     in.PromptTokens,
-			CacheReadTokens:  in.CacheReadTokens,
-			CacheWriteTokens: in.CacheWriteTokens,
 			CompletionTokens: in.CompletionTokens,
-			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
 			CorrelationID:    in.CorrelationID,
 			TraceID:          in.TraceID,
@@ -369,11 +334,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
 			return adapterBridge.ContinueSession(ctx, opts)
 		},
-		AbortExecution: func(ctx context.Context, execID, reason string) error {
-			return adapterBridge.AbortExecution(ctx, execID, reason)
-		},
 		HostServe: hostServe,
-		SecretsKEK: secretsKEK,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -414,7 +375,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig, secretsKEK)
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
@@ -466,9 +427,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})
 	recurringFireRec := scheduler.NewRecurringFireReconciler(pool, log, startWorkflowFn)
-	recurringFireRec.SetRunContextStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, rc map[string]any) error {
-		return workflow.StartWorkflowDirectWithContext(ctx, pool, log, tenantID, workflowID, projectID, workItemID, rc)
-	})
 	recurringFireRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})

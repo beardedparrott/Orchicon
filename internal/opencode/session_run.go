@@ -51,13 +51,6 @@ type sessionRun struct {
 	lastNudgeAt   time.Time
 	probeDeadline time.Time
 	probePending  bool
-	// probeGracePending is set while a completion-probe grace timer is armed:
-	// session.idle fired without the decision marker, but we are giving the
-	// trailing SSE events (the final text part that usually carries the
-	// marker) a short window to land before committing to a probe. Any
-	// mid-generation activity during the grace cancels it (resolveProbe), so
-	// a model that is merely still streaming is never interjected.
-	probeGracePending bool
 
 	// Session-scoped nudge tuning (manifest value first, env fallback).
 	// Populated by initNudgeTuning before the monitor starts. These drive
@@ -72,22 +65,6 @@ type sessionRun struct {
 	muParts      sync.Mutex
 	seq          int64
 	pendingParts []db.SessionPart
-
-	// Unified warn→escalate→abort budget ladder (see compact.go). budget is
-	// the per-execution spend accumulator fed on each step_finish via
-	// parseEvent; budgetSpec is the parsed merged budget. startedAt anchors
-	// the wall-clock dimension; firedWarn[dim][stage] latches each warning
-	// tier so a stage is injected exactly once per execution (never
-	// re-spammed every step once crossed). compactsPerformed +
-	// lastCompactStep implement the "at most once per step, never before
-	// the minimum-turn floor, re-arms only across normal forward progress"
-	// latch that prevents a compact loop.
-	budget            *budgetAccumulator
-	budgetSpec        budgetSpec
-	startedAt         time.Time
-	firedWarn         [dimCount][3]bool
-	compactsPerformed int
-	lastCompactStep   int
 }
 
 // Nudge tuning (env-overridable; default matches the advisory no-file
@@ -98,11 +75,6 @@ const (
 	defaultNudgeCooldown    = 60 * time.Second
 	defaultSettleAfterIdle  = 1 * time.Second
 	defaultSSEReconnectMax  = 10 * time.Second
-	// defaultCompletionProbeGrace is how long the completion probe waits
-	// after a markerless session.idle before interjecting, giving the serve's
-	// trailing final-text part (which usually carries the ORCHICON WORKER
-	// SUMMARY marker) time to flush. See maybeProbeCompletion.
-	defaultCompletionProbeGrace = 3 * time.Second
 )
 
 func nudgeMax() int {
@@ -120,10 +92,6 @@ func nudgeReplyWindow() time.Duration {
 
 func nudgeCooldown() time.Duration {
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
-}
-
-func completionProbeGrace() time.Duration {
-	return envDuration("ORCHICON_COMPLETION_PROBE_GRACE", defaultCompletionProbeGrace)
 }
 
 // initNudgeTuning resolves the session's nudge knobs: manifest (tenant
@@ -171,87 +139,23 @@ func (r *sessionRun) nudgeCooldown() time.Duration {
 	return nudgeCooldown()
 }
 
-// decisionMarker is the single marker signal every worker execution ends
+// livenessProbeText is the injected liveness check sent on an advisory
+// no_file_progress stall. It is designed to be answered at the next turn
+// boundary WITHOUT derailing the task: report status, then continue. It
+// preserves the ORCHICON WORKER SUMMARY decision-signal contract so the
+// probe reply cannot corrupt the routing signal.
+const livenessProbeText = "Do NOT stop or restart your task. This is a liveness check from Orchicon, not new work. " +
+	"In one short paragraph report: (1) what you have completed so far, (2) what you are doing right now, " +
+	"(3) what you will do next. Then continue your task exactly as planned. " +
+	"If your task is complete, end your output with: ORCHICON WORKER SUMMARY: success — <summary>. " +
+	"If you are genuinely blocked and cannot proceed, end your output with: ORCHICON WORKER SUMMARY: failure — <reason>."
+
+// decisionMarker is the single routing signal every worker execution ends
 // with (docs: the first word after it is success|failure). The completion
 // probe and the settle-time success guard check for its presence so a
 // session that ended without delivering the signal is never recorded as a
 // clean success.
 const decisionMarker = "ORCHICON WORKER SUMMARY:"
-
-// afterCompactReminderText is interjected into the session immediately
-// after a mid-flight compaction (compact.go maybeCompact) so the model
-// that just had its context summarized is reminded of the ORCHICON WORKER
-// SUMMARY contract and the todowrite obligation before it continues. A
-// summarized session otherwise can drift into "write a plan for the final
-// summary" and echo the marker as a literal template — which extraction
-// then parses as a fake `success` (see placeholderMarkerBody). The
-// reminder keeps the deliverable, its final line, and the live todo list
-// in view for the resumed turns.
-const afterCompactReminderText = "Your conversation was just compacted to keep it within budget — your task and progress notes are preserved in the compacted summary. " +
-	"Continue working on your task exactly as before. " +
-	"Resume your `todowrite` list NOW: emit a fresh full replacement array (`pending | in_progress | completed | cancelled`) reflecting current progress, and keep emitting it after every turn while you work — never wait until the end. " +
-	"When you have actually finished — and only then — end your response with the literal line: " +
-	"ORCHICON WORKER SUMMARY: success — <your summary of what you did>  (or  ORCHICON WORKER SUMMARY: failure — <the blocker>). " +
-	"Do NOT emit that line as part of a plan; emit it only as your final sign-off when the deliverable is complete."
-
-// placeholderMarkerBody reports whether the text following an
-// ORCHICON WORKER SUMMARY marker is a doc/plan placeholder ("success — <summary>",
-// "<reason>", an empty body) rather than a real worker-written summary. A
-// worker that echoes the marker as an example inside its plan must not be
-// treated as having delivered the signal — both the completion probe
-// (completionProbeDecision) and settle-time success guard must ignore it.
-func placeholderMarkerBody(rest string) bool {
-	rest = strings.TrimSpace(rest)
-	if rest == "" {
-		return true
-	}
-	// Inline code (backtick-quoted) markers are seed/instruction echo, never a
-	// real sign-off. The recovery seed writes `` `ORCHICON WORKER SUMMARY:
-	// failure` reason `recovery seed file missing` `` and system prompts quote
-	// `` `ORCHICON WORKER SUMMARY: success` `` as an example. The body right
-	// after the marker is a backtick-wrapped word (e.g. "`failure`" or
-	// "failure` reason ..."), so strip a leading backtick from the first word:
-	// a bare `success`/`failure` in backticks is a placeholder, not a delivery.
-	words := strings.Fields(rest)
-	if len(words) > 0 {
-		raw := words[0]
-		before, _ := strings.CutPrefix(raw, "`")
-		after, afterBacktick := strings.CutSuffix(before, "`")
-		if afterBacktick {
-			lower := strings.ToLower(after)
-			if lower == "success" || lower == "failure" {
-				return true
-			}
-		}
-	}
-	if strings.Contains(rest, "<summary>") || strings.Contains(rest, "<reason>") ||
-		strings.Contains(rest, "<your summary>") || strings.Contains(rest, "<your-summary>") {
-		return true
-	}
-	// "success — <summary>", "success", "—", "failure" with nothing real.
-	lower := strings.ToLower(rest)
-	switch lower {
-	case "", "success", "failure", "success —", "failure —", "success — <summary>", "failure — <reason>":
-		return true
-	}
-	return false
-}
-
-// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER
-// SUMMARY marker in output — one whose body is actual content, not a
-// placeholder/template echo. Returns -1 when no real marker exists.
-func realDecisionMarkerIn(output string) int {
-	idx := strings.LastIndex(output, decisionMarker)
-	for idx >= 0 {
-		if !placeholderMarkerBody(output[idx+len(decisionMarker):]) {
-			return idx
-		}
-		// The last occurrence was a placeholder echo — look for an earlier
-		// genuine one (a worker may plan with the marker then deliver it).
-		idx = strings.LastIndex(output[:idx], decisionMarker)
-	}
-	return -1
-}
 
 // completionProbeText is sent on session.idle when the worker's turn ended
 // WITHOUT the decision marker — e.g. the final model response was truncated
@@ -391,7 +295,7 @@ func (r *sessionRun) run() error {
 	// completion probe may have salvaged it, or the summary was delivered
 	// before the trailing step event was lost). A missing signal means the
 	// worker's final response never completed.
-	if r.stats.unfinished() && realDecisionMarkerIn(r.output.String()) < 0 {
+	if r.stats.unfinished() && !strings.Contains(r.output.String(), decisionMarker) {
 		ok = false
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}
@@ -469,27 +373,10 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.resolveProbe()
 		r.noteSessionProgress()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
-			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
-		// Record the raw part for the durable transcript, with the tool
-		// OUTPUT capped like the live forward (a follow-up or a
-		// recovery-resumed session re-seeds this transcript as context, so
-		// an uncapped giant build log would re-inflate it).
+			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
+		// Record the raw part for the durable transcript.
 		if t, _ := legacy["type"].(string); t != "" {
-			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
-		}
-		// Unified warn→escalate→abort budget ladder, evaluated on its own
-		// event boundary: step_finish feeds the spend accumulator and then
-		// drives the tokens/cost/time dimensions (the subsequent turn
-		// resends `system`, so goal/AC survive a lossy compact); tool_use
-		// drives the tool-call dimension (no "compact away a tool call").
-		switch et, _ := legacy["type"].(string); et {
-		case evtStepFinish:
-			r.maybeEnforceLadder(dimTokens)
-			r.maybeEnforceLadder(dimCost)
-			r.maybeEnforceLadder(dimTime)
-			r.maybeCompact() // context-hygiene turn-count gate only
-		case evtToolUse:
-			r.maybeEnforceLadder(dimTools)
+			r.recordPart(t, map[string]any{"part": legacy["part"], "error": legacy["error"]})
 		}
 	}
 }
@@ -560,19 +447,10 @@ func (r *sessionRun) flushParts() {
 func (r *sessionRun) resolveProbe() {
 	r.mu.Lock()
 	if !r.probePending {
-		// No probe is outstanding, but a completion-probe grace may be armed
-		// (session.idle fired without the marker and we are waiting for the
-		// trailing final text to land). Any telemetry activity during that
-		// window is evidence the model is still talking/finishing — cancel
-		// the pending probe so a still-streaming response is never
-		// interrupted. The next marker-bearing text part (arriving soon) will
-		// let the following session.idle settle normally.
-		r.probeGracePending = false
 		r.mu.Unlock()
 		return
 	}
 	r.probePending = false
-	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
 	revived := r.monitor.revive()
 	r.mu.Unlock()
@@ -649,11 +527,7 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	}
 	r.mu.Unlock()
 	r.callbacks.OnHealth(r.parentCtx, r.execRow.ID, "unhealthy")
-	if isInfraModelTurnError(msg) {
-		r.recycleOnInfraModelTurn(msg)
-	} else {
-		r.recycleOnWedgedServe(msg)
-	}
+	r.recycleOnWedgedServe(msg)
 	r.finish(false, "opencode_session_error: "+msg)
 }
 
@@ -679,57 +553,11 @@ func (r *sessionRun) recycleOnWedgedServe(msg string) {
 	if !r.a.countSessionError() {
 		return
 	}
-	sessionRecycleMetricsSingleton.recordWedgedConsecutive()
 	r.a.log.Warn("recycling wedged runtime container after consecutive session errors",
 		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
 		"threshold", threshold, "error", msg)
 	// Kill removes the container; the next dispatch's Create rebuilds it
 	// with a fresh serve. Best-effort — a failed recycle is just a log.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
-		r.a.log.Warn("runtime container recycle failed", "run", r.manifest.RuntimeWorkflowID, "error", err)
-	}
-}
-
-// recycleOnInfraModelTurn recycles the workflow's runtime container on the
-// FIRST model-turn failure whose root is a socket/transport connect error
-// (see isInfraModelTurnError). This is the sibling of recycleOnWedgedServe
-// but it does NOT wait for a run of consecutive errors: a model call that
-// cannot reach the model API at the socket layer (e.g. "Cannot connect to
-// API: Unable to connect. Is the computer able to access the url?") is the
-// same TCP-class as a session-create "connection refused", and burning the
-// 3-consecutive recycle gate would waste further dead-API turns before a
-// fresh serve arrives. Recycling on the first such failure means the next
-// dispatch's Create rebuilds the container with a fresh serve + store.
-//
-// Unlike the session-create infra path this is NOT dispatched-controllable by
-// an infra threshold, so it is still bounded by the per-dispatch repair
-// budget (sessionRepairBudget / ORCHICON_SESSION_REPAIR_ATTEMPTS) via a
-// dedicated infraModelTurnRecycles counter, reset on any progress. When the
-// budget is spent the step still fails (finish(false) in recordStreamError),
-// but further infra-model-turn recycles are suppressed so we never churn the
-// container unboundedly — the failure surfaces as the terminal
-// "opencode_session_error" reason instead.
-func (r *sessionRun) recycleOnInfraModelTurn(msg string) {
-	budget := sessionRepairBudget()
-	if budget < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
-		return
-	}
-	if r.a.infraModelTurnRecycleCount() >= budget {
-		r.a.log.Warn("not recycling — infra model-turn repair budget exhausted",
-			"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
-			"budget", budget, "error", msg)
-		sessionRecycleMetricsSingleton.recordInfraModelTurn(true)
-		return
-	}
-	r.a.incrInfraModelTurnRecycles()
-	r.a.log.Warn("recycling runtime container after infra model-turn connect failure",
-		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
-		"budget", budget, "error", msg)
-	sessionRecycleMetricsSingleton.recordInfraModelTurn(false)
-	// Kill removes the container; the next dispatch's Create rebuilds it with
-	// a fresh serve + store. Best-effort — a failed recycle is just a log.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
@@ -773,247 +601,15 @@ func (a *Adapter) resetSessionErrors() {
 	a.consecutiveSessionErrors = 0
 }
 
-// infraModelTurnRecycleCount returns the current per-dispatch
-// infra-model-turn recycle count (test helper).
-func (a *Adapter) infraModelTurnRecycleCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.infraModelTurnRecycles
-}
-
-// incrInfraModelTurnRecycles increments the per-dispatch infra-model-turn
-// recycle count.
-func (a *Adapter) incrInfraModelTurnRecycles() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.infraModelTurnRecycles++
-}
-
-// noteSessionProgress resets the consecutive-session-error counter and the
-// infra-model-turn per-dispatch recycle budget on any non-error session
-// progress (a step, tool call, or message completing), so a healthy step
-// never inherits a prior dispatch's spent budget. Both counters are reset
-// regardless of the wedge-recycle threshold: they gate independent classes.
+// noteSessionProgress resets the consecutive-session-error counter on any
+// non-error session progress (a step, tool call, or message completing).
 func (r *sessionRun) noteSessionProgress() {
+	if sessionErrorRecycleThreshold() < 1 {
+		return
+	}
 	r.a.mu.Lock()
 	r.a.consecutiveSessionErrors = 0
-	r.a.infraModelTurnRecycles = 0
 	r.a.mu.Unlock()
-}
-
-// maybeCompact evaluates the soft-first compact gate at a quiet step
-// boundary (after a step_finish feeds the spend accumulator). It fires on
-// EITHER of two independent triggers — a cost/token budget breach
-// (budgetBreached; the accumulator is cumulative, so once tripped it stays
-// tripped), or the turn-count gate (effectiveCompactMaxTurns; steps since
-// the last compact reaching the configured/default turn cap) — so a chatty
-// session gets compacted periodically even when per-turn spend never crosses
-// the cost gate. On either trigger it calls Compact once and CONTINUES —
-// best-effort, never a hard abort, never a failure. The shared min-turn
-// floor/re-arm latch (never at start, never immediately after a prior
-// compact within minT turns) applies to both triggers, so a fresh
-// post-compact summary is never immediately re-collapsed (the compact
-// loop), and the per-execution cap (compactMax) is the coarse safety
-// ceiling on top of that. The session's resolved provider/model is passed
-// so the compaction runs under the model the session actually uses.
-// maybeCompact is the context-hygiene compact gate, kept from the old model
-// but now firing ONLY on the turn-count trigger (compact_max_turns), NOT on
-// spend. Spend is handled by maybeEnforceLadder below (which compacts on
-// escalate1/escalate2 and aborts at the limit). It runs at a quiet step
-// boundary after a step_finish, respects the min-turn floor/re-arm latch and
-// the per-execution cap (compactMax), and is best-effort (never a failure).
-func (r *sessionRun) maybeCompact() {
-	r.mu.Lock()
-	if r.finished || r.budget == nil {
-		r.mu.Unlock()
-		return
-	}
-	maxC := compactMax()
-	if maxC < 1 {
-		r.mu.Unlock()
-		return
-	}
-	steps := r.budget.steps
-	minT := compactMinTurns()
-	if steps < minT || (r.compactsPerformed > 0 && steps < r.lastCompactStep+minT) {
-		r.mu.Unlock()
-		return
-	}
-	if r.compactsPerformed >= maxC {
-		r.mu.Unlock()
-		return
-	}
-	turnsSinceLastCompact := steps
-	if r.compactsPerformed > 0 {
-		turnsSinceLastCompact = steps - r.lastCompactStep
-	}
-	maxTurns, turnGateOn := effectiveCompactMaxTurns(r.budgetSpec)
-	turnTriggered := turnGateOn && turnsSinceLastCompact >= maxTurns
-	if !turnTriggered {
-		r.mu.Unlock()
-		return
-	}
-	r.mu.Unlock()
-	r.doCompact(steps, "turn_count")
-}
-
-// doCompact performs one best-effort context compaction (the summarize
-// round-trip) and, on success, re-states the summary contract so the
-// resumed turns finish correctly. Used by BOTH the turn-count hygiene gate
-// and the escalate1/escalate2 tiers of the budget ladder.
-func (r *sessionRun) doCompact(steps int, reason string) {
-	r.mu.Lock()
-	if r.compactsPerformed >= compactMax() {
-		r.mu.Unlock()
-		return
-	}
-	r.compactsPerformed++
-	r.lastCompactStep = steps
-	r.mu.Unlock()
-
-	provider, model, ok := splitModelRef(r.modelRef)
-	if !ok {
-		r.a.log.Warn("compact skipped: malformed model ref",
-			"execution", r.execRow.ID, "modelRef", r.modelRef)
-		return
-	}
-	r.a.log.Info("compact triggering", "execution", r.execRow.ID, "step", steps, "reason", reason,
-		"provider", provider, "model", model)
-	if err := r.client.Compact(r.parentCtx, r.sessionID, provider, model); err != nil {
-		r.a.log.Warn("compact failed (best-effort)", "execution", r.execRow.ID, "error", err)
-		return
-	}
-	r.recordPart(db.SessionPartCompacted, map[string]any{
-		"step": steps, "reason": reason, "provider": provider, "model": model,
-	})
-	r.sendAfterCompactReminder(steps)
-}
-
-// sendAfterCompactReminder re-states the summary contract + todowrite
-// obligation after a lossy compact so the resumed turns finish correctly.
-func (r *sessionRun) sendAfterCompactReminder(steps int) {
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
-		r.a.log.Warn("post-compact reminder send failed (best-effort)",
-			"execution", r.execRow.ID, "error", err)
-		return
-	}
-	r.bumpPending()
-	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": afterCompactReminderText, "source": "compact_reminder"})
-	r.a.log.Info("post-compact reminder sent", "execution", r.execRow.ID, "step", steps)
-}
-
-// maybeEnforceLadder evaluates the UNIFIED warn→escalate→abort ladder for
-// one dimension (tokens/cost/time on a step boundary; tool-calls on a tool
-// use). It is the single enforcement point for every budget dimension:
-//
-//	levelWarn     → inject the warning message once (compact if enabled)
-//	levelEscalate → inject the message once (compact if enabled)
-//	levelFinal    → inject the FINAL message once (compact if enabled)
-//	levelAbort    → KILL the session and fail the execution (HARD)
-//
-// Every non-abort tier ALWAYS injects its warning message when crossed;
-// whether it ALSO compacts is decided by the operator's per-tier
-// compact_tiers policy AND the shared re-arm latch (canCompactNow). The
-// default policy compacts only at escalate/final, not warn, and the re-arm
-// latch prevents compacts from different triggers firing on consecutive
-// steps — so the lossy collapse no longer repeatedly interrupts the worker
-// mid-flight while the spend climbs. Each warning tier is latched in
-// firedWarn so it fires exactly once per execution (a dimension that crosses
-// 25% then 50% then 75% sends all three, but never re-sends one). abort is
-// terminal and recovers via the same path onStall's fatal branch uses
-// (finish() first, THEN Abort, so the true reason survives the serve's
-// session.error echo).
-func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
-	r.mu.Lock()
-	if r.finished || r.budget == nil {
-		r.mu.Unlock()
-		return
-	}
-	frac := r.budgetSpec.fraction(d, r.budget, time.Since(r.startedAt), r.stats.toolUses)
-	level := r.budgetSpec.levelFor(d, frac)
-	if level == levelNone {
-		r.mu.Unlock()
-		return
-	}
-	if level == levelAbort {
-		r.mu.Unlock()
-		r.abortForLadder(d)
-		return
-	}
-	idx := levelIndex(level)
-	if r.firedWarn[d][idx] {
-		r.mu.Unlock()
-		return
-	}
-	r.firedWarn[d][idx] = true
-	msg := r.budgetSpec.message(d, level, frac)
-	// Whether this tier ALSO compacts is gated on the operator's per-tier
-	// compact_tiers policy, the per-dimension compact_dims policy (so e.g. a
-	// tool-call-budget warning never triggers a lossy collapse that would
-	// force yet more tool calls), AND the shared re-arm latch. A tier ALWAYS
-	// injects its warning message when crossed; compaction is the lossy,
-	// mid-flight-interrupting action. canCompactNow takes r.mu itself, so it
-	// must run AFTER the unlock below — otherwise it deadlocks re-locking the
-	// mutex the caller already holds.
-	compactPolicy := r.budgetSpec.compactsAt(level) && r.budgetSpec.compactsDim(d)
-	r.mu.Unlock()
-
-	r.injectBudgetWarning(d, level, msg)
-	if compactPolicy && r.canCompactNow() {
-		r.doCompact(r.budget.steps, "budget_ladder:"+dimName(d))
-	}
-}
-
-// canCompactNow reports whether a context compaction is currently allowed:
-// under the per-execution cap, past the min-turn floor, and more than
-// min-turn turns since the last compact. It is shared by the turn-count
-// hygiene gate (maybeCompact) and the spend-ladder tiers
-// (maybeEnforceLadder) so compacts from DIFFERENT triggers cannot fire
-// back-to-back on consecutive steps — the exact "compactions stepping on
-// each other" failure where one trigger collapses context and the next, a
-// step later, collapses it again before the worker can rebuild.
-func (r *sessionRun) canCompactNow() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.finished || r.budget == nil {
-		return false
-	}
-	if r.compactsPerformed >= compactMax() {
-		return false
-	}
-	steps := r.budget.steps
-	minT := compactMinTurns()
-	if steps < minT {
-		return false
-	}
-	if r.compactsPerformed > 0 && steps < r.lastCompactStep+minT {
-		return false
-	}
-	return true
-}
-
-// injectBudgetWarning sends one configured warning message into the live
-// session (best-effort) and records it in the transcript.
-func (r *sessionRun) injectBudgetWarning(d budgetDimension, level warnLevel, msg string) {
-	r.a.log.Warn("budget warning injected", "execution", r.execRow.ID,
-		"dimension", dimName(d), "level", levelIndex(level), "message", strings.TrimSpace(strings.Split(msg, "\n")[0]))
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, msg); err != nil {
-		r.a.log.Warn("budget warning send failed (best-effort)", "execution", r.execRow.ID, "error", err)
-		return
-	}
-	r.bumpPending()
-	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": msg, "source": "budget_warning"})
-}
-
-// abortForLadder is the HARD-abort terminal for a dimension that reached
-// its ceiling. finish() first (so the true reason survives the serve's
-// session.error echo), then Abort.
-func (r *sessionRun) abortForLadder(d budgetDimension) {
-	reason := "budget_abort:" + dimName(d)
-	r.a.log.Warn("budget limit reached — aborting session",
-		"execution", r.execRow.ID, "dimension", dimName(d), "reason", reason)
-	r.finish(false, reason)
-	_ = r.client.Abort(r.parentCtx, r.sessionID)
 }
 
 // onStall is the progress monitor's stall callback. Nudge-first routing:
@@ -1043,26 +639,12 @@ func (r *sessionRun) onStall(reason string) {
 	r.maybeNudge(reason)
 }
 
-// stallNudgeMessages returns the escalating liveness/stall messages, one per
-// nudge attempt (index 0..nudgeMax-1). Each is deliberately demanding and
-// frames the stall as the worker's fault that must be remedied immediately
-// or the session is killed. The last entry is the FINAL warning before the
-// abort.
-var stallNudgeMessages = []string{
-	"WARNING: You have gone quiet and are not making progress. You MUST work quickly and finish your work. " +
-		"Continue your task NOW — if you stall again your session will be KILLED.",
-	"CRITICAL: You are STILL not making progress. This is your final warning. " +
-		"You MUST work quickly and finish your work to avoid exceeding your budget — your session WILL BE KILLED if you do not continue immediately.",
-}
-
-// maybeNudge injects an escalating liveness warning when an advisory stall
-// (text_loop / repetition / no_file_progress) trips and the nudge
-// budget/cooldown allow it. The message gets harsher with each nudge (see
-// stallNudgeMessages). When the budget is spent and the worker is STILL
-// tripping the same advisory signal, it escalates to a fatal kill +
-// recovery instead of silently dropping the signal (the nudge-first
-// reframe, now with escalating scary messages under the same warn→escalate→
-// abort model as the budget ladder).
+// maybeNudge injects the liveness probe when an advisory stall (text_loop /
+// repetition / no_file_progress) trips and the nudge budget/cooldown allow
+// it. When the budget is spent and the worker is STILL tripping the same
+// advisory signal, it escalates to a fatal kill + recovery instead of
+// silently dropping the signal (the nudge-first reframe: nudge the live
+// session first, escalate only after persistent failure).
 func (r *sessionRun) maybeNudge(reason string) {
 	r.mu.Lock()
 	if r.finished || r.probePending {
@@ -1084,16 +666,11 @@ func (r *sessionRun) maybeNudge(reason string) {
 	r.nudgesSent++
 	r.probePending = true
 	r.probeDeadline = now.Add(r.nudgeReplyWindow())
-	idx := r.nudgesSent - 1
-	if idx >= len(stallNudgeMessages) {
-		idx = len(stallNudgeMessages) - 1
-	}
-	msg := stallNudgeMessages[idx]
 	r.mu.Unlock()
 
-	r.a.log.Info("advisory stall — sending escalating liveness warning",
+	r.a.log.Info("advisory stall — sending liveness probe",
 		"execution", r.execRow.ID, "reason", reason, "nudge", r.nudgesSent, "max", r.nudgeMax())
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, msg); err != nil {
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, livenessProbeText); err != nil {
 		r.mu.Lock()
 		r.probePending = false
 		r.mu.Unlock()
@@ -1101,7 +678,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 		return
 	}
 	r.bumpPending()
-	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": msg, "source": "nudge"})
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": livenessProbeText, "source": "nudge"})
 
 	// Verdict: no reply within the window → the worker is not responding
 	// → fail + recover (the true-hang case).
@@ -1133,7 +710,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 // value first, env fallback) so the completion probe shares the same
 // per-session budget as the advisory-stall nudge path.
 func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time, nudgeMax int, nudgeCooldown time.Duration) (probe bool, fail bool) {
-	if realDecisionMarkerIn(output) >= 0 {
+	if strings.Contains(output, decisionMarker) {
 		return false, false
 	}
 	if nudgesSent >= nudgeMax || now.Sub(lastNudgeAt) < nudgeCooldown {
@@ -1163,31 +740,6 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		return false
 	}
 	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
-	// A run that has been compacted is, by contract, mid-task: the compact
-	// fired on a cost / turn-count breach DURING the work, and the post-compact
-	// reminder explicitly tells the worker to keep going. Its session.idle
-	// after a compact is a boundary between work segments — the NORMAL pause of
-	// a resumed worker, not a truncated final turn. Treating that markerless
-	// idle as a missing decision interjects the "cut off" probe into a healthy,
-	// still-running session (the reported repro: the probe fires on every
-	// compacted run). So while compacted: a markerless idle waits for the next
-	// turn, while a marker-present idle still settles (return false). A
-	// compacted run that is genuinely truncated is still failed honestly by the
-	// unfinished-guard in finish() when the serve's stream ends.
-	if r.compactsPerformed > 0 {
-		r.mu.Unlock()
-		if probe || fail {
-			// Marker absent (probe or fail is only set on a markerless idle).
-			// A compacted run is mid-task, so this is a pause between work
-			// segments, not a truncated final turn: wait for the next turn
-			// rather than interjecting the "cut off" probe or failing on the
-			// exhausted budget.
-			r.a.log.Info("session idle without decision marker after compact — mid-task pause, waiting for the next turn",
-				"execution", r.execRow.ID, "nudges", r.nudgesSent)
-			return true
-		}
-		return false
-	}
 	if fail {
 		// Probe budget exhausted and still no signal — this is NOT a success.
 		// The final turn was truncated / the summary was lost.
@@ -1201,82 +753,13 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		r.mu.Unlock()
 		return false
 	}
-
-	// A probe is warranted, but do NOT fire it immediately. The opencode
-	// serve can emit session.idle a beat BEFORE the final text part that
-	// actually carries the ORCHICON WORKER SUMMARY marker has been flushed
-	// through the event stream — so a session whose model is still finishing
-	// its (long) final response could be interjected mid-token with the
-	// "your response appears cut off" probe, which is disruptive and, worse,
-	// can make a model that WAS about to deliver the marker re-plan instead.
-	// Arm a short grace timer; any mid-generation activity (a text/tool/step
-	// part arriving) cancels it via resolveProbe, and the NEXT session.idle
-	// re-enters this decision with the now-complete output. After the grace,
-	// if the session is genuinely idle with no marker, but the output was
-	// updated during the window (a marker-bearing tail landed), the probe is
-	// skipped. Only a session that stays silent and markerless through the
-	// grace is actually probed.
-	if !r.probeGracePending {
-		r.probeGracePending = true
-		grace := completionProbeGrace()
-		r.mu.Unlock()
-
-		r.a.log.Info("session idle without decision marker — arming completion-probe grace",
-			"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", r.nudgeMax(), "grace", grace)
-		go func() {
-			select {
-			case <-r.done:
-				return
-			case <-time.After(grace):
-			}
-			r.mu.Lock()
-			if r.finished || r.probePending {
-				r.mu.Unlock()
-				return
-			}
-			r.probeGracePending = false
-			// The marker may have landed during the grace (the trailing final
-			// text part arrived) — if so, settle normally instead of probing.
-			probe2, fail2 := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
-			r.mu.Unlock()
-			if fail2 {
-				r.a.log.Warn("session idle without decision marker after grace — failing",
-					"execution", r.execRow.ID, "nudges", r.nudgesSent)
-				r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
-				return
-			}
-			if !probe2 {
-				// Marker present now — the trailing text landed during the
-				// grace. Settle normally (the ordinary session.idle-finish
-				// path); do NOT interject a probe.
-				r.a.log.Info("decision marker landed during completion-probe grace — settling",
-					"execution", r.execRow.ID)
-				r.allTurnsDone()
-				return
-			}
-			r.sendCompletionProbe()
-		}()
-		return true
-	}
-	r.mu.Unlock()
-	return true
-}
-
-// sendCompletionProbe sends the completion-probe interjection (the
-// "your response appears to have been cut off" message) once the session has
-// been genuinely idle and markerless through the completion-probe grace.
-func (r *sessionRun) sendCompletionProbe() {
-	r.mu.Lock()
-	if r.finished || r.probePending {
-		r.mu.Unlock()
-		return
-	}
+	now := time.Now()
 	r.nudgesSent++
 	r.probePending = true
-	r.probeDeadline = time.Now().Add(r.nudgeReplyWindow())
+	r.probeDeadline = now.Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 
-	r.a.log.Info("session idle without decision marker — sending completion probe",
+	r.a.log.Info("session idle without decision signal — sending completion probe",
 		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", r.nudgeMax())
 	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, completionProbeText); err != nil {
 		r.mu.Lock()
@@ -1284,7 +767,7 @@ func (r *sessionRun) sendCompletionProbe() {
 		r.mu.Unlock()
 		r.a.log.Warn("completion probe send failed — failing", "execution", r.execRow.ID, "error", err)
 		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
-		return
+		return true
 	}
 	r.bumpPending()
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"})
@@ -1307,6 +790,7 @@ func (r *sessionRun) sendCompletionProbe() {
 			r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
 		}
 	}()
+	return true
 }
 
 // runSSE maintains the /event subscription with reconnects, routing every

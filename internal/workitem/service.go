@@ -111,53 +111,6 @@ func validateContextFilesInput(paths []string) ([]byte, error) {
 
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
-// AutomationRunContextKey is the context key that carries the calling run's
-// run_context (feature 4.1, AC2) from a recurring fire's execution into the
-// work item create path so automation provenance can be stamped. Exported so
-// the sandbox Orchicon MCP can inject it and both the Connect handler and the
-// askorchicon tool path can read it.
-type AutomationRunContextKey struct{}
-
-// WithAutomationRunContext returns a context carrying the given run_context so
-// a create path can stamp automation provenance. The run_context is the
-// workflow run's run_context JSONB — the recurring fire writes the provenance
-// block (spawned_by, spawned_by_run_id, outputs_mode) into it at fire time.
-// A nil/empty run_context returns the context unchanged (a plain create).
-func WithAutomationRunContext(ctx context.Context, runContext []byte) context.Context {
-	if len(runContext) == 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, AutomationRunContextKey{}, runContext)
-}
-
-// RunContextFrom returns the run_context carried on the request context, if
-// any. Absent (the common case — a human creating an item directly) means
-// "not an automation spawn" and returns nil.
-func RunContextFrom(ctx context.Context) []byte {
-	rc, _ := ctx.Value(AutomationRunContextKey{}).([]byte)
-	return rc
-}
-
-// ApplyAutomationProvenance stamps the automation provenance block onto a
-// work item being created from a recurring fire's run: spawned_by (the
-// recurring item id), spawned_by_run_id (the fire's run id), and — when the
-// fire's outputs_mode is "idea" — the IDEA status. No-op when the run_context
-// carries no provenance block (a plain create; backward compatible).
-func ApplyAutomationProvenance(row *db.WorkItemRow, runContext []byte) {
-	if len(runContext) == 0 {
-		return
-	}
-	spawnedBy, runID, mode := db.ProvenanceFromRunContext(runContext)
-	if spawnedBy == "" {
-		return
-	}
-	row.SpawnedByWorkItemID = &spawnedBy
-	row.SpawnedByRunID = &runID
-	if mode == domain.RecurringOutputsIdea {
-		row.Status = domain.WorkItemIdea
-	}
-}
-
 func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1.CreateWorkItemRequest]) (*connect.Response[apiv1.CreateWorkItemResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -192,14 +145,6 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	var secretIDsJSON []byte
-	if len(msg.SecretIds) > 0 {
-		if err := ValidateSecretIDs(msg.SecretIds); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-	}
-	// validate existence via DB after tx begins — store JSON for row
-
 	var parentID *string
 	if msg.ParentId != "" {
 		parentID = &msg.ParentId
@@ -227,35 +172,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 
-	// Parse and validate the recurring schedule BEFORE hierarchy validation so
-	// a flat-recurring item (kind=task, no parent) is exempt from the
-	// "only epics are top-level" rule and its flat shape is enforced.
-	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
-		msg.RecurringSchedule = nil
-	}
-	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	isRecurring := recurringSchedule != nil
-
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
 	// Shared with the Update path so the two cannot drift.
-	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId, isRecurring); err != nil {
+	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId); err != nil {
 		return nil, mapParentError(err)
-	}
-	// Flat-recurring invariants (D1/D7): recurring items are flat top-level
-	// tasks (no hierarchy participation), and a schedulable recurring LEAF
-	// must be bound to a workflow (the recurring fire has nothing to start
-	// for a workflow-less leaf). A freshly created item has no children, so
-	// it is a leaf for the workflow-binding check.
-	if isRecurring {
-		if err := ValidateRecurringFlatness(true, kind, msg.ParentId); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		if err := ValidateRecurringWorkflowBinding(true, false, msg.WorkflowId); err != nil {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-		}
 	}
 
 	// Parse scheduled start and workflow binding fields (docs/11 §5.1).
@@ -276,20 +196,15 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
-	if len(msg.SecretIds) > 0 {
-		if len(msg.SecretIds) > 0 {
-			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, msg.SecretIds)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			if len(m) != len(msg.SecretIds) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
-			}
-		}
-		b, _ := json.Marshal(msg.SecretIds)
-		secretIDsJSON = b
-	} else {
-		secretIDsJSON = []byte("[]")
+	// Parse and validate recurring schedule (if provided). An empty but
+	// present message (proto3 "clear" semantics) is normalized to nil
+	// before validation — same treatment as UpdateWorkItem.
+	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+		msg.RecurringSchedule = nil
+	}
+	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	status := domain.WorkItemPending
@@ -322,21 +237,8 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		AutoStartWorkflow:  autoStart,
 		ContextFiles:       contextFiles,
 		RecurringSchedule:  recurringSchedule,
-		SecretIDs:        secretIDsJSON,
 		NextRunAt:          nextRunAt,
 	}
-	// Stamp automation provenance (feature 4.1, AC2): when this create runs
-	// inside a recurring fire's run, the run_context carried on the request (or
-	// on the request context, injected by the sandbox Orchicon MCP from the
-	// run's run_context) carries the provenance block written by the
-	// reconciler. Stamping sets spawned_by/spawned_by_run_id and (when
-	// outputs_mode=idea) the IDEA status. Plain creates carry no run_context
-	// and are unaffected.
-	rc := []byte(msg.RunContext)
-	if len(rc) == 0 {
-		rc = RunContextFrom(ctx)
-	}
-	ApplyAutomationProvenance(&row, rc)
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
 	// it carries forward to the workflow run regardless of when it fires.
@@ -452,74 +354,7 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Idea surface: render the 'from automation X' badge for items that carry
-	// automation provenance (feature 5.1). Read-time only; nothing is stored.
-	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
-}
-
-// GetWorkItemRunHistory returns the per-fire run-history ledger for a
-// recurring work item, newest first. Each entry records the fire dispatch
-// outcome ('fired' | 'failed'), the run it produced (status/start/end) and
-// that run's worker executions (execution ids, outputs). A fire that failed
-// before a run existed yields an entry with no workflow_run_id whose Error
-// carries the dispatch error. Queryable from the recurring item detail view
-// (4.3) and via this API (4.2).
-func (s *Service) GetWorkItemRunHistory(ctx context.Context, req *connect.Request[apiv1.GetWorkItemRunHistoryRequest]) (*connect.Response[apiv1.GetWorkItemRunHistoryResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
-	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	defer ttx.Rollback(ctx)
-	entries, err := db.ListRecurringRunHistory(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	out := &apiv1.GetWorkItemRunHistoryResponse{
-		Entries: make([]*apiv1.RecurringRunHistoryEntry, 0, len(entries)),
-	}
-	for _, e := range entries {
-		pe := &apiv1.RecurringRunHistoryEntry{
-			Id:            e.ID,
-			Status:        e.Status,
-			WorkflowRunId: e.WorkflowRunID,
-			RunStatus:     e.RunStatus,
-			Error:         e.Error,
-		}
-		if !e.FireAt.IsZero() {
-			pe.FireAt = timestamppb.New(e.FireAt)
-		}
-		if e.RunStartedAt != nil {
-			pe.RunStartedAt = timestamppb.New(*e.RunStartedAt)
-		}
-		if e.RunEndedAt != nil {
-			pe.RunEndedAt = timestamppb.New(*e.RunEndedAt)
-		}
-		for _, x := range e.Executions {
-			px := &apiv1.RecurringRunExecution{Id: x.ID, Status: x.Status, StepId: x.StepID, Output: x.Output}
-			if x.StartedAt != nil {
-				px.StartedAt = timestamppb.New(*x.StartedAt)
-			}
-			if x.EndedAt != nil {
-				px.EndedAt = timestamppb.New(*x.EndedAt)
-			}
-			pe.Executions = append(pe.Executions, px)
-		}
-		out.Entries = append(out.Entries, pe)
-	}
-	return connect.NewResponse(out), nil
 }
 
 // ListWorkItems returns a page of work items for a project, optionally
@@ -539,27 +374,6 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		SortBy:          req.Msg.SortBy,
 		SortOrder:       req.Msg.SortOrder,
 		IncludeArchived: req.Msg.IncludeArchived,
-	}
-	switch req.Msg.RecurringFilter {
-	case apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING:
-		f.RecurringFilter = "exclude"
-	case apiv1.RecurringFilter_RECURRING_FILTER_ONLY_RECURRING:
-		f.RecurringFilter = "only"
-	case apiv1.RecurringFilter_RECURRING_FILTER_ALL:
-		f.RecurringFilter = "all"
-	default:
-		// UNSPECIFIED legacy: exclude recurring so normal Work Items callers
-		// that pre-date the field do not leak recurring rows. The explicit
-		// ALL value is required to get the old unfiltered behavior.
-		f.RecurringFilter = "exclude"
-	}
-	switch req.Msg.IdeaScope {
-	case apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA:
-		f.IdeaScope = "only"
-	default:
-		// UNSPECIFIED / EXCLUDE_IDEA legacy default: hide idea-state items so
-		// normal Work Items callers never leak automation-produced ideas.
-		f.IdeaScope = "exclude"
 	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
@@ -591,199 +405,6 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		resp.NextPageToken = items[len(items)-1].ID
 	}
 	return connect.NewResponse(resp), nil
-}
-
-// ListIdeas returns a page of idea-state work items (feature 5.1) with
-// their automation provenance and a read-time spawned_by_title badge. It
-// reuses the 4.1 idea gate (status='idea') via ListWorkItems(IdeaScope=only)
-// rather than a parallel query, so idea-list membership can never diverge
-// from the exclusion gate that keeps ideas out of the normal Work Items
-// scope — the two are the same SQL predicate by construction. The response
-// also attaches depends_on / blocked_by exactly like the general list.
-//
-// IdeaStateScope selects the population: ACTIVE (default) reads the Idea
-// Cloud; REJECTED reads the rejected graveyard — dismissed idea spawns
-// (status='cancelled' WITH spawned provenance), the durable rejection
-// memory the automation dedupe gate reads so a human's rejection is never
-// re-proposed.
-func (s *Service) ListIdeas(ctx context.Context, req *connect.Request[apiv1.ListIdeasRequest]) (*connect.Response[apiv1.ListIdeasResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	// Map the proto scope enum onto the store key; UNSPECIFIED keeps the
-	// feature-5.1 behavior byte-for-byte (ACTIVE).
-	var stateScope string
-	switch req.Msg.IdeaStateScope {
-	case apiv1.IdeaStateScope_IDEA_STATE_SCOPE_REJECTED:
-		stateScope = domain.IdeaStateRejected
-	default:
-		stateScope = domain.IdeaStateActive
-	}
-	f := db.ListWorkItemsFilter{
-		TenantID:  tenantID,
-		ProjectID: req.Msg.ProjectId,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
-		Search:    req.Msg.Search,
-		SortBy:    req.Msg.SortBy,
-		SortOrder: req.Msg.SortOrder,
-		// The idea surface always asks for idea-state items. IdeaScope="only"
-		// and the default EXCLUDE share the exact `status = 'idea'` predicate,
-		// so membership parity is guaranteed by construction. REJECTED swaps
-		// the same gate's population for dismissed spawns (status='cancelled'
-		// WITH provenance) — still never a parallel query.
-		IdeaScope:      domain.IdeaScopeOnly,
-		IdeaStateScope: stateScope,
-	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	defer ttx.Rollback(ctx)
-	items, err := db.ListWorkItems(ctx, ttx.Tx, f)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	resp := &apiv1.ListIdeasResponse{}
-	for _, w := range items {
-		resp.Ideas = append(resp.Ideas, rowToProto(w))
-	}
-	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := attachSpawnedByTitlesBatch(ctx, ttx.Tx, tenantID, resp.Ideas); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if len(items) > 0 {
-		resp.NextPageToken = items[len(items)-1].ID
-	}
-	return connect.NewResponse(resp), nil
-}
-
-// PromoteIdea approves an idea (feature 5.1): it transitions an idea-state
-// work item to a normal pending work item via CAS on the current version
-// (stale version → ErrVersionConflict → CodeAborted, exactly like
-// ArchiveWorkItem). The item leaves idea state, so it becomes queryable in
-// the normal Work Items scope with normal status semantics and can be
-// planned/scheduled/run through the existing pipeline; provenance
-// (spawned_by / spawned_by_run_id) is retained for the badge. Emits the
-// work_item.promoted outbox event and the work_item.promoted audit row in
-// the same transaction. PromoteIdea is the ONLY sanctioned path out of idea
-// state — the generic update/delete paths are gated for idea items.
-func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.PromoteIdeaRequest]) (*connect.Response[apiv1.PromoteIdeaResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
-	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	defer ttx.Rollback(ctx)
-	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if current.Status != domain.WorkItemIdea {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("only idea-state work items can be promoted; approve it via PromoteIdea, or discard it via DismissIdea"))
-	}
-	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemPending)}
-	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.promoted", updated); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.promoted", "work_item", updated.ID,
-		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.promoted: %w", err))
-	}
-	proto := rowToProto(updated)
-	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-	}
-	s.log.Info("work item promoted", "id", updated.ID, "version", updated.Version)
-	return connect.NewResponse(&apiv1.PromoteIdeaResponse{WorkItem: proto}), nil
-}
-
-// DismissIdea discards an idea (feature 5.1): it transitions an idea-state
-// work item to cancelled — the soft-delete/cancel terminal, consistent with
-// DeleteWorkItem — via CAS on the current version. The item leaves idea
-// state (so it drops out of the Idea Cloud list) but stays readable as
-// REJECTED history: the cancelled item retains its spawned_by provenance,
-// which is exactly the rejected-graveyard predicate ListIdeas
-// (IDEA_STATE_SCOPE_REJECTED) queries — nothing else needed to land there.
-// The item is a cancelled terminal item no active query surfaces as work.
-// Emits the work_item.dismissed outbox event and the work_item.dismissed
-// audit row in the same transaction.
-func (s *Service) DismissIdea(ctx context.Context, req *connect.Request[apiv1.DismissIdeaRequest]) (*connect.Response[apiv1.DismissIdeaResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
-	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	defer ttx.Rollback(ctx)
-	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if current.Status != domain.WorkItemIdea {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("only idea-state work items can be dismissed; discard it via DismissIdea, or approve it via PromoteIdea"))
-	}
-	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemCancelled)}
-	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.dismissed", updated); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dismissed", "work_item", updated.ID,
-		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dismissed: %w", err))
-	}
-	proto := rowToProto(updated)
-	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	// Provenance is retained; render the badge if the spawning item still
-	// exists (harmless if not).
-	if err := attachSpawnedByTitles(ctx, ttx.Tx, tenantID, proto); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-	}
-	s.log.Info("work item dismissed", "id", updated.ID, "version", updated.Version)
-	return connect.NewResponse(&apiv1.DismissIdeaResponse{WorkItem: proto}), nil
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency
@@ -838,14 +459,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				errors.New("archiving must go through ArchiveWorkItem; it is not settable via the generic update path"))
 		}
-		// "idea" is system-managed (set only by the automation spawn path and
-		// Idea Cloud promotion) — routing it through the generic update path
-		// would let a caller request it directly. Reject it here, mirroring
-		// the archived guard (feature 4.1, D2).
-		if st == domain.WorkItemIdea {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("idea is a system-managed status set only by the automation spawn path; it is not settable via the generic update path"))
-		}
 		fields.Status = strPtr(st)
 	}
 	if msg.Priority != nil {
@@ -876,14 +489,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
 	}
-	if msg.SecretIds != nil {
-		if err := ValidateSecretIDs(msg.SecretIds.Ids); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		b, _ := json.Marshal(msg.SecretIds.Ids)
-		fields.SecretIDs = &b
-	}
-
 	if msg.AutoStartWorkflow != nil {
 		v := *msg.AutoStartWorkflow
 		fields.AutoStartWorkflow = &v
@@ -908,10 +513,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			nextRunAt := ComputeNextRunAt(msg.RecurringSchedule, time.Now().UTC())
 			fields.NextRunAt = nextRunAt
 		}
-	}
-	if msg.RecurringEnabled != nil {
-		v := *msg.RecurringEnabled
-		fields.RecurringEnabled = &v
 	}
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
@@ -947,31 +548,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Ideas are system-managed (feature 4.1): the generic update path must
-	// never move an idea out of idea state — only PromoteIdea / DismissIdea
-	// are sanctioned. Keep the two surfaces identical (service + MCP).
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
-	}
-	// Per-item secret selection: validate dangling refs inside the tx so a
-	// concurrent delete cannot race the pre-tx check (fail-closed at write).
-	if fields.SecretIDs != nil {
-		var ids []string
-		_ = json.Unmarshal(*fields.SecretIDs, &ids)
-		if len(ids) > 0 {
-			m, err := db.BatchGetSecrets(ctx, ttx.Tx, tenantID, ids)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			if len(m) != len(ids) {
-				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("one or more secrets not found"))
-			}
-		}
-	}
-	// A currently-recurring item is exempt from the "only epics are
-	// top-level" parent rule (flat-recurring items are top-level tasks); the
-	// flat shape is enforced separately by ValidateRecurringFlatness.
-	itemIsRecurring := current.RecurringSchedule != nil
 	// Binding a workflow switches the item from one-shot (assigned worker,
 	// standalone dispatch) to template-bound: a stale worker assignment from
 	// the standalone path would flag the item as a worker-assigned one-shot
@@ -1078,7 +654,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if fields.ProjectID != nil && *fields.ProjectID != "" {
 			effectiveProject = *fields.ProjectID
 		}
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject, itemIsRecurring); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject); err != nil {
 			return nil, mapParentError(err)
 		}
 	} else if msg.ParentId == nil && fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -1088,7 +664,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID, itemIsRecurring); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID); err != nil {
 			return nil, mapParentError(err)
 		}
 	}
@@ -1170,18 +746,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		s := domain.WorkItemPending
 		fields.Status = &s
 	}
-	// Resume after a pause: pausing froze next_run_at, so a paused item can
-	// hold a stale (past) cursor. Re-arm it to the next cadence boundary on
-	// resume so firing restarts the cadence instead of firing immediately.
-	// Only when the item still has a recurring schedule and this request
-	// didn't set a fresh one (a fresh schedule computed its own next_run_at
-	// above). Preserving the schedule across pause/resume is a 4.2 AC; the
-	// schedule itself is never cleared by a pause, so resume re-arms it.
-	if msg.RecurringEnabled != nil && *msg.RecurringEnabled &&
-		current.RecurringSchedule != nil && fields.RecurringSchedule == nil &&
-		!fields.ClearRecurringSchedule {
-		fields.NextRunAt = ComputeNextRunAtFromScheduleJSON(current.RecurringSchedule, time.Now().UTC())
-	}
 	// Schedule-time validation (architecture-notes §3): scheduling or
 	// auto-starting runs the subtree validation — a parent WITH children is
 	// a sequence (the subtree must be executable: every leaf bound to a
@@ -1193,36 +757,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	effItem := current
 	if msg.WorkflowId != nil {
 		effItem.WorkflowID = msg.WorkflowId
-	}
-	// Flat-recurring + workflow-binding result-state checks (D1/D7). These
-	// apply to the RESULTING state, so a legacy recurring leaf edited to add
-	// a workflow passes, while any request that leaves a schedulable
-	// recurring leaf workflow-less is rejected. Non-recurring items are
-	// unaffected (backward compat).
-	resultRecurring := !fields.ClearRecurringSchedule &&
-		(fields.RecurringSchedule != nil || current.RecurringSchedule != nil)
-	if resultRecurring {
-		effKind := current.Kind
-		if fields.Kind != nil {
-			effKind = *fields.Kind
-		}
-		effParent := ""
-		if fields.ParentID != nil {
-			effParent = *fields.ParentID
-		} else if current.ParentID != nil {
-			effParent = *current.ParentID
-		}
-		if err := ValidateRecurringFlatness(true, effKind, effParent); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		effWorkflow := ""
-		if effItem.WorkflowID != nil && *effItem.WorkflowID != "" {
-			effWorkflow = *effItem.WorkflowID
-		}
-		hasChildren := s.itemHasChildren(ctx, tenantID, current.ID)
-		if err := ValidateRecurringWorkflowBinding(true, hasChildren, effWorkflow); err != nil {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-		}
 	}
 	if msg.ScheduledStartAt != nil || (msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow) {
 		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
@@ -1302,50 +836,26 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// with children wins: it runs as a SEQUENCE even if it still carries a
 	// workflow binding (children each run their own workflows — the subtree
 	// was validated in-tx). Only a workflow-bound LEAF starts its own run.
-	//
-	// Precondition (architecture-notes/fix-update-path-auto-start-…): the
-	// item's status must be startable BOTH before this edit and after it.
-	// Any other status (cancelled, failed, succeeded, skipped, recovering,
-	// checkpointing, running, recurring, …) is NEVER re-armed by an edit,
-	// no matter what the stored auto_start_workflow flag says — legacy rows
-	// created before migration 20260807120000 carry exactly such a stale
-	// flag. A stale flag declines silently (log only); an EXPLICIT
-	// auto_start_workflow=true in this request declines with a warning on
-	// the response. Either way the edit itself is saved.
-	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
-		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
-	autoStartWarning := ""
-	if wouldAutoStart {
-		effectiveStatus := current.Status
-		if fields.Status != nil {
-			effectiveStatus = *fields.Status
-		}
-		if IsStartableForAutoStart(current.Status) && IsStartableForAutoStart(effectiveStatus) {
-			if s.itemHasChildren(ctx, tenantID, updated.ID) {
-				s.maybeStartSequence(ctx, tenantID, updated)
-			} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {
-				// A previous run must be terminal (completed/failed/aborted) —
-				// active runs are not duplicated.
-				shouldStart := true
-				if updated.WorkflowRunID != "" {
-					var runStatus string
-					if err := s.pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
-						if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
-							shouldStart = false
-						}
-					}
-				}
-				if shouldStart {
-					if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
-						s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+	if updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchInFlight && !userExplicitlyAutoStarts) {
+		if s.itemHasChildren(ctx, tenantID, updated.ID) {
+			s.maybeStartSequence(ctx, tenantID, updated)
+		} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {
+			// A previous run must be terminal (completed/failed/aborted) —
+			// active runs are not duplicated.
+			shouldStart := true
+			if updated.WorkflowRunID != "" {
+				var runStatus string
+				if err := s.pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
+					if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
+						shouldStart = false
 					}
 				}
 			}
-		} else if userExplicitlyAutoStarts {
-			autoStartWarning = AutoStartDeclinedWarning(effectiveStatus)
-		} else {
-			s.log.Info("auto-start declined: item not in a startable status",
-				"work_item", updated.ID, "status", effectiveStatus)
+			if shouldStart {
+				if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+					s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+				}
+			}
 		}
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
@@ -1355,7 +865,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ContextFiles != nil {
 		project.NotifyProjectChanged()
 	}
-	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto, Warning: autoStartWarning}), nil
+	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto}), nil
 }
 
 // DeleteWorkItem soft-deletes a work item by setting status to cancelled.
@@ -1375,11 +885,6 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-	// An idea must be dismissed via DismissIdea (cancelled + audited as
-	// work_item.dismissed), not soft-deleted through the generic path.
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
 	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemCancelled)}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
@@ -1425,11 +930,6 @@ func (s *Service) HardDeleteWorkItem(ctx context.Context, req *connect.Request[a
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-	// Hard-deleting an idea would destroy its provenance before triage; an
-	// idea must be dismissed via DismissIdea (which retains provenance).
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
 	}
 	if err := db.HardDeleteWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
@@ -1866,11 +1366,6 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// An idea is never terminal-archivable; route it through DismissIdea so
-	// the dismissal is audited as work_item.dismissed rather than archived.
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
-	}
 	if !domain.WorkItemIsTerminalArchivable(current.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
@@ -2133,12 +1628,6 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 		}
 		if err := s.sequenceStopFn(ctx, tenantID, msg.Id); err != nil {
-			if errors.Is(err, db.ErrVersionConflict) {
-				return nil, connect.NewError(connect.CodeAborted, fmt.Errorf("version conflict: %w", err))
-			}
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
-			}
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 	}
@@ -2496,52 +1985,6 @@ func attachBlockedByBatch(ctx context.Context, tx pgx.Tx, tenantID string, items
 	return nil
 }
 
-// attachSpawnedByTitles populates proto.SpawnedByTitle — the title of the
-// spawning recurring item (the "from automation X" badge) — with ONE batched
-// query for the rows that carry provenance, avoiding an N+1 per idea.
-func attachSpawnedByTitlesBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
-	ids := make([]string, 0, len(items))
-	byID := map[string]*apiv1.WorkItem{}
-	for _, it := range items {
-		if it == nil || it.SpawnedBy == "" {
-			continue
-		}
-		ids = append(ids, it.SpawnedBy)
-		byID[it.SpawnedBy] = it
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	titles, err := db.SpawnedByTitles(ctx, tx, tenantID, ids)
-	if err != nil {
-		return err
-	}
-	for id, title := range titles {
-		if it, ok := byID[id]; ok {
-			it.SpawnedByTitle = title
-		}
-	}
-	return nil
-}
-
-// attachSpawnedByTitles populates proto.SpawnedByTitle for a single work
-// item (the "from automation X" badge). No-op when the item carries no
-// provenance. Used by GetWorkItem and the Promote/Dismiss responses so the
-// badge is always rendered alongside the item.
-func attachSpawnedByTitles(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
-	if p == nil || p.SpawnedBy == "" {
-		return nil
-	}
-	titles, err := db.SpawnedByTitles(ctx, tx, tenantID, []string{p.SpawnedBy})
-	if err != nil {
-		return err
-	}
-	if t, ok := titles[p.SpawnedBy]; ok {
-		p.SpawnedByTitle = t
-	}
-	return nil
-}
-
 func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, error) {
 	evt := map[string]any{
 		"event_type":        eventType,
@@ -2627,9 +2070,6 @@ func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID s
 // check ran against stale state) is FailedPrecondition with the trigger's
 // message naming the offending edge; everything else is Internal.
 func mapDBError(err error) error {
-	if errors.Is(err, db.ErrVersionConflict) {
-		return connect.NewError(connect.CodeAborted, fmt.Errorf("version conflict: %w", err))
-	}
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
@@ -2806,8 +2246,6 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
 	case domain.WorkItemArchived:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
-	case domain.WorkItemIdea:
-		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}
@@ -2894,26 +2332,11 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	if w.NextRunAt != nil {
 		p.NextRunAt = timestamppb.New(*w.NextRunAt)
 	}
-	p.RecurringEnabled = w.RecurringEnabled
 	if w.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*w.ArchivedAt)
 	}
 	if w.ArchivedFromStatus != nil {
 		p.ArchivedFromStatus = *w.ArchivedFromStatus
-	}
-	// Automation provenance (feature 4.1): stamped by the spawn path from the
-	// recurring fire's run_context; empty = not an automation spawn.
-	if w.SpawnedByWorkItemID != nil {
-		p.SpawnedBy = *w.SpawnedByWorkItemID
-	}
-	if w.SpawnedByRunID != nil {
-		p.SpawnedByRunId = *w.SpawnedByRunID
-	}
-	if len(w.SecretIDs) > 0 {
-		var ids []string
-		if err := json.Unmarshal(w.SecretIDs, &ids); err == nil {
-			p.SecretIds = ids
-		}
 	}
 	return p
 }

@@ -24,7 +24,7 @@ import {
   type WorkItem,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
-export { DependencyType, type WorkItem };
+export { DependencyType };
 
 // ---------------------------------------------------------------------------
 // Kinds (enum values from work_item.proto — do not re-invent)
@@ -282,18 +282,6 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-slate-500/15 text-slate-300",
     dot: "bg-slate-500",
   },
-  // Lime — visually distinct from every other status hue (amber is
-  // ASSIGNED's, yellow is SKIPPED's). System-managed: set only by the
-  // automation spawn path (a recurring fire with outputs_mode=idea) and
-  // by Idea Cloud promotion. An idea is an automation-produced item
-  // awaiting triage, excluded from every normal work-item view.
-  [WorkItemStatus.IDEA]: {
-    label: "idea",
-    titleLabel: "Idea",
-    pill: "bg-lime-500/15 text-lime-800",
-    pillDark: "bg-lime-500/15 text-lime-300",
-    dot: "bg-lime-500",
-  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -342,8 +330,6 @@ export function statusMetaFromString(status: string): StatusMeta {
       return statusMeta(WorkItemStatus.SKIPPED);
     case "archived":
       return statusMeta(WorkItemStatus.ARCHIVED);
-    case "idea":
-      return statusMeta(WorkItemStatus.IDEA);
     default:
       return statusMeta(WorkItemStatus.UNSPECIFIED);
   }

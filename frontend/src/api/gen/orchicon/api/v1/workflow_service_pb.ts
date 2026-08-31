@@ -19,9 +19,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
-import { GitStrategy } from "./project_pb.js";
 import { Workflow, WorkflowEvent, WorkflowRun, WorkflowRunStatus, WorkflowStatus, WorkflowStepRun, WorkflowVersion } from "./workflow_pb.js";
-import { Category, CategoryAssignment } from "./category_pb.js";
 import { EditLock } from "./worker_pb.js";
 
 /**
@@ -87,11 +85,6 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
    */
   type = "";
 
-  /**
-   * @generated from field: orchicon.api.v1.GitStrategy git_strategy = 11;
-   */
-  gitStrategy = GitStrategy.UNSPECIFIED;
-
   constructor(data?: PartialMessage<CreateWorkflowRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -109,7 +102,6 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
     { no: 8, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 11, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkflowRequest {
@@ -593,16 +585,6 @@ export class ListWorkflowsResponse extends Message<ListWorkflowsResponse> {
    */
   nextPageToken = "";
 
-  /**
-   * @generated from field: repeated orchicon.api.v1.Category categories = 3;
-   */
-  categories: Category[] = [];
-
-  /**
-   * @generated from field: repeated orchicon.api.v1.CategoryAssignment assignments = 4;
-   */
-  assignments: CategoryAssignment[] = [];
-
   constructor(data?: PartialMessage<ListWorkflowsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -613,8 +595,6 @@ export class ListWorkflowsResponse extends Message<ListWorkflowsResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "workflows", kind: "message", T: Workflow, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "categories", kind: "message", T: Category, repeated: true },
-    { no: 4, name: "assignments", kind: "message", T: CategoryAssignment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowsResponse {
@@ -992,11 +972,6 @@ export class UpdateWorkflowRequest extends Message<UpdateWorkflowRequest> {
    */
   name = "";
 
-  /**
-   * @generated from field: optional orchicon.api.v1.GitStrategy git_strategy = 3;
-   */
-  gitStrategy?: GitStrategy;
-
   constructor(data?: PartialMessage<UpdateWorkflowRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1007,7 +982,6 @@ export class UpdateWorkflowRequest extends Message<UpdateWorkflowRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy), opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowRequest {

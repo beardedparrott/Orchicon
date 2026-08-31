@@ -38,7 +38,7 @@ type ToolRegistry struct {
 }
 
 // NewToolRegistry creates the registry with all available tools.
-func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
+func NewToolRegistry(pool *db.Pool, log *slog.Logger) *ToolRegistry {
 	// Package-level logger for tools whose post-commit side effects (e.g.
 	// auto-starting a workflow) need a logger but receive none via the
 	// ToolFn signature.
@@ -51,7 +51,7 @@ func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRe
 	}
 
 	// Register all tools.
-	for _, td := range allTools(pool, log, secretsKEK) {
+	for _, td := range allTools(pool, log) {
 		r.tools = append(r.tools, td)
 		r.byName[td.Name] = td
 	}
@@ -96,7 +96,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, pool *db.Pool, name string, 
 }
 
 // allTools returns the complete list of tool definitions.
-func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefinition {
+func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 	return []ToolDefinition{
 		// --- Projects ---
 		{
@@ -180,10 +180,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Work Items ---
 		{
 			Name:        "list_work_items",
-			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
+			Description: "List work items for a project or tenant. Supports filter by status, kind, search.",
 			Mutating:    false,
 			Fn:          toolListWorkItems,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}},
 		},
 		{
 			Name:        "get_work_item",
@@ -191,37 +191,6 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Mutating:    false,
 			Fn:          toolGetWorkItem,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
-			Required:    []string{"id"},
-		},
-		{
-			Name:        "get_work_item_run_history",
-			Description: "Get a recurring work item's per-fire run history (each fire's status, fire time, bound workflow run, and that run's executions + outputs). Returns an empty array for an item that has never fired.",
-			Mutating:    false,
-			Fn:          toolGetWorkItemRunHistory,
-			Properties:  map[string]PropertySchema{"work_item_id": {Type: "string", Description: "Recurring work item ID"}},
-			Required:    []string{"work_item_id"},
-		},
-		{
-			Name:        "list_ideas",
-			Description: "List the Idea Cloud (feature 5.1): idea-state work items with their automation provenance (spawned_by + spawned_by_run_id) and a read-time SpawnedByTitle badge. Idea-state items are system-managed and excluded from the normal Work Items scope; they only become queryable there via promote_idea. Set state=\"rejected\" to read the REJECTED section instead: previously dismissed idea spawns (durable rejection history — also what the automation dedupe gate checks before spawning). Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
-			Mutating:    false,
-			Fn:          toolListIdeas,
-			Properties: map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
-		},
-		{
-			Name:        "promote_idea",
-			Description: "Approve an idea (feature 5.1): transition an idea-state work item to a normal pending work item (leaves idea state, becomes queryable in the normal Work Items scope with normal status semantics, and can be planned/scheduled/run through the existing pipeline). Provenance is retained for display. Audited as work_item.promoted. PromoteIdea is the ONLY sanctioned path out of idea state.",
-			Mutating:    true,
-			Fn:          toolPromoteIdea,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Idea-state work item ID"}},
-			Required:    []string{"id"},
-		},
-		{
-			Name:        "dismiss_idea",
-			Description: "Discard an idea (feature 5.1): transition an idea-state work item to cancelled (the soft-delete/cancel terminal, consistent with delete_work_item) so it leaves idea state and drops out of every active view. Provenance is retained as a record of where it came from. Audited as work_item.dismissed.",
-			Mutating:    true,
-			Fn:          toolDismissIdea,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Idea-state work item ID"}},
 			Required:    []string{"id"},
 		},
 		{
@@ -363,36 +332,19 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_worker",
-			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref/runtime_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id.",
+			Description: "Create a new worker with a name and optional runtime/model configuration.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
-			Properties: map[string]PropertySchema{
-				"name":          {Type: "string", Description: "Worker name"},
-				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"runtime_ref":   {Type: "string", Description: "Runtime reference (e.g. opencode)"},
-				"model_ref":     {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"},
-				"description":   {Type: "string", Description: "Optional human-readable description"},
-				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
-				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},
-				"skills":        {Type: "string", Description: "Optional skills section for the composed system prompt"},
-				"behavior":      {Type: "string", Description: "Optional behavior section for the composed system prompt"},
-				"agents_md":     {Type: "string", Description: "Optional AGENTS.md section for the composed system prompt"},
-				"system_prompt": {Type: "string", Description: "Raw system prompt (used only when no role/skills/behavior/agents_md is provided)"},
-			},
-			Required: []string{"name"},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Worker name"}, "purpose": {Type: "string", Description: "Worker purpose"}, "runtime_ref": {Type: "string", Description: "Runtime reference (e.g. opencode)"}, "model_ref": {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"}},
+			Required:    []string{"name"},
 		},
 		{
 			Name:        "update_worker",
-			Description: "Update a worker's header fields (name, description, purpose). Writes a worker.updated audit entry.",
+			Description: "Update a worker's header fields (name, purpose).",
 			Mutating:    true,
 			Fn:          toolUpdateWorker,
-			Properties: map[string]PropertySchema{
-				"id":          {Type: "string", Description: "Worker ID"},
-				"name":        {Type: "string", Description: "New name"},
-				"description": {Type: "string", Description: "New description"},
-				"purpose":     {Type: "string", Description: "New purpose"},
-			},
-			Required: []string{"id"},
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Worker ID"}, "name": {Type: "string", Description: "New name"}, "purpose": {Type: "string", Description: "New purpose"}},
+			Required:    []string{"id"},
 		},
 		{
 			Name:        "delete_worker",
@@ -463,30 +415,20 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_workflow",
-			Description: "Create a new workflow AND its first draft version (v1) in one transaction, seeding steps when provided — the workflow is immediately editable and publishable from the UI. Type defaults to template (no project_id) or one_shot (with project_id). description seeds the version-1 note when version_note is empty. Returns the workflow row plus version and version_id.",
+			Description: "Create a new workflow with a name and optional template.",
 			Mutating:    true,
 			Fn:          toolCreateWorkflow,
-			Properties: map[string]PropertySchema{
-				"name":         {Type: "string", Description: "Workflow name"},
-				"steps":        {Type: "array", Description: "Optional JSON array of step objects ({id, name, kind, ref, worker_version, depends_on, config, position_x, position_y}) seeded as draft version 1"},
-				"description":  {Type: "string", Description: "Optional description; stored as the draft version-1 version_note when version_note is empty"},
-				"version_note": {Type: "string", Description: "Optional note describing draft version 1"},
-				"type":         {Type: "string", Description: "Optional workflow type: one_shot or template"},
-				"git_strategy": {Type: "string", Description: "Optional git strategy: local, pr, or none"},
-				"inputs":       {Type: "object", Description: "Optional JSON object of run inputs"},
-				"outputs":      {Type: "object", Description: "Optional JSON object of run outputs"},
-				"project_id":   {Type: "string", Description: "Optional project ID for a project-scoped one_shot workflow (project must be active)"},
-			},
-			Required: []string{"name"},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Workflow name"}},
+			Required:    []string{"name"},
 		},
 
 		// --- Workflow Runs ---
 		{
 			Name:        "list_workflow_runs",
-			Description: "List workflow runs, optionally filtered by workflow_id, project_id, work_item_id, or status. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or get_workflow_run for full detail.",
+			Description: "List workflow runs, optionally filtered by workflow_id, project_id, work_item_id, or status.",
 			Mutating:    false,
 			Fn:          toolListWorkflowRuns,
-			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "project_id": {Type: "string", Description: "Optional project ID filter"}, "work_item_id": {Type: "string", Description: "Optional work item ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "sort_by": {Type: "string", Description: "Optional sort field: id or started_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "project_id": {Type: "string", Description: "Optional project ID filter"}, "work_item_id": {Type: "string", Description: "Optional work item ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "sort_by": {Type: "string", Description: "Optional sort field: id or started_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}},
 		},
 		{
 			Name:        "get_workflow_run",
@@ -516,10 +458,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Executions ---
 		{
 			Name:        "list_executions",
-			Description: "List executions, optionally filtered by project, status, or workflow run. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest, or get_execution for full detail.",
+			Description: "List executions, optionally filtered by project, status, or workflow run.",
 			Mutating:    false,
 			Fn:          toolListExecutions,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "task_id": {Type: "string", Description: "Optional work item ID filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
 		},
 		{
 			Name:        "get_execution",
@@ -548,10 +490,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "get_usage",
-			Description: "Get token usage and cost data. Optionally filter by project, provider, or model. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
+			Description: "Get token usage and cost data. Optionally filter by project.",
 			Mutating:    false,
 			Fn:          toolGetUsage,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "provider": {Type: "string", Description: "Optional provider filter"}, "model": {Type: "string", Description: "Optional model filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}},
 		},
 
 		// --- Policies ---
@@ -574,69 +516,12 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Recoveries ---
 		{
 			Name:        "list_recoveries",
-			Description: "List recovery executions, optionally filtered by project or status. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
+			Description: "List recovery executions, optionally filtered by project or status.",
 			Mutating:    false,
 			Fn:          toolListRecoveries,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
 		},
 
-		// --- Categories ---
-		{
-			Name:        "list_categories",
-			Description: "List categories for a target type (worker|workflow|conversation) with assignments. Each target_type has its own independent set.",
-			Mutating:    false,
-			Fn:          toolListCategories,
-			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type: worker, workflow, or conversation"}},
-			Required:    []string{"target_type"},
-		},
-		{
-			Name:        "create_category",
-			Description: "Create a category for a target type (worker|workflow|conversation). Target type is required and immutable.",
-			Mutating:    true,
-			Fn:          toolCreateCategory,
-			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "name": {Type: "string", Description: "Category name (1-64 chars)"}, "description": {Type: "string", Description: "Optional description (max 256)"}},
-			Required:    []string{"target_type", "name"},
-		},
-		{
-			Name:        "update_category",
-			Description: "Update a category name/description. Target type is immutable.",
-			Mutating:    true,
-			Fn:          toolUpdateCategory,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Category ID"}, "name": {Type: "string", Description: "New name"}, "description": {Type: "string", Description: "New description"}},
-			Required:    []string{"id"},
-		},
-		{
-			Name:        "delete_category",
-			Description: "Delete a category. Assignments are removed (items move to Uncategorized).",
-			Mutating:    true,
-			Fn:          toolDeleteCategory,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Category ID"}},
-			Required:    []string{"id"},
-		},
-		{
-			Name:        "assign_to_category",
-			Description: "Assign an entity to a category. Validates target_type matches the category.",
-			Mutating:    true,
-			Fn:          toolAssignToCategory,
-			Properties:  map[string]PropertySchema{"category_id": {Type: "string", Description: "Category ID"}, "entity_id": {Type: "string", Description: "Entity ID"}, "target_type": {Type: "string", Description: "Target type"}},
-			Required:    []string{"category_id", "entity_id", "target_type"},
-		},
-		{
-			Name:        "unassign_from_category",
-			Description: "Remove an entity from its category (move to Uncategorized).",
-			Mutating:    true,
-			Fn:          toolUnassignFromCategory,
-			Properties:  map[string]PropertySchema{"entity_id": {Type: "string", Description: "Entity ID"}, "target_type": {Type: "string", Description: "Target type"}},
-			Required:    []string{"entity_id", "target_type"},
-		},
-		{
-			Name:        "reorder_categories",
-			Description: "Reorder categories within a target_type set. ordered_ids must be a permutation of existing ids.",
-			Mutating:    true,
-			Fn:          toolReorderCategories,
-			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "ordered_ids": {Type: "array", Description: "Category IDs in new order"}},
-			Required:    []string{"target_type", "ordered_ids"},
-		},
 		// --- Runtime Images ---
 		{
 			Name:        "list_runtime_images",
@@ -654,27 +539,11 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_runtime_image",
-			Description: "Create a new runtime image spec (draft status) with a name, slug, and optional apt packages + toolchain lines. The image is built later via the UI. Accepts optional env (JSON object string) and dockerfile_override.",
+			Description: "Create a new runtime image spec (draft status) with a name, slug, and optional apt packages + toolchain lines. The image is built later via the UI.",
 			Mutating:    true,
 			Fn:          toolCreateRuntimeImage,
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Image name"}, "slug": {Type: "string", Description: "Image slug (lowercase words with hyphens)"}, "description": {Type: "string", Description: "Optional description"}, "apt_packages": {Type: "array", Description: "Optional list of apt package names"}, "toolchains": {Type: "array", Description: "Optional toolchain install lines (pip/npm/mise/curl)"}, "env": {Type: "string", Description: "Optional env as JSON object string (e.g. \"{\\\"PLAYWRIGHT_BROWSERS_PATH\\\":\\\"/ms-playwright\\\"}\")"}, "dockerfile_override": {Type: "string", Description: "Optional raw Dockerfile text (empty = generate from structured fields)"}, "tag": {Type: "string", Description: "Optional tag; defaults to \"<slug>:latest\""}},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Image name"}, "slug": {Type: "string", Description: "Image slug (lowercase words with hyphens)"}, "description": {Type: "string", Description: "Optional description"}, "apt_packages": {Type: "array", Description: "Optional list of apt package names"}, "toolchains": {Type: "array", Description: "Optional toolchain install lines (pip/npm/mise/curl)"}},
 			Required:    []string{"name", "slug"},
-		},
-		{
-			Name:        "update_runtime_image",
-			Description: "Update a runtime image spec (draft/failed; ready reverts to draft). Requires id + version (optimistic concurrency). Optionally updates name, slug, description, apt_packages, toolchains, env (JSON object string), dockerfile_override, tag.",
-			Mutating:    true,
-			Fn:          toolUpdateRuntimeImage,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}, "version": {Type: "number", Description: "Current spec version (optimistic concurrency)"}, "name": {Type: "string", Description: "New name"}, "slug": {Type: "string", Description: "New slug"}, "description": {Type: "string", Description: "New description"}, "apt_packages": {Type: "array", Description: "New apt packages"}, "toolchains": {Type: "array", Description: "New toolchain lines"}, "env": {Type: "string", Description: "New env as JSON object string"}, "dockerfile_override": {Type: "string", Description: "New Dockerfile override"}, "tag": {Type: "string", Description: "New tag"}},
-			Required:    []string{"id", "version"},
-		},
-		{
-			Name:        "build_runtime_image",
-			Description: "Build a runtime image via the runtime daemon (docker build). Requires id + version (optimistic concurrency). Streams build logs and returns final status/tag/error/skipped plus aggregated logs. Skipped true when spec is already built.",
-			Mutating:    true,
-			Fn:          toolBuildRuntimeImage,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}, "version": {Type: "number", Description: "Current spec version (optimistic concurrency)"}},
-			Required:    []string{"id", "version"},
 		},
 		{
 			Name:        "delete_runtime_image",
@@ -682,46 +551,6 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Mutating:    true,
 			Fn:          toolDeleteRuntimeImage,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}},
-			Required:    []string{"id"},
-		},
-
-		// --- Secrets ---
-		{
-			Name:        "list_secrets",
-			Description: "List tenant secrets (encrypted at rest; values never returned).",
-			Mutating:    false,
-			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-				return toolListSecrets(ctx, pool, secretsKEK, args)
-			},
-		},
-		{
-			Name:        "create_secret",
-			Description: "Create a tenant secret (AES-256-GCM encrypted at rest). Name must match ^[A-Z][A-Z0-9_]+$.",
-			Mutating:    true,
-			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-				return toolCreateSecret(ctx, pool, secretsKEK, args)
-			},
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
-			Required:    []string{"name", "value"},
-		},
-		{
-			Name:        "update_secret",
-			Description: "Update a tenant secret value or description.",
-			Mutating:    true,
-			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-				return toolUpdateSecret(ctx, pool, secretsKEK, args)
-			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
-			Required:    []string{"id"},
-		},
-		{
-			Name:        "delete_secret",
-			Description: "Delete a tenant secret by ID.",
-			Mutating:    true,
-			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-				return toolDeleteSecret(ctx, pool, secretsKEK, args)
-			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
 			Required:    []string{"id"},
 		},
 
@@ -734,30 +563,24 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "update_settings",
-			Description: "Update tenant settings (default models, stall parameters, nudge, execution budget, reaper). All fields are optional — zero/empty fields are left unchanged.",
+			Description: "Update tenant settings (default models, stall parameters). All fields are optional — zero/empty fields are left unchanged.",
 			Mutating:    true,
 			Fn:          toolUpdateSettings,
 			Properties: map[string]PropertySchema{
-				"default_worker_model":                {Type: "string", Description: "Default model for workers"},
-				"default_ask_orchicon_model":          {Type: "string", Description: "Default model for Ask Orchicon"},
-				"stall_no_progress_window_seconds":    {Type: "number", Description: "Seconds without token progress before a session is considered stalled (0 = leave unchanged)"},
-				"stall_no_file_diff_window_seconds":   {Type: "number", Description: "Seconds without file modifications before an advisory liveness probe is sent (0 = leave unchanged)"},
-				"stall_text_loop_window_seconds":      {Type: "number", Description: "Seconds window for text-loop detection (0 = leave unchanged)"},
-				"stall_repetition_count":              {Type: "number", Description: "Same tool-call signature repeated this many times within the repetition window before aborting (0 = leave unchanged)"},
-				"stall_repetition_window_seconds":     {Type: "number", Description: "Seconds window for repetition detection (0 = leave unchanged)"},
-				"stall_nudge_max":                     {Type: "number", Description: "Max liveness probes sent before an advisory stall escalates to fatal (0 = leave unchanged)"},
-				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
-				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
-				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates (e.g. {\"tokens\":500000,\"cost_usd\":0.5,\"wall_clock_seconds\":7200,\"tool_call_count\":0,\"compact_max_turns\":12}). Empty string = leave unchanged."},
-				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
-				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
+				"default_worker_model":              {Type: "string", Description: "Default model for workers"},
+				"default_ask_orchicon_model":        {Type: "string", Description: "Default model for Ask Orchicon"},
+				"stall_no_progress_window_seconds":  {Type: "number", Description: "Seconds without token progress before a session is considered stalled (0 = leave unchanged)"},
+				"stall_no_file_diff_window_seconds": {Type: "number", Description: "Seconds without file modifications before an advisory liveness probe is sent (0 = leave unchanged)"},
+				"stall_text_loop_window_seconds":    {Type: "number", Description: "Seconds window for text-loop detection (0 = leave unchanged)"},
+				"stall_repetition_count":            {Type: "number", Description: "Same tool-call signature repeated this many times within the repetition window before aborting (0 = leave unchanged)"},
+				"stall_repetition_window_seconds":   {Type: "number", Description: "Seconds window for repetition detection (0 = leave unchanged)"},
 			},
 		},
 
 		// --- Audit ---
 		{
 			Name:        "list_audit_events",
-			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id, start_time, end_time. Returns a bounded, compact list — pass next_page_token to page through the rest. Read-only.",
+			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id, start_time, end_time. Read-only.",
 			Mutating:    false,
 			Fn:          toolListAuditEvents,
 			Properties: map[string]PropertySchema{
@@ -768,7 +591,6 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"start_time":  {Type: "string", Description: "Optional RFC3339 inclusive lower bound on occurred_at (e.g. 2026-08-15T12:00:00Z)"},
 				"end_time":    {Type: "string", Description: "Optional RFC3339 exclusive upper bound on occurred_at (e.g. 2026-08-15T13:00:00Z)"},
 				"page_size":   {Type: "number", Description: "Optional page size (max 1000, default 100)"},
-				"page_token":  {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
 			},
 		},
 	}

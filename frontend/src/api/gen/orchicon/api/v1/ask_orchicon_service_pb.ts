@@ -14,7 +14,6 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
-import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
 /**
@@ -74,16 +73,6 @@ export class ListConversationsResponse extends Message<ListConversationsResponse
    */
   nextPageToken = "";
 
-  /**
-   * @generated from field: repeated orchicon.api.v1.Category categories = 3;
-   */
-  categories: Category[] = [];
-
-  /**
-   * @generated from field: repeated orchicon.api.v1.CategoryAssignment assignments = 4;
-   */
-  assignments: CategoryAssignment[] = [];
-
   constructor(data?: PartialMessage<ListConversationsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -94,8 +83,6 @@ export class ListConversationsResponse extends Message<ListConversationsResponse
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "conversations", kind: "message", T: Conversation, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "categories", kind: "message", T: Category, repeated: true },
-    { no: 4, name: "assignments", kind: "message", T: CategoryAssignment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListConversationsResponse {

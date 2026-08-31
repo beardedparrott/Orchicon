@@ -335,7 +335,7 @@ func TestProjectDirMissingProjectAndNoDirDB(t *testing.T) {
 // each ToolDefinition must match the tool's json.Unmarshal struct. This runs
 // without a DB — the registry only needs to enumerate allTools.
 func TestProjectDirToolsRegistered(t *testing.T) {
-	reg := NewToolRegistry(nil, slog.Default(), nil)
+	reg := NewToolRegistry(nil, slog.Default())
 
 	for _, name := range []string{"list_project_dir", "read_project_file"} {
 		td, ok := reg.Get(name)

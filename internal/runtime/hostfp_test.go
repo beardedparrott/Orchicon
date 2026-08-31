@@ -17,58 +17,6 @@ import (
 
 var hexDigestRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// TestDaemonBinaryFingerprintInvalidatesPoolKey: the daemon's own compiled
-// binary is bind-mounted read-only into every runtime container (the MCP
-// sidecar and supervisor exec it), so a REBUILT binary must invalidate warm
-// pooled containers — a container pinned to a pre-fix binary replays the
-// old code forever (the 2026-08-31 04:12 run: a stale sidecar create
-// envelope was misread as IDEA confirmation). The fingerprint also applies
-// when HostHome is unset (the mount is unconditional) and reflects content
-// changes (same size differs → different key).
-func TestDaemonBinaryFingerprintInvalidatesPoolKey(t *testing.T) {
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "orchicon")
-	binA := []byte("orchicon binary content A")
-	binB := []byte("orchicon binary content BB") // same class, different content+size
-	if err := os.WriteFile(exe, binA, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	d := &Daemon{HostHome: dir, ExePath: exe, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), ghTokenFn: func() string { return "" }}
-
-	req := CreateRequest{Image: "img:v1"}
-	keyA := poolEnvKey(req, d.hostInputsFingerprint())
-
-	// Same binary content → same key (the warm path stays warm).
-	if keyA2 := poolEnvKey(req, d.hostInputsFingerprint()); keyA2 != keyA {
-		t.Fatalf("stable binary must keep the pool key stable: %q != %q", keyA, keyA2)
-	}
-
-	// A REBUILT binary (different content) → different key.
-	if err := os.WriteFile(exe, binB, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	keyB := poolEnvKey(req, d.hostInputsFingerprint())
-	if keyB == keyA {
-		t.Fatal("a rebuilt binary must change the pool env key — the warm container pinned to the old binary must never be handed out")
-	}
-
-	// Missing binary → yet another key (fails toward fresh, never empty),
-	// and HostHome="" still colors the key because the mount is
-	// unconditional for every runtime container.
-	if err := os.Remove(exe); err != nil {
-		t.Fatal(err)
-	}
-	keyMissing := poolEnvKey(req, d.hostInputsFingerprint())
-	if keyMissing == keyA || keyMissing == keyB {
-		t.Fatal("a missing binary must yield its own key (absent sentinel), never collide with the content keys")
-	}
-	noHome := &Daemon{ExePath: exe, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), ghTokenFn: func() string { return "" }}
-	_ = os.WriteFile(exe, binA, 0o755)
-	if poolEnvKey(req, noHome.hostInputsFingerprint()) == poolEnvKey(req, (&Daemon{HostHome: dir, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), ghTokenFn: func() string { return "" }}).hostInputsFingerprint()) {
-		t.Fatal("the binary fingerprint must apply even when HostHome is unset (noHostHome key must differ from the no-binary key)")
-	}
-}
-
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -349,14 +297,7 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 	}
 	d.pool = newDaemonPool(d)
 	req := func(runID string) CreateRequest { return CreateRequest{WorkflowID: runID, Image: "img:v1"} }
-	// hostFp reads the DAEMON's fingerprint: checkout folds in the compiled
-	// daemon binary (ExePath) alongside the host inputs, so expected keys
-	// must come from the daemon method — a package-level
-	// hostInputsFingerprint(home, ghFp) would disagree and the reset wait
-	// would key-hop forever. Writing to the ExePath path in this test
-	// changes its content → changes the daemon fingerprint → the same
-	// invalidation signal the pool relies on.
-	hostFp := func() string { return d.hostInputsFingerprint() }
+	hostFp := func() string { return hostInputsFingerprint(home, ghTokenFingerprint("ghp_abcdefgh123456789")) }
 	key1 := poolEnvKey(req("run-1"), hostFp())
 
 	// First checkout: pool empty → fresh create.

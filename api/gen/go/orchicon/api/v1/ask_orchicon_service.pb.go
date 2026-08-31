@@ -85,8 +85,6 @@ type ListConversationsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Conversations []*Conversation        `protobuf:"bytes,1,rep,name=conversations,proto3" json:"conversations,omitempty"`
 	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	Categories    []*Category            `protobuf:"bytes,3,rep,name=categories,proto3" json:"categories,omitempty"`
-	Assignments   []*CategoryAssignment  `protobuf:"bytes,4,rep,name=assignments,proto3" json:"assignments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -133,20 +131,6 @@ func (x *ListConversationsResponse) GetNextPageToken() string {
 		return x.NextPageToken
 	}
 	return ""
-}
-
-func (x *ListConversationsResponse) GetCategories() []*Category {
-	if x != nil {
-		return x.Categories
-	}
-	return nil
-}
-
-func (x *ListConversationsResponse) GetAssignments() []*CategoryAssignment {
-	if x != nil {
-		return x.Assignments
-	}
-	return nil
 }
 
 type GetConversationRequest struct {
@@ -1520,18 +1504,14 @@ var File_orchicon_api_v1_ask_orchicon_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\n" +
-	"*orchicon/api/v1/ask_orchicon_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/category.proto\x1a\"orchicon/api/v1/ask_orchicon.proto\x1a orchicon/api/v1/ai_gateway.proto\"V\n" +
+	"*orchicon/api/v1/ask_orchicon_service.proto\x12\x0forchicon.api.v1\x1a\"orchicon/api/v1/ask_orchicon.proto\x1a orchicon/api/v1/ai_gateway.proto\"V\n" +
 	"\x18ListConversationsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tR\tpageToken\"\x8a\x02\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\"\x88\x01\n" +
 	"\x19ListConversationsResponse\x12C\n" +
 	"\rconversations\x18\x01 \x03(\v2\x1d.orchicon.api.v1.ConversationR\rconversations\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x129\n" +
-	"\n" +
-	"categories\x18\x03 \x03(\v2\x19.orchicon.api.v1.CategoryR\n" +
-	"categories\x12E\n" +
-	"\vassignments\x18\x04 \x03(\v2#.orchicon.api.v1.CategoryAssignmentR\vassignments\"(\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"(\n" +
 	"\x16GetConversationRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\\\n" +
 	"\x17GetConversationResponse\x12A\n" +
@@ -1666,77 +1646,73 @@ var file_orchicon_api_v1_ask_orchicon_service_proto_goTypes = []any{
 	(*GetModelCapabilitiesRequest)(nil),      // 26: orchicon.api.v1.GetModelCapabilitiesRequest
 	(*GetModelCapabilitiesResponse)(nil),     // 27: orchicon.api.v1.GetModelCapabilitiesResponse
 	(*Conversation)(nil),                     // 28: orchicon.api.v1.Conversation
-	(*Category)(nil),                         // 29: orchicon.api.v1.Category
-	(*CategoryAssignment)(nil),               // 30: orchicon.api.v1.CategoryAssignment
-	(ConversationMode)(0),                    // 31: orchicon.api.v1.ConversationMode
-	(*ChatMessage)(nil),                      // 32: orchicon.api.v1.ChatMessage
-	(*AttachmentInput)(nil),                  // 33: orchicon.api.v1.AttachmentInput
-	(*TextChunk)(nil),                        // 34: orchicon.api.v1.TextChunk
-	(*ToolCallChunk)(nil),                    // 35: orchicon.api.v1.ToolCallChunk
-	(*ToolCallResult)(nil),                   // 36: orchicon.api.v1.ToolCallResult
-	(*ErrorChunk)(nil),                       // 37: orchicon.api.v1.ErrorChunk
-	(*DoneSignal)(nil),                       // 38: orchicon.api.v1.DoneSignal
-	(*ReasoningChunk)(nil),                   // 39: orchicon.api.v1.ReasoningChunk
-	(*AgentConfig)(nil),                      // 40: orchicon.api.v1.AgentConfig
-	(*ModelCapabilities)(nil),                // 41: orchicon.api.v1.ModelCapabilities
+	(ConversationMode)(0),                    // 29: orchicon.api.v1.ConversationMode
+	(*ChatMessage)(nil),                      // 30: orchicon.api.v1.ChatMessage
+	(*AttachmentInput)(nil),                  // 31: orchicon.api.v1.AttachmentInput
+	(*TextChunk)(nil),                        // 32: orchicon.api.v1.TextChunk
+	(*ToolCallChunk)(nil),                    // 33: orchicon.api.v1.ToolCallChunk
+	(*ToolCallResult)(nil),                   // 34: orchicon.api.v1.ToolCallResult
+	(*ErrorChunk)(nil),                       // 35: orchicon.api.v1.ErrorChunk
+	(*DoneSignal)(nil),                       // 36: orchicon.api.v1.DoneSignal
+	(*ReasoningChunk)(nil),                   // 37: orchicon.api.v1.ReasoningChunk
+	(*AgentConfig)(nil),                      // 38: orchicon.api.v1.AgentConfig
+	(*ModelCapabilities)(nil),                // 39: orchicon.api.v1.ModelCapabilities
 }
 var file_orchicon_api_v1_ask_orchicon_service_proto_depIdxs = []int32{
 	28, // 0: orchicon.api.v1.ListConversationsResponse.conversations:type_name -> orchicon.api.v1.Conversation
-	29, // 1: orchicon.api.v1.ListConversationsResponse.categories:type_name -> orchicon.api.v1.Category
-	30, // 2: orchicon.api.v1.ListConversationsResponse.assignments:type_name -> orchicon.api.v1.CategoryAssignment
-	28, // 3: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	31, // 4: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	28, // 5: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	31, // 6: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	28, // 7: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	28, // 8: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	32, // 9: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
-	33, // 10: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	34, // 11: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
-	35, // 12: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
-	36, // 13: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
-	37, // 14: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
-	38, // 15: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
-	16, // 16: orchicon.api.v1.ChatStreamResponse.turn_started:type_name -> orchicon.api.v1.TurnStarted
-	39, // 17: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
-	33, // 18: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	40, // 19: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	40, // 20: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
-	40, // 21: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	41, // 22: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	0,  // 23: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
-	2,  // 24: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
-	4,  // 25: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
-	8,  // 26: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
-	10, // 27: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
-	6,  // 28: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
-	12, // 29: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
-	14, // 30: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
-	17, // 31: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
-	19, // 32: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
-	20, // 33: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
-	22, // 34: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
-	24, // 35: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
-	26, // 36: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
-	1,  // 37: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
-	3,  // 38: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
-	5,  // 39: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
-	9,  // 40: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
-	11, // 41: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
-	7,  // 42: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
-	13, // 43: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
-	15, // 44: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
-	18, // 45: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
-	15, // 46: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
-	21, // 47: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
-	23, // 48: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
-	25, // 49: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
-	27, // 50: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
-	37, // [37:51] is the sub-list for method output_type
-	23, // [23:37] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	28, // 1: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	29, // 2: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	28, // 3: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	29, // 4: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	28, // 5: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	28, // 6: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	30, // 7: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
+	31, // 8: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	32, // 9: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
+	33, // 10: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
+	34, // 11: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
+	35, // 12: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
+	36, // 13: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
+	16, // 14: orchicon.api.v1.ChatStreamResponse.turn_started:type_name -> orchicon.api.v1.TurnStarted
+	37, // 15: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
+	31, // 16: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	38, // 17: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	38, // 18: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
+	38, // 19: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	39, // 20: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	0,  // 21: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
+	2,  // 22: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
+	4,  // 23: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
+	8,  // 24: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
+	10, // 25: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
+	6,  // 26: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
+	12, // 27: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
+	14, // 28: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
+	17, // 29: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
+	19, // 30: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
+	20, // 31: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
+	22, // 32: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
+	24, // 33: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
+	26, // 34: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
+	1,  // 35: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
+	3,  // 36: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
+	5,  // 37: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
+	9,  // 38: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
+	11, // 39: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
+	7,  // 40: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
+	13, // 41: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
+	15, // 42: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
+	18, // 43: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
+	15, // 44: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
+	21, // 45: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
+	23, // 46: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
+	25, // 47: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
+	27, // 48: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
+	35, // [35:49] is the sub-list for method output_type
+	21, // [21:35] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ask_orchicon_service_proto_init() }
@@ -1744,7 +1720,6 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 	if File_orchicon_api_v1_ask_orchicon_service_proto != nil {
 		return
 	}
-	file_orchicon_api_v1_category_proto_init()
 	file_orchicon_api_v1_ask_orchicon_proto_init()
 	file_orchicon_api_v1_ai_gateway_proto_init()
 	file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[15].OneofWrappers = []any{

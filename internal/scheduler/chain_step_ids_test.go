@@ -22,8 +22,7 @@ import (
 //	4 step-loop-2      9 step-rrcz490q   <-- parallel gate, index 9
 //
 // DAG: repo → q4xlbg6v → i64wso0x → sse → rrcz490q(parallel) →
-//
-//	{pr-reviewer, qa} → loop-2 → approval → devops-pr
+//      {pr-reviewer, qa} → loop-2 → approval → devops-pr
 //
 // The old chainStepIDs sliced by array index from "step-sse" (1) to
 // "step-loop-2" (4), producing [sse, pr-reviewer, qa] — excluding the
