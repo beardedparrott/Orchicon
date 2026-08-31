@@ -202,6 +202,71 @@ func TestBuildConfigContentMCPEnvAndBinaryPath(t *testing.T) {
 	}
 }
 
+// TestRuntimeServeConfigPlaneChannelOnEveryImage pins the plane-channel
+// guarantee: whenever the run's worker role grants plane access (planeEnv
+// non-empty — minted by the runtime lifecycle per run), the `orchicon-plane`
+// MCP server is registered in the serve config on EVERY runtime image —
+// base, gui, web-research, orchicon-dev — because plane access is
+// ROLE-gated, never image-gated. This is the regression lock behind "the
+// idea MCP tools are truly going to be available to any runtime container":
+// the dedicated idea tools (orchicon_plane_list_idea_items /
+// orchicon_plane_create_idea_item) live inside that plane registry, so the
+// tools' availability reduces to this registration surviving for every
+// image tag. The sidecar runs from the daemon bind-mounted binary
+// (never baked), so the tools on the wire are whatever the freshly built
+// binary ships — paired with the pool's binary fingerprint, a rebuilt
+// binary forces a fresh container so the registry contents are always
+// current.
+func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
+	planeEnv := map[string]string{
+		"ORCHICON_PLANE_URL":   "http://172.17.0.3:8080",
+		"ORCHICON_PLANE_TOKEN": "test-plane-token",
+	}
+	for _, tag := range []string{
+		"orchicon-runtime:local",
+		"orchicon-runtime:local-gui",
+		"orchicon-runtime:web-research",
+		"orchicon-runtime:orchicon-dev",
+	} {
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv)
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("%s config not valid JSON: %v", tag, err)
+		}
+		mcp, ok := cfg["mcp"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s config missing mcp block with planeEnv set: %s", tag, out)
+		}
+		plane, ok := mcp["orchicon-plane"].(map[string]any)
+		if !ok {
+			t.Fatalf("orchicon-plane MCP must register on EVERY image when planeEnv is present (got missing on %s): %s", tag, out)
+		}
+		cmd, _ := plane["command"].([]any)
+		if len(cmd) != 2 || cmd[0] != runtimeContainerBinaryPath || cmd[1] != "mcp" {
+			t.Fatalf("plane MCP command = %#v, want [%s, mcp]", plane["command"], runtimeContainerBinaryPath)
+		}
+		env, _ := plane["environment"].(map[string]any)
+		if env["ORCHICON_PLANE_TOKEN"] != "test-plane-token" {
+			t.Fatalf("plane MCP env = %#v, want the minted credential", env)
+		}
+	}
+
+	// Deny-by-default is preserved: no planeEnv → no plane channel on any
+	// image (a worker whose role grants nothing gets no plane tools).
+	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "orchicon-runtime:web-research"} {
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil)
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("%s config not valid JSON: %v", tag, err)
+		}
+		if m, ok := cfg["mcp"].(map[string]any); ok {
+			if _, exists := m["orchicon-plane"]; exists {
+				t.Fatalf("orchicon-plane MCP must stay deny-by-default (registered on %s without planeEnv): %s", tag, out)
+			}
+		}
+	}
+}
+
 func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	// Dev image: the container serve must register the Orchicon MCP against
 	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).

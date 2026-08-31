@@ -29,6 +29,7 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 
 - Record established facts, root causes, environment gotchas, and decisions as `FACTS LEARNED:` lines in your final summary — one per line — so later steps inherit them instead of re-deriving them.
 - Never re-verify a fact already recorded by an earlier step. If you believe one is wrong, append a correcting `FACTS LEARNED:` line rather than silently re-deriving it.
+- On a recurring work item, your prompt may carry a **carry-forward block** (`## Carry-forward — facts learned by the previous fire`): facts the *previous fire* of this same item established. Treat them exactly like facts from an earlier step — do not re-verify; correct by appending.
 
 ## Read the run's `.orchicon/` files
 
@@ -78,7 +79,7 @@ Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and
 
 You may see two Orchicon MCP tool families — they are deliberately separate:
 
-- **`orchicon_plane_*` (real instance)** — available on **every** runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your worker's **role** grants plane access. The image is irrelevant — the gate is your role's entitlements, never the runtime image. Operates on the REAL instance your work item was created on, through the plane API. Use to inspect the real backlog and to create idea-state work items.
+- **`orchicon_plane_*` (real instance)** — available on **every** runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your worker's **role** grants plane access. The image is irrelevant — the gate is your role's entitlements, never the runtime image. Operates on the REAL instance your work item was created on, through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud (the dedupe gate) and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
 - **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
 
 If your worker has a role but you see **no** `orchicon_plane_*` tools, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do **NOT** conclude that real-instance access is dev-runtime-only.

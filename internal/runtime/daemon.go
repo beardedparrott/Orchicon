@@ -568,17 +568,39 @@ func (d *Daemon) ghToken() string {
 
 // hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
 // read-once HOST inputs baked into every runtime container at create time:
-// opencode config, provider auth, the adapter install, and the resolved GH
-// token (see hostfp.go). The warm pool folds it into the environment key, so
-// ANY change to a read-once host input forces the next checkout to create a
-// fresh container instead of reusing a warm one serving the stale value.
-// Returns "" when HostHome is unset or nothing applies — the pool key then
-// reduces to image+mounts (today's behavior).
+// the DAEMON BINARY (bind-mounted read-only at /usr/local/bin/orchicon —
+// the MCP sidecar and supervisor inside the container run it; a warm pooled
+// container pinned to a pre-fix binary served the 2026-08-31 04:12 spawn
+// with a stale create envelope that a spawning worker misread as IDEA
+// confirmation), opencode config, provider auth, the adapter install, and
+// the resolved GH token (see hostfp.go). The warm pool folds it into the
+// environment key, so ANY change to a read-once host input — a rebuilt
+// binary included — forces the next checkout to create a fresh container
+// instead of reusing a warm one serving the stale value. The binary term is
+// ALWAYS present ("absent" when the exe cannot be stat'd), so the key never
+// silently reverts to image+mounts on a fingerprint gap; bind-mount
+// resolution at docker run time additionally picks up a rebuilt binary for
+// freshly-created containers.
 func (d *Daemon) hostInputsFingerprint() string {
-	if d.HostHome == "" {
-		return ""
+	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime
+	// container (createContainer hard-fails without it), so it must color
+	// the pool key even when HostHome is unset.
+	var binFp string
+	if st, err := os.Stat(d.ExePath); err == nil && !st.IsDir() {
+		// Content hash of the daemon's own executable (hashFileContent
+		// returns a distinct sentinel when the file exists but cannot be
+		// read — never an empty "absent" value). A missing/unreadable
+		// binary still changes the fingerprint, so the pool misses toward
+		// a fresh container — the safe direction.
+		binFp = fmt.Sprintf("size=%d|%s", st.Size(), hashFileContent(d.ExePath))
+	} else {
+		binFp = "absent"
 	}
-	return hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
+	hostFp := ""
+	if d.HostHome != "" {
+		hostFp = hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
+	}
+	return hostFp + "|" + binFp
 }
 
 // startServe asks the in-container supervisor to bring up `opencode

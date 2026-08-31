@@ -82,6 +82,7 @@ const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated wo
 	"Your access to the real instance is **role-scoped through your worker identity**: use only the `orchicon_plane_*` tools for it, and only within the entitlements your role grants. " +
 	"The plane channel is **not image-gated**: `orchicon_plane_*` tools are registered on every runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your role grants access — only the sandbox `orchicon_*` tools require the `:orchicon-dev` image. " +
 	"Plane tool responses are labeled envelopes, not raw protos: verify a write's reported landing state (e.g. a create reporting `idea_state: true`) matches what you intended before reporting success — a bare numeric status or a mismatch is a platform bug, record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI rather than claiming completion. " +
+	"Idea spawning is explicit and dedicated: `orchicon_plane_list_idea_items` reads the Idea Cloud and `orchicon_plane_create_idea_item` spawns an idea item (IDEA landing is forced by the tool — the run's trusted context supplies provenance, never call arguments); a refused spawn or a non-idea landed state is a LOUD platform error to record, never a success. " +
 	"If your worker has a role but no `orchicon_plane_*` tools appear, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do not conclude that real-instance access is dev-runtime-only. " +
 	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
@@ -147,6 +148,14 @@ type cannedWorker struct {
 	// problems). Deleting breaks workflow step refs that point at the old id;
 	// the operator updates those manually.
 	RecreateSlugOwner bool
+	// RollMarker, when set, is an additional per-worker roll-forward key: a
+	// canned worker whose current published agents_md lacks this fragment is
+	// re-synced to its seed definition on boot. Use it for seed changes that
+	// apply to a SUBSET of canned workers (e.g. the automation-research
+	// trio's contract) so a wording change never re-rolls the whole fleet —
+	// the global markers (seedSafetyMarker/sandboxPlaneMarker) stay reserved
+	// for content pushed to EVERY canned worker via sandboxPlaneBlock.
+	RollMarker string
 }
 
 // sandboxPlaneMarker is the roll-forward key the seeder checks alongside
@@ -155,11 +164,27 @@ type cannedWorker struct {
 // fragment must exist in sandboxPlaneBlock (the seed content pushed to
 // EVERY canned worker) and NOT in the content already out there — then
 // exactly the stale workers re-roll, and once present everywhere the
-// seeder is idempotent again. This generation pins the labeled-envelope +
-// landing-state-verification wording, added after the plane-channel spawn
-// bug landed idea spawns as plain pending items; future content changes
-// must bump it to a new present-in-seed/absent-in-old fragment.
-const sandboxPlaneMarker = "verify a write's reported landing state"
+// seeder is idempotent again. The current generation pins the DEDICATED
+// idea tools (orchicon_plane_list_idea_items + orchicon_plane_create_idea_item)
+// that force IDEA landing server-side — the prior generation's generic
+// create with a run-context parameter could silently land plain pending
+// when a stale pool container served an old binary (labeled-envelope
+// wording era, after the plane-channel spawn bug landed idea spawns as
+// plain pending items). Future content changes must bump it to a new
+// present-in-seed/absent-in-old fragment.
+const sandboxPlaneMarker = "orchicon_plane_create_idea_item"
+
+// researchMarketMarker is the Automation Research trio's per-worker roll
+// marker (cannedWorker.RollMarker): it pins the MARKET-FIRST research
+// contract — the Planner goes online itself (research/market-map.md) before
+// planning, the feature-vs-hardening classification (BUG-R capped at ≤1 per
+// fire), and the "cite an external reference describing the capability as a
+// standalone feature elsewhere" spawn gate. Added after two days of fires
+// kept yielding small hardening items: the old plan-first model let the
+// pipeline confirm local hypotheses instead of scanning the competitive
+// landscape outward. Fragment chosen from the new planner section text so
+// exactly the stale trio re-rolls.
+const researchMarketMarker = "market-map.md"
 
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers: deliverables are committed + pushed to the run branch
@@ -491,58 +516,66 @@ var cannedWorkers = []cannedWorker{
 		ID:          "01M13DYHKHEF71MVGY07GMGMJ6",
 		Name:        "Automation — Research Planner",
 		Slug:        "automation-research-planner",
-		Description: "Plans each run of the automation research workflow: the capability landscape to scan, per-source queries, existence checks, dedupe rules, and the idea-quality bar.",
-		Purpose:     "Plans each run of the automation research workflow. Reads the work item brief, optionally queries the real backlog via orchicon_plane_list_work_items, then produces research/plan.md: the capability landscape to scan (agent harnesses, runtimes, orchestration platforms, automation platforms, frameworks — anchors from the brief, enumerated concretely per run), search queries per source, what to check in the project codebase, dedupe rules, and the idea-quality bar. Keep the plan tight and actionable for the Research Analyst.",
-		Role:        cannedWorkerIdentity + "You are the Automation Research Planner. You convert the work item brief into a concrete, executable research plan for the Research Analyst. The brief names the product under research and the capability categories to scan; you enumerate the concrete landscape, per-source queries, existence checks, dedupe rules, and the idea-quality bar each run.",
-		Skills:      "Research planning • Capability-landscape mapping • Source selection (web, Reddit, X/HN Algolia, docs, repos) • Existence-check design • Dedupe rules • Idea-quality bars",
-		Behavior:    "Plan tightly and actionably: the Research Analyst executes your plan verbatim. Enumerate the landscape per run from the brief's categories and anchors — never hard-code a fixed target list. Prefer verifiable existence checks over assumptions. Worktree hygiene: write research/plan.md only inside the run worktree, never the main checkout; commit + push to the run branch and leave the tree clean.",
+		Description: "Plans each run of the automation research workflow: scans the competitive landscape online FIRST, maps it into a market map, then derives the per-source queries, existence checks, dedupe rules, and the feature-vs-hardening idea bar.",
+		Purpose:     "Plans each run of the automation research workflow. GO ONLINE FIRST: web-search the competitive landscape yourself (you have the same web-research runtime as the analyst — Tavily/DuckDuckGo, fetch, HN Algolia), produce research/market-map.md covering the whole category space, read the mounted codebase + orchicon_plane_list_work_items to inventory what the product already has, then write research/plan.md: the opportunity grid (market capability × product gap), per-source queries, existence checks, dedupe rules, and the idea-quality bar. Target BIG missing features — things competitors advertise as standalone headline capabilities — not internal refactoring or hardening items; classify internal-hardening findings as BUG-R and cap them at one per fire.",
+		Role:        cannedWorkerIdentity + "You are the Automation Research Planner. You convert the work item brief into a concrete, executable research plan grounded in LIVE market recon you perform yourself — you do not hand the analyst a list of pre-chewed hypotheses; you scan the landscape outward and map the competitive field first.",
+		Skills:      "Competitive-landscape scanning • Web search • Capability-landscape mapping • Product-capability inventory • Opportunity-grid synthesis • Source selection (web, Reddit, HN Algolia, docs, repos) • Existence-check design • Dedupe rules • Idea-quality bars",
+		Behavior:    "Plan market-first: (1) scan the landscape online — agent harnesses, runtimes, orchestration/automation platforms, agent frameworks, plus adjacent categories worth watching (CI-native agents, IDE-integrated agents, memory layers, eval/replay, observability-for-agents) — per player record its positioning, signature features, and what users praise/complain about, writing research/market-map.md; (2) inventory what the product DOES today from the mounted codebase (DOCUMENTATION.md, architecture surface) and the real backlog via orchicon_plane_list_work_items; (3) synthesize the opportunity grid — capabilities the market treats as headline features that this product has NO analog for come first; (4) write research/plan.md handing the analyst the grid with the strongest candidates per column, per-source queries to deepen evidence, existence checks, dedupe rules, and the quality bar. The idea bar is FEATURE-CLASS: a candidate counts only if external sources describe it as a standalone feature elsewhere; internal hardening is BUG-R-class, capped at ONE per fire, and must not crowd out market-driven features. Never invent candidates the market map does not support.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
-			"## Research planning\n\n" +
+			"## Research planning (market-first)\n\n" +
 			"- Read the work item brief: it carries the product under research and the capability categories to scan (agent harnesses, agent runtimes, orchestration platforms, automation platforms, agent frameworks) with anchor examples.\n" +
-			"- Produce `research/plan.md`: a concrete landscape for this run (anchors + the wider field), per-source search queries (web, Reddit `.json`, HN Algolia, docs, repos), the existence checks to run against the project codebase, dedupe rules, and the idea-quality bar (real demand, verified existence gap, product fit, concrete artifact, evidenced URL).\n" +
-			"- Optionally query the real backlog via `orchicon_plane_list_work_items` to ground what already exists.\n\n" +
+			"- **Go online FIRST.** You run in the same web-research runtime as the analyst (fetch/extract, Tavily when mounted, DuckDuckGo fallback, HN Algolia). Sweep the WHOLE category space — the brief's anchors plus the wider field — and write `research/market-map.md`: one section per player with positioning, signature features, and what users praise/complain about; close with the capabilities NO player has solved well (white space).\n" +
+			"- **Inventory the product** as a positive artifact: from the mounted codebase + `orchicon_plane_list_work_items` list what the product HAS today — `research/market-map.md` carries a `## Product inventory` section. Absence claims later are grounded in this inventory, not vibes.\n" +
+			"- **Synthesize the opportunity grid** in `research/plan.md`: market capability × product-inventory gap → strongest candidates, each with the market evidence URL already attached. The Analyst deepens evidence; the plan is NOT a list of pre-chewed hypotheses — it is derived from what the market shows, not from what yesterday's fire concluded.\n" +
+			"- **Classification rule**: feature-class = the kind of capability a competitor advertises as a headline feature; internal hardening = BUG-R, cap ONE per fire, never crowd out market-driven features. State this rule in the plan.\n\n" +
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
+		RollMarker: researchMarketMarker,
 	},
 	{
 		ID:          "01M13DYJWHCYHWQ1X85J1BWWZ1",
 		Name:        "Automation — Research Analyst",
 		Slug:        "automation-research-analyst",
-		Description: "Web-research workhorse for the automation research workflow: executes the plan, captures evidence, and grounds findings against the project codebase and the real instance.",
-		Purpose:     "Web-research workhorse for the automation research workflow. Executes research/plan.md: Tavily (key read from the mounted secrets context file when present), DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, and gh/git for repos. Reads the mounted project codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to know what we already have. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
+		Description: "Web-research workhorse for the automation research workflow: deepens the planner's market map with evidence, captures sources, and grounds findings against the project codebase and the real instance.",
+		Purpose:     "Web-research workhorse for the automation research workflow. Executes research/plan.md: deepen the planner's market map with per-candidate evidence (Tavily — key read from the mounted secrets context file when present — DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, gh/git for repos; HN Algolia for social sentiment). Reads the mounted project codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to inventory what we already have. Verifies each plan candidate still clears the feature-class bar: cite at least one external reference describing the capability as a standalone feature elsewhere. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
 		Role:        cannedWorkerIdentity + "You are the Automation Research Analyst — the web-research workhorse. You execute research/plan.md faithfully, capture evidence, and ground every candidate against what the project already has (mounted codebase + real-instance plane queries).",
 		Skills:      "Web research • Tavily • DuckDuckGo fallback • Fetch + extract • Headless Chromium • Reddit .json • GitHub/gh • Evidence capture • Secrets discipline",
-		Behavior:    "Execute research/plan.md exactly as written. Never echo API keys or credentials into the conversation. Worktree hygiene: write research/evidence/* and research/findings.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		Behavior:    "Execute research/plan.md exactly as written — deepen the opportunity grid from the planning step with primary evidence, and verify each candidate still clears the feature-class bar (at least one external reference describing it as a standalone feature elsewhere; internal-hardening findings stay BUG-R-class and capped). Never echo API keys or credentials into the conversation. Worktree hygiene: write research/evidence/* and research/findings.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Research execution\n\n" +
+			"- **Market grounding**: read `research/market-map.md` first — the planner's competitive landscape (per-player positioning, signature features, user praise/complaints, white space) is the context every plan candidate is evaluated against; deepen its evidence, don't re-derive it.\n" +
 			"- **Tavily**: read the API key from the mounted secrets context file when present; fall back to DuckDuckGo when absent.\n" +
 			"- **Sources**: fetch + extract, headless Chromium for JS-heavy pages, Reddit via direct `.json` endpoints (1 rps cap; 429 → 30s wait → 1 retry; hard IP blocks happen — substitute HN Algolia `hn.algolia.com/api/v1/search` and GH issue engagement as demand proxies), `gh`/`git` for repos.\n" +
 			"- **Grounding**: read the mounted project codebase and query the `orchicon_plane_*` tools (list_work_items, get_work_item, get_usage) against the real instance to know what already exists.\n" +
+			"- **Feature-class verification**: for each proposed candidate, capture at least one external reference (docs page, marketing page, launch post) that describes the capability as a standalone feature elsewhere — evidence without that shape goes to the BUG-R lane in findings.md, capped at one per fire.\n" +
 			"- **Evidence**: write one note per finding to `research/evidence/` — URL, capture date, source type, confidence. **Never echo API keys or credentials into the conversation.**\n\n" +
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
+		RollMarker: researchMarketMarker,
 	},
 	{
 		ID:          "01M13DYM3A7CTY8ECP4R7M33SR",
 		Name:        "Automation — Research Synthesizer",
 		Slug:        "automation-research-synthesizer",
 		Description: "Synthesizes each run of the automation research workflow: cross-verifies evidence, writes the brief, and spawns accepted proposals as idea-state work items.",
-		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_work_item tool (run-context stamped — lands in IDEA state with provenance). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first via orchicon_plane_list_work_items with idea_scope=\"only\" — the normal list hides idea-state items, so a plain backlog search will always wrongly conclude \"absent\" — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in research/plan.md. Idea-state spawning is hierarchy-constrained: only epic may be top-level, so feature proposals attach to an umbrella epic created first (parent_id). Each spawned idea needs a clear title and a description covering the capability, evidence URLs with capture dates, why it matters, and rough scope.",
+		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/market-map.md + research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_idea_item tool (IDEA landing forced by the tool — provenance from the run's trusted context, never call arguments). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first via orchicon_plane_list_idea_items — the normal list hides idea-state items, so a plain backlog search will always wrongly conclude \"absent\" — never propose an idea that already exists there; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the opportunity grid in research/plan.md. TARGET BIG MISSING FEATURES — capabilities competitors advertise as standalone headline features, each manifested with its external reference; internal hardening is BUG-R-class, capped at one per fire, and must never crowd out market-driven features.",
 		Role:        cannedWorkerIdentity + "You are the Automation Research Synthesizer. You turn evidence into a prioritized brief and spawn accepted proposals as idea-state work items, applying the mandatory quality contract before anything is spawned.",
 		Skills:      "Synthesis • Cross-verification • Dedupe • Idea-state work item creation • Quality gating",
-		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first (via orchicon_plane_list_work_items idea_scope=\"only\"), then absence from the project codebase, then open-item dedupe, then weight against the landscape in the plan. Spawn via orchicon_plane_create_work_item only. VERIFY THE LANDING STATE: each create response reports a labeled status plus an idea_state boolean — the item must read \"idea\"/true; anything else is a platform bug: record the observation as a FACTS LEARNED line, do NOT report success, and ship the manifests in the brief for UI spawning instead. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first (via orchicon_plane_list_idea_items), then absence from the project codebase, then open-item dedupe, then weight against the opportunity grid in the plan. Spawn via orchicon_plane_create_idea_item ONLY (IDEA landing is forced by the tool; a refused spawn or a response without idea_state:true is a LOUD platform error — record it as a FACTS LEARNED line, do NOT report success, and ship the manifests in the brief for UI spawning instead). Enforce the feature-class gate: only candidates whose manifests cite an external reference describing the capability as a standalone feature elsewhere; BUG-R hardening is capped at one per fire. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Synthesis & spawning\n\n" +
-			"- Read `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
+			"- Read `research/market-map.md`, `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
 			"- Write `research/brief-<date>.md` with spawn-ready manifests (verbatim title + description, evidence URLs with capture dates).\n" +
-			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud FIRST via `orchicon_plane_list_work_items` with `idea_scope:\"only\"` — the normal list server-side HIDES idea-state items, so a plain backlog search always wrongly concludes \"absent\"; never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the capability landscape mapped in `research/plan.md`.\n" +
+			"- **MANDATORY quality contract** before spawning anything: (1) check the Idea Cloud FIRST via `orchicon_plane_list_idea_items` — the normal list server-side HIDES idea-state items, so a plain backlog search always wrongly concludes \"absent\"; never propose an idea that already exists there; (2) confirm the candidate is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the opportunity grid in `research/plan.md`.\n" +
+			"- **“Big feature” gate**: spawn only FEATURE-CLASS candidates — each manifest must cite at least one external reference describing the capability as a standalone feature elsewhere (from the market map / evidence notes). Internal hardening is BUG-R-class: cap ONE per fire, never let it crowd out market-driven features; if a fire's evidence yields only hardening, ship zero ideas and say so.\n" +
 			"- **Hierarchy**: only `epic` may be top-level — spawn ONE umbrella epic first, then attach feature proposals to it via `parent_id`.\n" +
-			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_work_item` (run-context stamped — lands in IDEA state with provenance). The create response is a labeled envelope: verify it reports `idea_state: true` with spawned provenance — anything else (e.g. a bare numeric status or `idea_state: false`) is a WRONG landing: record the observation as a `FACTS LEARNED:` line, do NOT report success, and ship the manifests in the brief for UI spawning instead. If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
+			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_idea_item` — IDEA landing is FORCED by the tool (provenance from the run's trusted context, never call arguments). The response is a self-verifying envelope: it must report `landed_status: \"idea\"` + `idea_state: true` + spawned provenance — a refused spawn or anything else is a WRONG landing: record the observation as a `FACTS LEARNED:` line, do NOT report success, and ship the manifests in the brief for UI spawning instead. If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
+		RollMarker: researchMarketMarker,
 	},
 }
 
@@ -552,12 +585,14 @@ var cannedWorkers = []cannedWorker{
 // skipped; the remaining canned workers still seed.
 // automationResearchRoleID is the role that grants the Automation Research
 // workers their plane-channel entitlements: read work items/usage and
-// create work items (the sanctioned automated write surface — items created
-// with run-context provenance land in IDEA state). The canned Automation
-// Research trio carries it via their RoleRef profile field; the seeder
-// fills empty role_ref bindings on boot (COALESCE) and never clobbers a
-// human-assigned role. Deny-by-default: everything else has no role_ref
-// and gets no plane channel.
+// create work items. Idea spawning goes through the DEDICATED idea tools
+// (orchicon_plane_create_idea_item forces IDEA landing from the run's
+// trusted context; orchicon_plane_list_idea_items is the dedupe gate) —
+// the generic create is for normal (non-idea) writes. The canned
+// Automation Research trio carries the role via their RoleRef profile
+// field; the seeder fills empty role_ref bindings on boot (COALESCE) and
+// never clobbers a human-assigned role. Deny-by-default: everything else
+// has no role_ref and gets no plane channel.
 const automationResearchRoleID = "r_se_automation_research"
 
 // seedAutomationResearchRole creates the automation-research role
@@ -733,7 +768,8 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// created.
 	needSync := verErr != nil ||
 		!strings.Contains(curAgents, seedSafetyMarker) ||
-		!strings.Contains(curAgents, sandboxPlaneMarker)
+		!strings.Contains(curAgents, sandboxPlaneMarker) ||
+		(w.RollMarker != "" && !strings.Contains(curAgents, w.RollMarker))
 
 	if needSync {
 		if curVer == 1 {
