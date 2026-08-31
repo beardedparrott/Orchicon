@@ -109,6 +109,15 @@ func poolEnvKey(req CreateRequest, hostFp string) string {
 	if req.ServeConfig != "" {
 		_, _ = io.WriteString(h, "cfg="+req.ServeConfig+"\n")
 	}
+	// The git strategy is a credential-relevant host input: a "none"
+	// (ephemeral) container is created WITHOUT a push-capable GH_TOKEN and
+	// WITHOUT the git credential mounts, so it must never pool with a
+	// local/pr container that carries them. Fold it into the key so the two
+	// environments stay separate — under the same key a "none" run could
+	// reuse a warm token-bearing container (the pre-fix leak class).
+	if req.GitStrategy != "" {
+		_, _ = io.WriteString(h, "gs="+req.GitStrategy+"\n")
+	}
 	if hostFp != "" {
 		_, _ = io.WriteString(h, "host="+hostFp+"\n")
 	}

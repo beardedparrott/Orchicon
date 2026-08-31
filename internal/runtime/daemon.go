@@ -108,6 +108,14 @@ type CreateRequest struct {
 	// Secrets are tenant secrets to inject as container env at create time.
 	// Decrypted plane-side, never stored in image; same pattern as GH_TOKEN.
 	Secrets map[string]string `json:"secrets,omitempty"`
+	// GitStrategy is the effective workflow git strategy (local|pr|none)
+	// resolved for the run. It gates whether the runtime container is given
+	// a push-capable GH_TOKEN and the git identity/credential mounts: a
+	// "none" (ephemeral, detached-HEAD) run must never be able to push, so
+	// it gets neither and cannot create a branch ref locally or on origin.
+	// Empty does not default here — the daemon treats "" as "not none" so a
+	// request that omits it retains today's conditional token injection.
+	GitStrategy string `json:"git_strategy,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -397,6 +405,14 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// by the daemon, not the plane, so the control plane can never request
 	// them.
 	if d.HostHome != "" {
+		// Git identity/credential + push-capable GH_TOKEN are gated on the
+		// run's effective git strategy: a "none" (ephemeral detached-HEAD)
+		// run must never be able to create or push a branch, so it gets NO
+		// .gitconfig/.git-credentials/gh mounts and NO GH_TOKEN. The
+		// opencode model-auth mounts (config, provider auth, adapter CLI)
+		// stay universal — a "none" run still needs model auth and the
+		// adapter to work; only the push surface is removed.
+		gitCreds := req.GitStrategy != "none"
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
 		}
@@ -406,36 +422,38 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".opencode")+":"+filepath.Join(d.HostHome, ".opencode")+":ro")
 		}
-		for _, f := range []string{".gitconfig", ".git-credentials"} {
-			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
+		if gitCreds {
+			for _, f := range []string{".gitconfig", ".git-credentials"} {
+				if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
+					args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
+				}
 			}
-		}
-		// GitHub CLI auth + state (read-only — PR/merge workers run
-		// `gh pr create`/`gh repo create`). Without the hosts.yml mount
-		// gh reports "not authenticated" inside the container even though
-		// the operator is logged in on the host.
-		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
-		}
-		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+			// GitHub CLI auth + state (read-only — PR/merge workers run
+			// `gh pr create`/`gh repo create`). Without the hosts.yml mount
+			// gh reports "not authenticated" inside the container even though
+			// the operator is logged in on the host.
+			if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
+				args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+			}
+			if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
+				args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+			}
+			// The operator's gh token often lives in the OS keyring, which is
+			// NOT available inside containers — hosts.yml alone has no token,
+			// so `gh` reports "not authenticated". Resolve the host's effective
+			// token and pass it as GH_TOKEN so PR/merge workers can actually
+			// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
+			// d.ghToken() is TTL-cached and shared with the pool key fingerprint
+			// so the container's env and the pool key always agree on the token
+			// (no wasteful fresh-create from a mid-checkout rotation race).
+			if tok := d.ghToken(); tok != "" {
+				args = append(args, "-e", "GH_TOKEN="+tok)
+			}
 		}
 		args = append(args, "-e", "HOME="+d.HostHome)
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.
 		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-		// The operator's gh token often lives in the OS keyring, which is
-		// NOT available inside containers — hosts.yml alone has no token,
-		// so `gh` reports "not authenticated". Resolve the host's effective
-		// token and pass it as GH_TOKEN so PR/merge workers can actually
-		// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
-		// d.ghToken() is TTL-cached and shared with the pool key fingerprint
-		// so the container's env and the pool key always agree on the token
-		// (no wasteful fresh-create from a mid-checkout rotation race).
-		if tok := d.ghToken(); tok != "" {
-			args = append(args, "-e", "GH_TOKEN="+tok)
-		}
 	}
 	for k, v := range req.Secrets {
 		if k == "" || v == "" {

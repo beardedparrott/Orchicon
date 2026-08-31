@@ -2904,18 +2904,28 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "This is iteration %d of this step. You may have done this work before — review your previous output and the feedback from downstream steps before repeating yourself.\n\n", currentRun.Iteration)
 	}
 
-	// Git/branch guidance: keyed on the run's worktree_status so a non-repo
-	// (in-place) run is never told to work on a branch. ready → the
-	// develop-first discipline block naming the recorded branch; anything
-	// else → an in-place block. The worktree fields come from the run row
-	// (the same signal that drives the execution cwd), resolved in the
-	// already-open transaction.
-	worktreeStatus, worktreeBranch, projectDir := "", "", ""
+	// Git/branch guidance: keyed on the run's worktree_status AND effective
+	// git strategy so a non-repo (in-place) run is never told to work on a
+	// branch and a `none` (ephemeral) run is told the worktree is detached
+	// HEAD with nothing pushed. ready → the develop-first discipline block
+	// naming the recorded branch; anything else → an in-place block. The
+	// worktree fields come from the run row (the same signal that drives the
+	// execution cwd), resolved in the already-open transaction. The run row's
+	// own workflow_id/project_id drive the strategy so it always agrees with
+	// what the worktree reconciler actually created.
+	worktreeStatus, worktreeBranch, projectDir, gitStrategy := "", "", "", ""
+	runWorkflowID, runProjectID := "", ""
+	if wi.WorkflowID != nil {
+		runWorkflowID = *wi.WorkflowID
+	}
+	if wi.ProjectID != "" {
+		runProjectID = wi.ProjectID
+	}
 	if wi.WorkflowRunID != "" {
 		_ = tx.QueryRow(ctx,
-			`SELECT worktree_status, worktree_branch FROM workflow_runs WHERE id = $1 AND tenant_id = $2`,
+			`SELECT worktree_status, worktree_branch, COALESCE(workflow_id,''), COALESCE(project_id,'') FROM workflow_runs WHERE id = $1 AND tenant_id = $2`,
 			wi.WorkflowRunID, tenantID,
-		).Scan(&worktreeStatus, &worktreeBranch)
+		).Scan(&worktreeStatus, &worktreeBranch, &runWorkflowID, &runProjectID)
 	}
 	if wi.ProjectID != "" {
 		_ = tx.QueryRow(ctx,
@@ -2923,7 +2933,8 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			wi.ProjectID, tenantID,
 		).Scan(&projectDir)
 	}
-	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
+	gitStrategy = db.EffectiveGitStrategy(ctx, tx, tenantID, runWorkflowID, runProjectID)
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy))
 
 	// Recovery context: if THIS step is being re-dispatched after a
 	// recovery (its step run is recovering and carries a recovery
@@ -4179,30 +4190,19 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				// "onWorkerSuccess" semantics for non-PR workflows.
 				shouldRequirePR := requiresPRStep(sr.StepID, stepConfig)
 				if shouldRequirePR {
-					effectiveGitStrategy := "local"
-					workflowStrategy := ""
+					// The project is always consulted for the repo slug
+					// (needed by the deterministic PR check) independently of
+					// which strategy wins.
 					repoSlug := ""
-					if run.WorkflowID != "" {
-						if wf, err := db.GetWorkflow(ctx, tx, tenantID, run.WorkflowID); err == nil && wf.GitStrategy != nil && *wf.GitStrategy != "" {
-							workflowStrategy = *wf.GitStrategy
-							effectiveGitStrategy = workflowStrategy
-						}
-					}
-					// The project is always consulted for the repo slug (needed
-					// by the deterministic PR check) even when a workflow-level
-					// git strategy wins; its strategy is only a fallback when
-					// the workflow does not specify one.
 					if run.ProjectID != "" {
-						if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil {
-							if workflowStrategy == "" && proj.GitStrategy != "" {
-								effectiveGitStrategy = proj.GitStrategy
-							}
-							if proj.RepoSlug != nil {
-								repoSlug = *proj.RepoSlug
-							}
+						if proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID); err == nil && proj.RepoSlug != nil {
+							repoSlug = *proj.RepoSlug
 						}
 					}
-					if effectiveGitStrategy == "pr" {
+					// Effective git strategy — workflow-level wins, else
+					// project-level, else "local" (single source of truth,
+					// db.EffectiveGitStrategy).
+					if db.EffectiveGitStrategy(ctx, tx, tenantID, run.WorkflowID, run.ProjectID) == "pr" {
 						// Deterministic PR verification (D-PR): the platform
 						// itself checks GitHub for a valid PR whose head is the
 						// branch created for this run. Step success no longer

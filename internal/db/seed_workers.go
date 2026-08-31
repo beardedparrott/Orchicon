@@ -195,13 +195,29 @@ const researchMarketMarker = "market-map.md"
 // re-rolls ONLY the Synthesizer, never the Planner/Analyst.
 const researchSynthesizerRejectedMarker = "state=\"rejected\""
 
+// researchEphemeralMarker is the Automation Research trio's roll-forward
+// fragment. The Automation Research workflow runs with git_strategy=none
+// (ephemeral): the run worktree is a detached HEAD — no branch is created,
+// nothing is pushed to origin. The old hygiene block's "commit + push to the
+// run branch" contract is the research leak class (17 branches in ~48h), so
+// it is replaced by the ephemeral wording below. This marker fragment appears
+// in the NEW researchHygieneBlock only (and not in the old, which shipped
+// "commit + push to the run branch"), so exactly the trio re-rolls — never
+// the whole fleet via seedSafetyMarker/sandboxPlaneMarker.
+const researchEphemeralMarker = "git_strategy=none"
+
 // researchHygieneBlock is the worktree discipline for the automation
-// research workers: deliverables are committed + pushed to the run branch
-// from the run worktree only — never written to the main checkout (a stray
-// copy there is exactly the kind of mess this rule prevents).
+// research workers. The Automation Research workflow runs with
+// git_strategy=none (ephemeral): the run worktree is a detached HEAD — no
+// branch is created, nothing is pushed to origin, and no remote branch is
+// retained. Deliverables are written only inside the run worktree, never to
+// the main checkout, and the worker must NOT create a branch, commit a
+// branch, or push anything to origin (the old "commit + push to the run
+// branch" recipe is exactly the leak this replaces).
 const researchHygieneBlock = "## Worktree hygiene\n" +
+	"- This run is **ephemeral** (`git_strategy=none`): the run worktree is a **detached HEAD** — no branch is created, nothing is pushed to origin, and no remote branch is retained.\n" +
 	"- Write research deliverables (`research/plan.md`, `research/evidence/*`, `research/findings.md`, `research/brief-<date>.md`) **only inside the run worktree** — never to the main checkout.\n" +
-	"- Commit + push to the run branch, verify the remote tip, and leave the worktree clean.\n\n"
+	"- Do **not** create a branch, commit a branch, or push to origin. Leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -540,7 +556,7 @@ var cannedWorkers = []cannedWorker{
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
-		RollMarker: researchMarketMarker,
+		RollMarker: researchEphemeralMarker,
 	},
 	{
 		ID:          "01M13DYJWHCYHWQ1X85J1BWWZ1",
@@ -550,7 +566,7 @@ var cannedWorkers = []cannedWorker{
 		Purpose:     "Web-research workhorse for the automation research workflow. Executes research/plan.md: deepen the planner's market map with per-candidate evidence (Tavily — key read from the mounted secrets context file when present — DuckDuckGo fallback, fetch + extract, headless Chromium for JS-heavy pages, Reddit .json, gh/git for repos; HN Algolia for social sentiment). Reads the mounted project codebase and queries the orchicon_plane_* MCP tools (orchicon_plane_list_work_items, orchicon_plane_get_work_item, orchicon_plane_get_usage) against the real instance to inventory what we already have. Verifies each plan candidate still clears the feature-class bar: cite at least one external reference describing the capability as a standalone feature elsewhere. Writes per-finding notes to research/evidence/ — each with URL, capture date, source type, and confidence. Never echo API keys or credentials into the conversation.",
 		Role:        cannedWorkerIdentity + "You are the Automation Research Analyst — the web-research workhorse. You execute research/plan.md faithfully, capture evidence, and ground every candidate against what the project already has (mounted codebase + real-instance plane queries).",
 		Skills:      "Web research • Tavily • DuckDuckGo fallback • Fetch + extract • Headless Chromium • Reddit .json • GitHub/gh • Evidence capture • Secrets discipline",
-		Behavior:    "Execute research/plan.md exactly as written — deepen the opportunity grid from the planning step with primary evidence, and verify each candidate still clears the feature-class bar (at least one external reference describing it as a standalone feature elsewhere; internal-hardening findings stay BUG-R-class and capped). Never echo API keys or credentials into the conversation. Worktree hygiene: write research/evidence/* and research/findings.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		Behavior:    "Execute research/plan.md exactly as written — deepen the opportunity grid from the planning step with primary evidence, and verify each candidate still clears the feature-class bar (at least one external reference describing it as a standalone feature elsewhere; internal-hardening findings stay BUG-R-class and capped). Never echo API keys or credentials into the conversation. Worktree hygiene: this run is ephemeral (`git_strategy=none`) — the worktree is a detached HEAD; write research/evidence/* and research/findings.md only inside the run worktree and do NOT commit a branch or push to origin.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Research execution\n\n" +
 			"- **Market grounding**: read `research/market-map.md` first — the planner's competitive landscape (per-player positioning, signature features, user praise/complaints, white space) is the context every plan candidate is evaluated against; deepen its evidence, don't re-derive it.\n" +
@@ -562,7 +578,7 @@ var cannedWorkers = []cannedWorker{
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
-		RollMarker: researchMarketMarker,
+		RollMarker: researchEphemeralMarker,
 	},
 	{
 		ID:          "01M13DYM3A7CTY8ECP4R7M33SR",
@@ -572,7 +588,7 @@ var cannedWorkers = []cannedWorker{
 		Purpose:     "Synthesizes each run of the automation research workflow. Reads research/market-map.md + research/plan.md + research/evidence/, cross-verifies and dedupes, then writes research/brief-<date>.md and spawns each accepted proposal as an idea-state work item via the orchicon_plane_create_idea_item tool (IDEA landing forced by the tool — provenance from the run's trusted context, never call arguments). MANDATORY quality contract before spawning anything: (1) check the Idea Cloud first via orchicon_plane_list_idea_items — BOTH populations: state=\"active\" (pending triage) AND state=\"rejected\" (previously dismissed spawns) — the normal list hides idea-state items, so a plain backlog search will always wrongly conclude \"absent\", and skipping the REJECTED read means re-proposing ideas a human already rejected; never propose an idea that exists in either; (2) confirm the feature or bug fix is genuinely absent from the project codebase; (3) check all open (non-succeeded) work items — never duplicate already-planned work; (4) weigh each candidate against the opportunity grid in research/plan.md. TARGET BIG MISSING FEATURES — capabilities competitors advertise as standalone headline features, each manifested with its external reference; internal hardening is BUG-R-class, capped at one per fire, and must never crowd out market-driven features.",
 		Role:        cannedWorkerIdentity + "You are the Automation Research Synthesizer. You turn evidence into a prioritized brief and spawn accepted proposals as idea-state work items, applying the mandatory quality contract before anything is spawned.",
 		Skills:      "Synthesis • Cross-verification • Dedupe • Idea-state work item creation • Quality gating",
-		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first (via orchicon_plane_list_idea_items, BOTH state=\"active\" AND state=\"rejected\"; a REJECTED hit means the idea was dismissed by a human: drop the candidate and never re-propose it), then absence from the project codebase, then open-item dedupe, then weight against the opportunity grid in the plan. Spawn via orchicon_plane_create_idea_item ONLY (IDEA landing is forced by the tool; a refused spawn or a response without idea_state:true is a LOUD platform error — record it as a FACTS LEARNED line, do NOT report success, and ship the manifests in the brief for UI spawning instead). Enforce the feature-class gate: only candidates whose manifests cite an external reference describing the capability as a standalone feature elsewhere; BUG-R hardening is capped at one per fire. Worktree hygiene: write research/brief-<date>.md only inside the run worktree; commit + push to the run branch, verify the remote tip, and leave the tree clean.",
+		Behavior:    "Apply the mandatory quality contract before spawning anything — Idea Cloud first (via orchicon_plane_list_idea_items, BOTH state=\"active\" AND state=\"rejected\"; a REJECTED hit means the idea was dismissed by a human: drop the candidate and never re-propose it), then absence from the project codebase, then open-item dedupe, then weight against the opportunity grid in the plan. Spawn via orchicon_plane_create_idea_item ONLY (IDEA landing is forced by the tool; a refused spawn or a response without idea_state:true is a LOUD platform error — record it as a FACTS LEARNED line, do NOT report success, and ship the manifests in the brief for UI spawning instead). Enforce the feature-class gate: only candidates whose manifests cite an external reference describing the capability as a standalone feature elsewhere; BUG-R hardening is capped at one per fire. Worktree hygiene: this run is ephemeral (`git_strategy=none`) — the worktree is a detached HEAD; write research/brief-<date>.md only inside the run worktree and do NOT commit a branch or push to origin.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Synthesis & spawning\n\n" +
 			"- Read `research/market-map.md`, `research/plan.md` + `research/evidence/`; cross-verify and dedupe.\n" +
@@ -584,10 +600,12 @@ var cannedWorkers = []cannedWorker{
 			researchHygieneBlock,
 		RoleRef:    automationResearchRoleID,
 		RuntimeRef: "orchicon-runtime:web-research",
-		// Synthesizer-only roll marker: the rejected-ideas dedupe gate.
-		// Distinct fragment so ONLY the Synthesizer re-rolls for this
-		// wording change — the Planner/Analyst keep their published version.
-		RollMarker: researchSynthesizerRejectedMarker,
+		// Trio roll marker: the ephemeral (git_strategy=none) hygiene
+		// contract. Fragment present in the NEW researchHygieneBlock only,
+		// so exactly the trio re-rolls for this wording change — the
+		// market-map/rejected-idea content still ships (it re-syncs along
+		// with the refreshed definition).
+		RollMarker: researchEphemeralMarker,
 	},
 }
 

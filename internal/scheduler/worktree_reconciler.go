@@ -583,7 +583,16 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	}
 
 	path := filepath.Join(projectDir, worktreeDirName, runID)
-	branch := r.branchName(ctx, tenantID, run)
+	// For a `none` (ephemeral) run, NO named branch is created — the
+	// worktree is detached HEAD, so "no branch retained" is structural
+	// (a detached worktree creates no ref that can leak locally or
+	// remotely). The strategy is resolved once here and used for both the
+	// branch name and the detached-vs-named provisioning decision.
+	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
+	branch := ""
+	if strategy != "none" {
+		branch = r.branchName(ctx, tenantID, run)
+	}
 
 	// Resolve the base ref up front so the container-adopt path (Phase 3,
 	// case 2) can create the run worktree without re-entering Phase 4.
@@ -640,7 +649,7 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 				return fmt.Errorf("worktree: inspect container %s: %w", path, cerr)
 			}
 			if isContainer {
-				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base); aerr != nil {
+				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base, strategy == "none"); aerr != nil {
 					return fmt.Errorf("worktree: adopt run container at %s: %w", path, aerr)
 				}
 				return r.recordReady(ctx, tenantID, runID, path, branch)
@@ -656,16 +665,23 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	// Phase 4 — create or attach against the resolved base ref. When the
 	// deterministic branch already exists (a retried run reusing its branch),
 	// provisionWorktree ATTACHES to it so the branch's existing commits carry
-	// over — never `-b`, which fails on an existing branch.
-	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
-		if isAlreadyTrackedErr(err) {
+	// over — never `-b`, which fails on an existing branch. For a `none` run
+	// the worktree is provisioned DETACHED (no named branch at all).
+	var perr error
+	if strategy == "none" {
+		perr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
+	} else {
+		perr = r.provisionWorktree(ctx, projectDir, path, branch, base)
+	}
+	if perr != nil {
+		if isAlreadyTrackedErr(perr) {
 			// A concurrent pass won the create race — converge on the
 			// worktree git now has at our path.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
 				return r.recordReady(ctx, tenantID, runID, path, branch)
 			}
 		}
-		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", err))
+		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", perr))
 	}
 
 	if err := r.recordReady(ctx, tenantID, runID, path, branch); err != nil {
@@ -750,7 +766,15 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 	}
 
 	path := filepath.Join(projectDir, worktreeDirName, runID, stepRunID)
-	branch := r.branchWorktreeName(ctx, tenantID, run, sr)
+	// `none` (ephemeral): the branch child worktree is detached HEAD too —
+	// no named branch, so a parallel-branch child can never create a ref
+	// that leaks. The DAG gate is status-based (WorktreeStatus), so a
+	// detached branch child does not regress parallel-branch steps.
+	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
+	branch := ""
+	if strategy != "none" {
+		branch = r.branchWorktreeName(ctx, tenantID, run, sr)
+	}
 
 	// Phase 3 — converge against what git actually has at the expected
 	// path (mirrors reconcileOne's repair/fail-closed logic).
@@ -788,21 +812,28 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 
 	// Phase 4 — resolve the base ref and create. The base is the run's
 	// branch when the run worktree exists (preserving lineage); otherwise
-	// the repo's default ref.
+	// the repo's default ref. For a `none` run the branch child worktree
+	// is provisioned DETACHED (no named branch).
 	base := ""
 	if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" {
 		base = run.WorktreeBranch
 	} else {
 		base = r.resolveBaseRef(ctx, projectDir)
 	}
-	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
-		if isAlreadyTrackedErr(err) {
+	var perr error
+	if strategy == "none" {
+		perr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
+	} else {
+		perr = r.provisionWorktree(ctx, projectDir, path, branch, base)
+	}
+	if perr != nil {
+		if isAlreadyTrackedErr(perr) {
 			// A concurrent pass won the create race — converge.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
 				return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
 			}
 		}
-		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", err))
+		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", perr))
 	}
 
 	return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
@@ -1198,6 +1229,21 @@ func (r *WorktreeReconciler) branchName(ctx context.Context, tenantID string, ru
 	return branchNameFor(r.slugSource(ctx, tenantID, run), run.ID)
 }
 
+// effectiveGitStrategy resolves the run's effective git strategy
+// (workflow > project > "local") in a short read-only transaction. It is
+// the single source of truth for whether a run is ephemeral ("none") — the
+// same resolver the runtime daemon uses for the credential gate — so the
+// detached-HEAD decision here always agrees with the push-credential
+// decision there.
+func (r *WorktreeReconciler) effectiveGitStrategy(ctx context.Context, tenantID string, run db.WorkflowRunRow) string {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return db.DefaultGitStrategy
+	}
+	defer ttx.Rollback(ctx)
+	return db.EffectiveGitStrategy(ctx, ttx.Tx, tenantID, run.WorkflowID, run.ProjectID)
+}
+
 // branchNameFor is the pure branch-name constructor: <kebab-slug>-<suffix>.
 // The slug portion is capped so the full name stays well under git's
 // 255-byte ref limit; the suffix is the run ID's entropy tail (runSuffix),
@@ -1588,7 +1634,7 @@ func dirEmpty(path string) (bool, error) {
 // registered worktrees) or os.Rename of provably-ours artifacts mutates the
 // filesystem. On success both the run worktree and every nested branch
 // worktree are registered and intact at their recorded paths.
-func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, path, branch, base string) error {
+func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, path, branch, base string, detached bool) error {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err
@@ -1625,8 +1671,16 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 		moves = append(moves, staged{from: child, to: stagePath, move: ok})
 	}
 
-	// 2. <path> is now empty — create the run worktree into it.
-	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
+	// 2. <path> is now empty — create the run worktree into it. For a
+	// `none` run the run worktree is provisioned DETACHED (no named branch);
+	// otherwise the deterministic branch is created as today.
+	var createErr error
+	if detached {
+		createErr = r.provisionDetachedWorktree(ctx, projectDir, path, base)
+	} else {
+		createErr = r.addWorktree(ctx, projectDir, path, branch, base)
+	}
+	if createErr != nil {
 		// Best-effort rollback: move already-staged children back so a
 		// later pass can retry cleanly.
 		for _, m := range moves {
@@ -1636,7 +1690,7 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 				_ = os.Rename(m.to, m.from)
 			}
 		}
-		return err
+		return createErr
 	}
 
 	// 3. Move the nested children back into the run worktree.
@@ -1727,6 +1781,23 @@ func (r *WorktreeReconciler) provisionWorktree(ctx context.Context, projectDir, 
 		return nil
 	}
 	return r.addWorktree(ctx, projectDir, path, branch, base)
+}
+
+// provisionDetachedWorktree creates a detached-HEAD worktree at path from
+// base (`git worktree add --detach <path> <base>`). It is the `none`
+// (ephemeral) strategy's structural guarantee: no named branch is created,
+// so there is no ref to leak locally or on origin — "no branch retained"
+// is a property of the worktree shape, not a cleanup promise. base may be
+// "" to start the detached worktree at HEAD.
+func (r *WorktreeReconciler) provisionDetachedWorktree(ctx context.Context, projectDir, path, base string) error {
+	args := []string{"worktree", "add", "--detach", path}
+	if base != "" {
+		args = append(args, base)
+	}
+	if _, err := runGit(ctx, projectDir, args...); err != nil {
+		return err
+	}
+	return nil
 }
 
 // addWorktree runs `git worktree add <path> -b <branch> [<base>]` with
@@ -1874,6 +1945,22 @@ func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branc
 			"branch", branch, "reason", reason)
 		return nil
 	}
+	// L3 — remote half of the prune: when a remote ref exists, delete it
+	// FIRST, fail-closed. A remote-delete failure returns an error WITHOUT
+	// deleting the local branch, so the row keeps its WorktreeBranch
+	// provenance and the orphan sweep retries both — nothing is deleted on
+	// doubt. When the probe is inconclusive (no origin / no network), skip
+	// the remote delete but still allow a provably-merged LOCAL delete.
+	// The P1/P2/P3 proof + Gate B ran above, so nothing unmerged is ever
+	// deleted locally or remotely.
+	if exists, determined := r.branchRemoteExists(ctx, projectDir, branch); determined && exists {
+		if _, err := runGit(ctx, projectDir, "push", "origin", "--delete", branch); err != nil {
+			return fmt.Errorf("git push origin --delete %s: %w", branch, err)
+		}
+		r.log.Info("worktree: deleted remote branch after successful run", "branch", branch)
+	} else if !determined {
+		r.log.Info("worktree: remote branch probe inconclusive; skipping remote delete (local delete proceeds)", "branch", branch)
+	}
 	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
 		return fmt.Errorf("git branch -D %s: %w", branch, err)
 	}
@@ -1986,6 +2073,39 @@ func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir
 		return true
 	}
 	return false
+}
+
+// branchRemoteExists reports whether a remote ref refs/heads/<branch>
+// exists on origin. It returns (exists, determined):
+//   - determined=false means the probe could NOT confirm (origin absent /
+//     network down) — the caller must SKIP the remote `--delete` but still
+//     allow a provably-merged LOCAL delete (the Design Approver's
+//     refinement: fail-closed for deletion, but never deadlock local
+//     cleanup on a missing origin).
+//   - determined=true means the probe spoke to origin and exists is
+//     authoritative.
+//
+// It is the L3 gate that decides whether `git push origin --delete` is even
+// attempted; it never deletes on doubt.
+func (r *WorktreeReconciler) branchRemoteExists(ctx context.Context, projectDir, branch string) (bool, bool) {
+	if branch == "" {
+		return false, true
+	}
+	out, err := runGit(ctx, projectDir, "ls-remote", "--heads", "origin", branch)
+	if err != nil {
+		// origin absent / network down — cannot confirm. Skip the remote
+		// delete (do not block a provably-merged local delete).
+		r.log.Warn("worktree: remote branch probe failed; skipping remote delete",
+			"branch", branch, "error", err)
+		return false, false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == "refs/heads/"+branch {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // isAncestor reports whether branch a is an ancestor of branch b (a..b fast-forwardable).
