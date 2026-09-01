@@ -50,6 +50,7 @@ service AIGatewayService {
 
 message ListOpenCodeModelsRequest {
   optional string provider = 1; // filter by provider id (e.g. "anthropic", "opencode")
+  optional string adapter = 2;  // filter to one adapter kind (e.g. "opencode", "claude", "orchicon"); empty = opencode (default)
 }
 message ListOpenCodeModelsResponse {
   repeated OpenCodeModel models = 1;

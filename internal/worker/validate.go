@@ -24,6 +24,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -45,6 +46,39 @@ const (
 // gate that rejects path-traversal or injection-laden slugs before they
 // reach the database (mirrors internal/project/validate.go).
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// modelRefRegistry is the provider/kind catalog used to validate model_ref
+// values at the API boundary. It defaults to the built-in catalog (opencode
+// providers plus the known adapter kinds) and can be swapped for tests via
+// SetModelRefRegistry. Tenant-created custom providers are merged in at the
+// service layer (they are not part of this static catalog).
+var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
+
+// SetModelRefRegistry replaces the validation catalog (test seam).
+func SetModelRefRegistry(reg adapter.ProviderRegistry) {
+	if reg != nil {
+		modelRefRegistry = reg
+	}
+}
+
+// validateModelRef trims and bounds-checks a model_ref, then validates it
+// against the adapter/provider/model grammar (ADR-0003). An empty value is
+// returned unchanged (empty model_ref is valid — the system default applies).
+// The registry is a static built-in catalog; the settings/worker service
+// layers additionally check tenant custom providers when one is configured.
+func validateModelRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(ref) > maxNameLen {
+		return "", fmt.Errorf("model_ref must be at most %d characters", maxNameLen)
+	}
+	if _, err := adapter.ParseModelRef(ref, modelRefRegistry); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
 
 // validateName trims and bounds-checks a worker name.
 func validateName(name string) (string, error) {

@@ -509,7 +509,7 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
 	}
-	modelRef, err := validateTextField(req.Msg.ModelRef, maxNameLen, "model_ref")
+	modelRef, err := validateModelRef(req.Msg.ModelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -899,7 +899,11 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 		merged.RuntimeRef = *msg.RuntimeRef
 	}
 	if msg.ModelRef != nil {
-		merged.ModelRef = *msg.ModelRef
+		modelRef, err := validateModelRef(*msg.ModelRef)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		merged.ModelRef = modelRef
 	}
 	if msg.SystemPrompt != nil {
 		merged.SystemPrompt = *msg.SystemPrompt
@@ -1034,7 +1038,11 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		newVer.RuntimeRef = *msg.RuntimeRef
 	}
 	if msg.ModelRef != nil {
-		newVer.ModelRef = *msg.ModelRef
+		modelRef, err := validateModelRef(*msg.ModelRef)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		newVer.ModelRef = modelRef
 	}
 	if msg.SystemPrompt != nil {
 		newVer.SystemPrompt = *msg.SystemPrompt

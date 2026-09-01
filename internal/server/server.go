@@ -230,7 +230,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// The Dispatcher is the shared routing substrate: adapters register
 	// under their kind at construction (below), and the TaskReconciler +
 	// server RPC paths resolve the bridge per execution from the
-	// execution's adapter kind (adapter.ParseModelRef(model_ref).Adapter
+	// execution's adapter kind (adapter.AdapterKind(model_ref))
 	// — ADR-0003). Concrete adapter types appear ONLY here, at
 	// construction/registration; every other path goes through the
 	// scheduler-defined contract interfaces.
@@ -379,7 +379,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		if err != nil {
 			return "", err
 		}
-		kind := adapter.ParseModelRef(ver.ModelRef).Adapter
+		kind := adapter.AdapterKind(ver.ModelRef)
 		if kind == "" {
 			// Same fallback the reconciler applies at dispatch time: an
 			// empty/malformed model_ref dispatches under the legacy default
@@ -1001,7 +1001,7 @@ func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logg
 			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
 			return false
 		}
-		kind := adapter.ParseModelRef(ver.ModelRef).Adapter
+		kind := adapter.AdapterKind(ver.ModelRef)
 		if kind == "" {
 			// Same fallback the reconciler applies at dispatch time: an
 			// empty/malformed model_ref dispatches under the legacy default

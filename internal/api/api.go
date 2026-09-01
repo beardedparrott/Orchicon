@@ -73,6 +73,10 @@ type Dependencies struct {
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer *aigateway.ModelDiscoverer
 	MCPDiscoverer   *aigateway.MCPDiscoverer
+	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪
+	// tenant custom) for adapter-scoped model listing and legacy 2-segment
+	// inference (ADR-0003). nil falls back to the built-in catalog.
+	ModelRefRegistry adapter.ProviderRegistry
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
 	// PostgresDSN is the Postgres connection string for backup/restore.
@@ -221,7 +225,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
 	// AIGatewayService (docs/07 §3.10).
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC

@@ -41,7 +41,7 @@ func (b *manifestCaptureBridge) Start(_ context.Context, _ db.ExecutionRow, mani
 
 // testDispatcher builds a Dispatcher with the bridge registered under the
 // opencode default kind, so the reconciler's model_ref → kind resolution
-// (ParseModelRef) routes to it. Tests that need an unknown-kind path build
+// (AdapterKind) routes to it. Tests that need an unknown-kind path build
 // their own dispatcher.
 func testDispatcher(bridge AdapterBridge) *Dispatcher {
 	d := NewDispatcher()

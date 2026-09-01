@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -38,6 +39,7 @@ type Service struct {
 	subscriber    eventbus.Subscriber
 	metrics       *usageMetrics
 	providers     []*apiv1.AIProvider
+	registry      adapter.ProviderRegistry
 	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
 	apiv1connect.UnimplementedAIGatewayServiceHandler
@@ -51,13 +53,20 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // records usage + cost from adapter telemetry.
 // If discoverer is nil, ListOpenCodeModels returns Unimplemented.
 // If mcpDiscoverer is nil, ListOpenCodeMCPs returns Unimplemented.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer) *Service {
+// registry supplies the per-adapter provider catalog (built-in profiles ∪
+// tenant custom providers) for adapter-scoped filtering; nil falls back to
+// the built-in catalog.
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry) *Service {
+	if registry == nil {
+		registry = adapter.NewBuiltinProviderCatalog()
+	}
 	return &Service{
 		pool:          pool,
 		log:           log,
 		subscriber:    sub,
 		metrics:       newUsageMetrics(log),
 		providers:     defaultProviders(),
+		registry:      registry,
 		discoverer:    discoverer,
 		mcpDiscoverer: mcpDiscoverer,
 	}
@@ -71,6 +80,10 @@ func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.
 
 // ListOpenCodeModels enumerates all models available via the `opencode`
 // CLI by shelling out to `opencode models --verbose` (docs/04 §6).
+// The optional adapter filter narrows the result to one adapter kind's
+// provider set (built-in profiles ∪ tenant custom providers — ADR-0003
+// D3). A legacy 2-segment ref (no adapter) resolves to the default
+// adapter kind.
 func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeModelsRequest]) (*connect.Response[apiv1.ListOpenCodeModelsResponse], error) {
 	if s.discoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)"))
@@ -79,9 +92,32 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 	if req.Msg.Provider != nil {
 		provider = *req.Msg.Provider
 	}
+	adapterKind := ""
+	if req.Msg.Adapter != nil {
+		adapterKind = *req.Msg.Adapter
+	}
 	models, err := s.discoverer.ListModels(ctx, provider)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
+	}
+	// Scope the result to the adapter's provider list when a filter is set.
+	if adapterKind != "" {
+		providers := s.registry.Providers(adapterKind)
+		if len(providers) == 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("unknown adapter kind %q — register an adapter of that kind, or use adapter/provider/model with a known adapter", adapterKind))
+		}
+		allowed := make(map[string]struct{}, len(providers))
+		for _, p := range providers {
+			allowed[p] = struct{}{}
+		}
+		filtered := make([]*apiv1.OpenCodeModel, 0, len(models))
+		for _, m := range models {
+			if _, ok := allowed[m.ProviderId]; ok {
+				filtered = append(filtered, m)
+			}
+		}
+		models = filtered
 	}
 	return connect.NewResponse(&apiv1.ListOpenCodeModelsResponse{Models: models}), nil
 }

@@ -9,10 +9,11 @@ import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 interface ModelPickerProps {
   value: string;
   onChange: (value: string) => void;
+  adapter?: string; // adapter kind filter (opencode/claude/orchicon); empty = default
 }
 
-export function ModelPicker({ value, onChange }: ModelPickerProps) {
-  const { data: models, isLoading, error } = useListOpenCodeModels();
+export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
+  const { data: models, isLoading, error } = useListOpenCodeModels(adapter);
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<string>("");
   const [focusedIdx, setFocusedIdx] = useState(0);
