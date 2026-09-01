@@ -110,7 +110,7 @@ For Docker/infra changes, verify the full stack boots (healthz + Grafana on :300
 
 ## E2E & data preservation
 
-- Back up the database before any agent session that modifies data: `docker exec orchicon-postgres pg_dump -U orchicon -d orchicon > /tmp/orchicon-backup-<ts>.sql`.
+- Back up the database before any agent session that modifies data: `docker exec orchicon-cnt-dev pg_dump -U orchicon -d orchicon > /tmp/orchicon-backup-<ts>.sql`. (Postgres runs INSIDE the instance container — `orchicon-cnt-dev` / `orchicon-cnt-prod` — there is no separate `orchicon-postgres` container.)
 - Every `REFERENCES` column must carry `ON DELETE SET NULL` or `ON DELETE CASCADE`.
 - Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`.
 - Seed data is managed in Go (`internal/db/seed_workers.go`), not SQL migrations.
