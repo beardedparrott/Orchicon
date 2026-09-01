@@ -33,6 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
@@ -337,6 +338,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// the execution's parsed adapter kind (ADR-0003).
 	dispatcher.Register("opencode", adapterBridge)
 
+
 	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
@@ -457,6 +459,53 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		SecretsKEK: secretsKEK,
 	}
 	handler := api.Mount(mux, deps)
+
+	// Native in-process session engine (adapter kind "orchicon"). The
+	// Dispatcher treats it like any other adapter: Start blocks until the
+	// terminal OnResult, and the mid-run injection / continuation / abort
+	// RPC paths resolve it via the same capability assertions. The
+	// provider registry is constructed lazily by api.Mount (providers
+	// settings core) — resolve it through the deps hook when the first
+	// orchicon-kind execution dispatches.
+	nativeBridge := orchicon.NewBridge(
+		orchiconRegistryResolver(&deps, pool, secretsKEK, log),
+		"",
+		log,
+	)
+	nativeBridge.SetUsageRecorder(func(ctx context.Context, in scheduler.UsageRecord) error {
+		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
+			TenantID:         in.TenantID,
+			ProjectID:        in.ProjectID,
+			TaskID:           in.TaskID,
+			ExecutionID:      in.ExecutionID,
+			WorkerID:         in.WorkerID,
+			Provider:         in.Provider,
+			Model:            in.Model,
+			PromptTokens:     in.PromptTokens,
+			CacheReadTokens:  in.CacheReadTokens,
+			CacheWriteTokens: in.CacheWriteTokens,
+			CompletionTokens: in.CompletionTokens,
+			ReasoningTokens:  in.ReasoningTokens,
+			CostUSD:          in.CostUSD,
+			CorrelationID:    in.CorrelationID,
+			TraceID:          in.TraceID,
+			WorkflowRunID:    in.WorkflowRunID,
+		})
+		return err
+	})
+	nativeBridge.SetSessionStore(func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
+		ttx, err := pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		defer ttx.Rollback(ctx)
+		if err := db.AppendExecutionSessionParts(ctx, ttx.Tx, tenantID, parts); err != nil {
+			return err
+		}
+		return ttx.Commit(ctx)
+	})
+	dispatcher.Register("orchicon", nativeBridge)
+
 
 	// Wrap with OTel tracing interceptor (spans on every API call).
 	handler = telemetry.Middleware(handler)
@@ -1022,4 +1071,20 @@ func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logg
 		}
 		return rep.IsExecutionActive(exec.ID)
 	}
+}
+
+// orchiconRegistryResolver returns a lazily-resolving ProviderResolver
+// for the native session engine. The providers registry is constructed
+// inside api.Mount (the providers settings core, ADR-0006); the resolver
+// defers to it on first dispatch so construction order stays a single
+// Mount call.
+func orchiconRegistryResolver(deps *api.Dependencies, pool *db.Pool, kek []byte, log *slog.Logger) orchicon.ProviderResolver {
+	return orchicon.ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (orchicon.Provider, error) {
+		svc := deps.ProvidersService
+		if svc == nil {
+			return nil, fmt.Errorf("providers service not yet constructed (api.Mount) — orchicon adapter kind not ready")
+		}
+		reg := svc.Registry()
+		return reg.Get(ctx, tenantID, providerID)
+	})
 }
