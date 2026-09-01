@@ -36,6 +36,31 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
   it("annotates models missing context/output hints but keeps them selectable", () => {
     expect(src).toContain("missingHints");
     expect(src).toContain("no context/output hint — may misbehave in compaction");
+    // Either hint missing counts (AC says context/output, not all-three).
+    expect(src).toMatch(
+      /!model\.limits \|\| !model\.limits\.context \|\| !model\.limits\.output/,
+    );
+  });
+
+  it("matches catalog models by parsed segments, not raw value (QA BUG-1)", () => {
+    expect(src).toContain("catalogModelMatches(parsed, m)");
+    expect(src).toContain("catalogModelMatches(parsed, model)");
+    // The raw-value comparisons that false-flagged every 3-segment ref are gone.
+    expect(src).not.toContain("m.modelRef === value");
+    expect(src).not.toContain("m.id === value");
+  });
+
+  it("flags stored refs only from loaded tier data — no flash-of-banner, no RPC-failure false flags", () => {
+    expect(src).toContain("const storedAdapterKnown");
+    expect(src).toContain("const storedProviderKnown");
+    expect(src).toMatch(/adapterKinds !== undefined && !storedAdapterKnown/);
+    expect(src).toMatch(/providers !== undefined && !storedProviderKnown/);
+    expect(src).toMatch(/models !== undefined &&/);
+  });
+
+  it("suppresses provider/model flags while browsing a different adapter tier", () => {
+    expect(src).toContain("const adapterDiverged");
+    expect(src).toMatch(/!adapterDiverged &&/);
   });
 
   it("writes normalized 3-segment refs via formatModelRef", () => {

@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { AIProvider } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
-import { DEFAULT_ADAPTER_KIND, formatModelRef, parseModelRef } from "@/lib/model-ref";
+import { DEFAULT_ADAPTER_KIND, catalogModelMatches, formatModelRef, parseModelRef } from "@/lib/model-ref";
 
 interface ModelPickerProps {
   value: string;
@@ -46,9 +46,25 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   } = useListOpenCodeModels(adapter, provider);
 
   const adapterList = adapterKinds && adapterKinds.length > 0 ? adapterKinds : [DEFAULT_ADAPTER_KIND];
-  const adapterKnown = adapterList.includes(adapter);
-  const providerKnown = providers?.some((p) => p.id === provider) ?? false;
-  const modelKnown = models?.some((m) => m.modelRef === value || m.id === value) ?? false;
+  // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw
+  // value: OpenCodeModel.modelRef is the legacy 2-segment "providerId/id"
+  // (internal/aigateway), so a raw comparison against a 3-segment ref would
+  // false-flag every freshly-written ref (QA BUG-1). parsed === null (empty or
+  // malformed ref) never matches — unknown shapes stay flagged (D5).
+  const modelKnown = parsed !== null && models?.some((m) => catalogModelMatches(parsed, m)) === true;
+  // Stored-ref flags are evaluated against the PARSED ref and the loaded
+  // lists — independent of the current tier selection, so navigating the
+  // tiers mid-re-selection never flags a previously-valid stored ref.
+  const storedAdapterKnown = parsed !== null && adapterList.includes(parsed.adapter);
+  const storedProviderKnown =
+    parsed === null ||
+    parsed.provider === "" ||
+    (providers?.some((p) => p.id === parsed.provider) ?? false);
+  // Provider/model verification is only meaningful within the stored ref's
+  // own adapter scope: while the user browses a different adapter the
+  // provider/model lists are scoped elsewhere, so suppress those flags
+  // instead of false-flagging a previously-valid ref.
+  const adapterDiverged = parsed !== null && parsed.adapter !== adapter;
 
   // Stale-selection guard: when the seeded adapter/provider are not in the
   // freshly-loaded lists (unknown/stored refs), keep the flagged state rather
@@ -57,9 +73,9 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   const customProvider = selectedProviderObj?.custom ?? false;
 
   const selectedModel = useMemo(() => {
-    if (!models) return null;
-    return models.find((m) => m.modelRef === value || m.id === value) ?? null;
-  }, [models, value]);
+    if (!models || !parsed) return null;
+    return models.find((m) => catalogModelMatches(parsed, m)) ?? null;
+  }, [models, parsed]);
 
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
@@ -125,29 +141,50 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
 
   // Stored-ref review banner: the picker renders the raw ref flagged for
   // review whenever the stored value is unknown in any tier (D5) — never
-  // blank, hidden, or erroring. Catalog-known-but-unregistered adapters and
-  // 3-seg deleted providers re-save unchanged; unknown-adapter 3-seg and
-  // unknown-provider 2-seg refs route to re-selection via the tiers.
+  // blank, hidden, or erroring. Each tier flags only what its LOADED data
+  // can verify: a failed/absent catalog or a mid-navigation tier scope
+  // never produces a false flag (and no flash-of-banner before queries
+  // resolve). Catalog-known-but-unregistered adapters and 3-seg deleted
+  // providers re-save unchanged; unknown-adapter 3-seg and unknown-provider
+  // 2-seg refs route to re-selection via the tiers.
   const storedRefFlagged =
     value.trim() !== "" &&
-    ((parsed && !adapterKnown) || (parsed && !providerKnown && parsed.provider !== "") || !modelKnown);
+    (!parsed ||
+      (adapterKinds !== undefined && !storedAdapterKnown) ||
+      (!adapterDiverged && providers !== undefined && !storedProviderKnown) ||
+      (!adapterDiverged &&
+        parsed !== null &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown));
 
   const reviewReasons: string[] = [];
-  if (value.trim() !== "" && parsed && !adapterKnown) {
-    reviewReasons.push(
-      adapterList.includes(parsed.adapter) ? "adapter not registered" : "unknown adapter",
-    );
-  }
-  if (value.trim() !== "" && parsed && parsed.provider !== "" && !providerKnown) {
-    reviewReasons.push("provider not found (deleted or unknown)");
-  }
-  if (value.trim() !== "" && !modelKnown && parsed) {
-    reviewReasons.push("model not found in the selected provider's catalog");
+  if (value.trim() !== "") {
+    if (!parsed) {
+      reviewReasons.push("unrecognized ref shape");
+    } else {
+      if (adapterKinds !== undefined && !storedAdapterKnown) {
+        reviewReasons.push("adapter not registered");
+      }
+      if (!adapterDiverged && providers !== undefined && !storedProviderKnown) {
+        reviewReasons.push("provider not found (deleted or unknown)");
+      }
+      if (
+        !adapterDiverged &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown
+      ) {
+        reviewReasons.push("model not found in the selected provider's catalog");
+      }
+    }
   }
 
-  // Missing context/output hints → selectable but annotated (D3).
+  // Missing context/output hints → selectable but annotated (D3). Either
+  // hint missing (or the whole limits block absent) counts — compaction
+  // needs both the context window and the output cap.
   function missingHints(model: OpenCodeModel): boolean {
-    return !model.limits || (!model.limits.context && !model.limits.output && !model.limits.input);
+    return !model.limits || !model.limits.context || !model.limits.output;
   }
 
   function formatCost(cost?: { input: number; output: number }) {
@@ -377,7 +414,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
                         type="button"
                         className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
                           idx === focusedIdx ? "bg-accent" : ""
-                        } ${model.modelRef === value || model.id === value ? "bg-primary/10" : ""}`}
+                        } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
                         onMouseEnter={() => setFocusedIdx(idx)}
                         onClick={() => selectModel(model)}
                         onDoubleClick={() => {

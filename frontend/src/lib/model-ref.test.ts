@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_ADAPTER_KIND, formatModelRef, parseModelRef } from "@/lib/model-ref";
+import {
+  DEFAULT_ADAPTER_KIND,
+  catalogModelMatches,
+  formatModelRef,
+  parseModelRef,
+} from "@/lib/model-ref";
 
 // Mirrors the Go table tests in internal/adapter/modelref_test.go
 // (legacy, 3-seg, slashed model ids, malformed).
@@ -90,5 +95,62 @@ describe("formatModelRef", () => {
     expect(formatModelRef("opencode", "", "")).toBe("opencode");
     expect(formatModelRef("opencode", "anthropic", "")).toBe("opencode/anthropic");
     expect(formatModelRef("", "", "")).toBe("");
+  });
+});
+
+describe("catalogModelMatches (BUG-1: segment matching, not raw-value)", () => {
+  const catalog = [
+    { id: "claude-sonnet-4", providerId: "anthropic", modelRef: "anthropic/claude-sonnet-4" },
+    { id: "deepseek-v4-flash", providerId: "command-code", modelRef: "command-code/deepseek-v4-flash" },
+    { id: "legacy-model", providerId: "anthropic" }, // catalog entry without modelRef
+  ];
+
+  it("matches freshly-written 3-segment refs by segments", () => {
+    const parsed = parseModelRef("opencode/anthropic/claude-sonnet-4");
+    expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(true);
+    // A catalog entry under a DIFFERENT provider never matches, regardless
+    // of the ref's adapter segment (the adapter is not catalog identity).
+    expect(parsed && catalogModelMatches(parsed, { id: "claude-sonnet-4", providerId: "opencode" })).toBe(false);
+    // wrong provider must not match
+    expect(parsed && catalogModelMatches(parsed, catalog[1])).toBe(false);
+  });
+
+  it("matches stored 3-segment refs whose adapter differs from the provider", () => {
+    const parsed = parseModelRef("claude/anthropic/claude-sonnet-5");
+    expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(false); // model id differs
+    const parsed2 = parseModelRef("claude/anthropic/claude-sonnet-4");
+    expect(parsed2 && catalogModelMatches(parsed2, catalog[0])).toBe(true);
+  });
+
+  it("matches slashed model ids (4+ segment refs)", () => {
+    const parsed = parseModelRef("orchicon/command-code/deepseek/deepseek-v4-flash");
+    // Catalog id carries the internal slashes verbatim.
+    expect(parsed && catalogModelMatches(parsed, { id: "deepseek/deepseek-v4-flash", providerId: "command-code" })).toBe(true);
+    // The bare-id entry does not match the slashed ref.
+    expect(parsed && catalogModelMatches(parsed, catalog[1])).toBe(false);
+    expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(false);
+  });
+
+  it("matches legacy 2-segment refs via provider+model segments", () => {
+    const parsed = parseModelRef("anthropic/claude-sonnet-4");
+    expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(true);
+    expect(parsed && catalogModelMatches(parsed, catalog[1])).toBe(false);
+  });
+
+  it("matches legacy 1-segment refs by model id alone", () => {
+    const parsed = parseModelRef("claude-sonnet-4");
+    expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(true);
+    expect(parsed && catalogModelMatches(parsed, catalog[1])).toBe(false);
+  });
+
+  it("handles catalog entries without a legacy modelRef", () => {
+    const parsed = parseModelRef("opencode/anthropic/legacy-model");
+    expect(parsed && catalogModelMatches(parsed, catalog[2])).toBe(true);
+  });
+
+  it("falls back to the legacy modelRef when segments are unavailable", () => {
+    const parsed = parseModelRef("anthropic/legacy-model");
+    // A provider-less entry still matches its legacy 2-seg modelRef string.
+    expect(parsed && catalogModelMatches(parsed, { id: "", providerId: "", modelRef: "anthropic/legacy-model" })).toBe(true);
   });
 });

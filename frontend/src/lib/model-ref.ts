@@ -60,6 +60,42 @@ export function parseModelRef(ref: string | undefined | null): ParsedModelRef | 
 }
 
 /**
+ * CatalogModelLike is the minimal catalog-entry shape model-match needs
+ * (structural — no protobuf type import). `modelRef` is the catalog's
+ * LEGACY 2-segment "providerId/id" (internal/aigateway OpenCodeModel);
+ * `providerId`+`id` carry the authoritative segments.
+ */
+export interface CatalogModelLike {
+  id: string;
+  providerId: string;
+  modelRef?: string; // legacy 2-segment "providerId/id"
+}
+
+/**
+ * catalogModelMatches reports whether a catalog entry corresponds to the
+ * model in a (parsed) model ref, by SEGMENTS — not by raw-string equality.
+ * A catalog entry's modelRef is the legacy 2-segment "providerId/id", so
+ * a raw comparison against a 3-segment ref ("opencode/anthropic/claude-4")
+ * never matches; the adapter segment is inherently not part of the
+ * catalog's identity (models are scoped per provider+id). A parsed ref is
+ * REQUIRED: unknown shapes (null) deliberately never match, so callers
+ * keep flagging them for review (ADR-0004 D5).
+ */
+export function catalogModelMatches(
+  parsed: ParsedModelRef,
+  model: CatalogModelLike,
+): boolean {
+  if (parsed.provider !== "") {
+    if (parsed.provider === model.providerId && parsed.model === model.id) return true;
+    // Fallback for entries with empty segments: compare against the legacy
+    // 2-segment modelRef verbatim.
+    return model.modelRef === `${parsed.provider}/${parsed.model}`;
+  }
+  // Legacy 1-segment ref: a bare model id with no provider segment.
+  return parsed.model === model.id || parsed.model === model.modelRef;
+}
+
+/**
  * formatModelRef builds the canonical 3-segment ref "adapter/provider/model".
  * The model segment is written verbatim (may contain internal slashes).
  * Empty provider/model collapse the ref back toward legacy forms only when
