@@ -115,6 +115,79 @@ func TestLegacyEventFromBus(t *testing.T) {
 	}
 }
 
+// TestToolStartFromBus verifies the raw-bus-event tool-start signal the
+// in-flight tool-hang watchdog arms on: a tool part still in flight
+// (status "running" or absent) is a start; a resolved part (completed /
+// error) is NOT (the legacy mapping handles it as a tool_use resolution);
+// non-tool and non-message events are not starts.
+func TestToolStartFromBus(t *testing.T) {
+	cases := []struct {
+		name     string
+		evt      BusEvent
+		wantTool string
+		wantOK   bool
+	}{
+		{
+			name: "tool running is a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+			}},
+			wantTool: "bash", wantOK: true,
+		},
+		{
+			name: "tool without status is a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "read"},
+			}},
+			wantTool: "read", wantOK: true,
+		},
+		{
+			name: "tool completed is NOT a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "tool error is NOT a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "error", "error": "boom"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "text part is not a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "text", "text": "hi", "time": map[string]any{"start": 1, "end": 2}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "tool part without a tool name is not a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "state": map[string]any{"status": "running"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:   "non-message event is not a start",
+			evt:    BusEvent{Type: "session.idle", Properties: map[string]any{}},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok := ToolStartFromBus(tc.evt)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && tool != tc.wantTool {
+				t.Fatalf("tool = %q, want %q", tool, tc.wantTool)
+			}
+		})
+	}
+}
+
 // TestTokenDeltaFromBus verifies the mid-generation delta detection: streamed
 // text/reasoning deltas (modern `message.part.delta` and legacy
 // `message.part.updated`-with-delta shapes) are recognized so the progress
@@ -656,6 +729,13 @@ func TestStallNoProgressFatal(t *testing.T) {
 // the next user turn (SendMessage lands on the mock provider), (4) record
 // the redirect in the durable transcript, and (5) NOT re-fire on a second
 // hang (latch is once per session). The run then completes normally.
+//
+// The tool call is driven through the FULL handleEvent pipeline — the raw
+// `message.part.updated` bus events a real serve emits — so this test also
+// proves the PRODUCTION arming path (D6 review finding): the watchdog arms
+// from the raw tool-start event (status "running"), not from the
+// LegacyEventFromBus completed/error mapping, which never fires for a hung
+// tool.
 func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 	var (
 		mu         sync.Mutex
@@ -705,13 +785,24 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 		done:              make(chan struct{}),
 		stats:             &execStreamState{},
 		store:             a.sessionStore,
+		output:            strings.Builder{},
 		toolHangWindowVal: 30 * time.Millisecond,
 	}
 	// A short manual probe timeout would otherwise fire in the background;
 	// the monitor is not started here so no probe goroutines run.
 
-	// The tool call starts, then goes silent past the window.
-	r.observeToolStart("bash")
+	// The tool call STARTS through the real event pipeline: the raw bus
+	// event carries a tool part with status "running" (the serve's shape
+	// while the tool executes). handleEvent must arm the hang watchdog from
+	// this event alone.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
+	if !r.toolInFlight() {
+		t.Fatal("handleEvent did not arm the hang watchdog from the raw tool-start event (production arming path broken)")
+	}
+	// The tool goes silent past the window.
 	time.Sleep(40 * time.Millisecond)
 	r.checkToolHang()
 
@@ -738,6 +829,7 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 		t.Fatalf("redirect message not sent; bodies=%v", bodies)
 	}
 	// (4) The redirect is in the durable transcript (source tool_hang_redirect).
+	r.flushParts()
 	storedMu.Lock()
 	parts := append([]db.SessionPart(nil), storedParts...)
 	storedMu.Unlock()
@@ -747,21 +839,16 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 			found = true
 		}
 	}
-	r.flushParts()
-	storedMu.Lock()
-	parts = append([]db.SessionPart(nil), storedParts...)
-	storedMu.Unlock()
-	found = false
-	for _, p := range parts {
-		if p.Kind == db.SessionPartUserMessage && strings.Contains(string(p.Payload), "tool_hang_redirect") {
-			found = true
-		}
-	}
 	if !found {
 		t.Fatalf("redirect not recorded in transcript; parts=%+v", parts)
 	}
-	// (5) A second hang does NOT re-fire (latch is once per session).
-	r.observeToolStart("bash")
+	// (5) A second hang does NOT re-fire (latch is once per session). The
+	// second call starts through the pipeline too — with the latch already
+	// set, checkToolHang must no-op.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
 	time.Sleep(40 * time.Millisecond)
 	r.checkToolHang()
 	mu.Lock()
@@ -771,9 +858,16 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 		t.Fatalf("second hang re-fired the watchdog (hangSends=%d), want 1 (latched)", hangN)
 	}
 
-	// The loop continues and completes: the tool resolves and the run ends
-	// successfully (the watchdog never poisoned the run).
-	r.observeToolEnd()
+	// The loop continues and completes: the tool resolves (the serve emits
+	// the completed part) and the run ends successfully — the watchdog
+	// never poisoned the run.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+	}})
+	if r.toolInFlight() {
+		t.Fatal("tool resolution must disarm the hang watchdog")
+	}
 	r.handleEvent(BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": "ses-toolhang"}})
 	// The run's finish path is exercised by the run loop; here we verify the
 	// watchdog left the run in a state where completion is still reachable:
@@ -781,5 +875,84 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 	// latch is the only side effect.
 	if r.isFinished() {
 		t.Fatal("watchdog must not kill the session; finished should remain false")
+	}
+}
+
+// TestToolHangNoFalsePositiveOnLongGeneration is the D6 false-positive
+// regression: a tool call that COMPLETES must immediately disarm the hang
+// watchdog, so the model's long post-tool generation (text streaming after
+// the tool's completed part) never trips a hang. The watchdog fires only
+// for a call that is genuinely silent WHILE in flight.
+func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		hangSends int
+		stalls    []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/global/health":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"ok":true}`)
+		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			mu.Lock()
+			if strings.Contains(r.URL.Path, "tool-hang") {
+				hangSends++
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	callbacks := &stallRecordingCallbacks{stalls: &stalls, mu: &mu}
+	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := &sessionRun{
+		a:                 a,
+		parentCtx:         context.Background(),
+		execRow:           db.ExecutionRow{ID: "exec-toolhang-fp", TenantID: "tnt_dev"},
+		callbacks:         callbacks,
+		client:            NewSessionClient(srv.URL, "", ""),
+		sessionID:         "ses-toolhang-fp",
+		done:              make(chan struct{}),
+		stats:             &execStreamState{},
+		output:            strings.Builder{},
+		toolHangWindowVal: 30 * time.Millisecond,
+	}
+
+	// Tool starts through the pipeline, then completes quickly.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang-fp",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
+	if !r.toolInFlight() {
+		t.Fatal("watchdog not armed at tool start")
+	}
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang-fp",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+	}})
+	if r.toolInFlight() {
+		t.Fatal("tool completion must disarm the hang watchdog immediately")
+	}
+	// The model's long post-tool generation (token deltas + a completed text
+	// part) flows for far longer than the window — the watchdog must not
+	// fire because no tool is in flight.
+	for i := 0; i < 6; i++ {
+		r.handleEvent(BusEvent{Type: "message.part.delta", Properties: map[string]any{
+			"sessionID": "ses-toolhang-fp", "delta": "streaming text ",
+		}})
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+
+	mu.Lock()
+	hangN, stallList := hangSends, append([]string(nil), stalls...)
+	mu.Unlock()
+	if hangN != 0 || len(stallList) != 0 {
+		t.Fatalf("false positive: hangSends=%d stalls=%v, want 0/empty (no in-flight tool)", hangN, stallList)
 	}
 }

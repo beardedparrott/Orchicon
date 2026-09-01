@@ -523,6 +523,52 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 	return nil, false
 }
 
+// ToolStartFromBus reports the tool name when a bus event is the START of a
+// tool call — a tool part whose state is still in flight (status "running",
+// or any status other than a completed/error resolution). This is the
+// tool-start signal the in-flight tool-hang watchdog arms on.
+//
+// It deliberately sits OUTSIDE LegacyEventFromBus, which only maps COMPLETED
+// tool parts (matching run.ts: a tool is emitted only when
+// completed/errored). A hung tool — one stuck at "running" forever — never
+// produces a completed part, so the legacy mapping alone could never arm the
+// watchdog that is supposed to interrupt exactly that hang (D6 review
+// finding). Callers observe the start from the RAW bus event BEFORE the
+// completed/error filter and arm the hang window; the resolution (the
+// completed/error legacy event) disarms it.
+//
+// Returns ("", false) when the event is not a tool-start (non-tool parts,
+// tool parts already resolved, or events that carry no tool name).
+func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
+	props := evt.Properties
+	if evt.Type != "message.part.updated" {
+		return "", false
+	}
+	part, _ := props["part"].(map[string]any)
+	if part == nil {
+		return "", false
+	}
+	ptype, _ := part["type"].(string)
+	if ptype != "tool" {
+		return "", false
+	}
+	tool, _ = part["tool"].(string)
+	if tool == "" {
+		return "", false
+	}
+	// A tool part with a completed/error status is a RESOLUTION, not a start —
+	// the start event for that call (if any) already fired earlier. A part
+	// without a status (or with "running"/"pending") is an in-flight start.
+	status := ""
+	if state, ok := part["state"].(map[string]any); ok {
+		status, _ = state["status"].(string)
+	}
+	if status == "completed" || status == "error" {
+		return "", false
+	}
+	return tool, true
+}
+
 // TokenDeltaInfoFromBus reports whether a bus event is a mid-generation token
 // delta and returns the incremental text plus the part kind it belongs to
 // ("text", "reasoning", or "" when the event does not carry a kind — callers

@@ -618,6 +618,14 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	if _, ok := TokenDeltaFromBus(evt); ok {
 		r.resolveProbe()
 		r.noteSessionProgress()
+		// Token deltas are MODEL generation — the model only generates
+		// between tool calls, never while a tool is in flight (it waits for
+		// the result). A delta therefore proves no tool is currently hung:
+		// disarm the hang watchdog so a long post-tool generation can never
+		// false-trip it, even if the tool's completed part was dropped from
+		// the SSE bus (the bus drops telemetry events when full — see
+		// Subscription.read).
+		r.observeToolEnd()
 		if r.monitor != nil {
 			// observe("text") advances lastStepFinish — the no_progress
 			// signal — without touching lastMeaningfulAction, so the
@@ -630,6 +638,17 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		}
 		return
 	}
+	// Feed the in-flight tool-hang watchdog (D6) from the RAW bus event,
+	// BEFORE the LegacyEventFromBus completed/error filter: a tool part in
+	// flight (status "running" / no status) is the tool-START signal the
+	// hang window arms on. The legacy mapping only ever emits COMPLETED
+	// tool parts, so a tool stuck at "running" would otherwise never arm
+	// the watchdog that exists to interrupt exactly that hang (D6 review
+	// finding). The resolution — the completed/error legacy event — disarms
+	// it below.
+	if tool, isStart := ToolStartFromBus(evt); isStart {
+		r.observeToolStart(tool)
+	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
@@ -640,13 +659,11 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// never triggers a container recycle.
 		r.resolveProbe()
 		r.noteSessionProgress()
-		// Feed the in-flight tool-hang watchdog (D6): a tool_use event is
-		// the tool-start; any completion (non-tool_use activity) disarms
-		// the hang window.
+		// A resolved tool part (completed/error) disarms the hang window;
+		// any other legacy telemetry (text/step/reasoning) after a tool
+		// start is post-tool model generation — the in-flight call is done.
 		if t, _ := legacy["type"].(string); t == evtToolUse {
-			if tool, _ := legacy["part"].(map[string]any)["tool"].(string); tool != "" {
-				r.observeToolStart(tool)
-			}
+			r.observeToolEnd()
 		} else if t != "" {
 			r.observeToolEnd()
 		}
