@@ -28,6 +28,7 @@ import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_conn
 import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { SecretsService } from "@/api/gen/orchicon/api/v1/secret_service_connect";
 import { CategoryService } from "@/api/gen/orchicon/api/v1/category_service_connect";
+import { ProviderService } from "@/api/gen/orchicon/api/v1/provider_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
 import type { RefreshResult } from "@/auth/session";
 
@@ -119,3 +120,6 @@ export const categoryClient = createClient(CategoryService, connectTransport);
 
 // Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
 export const GRAFANA_UI_URL = "/grafana";
+
+// Provider settings service (ADR-0006) — Settings → Adapters Providers tab.
+export const providerClient = createClient(ProviderService, connectTransport);

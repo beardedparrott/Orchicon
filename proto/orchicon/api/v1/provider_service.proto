@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/provider.proto";
+
+// ProviderService (ADR-0006 D4): the tenant-facing Providers management
+// surface behind Settings → Adapters. Merged view over built-in profiles
+// ⊕ stored overrides ⊕ custom providers; token auto-write into the
+// tenant secrets store (standard names, plaintext never returned);
+// sourcing view consumed from the substrate SourcingService.
+service ProviderService {
+  rpc ListProviders(ProviderListRequest) returns (ProviderListResponse);
+  rpc UpdateProviderSettings(ProviderUpdateSettingsRequest) returns (ProviderUpdateSettingsResponse);
+  rpc CreateCustomProvider(ProviderCreateCustomRequest) returns (ProviderCreateCustomResponse);
+  rpc UpdateCustomProvider(ProviderUpdateCustomRequest) returns (ProviderUpdateCustomResponse);
+  rpc DeleteCustomProvider(ProviderDeleteCustomRequest) returns (ProviderDeleteCustomResponse);
+  rpc SetProviderToken(ProviderSetTokenRequest) returns (ProviderSetTokenResponse);
+  rpc ClearProviderToken(ProviderClearTokenRequest) returns (ProviderClearTokenResponse);
+  rpc ListProviderModels(ProviderModelsRequest) returns (ProviderModelsResponse);
+}

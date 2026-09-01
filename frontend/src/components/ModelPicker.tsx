@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useListAdapterKinds, useListOpenCodeModels, useListProviders } from "@/api/aigateway";
+import { useListAdapterKinds, useListOpenCodeModels } from "@/api/aigateway";
+import { useProviderList } from "@/api/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { AIProvider } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
 import {
   DEFAULT_ADAPTER_KIND,
   ORCHICON_ADAPTER_KIND,
@@ -13,6 +14,15 @@ import {
   formatModelRef,
   parseModelRef,
 } from "@/lib/model-ref";
+
+// Per-adapter built-in provider scope (mirrors the backend
+// BuiltinProviderCatalog seed in internal/adapter/providers.go): the
+// provider tier shows the selected adapter's provider set, not the
+// tenant-wide union (ProviderRegistry.Providers semantics).
+const LEGACY_ADAPTER_PROVIDER_IDS: Record<string, Set<string>> = {
+  opencode: new Set(["anthropic", "openai", "local", "opencode", "opencode-go"]),
+  claude: new Set(["anthropic"]),
+};
 
 interface ModelPickerProps {
   value: string;
@@ -40,11 +50,27 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Provider tier (ADR-0006): tenant-aware merged view from the providers
+  // service — built-ins plus the tenant's ENABLED custom providers,
+  // projected into the picker's {id, name, custom} shape. Enabled-only:
+  // disabled providers are not selectable.
   const {
-    data: providers,
+    data: providerEntries,
     isLoading: providersLoading,
     error: providersError,
-  } = useListProviders(adapter);
+  } = useProviderList();
+  // ProviderRegistry semantics (ADR-0003 D3): the provider tier is scoped
+  // to the SELECTED ADAPTER — the merged providers list is the tenant-wide
+  // union, so scope it here (opencode → the opencode-profile providers;
+  // legacy 2-segment ref inference infers opencode, never orchicon).
+  const scopedIds =
+    adapter === ORCHICON_ADAPTER_KIND
+      ? null // the product-default kind: every built-in + enabled custom provider
+      : LEGACY_ADAPTER_PROVIDER_IDS[adapter] ?? null;
+  const providers = providerEntries
+    ?.filter((p) => p.enabled)
+    .filter((p) => scopedIds === null || scopedIds.has(p.id))
+    .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
   const {
     data: models,
     isLoading: modelsLoading,
@@ -336,7 +362,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
                 No providers for adapter “{adapter}”
               </span>
             )}
-            {providers.map((p: AIProvider) => {
+            {providers.map((p: { id: string; name: string; custom: boolean }) => {
               const active = p.id === provider;
               return (
                 <div key={p.id} className="flex items-center gap-1">

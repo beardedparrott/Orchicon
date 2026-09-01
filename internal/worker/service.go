@@ -54,6 +54,13 @@ func (s *Service) SetAdapterKinds(fn func() []string) {
 	SetAdapterKinds(fn)
 }
 
+// SetCustomProviderIDs wires the tenant custom-provider source for
+// model-ref validation (ADR-0006 D6). Called by the server layer after
+// construction; the package-level seam mirrors SetAdapterKinds.
+func (s *Service) SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
+	SetCustomProviderIDs(fn)
+}
+
 // CreateWorker validates input, inserts the worker header + its first
 // draft version, and enqueues a worker.created event — all in one
 // tenant-scoped transaction. The transactional create lives in
@@ -518,7 +525,7 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
 	}
-	modelRef, err := validateModelRef(req.Msg.ModelRef)
+	modelRef, err := validateModelRef(ctx, tenantID, req.Msg.ModelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -633,7 +640,7 @@ func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.Wor
 	// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair
 	// valid for the NEW adapter. A violation becomes this worker's Error
 	// outcome (the batch keeps going — partial-success contract).
-	if err := validateAdapterChange(latest.ModelRef, modelRef); err != nil {
+	if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
 		return db.WorkerVersionRow{}, err
 	}
 	var (
@@ -931,7 +938,7 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
-			modelRef, err := validateModelRef(*msg.ModelRef)
+			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
@@ -942,7 +949,7 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 			// non-empty (the parser enforces segment non-emptiness).
 			// Unchanged-adapter re-saves keep the ADR-0004 D5 semantics
 			// verbatim.
-			if err := validateAdapterChange(current.ModelRef, merged.ModelRef); err != nil {
+			if err := validateAdapterChange(ctx, tenantID, current.ModelRef, merged.ModelRef); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 		}
@@ -1102,14 +1109,14 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
-			modelRef, err := validateModelRef(*msg.ModelRef)
+			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 			newVer.ModelRef = modelRef
 			// ADR-0005 D4: adapter-change validation against the source
 			// version's ref (same contract as UpdateWorkerVersion).
-			if err := validateAdapterChange(source.ModelRef, newVer.ModelRef); err != nil {
+			if err := validateAdapterChange(ctx, tenantID, source.ModelRef, newVer.ModelRef); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 		}
