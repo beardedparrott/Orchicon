@@ -152,7 +152,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	catSvc := category.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
-	// WorkerService (docs/07 §3.3).
+	// ProviderService (ADR-0006) — tenant-facing Providers management
+	// surface behind Settings → Adapters. Constructed here (before
+	// WorkerService) so the worker validation path can consume the
+	// tenant's enabled custom provider ids; the handler is registered on
+	// the mux exactly once (the earlier/only Handle call). Note: the
+	// comment above originally grouped this under WorkerService — the
+	// service construction, substrate loader registration, and handler
+	// mount all belong together.
 	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	providerSvc.Service().RegisterSubstrateLoader()
 	deps.ProvidersService = providerSvc.Service()
@@ -295,14 +302,6 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// leaves the store disabled (fail-closed at the service layer).
 	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
-
-	// ProviderService — the tenant-facing Providers management surface
-	// behind Settings → Adapters (ADR-0006): merged provider view, custom
-	// CRUD, token auto-write into the tenant secrets store (same KEK as
-	// SecretsService — fail-closed without it), and the substrate loader
-	// registration (tenant custom profiles become resolvable through
-	// orchicon.Registry.Get; DISABLED providers never load).
-	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)

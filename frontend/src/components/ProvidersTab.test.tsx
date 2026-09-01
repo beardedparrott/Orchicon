@@ -59,4 +59,25 @@ describe("ProvidersTab (ADR-0006)", () => {
     expect(invalidations).toBe(6); // settings, create, update, delete, setToken, clearToken
     expect(api).toContain("providersKeys.all");
   });
+
+  it("edits custom providers (display name, base URL, auth mode; ref immutable)", () => {
+    expect(src).toContain("useUpdateCustomProvider");
+    expect(src).toMatch(/Edit custom provider/);
+    expect(src).toMatch(/ref id is immutable after create/);
+    // The edit control exists next to the delete control.
+    expect(src).toMatch(/Pencil/);
+    expect(src).toContain('aria-label={`Edit ${entry.id}`}');
+  });
+
+  it("manages manual model entries on custom providers (add/edit/remove + hints)", () => {
+    expect(src).toContain("ManualModelsEditor");
+    expect(src).toContain("replaceManualModels");
+    expect(src).toContain("manualModels");
+    expect(src).toMatch(/Manual models/);
+    expect(src).toMatch(/context window/);
+    expect(src).toMatch(/reasoning/);
+    expect(src).toMatch(/max output/);
+    // Hints ride the same sourcing tier as probe results.
+    expect(src).toContain("m.source === \"manual\"");
+  });
 });

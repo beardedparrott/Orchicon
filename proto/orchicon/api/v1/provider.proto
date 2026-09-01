@@ -21,6 +21,10 @@ message ProviderEntry {
   // Hidden model ids (visibility toggles). Empty for customs that never
   // hid anything.
   repeated string hidden_models = 13;
+  // Operator-added manual model entries (custom providers). Present so the
+  // UI can render existing entries when editing; the write path uses
+  // ProviderUpdateSettingsRequest.manual_models.
+  repeated ProviderManualModel manual_models = 14;
 }
 
 message ProviderListRequest {}

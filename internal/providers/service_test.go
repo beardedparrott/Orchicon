@@ -347,6 +347,119 @@ func TestProvidersBuiltInOverrides(t *testing.T) {
 	t.Fatal("ollama not listed as read-only built-in")
 }
 
+func TestProvidersManualModels(t *testing.T) {
+	svc, pool := newProvidersTestService(t)
+	ensureTenant(t, pool, testTenant)
+	ctx := context.Background()
+
+	// Create a custom provider to attach manual models to.
+	if _, err := svc.CreateCustom(ctx, testTenant, providers.CreateCustomInput{RefID: "local-models-mm", BaseURL: "http://localhost:11434/v1", AuthMode: providers.AuthModeNone}); err != nil {
+		t.Fatalf("create custom: %v", err)
+	}
+	t.Cleanup(func() {
+		ct := context.Background()
+		dtx, err := pool.BeginTenantTx(ct, testTenant)
+		if err == nil {
+			_, _ = dtx.Exec(ct, `DELETE FROM provider_settings WHERE tenant_id = $1 AND is_custom`, testTenant)
+			_, _ = dtx.Exec(ct, `DELETE FROM tenant_secrets WHERE tenant_id = $1 AND name LIKE 'CUSTOM\_%' ESCAPE '\'`, testTenant)
+			_ = dtx.Commit(ct)
+		}
+	})
+
+	// Append manual models (replace=false merges by id).
+	_, err := svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID: "local-models-mm",
+		ManualModels: []providers.ManualModel{
+			{ID: "Qwen3.6-35B-A3B-UD", Context: 32768, MaxOutput: 4096, Reasoning: true},
+			{ID: "mistral-small", Context: 16384, MaxOutput: 2048},
+		},
+	})
+	if err != nil {
+		t.Fatalf("append manual models: %v", err)
+	}
+
+	// Merge by id: update one, add one, keep the other.
+	_, err = svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID: "local-models-mm",
+		ManualModels: []providers.ManualModel{
+			{ID: "Qwen3.6-35B-A3B-UD", Context: 65536, MaxOutput: 8192, Reasoning: false},
+			{ID: "llama3.1-8b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge manual models: %v", err)
+	}
+
+	list, err := svc.ListForTenant(ctx, testTenant)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var e *providers.Entry
+	for i := range list {
+		if list[i].ID == "local-models-mm" {
+			e = &list[i]
+			break
+		}
+	}
+	if e == nil {
+		t.Fatal("custom provider missing from list")
+	}
+	if len(e.ManualModels) != 3 {
+		t.Fatalf("want 3 manual models, got %+v", e.ManualModels)
+	}
+	byID := map[string]providers.ManualModel{}
+	for _, m := range e.ManualModels {
+		byID[m.ID] = m
+	}
+	if m := byID["Qwen3.6-35B-A3B-UD"]; m.Context != 65536 || m.MaxOutput != 8192 || m.Reasoning {
+		t.Fatalf("updated manual model wrong: %+v", m)
+	}
+	if m := byID["mistral-small"]; m.Context != 16384 || m.MaxOutput != 2048 {
+		t.Fatalf("kept manual model wrong: %+v", m)
+	}
+	if m := byID["llama3.1-8b"]; m.Context != 0 || m.MaxOutput != 0 {
+		t.Fatalf("added bare manual model wrong: %+v", m)
+	}
+
+	// The manual entries surface in the sourcing model list (source=manual).
+	models, err := svc.ListProviderModels(ctx, testTenant, "local-models-mm")
+	if err != nil {
+		t.Fatalf("list models: %v", err)
+	}
+	saw := map[string]bool{}
+	for _, m := range models.Models {
+		saw[m.ID] = true
+		if m.Source == "manual" && m.ID == "Qwen3.6-35B-A3B-UD" && m.Context != 65536 {
+			t.Fatalf("manual model surfaced wrong: %+v", m)
+		}
+	}
+	for _, id := range []string{"Qwen3.6-35B-A3B-UD", "mistral-small", "llama3.1-8b"} {
+		if !saw[id] {
+			t.Fatalf("manual model %s missing from sourced list", id)
+		}
+	}
+
+	// Replace wipes everything not in the replacement list.
+	_, err = svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID:   "local-models-mm",
+		ManualModels: []providers.ManualModel{{ID: "only-one"}},
+		ManualReplace: true,
+	})
+	if err != nil {
+		t.Fatalf("replace manual models: %v", err)
+	}
+	list, _ = svc.ListForTenant(ctx, testTenant)
+	for i := range list {
+		if list[i].ID == "local-models-mm" {
+			if len(list[i].ManualModels) != 1 || list[i].ManualModels[0].ID != "only-one" {
+				t.Fatalf("replace result: %+v", list[i].ManualModels)
+			}
+			return
+		}
+	}
+	t.Fatal("custom provider missing after replace")
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
 }

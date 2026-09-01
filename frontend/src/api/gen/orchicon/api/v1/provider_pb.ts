@@ -82,6 +82,15 @@ export class ProviderEntry extends Message<ProviderEntry> {
    */
   hiddenModels: string[] = [];
 
+  /**
+   * Operator-added manual model entries (custom providers). Present so the
+   * UI can render existing entries when editing; the write path uses
+   * ProviderUpdateSettingsRequest.manual_models.
+   *
+   * @generated from field: repeated orchicon.api.v1.ProviderManualModel manual_models = 14;
+   */
+  manualModels: ProviderManualModel[] = [];
+
   constructor(data?: PartialMessage<ProviderEntry>) {
     super();
     proto3.util.initPartial(data, this);
@@ -103,6 +112,7 @@ export class ProviderEntry extends Message<ProviderEntry> {
     { no: 11, name: "token_secret_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 12, name: "num_ctx_default", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 13, name: "hidden_models", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 14, name: "manual_models", kind: "message", T: ProviderManualModel, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProviderEntry {

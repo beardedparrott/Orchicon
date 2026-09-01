@@ -2,8 +2,9 @@
 // Settings → Adapters. Lists built-in profiles (read-only entries) and
 // tenant custom providers (first-class CRUD), with enable/disable toggles,
 // baseURL overrides, token auto-write (never a manual secrets visit),
-// Ollama context settings, per-provider model visibility, and the
-// deletion guard (blocked while workers reference the provider).
+// Ollama context settings, per-provider model visibility, manual model
+// entries (custom providers), and the deletion guard (blocked while
+// workers reference the provider).
 import { useState } from "react";
 
 import {
@@ -17,21 +18,172 @@ import {
   useProviderModels,
 } from "@/api/providers";
 import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
+import { ProviderManualModel } from "@/api/gen/orchicon/api/v1/provider_pb";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Loader2, Plus, Trash2, AlertTriangle, KeyRound, Eye } from "lucide-react";
+import { Loader2, Plus, Trash2, AlertTriangle, KeyRound, Eye, Pencil, X } from "lucide-react";
 
 const OLLAMA_ID = "ollama";
+
+// ManualModelsEditor manages the operator-added manual model entries on a
+// custom provider (ADR-0006 D1/D4): model id + optional context-window /
+// max-output / reasoning hints. The whole list is persisted with
+// replaceManualModels=true (the merge logic lives in the service, not the
+// UI). Rendered under the same "models" tier as the probe results.
+function ManualModelsEditor({ entry }: { entry: ProviderEntry }) {
+  const [models, setModels] = useState<ProviderManualModel[]>(
+    () => (entry.manualModels ?? []).map((m) => new ProviderManualModel({ ...m })),
+  );
+  const [newId, setNewId] = useState("");
+  const [newCtx, setNewCtx] = useState("");
+  const [newMaxOut, setNewMaxOut] = useState("");
+  const [newReasoning, setNewReasoning] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const updateSettings = useUpdateProviderSettings();
+
+  function add() {
+    setMsg(null);
+    const id = newId.trim();
+    if (!id) return;
+    const model = new ProviderManualModel({
+      id,
+      context: BigInt(newCtx.trim() === "" ? 0 : Number(newCtx)),
+      maxOutput: BigInt(newMaxOut.trim() === "" ? 0 : Number(newMaxOut)),
+      reasoning: newReasoning,
+    });
+    setModels((prev) => (prev.some((m) => m.id === id) ? prev : [...prev, model]));
+    setNewId("");
+    setNewCtx("");
+    setNewMaxOut("");
+    setNewReasoning(false);
+  }
+
+  function updateRow(id: string, patch: Partial<ProviderManualModel>) {
+    setModels((prev) => prev.map((m) => (m.id === id ? new ProviderManualModel({ ...m, ...patch }) : m)));
+  }
+
+  function removeRow(id: string) {
+    setModels((prev) => prev.filter((m) => m.id !== id));
+  }
+
+  function save() {
+    setMsg(null);
+    updateSettings.mutate(
+      {
+        providerId: entry.id,
+        manualModels: models.map((m) => ({
+          id: m.id,
+          context: m.context,
+          maxOutput: m.maxOutput,
+          reasoning: m.reasoning,
+        })),
+        replaceManualModels: true,
+      },
+      {
+        onSuccess: () => setMsg("Manual models saved."),
+        onError: (e) => setMsg(String(e)),
+      },
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        Manual models (custom provider)
+      </p>
+      {models.length > 0 && (
+        <ul className="space-y-1">
+          {models.map((m) => (
+            <li key={m.id} className="flex items-center gap-2 text-xs">
+              <span className="min-w-0 flex-1 truncate">
+                <code>{m.id}</code>
+              </span>
+              <label className="flex items-center gap-1 text-muted-foreground">
+                ctx
+                <Input
+                  type="number"
+                  min={0}
+                  className="h-6 w-20 px-1 text-xs"
+                  value={m.context.toString()}
+                  onChange={(e) => updateRow(m.id, { context: BigInt(Number(e.target.value) || 0) })}
+                />
+              </label>
+              <label className="flex items-center gap-1 text-muted-foreground">
+                max
+                <Input
+                  type="number"
+                  min={0}
+                  className="h-6 w-20 px-1 text-xs"
+                  value={m.maxOutput.toString()}
+                  onChange={(e) => updateRow(m.id, { maxOutput: BigInt(Number(e.target.value) || 0) })}
+                />
+              </label>
+              <label className="flex items-center gap-1 text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={m.reasoning}
+                  onChange={(e) => updateRow(m.id, { reasoning: e.target.checked })}
+                />
+                reasoning
+              </label>
+              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => removeRow(m.id)} aria-label={`Remove ${m.id}`}>
+                <X className="h-3 w-3" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          placeholder="model id (e.g. Qwen3.6-35B-A3B)"
+          value={newId}
+          onChange={(e) => setNewId(e.target.value)}
+          className="h-7 w-44 text-xs"
+        />
+        <Input
+          type="number"
+          min={0}
+          placeholder="ctx"
+          value={newCtx}
+          onChange={(e) => setNewCtx(e.target.value)}
+          className="h-7 w-16 text-xs"
+          aria-label="context window"
+        />
+        <Input
+          type="number"
+          min={0}
+          placeholder="max"
+          value={newMaxOut}
+          onChange={(e) => setNewMaxOut(e.target.value)}
+          className="h-7 w-16 text-xs"
+          aria-label="max output"
+        />
+        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <input type="checkbox" checked={newReasoning} onChange={(e) => setNewReasoning(e.target.checked)} />
+          reasoning
+        </label>
+        <Button size="sm" variant="outline" className="h-7" onClick={add} disabled={!newId.trim()}>
+          <Plus className="h-3 w-3" /> Add
+        </Button>
+        <Button size="sm" className="h-7" onClick={save} disabled={updateSettings.isPending}>
+          {updateSettings.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+        </Button>
+      </div>
+      {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
+    </div>
+  );
+}
 
 // ProviderCard renders one merged provider entry. Built-ins render their
 // controls but never delete/edit-identity (read-only definition).
 function ProviderCard({ entry }: { entry: ProviderEntry }) {
   const [token, setToken] = useState("");
   const [baseUrl, setBaseUrl] = useState(entry.baseUrlOverride || "");
-  const [numCtx, setNumCtx] = useState<string>(entry.numCtxDefault ? String(entry.numCtxDefault) : "");
+  const [numCtx, setNumCtx] = useState<string>(entry.numCtxDefault ? entry.numCtxDefault.toString() : "");
   const [showModels, setShowModels] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const updateSettings = useUpdateProviderSettings();
   const setTokenMut = useSetProviderToken();
@@ -50,7 +202,11 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
   function saveNumCtx() {
     setMsg(null);
     const n = numCtx.trim() === "" ? 0 : Number(numCtx);
-    updateSettings.mutate({ providerId: entry.id, numCtxDefault: n > 0 ? n : 0 }, { onError: (e) => setMsg(String(e)) });
+    // numCtxDefault is proto int64 → TS bigint; coerce explicitly.
+    updateSettings.mutate(
+      { providerId: entry.id, numCtxDefault: BigInt(n > 0 ? n : 0) },
+      { onError: (e) => setMsg(String(e)) },
+    );
   }
   function saveToken() {
     setMsg(null);
@@ -94,15 +250,22 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
               <span className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">built-in</span>
             )}
           </span>
-          <label className="flex items-center gap-2 text-xs font-normal">
-            <input
-              type="checkbox"
-              checked={entry.enabled}
-              onChange={(e) => saveToggle(e.target.checked)}
-              aria-label={`Enable ${entry.id}`}
-            />
-            enabled
-          </label>
+          <span className="flex items-center gap-2">
+            {entry.isCustom && (
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setEditing(true)}>
+                <Pencil className="mr-1 h-3 w-3" /> Edit
+              </Button>
+            )}
+            <label className="flex items-center gap-2 text-xs font-normal">
+              <input
+                type="checkbox"
+                checked={entry.enabled}
+                onChange={(e) => saveToggle(e.target.checked)}
+                aria-label={`Enable ${entry.id}`}
+              />
+              enabled
+            </label>
+          </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
@@ -166,7 +329,8 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
           </div>
         )}
 
-        {/* Sourcing surface: probed ⊕ manual, deduped; visibility toggles. */}
+        {/* Sourcing surface: probed ⊕ manual, deduped; visibility toggles;
+            manual-model editor for customs. */}
         <div className="space-y-1">
           <button
             type="button"
@@ -176,41 +340,44 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
             <Eye className="h-3 w-3" /> {showModels ? "Hide" : "Show"} models
           </button>
           {showModels && (
-            <div className="space-y-1 rounded border p-2">
-              {modelsQ.isLoading && <Loader2 className="h-3 w-3 animate-spin" />}
-              {modelsQ.data?.degraded && (
-                <p className="flex items-center gap-1 text-xs text-amber-600">
-                  <AlertTriangle className="h-3 w-3" /> Probe failed — showing manual entries only (non-fatal).
-                </p>
-              )}
-              {modelsQ.data?.enabled === false && <p className="text-xs text-muted-foreground">Provider disabled.</p>}
-              {(modelsQ.data?.models ?? []).map((m) => (
-                <label key={m.id} className="flex items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={m.visible}
-                    onChange={(e) => {
-                      const hidden = e.target.checked
-                        ? (entry.hiddenModels ?? []).filter((h) => h !== m.id)
-                        : [...(entry.hiddenModels ?? []), m.id];
-                      updateSettings.mutate({ providerId: entry.id, hiddenModels: hidden }, { onError: (err) => setMsg(String(err)) });
-                    }}
-                  />
-                  <code>{m.id}</code>
-                  {m.source === "manual" && <span className="rounded bg-muted px-1 text-[10px]">manual</span>}
-                  {m.warnNoContext && (
-                    <span
-                      className="rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700"
-                      title="No context-window hint — selectable but may misbehave"
-                    >
-                      WARN: no context hint
-                    </span>
-                  )}
-                </label>
-              ))}
-              {modelsQ.data && (modelsQ.data.models ?? []).length === 0 && !modelsQ.data.degraded && (
-                <p className="text-xs text-muted-foreground">No models discovered.</p>
-              )}
+            <div className="space-y-2 rounded border p-2">
+              {entry.isCustom && <ManualModelsEditor entry={entry} />}
+              <div className="space-y-1">
+                {modelsQ.isLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+                {modelsQ.data?.degraded && (
+                  <p className="flex items-center gap-1 text-xs text-amber-600">
+                    <AlertTriangle className="h-3 w-3" /> Probe failed — showing manual entries only (non-fatal).
+                  </p>
+                )}
+                {modelsQ.data?.enabled === false && <p className="text-xs text-muted-foreground">Provider disabled.</p>}
+                {(modelsQ.data?.models ?? []).map((m) => (
+                  <label key={m.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={m.visible}
+                      onChange={(e) => {
+                        const hidden = e.target.checked
+                          ? (entry.hiddenModels ?? []).filter((h) => h !== m.id)
+                          : [...(entry.hiddenModels ?? []), m.id];
+                        updateSettings.mutate({ providerId: entry.id, hiddenModels: hidden }, { onError: (err) => setMsg(String(err)) });
+                      }}
+                    />
+                    <code>{m.id}</code>
+                    {m.source === "manual" && <span className="rounded bg-muted px-1 text-[10px]">manual</span>}
+                    {m.warnNoContext && (
+                      <span
+                        className="rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700"
+                        title="No context-window hint — selectable but may misbehave"
+                      >
+                        WARN: no context hint
+                      </span>
+                    )}
+                  </label>
+                ))}
+                {modelsQ.data && (modelsQ.data.models ?? []).length === 0 && !modelsQ.data.degraded && (
+                  <p className="text-xs text-muted-foreground">No models discovered.</p>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -223,7 +390,77 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
           </Button>
         )}
       </CardContent>
+
+      {editing && entry.isCustom && (
+        <EditCustomDialog
+          entry={entry}
+          onClose={() => setEditing(false)}
+          onError={(e) => setMsg(String(e))}
+        />
+      )}
     </Card>
+  );
+}
+
+// EditCustomDialog edits the mutable definition of a custom provider
+// (display name, base URL, auth mode). The ref id is immutable after
+// create — it is the model_ref segment-2 identity.
+function EditCustomDialog({
+  entry,
+  onClose,
+  onError,
+}: {
+  entry: ProviderEntry;
+  onClose: () => void;
+  onError: (e: unknown) => void;
+}) {
+  const [displayName, setDisplayName] = useState(entry.displayName || "");
+  const [baseUrl, setBaseUrl] = useState(entry.baseUrl || "");
+  const [authMode, setAuthMode] = useState<"none" | "token">(entry.authMode === "token" ? "token" : "none");
+  const [err, setErr] = useState<string | null>(null);
+  const updateMut = useUpdateCustomProvider();
+
+  function submit() {
+    setErr(null);
+    updateMut.mutate(
+      { refId: entry.id, displayName, baseUrl, authMode },
+      {
+        onSuccess: onClose,
+        onError: (e) => {
+          setErr(String(e));
+          onError(e);
+        },
+      },
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog" aria-label={`Edit ${entry.id}`}>
+      <div className="w-full max-w-md space-y-3 rounded-lg border bg-background p-4">
+        <h2 className="text-base font-semibold">
+          Edit custom provider <span className="font-mono text-xs text-muted-foreground">{entry.id}</span>
+        </h2>
+        <p className="text-xs text-muted-foreground">ref id is immutable after create.</p>
+        <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+        <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <label className="flex items-center gap-2 text-xs">
+          auth mode
+          <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "none" | "token")}>
+            <option value="none">none</option>
+            <option value="token">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
+          </select>
+        </label>
+        {err && <p className="text-xs text-destructive">{err}</p>}
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={updateMut.isPending || !baseUrl}>
+            {updateMut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

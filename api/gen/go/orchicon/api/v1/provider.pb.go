@@ -40,7 +40,11 @@ type ProviderEntry struct {
 	NumCtxDefault   int64                  `protobuf:"varint,12,opt,name=num_ctx_default,json=numCtxDefault,proto3" json:"num_ctx_default,omitempty"`
 	// Hidden model ids (visibility toggles). Empty for customs that never
 	// hid anything.
-	HiddenModels  []string `protobuf:"bytes,13,rep,name=hidden_models,json=hiddenModels,proto3" json:"hidden_models,omitempty"`
+	HiddenModels []string `protobuf:"bytes,13,rep,name=hidden_models,json=hiddenModels,proto3" json:"hidden_models,omitempty"`
+	// Operator-added manual model entries (custom providers). Present so the
+	// UI can render existing entries when editing; the write path uses
+	// ProviderUpdateSettingsRequest.manual_models.
+	ManualModels  []*ProviderManualModel `protobuf:"bytes,14,rep,name=manual_models,json=manualModels,proto3" json:"manual_models,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -162,6 +166,13 @@ func (x *ProviderEntry) GetNumCtxDefault() int64 {
 func (x *ProviderEntry) GetHiddenModels() []string {
 	if x != nil {
 		return x.HiddenModels
+	}
+	return nil
+}
+
+func (x *ProviderEntry) GetManualModels() []*ProviderManualModel {
+	if x != nil {
+		return x.ManualModels
 	}
 	return nil
 }
@@ -1207,7 +1218,7 @@ var File_orchicon_api_v1_provider_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_provider_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/provider.proto\x12\x0forchicon.api.v1\"\xb1\x03\n" +
+	"\x1eorchicon/api/v1/provider.proto\x12\x0forchicon.api.v1\"\xfc\x03\n" +
 	"\rProviderEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x12\n" +
@@ -1222,7 +1233,8 @@ const file_orchicon_api_v1_provider_proto_rawDesc = "" +
 	" \x01(\bR\x0ehasTokenStored\x12*\n" +
 	"\x11token_secret_name\x18\v \x01(\tR\x0ftokenSecretName\x12&\n" +
 	"\x0fnum_ctx_default\x18\f \x01(\x03R\rnumCtxDefault\x12#\n" +
-	"\rhidden_models\x18\r \x03(\tR\fhiddenModels\"\x15\n" +
+	"\rhidden_models\x18\r \x03(\tR\fhiddenModels\x12I\n" +
+	"\rmanual_models\x18\x0e \x03(\v2$.orchicon.api.v1.ProviderManualModelR\fmanualModels\"\x15\n" +
 	"\x13ProviderListRequest\"T\n" +
 	"\x14ProviderListResponse\x12<\n" +
 	"\tproviders\x18\x01 \x03(\v2\x1e.orchicon.api.v1.ProviderEntryR\tproviders\"\xb6\x03\n" +
@@ -1340,18 +1352,19 @@ var file_orchicon_api_v1_provider_proto_goTypes = []any{
 	(*ProviderModelsResponse)(nil),         // 19: orchicon.api.v1.ProviderModelsResponse
 }
 var file_orchicon_api_v1_provider_proto_depIdxs = []int32{
-	0,  // 0: orchicon.api.v1.ProviderListResponse.providers:type_name -> orchicon.api.v1.ProviderEntry
-	4,  // 1: orchicon.api.v1.ProviderUpdateSettingsRequest.manual_models:type_name -> orchicon.api.v1.ProviderManualModel
-	0,  // 2: orchicon.api.v1.ProviderUpdateSettingsResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
-	0,  // 3: orchicon.api.v1.ProviderCreateCustomResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
-	0,  // 4: orchicon.api.v1.ProviderUpdateCustomResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
-	11, // 5: orchicon.api.v1.ProviderDeleteCustomResponse.referencing_workers:type_name -> orchicon.api.v1.ProviderReferencingWorker
-	17, // 6: orchicon.api.v1.ProviderModelsResponse.models:type_name -> orchicon.api.v1.ProviderModel
-	7,  // [7:7] is the sub-list for method output_type
-	7,  // [7:7] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	4,  // 0: orchicon.api.v1.ProviderEntry.manual_models:type_name -> orchicon.api.v1.ProviderManualModel
+	0,  // 1: orchicon.api.v1.ProviderListResponse.providers:type_name -> orchicon.api.v1.ProviderEntry
+	4,  // 2: orchicon.api.v1.ProviderUpdateSettingsRequest.manual_models:type_name -> orchicon.api.v1.ProviderManualModel
+	0,  // 3: orchicon.api.v1.ProviderUpdateSettingsResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
+	0,  // 4: orchicon.api.v1.ProviderCreateCustomResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
+	0,  // 5: orchicon.api.v1.ProviderUpdateCustomResponse.provider:type_name -> orchicon.api.v1.ProviderEntry
+	11, // 6: orchicon.api.v1.ProviderDeleteCustomResponse.referencing_workers:type_name -> orchicon.api.v1.ProviderReferencingWorker
+	17, // 7: orchicon.api.v1.ProviderModelsResponse.models:type_name -> orchicon.api.v1.ProviderModel
+	8,  // [8:8] is the sub-list for method output_type
+	8,  // [8:8] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_provider_proto_init() }

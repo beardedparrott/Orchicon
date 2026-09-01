@@ -235,5 +235,10 @@ func entryToProto(e Entry) *apiv1.ProviderEntry {
 		NumCtxDefault:   e.NumCtxDefault,
 	}
 	out.HiddenModels = append(out.HiddenModels, e.HiddenModels...)
+	for _, m := range e.ManualModels {
+		out.ManualModels = append(out.ManualModels, &apiv1.ProviderManualModel{
+			Id: m.ID, Context: m.Context, MaxOutput: m.MaxOutput, Reasoning: m.Reasoning,
+		})
+	}
 	return out
 }
