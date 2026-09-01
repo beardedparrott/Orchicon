@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -47,6 +48,11 @@ type NativeBridge struct {
 	usageRecorder scheduler.UsageRecorderFunc
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
+	// mcpConfig resolves the session's MCP server selection (ADR-0008:
+	// worker → project → none over the tenant server list). Nil/absent →
+	// no MCP tools (sessions unaffected). Defaults to the no-op source so
+	// the feature degrades safely until adapter-settings storage lands.
+	mcpConfig mcpclient.ConfigSource
 }
 
 // liveSession is the bridge's handle on one running session.
@@ -75,6 +81,14 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 
 // Kind is the registered adapter kind ("orchicon").
 func (b *NativeBridge) Kind() string { return "orchicon" }
+
+// SetConfigSource sets the MCP server config-resolution source for
+// sessions (ADR-0008). Absent → no MCP tools. The platform injects a
+// real source once tenant server storage lands (adapter-settings task);
+// until then the no-op default keeps sessions unaffected.
+func (b *NativeBridge) SetConfigSource(src mcpclient.ConfigSource) {
+	b.mcpConfig = src
+}
 
 // ProviderResolverFunc adapts a function to ProviderResolver.
 type ProviderResolverFunc func(ctx context.Context, tenantID, providerID string) (Provider, error)
@@ -107,6 +121,34 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		return fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
 
+	// MCP tool resolution (ADR-0008): worker selection → project selection
+	// → none, over the tenant-configured server list. Connections are
+	// established NOW — per session, never at control-plane boot — and
+	// tool discovery runs at Start so the discovered signatures are
+	// present in the model's first request. A selected-but-unconfigured
+	// or unreachable server fails the session actionably (never silent);
+	// the no-op default source degrades to no MCP tools.
+	var tools ToolRegistry
+	if b.mcpConfig != nil {
+		res, rerr := mcpclient.Resolve(ctx, b.mcpConfig, exec.WorkerID, exec.ProjectID)
+		if rerr != nil {
+			return fmt.Errorf("orchicon bridge: resolve MCP servers: %w", rerr)
+		}
+		if len(res.Missing) > 0 {
+			return fmt.Errorf("orchicon bridge: MCP server(s) selected but not configured: %v — fix the worker/project MCP selection or the tenant server list", res.Missing)
+		}
+		if len(res.Servers) > 0 {
+			mgr := mcpclient.NewManager(b.log)
+			if _, merr := mgr.Start(ctx, res.Servers); merr != nil {
+				return fmt.Errorf("orchicon bridge: MCP connect: %w", merr)
+			}
+			// Start blocks until the session's terminal result; Close runs
+			// at session end (kills stdio children, closes HTTP).
+			defer func() { _ = mgr.Close() }()
+			tools = mcpTools{mgr: mgr}
+		}
+	}
+
 	// Sessions are per-execution. Resolve the provider once here (model
 	// bound at session start — no per-turn model switch).
 	sess, err := NewSession(SessionConfig{
@@ -114,6 +156,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		Manifest:   manifest,
 		ProjectDir: pd,
 		Resolver:   b.resolver,
+		Tools:      tools,
 		Log:        b.log,
 	})
 	if err != nil {
@@ -303,6 +346,30 @@ func (b *NativeBridge) SetSessionStore(fn scheduler.SessionStoreFunc) {
 func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {}
 
 // --- internal ------------------------------------------------------------
+
+// mcpTools adapts the per-session MCP client manager to the loop's
+// ToolRegistry (ADR-0008): discovered tools surface as
+// mcp__<server>__<tool> with their JSON schemas passed through verbatim,
+// and calls route to the MCP server with per-call timeouts and
+// cancellation. The manager is closed by the bridge at session end.
+type mcpTools struct {
+	mgr *mcpclient.Manager
+}
+
+// Defs implements ToolRegistry: the discovered MCP tool definitions.
+func (m mcpTools) Defs() []ToolDef {
+	src := m.mgr.Defs()
+	out := make([]ToolDef, len(src))
+	for i, d := range src {
+		out[i] = ToolDef{Name: d.Name, Description: d.Description, ParamsJSON: d.ParamsJSON}
+	}
+	return out
+}
+
+// Execute implements ToolRegistry: route a call to the MCP server.
+func (m mcpTools) Execute(ctx context.Context, name, argsJSON string) (string, error) {
+	return m.mgr.Execute(ctx, name, argsJSON)
+}
 
 // recordUsage emits the execution's final usage sample (best-effort).
 func (b *NativeBridge) recordUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) {

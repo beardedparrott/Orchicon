@@ -32,6 +32,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/logging"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/outbox"
@@ -752,6 +753,27 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses
+	// spawned for sessions carry ORCHICON_MCP_STDIO=1. PDEATHSIG reaps
+	// them when the plane dies in-process, but a plane crash (SIGKILL /
+	// OOM) reparents live children to PID 1. Sweep at boot (1s) and every
+	// 30s: any marked child whose parent is PID 1 has no controlling
+	// execution and is killed (process group).
+	go func() {
+		sweep := time.NewTicker(30 * time.Second)
+		defer sweep.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+				mcpclient.SweepStaleChildren(ctx, s.log)
+			case <-sweep.C:
+				mcpclient.SweepStaleChildren(ctx, s.log)
+			}
+		}
+	}()
 
 	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +
 	// dead-letter — docs/07 §3.11). Degrades gracefully when NATS is
