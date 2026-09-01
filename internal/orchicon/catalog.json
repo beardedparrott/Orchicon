@@ -1,0 +1,86 @@
+{
+  "_meta": {
+    "description": "Orchicon vendored model catalog — authored snapshot (mini models.dev). Pricing is USD per million tokens. Missing pricing displays zero cost with an explicit 'billing applies' disclaimer; it never implies free requests.",
+    "authored": "2026-09"
+  },
+  "anthropic/claude-sonnet-4": {
+    "context": 200000, "max_output": 64000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.3, "cache_write_per_m": 3.75, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true, "aliases": ["claude-sonnet-4", "sonnet-4"]
+  },
+  "anthropic/claude-opus-4": {
+    "context": 200000, "max_output": 32000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 15.0, "output_per_m": 75.0, "cache_read_per_m": 1.5, "cache_write_per_m": 18.75, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "anthropic/claude-haiku-4": {
+    "context": 200000, "max_output": 64000, "tools": true,
+    "pricing": {"input_per_m": 0.8, "output_per_m": 4.0, "cache_read_per_m": 0.08, "cache_write_per_m": 1.0, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "openai/gpt-5": {
+    "context": 400000, "max_output": 128000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 1.25, "output_per_m": 10.0, "cache_read_per_m": 0.125, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "openai/gpt-5-mini": {
+    "context": 400000, "max_output": 128000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 0.25, "output_per_m": 2.0, "cache_read_per_m": 0.025, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "openrouter/deepseek/deepseek-v4-flash": {
+    "context": 128000, "max_output": 32000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 0.28, "output_per_m": 0.42, "cache_read_per_m": 0.028, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "opencode/gpt-5.1-codex": {
+    "context": 400000, "max_output": 128000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 1.25, "output_per_m": 10.0, "cache_read_per_m": 0.125, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "opencode-go/gpt-5.3-codex-spark": {
+    "context": 400000, "max_output": 128000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 0.5, "output_per_m": 2.0, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "commandcode/z-ai/glm-5.3-flash": {
+    "context": 200000, "max_output": 96000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 0.6, "output_per_m": 2.2, "cache_read_per_m": 0.11, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "commandcode/deepseek/deepseek-v4-flash": {
+    "context": 128000, "max_output": 32000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 0.28, "output_per_m": 0.42, "cache_read_per_m": 0.028, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "commandcode/claude-sonnet-4": {
+    "context": 200000, "max_output": 64000, "tools": true,
+    "reasoning_efforts": ["low", "medium", "high"],
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.3, "cache_write_per_m": 3.75, "currency": "USD", "source": "catalog-authored 2026-09"},
+    "visible": true
+  },
+  "commandcode/qwen/qwen3-coder-plus": {
+    "context": 128000, "max_output": 32000, "tools": true,
+    "pricing": null,
+    "visible": true
+  },
+  "ollama/llama3.2": {
+    "context": 131072, "max_output": 8192, "tools": true,
+    "pricing": null,
+    "visible": true
+  },
+  "ollama/qwen3-coder": {
+    "context": 262144, "max_output": 8192, "tools": true,
+    "pricing": null,
+    "visible": true
+  }
+}
