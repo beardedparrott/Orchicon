@@ -9,8 +9,9 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     // Tier 1 — adapter bubble list from registered kinds.
     expect(src).toContain("useListAdapterKinds");
     expect(src).toMatch(/rounded-full border px-3 py-1/);
-    // Tier 2 — provider list scoped to the selected adapter.
-    expect(src).toContain("useListProviders(adapter)");
+    // Tier 2 — provider list from the tenant-aware providers service
+    // (ADR-0006: built-ins ⊕ enabled tenant customs, auto-refresh on save).
+    expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
     expect(src).toContain("useListOpenCodeModels(adapter, provider)");
@@ -24,6 +25,16 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toContain("useListOpenCodeModels(");
     expect(src).toMatch(/Search models\.\.\./);
     expect(src).toMatch(/Select a provider first/);
+  });
+
+  it("scopes the merged provider tier to the selected adapter (ProviderRegistry semantics)", () => {
+    // The merged providers list is tenant-wide; the tier filters it to the
+    // selected adapter's provider set (legacy kinds from the catalog mirror,
+    // orchicon = full union). Regression guard: tier 2 must never render the
+    // whole tenant union under a legacy adapter kind.
+    expect(src).toContain("LEGACY_ADAPTER_PROVIDER_IDS");
+    expect(src).toContain("scopedIds");
+    expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
   });
 
   it("marks custom providers with a badge and manage affordance", () => {

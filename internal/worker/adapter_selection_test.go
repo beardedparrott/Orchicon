@@ -7,6 +7,7 @@ package worker
 // injected seams (SetAdapterKinds / SetModelRefRegistry).
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -83,29 +84,29 @@ func TestValidateAdapterChange(t *testing.T) {
 
 	// Unchanged adapter re-save: even a catalog-known-but-deleted provider
 	// keeps the ADR-0004 D5 re-save semantics (no adapter-change gate).
-	if err := validateAdapterChange("opencode/ghost/m", "opencode/ghost/m2"); err != nil {
+	if err := validateAdapterChange(context.Background(), "", "opencode/ghost/m", "opencode/ghost/m2"); err != nil {
 		t.Fatalf("unchanged-adapter re-save = %v; want nil (D5 preserved)", err)
 	}
 	// Same parsed adapter (legacy vs 3-seg) is not a change.
-	if err := validateAdapterChange("anthropic/claude-4", "opencode/anthropic/m"); err != nil {
+	if err := validateAdapterChange(context.Background(), "", "anthropic/claude-4", "opencode/anthropic/m"); err != nil {
 		t.Fatalf("legacy to 3-seg same adapter = %v; want nil", err)
 	}
 	// Adapter change to a valid provider/model pair passes.
-	if err := validateAdapterChange("opencode/anthropic/m", "orchicon/command-code/deepseek/deepseek-v4-flash"); err != nil {
+	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/command-code/deepseek/deepseek-v4-flash"); err != nil {
 		t.Fatalf("opencode to orchicon valid pair = %v; want nil", err)
 	}
 	// Adapter change keeping an opencode-only provider is rejected with an
 	// actionable error naming the new kind's valid providers.
-	err := validateAdapterChange("opencode/anthropic/m", "orchicon/anthropic/m")
+	err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/anthropic/m")
 	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "command-code") {
 		t.Fatalf("opencode to orchicon with opencode-only provider = %v; want error naming orchicon providers", err)
 	}
 	// 1-segment legacy ref: parse-only, nothing further to validate.
-	if err := validateAdapterChange("opencode/anthropic/m", "bare-model"); err != nil {
+	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "bare-model"); err != nil {
 		t.Fatalf("1-segment change = %v; want nil", err)
 	}
 	// Malformed new ref surfaces the parser error.
-	if err := validateAdapterChange("opencode/anthropic/m", "opencode/"); err == nil {
+	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "opencode/"); err == nil {
 		t.Fatal("malformed new ref succeeded; want parser error")
 	}
 }

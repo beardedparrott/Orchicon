@@ -30,6 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
@@ -84,6 +85,11 @@ type Dependencies struct {
 	AdapterKinds func() []string
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
+	// ProvidersService is the providers settings core (ADR-0006). Mount
+	// constructs it and stores it back here so the wiring order is a
+	// single Mount call; nil until Mount runs (or in tests that mount
+	// without the secrets KEK — token writes then fail closed).
+	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
 	// RuntimeClient talks to the host-side runtime daemon over its unix
@@ -147,11 +153,22 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
 	// WorkerService (docs/07 §3.3).
+	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	providerSvc.Service().RegisterSubstrateLoader()
+	deps.ProvidersService = providerSvc.Service()
+	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 	workerSvc := worker.New(deps.Pool, deps.Log)
 	// Explicit adapter selections validate against the Dispatcher's
 	// registered kinds (ADR-0005 D2) — the injected func avoids the
 	// api → scheduler import cycle.
 	workerSvc.SetAdapterKinds(deps.AdapterKinds)
+	// Tenant custom providers join model-ref validation (ADR-0006 D6): the
+	// global validation registry stays built-in-only; the worker service
+	// merges the requesting tenant's enabled custom ids where tenant
+	// context exists.
+	if deps.ProvidersService != nil {
+		workerSvc.SetCustomProviderIDs(deps.ProvidersService.EnabledCustomProviderIDs)
+	}
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
 
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
@@ -278,6 +295,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// leaves the store disabled (fail-closed at the service layer).
 	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
+
+	// ProviderService — the tenant-facing Providers management surface
+	// behind Settings → Adapters (ADR-0006): merged provider view, custom
+	// CRUD, token auto-write into the tenant secrets store (same KEK as
+	// SecretsService — fail-closed without it), and the substrate loader
+	// registration (tenant custom profiles become resolvable through
+	// orchicon.Registry.Get; DISABLED providers never load).
+	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)

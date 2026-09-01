@@ -54,6 +54,53 @@ var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // service layer (they are not part of this static catalog).
 var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
 
+// customProviderIDs returns the requesting tenant's ENABLED custom
+// provider ids (ADR-0006 D6). Wired by the API layer; nil = no tenant
+// custom providers (built-ins only).
+var customProviderIDs func(ctx context.Context, tenantID string) ([]string, error)
+
+// SetCustomProviderIDs wires the tenant custom-provider source for
+// model-ref validation (the providers settings service). Called by the
+// server layer after construction; the package-level seam mirrors
+// SetModelRefRegistry.
+func SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
+	customProviderIDs = fn
+}
+
+// customProviderRegistry merges the tenant's enabled custom provider ids
+// into the built-in validation catalog under the default adapter kind
+// (legacy 2-segment `local-models/...` refs parse — ADR-0006 D2/D6), and
+// under the product-default "orchicon" kind when that kind is registered
+// (fresh `orchicon/local-models/...` refs validate). A merge failure is
+// non-fatal: validation degrades to the built-in catalog (never breaks
+// worker saves). No tenant context → built-ins only.
+func customProviderRegistry(ctx context.Context, tenantID string) adapter.ProviderRegistry {
+	if tenantID == "" || customProviderIDs == nil {
+		return modelRefRegistry
+	}
+	ids, err := customProviderIDs(ctx, tenantID)
+	if err != nil || len(ids) == 0 {
+		return modelRefRegistry
+	}
+	catalog, ok := modelRefRegistry.(*adapter.BuiltinProviderCatalog)
+	if !ok {
+		return modelRefRegistry
+	}
+	// Copy-on-write: never mutate the shared built-in catalog.
+	merged := adapter.NewBuiltinProviderCatalog()
+	for _, kind := range catalog.AdapterKinds() {
+		merged.AddAdapterKind(kind, catalog.Providers(kind)...)
+	}
+	merged.AddAdapterKind(adapter.DefaultAdapterKind, ids...)
+	// The adapter-change validator offers the new kind's provider set on
+	// failure; "orchicon" is the product default kind, so tenant customs
+	// join it too when registered.
+	if merged.IsKnownAdapter("orchicon") {
+		merged.AddAdapterKind("orchicon", ids...)
+	}
+	return merged
+}
+
 // SetModelRefRegistry replaces the validation catalog (test seam).
 func SetModelRefRegistry(reg adapter.ProviderRegistry) {
 	if reg != nil {
@@ -64,9 +111,10 @@ func SetModelRefRegistry(reg adapter.ProviderRegistry) {
 // validateModelRef trims and bounds-checks a model_ref, then validates it
 // against the adapter/provider/model grammar (ADR-0003). An empty value is
 // returned unchanged (empty model_ref is valid — the system default applies).
-// The registry is a static built-in catalog; the settings/worker service
-// layers additionally check tenant custom providers when one is configured.
-func validateModelRef(ref string) (string, error) {
+// The registry is a static built-in catalog UNION the requesting tenant's
+// enabled custom providers (ADR-0006 D6); the settings/worker service
+// layers check tenant custom providers when one is configured.
+func validateModelRef(ctx context.Context, tenantID, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return "", nil
@@ -74,7 +122,7 @@ func validateModelRef(ref string) (string, error) {
 	if utf8.RuneCountInString(ref) > maxNameLen {
 		return "", fmt.Errorf("model_ref must be at most %d characters", maxNameLen)
 	}
-	if _, err := adapter.ParseModelRef(ref, modelRefRegistry); err != nil {
+	if _, err := adapter.ParseModelRef(ref, customProviderRegistry(ctx, tenantID)); err != nil {
 		return "", err
 	}
 	return ref, nil
@@ -268,13 +316,14 @@ func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 // registry seam validateModelRef uses). Unchanged-adapter re-saves keep
 // the ADR-0004 D5 semantics verbatim (catalog-known-but-deleted providers
 // re-save flagged) and pass through here untouched.
-func validateAdapterChange(currentRef, newRef string) error {
+func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
 	current := adapterKindOf(currentRef)
 	next := adapterKindOf(newRef)
 	if current == next {
 		return nil
 	}
-	parsed, err := adapter.ParseModelRef(newRef, modelRefRegistry)
+	reg := customProviderRegistry(ctx, tenantID)
+	parsed, err := adapter.ParseModelRef(newRef, reg)
 	if err != nil {
 		return err
 	}
@@ -282,7 +331,7 @@ func validateAdapterChange(currentRef, newRef string) error {
 		// Legacy 1-segment ref: nothing to validate beyond the parse.
 		return nil
 	}
-	provs := modelRefRegistry.Providers(parsed.Adapter)
+	provs := reg.Providers(parsed.Adapter)
 	for _, p := range provs {
 		if p == parsed.Provider {
 			return nil

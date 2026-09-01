@@ -89,7 +89,7 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 	if in.RuntimeRef, err = validateTextField(in.RuntimeRef, maxNameLen, "runtime_ref"); err != nil {
 		return err
 	}
-	if in.ModelRef, err = validateModelRef(in.ModelRef); err != nil {
+	if in.ModelRef, err = validateModelRef(context.Background(), in.TenantID, in.ModelRef); err != nil {
 		return err
 	}
 	if in.Adapter, err = validateAdapterInput(in.Adapter); err != nil {
