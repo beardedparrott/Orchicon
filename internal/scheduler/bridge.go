@@ -55,6 +55,13 @@ type ExecutionManifest struct {
 	StallNudgeMax                int32
 	StallNudgeReplyWindowSeconds int64
 	StallNudgeCooldownSeconds    int64
+	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part
+	// of a sequence chain: consecutive same-worker tasks may resume the
+	// prior task's session transcript instead of starting a fresh session
+	// (tightly-coupled chains where retained context beats isolation).
+	// When true, ContinueFromSessionID names the prior session to resume.
+	SequenceContinue      bool
+	ContinueFromSessionID string
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to
