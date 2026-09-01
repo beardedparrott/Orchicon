@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -120,11 +121,13 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
-// dispatches them via the AdapterBridge.
+// dispatches them via the AdapterBridge resolved from the Dispatcher by
+// the execution's adapter kind (adapter.ParseModelRef(manifest.ModelRef)
+// .Adapter).
 type TaskReconciler struct {
 	pool             *db.Pool
 	log              *slog.Logger
-	bridge           AdapterBridge
+	dispatcher       *Dispatcher
 	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 
@@ -163,9 +166,12 @@ type TaskReconciler struct {
 	dispatchOverlap func(inFlight int)
 }
 
-// NewTaskReconciler creates a TaskReconciler.
-func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
-	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
+// NewTaskReconciler creates a TaskReconciler. The dispatcher routes each
+// dispatch to the AdapterBridge registered for the execution's adapter
+// kind (parsed from the worker's model_ref at dispatch time) — never a
+// hardcoded singleton bridge.
+func NewTaskReconciler(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher) *TaskReconciler {
+	return &TaskReconciler{pool: pool, log: log, dispatcher: dispatcher}
 }
 
 // SetDispatchConcurrency sets the per-pass concurrency bound for the scan
@@ -849,7 +855,7 @@ func mustStepWorkItemID(sr db.WorkflowStepRunRow) string {
 // runs in a goroutine so the reconcile loop is not blocked by the
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
-func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
+func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adp db.AdapterRow) {
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
 	// Use a background context (the reconciler's ctx may expire before
@@ -1060,7 +1066,38 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 	}
-	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
+	if r.dispatcher == nil {
+		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "error", err)
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	// Resolve the adapter bridge from the execution's adapter kind — the
+	// model_ref grammar (adapter.ParseModelRef) is the SINGLE source of
+	// truth (ADR-0003). A 2-segment legacy ref (opencode/<model>) resolves
+	// to the default kind "opencode"; an unknown kind fails the execution
+	// with an actionable message (never a panic).
+	modelRef := manifest.ModelRef
+	if modelRef == "" {
+		modelRef = manifest.DefaultModelRef
+	}
+	kind := adapter.ParseModelRef(modelRef).Adapter
+	if kind == "" {
+		// Empty/malformed model_ref: fall back to the default adapter
+		// kind ("opencode") so legacy workers with single-segment refs
+		// keep dispatching exactly as they did before the dispatcher
+		// (previously the bridge was a hardcoded singleton).
+		kind = adapter.DefaultAdapterKind
+	}
+	bridge, err := r.dispatcher.Resolve(kind)
+	if err != nil {
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "kind", kind, "error", err)
+		// The Resolve error names the missing kind and the registered
+		// kinds — surface it verbatim so the operator can act on it.
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	if err := bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
 		// Mark the execution as failed_to_start.
 		r.markFailedToStart(context.Background(), exec, err.Error())

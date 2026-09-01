@@ -7,30 +7,15 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // ContinueSessionOpts carries everything needed to run a follow-up
 // question against a worker's session WITHOUT creating a new
-// execution or work item.
-type ContinueSessionOpts struct {
-	ExecutionID  string
-	TenantID     string
-	SystemPrompt string // the worker's composed system prompt (per-message)
-	ModelRef     string
-	ProjectDir   string
-	Message      string // the user's follow-up question
-	// Context is the durable-transcript context used to seed a FRESH
-	// session when the original serve/session is no longer reachable.
-	Context string
-	// Original session identity (from the transcript's session_info part);
-	// re-attached when the serve is still reachable for real continuity.
-	SessionID     string
-	ServeURL      string
-	ServePassword string
-	// StartSeq is the next transcript seq to use (the last existing part's
-	// seq + 1), so the follow-up entries append after the original run.
-	StartSeq int64
-}
+// execution or work item. It is the opencode alias for the scheduler
+// contract type (scheduler.ContinueSessionOpts) so the shared shape
+// lives at contract level and any bridge can accept it.
+type ContinueSessionOpts = scheduler.ContinueSessionOpts
 
 // ContinueSession runs the follow-up. The user's question is recorded into
 // the durable transcript synchronously (so the session chat shows it

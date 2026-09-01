@@ -21,6 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -33,14 +34,13 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
-	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
-	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
@@ -82,13 +82,14 @@ type Dependencies struct {
 	// configured (headless serve).
 	RuntimeClient *runtime.Client
 	// SendExecutionMessage routes a mid-run human message into a live
-	// session execution (Stage 3). Nil when the session transport is
-	// unavailable.
+	// execution's adapter session (type-asserts the MessageInjector
+	// capability; a non-supporting bridge yields an actionable error, never
+	// a panic). Nil when the session transport is unavailable.
 	SendExecutionMessage func(ctx context.Context, execID, message string) error
 	// ContinueSession runs a one-shot follow-up question against a worker's
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
-	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	ContinueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 	// AbortExecution stops a live execution's opencode session when a human
 	// cancels it, so the model stops generating immediately (prevents the
 	// "terminated but still active" token burn). Nil when the session
