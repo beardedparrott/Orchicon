@@ -917,16 +917,18 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.ModelRef != nil || msg.Adapter != nil {
 		// ADR-0005 D2: the explicit adapter input is a consistency
 		// affordance — it must be a registered kind and must agree with
-		// the resulting ref's adapter segment.
-		adapterSel := adapterKindOf(merged.ModelRef)
+		// the resulting ref's adapter segment. It stays EMPTY unless the
+		// caller explicitly set it (a model_ref-only change — the picker's
+		// save path — never does), so the agreement check below only fires
+		// on an explicit selection and a ref-only adapter change is judged
+		// solely by the adapter-change validation above.
+		var adapterSel string
 		if msg.Adapter != nil {
 			sel, err := validateAdapterInput(*msg.Adapter)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
-			if sel != "" {
-				adapterSel = sel
-			}
+			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
 			modelRef, err := validateModelRef(*msg.ModelRef)
@@ -944,9 +946,11 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 		}
-		// Agreement runs against the MERGED ref so a set adapter + unset
-		// ref checks against the version's current ref, and set+set checks
-		// against the incoming pair.
+		// Agreement runs against the MERGED ref so an explicit adapter
+		// with an unset ref checks against the version's current ref, and
+		// a set+set pair checks against the incoming pair. An empty
+		// adapter (input not sent) is a no-op — the ref alone defines the
+		// selection.
 		if err := validateAdapterRefAgreement(adapterSel, merged.ModelRef); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -1086,16 +1090,16 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.ModelRef != nil || msg.Adapter != nil {
 		// ADR-0005 D2: explicit adapter input must be a registered kind and
 		// agree with the resulting ref's adapter segment (the source ref
-		// when model_ref is unset).
-		adapterSel := adapterKindOf(newVer.ModelRef)
+		// when model_ref is unset). It stays EMPTY unless the caller
+		// explicitly set it, so a model_ref-only adapter change — the
+		// picker's save path — is judged solely by validateAdapterChange.
+		var adapterSel string
 		if msg.Adapter != nil {
 			sel, err := validateAdapterInput(*msg.Adapter)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
-			if sel != "" {
-				adapterSel = sel
-			}
+			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
 			modelRef, err := validateModelRef(*msg.ModelRef)
@@ -1110,7 +1114,8 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 			}
 		}
 		// Agreement runs against the MERGED ref (the source ref when
-		// model_ref is unset).
+		// model_ref is unset). An empty adapter (input not sent) is a
+		// no-op — the ref alone defines the selection.
 		if err := validateAdapterRefAgreement(adapterSel, newVer.ModelRef); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
