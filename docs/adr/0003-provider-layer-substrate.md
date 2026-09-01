@@ -1,6 +1,6 @@
 # ADR-0003: Provider layer substrate — native wire clients, registry & model sourcing
 
-Status: **Proposed** (pending Design Approver ratification)
+Status: **Accepted** (ratified by Design Approver — run 01M1DXRYQNYMWA824NJP80JXGD, 2026-09-01)
 Work item: "Provider layer: native wire clients, provider registry & sourcing service"
 Full design + test plan: `architecture-notes/provider-layer-native-wire-clients-provider-registry-sourcing-service.md` (worker artifact of the architect step).
 
