@@ -338,7 +338,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// the execution's parsed adapter kind (ADR-0003).
 	dispatcher.Register("opencode", adapterBridge)
 
-
 	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
@@ -506,7 +505,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register("orchicon", nativeBridge)
 
-
 	// Wrap with OTel tracing interceptor (spans on every API call).
 	handler = telemetry.Middleware(handler)
 
@@ -638,10 +636,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 	})
 
-	// Seed an in-process OpenCode adapter registration so the
-	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:
-	// in-process adapter for dev only). Idempotent.
+	// Seed in-process adapter registrations (opencode + the native
+	// orchicon session engine) so the TaskReconciler can find a ready
+	// adapter for dispatch (docs/04 §6.3: in-process adapter for dev
+	// only). Idempotent.
 	seedDevAdapter(context.Background(), pool, log)
+	seedNativeAdapter(context.Background(), pool, log)
 
 	return s, nil
 }
@@ -935,13 +935,19 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			caps := opencode.BuildCapabilitiesJSON()
 			ttx, err := s.pool.BeginTenantTx(ctx, "tnt_dev")
 			if err != nil {
 				continue
 			}
+			// Heartbeat both in-process dev adapters (opencode + native
+			// orchicon) so selectAdapter can dispatch beyond the initial
+			// heartbeat TTL for either kind.
+			caps := opencode.BuildCapabilitiesJSON()
 			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_opencode_dev", []byte(caps)); err != nil {
 				s.log.Warn("dev adapter heartbeat failed", "error", err)
+			}
+			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_orchicon_dev", []byte(orchicon.BuildCapabilitiesJSON())); err != nil {
+				s.log.Warn("dev native adapter heartbeat failed", "error", err)
 			}
 			_ = ttx.Commit(ctx)
 		}
@@ -984,8 +990,27 @@ func (s *Server) indexHealthLoop(ctx context.Context) {
 // supported for tests only, never production"). Idempotent — re-runs
 // on every boot update the heartbeat timestamp.
 func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	seedDevAdapterKind(ctx, pool, log, "adp_opencode_dev", "opencode", opencode.BuildCapabilitiesJSON)
+}
+
+// seedNativeAdapter registers the in-process native session engine
+// (adapter kind "orchicon") the same way seedDevAdapter registers
+// opencode, so a worker with model_ref orchicon/<provider>/<model> (and
+// an empty runtime_ref, which falls back to the model_ref's adapter kind
+// per resolveAdapterRowKind) can find a ready adapter row at dispatch.
+// Without this row, selectAdapter finds no ready adapter of kind
+// "orchicon" and the task requeues forever (the dispatch black hole).
+// Idempotent — re-runs on every boot update the heartbeat timestamp.
+func seedNativeAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	seedDevAdapterKind(ctx, pool, log, "adp_orchicon_dev", "orchicon", orchicon.BuildCapabilitiesJSON)
+}
+
+// seedDevAdapterKind is the shared body behind seedDevAdapter and
+// seedNativeAdapter: upsert a ready in-process adapter row for the given
+// id/kind, heartbeating when the row already exists. caps builds the
+// capabilities JSON for the kind.
+func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, adapterID, kind string, caps func() string) {
 	tenantID := "tnt_dev"
-	adapterID := "adp_opencode_dev"
 
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -998,8 +1023,7 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	_, err = db.GetAdapter(ctx, ttx.Tx, tenantID, adapterID)
 	if err == nil {
 		// Already registered — just heartbeat.
-		caps := opencode.BuildCapabilitiesJSON()
-		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(caps)); err != nil {
+		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(caps())); err != nil {
 			log.Warn("seed dev adapter: heartbeat failed", "error", err)
 			return
 		}
@@ -1013,10 +1037,10 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	row := db.AdapterRow{
 		ID:                      adapterID,
 		TenantID:                tenantID,
-		Kind:                    "opencode",
+		Kind:                    kind,
 		Version:                 "0.1.0",
 		Endpoint:                "in-process",
-		Capabilities:            []byte(opencode.BuildCapabilitiesJSON()),
+		Capabilities:            []byte(caps()),
 		Status:                  domain.AdapterReady,
 		MaxConcurrentExecutions: 5,
 	}
@@ -1028,7 +1052,7 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		log.Warn("seed dev adapter: commit failed", "error", err)
 		return
 	}
-	log.Info("seeded dev opencode adapter", "id", adapterID)
+	log.Info("seeded dev adapter", "id", adapterID, "kind", kind)
 }
 
 // activeProbe returns the execution-reaper liveness probe for the

@@ -60,7 +60,7 @@ type ExecutionManifest struct {
 	// prior task's session transcript instead of starting a fresh session
 	// (tightly-coupled chains where retained context beats isolation).
 	// When true, ContinueFromSessionID names the prior session to resume.
-	SequenceContinue     bool
+	SequenceContinue      bool
 	ContinueFromSessionID string
 }
 

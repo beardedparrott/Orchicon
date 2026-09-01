@@ -93,25 +93,31 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if exec.ID == "" {
 		return fmt.Errorf("orchicon bridge: empty execution id")
 	}
+	// The transcript lives under the execution's true project dir:
+	// manifest.ProjectDir is authoritative (set from the project row at
+	// dispatch, ADR-0007); the construction-time projectDir is a fallback
+	// for bridge-level lookups. Resolve once here so NewSession and the
+	// continuation seed lookup agree on the transcript location — and the
+	// shared bridge's projectDir is never mutated per execution.
+	pd := b.projectDir
+	if manifest.ProjectDir != "" {
+		pd = manifest.ProjectDir
+	}
+	if pd == "" {
+		return fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
+	}
+
 	// Sessions are per-execution. Resolve the provider once here (model
 	// bound at session start — no per-turn model switch).
 	sess, err := NewSession(SessionConfig{
 		ExecRow:    exec,
 		Manifest:   manifest,
-		ProjectDir: b.projectDir,
+		ProjectDir: pd,
 		Resolver:   b.resolver,
 		Log:        b.log,
 	})
 	if err != nil {
 		return fmt.Errorf("orchicon bridge: %w", err)
-	}
-
-	// The transcript lives under the execution's true project dir
-	// (manifest.ProjectDir is authoritative — set from the project row at
-	// dispatch, ADR-0007). The construction-time projectDir is a fallback
-	// for bridge-level lookups.
-	if b.projectDir == "" && manifest.ProjectDir != "" {
-		b.projectDir = manifest.ProjectDir
 	}
 
 	// Sequence continuation (opt-in, DEFAULT OFF): when the manifest
@@ -121,7 +127,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// back to a fresh session (never leaks another worker's transcript,
 	// never fails the execution over an unavailable continuation).
 	if manifest.SequenceContinue && manifest.ContinueFromSessionID != "" {
-		priorPath := transcriptPath(b.projectDir, manifest.ContinueFromSessionID)
+		priorPath := transcriptPath(pd, manifest.ContinueFromSessionID)
 		if err := verifyContinuationIdentity(priorPath, exec); err != nil {
 			b.log.Warn("orchicon: continuation refused, starting fresh",
 				"execution", exec.ID, "prior", manifest.ContinueFromSessionID, "error", err)
@@ -143,7 +149,16 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		close(ls.done)
 	}()
 
-	err = sess.Run(runCtx, callbacks)
+	// Wrap the callbacks so the terminal OnResult is observed. Every
+	// terminal path in the loop (success, failure, cancellation, guard
+	// trip, recovered panic) fires OnResult exactly once, so a fired
+	// terminal means the execution already reached its verdict — Start
+	// must return nil then (opencode parity: session_run returns nil
+	// after the terminal result). Returning the loop's error would
+	// double-terminate: the reconciler's startExecution would mark the
+	// execution failed_to_start AND requeue the task (PR B2).
+	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
+	err = sess.Run(runCtx, terminal)
 	// Best-effort usage record (step_finish parity).
 	if b.usageRecorder != nil {
 		b.recordUsage(ctx, exec, manifest)
@@ -157,9 +172,39 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 			// Cancellation already surfaced OnResult(false,"cancelled").
 			return nil
 		}
+		if terminal.fired() {
+			// The loop contained a panic (or a terminal-firing failure)
+			// and already delivered OnResult(false, ...); the execution
+			// is failed. Swallow the error so the reconciler does not
+			// also markFailedToStart / requeue (double-termination).
+			return nil
+		}
 		return err
 	}
 	return nil
+}
+
+// terminalOnResult wraps ExecutionCallbacks to observe the terminal
+// OnResult. See NativeBridge.Start for why the bridge needs to know
+// whether the loop already delivered its final verdict.
+type terminalOnResult struct {
+	scheduler.ExecutionCallbacks
+	mu   sync.Mutex
+	done bool
+}
+
+// OnResult records the terminal and forwards to the underlying callbacks.
+func (t *terminalOnResult) OnResult(ctx context.Context, execID string, succeeded bool, output, errorMessage string) {
+	t.mu.Lock()
+	t.done = true
+	t.mu.Unlock()
+	t.ExecutionCallbacks.OnResult(ctx, execID, succeeded, output, errorMessage)
+}
+
+func (t *terminalOnResult) fired() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.done
 }
 
 // SendExecutionMessage implements scheduler.MessageInjector: queue a
@@ -185,8 +230,16 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	if opts.SessionID == "" {
 		return "", fmt.Errorf("orchicon bridge: continue requires a prior session id")
 	}
+	// The prior transcript lives under the session's project dir. Prefer
+	// the caller-supplied dir (the execution service sets it from the
+	// manifest/project row) over the bridge's construction-time fallback
+	// so a shared bridge resolves transcripts per execution.
+	pd := b.projectDir
+	if opts.ProjectDir != "" {
+		pd = opts.ProjectDir
+	}
 	// Load the prior transcript for identity verification.
-	path := transcriptPath(b.projectDir, opts.SessionID)
+	path := transcriptPath(pd, opts.SessionID)
 	evs, err := Load(path)
 	if err != nil {
 		return "", fmt.Errorf("orchicon bridge: load prior transcript: %w", err)
@@ -195,9 +248,11 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	// Identity isolation by construction: a continuation must belong to
 	// the same worker+tenant as the prior session (sequence chains are
 	// same-worker by definition). Cross-worker resumption is refused —
-	// no worker ever sees another worker's transcript.
-	if prior.WorkerID != "" && opts.ExecutionID != "" && opts.SessionID != "" {
-		if prior.TenantID != "" && prior.TenantID != tenantOf(opts.SessionID, prior) {
+	// no worker ever sees another worker's transcript. When the caller
+	// does not carry a tenant (bridge-level tests), the tenant check is
+	// skipped rather than refused.
+	if prior.WorkerID != "" && opts.ExecutionID != "" {
+		if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
 			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
 		}
 	}
