@@ -21,6 +21,7 @@ import (
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -226,6 +227,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// (docs/04 §6). If the binary is absent, the bridge runs in
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
+	// The Dispatcher is the shared routing substrate: adapters register
+	// under their kind at construction (below), and the TaskReconciler +
+	// server RPC paths resolve the bridge per execution from the
+	// execution's adapter kind (adapter.ParseModelRef(model_ref).Adapter
+	// — ADR-0003). Concrete adapter types appear ONLY here, at
+	// construction/registration; every other path goes through the
+	// scheduler-defined contract interfaces.
+	dispatcher := scheduler.NewDispatcher()
 
 	// Always-on host opencode serve for the in-process execution
 	// population (Stage 3 session transport): standalone dispatches,
@@ -322,7 +331,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return ttx.Commit(ctx)
 	})
 
-	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	// Register the opencode bridge under its adapter kind. This is the
+	// ONLY place the concrete adapter appears in a dispatch-capable
+	// position — every downstream path resolves it from the Dispatcher by
+	// the execution's parsed adapter kind (ADR-0003).
+	dispatcher.Register("opencode", adapterBridge)
+
+	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
@@ -347,6 +362,33 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if err := runtimeimage.SeedCannedImages(context.Background(), pool, log, rtClient); err != nil {
 		log.Warn("seed canned runtime images failed (continuing)", "error", err)
 	}
+	// adapterKind resolves the execution's adapter kind from the worker's
+	// model_ref (the single source of truth, ADR-0003). The dispatcher then
+	// routes the bridge lookup by kind.
+	adapterKind := func(ctx context.Context, execID string) (string, error) {
+		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+		if err != nil {
+			return "", err
+		}
+		defer tx.Rollback(ctx)
+		exec, err := db.GetExecution(ctx, tx.Tx, "tnt_dev", execID)
+		if err != nil {
+			return "", err
+		}
+		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+		if err != nil {
+			return "", err
+		}
+		kind := adapter.ParseModelRef(ver.ModelRef).Adapter
+		if kind == "" {
+			// Same fallback the reconciler applies at dispatch time: an
+			// empty/malformed model_ref dispatches under the legacy default
+			// kind, so mid-run RPCs must resolve the SAME kind or they would
+			// fail executions that dispatched fine.
+			kind = adapter.DefaultAdapterKind
+		}
+		return kind, nil
+	}
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -363,16 +405,54 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,
+		// adapterKind resolves the execution's adapter kind from the worker's
+		// model_ref (the single source of truth, ADR-0003) via the dispatcher.
 		SendExecutionMessage: func(ctx context.Context, execID, message string) error {
-			return adapterBridge.SendExecutionMessage(ctx, execID, message)
+			kind, err := adapterKind(ctx, execID)
+			if err != nil {
+				return fmt.Errorf("resolve adapter for execution %s: %w", execID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return err
+			}
+			inj, ok := bridge.(scheduler.MessageInjector)
+			if !ok {
+				return fmt.Errorf("adapter kind %q does not support mid-run message injection", kind)
+			}
+			return inj.SendExecutionMessage(ctx, execID, message)
 		},
-		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
-			return adapterBridge.ContinueSession(ctx, opts)
+		ContinueSession: func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
+			kind, err := adapterKind(ctx, opts.ExecutionID)
+			if err != nil {
+				return "", fmt.Errorf("resolve adapter for execution %s: %w", opts.ExecutionID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return "", err
+			}
+			cont, ok := bridge.(scheduler.SessionContinuer)
+			if !ok {
+				return "", fmt.Errorf("adapter kind %q does not support follow-up sessions", kind)
+			}
+			return cont.ContinueSession(ctx, opts)
 		},
 		AbortExecution: func(ctx context.Context, execID, reason string) error {
-			return adapterBridge.AbortExecution(ctx, execID, reason)
+			kind, err := adapterKind(ctx, execID)
+			if err != nil {
+				return fmt.Errorf("resolve adapter for execution %s: %w", execID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return err
+			}
+			aborter, ok := bridge.(scheduler.Aborter)
+			if !ok {
+				return fmt.Errorf("adapter kind %q does not support live-session abort", kind)
+			}
+			return aborter.AbortExecution(ctx, execID, reason)
 		},
-		HostServe: hostServe,
+		HostServe:  hostServe,
 		SecretsKEK: secretsKEK,
 	}
 	handler := api.Mount(mux, deps)
@@ -420,7 +500,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			adapterBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane
 			// restart or a lost runtime container so recovery re-dispatches.
-			s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+			// The probe resolves the execution's adapter kind (worker
+			// model_ref → dispatcher) and type-asserts the LivenessReporter
+			// capability; a bridge without it reports inactive (fail-closed).
+			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
@@ -428,7 +511,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	}
 	// Headless: still reap in-process executions orphaned by a restart.
 	if s.reaper == nil {
-		s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+		s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
 	// Bounded in-pass fan-out for the post-commit inline dispatch: parallel
@@ -896,4 +979,46 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		return
 	}
 	log.Info("seeded dev opencode adapter", "id", adapterID)
+}
+
+// activeProbe returns the execution-reaper liveness probe for the
+// dispatcher. The probe resolves the execution's adapter kind from the
+// worker's model_ref, looks up the bridge, and type-asserts the
+// LivenessReporter capability. A bridge without the capability reports
+// inactive (fail-closed), matching the pre-dispatcher behavior for kinds
+// that never supported liveness — the reaper never panics.
+func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logger) func(exec db.ExecutionRow) bool {
+	return func(exec db.ExecutionRow) bool {
+		ctx := context.Background()
+		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+		if err != nil {
+			log.Warn("liveness probe: begin tx failed", "execution", exec.ID, "error", err)
+			return false
+		}
+		defer tx.Rollback(ctx)
+		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+		if err != nil {
+			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
+			return false
+		}
+		kind := adapter.ParseModelRef(ver.ModelRef).Adapter
+		if kind == "" {
+			// Same fallback the reconciler applies at dispatch time: an
+			// empty/malformed model_ref dispatches under the legacy default
+			// kind, so the liveness probe must resolve the SAME kind or it
+			// would fail-closed executions that dispatched fine.
+			kind = adapter.DefaultAdapterKind
+		}
+		bridge, err := dispatcher.Resolve(kind)
+		if err != nil {
+			log.Warn("liveness probe: no bridge for kind", "execution", exec.ID, "kind", kind, "error", err)
+			return false
+		}
+		rep, ok := bridge.(scheduler.LivenessReporter)
+		if !ok {
+			log.Warn("liveness probe: bridge does not support liveness", "execution", exec.ID, "kind", kind)
+			return false
+		}
+		return rep.IsExecutionActive(exec.ID)
+	}
 }

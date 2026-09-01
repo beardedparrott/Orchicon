@@ -84,7 +84,7 @@ func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	}
 
 	bridge := &manifestCaptureBridge{}
-	rec := NewTaskReconciler(env.pool, slog.Default(), bridge)
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
 	if err := rec.reconcileOne(ctx, env.itemID, sr.ID); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestWorktreeExecutionRowSkippedRun(t *testing.T) {
 		t.Fatalf("commit step run: %v", err)
 	}
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, env.itemID, sr.ID); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}

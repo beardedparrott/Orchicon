@@ -105,7 +105,7 @@ func TestDispatchLimitGateHoldsSecondUntilSlotFrees(t *testing.T) {
 	first := seedReadyTask(t, env.pool, env.proj.ID)
 	second := seedReadyTask(t, env.pool, env.proj.ID)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	rec.SetDispatchLimiter(stubDispatchLimiter{effLimit: func(string) int { return 1 }})
 
 	if err := rec.reconcileOne(ctx, first.ID, ""); err != nil {
@@ -178,7 +178,7 @@ func TestDispatchLimitNoGateWithoutLimiter(t *testing.T) {
 	first := seedReadyTask(t, env.pool, env.proj.ID)
 	second := seedReadyTask(t, env.pool, env.proj.ID)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, first.ID, ""); err != nil {
 		t.Fatalf("dispatch first: %v", err)
 	}

@@ -647,7 +647,7 @@ func TestBranchExecutionCwd(t *testing.T) {
 	}
 
 	bridge := &manifestCaptureBridge{}
-	taskRec := NewTaskReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), bridge)
+	taskRec := NewTaskReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), testDispatcher(bridge))
 	if err := taskRec.reconcileOne(ctx, env.ticketID, srA.ID); err != nil {
 		t.Fatalf("reconcileOne (branch dispatch): %v", err)
 	}
