@@ -1,6 +1,8 @@
 # ADR-0006: Provider settings UI — Providers tab, custom provider CRUD & secret auto-write
 
-Status: **Proposed** (architect step; pending Design Approver ratification)
+Status: **Accepted** (ratified by Design Approver, workflow step 2)
+
+> **Ratification note (Design Approver, step 2):** plan approved against all acceptance criteria: tab controls (D7), auto-write naming incl. `COMMANDCODE_API_KEY` and `CUSTOM_<REF>_API_KEY` (D3/D5), custom CRUD with read-only built-ins (D3/D4), deletion guard listing referencing workers (D3), sourcing surface with WARN/degraded (D4/D7), and the test matrix. Two expectations bind the implementer: (1) the test suite must include the **end-to-end credential-resolution test** the AC demands: a token saved via the tab resolves through `CredentialResolver.Resolve` by tenant-secret name, host-env fallback applies when the secret is absent, and the failure names the exact missing key when neither exists. (2) `aigateway`'s `useListProviders` remains the source for telemetry usage displays (`telemetry.tsx` Overview/Credits panels); only ModelPicker migrates to `ProviderService.ListProviders`.
 Work item: "Provider settings UI: Providers tab, custom provider CRUD & secret auto-write"
 Full design + test plan: `architecture-notes/provider-settings-ui-providers-tab-custom-provider-crud-secret-auto-write.md` (worker artifact of the architect step).
 
