@@ -67,6 +67,22 @@ type sessionRun struct {
 	nudgeReplyWindowVal time.Duration
 	nudgeCooldownVal    time.Duration
 
+	// In-flight tool-hang watchdog (D6): a tool call with no events for
+	// longer than toolHangWindowVal is interrupted NATIVELY — the call is
+	// cancelled (synthesized `cancelled: tool exceeded tool-hang window`
+	// result) and a course-correcting redirect is injected as the next user
+	// turn (session + cache prefix preserved). Latched once per session;
+	// an unheeded hang escalates to the stall/liveness layer (probe →
+	// fatal). toolHangWindowVal <= 0 disables the watchdog.
+	toolHangWindowVal time.Duration
+	hangLatched       bool
+	hangMu            sync.Mutex
+	// tool tracking for the hang watchdog: the currently in-flight tool
+	// (name + last-activity time). Guarded by hangMu.
+	toolTrackName   string
+	toolTrackAt     time.Time
+	toolInFlightNow bool
+
 	// Durable transcript (execution_session_parts): recorded as events
 	// arrive, flushed in batches by a background goroutine and at finish.
 	store        SessionStoreFunc
@@ -131,10 +147,24 @@ func completionProbeGrace() time.Duration {
 // settings) value first, env-var fallback, then code default. Zero in the
 // manifest means "use the env var or code default". Called once before the
 // monitor starts so the session's nudge budget is stable for its lifetime.
+// toolHangWindow returns the in-flight tool-hang watchdog window: env
+// override (ORCHICON_TOOL_HANG_WINDOW) first, else the code default 180s.
+// A value <= 0 disables the watchdog (0/negative per the platform stall
+// setting contract).
+func toolHangWindow() time.Duration {
+	if v := os.Getenv("ORCHICON_TOOL_HANG_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 180 * time.Second
+}
+
 func (r *sessionRun) initNudgeTuning() {
 	r.nudgeMaxVal = nudgeMax()
 	r.nudgeReplyWindowVal = nudgeReplyWindow()
 	r.nudgeCooldownVal = nudgeCooldown()
+	r.toolHangWindowVal = toolHangWindow()
 	if r.manifest.StallNudgeMax > 0 && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
 		r.nudgeMaxVal = int(r.manifest.StallNudgeMax)
 	}
@@ -144,6 +174,143 @@ func (r *sessionRun) initNudgeTuning() {
 	if r.manifest.StallNudgeCooldownSeconds > 0 && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
 		r.nudgeCooldownVal = time.Duration(r.manifest.StallNudgeCooldownSeconds) * time.Second
 	}
+	// Tool-hang watchdog: manifest (tenant settings) value first — 0 means
+	// unset (keep the env/code default 180s), negative means disabled
+	// (any duration <= 0 disables). Env overrides both for dev/debugging.
+	if r.manifest.StallToolHangSeconds != 0 && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
+		r.toolHangWindowVal = time.Duration(r.manifest.StallToolHangSeconds) * time.Second
+	}
+}
+
+// startToolHangWatchdog arms the in-flight tool-hang watchdog for this
+// session: a background goroutine that watches for a tool call that has
+// been silent for longer than toolHangWindowVal. It latches once per
+// session (the first hang is interrupted natively; a second unheeded hang
+// escalates to the stall/liveness layer). Returns a stop func.
+func (r *sessionRun) startToolHangWatchdog(ctx context.Context) func() {
+	stop := make(chan struct{})
+	go func() {
+		// Poll every second; the watchdog is cheap and the window is
+		// seconds-scale, so a 1s poll gives tight latencies.
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-r.done:
+				return
+			case <-t.C:
+				r.checkToolHang()
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// checkToolHang fires the in-flight tool-hang watchdog: when a tool call
+// has produced no events for longer than the window, it latches once and
+// (a) records the hang, (b) injects a course-correcting redirect as the
+// next user turn (session + cache prefix preserved) instead of a silent
+// no_progress kill. The synthetic "cancel" is delivered to the model as
+// the redirect message; a second unheeded hang escalates to the
+// stall/liveness layer via onStall (probe → fatal).
+func (r *sessionRun) checkToolHang() {
+	r.hangMu.Lock()
+	if r.finished || r.hangLatched || r.toolHangWindowVal <= 0 {
+		r.hangMu.Unlock()
+		return
+	}
+	// No tool call is currently tracked as in-flight if the last event was
+	// a completion: track in-flight state via the monitor's lastMeaningful
+	// activity vs. the last tool-start. We approximate with the monitor's
+	// lastToolStart (see observe below) — when no tool has started since
+	// the window, nothing to do.
+	r.hangMu.Unlock()
+
+	// The hang window is only armed while a tool call is actually in
+	// flight; that state is maintained by observeToolStart/observeToolEnd
+	// (called from handleEvent). When nothing is in flight the watchdog
+	// simply idles.
+	if !r.toolInFlight() {
+		return
+	}
+	if time.Since(r.lastToolActivity()) <= r.toolHangWindowVal {
+		return
+	}
+	r.hangMu.Lock()
+	if r.hangLatched {
+		r.hangMu.Unlock()
+		return
+	}
+	r.hangLatched = true
+	r.hangMu.Unlock()
+
+	r.a.log.Warn("tool hang detected — interrupting natively",
+		"execution", r.execRow.ID, "tool", r.lastToolName(), "window", r.toolHangWindowVal)
+	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, "stalled:tool_hang:"+r.lastToolName(), false)
+
+	// Synthesize the cancelled tool result + course-correcting redirect as
+	// the next user turn. The session and cache prefix are preserved —
+	// SendMessage appends to the live session; nothing is aborted/restarted.
+	redirect := toolHangRedirectMessage(r.lastToolName(), r.toolHangWindowVal)
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, redirect); err != nil {
+		r.a.log.Warn("tool-hang redirect send failed", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": redirect, "source": "tool_hang_redirect"})
+}
+
+// observeToolStart records that a tool call began (called from handleEvent
+// on the first tool_use event for a call). The watchdog uses it to arm the
+// hang window.
+func (r *sessionRun) observeToolStart(name string) {
+	r.hangMu.Lock()
+	r.toolTrackName = name
+	r.toolTrackAt = time.Now()
+	r.toolInFlightNow = true
+	r.hangMu.Unlock()
+}
+
+// observeToolEnd records that the in-flight tool produced a completion
+// event (or the call resolved); the watchdog disarms.
+func (r *sessionRun) observeToolEnd() {
+	r.hangMu.Lock()
+	r.toolInFlightNow = false
+	r.hangMu.Unlock()
+}
+
+func (r *sessionRun) toolInFlight() bool {
+	r.hangMu.Lock()
+	defer r.hangMu.Unlock()
+	return r.toolInFlightNow
+}
+
+func (r *sessionRun) lastToolActivity() time.Time {
+	r.hangMu.Lock()
+	defer r.hangMu.Unlock()
+	return r.toolTrackAt
+}
+
+func (r *sessionRun) lastToolName() string {
+	r.hangMu.Lock()
+	defer r.hangMu.Unlock()
+	if r.toolTrackName == "" {
+		return "unknown"
+	}
+	return r.toolTrackName
+}
+
+// toolHangRedirectMessage builds the course-correcting redirect injected
+// when a tool call exceeds the hang window.
+func toolHangRedirectMessage(tool string, window time.Duration) string {
+	return "Your tool call " + tool + " exceeded the " + window.String() +
+		" tool-hang window with no events and was cancelled (cancelled: tool exceeded tool-hang window). " +
+		"Re-harness it: kill or supersede the stuck call and retry with a timeout, " +
+		"background-and-poll, or a bounded retry — then move on. Do not repeat the identical hung call."
 }
 
 // nudgeMax returns the session's resolved nudge budget (manifest value
@@ -336,6 +503,11 @@ func (r *sessionRun) run() error {
 	)
 	defer r.monitor.close()
 
+	// In-flight tool-hang watchdog (D6): cancels a silent tool call and
+	// injects a course-correcting redirect, latched once per session.
+	stopHangWatchdog := r.startToolHangWatchdog(r.parentCtx)
+	defer stopHangWatchdog()
+
 	// Durable transcript: flush every few seconds so a crash loses at most
 	// the trailing batch, and once at finish.
 	if r.store != nil {
@@ -447,6 +619,14 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	if _, ok := TokenDeltaFromBus(evt); ok {
 		r.resolveProbe()
 		r.noteSessionProgress()
+		// Token deltas are MODEL generation — the model only generates
+		// between tool calls, never while a tool is in flight (it waits for
+		// the result). A delta therefore proves no tool is currently hung:
+		// disarm the hang watchdog so a long post-tool generation can never
+		// false-trip it, even if the tool's completed part was dropped from
+		// the SSE bus (the bus drops telemetry events when full — see
+		// Subscription.read).
+		r.observeToolEnd()
 		if r.monitor != nil {
 			// observe("text") advances lastStepFinish — the no_progress
 			// signal — without touching lastMeaningfulAction, so the
@@ -459,6 +639,17 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		}
 		return
 	}
+	// Feed the in-flight tool-hang watchdog (D6) from the RAW bus event,
+	// BEFORE the LegacyEventFromBus completed/error filter: a tool part in
+	// flight (status "running" / no status) is the tool-START signal the
+	// hang window arms on. The legacy mapping only ever emits COMPLETED
+	// tool parts, so a tool stuck at "running" would otherwise never arm
+	// the watchdog that exists to interrupt exactly that hang (D6 review
+	// finding). The resolution — the completed/error legacy event — disarms
+	// it below.
+	if tool, isStart := ToolStartFromBus(evt); isStart {
+		r.observeToolStart(tool)
+	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
@@ -469,6 +660,14 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// never triggers a container recycle.
 		r.resolveProbe()
 		r.noteSessionProgress()
+		// A resolved tool part (completed/error) disarms the hang window;
+		// any other legacy telemetry (text/step/reasoning) after a tool
+		// start is post-tool model generation — the in-flight call is done.
+		if t, _ := legacy["type"].(string); t == evtToolUse {
+			r.observeToolEnd()
+		} else if t != "" {
+			r.observeToolEnd()
+		}
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
 		// Record the raw part for the durable transcript, with the tool
@@ -476,7 +675,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// recovery-resumed session re-seeds this transcript as context, so
 		// an uncapped giant build log would re-inflate it).
 		if t, _ := legacy["type"].(string); t != "" {
-			r.recordPart(t, map[string]any{"part": capPartOutput(legacy["part"]), "error": legacy["error"]})
+			r.recordPart(t, map[string]any{"part": r.a.capPartOutput(legacy["part"], r.execRow.ID, executionDir(r.manifest)), "error": legacy["error"]})
 		}
 		// Unified warn→escalate→abort budget ladder, evaluated on its own
 		// event boundary: step_finish feeds the spend accumulator and then

@@ -141,23 +141,50 @@ func TestStallRepetitionNoFalsePositive(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionCompletedResets verifies result-aware repetition
-// (design B): a COMPLETED tool call resets the signature history, so
-// repeated identical calls that SUCCEED never trip repetition. This is the
-// normal build-fix-iterate-debug loop — a worker iterating on a failing
-// build (legitimate) must not be reaped.
-func TestStallRepetitionCompletedResets(t *testing.T) {
+// TestStallRepetitionCompletedResets verifies the two-tier repetition model
+// (D5): a COMPLETED tool call no longer resets the tier-2 signature history,
+// so repeated identical calls that SUCCEED DO trip tier-2 repetition — the
+// completed-call loop (repeatedly re-reading the same file) is the case the
+// work item wants caught. The tier-2 threshold is deliberately above
+// tier-1's so a normal build-iterate loop (identical bash calls with
+// different results) is not flagged at the same count. A file_diff between
+// identical calls resets the history (reset-on-progress).
+func TestStallRepetitionCompletedTrips(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
-	// Many identical COMPLETED calls — each resets the counters, so no trip.
+	call := map[string]any{
+		"tool":  "bash",
+		"state": map[string]any{"status": "completed", "input": map[string]any{"command": "go test ./..."}},
+	}
+	// 10 identical COMPLETED calls — tier-2 threshold (repetitionN*2 = 6+3
+	// = 9, capped at 9) trips at 10.
 	for i := 0; i < 10; i++ {
-		m.observe("tool_use", map[string]any{
-			"tool":  "bash",
-			"state": map[string]any{"status": "completed", "input": map[string]any{"command": "go test ./..."}},
-		})
+		m.observe("tool_use", call)
+	}
+	if reason := m.check(); reason == "" {
+		t.Fatalf("expected tier-2 repetition on completed calls, got none")
+	} else if !strings.Contains(reason, "stalled:repetition:completed:") {
+		t.Fatalf("expected completed-call repetition reason, got %q", reason)
+	}
+}
+
+// TestStallRepetitionCompletedResetsOnProgress verifies the reset-on-
+// progress guard: a file_diff between identical completed calls resets the
+// tier-2 history, so legitimate forward progress never false-positives.
+func TestStallRepetitionCompletedResetsOnProgress(t *testing.T) {
+	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
+	m := newTestMonitor(w)
+	call := map[string]any{
+		"tool":  "bash",
+		"state": map[string]any{"status": "completed", "input": map[string]any{"command": "go test ./..."}},
+	}
+	for i := 0; i < 8; i++ {
+		m.observe("tool_use", call)
+		// A file diff between calls = forward progress → reset.
+		m.observe("file_diff", map[string]any{"path": "/a"})
 	}
 	if reason := m.check(); reason != "" {
-		t.Fatalf("expected no repetition on completed calls, got %q", reason)
+		t.Fatalf("expected no repetition with file progress between calls, got %q", reason)
 	}
 }
 

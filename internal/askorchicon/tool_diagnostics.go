@@ -144,6 +144,7 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeMax                    int32   `json:"stall_nudge_max"`
 		StallNudgeReplyWindowSeconds     int64   `json:"stall_nudge_reply_window_seconds"`
 		StallNudgeCooldownSeconds        int64   `json:"stall_nudge_cooldown_seconds"`
+		StallToolHangSeconds             int64   `json:"stall_tool_hang_seconds"`
 		DefaultBudgetOverrides           *string `json:"default_budget_overrides"`
 		ExecutionReapGraceSeconds        int64   `json:"execution_reap_grace_seconds"`
 		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
@@ -181,6 +182,7 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeMax:                    params.StallNudgeMax,
 		StallNudgeReplyWindowSeconds:     params.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        params.StallNudgeCooldownSeconds,
+		StallToolHangSeconds:             params.StallToolHangSeconds,
 		DefaultBudgetOverrides:           budget,
 		ExecutionReapGraceSeconds:        params.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,

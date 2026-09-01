@@ -478,6 +478,7 @@ function DefaultsTab() {
   const [draftNudgeMax, setDraftNudgeMax] = useState("");
   const [draftNudgeReplyWindow, setDraftNudgeReplyWindow] = useState("");
   const [draftNudgeCooldown, setDraftNudgeCooldown] = useState("");
+  const [draftToolHang, setDraftToolHang] = useState("");
   const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
@@ -507,6 +508,7 @@ function DefaultsTab() {
       setDraftNudgeMax(String(settings.stallNudgeMax ?? ""));
       setDraftNudgeReplyWindow(String(settings.stallNudgeReplyWindowSeconds ?? ""));
       setDraftNudgeCooldown(String(settings.stallNudgeCooldownSeconds ?? ""));
+      setDraftToolHang(String(settings.stallToolHangSeconds ?? ""));
       const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
       setDraftBudgetTokens(budget.tokens);
       setDraftBudgetCost(budget.costUsd);
@@ -540,6 +542,7 @@ function DefaultsTab() {
         stallNudgeMax: parseInt(draftNudgeMax) || 0,
         stallNudgeReplyWindowSeconds: parseInt(draftNudgeReplyWindow) || 0,
         stallNudgeCooldownSeconds: parseInt(draftNudgeCooldown) || 0,
+        stallToolHangSeconds: parseInt(draftToolHang) || 0,
         defaultBudgetOverrides: buildBudgetDefaults(
           draftBudgetTokens,
           draftBudgetCost,
@@ -666,6 +669,13 @@ function DefaultsTab() {
                 value={draftNudgeCooldown}
                 onChange={setDraftNudgeCooldown}
                 placeholder="60"
+              />
+              <StallField
+                label="Tool hang (seconds)"
+                description="A tool call with no events for longer than this is cancelled natively (synthesized cancelled result + course-correcting redirect injected). 0 = default 180s; negative = disabled."
+                value={draftToolHang}
+                onChange={setDraftToolHang}
+                placeholder="180"
               />
             </div>
           </CardContent>

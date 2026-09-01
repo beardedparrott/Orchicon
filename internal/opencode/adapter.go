@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
@@ -365,8 +366,11 @@ const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n
 	"- `batch_read` reads several files or a whole directory in ONE call.\n" +
 	"- `batch_grep` searches several patterns across the tree in ONE call.\n" +
 	"- `batch_write` applies several create/overwrite/edit/append writes in ONE atomic call.\n" +
-	"- Do NOT use `read`, `grep`, `glob`, `write`, or `edit` for file access when the batch tools are available — they are fallback-only.\n" +
-	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n"
+	"- The single-op variants (`read`, `grep`, `write`, `edit`) are thin wrappers over the same batch engine — use them only for a genuinely one-file need; prefer the batch tools for independent operations (one call carrying several operations = one turn instead of N).\n" +
+	"- `list` enumerates a directory's entries cheaply (the `ls` equivalent of glob); `todoread` re-syncs your live todo list.\n" +
+	"- Do NOT use `glob` to read files, and never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n" +
+	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
+	"- Oversized tool outputs are truncated head+tail at capture time with the full payload offloaded to disk (<project>/.orchicon/outputs/); the transcript carries the reference — grep/read the offloaded file only if you actually need the middle.\n"
 
 // IsExecutionActive reports whether an in-process execution subprocess is
 // still tracked as running. Used by the execution-liveness reaper to
@@ -422,11 +426,13 @@ const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
 	"File access tools (use these for all reading, searching, and writing):\n" +
 	"- `batch_read` — read several files or a whole directory in ONE call\n" +
 	"- `batch_grep` — search several patterns across the tree in ONE call\n" +
-	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n\n" +
+	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n" +
+	"- `read` / `grep` / `write` / `edit` — single-file wrappers over the batch engine (one-op convenience; prefer the batch tools for independent operations)\n" +
+	"- `list` — enumerate a directory's entries (the `ls` equivalent of glob)\n\n" +
 	"Other tools:\n" +
 	"- `glob` — find files by pattern\n" +
 	"- `bash` — run a shell command in the project\n" +
-	"- `todowrite` — maintain the live task-progress list (emit it every turn)\n" +
+	"- `todowrite` — maintain the live task-progress list (emit it every turn); `todoread` re-syncs it\n" +
 	"- `webfetch` — fetch web content from a URL\n" +
 	"- `websearch` — search the web (use only if needed)\n" +
 	"- `skill` — load a skill's instructions\n" +
@@ -754,6 +760,41 @@ func allTokensZero(tokens map[string]any) bool {
 	return true
 }
 
+// parseTodoItems extracts the worker's todo list from a `todowrite` tool
+// input payload. opencode's todowrite input carries the full replacement
+// array under `todos` ({content, status, priority} per item). Malformed
+// items are dropped; items with no content are skipped; a missing status
+// defaults to "pending". This is the exact shape `todoread` (and the native
+// todo surface) renders from.
+func parseTodoItems(inRaw any) []worktree.TodoItem {
+	inputMap, ok := inRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	itemsRaw, ok := inputMap["todos"].([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]worktree.TodoItem, 0, len(itemsRaw))
+	for _, ir := range itemsRaw {
+		im, ok := ir.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := im["content"].(string)
+		if content == "" {
+			continue
+		}
+		status, _ := im["status"].(string)
+		priority, _ := im["priority"].(string)
+		if status == "" {
+			status = "pending"
+		}
+		items = append(items, worktree.TodoItem{Content: content, Status: status, Priority: priority})
+	}
+	return items
+}
+
 // parseEvent dispatches a decoded opencode event into the telemetry
 // pipeline. It is the single dispatch used by the session transport
 // (legacyEventFromBus builds the {type, part} object from the server SSE
@@ -817,6 +858,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		//     }
 		//   }
 		toolName, _ := part["tool"].(string)
+		callID, _ := part["callID"].(string)
 		state, _ := part["state"].(map[string]any)
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
@@ -828,7 +870,20 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		// inflates everything downstream of this execution. Truncate with a
 		// clear marker so the worker/operator knows the tail is available on
 		// the host or project disk without ballooning the transcript.
-		outStr = capToolOutput(outStr)
+		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID)
+
+		// Detect `todowrite` (native opencode todo tool) and mirror its
+		// payload into the DB-less sidecar snapshot so `todoread` — and the
+		// native todo surface — can re-sync it without a Postgres
+		// transcript. The todo list is the live task-progress list the
+		// execution UI renders from; snapshotting it here (rather than
+		// re-parsing the durable transcript) is what makes the native todo
+		// surface work for DB-less sessions. Best-effort: a failed snapshot
+		// is a log-level concern, never a tool failure.
+		if toolName == "todowrite" {
+			items := parseTodoItems(inRaw)
+			worktree.SaveTodoSnapshot(executionDir(manifest), items)
+		}
 
 		// Detect `write` tool calls (opencode built-in file writer)
 		// and route them as artifacts instead of raw tool calls. The
@@ -1197,10 +1252,15 @@ func toInt64(v any) int64 {
 // FULL tool output (a build log, a directory listing) to OnToolCall; an
 // uncapped output is then re-sent on every later turn — the main amplifier
 // behind the observed ~45k-72k context-per-call across workflow runs. Keep
-// the head of the output (the summary/decision part) and mark the truncation
-// so the worker can grep/read the tail from disk if it needs to. Overridable
-// via ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
+// the head + tail of the output (the decision part + the error tail) and
+// offload the FULL payload to the project disk so the worker can
+// grep/read the middle if it needs to. Overridable via
+// ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
 const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
+
+// toolOutputOffloadRatio is the head+tail split of the cap: each side keeps
+// (cap - marker) * ratio / (ratio+1) bytes.
+const toolOutputOffloadRatio = 2 // head:tail = 2:1 — the decision part outweighs the error tail
 
 func maxToolOutputBytes() int {
 	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
@@ -1211,22 +1271,90 @@ func maxToolOutputBytes() int {
 	return maxToolOutputBytesDefault
 }
 
+// toolOutputOffloadDir returns the directory where oversized tool outputs
+// are offloaded: <project_dir>/.orchicon/outputs/<execution_id>/. The
+// .orchicon/ directory is gitignored (verified: .gitignore:57) and the
+// execution dir is scoped so a giant build log lands in exactly one place.
+// Returns "" when the project dir is not resolvable (offload disabled).
+func toolOutputOffloadDir(projectDir, execID string) string {
+	if projectDir == "" || execID == "" {
+		return ""
+	}
+	p := filepath.Join(projectDir, ".orchicon", "outputs", execID)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		return ""
+	}
+	return p
+}
+
+// offloadToolOutput writes the full oversized tool output to the offload dir
+// and returns a short reference line the transcript carries instead of the
+// payload. Best-effort: a disk-write failure degrades to the truncated
+// head+tail only (the worker still gets the decision part).
+func offloadToolOutput(projectDir, execID, callID string, full string) string {
+	dir := toolOutputOffloadDir(projectDir, execID)
+	if dir == "" {
+		return ""
+	}
+	name := callID
+	if name == "" {
+		name = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	p := filepath.Join(dir, name+".out")
+	if err := os.WriteFile(p, []byte(full), 0o644); err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(projectDir, p)
+	if err != nil {
+		rel = p
+	}
+	return fmt.Sprintf(" (full output offloaded to %s)", rel)
+}
+
 // capToolOutput truncates a tool output to maxToolOutputBytes (128k default),
-// keeping the head + a truncation marker. Returns the string unchanged when
-// under the cap or the cap is disabled.
-func capToolOutput(s string) string {
+// keeping the HEAD (the decision/summary part) + a truncation marker + the
+// TAIL (the error/stack part — the part a worker needs when a build fails).
+// Returns the string unchanged when under the cap or the cap is disabled.
+//
+// projectDir + execID + callID feed the offload path: when the output is
+// over the cap, the FULL payload is written to
+// <projectDir>/.orchicon/outputs/<execID>/<callID>.out and the returned
+// string carries a reference to it (plus the head+tail preview), so the
+// transcript never re-sends the payload and the worker can still reach the
+// full content from disk if needed.
+func capToolOutput(s, projectDir, execID, callID string) string {
 	limit := maxToolOutputBytes()
 	if limit < 1 || len(s) <= limit {
 		return s
 	}
-	head := limit - len(toolOutputTruncatedMarker)
+	offloadRef := offloadToolOutput(projectDir, execID, callID, s)
+	avail := limit - len(toolOutputTruncatedMarker)
+	if avail < 4 {
+		avail = 4
+	}
+	head := avail * toolOutputOffloadRatio / (toolOutputOffloadRatio + 1)
+	tail := avail - head
 	if head < 1 {
 		head = 1
 	}
-	return s[:head] + toolOutputTruncatedMarker
+	if tail < 1 {
+		tail = 1
+	}
+	// The offload ref is part of the returned string; shrink the preview if
+	// the ref alone pushes past the cap (extremely long callIDs).
+	for len(toolOutputTruncatedMarker)+len(offloadRef)+head+tail > limit {
+		if head > 1 {
+			head--
+		} else if tail > 1 {
+			tail--
+		} else {
+			break
+		}
+	}
+	return s[:head] + toolOutputTruncatedMarker + offloadRef + s[len(s)-tail:]
 }
 
-const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
+const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — head+tail shown, full payload on disk]\n"
 
 // capPartOutput applies the tool-output cap to a legacy event's `part`
 // map (the durable-transcript shape). It returns the part unchanged when
@@ -1234,7 +1362,7 @@ const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a 
 // copy with state.output replaced by the capped value, so the transcript
 // (re-seeded by follow-ups / recovery-resumed sessions) stays bounded
 // without mutating the event the UI path consumed.
-func capPartOutput(part any) any {
+func (a *Adapter) capPartOutput(part any, execID, projectDir string) any {
 	m, ok := part.(map[string]any)
 	if !ok {
 		return part
@@ -1247,7 +1375,8 @@ func capPartOutput(part any) any {
 	if out == "" {
 		return part
 	}
-	capped := capToolOutput(out)
+	callID, _ := m["callID"].(string)
+	capped := capToolOutput(out, projectDir, execID, callID)
 	if capped == out {
 		return part
 	}
