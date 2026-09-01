@@ -36,8 +36,8 @@ import (
 type NativeBridge struct {
 	mu sync.Mutex
 
-	resolver ProviderResolver // registry (nil → sessions must be given a pre-resolved provider via test hook)
-	projectDir string        // daemon-level serve/guard boundary (manifest.ProjectDir)
+	resolver   ProviderResolver // registry (nil → sessions must be given a pre-resolved provider via test hook)
+	projectDir string           // daemon-level serve/guard boundary (manifest.ProjectDir)
 	log        *slog.Logger
 
 	// live tracks in-flight sessions (execID → cancel + session).
@@ -112,6 +112,24 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// for bridge-level lookups.
 	if b.projectDir == "" && manifest.ProjectDir != "" {
 		b.projectDir = manifest.ProjectDir
+	}
+
+	// Sequence continuation (opt-in, DEFAULT OFF): when the manifest
+	// names a prior session to continue from, seed that session's
+	// transcript into this one. Identity (same worker) is verified by the
+	// bridge before seeding; a mismatch or missing prior transcript falls
+	// back to a fresh session (never leaks another worker's transcript,
+	// never fails the execution over an unavailable continuation).
+	if manifest.SequenceContinue && manifest.ContinueFromSessionID != "" {
+		priorPath := transcriptPath(b.projectDir, manifest.ContinueFromSessionID)
+		if err := verifyContinuationIdentity(priorPath, exec); err != nil {
+			b.log.Warn("orchicon: continuation refused, starting fresh",
+				"execution", exec.ID, "prior", manifest.ContinueFromSessionID, "error", err)
+		} else {
+			sess.SetContinuation(priorPath)
+			b.log.Info("orchicon: session continues prior transcript",
+				"execution", exec.ID, "prior", manifest.ContinueFromSessionID)
+		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	ls := &liveSession{session: sess, cancel: cancel, execRow: exec, manifest: manifest, done: make(chan struct{})}
@@ -274,6 +292,27 @@ func identityFromReplay(evs []replayEvent) Identity {
 		}
 	}
 	return Identity{}
+}
+
+// verifyContinuationIdentity loads the prior session's transcript and
+// confirms it belongs to the SAME worker as the continuing execution
+// (identity isolation by construction — no worker ever sees another
+// worker's transcript). A missing or unparseable prior transcript, or a
+// worker mismatch, is an error and the caller falls back to a fresh
+// session.
+func verifyContinuationIdentity(priorPath string, exec db.ExecutionRow) error {
+	evs, err := Load(priorPath)
+	if err != nil {
+		return fmt.Errorf("load prior transcript: %w", err)
+	}
+	prior := identityFromReplay(evs)
+	if prior.WorkerID == "" {
+		return fmt.Errorf("prior session has no identity block")
+	}
+	if exec.WorkerID != "" && prior.WorkerID != exec.WorkerID {
+		return fmt.Errorf("prior session belongs to worker %q, execution is worker %q (identity isolation)", prior.WorkerID, exec.WorkerID)
+	}
+	return nil
 }
 
 // jsonUnmarshal is a tiny indirection for testability.

@@ -45,6 +45,14 @@ type transEntry struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
+// transToolCallData is the durable payload of a TransToolCall event: the
+// assistant turn's accumulated text plus its complete tool calls. Replay
+// rebuilds the assistant tool_use history message from this (BUG-1).
+type transToolCallData struct {
+	Text      string     `json:"text"`
+	ToolCalls []ToolCall `json:"tool_calls"`
+}
+
 // JSONLTranscript is the crash-safe append-only session transcript at
 // <project_dir>/.orchicon/sessions/<session_id>.jsonl. Every event is
 // fsync'd before the next one starts (f.Sync after each append under a
@@ -67,7 +75,7 @@ func openTranscript(path string) (*JSONLTranscript, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("transcript: mkdir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("transcript: open: %w", err)
 	}
@@ -201,4 +209,59 @@ func Load(path string) ([]replayEvent, error) {
 		return nil, fmt.Errorf("transcript: scan: %w", err)
 	}
 	return out, nil
+}
+
+// SeedFrom re-appends the durable lines of a prior session's transcript
+// into this one, preserving their original seq values (the new session's
+// own header is written first, then the prior events follow — the new
+// file is self-contained and replays to the full prior conversation).
+// Used by the sequence-continuation path (Session.SetContinuation). The
+// caller must verify identity (same worker) before calling — this method
+// performs no identity checks.
+func (t *JSONLTranscript) SeedFrom(path string) error {
+	evs, err := Load(path)
+	if err != nil {
+		return fmt.Errorf("transcript: seed from %s: %w", path, err)
+	}
+	if len(evs) == 0 {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return fmt.Errorf("transcript: seed after close")
+	}
+	// Keep the FIRST event's seq as the anchor (the new header was already
+	// appended with seq 1); prior events continue after it.
+	if len(evs) == 0 {
+		return nil
+	}
+	anchor := evs[0].Seq
+	for _, e := range evs {
+		seq := e.Seq - anchor + 1
+		if seq <= t.seq {
+			continue // already seeded
+		}
+		payload := json.RawMessage("null")
+		if len(e.Data) > 0 {
+			payload = e.Data
+		}
+		entry := transEntry{Seq: seq, Type: e.Type, TS: e.TS, Data: payload}
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("transcript: seed marshal: %w", err)
+		}
+		if _, err := t.f.Write(append(b, '\n')); err != nil {
+			t.done = true
+			_ = t.f.Close()
+			return fmt.Errorf("transcript: seed write: %w", err)
+		}
+		if err := t.f.Sync(); err != nil {
+			t.done = true
+			_ = t.f.Close()
+			return fmt.Errorf("transcript: seed fsync: %w", err)
+		}
+		t.seq = seq
+	}
+	return nil
 }

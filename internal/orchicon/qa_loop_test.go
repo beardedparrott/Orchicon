@@ -67,7 +67,8 @@ func TestQATextOnlyCallbackParity(t *testing.T) {
 }
 
 // AC1: tool round → OnToolCall + tool result back in history + loop
-// continues. FAILS on BUG-1 (assistant tool_use never in history).
+// continues. Verifies BUG-1 fix (assistant tool_use precedes tool results
+// in history).
 func TestQAToolRoundHistory(t *testing.T) {
 	tools := newMockTools()
 	tools.results["read"] = "file contents"
@@ -244,8 +245,8 @@ func TestQACancellation(t *testing.T) {
 	}
 }
 
-// AC: no-progress guard must fire ONLY on zero growth + REPEATED tool
-// signature. FAILS on BUG-2 (fires on a single non-repeated round).
+// AC2: no-progress guard requires a REPEATED tool signature (zero token
+// growth on one unique-signature round is healthy). Verifies BUG-2 fix.
 func TestQANoProgressGuardNeedsRepeat(t *testing.T) {
 	tools := newMockTools()
 	tools.results["noop"] = "ok"
@@ -496,3 +497,135 @@ func (p *panicProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnSt
 }
 func (p *panicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
 func (p *panicProvider) Capabilities() Capabilities                          { return Capabilities{} }
+
+// AC: sequence continuation (opt-in, DEFAULT OFF) — a new session seeded
+// from a prior session's transcript replays the full prior conversation
+// into history (the provider sees the prior goal + assistant tool_use +
+// tool result), the new goal arrives as the LAST user message, and the
+// new session's own header identity is its own execution id (identity
+// isolation preserved — no worker sees another worker's transcript).
+func TestQASequenceContinuation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Prior session: a tool round + a finishing text turn.
+	priorPath := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
+	if err := os.MkdirAll(filepath.Dir(priorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{
+			ToolCallStart{Index: 0, ToolCallID: "tc1", Name: "read"},
+			ToolCallDelta{Index: 0, ArgsJSONDelta: `{"path":"`},
+			ToolCallDelta{Index: 0, ArgsJSONDelta: `a.txt"}`},
+			ToolCallEnd{Index: 0},
+		}, finish: StopToolUse, usage: Usage{InputTokens: 200, OutputTokens: 10}},
+		{events: []Event{TextDelta{Text: "Prior done."}}, finish: StopStop, usage: Usage{InputTokens: 300, OutputTokens: 15}},
+	}}
+	sp := qaSession(t, prior, newMockTools())
+	if err := sp.Run(context.Background(), &recordedCallback{}); err != nil {
+		t.Fatalf("prior Run: %v", err)
+	}
+	// Move the prior transcript to the sessions dir under the expected name.
+	priorTmp := sp.TranscriptPath()
+	if err := os.Rename(priorTmp, priorPath); err != nil {
+		t.Fatalf("rename prior transcript: %v", err)
+	}
+
+	// Continuing session: SAME worker (identity isolation), new execution
+	// id, new goal (a chain's next step), seeded from the prior
+	// transcript.
+	tools := newMockTools()
+	tools.results["read"] = "file contents"
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{TextDelta{Text: "Continuing."}}, finish: StopStop, usage: Usage{InputTokens: 400, OutputTokens: 12}},
+	}}
+	sdir := t.TempDir()
+	man := testManifest("orchicon/mockprov/deepseek-v4-flash")
+	man.Goal = "Continue the chain: finish the next step."
+	s, err := NewSession(SessionConfig{
+		ExecRow:    testExecRow("exec_new"),
+		Manifest:   man,
+		ProjectDir: sdir,
+		Provider:   prov,
+		Tools:      tools,
+	})
+	if err != nil {
+		t.Fatalf("NewSession continuation: %v", err)
+	}
+	s.SetContinuation(priorPath)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("continuation Run: %v", err)
+	}
+
+	req := prov.lastRequest()
+	if len(req.Messages) < 4 {
+		t.Fatalf("continuation history has %d messages, want >= 4 (prior goal, prior assistant tool_use, prior tool result, new goal) — got %+v", len(req.Messages), req.Messages)
+	}
+	// Prior goal exactly once (seeded), new goal exactly once as LAST.
+	priorGoalCount := 0
+	for _, m := range req.Messages {
+		if m.Role == RoleUser && len(m.Content) > 0 && m.Content[0].Text != nil && strings.Contains(*m.Content[0].Text, "Write a test.") {
+			priorGoalCount++
+		}
+	}
+	if priorGoalCount != 1 {
+		t.Errorf("prior goal count = %d, want 1", priorGoalCount)
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != RoleUser || last.Content[0].Text == nil || !strings.Contains(*last.Content[0].Text, "Continue the chain") {
+		t.Errorf("last message = role %q, want the new chain goal user message", last.Role)
+	}
+	// Seeded assistant tool_use present (BUG-1 parity survives replay).
+	foundAsst := false
+	for _, m := range req.Messages {
+		if m.Role == RoleAssistant && len(m.Content) > 0 && m.Content[0].ToolUse != nil && m.Content[0].ToolUse.Name == "read" {
+			foundAsst = true
+		}
+	}
+	if !foundAsst {
+		t.Errorf("seeded assistant tool_use missing from continuation history")
+	}
+	// New session's header carries ITS OWN identity (exec_test, not exec_prior).
+	evs, err := Load(s.TranscriptPath())
+	if err != nil {
+		t.Fatalf("Load continuation transcript: %v", err)
+	}
+	var hdr struct {
+		Identity Identity `json:"identity"`
+	}
+	if err := json.Unmarshal(evs[0].Data, &hdr); err != nil {
+		t.Fatalf("continuation header: %v", err)
+	}
+	if hdr.Identity.ExecutionID == "exec_prior" {
+		t.Errorf("continuation header carries the PRIOR execution id (isolation broken)")
+	}
+}
+
+// AC: sequence continuation refuses cross-worker continuation (identity
+// isolation — no worker ever resumes another worker's transcript).
+func TestQASetContinuationRefusesCrossWorker(t *testing.T) {
+	// verifyContinuationIdentity is bridge-level; exercise it directly.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prior.jsonl")
+	tr, err := openTranscript(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Append(TransSession, map[string]any{"identity": Identity{ExecutionID: "exec_prior", WorkerID: "worker_A", WorkerName: "worker-a", TenantID: "tnt_test"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = tr.Close()
+	// Same worker → ok.
+	execSame := testExecRow("exec_new")
+	execSame.WorkerID = "worker_A"
+	if err := verifyContinuationIdentity(path, execSame); err != nil {
+		t.Errorf("same-worker continuation refused: %v", err)
+	}
+	// Different worker → refused.
+	execDiff := testExecRow("exec_new")
+	execDiff.WorkerID = "worker_B"
+	if err := verifyContinuationIdentity(path, execDiff); err == nil {
+		t.Error("cross-worker continuation must be refused")
+	}
+}

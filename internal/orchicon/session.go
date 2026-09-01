@@ -58,19 +58,27 @@ type ToolRegistry interface {
 // transcript. It runs the agent turn loop (loop.go) and is the unit of
 // resume/continuation (the JSONL transcript is replayable).
 type Session struct {
-	id        string // session id == execution id
-	identity  Identity
-	provider  Provider        // resolved once at session start (no per-turn model switch)
-	tools     ToolRegistry    // injected (tool-suite task / tests); may be nil
+	id         string // session id == execution id
+	identity   Identity
+	provider   Provider     // resolved once at session start (no per-turn model switch)
+	tools      ToolRegistry // injected (tool-suite task / tests); may be nil
 	transcript *JSONLTranscript
-	dir       string // session transcript directory (<project_dir>/.orchicon/sessions)
-	log       *slog.Logger
+	dir        string // session transcript directory (<project_dir>/.orchicon/sessions)
+	log        *slog.Logger
 	// history is the replayable conversation (user/assistant/tool messages).
 	history []Message
 	// output accumulates the session's assistant text (OnResult parity).
 	output *strings.Builder
 	// inj is the mid-run injection queue (nil until first inject).
 	inj *injected
+	// continuationPath is the prior session's transcript path when this
+	// session resumes a sequence chain (sequence-continuation flag,
+	// opt-in default off). Seeded into the transcript at Run time.
+	continuationPath string
+	// continued records that the transcript was seeded from a prior
+	// session (goal-append gate: a continued session carries its own new
+	// goal as a user message after the seeded history).
+	continued bool
 	// written-tracking (deduped, OnWrittenFiles parity).
 	writtenMu    sync.Mutex
 	writtenSet   map[string]bool
@@ -81,7 +89,7 @@ type Session struct {
 type SessionConfig struct {
 	ExecRow    db.ExecutionRow // ExecutionRow used for identity fields
 	Manifest   scheduler.ExecutionManifest
-	ProjectDir string // the true project dir (manifest.ProjectDir)
+	ProjectDir string           // the true project dir (manifest.ProjectDir)
 	Provider   Provider         // pre-resolved provider (tests); may be nil → resolve via resolver
 	Resolver   ProviderResolver // resolves provider/model from manifest.ModelRef
 	Tools      ToolRegistry     // may be nil
@@ -138,13 +146,13 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		AcceptanceCriteria: cfg.Manifest.AcceptanceCriteria,
 	}
 	s := &Session{
-		id:        cfg.ExecRow.ID,
-		identity:  ident,
-		provider:  prov,
-		tools:     cfg.Tools,
-		dir:       filepath.Join(cfg.ProjectDir, ".orchicon", "sessions"),
-		log:       cfg.Log,
-		output:    &strings.Builder{},
+		id:       cfg.ExecRow.ID,
+		identity: ident,
+		provider: prov,
+		tools:    cfg.Tools,
+		dir:      filepath.Join(cfg.ProjectDir, ".orchicon", "sessions"),
+		log:      cfg.Log,
+		output:   &strings.Builder{},
 	}
 	return s, nil
 }
@@ -179,3 +187,12 @@ func (s *Session) History() []Message { return s.history }
 
 // SetHistory replaces the history (used by resume/continuation replay).
 func (s *Session) SetHistory(h []Message) { s.history = h }
+
+// SetContinuation marks this session as continuing a prior session's
+// transcript (sequence-continuation flag, opt-in default off). The prior
+// transcript must belong to the SAME worker (identity isolation) — the
+// bridge verifies this before calling; a mismatch is refused and the
+// session starts fresh. path is the prior session's JSONL path.
+func (s *Session) SetContinuation(path string) {
+	s.continuationPath = path
+}

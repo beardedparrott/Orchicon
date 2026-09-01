@@ -27,7 +27,7 @@ const (
 	toolParallelismDefault = 4
 	// textStreamingChunkSize / Delay match opencode's emitTextChunked
 	// pacing so the runtime session pane renders identically.
-	textStreamingChunkSize = 40
+	textStreamingChunkSize  = 40
 	textStreamingChunkDelay = 60 * time.Millisecond
 	// maxToolOutputBytes caps one tool result before it re-enters history
 	// (parity with the opencode adapter's context-amplifier guard).
@@ -50,7 +50,7 @@ func loopEnvInt(key string, def int) int {
 	return def
 }
 
-func maxSteps() int     { return loopEnvInt("ORCHICON_SESSION_MAX_STEPS", maxStepsDefault) }
+func maxSteps() int { return loopEnvInt("ORCHICON_SESSION_MAX_STEPS", maxStepsDefault) }
 func toolParallelism() int {
 	return loopEnvInt("ORCHICON_SESSION_TOOL_PARALLELISM", toolParallelismDefault)
 }
@@ -71,23 +71,11 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 	if callbacks == nil {
 		return fmt.Errorf("session: nil callbacks")
 	}
-	// Panic containment at the session boundary (AC: panic in the loop
-	// fails ONLY this execution — never the plane or siblings).
-	defer func() {
-		if r := recover(); r != nil {
-			msg := fmt.Sprintf("session panic recovered: %v\n%s", r, debug.Stack())
-			s.log.Error("session panic contained", "execution", s.id, "panic", r)
-			_ = s.markState(ctx, "failed")
-			if s.transcript != nil {
-				_ = s.transcript.Append(TransError, map[string]any{"error": msg})
-				_ = s.transcript.Close()
-			}
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), "panic: "+fmt.Sprint(r))
-			err = fmt.Errorf("%w: %v", ErrPanic, r)
-		}
-	}()
-
-	// Open (or reopen) the crash-safe transcript.
+	// Open (or reopen) the crash-safe transcript FIRST so the panic
+	// boundary below can mark the transcript failed while it is still
+	// open. Defer order is LIFO: Close is registered BEFORE the recover
+	// defer, so on panic the recover runs first (marks failed + appends
+	// the panic error while the file is open), then Close runs.
 	if s.transcript == nil {
 		t, err := s.OpenTranscript()
 		if err != nil {
@@ -100,6 +88,42 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			}
 			_ = s.transcript.Close()
 		}()
+	}
+	// Panic containment at the session boundary (AC: panic in the loop
+	// fails ONLY this execution — never the plane or siblings). Runs
+	// BEFORE the Close defer above (registered last → runs first). Must
+	// be registered before ANY transcript work (seeding, replay, header)
+	// so a panic there is contained too.
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("session panic recovered: %v\n%s", r, debug.Stack())
+			s.log.Error("session panic contained", "execution", s.id, "panic", r)
+			_ = s.markState(ctx, "failed")
+			if s.transcript != nil {
+				_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			}
+			callbacks.OnResult(ctx, s.id, false, s.output.String(), "panic: "+fmt.Sprint(r))
+			err = fmt.Errorf("%w: %v", ErrPanic, r)
+		}
+	}()
+	// Sequence continuation (opt-in, default off): seed the prior
+	// session's transcript into this one so the new file is
+	// self-contained and replay produces the full prior conversation.
+	// Identity (same worker) is verified by the bridge before this is
+	// set; a seed failure falls back to a fresh session (never leaks
+	// another worker's transcript).
+	if s.continuationPath != "" && s.transcript.Seq() == 0 {
+		if err := s.transcript.Append(TransSession, map[string]any{"identity": s.identity}); err != nil {
+			return fmt.Errorf("session: header: %w", err)
+		}
+		if err := s.transcript.SeedFrom(s.continuationPath); err != nil {
+			s.log.Warn("session: continuation seed failed — starting fresh", "execution", s.id, "error", err)
+			// The header is already appended; drop the seeded path so the
+			// fresh session proceeds normally.
+		} else {
+			s.continued = true
+		}
+		s.continuationPath = "" // seed once — a resume must not re-seed
 	}
 
 	// Replay the transcript into history on resume (idempotent: replays
@@ -120,10 +144,16 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 
 	// First user message = manifest Goal (parity: opencode sends the goal
 	// as the first user message; the engine does NOT re-render — the goal
-	// text IS the manifest field).
-	s.appendUser(TransUserMessage, s.identity.Goal, "goal")
-	if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.identity.Goal, "source": "goal"}); err != nil {
-		return err
+	// text IS the manifest field). Only on a FRESH session: a resumed or
+	// sequence-continued session already carries its goal in the replayed
+	// transcript — appending again would duplicate the goal. A CONTINUED
+	// session gets its own new goal as the FIRST message after the seeded
+	// history (the chain's next step).
+	if s.transcript.Seq() == 1 || s.continued {
+		s.appendUser(TransUserMessage, s.identity.Goal, "goal")
+		if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.identity.Goal, "source": "goal"}); err != nil {
+			return err
+		}
 	}
 
 	// Turn loop bounded by maxSteps.
@@ -152,9 +182,9 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// Build the turn request. The static system prefix is marked as
 		// the provider cache breakpoint (Cache:true on the static block).
 		req := TurnRequest{
-			Model:    s.identity.Model,
-			System:   []SystemBlock{{Text: s.identity.SystemPrompt, Cache: true}},
-			Messages: s.history,
+			Model:     s.identity.Model,
+			System:    []SystemBlock{{Text: s.identity.SystemPrompt, Cache: true}},
+			Messages:  s.history,
 			MaxTokens: 4096,
 		}
 		if s.tools != nil {
@@ -171,7 +201,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			return nil
 		}
 
-		finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
+		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
 		_ = stream.Close()
 		if streamErr != nil {
 			msg := fmt.Sprintf("stream error: %v", streamErr)
@@ -195,9 +225,21 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 
 		switch finish {
 		case StopToolUse:
-			// Execute pending tool calls (parallel where independent),
-			// append results to history, drain injection queue, loop.
+			// History parity (BUG-1): the assistant's tool_use message must
+			// PRECEDE the tool results in history. Record the turn's
+			// assistant message (accumulated text + tool_use blocks) into
+			// the transcript BEFORE executing tools (so a crash mid-tool
+			// still replays the assistant turn), then append the same
+			// message to history so the provider sees the full turn.
 			if len(toolCalls) > 0 {
+				if err := s.transcript.Append(TransToolCall, map[string]any{
+					"text": text, "tool_calls": toolCalls,
+				}); err != nil {
+					return err
+				}
+				s.appendAssistantToolUse(text, toolCalls)
+				// Execute pending tool calls (parallel where independent),
+				// append results to history, drain injection queue, loop.
 				results := s.executeTools(ctx, callbacks, toolCalls)
 				for _, r := range results {
 					if err := s.transcript.Append(TransToolResult, r); err != nil {
@@ -237,8 +279,10 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 // repeats a prior tool signature. Returns the stall reason string
 // (parity vocabulary) or "" when healthy.
 func (s *Session) checkNoProgress(prevTokens int64, usage Usage, toolCalls []ToolCall, sigs map[string]int) string {
-	// Only treat zero-growth + repeated signature as a stall (a final
-	// StopStop turn legitimately adds output tokens).
+	// Only treat zero-growth + REPEATED tool signature as a stall (a
+	// single zero-growth tool round is healthy — e.g. a read turn that
+	// produces no tokens; the NEXT round with the same signature trips
+	// the guard). A final StopStop turn legitimately adds output tokens.
 	if len(toolCalls) == 0 {
 		return ""
 	}
@@ -250,7 +294,9 @@ func (s *Session) checkNoProgress(prevTokens int64, usage Usage, toolCalls []Too
 		}
 		return ""
 	}
-	// Zero token growth + tool calls: count repeated signatures.
+	// Zero token growth + tool calls: stall only when the SAME signature
+	// repeats (the platform's repetition detector semantics). A single
+	// zero-growth round is healthy — the guard needs a repeat to trip.
 	for _, tc := range toolCalls {
 		sig := tc.Name + ":" + tc.ArgsJSON
 		sigs[sig]++
@@ -258,13 +304,16 @@ func (s *Session) checkNoProgress(prevTokens int64, usage Usage, toolCalls []Too
 			return "stalled:repetition:" + tc.Name
 		}
 	}
-	return "stalled:no_progress"
+	// No repeated signature yet: healthy, keep the round count for the
+	// next round (the repetition counter already advanced above).
+	return ""
 }
 
 // drain reads the turn stream until Finish, mapping every event type onto
-// callbacks (no silent gaps). Returns the stop reason, the complete tool
-// calls of the turn, the usage, and any mid-stream error.
-func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallbacks, stream TurnStream) (StopReason, []ToolCall, Usage, error) {
+// callbacks (no silent gaps). Returns the turn's accumulated assistant
+// text, the stop reason, the complete tool calls of the turn, the usage,
+// and any mid-stream error.
+func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallbacks, stream TurnStream) (string, StopReason, []ToolCall, Usage, error) {
 	var text strings.Builder
 	var reasoning strings.Builder
 	var finish StopReason
@@ -275,7 +324,7 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 	for {
 		ev, ok, err := stream.Next(ctx)
 		if err != nil {
-			return finish, calls, usage, err
+			return text.String(), finish, calls, usage, err
 		}
 		if !ok {
 			break
@@ -309,13 +358,13 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 			// Already-complete tool call event.
 			calls = append(calls, e)
 		case StreamError:
-			return finish, calls, usage, e.Err
+			return text.String(), finish, calls, usage, e.Err
 		case Finish:
 			finish = e.StopReason
 			usage = e.Usage
 		}
 	}
-	return finish, calls, usage, nil
+	return text.String(), finish, calls, usage, nil
 }
 
 // executeTools runs the turn's tool calls (parallel where independent —
@@ -379,11 +428,29 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 	return results
 }
 
-// toolResult is one tool execution outcome.
+// toolResult is one tool execution outcome. The JSON tags are the
+// durable transcript shape (TransToolResult): replay unmarshals these
+// exact keys, so the transcript round-trips.
 type toolResult struct {
-	ToolCall ToolCall
-	Output   string // capped
-	Err      string // "" on success
+	ToolCall ToolCall `json:"tool_call"`
+	Output   string   `json:"output"`
+	Err      string   `json:"error,omitempty"` // "" on success
+}
+
+// appendAssistantToolUse appends the assistant's turn message to history:
+// the accumulated text (if any) plus one ContentToolUse block per tool
+// call. This is the assistant tool_use message that MUST precede the tool
+// results in history (BUG-1 — provider parity).
+func (s *Session) appendAssistantToolUse(text string, calls []ToolCall) {
+	msg := Message{Role: RoleAssistant}
+	if text != "" {
+		msg.Content = append(msg.Content, Content{Text: &text})
+	}
+	for _, c := range calls {
+		use := &ContentToolUse{ToolCallID: c.ToolCallID, Name: c.Name, ArgsJSON: c.ArgsJSON}
+		msg.Content = append(msg.Content, Content{ToolUse: use})
+	}
+	s.history = append(s.history, msg)
 }
 
 // appendToolResults appends tool results to history as RoleTool messages,
@@ -460,6 +527,19 @@ func (s *Session) replay(evs []replayEvent) {
 			_ = json.Unmarshal(e.Data, &d)
 			// Reassembled from chunks; the output buffer holds the full text.
 			s.output.WriteString(d.Text)
+		case TransToolCall:
+			// Rebuild the assistant's tool_use turn (BUG-1 parity): the
+			// accumulated text + one ToolUse block per call. This message
+			// MUST precede the following TransToolResult lines in history.
+			var d struct {
+				Text      string     `json:"text"`
+				ToolCalls []ToolCall `json:"tool_calls"`
+			}
+			_ = json.Unmarshal(e.Data, &d)
+			if d.Text != "" {
+				s.output.WriteString(d.Text)
+			}
+			s.appendAssistantToolUse(d.Text, d.ToolCalls)
 		case TransToolResult:
 			var d struct {
 				ToolCall ToolCall `json:"tool_call"`
@@ -480,7 +560,7 @@ func (s *Session) replay(evs []replayEvent) {
 
 // injected holds queued mid-run user turns (SendExecutionMessage).
 type injected struct {
-	mu  sync.Mutex
+	mu   sync.Mutex
 	msgs []string
 }
 

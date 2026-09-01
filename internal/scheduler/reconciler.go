@@ -1096,6 +1096,23 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		// (previously the bridge was a hardcoded singleton).
 		kind = adapter.DefaultAdapterKind
 	}
+	// Sequence continuation (opt-in, DEFAULT OFF): consecutive
+	// same-worker tasks in a sequence chain may resume the prior task's
+	// session transcript instead of starting fresh (tightly-coupled
+	// chains where retained context beats isolation). Resolution happens
+	// ONLY for the native engine (kind "orchicon" — the in-process
+	// session engine); opencode/other adapters never resume (their
+	// transcripts are subprocess-bound, not in-process). The flag is set
+	// only when the task has a terminal-success predecessor sibling bound
+	// to the same worker, so identity isolation holds by construction.
+	if kind == "orchicon" && task.ParentID != nil && *task.ParentID != "" {
+		if priorID, ok := r.continuationSessionID(context.Background(), task, version); ok {
+			manifest.SequenceContinue = true
+			manifest.ContinueFromSessionID = priorID
+			r.log.Info("sequence continuation armed",
+				"execution", exec.ID, "prior", priorID, "task", task.ID)
+		}
+	}
 	bridge, err := r.dispatcher.Resolve(kind)
 	if err != nil {
 		r.log.Error("adapter dispatch failed", "execution", exec.ID, "kind", kind, "error", err)
@@ -1109,6 +1126,76 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		// Mark the execution as failed_to_start.
 		r.markFailedToStart(context.Background(), exec, err.Error())
 	}
+}
+
+// continuationSessionID resolves the prior session to continue for a
+// sequence-chain task (sequence-continuation flag, opt-in DEFAULT OFF).
+// It returns (sessionID, true) only when:
+//   - the task is a direct child of a sequence parent (ParentID set),
+//   - its immediate predecessor sibling is terminal-success (succeeded or
+//     skipped — a failed/cancelled predecessor never continues),
+//   - the predecessor's assigned worker is the SAME worker as the current
+//     task's (identity isolation by construction: no worker ever resumes
+//     another worker's transcript),
+//   - the predecessor has a completed execution (session id == execution
+//     id for the native engine).
+//
+// The session id for the native engine IS the execution id, so the prior
+// execution's id is the continuation target.
+func (r *TaskReconciler) continuationSessionID(ctx context.Context, task db.WorkItemRow, version db.WorkerVersionRow) (string, bool) {
+	if task.ParentID == nil || *task.ParentID == "" {
+		return "", false
+	}
+	ttx, err := r.pool.BeginTenantTx(context.Background(), task.TenantID)
+	if err != nil {
+		r.log.Warn("continuation: begin tx failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	defer ttx.Rollback(context.Background())
+
+	children, err := db.ListDirectChildren(context.Background(), ttx.Tx, task.TenantID, *task.ParentID)
+	if err != nil {
+		r.log.Warn("continuation: list children failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	idx := -1
+	for i, c := range children {
+		if c.ID == task.ID {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return "", false // no predecessor (first child or not found)
+	}
+	prev := children[idx-1]
+	if !domain.WorkItemIsTerminalSuccess(prev.Status) {
+		return "", false
+	}
+	// Same-worker requirement (identity isolation). The predecessor's
+	// assigned worker is parsed from its AssignedWorkerRef.
+	var ref struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if len(prev.AssignedWorkerRef) == 0 {
+		return "", false
+	}
+	if err := json.Unmarshal(prev.AssignedWorkerRef, &ref); err != nil || ref.WorkerID == "" {
+		return "", false
+	}
+	if ref.WorkerID != version.WorkerID {
+		return "", false // cross-worker never continues
+	}
+	priorExec, err := db.GetLatestExecutionForTask(context.Background(), ttx.Tx, task.TenantID, prev.ID)
+	if err != nil || priorExec.ID == "" {
+		return "", false
+	}
+	// Only a succeeded prior execution is worth continuing from.
+	if priorExec.Status != domain.ExecutionSucceeded {
+		return "", false
+	}
+	return priorExec.ID, true
 }
 
 // markFailedToStart transitions an execution to failed_to_start
