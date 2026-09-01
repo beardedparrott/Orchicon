@@ -6,7 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { AIProvider } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
-import { DEFAULT_ADAPTER_KIND, catalogModelMatches, formatModelRef, parseModelRef } from "@/lib/model-ref";
+import {
+  DEFAULT_ADAPTER_KIND,
+  ORCHICON_ADAPTER_KIND,
+  catalogModelMatches,
+  formatModelRef,
+  parseModelRef,
+} from "@/lib/model-ref";
 
 interface ModelPickerProps {
   value: string;
@@ -69,6 +75,18 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // Stale-selection guard: when the seeded adapter/provider are not in the
   // freshly-loaded lists (unknown/stored refs), keep the flagged state rather
   // than resetting the stored value.
+
+  // ADR-0005 D5 (default adapter = "orchicon" for FRESH selections): when
+  // the stored ref is empty (no adapter chosen yet) and "orchicon" is a
+  // Dispatcher-registered kind, seed the adapter tier with "orchicon".
+  // Otherwise seed "opencode" (today's registry — the picker degrades to
+  // the only dispatchable kind, never a default that cannot dispatch).
+  // Legacy/stored refs keep their own adapter (never repointed).
+  useEffect(() => {
+    if (value.trim() !== "") return; // stored ref keeps its own selection
+    if (!adapterKinds) return; // kinds not loaded yet — no guessing
+    setAdapter(adapterKinds.includes(ORCHICON_ADAPTER_KIND) ? ORCHICON_ADAPTER_KIND : DEFAULT_ADAPTER_KIND);
+  }, [value, adapterKinds]);
   const selectedProviderObj = providers?.find((p) => p.id === provider);
   const customProvider = selectedProviderObj?.custom ?? false;
 
@@ -116,7 +134,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }, []);
 
   // Adapter selection: rescope provider (and reset provider/model tiers so no
-  // stale selection leaks across adapters — ADR-0004 stale-selection guard).
+  // stale selection leaks across adapters — ADR-0004 stale-selection guard;
+  // pinned as the ADR-0005 D4 reset contract: switching adapters NEVER
+  // carries the previous selection into the new scope and no ref is written
+  // until a model under the new adapter is chosen — a clean re-selection,
+  // never a hidden mutation of the stored ref).
   function selectAdapter(kind: string) {
     setAdapter(kind);
     setProvider("");

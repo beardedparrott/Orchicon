@@ -72,6 +72,18 @@ func (c *BuiltinProviderCatalog) AddAdapterKind(kind string, providers ...string
 	}
 }
 
+// AdapterKinds returns the registered adapter kinds, sorted. It satisfies
+// the optional AdapterKindLister the worker service's explicit-adapter-input
+// fallback uses (ADR-0005 D2) when the Dispatcher kinds are not wired.
+func (c *BuiltinProviderCatalog) AdapterKinds() []string {
+	out := make([]string, 0, len(c.adapterKinds))
+	for k := range c.adapterKinds {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // IsKnownAdapter implements ProviderRegistry.
 func (c *BuiltinProviderCatalog) IsKnownAdapter(kind string) bool {
 	_, ok := c.adapterKinds[kind]

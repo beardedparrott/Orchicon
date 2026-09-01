@@ -15,6 +15,17 @@
 /** The adapter kind assumed for legacy refs with no explicit adapter segment. */
 export const DEFAULT_ADAPTER_KIND = "opencode";
 
+/**
+ * ORCHICON_ADAPTER_KIND is the decided product default for FRESH adapter
+ * selections (ADR-0005 D5): the native adapter kind this feature delivers.
+ * The picker seeds its adapter tier with this kind when the stored ref is
+ * empty AND the kind is Dispatcher-registered; otherwise it degrades to
+ * DEFAULT_ADAPTER_KIND (opencode) — never a default that cannot dispatch.
+ * It is deliberately NOT the backward-compat inference: legacy refs
+ * without an adapter segment keep inferring opencode.
+ */
+export const ORCHICON_ADAPTER_KIND = "orchicon";
+
 /** The parsed form of a model_ref. */
 export interface ParsedModelRef {
   adapter: string; // segment 1 (3+ seg) or the inferred legacy default
