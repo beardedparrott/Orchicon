@@ -883,6 +883,32 @@ A run's effective git strategy is resolved once, at every layer, from the same s
  5. **Defaults → Execution liveness reaper**: tuning for the execution-liveness reaper (the sweep that fails executions whose runtime process is gone). The liveness probe can false-negative on a transient docker/socket hiccup, so an execution is only reaped once it is **older than the grace window** (default 60s) **and** has been reported not-alive for **consecutive-failures** checks in a row (default 3). Env overrides: `ORCHICON_REAP_GRACE_SECONDS`, `ORCHICON_REAP_CONSECUTIVE_FAILURES`.
   6. **Defaults → Execution transport resilience**: the exec stream between the control plane and the runtime supervisor can break on a transient socket/docker hiccup. The execution is **not** failed on a broken stream: the client retries (**reconnect attempts**, default 3) and the supervisor keeps the child running for the **reconnect grace** (default 60s) so a re-attach can resume. Only when the retries are exhausted (or the context was explicitly cancelled) does the execution fail and fall through to recovery. Env overrides: `ORCHICON_RECONNECT_ATTEMPTS`, `ORCHICON_RECONNECT_GRACE_SECONDS`.
 
+#### MCP servers (Settings → Adapters → MCP)
+The **MCP** tab under **Settings → Adapters** manages the tenant's MCP (Model Context Protocol) server entries — the surface that makes external tools available to workers via MCP, mirroring how providers are managed. Entries are **tenant-scoped**; project and worker MCP selections **reference** these entries (never copies), so editing one entry updates every consumer automatically.
+
+**Setup**
+1. Navigate to **Settings → Adapters → MCP**.
+2. **Add an entry manually**: name, transport (`stdio` — command + args + env; or `streamable-http` — URL + headers), and the enabled flag. For `stdio`, give the executable (e.g. `npx`) and argv; for `streamable-http`, give the endpoint URL.
+3. **One-click add from the catalog**: the built-in curated registry (filesystem, github, gitlab, postgres, sqlite, fetch, playwright/puppeteer, sentry, slack, and similar) prefills the create form with the install spec, default config, docs link, and required env vars — then save.
+4. **Credentials**: click **Save credential** on any required secret (e.g. `GITHUB_PERSONAL_ACCESS_TOKEN`). Credentials are stored in the tenant secrets store (AES-256-GCM at rest) — the same pattern as provider tokens — and are **never** returned or baked into config; the entry holds a `${SECRET_NAME}` reference resolved at session time.
+
+**Auto-install**
+- Catalog entries with installable commands carry an install mechanism (`npx` / `uvx` / `docker` / `remote_url`) and an **Install** button. Installation is **explicit** (the operator clicks Install) — never implicit at session time.
+- The server detects which runtimes are available on the host (`npx`, `uvx`, `docker` via `PATH`); a missing runtime fails the install with a clear error.
+- On success the result (runtime, command, timestamp) is recorded on the entry; failures record the captured error. `remote_url` entries need no install — they are marked installed on click.
+- CI safety: set `ORCHICON_MCP_INSTALL_DRYRUN=1` (or use the dry-run/preview control) to resolve what **would** run without executing anything or writing the DB — no network installs in default tests.
+
+**Project & worker integration**
+- The **project create/edit** page and **worker settings** list the configured MCP servers with per-project / per-worker selection checkboxes; selections save as references and the pickers refresh automatically on save.
+- **Resolution order** (worker → project → tenant default → none): a worker with no selection falls back to its project's selection, then to the tenant default set, then to none. The tenant default set is managed in the MCP tab.
+
+**Troubleshooting**
+- **Runtime missing**: install on the host — `npx` (Node.js), `uvx` (`pip install uv`), or Docker (Docker Desktop / engine) — then retry Install.
+- **Install failed**: read the recorded error on the entry; ensure the command/args are valid for the selected runtime.
+- **Enabled but not installed**: install the server first — an enabled entry without an installed server cannot connect.
+- **Secret not stored**: use **Save credential** on the entry; the plaintext value is never persisted in the entry config.
+- **Delete blocked**: the entry is referenced by a project, worker, or the tenant default set — clear those references first.
+
 #### Audit trail
 The actor-based audit trail records **who did what** across the whole plane. Every mutating RPC and auth action writes an `audit_events` row **in the same transaction as the mutation** (the transactional-outbox pattern — an audit row exists iff the mutation committed); read-only calls write nothing.
 

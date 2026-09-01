@@ -33,6 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/outbox"
@@ -472,6 +473,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		"",
 		log,
 	)
+	// MCP server storage (ADR-0008): sessions resolve worker → project →
+	// tenant-default selections over the tenant-configured server list and
+	// ${SECRET_NAME} refs resolve to stored plaintext before connect.
+	// With no configured servers the source returns an empty list and
+	// sessions run without MCP tools (never an error).
+	nativeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
 	nativeBridge.SetUsageRecorder(func(ctx context.Context, in scheduler.UsageRecord) error {
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,

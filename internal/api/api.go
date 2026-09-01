@@ -40,6 +40,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/workitem"
@@ -164,6 +165,16 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	providerSvc.Service().RegisterSubstrateLoader()
 	deps.ProvidersService = providerSvc.Service()
 	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
+
+	// MCPService (adapter-settings MCP management) — tenant-facing MCP
+	// server surface behind Settings → Adapters → MCP: CRUD over server
+	// entries (stdio + streamable HTTP), curated registry catalog with
+	// one-click prefill, explicit-only auto-install (dry-run for CI), and
+	// project/tenant-default selections (references, never copies). The
+	// sibling MCP-client task consumes the stored entries at session time.
+	mcpSvc := mcpsettings.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	mux.Handle(apiv1connect.NewMCPServiceHandler(mcpSvc, interceptorOpt))
+
 	workerSvc := worker.New(deps.Pool, deps.Log)
 	// Explicit adapter selections validate against the Dispatcher's
 	// registered kinds (ADR-0005 D2) — the injected func avoids the
