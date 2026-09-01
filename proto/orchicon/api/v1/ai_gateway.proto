@@ -49,6 +49,10 @@ message AIProvider {
   string name = 2;           // display name
   bool enabled = 3;
   repeated string models = 4; // model ids exposed by this provider
+  // custom is true when this provider is a tenant-created custom provider
+  // (Settings → Adapters), false for a built-in provider profile. The
+  // picker renders custom providers with a badge + manage affordance.
+  bool custom = 5;
 }
 
 // UsageRecord is a single LLM usage sample recorded by the AI Gateway

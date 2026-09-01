@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -60,6 +61,22 @@ func (d *Dispatcher) Resolve(kind string) (AdapterBridge, error) {
 		return nil, fmt.Errorf("no adapter bridge registered for kind %q — register it at server construction or fix the worker's model_ref (registered kinds: %s)", kind, d.kindsLocked())
 	}
 	return b, nil
+}
+
+// Kinds returns the registered adapter kinds, sorted, deduped (map keys
+// are unique by construction). It is the public enumeration surface the
+// model picker's adapter bubble tier consumes (ADR-0004 D1): a new
+// adapter appears in the picker automatically once it registers here.
+// An empty Dispatcher yields an empty (non-nil) slice.
+func (d *Dispatcher) Kinds() []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	kinds := make([]string, 0, len(d.bridges))
+	for k := range d.bridges {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 // kindsLocked returns a comma-separated list of registered kinds. Caller

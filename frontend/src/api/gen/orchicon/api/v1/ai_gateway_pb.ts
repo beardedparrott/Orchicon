@@ -238,6 +238,15 @@ export class AIProvider extends Message<AIProvider> {
    */
   models: string[] = [];
 
+  /**
+   * custom is true when this provider is a tenant-created custom provider
+   * (Settings → Adapters), false for a built-in provider profile. The
+   * picker renders custom providers with a badge + manage affordance.
+   *
+   * @generated from field: bool custom = 5;
+   */
+  custom = false;
+
   constructor(data?: PartialMessage<AIProvider>) {
     super();
     proto3.util.initPartial(data, this);
@@ -250,6 +259,7 @@ export class AIProvider extends Message<AIProvider> {
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 4, name: "models", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 5, name: "custom", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AIProvider {

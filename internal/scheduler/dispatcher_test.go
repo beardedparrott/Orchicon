@@ -108,6 +108,26 @@ func TestDispatcherLastRegistrationWins(t *testing.T) {
 	}
 }
 
+func TestDispatcherKinds(t *testing.T) {
+	d := NewDispatcher()
+	if k := d.Kinds(); len(k) != 0 {
+		t.Fatalf("Kinds() on empty dispatcher = %v, want empty", k)
+	}
+	d.Register("opencode", &fakeBridge{})
+	d.Register("claude", &fakeBridge{})
+	d.Register("opencode", &fakeBridge{}) // duplicate kind — deduped
+	got := d.Kinds()
+	want := []string{"claude", "opencode"}
+	if len(got) != len(want) {
+		t.Fatalf("Kinds() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Kinds() = %v, want %v (sorted, deduped)", got, want)
+		}
+	}
+}
+
 // TestDispatcherCapabilityNegotiation proves the server-side pattern: the
 // caller type-asserts a capability interface and degrades with an
 // actionable error when the bridge does not support it — never a panic.

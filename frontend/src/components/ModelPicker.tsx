@@ -1,37 +1,81 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useListOpenCodeModels } from "@/api/aigateway";
+import { useListAdapterKinds, useListOpenCodeModels, useListProviders } from "@/api/aigateway";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import type { AIProvider } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import { DEFAULT_ADAPTER_KIND, catalogModelMatches, formatModelRef, parseModelRef } from "@/lib/model-ref";
 
 interface ModelPickerProps {
   value: string;
   onChange: (value: string) => void;
-  adapter?: string; // adapter kind filter (opencode/claude/orchicon); empty = default
 }
 
-export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
-  const { data: models, isLoading, error } = useListOpenCodeModels(adapter);
+// Three-tier control (ADR-0004): adapter bubble list (registered kinds) →
+// provider list (built-in ∪ tenant custom, adapter-scoped) → searchable model
+// list (provider-scoped). The stored model_ref seeds the selection
+// (legacy 2-segment refs infer adapter `opencode`); saving writes a
+// normalized 3-segment `adapter/provider/model` ref.
+export function ModelPicker({ value, onChange }: ModelPickerProps) {
+  const parsed = useMemo(() => parseModelRef(value), [value]);
+
+  const { data: adapterKinds, error: kindsError } = useListAdapterKinds();
+
+  // Seeded adapter/provider from the stored ref; DEFAULT_ADAPTER_KIND when the
+  // ref is empty or unknown (never blank, never hidden).
+  const [adapter, setAdapter] = useState<string>(() => parsed?.adapter ?? DEFAULT_ADAPTER_KIND);
+  const [provider, setProvider] = useState<string>(() => parsed?.provider ?? "");
   const [search, setSearch] = useState("");
-  const [providerFilter, setProviderFilter] = useState<string>("");
-  const [focusedIdx, setFocusedIdx] = useState(0);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [focusedIdx, setFocusedIdx] = useState(0);
   const [infoModel, setInfoModel] = useState<OpenCodeModel | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const selectedModel = useMemo(() => {
-    if (!models || !value) return null;
-    return models.find((m) => m.modelRef === value) ?? null;
-  }, [models, value]);
+  const {
+    data: providers,
+    isLoading: providersLoading,
+    error: providersError,
+  } = useListProviders(adapter);
+  const {
+    data: models,
+    isLoading: modelsLoading,
+    error: modelsError,
+  } = useListOpenCodeModels(adapter, provider);
 
-  const providers = useMemo(() => {
-    if (!models) return [] as string[];
-    const set = new Set(models.map((m) => m.providerId));
-    return Array.from(set).sort();
-  }, [models]);
+  const adapterList = adapterKinds && adapterKinds.length > 0 ? adapterKinds : [DEFAULT_ADAPTER_KIND];
+  // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw
+  // value: OpenCodeModel.modelRef is the legacy 2-segment "providerId/id"
+  // (internal/aigateway), so a raw comparison against a 3-segment ref would
+  // false-flag every freshly-written ref (QA BUG-1). parsed === null (empty or
+  // malformed ref) never matches — unknown shapes stay flagged (D5).
+  const modelKnown = parsed !== null && models?.some((m) => catalogModelMatches(parsed, m)) === true;
+  // Stored-ref flags are evaluated against the PARSED ref and the loaded
+  // lists — independent of the current tier selection, so navigating the
+  // tiers mid-re-selection never flags a previously-valid stored ref.
+  const storedAdapterKnown = parsed !== null && adapterList.includes(parsed.adapter);
+  const storedProviderKnown =
+    parsed === null ||
+    parsed.provider === "" ||
+    (providers?.some((p) => p.id === parsed.provider) ?? false);
+  // Provider/model verification is only meaningful within the stored ref's
+  // own adapter scope: while the user browses a different adapter the
+  // provider/model lists are scoped elsewhere, so suppress those flags
+  // instead of false-flagging a previously-valid ref.
+  const adapterDiverged = parsed !== null && parsed.adapter !== adapter;
+
+  // Stale-selection guard: when the seeded adapter/provider are not in the
+  // freshly-loaded lists (unknown/stored refs), keep the flagged state rather
+  // than resetting the stored value.
+  const selectedProviderObj = providers?.find((p) => p.id === provider);
+  const customProvider = selectedProviderObj?.custom ?? false;
+
+  const selectedModel = useMemo(() => {
+    if (!models || !parsed) return null;
+    return models.find((m) => catalogModelMatches(parsed, m)) ?? null;
+  }, [models, parsed]);
 
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
@@ -47,16 +91,12 @@ export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
           m.family.toLowerCase().includes(q),
       );
     }
-    if (providerFilter) {
-      result = result.filter((m) => m.providerId === providerFilter);
-    }
     return result.sort((a, b) => {
       if (a.providerId !== b.providerId) return a.providerId.localeCompare(b.providerId);
       return (a.cost?.input ?? 0) - (b.cost?.input ?? 0);
     });
-  }, [models, search, providerFilter]);
+  }, [models, search]);
 
-  // Reset focused index when filtered list changes
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
   // Close dropdown on outside click
@@ -75,10 +115,90 @@ export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  // Adapter selection: rescope provider (and reset provider/model tiers so no
+  // stale selection leaks across adapters — ADR-0004 stale-selection guard).
+  function selectAdapter(kind: string) {
+    setAdapter(kind);
+    setProvider("");
+    setSearch("");
+    setShowDropdown(false);
+  }
+
+  function selectProvider(id: string) {
+    setProvider(id);
+    setSearch("");
+    setShowDropdown(false);
+  }
+
   function selectModel(model: OpenCodeModel) {
-    onChange(model.modelRef);
+    // model.id is the bare model id — the model segment of the 3-segment
+    // grammar. model.modelRef is the legacy 2-segment provider/model and
+    // must NOT be used here (it would produce a bogus 4-segment ref).
+    onChange(formatModelRef(adapter, provider, model.id));
     setShowDropdown(false);
     setSearch("");
+  }
+
+  // Stored-ref review banner: the picker renders the raw ref flagged for
+  // review whenever the stored value is unknown in any tier (D5) — never
+  // blank, hidden, or erroring. Each tier flags only what its LOADED data
+  // can verify: a failed/absent catalog or a mid-navigation tier scope
+  // never produces a false flag (and no flash-of-banner before queries
+  // resolve). Catalog-known-but-unregistered adapters and 3-seg deleted
+  // providers re-save unchanged; unknown-adapter 3-seg and unknown-provider
+  // 2-seg refs route to re-selection via the tiers.
+  const storedRefFlagged =
+    value.trim() !== "" &&
+    (!parsed ||
+      (adapterKinds !== undefined && !storedAdapterKnown) ||
+      (!adapterDiverged && providers !== undefined && !storedProviderKnown) ||
+      (!adapterDiverged &&
+        parsed !== null &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown));
+
+  const reviewReasons: string[] = [];
+  if (value.trim() !== "") {
+    if (!parsed) {
+      reviewReasons.push("unrecognized ref shape");
+    } else {
+      if (adapterKinds !== undefined && !storedAdapterKnown) {
+        reviewReasons.push("adapter not registered");
+      }
+      if (!adapterDiverged && providers !== undefined && !storedProviderKnown) {
+        reviewReasons.push("provider not found (deleted or unknown)");
+      }
+      if (
+        !adapterDiverged &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown
+      ) {
+        reviewReasons.push("model not found in the selected provider's catalog");
+      }
+    }
+  }
+
+  // Missing context/output hints → selectable but annotated (D3). Either
+  // hint missing (or the whole limits block absent) counts — compaction
+  // needs both the context window and the output cap.
+  function missingHints(model: OpenCodeModel): boolean {
+    return !model.limits || !model.limits.context || !model.limits.output;
+  }
+
+  function formatCost(cost?: { input: number; output: number }) {
+    if (!cost) return "";
+    if (cost.input === 0 && cost.output === 0) return "Free";
+    return `$${cost.input}/${cost.output} per 1M tokens`;
+  }
+
+  function formatLimit(val?: bigint | number | string) {
+    if (!val) return "";
+    const n = Number(val);
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+    return String(n);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -108,22 +228,6 @@ export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
     }
   }
 
-  // Format cost display
-  function formatCost(cost?: { input: number; output: number }) {
-    if (!cost) return "";
-    if (cost.input === 0 && cost.output === 0) return "Free";
-    return `$${cost.input}/${cost.output} per 1M tokens`;
-  }
-
-  // Format limit display
-  function formatLimit(val?: bigint | number | string) {
-    if (!val) return "";
-    const n = Number(val);
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-    return String(n);
-  }
-
   if (infoModel) {
     return (
       <div className="space-y-2">
@@ -140,127 +244,210 @@ export function ModelPicker({ value, onChange, adapter }: ModelPickerProps) {
   }
 
   return (
-    <div className={showDropdown ? "relative space-y-2 z-10" : "relative space-y-2"}>
-      {selectedModel ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">Selected model:</span>
-          <span className="min-w-0 flex-1 truncate text-sm font-mono text-muted-foreground">
-            {selectedModel.modelRef}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs"
-            onClick={() => setInfoModel(selectedModel)}
-          >
-            Info
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              onChange("");
-              setProviderFilter("");
-              setSearch("");
-            }}
-          >
-            Change
-          </Button>
-        </div>
-      ) : (
-        <>
-          <Input
-            ref={inputRef}
-            placeholder="Search models (type to filter)..."
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setShowDropdown(true);
-            }}
-            onFocus={() => setShowDropdown(true)}
-            onKeyDown={handleKeyDown}
-          />
-
-          {showDropdown && (
-            <div
-              ref={dropdownRef}
-              className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
-              style={{ maxHeight: "400px", overflow: "hidden", display: "flex", flexDirection: "column" }}
-            >
-              {/* Provider filter bar */}
-              <div className="flex gap-1 border-b p-2 overflow-x-auto shrink-0">
-                <button
-                  type="button"
-                  className={`rounded px-2 py-0.5 text-xs whitespace-nowrap ${
-                    !providerFilter ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                  }`}
-                  onClick={() => setProviderFilter("")}
-                >
-                  All
-                </button>
-                {providers.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={`rounded px-2 py-0.5 text-xs whitespace-nowrap ${
-                      providerFilter === p ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                    }`}
-                    onClick={() => setProviderFilter(p)}
-                  >
-                    {p}
-                  </button>
+    <div className="space-y-3">
+      {/* Stored-ref review banner (D5): flagged for review, never blank/hidden. */}
+      {storedRefFlagged && (
+        <div
+          role="alert"
+          className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <span className="font-medium">Stored model ref flagged for review:</span>{" "}
+              <span className="font-mono">{value}</span>
+              <ul className="mt-1 list-inside list-disc">
+                {reviewReasons.map((r) => (
+                  <li key={r}>{r}</li>
                 ))}
-              </div>
-
-              {/* Model list */}
-              <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
-                {isLoading && (
-                  <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
-                )}
-                {error && (
-                  <p className="p-4 text-xs text-destructive text-center">
-                    Failed to load models: {String(error)}
-                  </p>
-                )}
-                {!isLoading && !error && filtered.length === 0 && (
-                  <p className="p-4 text-xs text-muted-foreground text-center">No models match your search</p>
-                )}
-                {!isLoading &&
-                  filtered.map((model, idx) => (
-                    <button
-                      key={model.modelRef}
-                      type="button"
-                      className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
-                        idx === focusedIdx ? "bg-accent" : ""
-                      } ${model.modelRef === value ? "bg-primary/10" : ""}`}
-                      onMouseEnter={() => setFocusedIdx(idx)}
-                      onClick={() => selectModel(model)}
-                      onDoubleClick={() => {
-                        selectModel(model);
-                        setInfoModel(model);
-                      }}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium truncate">{model.name}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          <span className="font-mono">{model.providerId}</span>
-                          {" / "}
-                          <span className="font-mono">{model.id}</span>
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-xs font-mono">{formatCost(model.cost)}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-              </div>
+              </ul>
+              <p className="mt-1 text-amber-700">
+                Re-select below to fix; catalog-known refs re-save unchanged. Unknown-adapter or
+                unknown-provider refs must be re-selected before saving.
+              </p>
             </div>
-          )}
-        </>
+          </div>
+        </div>
       )}
+
+      {/* Tier 1 — adapter bubble list (registered kinds, auto from Dispatcher). */}
+      <div>
+        <span className="mb-1 block text-xs font-medium text-muted-foreground">Adapter</span>
+        <div className="flex flex-wrap gap-1.5">
+          {adapterList.map((kind) => {
+            const active = kind === adapter;
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-muted text-foreground hover:bg-muted/80"
+                }`}
+                onClick={() => selectAdapter(kind)}
+              >
+                {kind}
+              </button>
+            );
+          })}
+          {kindsError && (
+            <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
+              (kinds unavailable — showing default)
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Tier 2 — provider list scoped to the selected adapter (built-in ∪ custom). */}
+      <div>
+        <span className="mb-1 block text-xs font-medium text-muted-foreground">Provider</span>
+        {providersLoading && <p className="text-xs text-muted-foreground">Loading providers...</p>}
+        {providersError && (
+          <div className="space-y-1">
+            <p className="text-xs text-destructive">Failed to load providers: {String(providersError)}</p>
+          </div>
+        )}
+        {!providersLoading && !providersError && providers && (
+          <div className="flex flex-wrap gap-1.5">
+            {providers.length === 0 && (
+              <span className="text-xs text-muted-foreground">
+                No providers for adapter “{adapter}”
+              </span>
+            )}
+            {providers.map((p: AIProvider) => {
+              const active = p.id === provider;
+              return (
+                <div key={p.id} className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                      active
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-muted text-foreground hover:bg-muted/80"
+                    }`}
+                    onClick={() => selectProvider(p.id)}
+                  >
+                    {p.name || p.id}
+                  </button>
+                  {p.custom && (
+                    <span
+                      className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
+                      title="Manage in Settings → Adapters"
+                    >
+                      custom
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            {customProvider && (
+              <span className="self-center text-[10px] text-muted-foreground">
+                Manage custom providers in Settings → Adapters
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Tier 3 — searchable model list scoped to the selected provider. */}
+      <div className={showDropdown ? "relative z-10 space-y-1" : "relative space-y-1"}>
+        <span className="mb-1 block text-xs font-medium text-muted-foreground">Model</span>
+        {selectedModel && !showDropdown ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs"
+              onClick={() => setInfoModel(selectedModel)}
+            >
+              Info
+            </Button>
+            <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowDropdown(true)}>
+              Change
+            </Button>
+          </div>
+        ) : (
+          <>
+            <Input
+              ref={inputRef}
+              placeholder={provider ? "Search models..." : "Select a provider first"}
+              value={search}
+              disabled={!provider}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setShowDropdown(true);
+              }}
+              onFocus={() => setShowDropdown(true)}
+              onKeyDown={handleKeyDown}
+            />
+            {showDropdown && provider && (
+              <div
+                ref={dropdownRef}
+                className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+                style={{
+                  maxHeight: "320px",
+                  overflow: "hidden",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <div className="overflow-y-auto">
+                  {modelsLoading && (
+                    <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
+                  )}
+                  {modelsError && (
+                    <p className="p-4 text-xs text-destructive text-center">
+                      Failed to load models: {String(modelsError)}
+                    </p>
+                  )}
+                  {!modelsLoading && !modelsError && filtered.length === 0 && (
+                    <p className="p-4 text-xs text-muted-foreground text-center">
+                      No models match your search
+                    </p>
+                  )}
+                  {!modelsLoading &&
+                    !modelsError &&
+                    filtered.map((model, idx) => (
+                      <button
+                        key={model.modelRef || model.id}
+                        type="button"
+                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
+                          idx === focusedIdx ? "bg-accent" : ""
+                        } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
+                        onMouseEnter={() => setFocusedIdx(idx)}
+                        onClick={() => selectModel(model)}
+                        onDoubleClick={() => {
+                          selectModel(model);
+                          setInfoModel(model);
+                        }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium truncate">{model.name}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            <span className="font-mono">{model.providerId}</span> /{" "}
+                            <span className="font-mono">{model.id}</span>
+                          </div>
+                          {missingHints(model) && (
+                            <div className="mt-0.5 text-[10px] text-amber-600">
+                              no context/output hint — may misbehave in compaction
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-xs font-mono">{formatCost(model.cost)}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -279,7 +466,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <div className="grid grid-cols-2 gap-3">
-          {/* Cost */}
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">Cost per 1M tokens</span>
             {model.cost ? (
@@ -310,7 +496,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
             )}
           </div>
 
-          {/* Limits */}
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">Token limits</span>
             {model.limits ? (
@@ -321,7 +506,9 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
                 </div>
                 <div className="flex justify-between">
                   <span>Max input</span>
-                  <span className="font-mono">{Number(model.limits.input || 0).toLocaleString() || "N/A"}</span>
+                  <span className="font-mono">
+                    {Number(model.limits.input || 0).toLocaleString() || "N/A"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Max output</span>
@@ -334,7 +521,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
           </div>
         </div>
 
-        {/* Capabilities */}
         {model.capabilities && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Capabilities</span>
@@ -351,16 +537,12 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
           </div>
         )}
 
-        {/* Variants (reasoning effort) */}
         {model.variants.length > 0 && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Reasoning effort variants</span>
             <div className="flex flex-wrap gap-1 mt-1">
               {model.variants.map((v) => (
-                <span
-                  key={v}
-                  className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-mono"
-                >
+                <span key={v} className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
                   {v}
                 </span>
               ))}

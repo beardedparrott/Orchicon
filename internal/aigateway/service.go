@@ -42,6 +42,10 @@ type Service struct {
 	registry      adapter.ProviderRegistry
 	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
+	// adapterKinds returns the adapter kinds registered with the
+	// Dispatcher (ADR-0004 D1). nil falls back to the default adapter
+	// kind so the picker never blanks.
+	adapterKinds func() []string
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
@@ -56,7 +60,7 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // registry supplies the per-adapter provider catalog (built-in profiles ∪
 // tenant custom providers) for adapter-scoped filtering; nil falls back to
 // the built-in catalog.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry) *Service {
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry, adapterKinds func() []string) *Service {
 	if registry == nil {
 		registry = adapter.NewBuiltinProviderCatalog()
 	}
@@ -69,13 +73,60 @@ func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discov
 		registry:      registry,
 		discoverer:    discoverer,
 		mcpDiscoverer: mcpDiscoverer,
+		adapterKinds:  adapterKinds,
 	}
+}
+
+// ListAdapterKinds returns the adapter kinds currently registered with
+// the Dispatcher (ADR-0004 D1). The model picker's adapter bubble tier
+// derives from this, so a new adapter appears automatically once
+// registered. When no kinds function is injected (headless/test) it
+// falls back to the default adapter kind so the picker never blanks.
+func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[apiv1.ListAdapterKindsRequest]) (*connect.Response[apiv1.ListAdapterKindsResponse], error) {
+	kinds := []string{adapter.DefaultAdapterKind}
+	if s.adapterKinds != nil {
+		if k := s.adapterKinds(); len(k) > 0 {
+			kinds = k
+		}
+	}
+	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{AdapterKinds: kinds}), nil
 }
 
 // ListProviders returns the LLM providers known to the gateway
 // (docs/07 §3.10). Providers are not tenant-scoped in v0.1.
+// The optional adapter filter scopes the result to one adapter kind's
+// provider set: its built-in profiles (registry.Providers, enriched with
+// display info from the gateway provider table where the id matches) ∪
+// tenant-created custom providers (provider-layer task — contract-only
+// today). An unknown adapter kind yields an empty list (never an error)
+// so the picker renders the unknown state flagged for review.
 func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.ListProvidersRequest]) (*connect.Response[apiv1.ListProvidersResponse], error) {
+	if req.Msg.Adapter != nil && *req.Msg.Adapter != "" {
+		return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providersForAdapter(*req.Msg.Adapter)}), nil
+	}
 	return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providers}), nil
+}
+
+// providersForAdapter builds the adapter-scoped provider list from the
+// registry's per-adapter provider names, enriching each with the gateway
+// provider table's display info where the id matches (falling back to a
+// bare id provider otherwise). Tenant custom providers (custom: true)
+// merge in here once the provider-layer task lands.
+func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
+	names := s.registry.Providers(adapterKind)
+	byID := make(map[string]*apiv1.AIProvider, len(s.providers))
+	for _, p := range s.providers {
+		byID[p.Id] = p
+	}
+	out := make([]*apiv1.AIProvider, 0, len(names))
+	for _, name := range names {
+		if p, ok := byID[name]; ok {
+			out = append(out, p)
+			continue
+		}
+		out = append(out, &apiv1.AIProvider{Id: name, Name: name, Enabled: true})
+	}
+	return out
 }
 
 // ListOpenCodeModels enumerates all models available via the `opencode`
@@ -297,7 +348,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 							TotalTokens:      workers[k].TotalTokens,
 							PromptTokens:     workers[k].PromptTokens,
 							CompletionTokens: workers[k].CompletionTokens,
-CacheReadTokens:  workers[k].CacheReadTokens,
+							CacheReadTokens:  workers[k].CacheReadTokens,
 							CacheWriteTokens: workers[k].CacheWriteTokens,
 							ReasoningTokens:  workers[k].ReasoningTokens,
 							ExecutionCount:   workers[k].ExecutionCount,
