@@ -31,6 +31,7 @@ import (
 
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -1104,7 +1105,12 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
 	}
-	provider, model := parseModelRef(manifest.ModelRef)
+	provider, model, ok := adapter.SplitForServe(manifest.ModelRef)
+	if !ok {
+		// A malformed/empty model ref on a usage sample: attribute to
+		// "unknown" so the record is never dropped on the parse.
+		provider, model = "unknown", "unknown"
+	}
 	in := UsageRecord{
 		TenantID:         execRow.TenantID,
 		ProjectID:        execRow.ProjectID,
@@ -1172,20 +1178,6 @@ func extractErrorMessage(evt map[string]any) string {
 		return n
 	}
 	return ""
-}
-
-// parseModelRef splits a model ref like "anthropic/claude-sonnet-4" or
-// "opencode/deepseek-v4-flash-free" into (provider, model). If there is
-// no "/", provider is "unknown" and model is the whole ref.
-func parseModelRef(ref string) (provider, model string) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "unknown", "unknown"
-	}
-	if i := strings.IndexByte(ref, '/'); i > 0 {
-		return ref[:i], ref[i+1:]
-	}
-	return "unknown", ref
 }
 
 func toInt64(v any) int64 {

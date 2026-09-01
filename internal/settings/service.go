@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
@@ -53,16 +54,36 @@ func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.Ge
 	}), nil
 }
 
+// validateModelRef checks a tenant-default model ref against the
+// adapter/provider/model grammar (ADR-0003). Empty means unset — valid.
+func validateModelRef(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, adapter.NewBuiltinProviderCatalog()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1.UpdateSettingsRequest]) (*connect.Response[apiv1.UpdateSettingsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Validate session TTLs before touching the DB.
+	// Validate session TTLs and default model refs before touching the DB.
 	if s := req.Msg.Settings; s != nil {
 		if err := validateSessionTTLs(s.SessionAccessTokenTtlSeconds, s.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if err := validateModelRef(s.DefaultWorkerModel); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("default_worker_model: %w", err))
+		}
+		if err := validateModelRef(s.DefaultAskOrchiconModel); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("default_ask_orchicon_model: %w", err))
 		}
 	}
 

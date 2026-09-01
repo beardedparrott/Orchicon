@@ -27,6 +27,13 @@ export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest
    */
   provider?: string;
 
+  /**
+   * filter to one adapter kind (e.g. "opencode", "claude", "orchicon"); empty = opencode (default)
+   *
+   * @generated from field: optional string adapter = 2;
+   */
+  adapter?: string;
+
   constructor(data?: PartialMessage<ListOpenCodeModelsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -36,6 +43,7 @@ export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest
   static readonly typeName = "orchicon.api.v1.ListOpenCodeModelsRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "provider", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 2, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeModelsRequest {

@@ -34,6 +34,7 @@ const (
 type ListOpenCodeModelsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      *string                `protobuf:"bytes,1,opt,name=provider,proto3,oneof" json:"provider,omitempty"` // filter by provider id (e.g. "anthropic", "opencode")
+	Adapter       *string                `protobuf:"bytes,2,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`   // filter to one adapter kind (e.g. "opencode", "claude", "orchicon"); empty = opencode (default)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -71,6 +72,13 @@ func (*ListOpenCodeModelsRequest) Descriptor() ([]byte, []int) {
 func (x *ListOpenCodeModelsRequest) GetProvider() string {
 	if x != nil && x.Provider != nil {
 		return *x.Provider
+	}
+	return ""
+}
+
+func (x *ListOpenCodeModelsRequest) GetAdapter() string {
+	if x != nil && x.Adapter != nil {
+		return *x.Adapter
 	}
 	return ""
 }
@@ -1232,10 +1240,13 @@ var File_orchicon_api_v1_ai_gateway_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
-	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"I\n" +
+	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"t\n" +
 	"\x19ListOpenCodeModelsRequest\x12\x1f\n" +
-	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01B\v\n" +
-	"\t_provider\"T\n" +
+	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01\x12\x1d\n" +
+	"\aadapter\x18\x02 \x01(\tH\x01R\aadapter\x88\x01\x01B\v\n" +
+	"\t_providerB\n" +
+	"\n" +
+	"\b_adapter\"T\n" +
 	"\x1aListOpenCodeModelsResponse\x126\n" +
 	"\x06models\x18\x01 \x03(\v2\x1e.orchicon.api.v1.OpenCodeModelR\x06models\"\x19\n" +
 	"\x17ListOpenCodeMCPsRequest\"R\n" +

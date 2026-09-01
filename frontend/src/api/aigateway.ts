@@ -26,11 +26,11 @@ export const usageKeys = {
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
 
-export function useListOpenCodeModels() {
+export function useListOpenCodeModels(adapter?: string) {
   return useQuery({
-    queryKey: usageKeys.models,
+    queryKey: adapter ? [...usageKeys.models, adapter] : usageKeys.models,
     queryFn: async () => {
-      const res = await aiGatewayClient.listOpenCodeModels({});
+      const res = await aiGatewayClient.listOpenCodeModels({ adapter: adapter ?? "" });
       return (res.models ?? []) as OpenCodeModel[];
     },
     staleTime: 5 * 60 * 1000, // 5 min cache — models don't change often

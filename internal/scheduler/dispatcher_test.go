@@ -176,8 +176,8 @@ func TestTaskReconcilerResolvesBridgeByKind(t *testing.T) {
 	d.Register("claude", claudeBridge)
 
 	// A model_ref whose adapter segment is "claude" must route to the
-	// claude bridge via ParseModelRef — not to a hardcoded opencode one.
-	kind := adapter.ParseModelRef("claude/anthropic/claude-sonnet-4").Adapter
+	// claude bridge via AdapterKind — not to a hardcoded opencode one.
+	kind := adapter.AdapterKind("claude/anthropic/claude-sonnet-4")
 	bridge, err := d.Resolve(kind)
 	if err != nil {
 		t.Fatalf("resolve claude kind %q: %v", kind, err)
@@ -188,7 +188,7 @@ func TestTaskReconcilerResolvesBridgeByKind(t *testing.T) {
 
 	// Unknown kind produces an actionable error (the reconciler path
 	// surfaces it as an execution failure, never a panic).
-	_, err = d.Resolve(adapter.ParseModelRef("mystery/provider/model").Adapter)
+	_, err = d.Resolve(adapter.AdapterKind("mystery/provider/model"))
 	if err == nil {
 		t.Fatal("unknown kind resolved, want actionable error")
 	}

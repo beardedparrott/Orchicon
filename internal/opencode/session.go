@@ -43,6 +43,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // defaultServeUsername is the HTTP basic-auth username opencode serves
@@ -282,7 +284,10 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 		body["system"] = system
 	}
 	if modelRef != "" {
-		if provider, model, ok := splitModelRef(modelRef); ok {
+		// Left-greedy split: segment 1 = adapter (consumed by the control
+		// plane, dropped before the serve call), segment 2 = provider,
+		// remainder = model verbatim (slashes preserved — ADR-0003).
+		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
 			body["model"] = map[string]any{"providerID": provider, "modelID": model}
 		}
 	}
@@ -325,6 +330,8 @@ func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 //
 // The opencode summarize contract uses camelCase keys: `providerID`,
 // `modelID` (unlike SendMessage's snake_case `provider_id`).
+// (the adapter segment is consumed by the control plane and dropped
+// before the serve call — ADR-0003).
 func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, modelID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -672,14 +679,4 @@ func (c *SessionClient) doJSON(ctx context.Context, method, path string, body, o
 		}
 	}
 	return nil
-}
-
-// splitModelRef splits "provider/model" into (provider, model). Returns
-// ok=false when there is no "/" separator.
-func splitModelRef(ref string) (provider, model string, ok bool) {
-	ref = strings.TrimSpace(ref)
-	if i := strings.IndexByte(ref, '/'); i > 0 {
-		return ref[:i], ref[i+1:], true
-	}
-	return "", "", false
 }

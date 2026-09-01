@@ -122,7 +122,7 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
 // dispatches them via the AdapterBridge resolved from the Dispatcher by
-// the execution's adapter kind (adapter.ParseModelRef(manifest.ModelRef)
+// the execution's adapter kind (adapter.AdapterKind(manifest.ModelRef)
 // .Adapter).
 type TaskReconciler struct {
 	pool             *db.Pool
@@ -1073,7 +1073,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		return
 	}
 	// Resolve the adapter bridge from the execution's adapter kind — the
-	// model_ref grammar (adapter.ParseModelRef) is the SINGLE source of
+	// model_ref grammar (adapter.AdapterKind) is the SINGLE source of
 	// truth (ADR-0003). A 2-segment legacy ref (opencode/<model>) resolves
 	// to the default kind "opencode"; an unknown kind fails the execution
 	// with an actionable message (never a panic).
@@ -1081,7 +1081,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	if modelRef == "" {
 		modelRef = manifest.DefaultModelRef
 	}
-	kind := adapter.ParseModelRef(modelRef).Adapter
+	kind := adapter.AdapterKind(modelRef)
 	if kind == "" {
 		// Empty/malformed model_ref: fall back to the default adapter
 		// kind ("opencode") so legacy workers with single-segment refs
