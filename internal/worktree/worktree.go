@@ -32,7 +32,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // Default caps keep a single tool call well-bounded so it cannot blow up the
@@ -268,16 +270,54 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 		return "batch_read: no matching paths were readable.", nil
 	}
 
+	// Parallel read phase (D3): independent file reads run CONCURRENTLY with
+	// bounded parallelism (default 8, overridable via
+	// ORCHICON_TOOL_PARALLELISM) and the results are emitted in DETERMINISTIC
+	// path order (the order `expandPaths` returned), never completion order —
+	// the model sees one batch_read result block whose file order matches its
+	// request order, so its reasoning stays stable. The per-file read itself
+	// is the expensive part (disk + decode); the rendering below is serial.
+	var (
+		readWg sync.WaitGroup
+		readMu sync.Mutex
+	)
+	type fileRead struct {
+		fp   string
+		rel  string
+		data []byte
+		err  error
+	}
+	reads := make([]fileRead, 0, len(files))
+	par := readParallelism()
+	sem := make(chan struct{}, par)
+	for _, fp := range files {
+		reads = append(reads, fileRead{fp: fp, rel: relPath(base, fp)})
+	}
+	for i := range reads {
+		readWg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer readWg.Done()
+			defer func() { <-sem }()
+			data, err := os.ReadFile(reads[i].fp)
+			readMu.Lock()
+			reads[i].data = data
+			reads[i].err = err
+			readMu.Unlock()
+		}(i)
+	}
+	readWg.Wait()
+
 	var b bytes.Buffer
 	total := 0
 	truncated := 0
-	for _, fp := range files {
-		data, err := os.ReadFile(fp)
-		if err != nil {
-			skipped = append(skipped, fp+" ("+err.Error()+")")
+	for _, fr := range reads {
+		if fr.err != nil {
+			skipped = append(skipped, fr.fp+" ("+fr.err.Error()+")")
 			continue
 		}
-		rel := relPath(base, fp)
+		data := fr.data
+		rel := fr.rel
 		line := "==> " + rel + " (" + humanBytes(len(data)) + ") <==\n"
 		// Reserve space for the header + a trailing marker even when hitting
 		// the total cap, so the model sees which file was cut off.
@@ -454,6 +494,24 @@ func pathSafeLine(l []byte) []byte {
 
 // maxBytesOut is the whole-result cap for batch_grep.
 func maxBytesOut() int { return defaultMaxBytes }
+
+// readParallelism is the bounded-parallelism cap for the batch_read parallel
+// read phase (D3): independent file reads run concurrently up to this many
+// goroutines. Configurable via ORCHICON_TOOL_PARALLELISM (0/negative → the
+// default 8; 1 → fully serial). Deterministic result ORDER is preserved
+// regardless of the cap — completion order never leaks into the output.
+func readParallelism() int {
+	const def = 8
+	if v := os.Getenv("ORCHICON_TOOL_PARALLELISM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 1 {
+				return def
+			}
+			return n
+		}
+	}
+	return def
+}
 
 // --- batch_write ----------------------------------------------------------
 

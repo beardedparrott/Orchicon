@@ -54,6 +54,12 @@ type ExecutionManifest struct {
 	StallNudgeMax                int32
 	StallNudgeReplyWindowSeconds int64
 	StallNudgeCooldownSeconds    int64
+	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6):
+	// a tool call with no events for longer than this is cancelled natively
+	// (synthesized `cancelled:` tool result + course-correcting redirect
+	// injected as the next user turn). Zero = unset (env/code default 180s);
+	// negative = disabled.
+	StallToolHangSeconds int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to

@@ -1005,6 +1005,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallRepWindow int64
 	var stallNudgeMax int32
 	var stallNudgeReplyWindow, stallNudgeCooldown int64
+	var stallToolHang int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -1021,6 +1022,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeMax = s.StallNudgeMax
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
+				stallToolHang = s.StallToolHangSeconds
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -1059,6 +1061,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeMax:                stallNudgeMax,
 		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
+		StallToolHangSeconds:         stallToolHang,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)

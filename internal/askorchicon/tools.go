@@ -206,7 +206,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Description: "List the Idea Cloud (feature 5.1): idea-state work items with their automation provenance (spawned_by + spawned_by_run_id) and a read-time SpawnedByTitle badge. Idea-state items are system-managed and excluded from the normal Work Items scope; they only become queryable there via promote_idea. Set state=\"rejected\" to read the REJECTED section instead: previously dismissed idea spawns (durable rejection history — also what the automation dedupe gate checks before spawning). Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolListIdeas,
-			Properties: map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
 		},
 		{
 			Name:        "promote_idea",
@@ -701,8 +701,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolCreateSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
-			Required:    []string{"name", "value"},
+			Properties: map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
+			Required:   []string{"name", "value"},
 		},
 		{
 			Name:        "update_secret",
@@ -711,8 +711,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolUpdateSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
-			Required:    []string{"id"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
+			Required:   []string{"id"},
 		},
 		{
 			Name:        "delete_secret",
@@ -721,8 +721,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolDeleteSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
-			Required:    []string{"id"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
+			Required:   []string{"id"},
 		},
 
 		// --- Settings ---
@@ -748,6 +748,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"stall_nudge_max":                     {Type: "number", Description: "Max liveness probes sent before an advisory stall escalates to fatal (0 = leave unchanged)"},
 				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
 				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
+				"stall_tool_hang_seconds":             {Type: "number", Description: "Seconds a tool call with no events is allowed before it is cancelled natively and a course-correcting redirect is injected (0 = leave unchanged; negative = disabled)"},
 				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates (e.g. {\"tokens\":500000,\"cost_usd\":0.5,\"wall_clock_seconds\":7200,\"tool_call_count\":0,\"compact_max_turns\":12}). Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},

@@ -240,3 +240,49 @@ func TestBatchWriteRejectsTraversal(t *testing.T) {
 		t.Fatal("expected a path-traversal error")
 	}
 }
+
+func TestBatchReadParallelOrderDeterministic(t *testing.T) {
+	// D3: independent file reads run concurrently, but the RESULT must be in
+	// deterministic path order (request order), never completion order.
+	base := t.TempDir()
+	for i := 0; i < 24; i++ {
+		// Deliberately big-ish content so reads actually take measurable time.
+		writeFile(t, base, fmt.Sprintf("f%02d.txt", i), fmt.Sprintf("content-%02d-%s\n", i, strings.Repeat("z", 20000)))
+	}
+	paths := make([]string, 24)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("f%02d.txt", i)
+	}
+	// Force high parallelism so completion order would differ from request order.
+	t.Setenv("ORCHICON_TOOL_PARALLELISM", "24")
+	out, err := BatchRead(base, ReadArgs{Paths: paths, MaxBytes: 1_000_000})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	last := -1
+	for i := 0; i < 24; i++ {
+		marker := fmt.Sprintf("==> f%02d.txt", i)
+		idx := strings.Index(out, marker)
+		if idx < 0 {
+			t.Fatalf("missing file %d in output", i)
+		}
+		if idx < last {
+			t.Fatalf("output order not deterministic: file %d appeared before file %d", i, last)
+		}
+		last = idx
+	}
+}
+
+func TestBatchReadParallelismOneIsSerial(t *testing.T) {
+	base := t.TempDir()
+	writeFile(t, base, "a.txt", "aaa")
+	writeFile(t, base, "b.txt", "bbb")
+	t.Setenv("ORCHICON_TOOL_PARALLELISM", "1")
+	out, err := BatchRead(base, ReadArgs{Paths: []string{"a.txt", "b.txt"}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if strings.Index(out, "==> a.txt") > strings.Index(out, "==> b.txt") {
+		t.Fatalf("serial mode must keep request order:\n%s", out)
+	}
+}

@@ -63,6 +63,15 @@ type TenantSettings struct {
 	StallNudgeReplyWindowSeconds int64 `protobuf:"varint,32,opt,name=stall_nudge_reply_window_seconds,json=stallNudgeReplyWindowSeconds,proto3" json:"stall_nudge_reply_window_seconds,omitempty"`
 	// Minimum gap between nudges. Seconds. Default 60.
 	StallNudgeCooldownSeconds int64 `protobuf:"varint,33,opt,name=stall_nudge_cooldown_seconds,json=stallNudgeCooldownSeconds,proto3" json:"stall_nudge_cooldown_seconds,omitempty"`
+	// --- In-flight tool-hang watchdog ---
+	// A tool call with no events for longer than this window is interrupted
+	// NATIVELY: the call is cancelled, a `cancelled: tool exceeded tool-hang
+	// window` tool result is synthesized, and a course-correcting redirect is
+	// injected as the next user turn (session and cache prefix fully
+	// preserved). Latched once per session; an unheeded hang escalates to the
+	// stall/liveness layer (probe → fatal). Zero = unset (env/code default
+	// 180s); negative = disabled.
+	StallToolHangSeconds int64 `protobuf:"varint,34,opt,name=stall_tool_hang_seconds,json=stallToolHangSeconds,proto3" json:"stall_tool_hang_seconds,omitempty"`
 	// How long an execution must have been running before it becomes
 	// eligible for reaping (skips the fresh-dispatch race). Seconds.
 	// Default 60.
@@ -242,6 +251,13 @@ func (x *TenantSettings) GetStallNudgeCooldownSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetStallToolHangSeconds() int64 {
+	if x != nil {
+		return x.StallToolHangSeconds
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetExecutionReapGraceSeconds() int64 {
 	if x != nil {
 		return x.ExecutionReapGraceSeconds
@@ -358,7 +374,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\v\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\f\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -370,7 +386,8 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12&\n" +
 	"\x0fstall_nudge_max\x18\x1f \x01(\x05R\rstallNudgeMax\x12F\n" +
 	" stall_nudge_reply_window_seconds\x18  \x01(\x03R\x1cstallNudgeReplyWindowSeconds\x12?\n" +
-	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03R\x19stallNudgeCooldownSeconds\x12?\n" +
+	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03R\x19stallNudgeCooldownSeconds\x125\n" +
+	"\x17stall_tool_hang_seconds\x18\" \x01(\x03R\x14stallToolHangSeconds\x12?\n" +
 	"\x1cexecution_reap_grace_seconds\x18\x0f \x01(\x03R\x19executionReapGraceSeconds\x12M\n" +
 	"#execution_reap_consecutive_failures\x18\x10 \x01(\x05R executionReapConsecutiveFailures\x128\n" +
 	"\x18default_budget_overrides\x18\x13 \x01(\tR\x16defaultBudgetOverrides\x12'\n" +

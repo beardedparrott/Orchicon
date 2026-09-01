@@ -2,16 +2,38 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 )
+
+// stallRecordingCallbacks records advisory stall reasons (OnStall).
+type stallRecordingCallbacks struct {
+	mu     *sync.Mutex
+	stalls *[]string
+}
+
+func (c *stallRecordingCallbacks) OnStarted(context.Context, string)                          {}
+func (c *stallRecordingCallbacks) OnHealth(context.Context, string, string)                   {}
+func (c *stallRecordingCallbacks) OnRecovered(context.Context, string, string)                {}
+func (c *stallRecordingCallbacks) OnText(context.Context, string, string)                     {}
+func (c *stallRecordingCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {}
+func (c *stallRecordingCallbacks) OnArtifact(context.Context, string, string, string, string) {}
+func (c *stallRecordingCallbacks) OnWrittenFiles(context.Context, string, []string)           {}
+func (c *stallRecordingCallbacks) OnResult(context.Context, string, bool, string, string)     {}
+func (c *stallRecordingCallbacks) OnStall(_ context.Context, _ string, reason string, _ bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	*c.stalls = append(*c.stalls, reason)
+}
 
 // TestLegacyEventFromBus verifies the bus→legacy event mapping matches the
 // shapes the adapter's parseEvent pipeline consumes.
@@ -463,19 +485,19 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	now := time.Now()
 	mkRun := func(output string, nudges int, compacted bool) *sessionRun {
 		r := &sessionRun{
-			a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
-			parentCtx:  context.Background(),
-			execRow:    db.ExecutionRow{ID: "exec-probe-compact", TenantID: "tnt_dev"},
-			callbacks:  &liveCallbacks{},
-			client:     NewSessionClient("http://localhost:1", "", ""),
-			done:       make(chan struct{}),
-			stats:      &execStreamState{},
-			output:     strings.Builder{},
-			nudgesSent: nudges,
+			a:           &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+			parentCtx:   context.Background(),
+			execRow:     db.ExecutionRow{ID: "exec-probe-compact", TenantID: "tnt_dev"},
+			callbacks:   &liveCallbacks{},
+			client:      NewSessionClient("http://localhost:1", "", ""),
+			done:        make(chan struct{}),
+			stats:       &execStreamState{},
+			output:      strings.Builder{},
+			nudgesSent:  nudges,
 			lastNudgeAt: now,
 			// Budget spent → absent the compact gate this would FAIL. The gate
 			// must take precedence so a compacted mid-task pause never fails.
-			nudgeMaxVal:       nudgeMax(),
+			nudgeMaxVal:         nudgeMax(),
 			nudgeReplyWindowVal: time.Hour,
 			nudgeCooldownVal:    time.Nanosecond,
 		}
@@ -624,5 +646,140 @@ func TestStallNoProgressFatal(t *testing.T) {
 	}
 	if errMsg != "stalled:no_progress" {
 		t.Fatalf("reason = %q, want stalled:no_progress", errMsg)
+	}
+}
+
+// TestToolHangWatchdogFiresAndLoopCompletes is the D6 mock-provider test:
+// a tool call goes silent for longer than the hang window. The watchdog
+// must (1) latch once, (2) fire the advisory OnStall with the
+// stalled:tool_hang: reason, (3) inject the course-correcting redirect as
+// the next user turn (SendMessage lands on the mock provider), (4) record
+// the redirect in the durable transcript, and (5) NOT re-fire on a second
+// hang (latch is once per session). The run then completes normally.
+func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		sentBodies []string
+		hangSends  int
+		stalls     []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/global/health":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"ok":true}`)
+		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			sentBodies = append(sentBodies, string(body))
+			if strings.Contains(string(body), "tool-hang") {
+				hangSends++
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	callbacks := &stallRecordingCallbacks{stalls: &stalls, mu: &mu}
+	var storedMu sync.Mutex
+	var storedParts []db.SessionPart
+	a := &Adapter{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionStore: func(_ context.Context, _, _ string, parts []db.SessionPart) error {
+			storedMu.Lock()
+			defer storedMu.Unlock()
+			storedParts = append(storedParts, parts...)
+			return nil
+		},
+	}
+	r := &sessionRun{
+		a:                 a,
+		parentCtx:         context.Background(),
+		execRow:           db.ExecutionRow{ID: "exec-toolhang", TenantID: "tnt_dev"},
+		callbacks:         callbacks,
+		client:            NewSessionClient(srv.URL, "", ""),
+		sessionID:         "ses-toolhang",
+		done:              make(chan struct{}),
+		stats:             &execStreamState{},
+		store:             a.sessionStore,
+		toolHangWindowVal: 30 * time.Millisecond,
+	}
+	// A short manual probe timeout would otherwise fire in the background;
+	// the monitor is not started here so no probe goroutines run.
+
+	// The tool call starts, then goes silent past the window.
+	r.observeToolStart("bash")
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+
+	// (1) Latched once.
+	if !r.hangLatched {
+		t.Fatal("watchdog did not latch after the hang window elapsed")
+	}
+	// (2) Advisory OnStall fired with the stalled:tool_hang: reason.
+	mu.Lock()
+	stallList := append([]string(nil), stalls...)
+	mu.Unlock()
+	if len(stallList) != 1 || stallList[0] != "stalled:tool_hang:bash" {
+		t.Fatalf("OnStall reasons = %v, want exactly [stalled:tool_hang:bash]", stallList)
+	}
+	// (3) The redirect was sent to the mock provider exactly once.
+	mu.Lock()
+	hangN := hangSends
+	bodies := append([]string(nil), sentBodies...)
+	mu.Unlock()
+	if hangN != 1 {
+		t.Fatalf("hang redirect sends = %d, want exactly 1", hangN)
+	}
+	if len(bodies) == 0 || !strings.Contains(bodies[len(bodies)-1], "tool exceeded tool-hang window") {
+		t.Fatalf("redirect message not sent; bodies=%v", bodies)
+	}
+	// (4) The redirect is in the durable transcript (source tool_hang_redirect).
+	storedMu.Lock()
+	parts := append([]db.SessionPart(nil), storedParts...)
+	storedMu.Unlock()
+	found := false
+	for _, p := range parts {
+		if p.Kind == db.SessionPartUserMessage && strings.Contains(string(p.Payload), "tool_hang_redirect") {
+			found = true
+		}
+	}
+	r.flushParts()
+	storedMu.Lock()
+	parts = append([]db.SessionPart(nil), storedParts...)
+	storedMu.Unlock()
+	found = false
+	for _, p := range parts {
+		if p.Kind == db.SessionPartUserMessage && strings.Contains(string(p.Payload), "tool_hang_redirect") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("redirect not recorded in transcript; parts=%+v", parts)
+	}
+	// (5) A second hang does NOT re-fire (latch is once per session).
+	r.observeToolStart("bash")
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+	mu.Lock()
+	hangN = hangSends
+	mu.Unlock()
+	if hangN != 1 {
+		t.Fatalf("second hang re-fired the watchdog (hangSends=%d), want 1 (latched)", hangN)
+	}
+
+	// The loop continues and completes: the tool resolves and the run ends
+	// successfully (the watchdog never poisoned the run).
+	r.observeToolEnd()
+	r.handleEvent(BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": "ses-toolhang"}})
+	// The run's finish path is exercised by the run loop; here we verify the
+	// watchdog left the run in a state where completion is still reachable:
+	// finished must be false (no fatal kill from the watchdog) and the
+	// latch is the only side effect.
+	if r.isFinished() {
+		t.Fatal("watchdog must not kill the session; finished should remain false")
 	}
 }

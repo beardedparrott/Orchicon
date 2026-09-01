@@ -21,6 +21,7 @@ type TenantSettingsRow struct {
 	StallNudgeMax                    int32
 	StallNudgeReplyWindowSeconds     int64
 	StallNudgeCooldownSeconds        int64
+	StallToolHangSeconds             int64
 	DefaultBudgetOverrides           []byte       // jsonb: default budget JSON transport (see BudgetLadder for the typed source of truth); a worker's budget_overrides overrides these
 	Budget                           BudgetLadder // typed budget ladder + gates (authoritative; the jsonb BudgetLadder... is the wire transport)
 	ExecutionReapGraceSeconds        int64        // liveness reaper: min age before an execution is reaping-eligible
@@ -67,6 +68,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
+		stall_tool_hang_seconds,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -103,6 +105,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
+		stall_tool_hang_seconds,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -162,8 +165,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
 		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
+		stall_tool_hang_seconds,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -221,6 +225,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_compact_warn_tier = $56,
 		budget_compact_escalate_tier = $57,
 		budget_compact_final_tier = $58,
+		stall_tool_hang_seconds = CASE WHEN $59 <> 0 THEN $59 ELSE tenant_settings.stall_tool_hang_seconds END,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -245,6 +250,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
+		stall_tool_hang_seconds,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -270,6 +276,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.Budget.WarnMsgTools, in.Budget.EscMsgTools, in.Budget.FinalMsgTools,
 		in.Budget.WarnMsgTime, in.Budget.EscMsgTime, in.Budget.FinalMsgTime,
 		in.Budget.CompactWarnTier, in.Budget.CompactEscalTier, in.Budget.CompactFinalTier,
+		in.StallToolHangSeconds,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -307,6 +314,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.LogRetentionDays, &r.LogMaxFiles,
 		&r.MaxConcurrentRuns,
 		&r.SessionAccessTokenTtlSeconds, &r.SessionRefreshTokenTtlSeconds,
+		&r.StallToolHangSeconds,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)

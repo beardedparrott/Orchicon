@@ -139,10 +139,17 @@ type progressMonitor struct {
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args hash) → timestamps within the window.
-	// Only ERROR-status tool calls are recorded (result-aware repetition);
-	// a completed call or file_diff resets the history (progress resets
-	// the counters).
-	sigs map[string][]time.Time
+	// Two-tier model (D5):
+	//   - sigsErr: ERROR-status tool calls only (result-aware, tier 1).
+	//     A completed call or file_diff resets it (progress resets the
+	//     counters).
+	//   - sigsAll: ANY-status identical signature (tier 2). Catches a
+	//     completed-call loop — e.g. repeatedly re-reading the same file
+	//     without erroring. Resets on genuine forward progress (a
+	//     file_diff / step_finish between identical calls resets the
+	//     count), so legitimate long steps never false-positive.
+	sigsErr map[string][]time.Time
+	sigsAll map[string][]time.Time
 
 	// fired tracks whether the monitor has already raised a FATAL stall
 	// (no_progress / text_loop / repetition) for this execution. A fatal
@@ -173,7 +180,8 @@ func newProgressMonitor(execID string, w stallWindows) *progressMonitor {
 		lastStepFinish:       time.Now(),
 		lastFileDiff:         time.Now(),
 		lastMeaningfulAction: time.Now(),
-		sigs:                 make(map[string][]time.Time),
+		sigsErr:              make(map[string][]time.Time),
+		sigsAll:              make(map[string][]time.Time),
 		stop:                 make(chan struct{}),
 	}
 	return m
@@ -197,7 +205,8 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		// A step finishing is real progress — reset the repetition
 		// signature history (the worker is making forward progress, not
 		// looping).
-		m.sigs = make(map[string][]time.Time)
+		m.sigsErr = make(map[string][]time.Time)
+		m.sigsAll = make(map[string][]time.Time)
 		// Track cumulative token count so no-new-tokens is detectable even
 		// if step_finish fires without a token delta.
 		if tokens, ok := part["tokens"].(map[string]any); ok {
@@ -212,32 +221,41 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		m.lastFileDiff = now
 		m.lastMeaningfulAction = now
 		// File progress is real progress — reset the repetition history.
-		m.sigs = make(map[string][]time.Time)
+		m.sigsErr = make(map[string][]time.Time)
+		m.sigsAll = make(map[string][]time.Time)
 	case "tool_use", "tool_call":
 		m.lastMeaningfulAction = now
-		// Result-aware repetition: only ERROR-status tool calls count
-		// toward the repetition threshold. A completed call is real
-		// progress — it resets the signature history (the normal
-		// build-fix-iterate-debug loop).
 		status, _ := part["state"].(map[string]any)["status"].(string)
+		sig := toolUseSignature(part)
+		cutoff := now.Add(-m.w.repetitionW)
+		// Tier 1 (existing): only ERROR-status tool calls count toward the
+		// repetition threshold. A completed call is real progress — it
+		// resets the error history (the normal build-fix-iterate-debug
+		// loop).
 		if status == "error" {
-			sig := toolUseSignature(part)
-			cutoff := now.Add(-m.w.repetitionW)
-			hist := m.sigs[sig]
-			// drop entries outside the window
-			kept := hist[:0]
-			for _, t := range hist {
-				if t.After(cutoff) {
-					kept = append(kept, t)
-				}
-			}
-			kept = append(kept, now)
-			m.sigs[sig] = kept
+			m.sigsErr[sig] = appendInWindow(m.sigsErr[sig], now, cutoff)
 		} else {
-			// completed (or unknown) — progress resets the counters.
-			m.sigs = make(map[string][]time.Time)
+			m.sigsErr = make(map[string][]time.Time)
+		}
+		// Tier 2 (D5): ANY-status identical signature — catches a
+		// completed-call loop (repeatedly re-reading the same file, the
+		// same write). The same call repeated without forward progress
+		// accumulates; a file_diff / step_finish between identical calls
+		// resets the count (reset-on-progress).
+		m.sigsAll[sig] = appendInWindow(m.sigsAll[sig], now, cutoff)
+	}
+}
+
+// appendInWindow appends a timestamp to a signature history, dropping
+// entries outside the repetition window.
+func appendInWindow(hist []time.Time, now, cutoff time.Time) []time.Time {
+	kept := hist[:0]
+	for _, t := range hist {
+		if t.After(cutoff) {
+			kept = append(kept, t)
 		}
 	}
+	return append(kept, now)
 }
 
 // toolUseSignature builds the repetition signature for a tool event: the
@@ -432,20 +450,48 @@ func (m *progressMonitor) check() string {
 	// spent.
 	if m.w.repetitionN > 0 {
 		cutoff := now.Add(-m.w.repetitionW)
-		for sig, ts := range m.sigs {
-			kept := ts[:0]
-			for _, t := range ts {
-				if t.After(cutoff) {
-					kept = append(kept, t)
-				}
-			}
-			m.sigs[sig] = kept
+		// Tier 1: error-status repeats (result-aware).
+		for sig, ts := range m.sigsErr {
+			kept := trimWindow(ts, cutoff)
+			m.sigsErr[sig] = kept
 			if len(kept) > m.w.repetitionN {
 				return fmt.Sprintf("stalled:repetition:%s", sig)
 			}
 		}
+		// Tier 2 (D5): ANY-status identical signature — a completed-call
+		// loop (repeatedly re-reading the same file, re-issuing the same
+		// write) is invisible to tier 1 (only erroring calls count) but
+		// must still trip advisory → hard stop. Reset-on-progress (a
+		// file_diff / step_finish between identical calls clears the
+		// history) keeps legitimate long steps from false-positiving.
+		// The threshold for tier 2 is deliberately a bit higher than
+		// tier 1's so a normal build-iterate loop (which legitimately
+		// repeats the same bash/grep calls with different results) is
+		// not flagged at the same count.
+		tier2N := m.w.repetitionN * 2
+		if tier2N < m.w.repetitionN+3 {
+			tier2N = m.w.repetitionN + 3
+		}
+		for sig, ts := range m.sigsAll {
+			kept := trimWindow(ts, cutoff)
+			m.sigsAll[sig] = kept
+			if len(kept) > tier2N {
+				return fmt.Sprintf("stalled:repetition:completed:%s", sig)
+			}
+		}
 	}
 	return ""
+}
+
+// trimWindow drops signature timestamps outside the repetition window.
+func trimWindow(ts []time.Time, cutoff time.Time) []time.Time {
+	kept := ts[:0]
+	for _, t := range ts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // checkRevival returns a revival reason (and clears the `warned` state)

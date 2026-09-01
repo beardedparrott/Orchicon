@@ -82,7 +82,8 @@ const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
 	"- Mark items `completed` **immediately** as the work finishes — never batch completions at the end.\n" +
 	"- Mark items `cancelled` when they become irrelevant instead of silently dropping them.\n" +
 	"- `todowrite` replaces the whole list on every call: always send the full updated array of `{content, status, priority}` items, using only `pending | in_progress | completed | cancelled` statuses.\n" +
-	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n\n"
+	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n" +
+	"- `todoread` reads back your LATEST todo list in one cheap call — re-sync mid-run instead of re-deriving it from memory; a stale list reads as no progress.\n\n"
 
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
 // section of the stable prompt prefix. It tells the worker the ground truth
