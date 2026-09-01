@@ -46,6 +46,21 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 	return &Service{pool: pool, log: log}
 }
 
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds for
+// explicit-adapter-input validation (ADR-0005 D2). Called by the server
+// layer after construction; the package-level seam mirrors
+// SetModelRefRegistry.
+func (s *Service) SetAdapterKinds(fn func() []string) {
+	SetAdapterKinds(fn)
+}
+
+// SetCustomProviderIDs wires the tenant custom-provider source for
+// model-ref validation (ADR-0006 D6). Called by the server layer after
+// construction; the package-level seam mirrors SetAdapterKinds.
+func (s *Service) SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
+	SetCustomProviderIDs(fn)
+}
+
 // CreateWorker validates input, inserts the worker header + its first
 // draft version, and enqueues a worker.created event — all in one
 // tenant-scoped transaction. The transactional create lives in
@@ -66,6 +81,7 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		RoleRef:             msg.RoleRef,
 		VersionNote:         msg.VersionNote,
 		RuntimeRef:          msg.RuntimeRef,
+		Adapter:             msg.Adapter,
 		ModelRef:            msg.ModelRef,
 		Role:                msg.Role,
 		Skills:              msg.Skills,
@@ -509,7 +525,7 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
 	}
-	modelRef, err := validateTextField(req.Msg.ModelRef, maxNameLen, "model_ref")
+	modelRef, err := validateModelRef(ctx, tenantID, req.Msg.ModelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -621,6 +637,12 @@ func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, m
 // is called so current_version follows the latest published version (mirrors
 // PublishWorkerVersion).
 func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
+	// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair
+	// valid for the NEW adapter. A violation becomes this worker's Error
+	// outcome (the batch keeps going — partial-success contract).
+	if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
+		return db.WorkerVersionRow{}, err
+	}
 	var (
 		before    db.WorkerVersionRow
 		after     db.WorkerVersionRow
@@ -796,6 +818,7 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 			Worker:              workerRowToProto(r.WorkerRow),
 			ActiveModelRef:      r.ActiveModelRef,
 			ActiveVersionStatus: workerVersionStatusToProto(r.ActiveVersionStatus),
+			ActiveAdapter:       adapterKindOf(r.ActiveModelRef),
 		}
 		resp.Items = append(resp.Items, item)
 		// Keep deprecated workers populated for wire-compat during rollout.
@@ -898,8 +921,46 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.RuntimeRef != nil {
 		merged.RuntimeRef = *msg.RuntimeRef
 	}
-	if msg.ModelRef != nil {
-		merged.ModelRef = *msg.ModelRef
+	if msg.ModelRef != nil || msg.Adapter != nil {
+		// ADR-0005 D2: the explicit adapter input is a consistency
+		// affordance — it must be a registered kind and must agree with
+		// the resulting ref's adapter segment. It stays EMPTY unless the
+		// caller explicitly set it (a model_ref-only change — the picker's
+		// save path — never does), so the agreement check below only fires
+		// on an explicit selection and a ref-only adapter change is judged
+		// solely by the adapter-change validation above.
+		var adapterSel string
+		if msg.Adapter != nil {
+			sel, err := validateAdapterInput(*msg.Adapter)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			adapterSel = sel
+		}
+		if msg.ModelRef != nil {
+			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			merged.ModelRef = modelRef
+			// ADR-0005 D4: an adapter CHANGE (parsed segment differs from
+			// the current ref's) must land on a provider/model pair valid
+			// for the NEW adapter — provider known for the kind, model
+			// non-empty (the parser enforces segment non-emptiness).
+			// Unchanged-adapter re-saves keep the ADR-0004 D5 semantics
+			// verbatim.
+			if err := validateAdapterChange(ctx, tenantID, current.ModelRef, merged.ModelRef); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+		// Agreement runs against the MERGED ref so an explicit adapter
+		// with an unset ref checks against the version's current ref, and
+		// a set+set pair checks against the incoming pair. An empty
+		// adapter (input not sent) is a no-op — the ref alone defines the
+		// selection.
+		if err := validateAdapterRefAgreement(adapterSel, merged.ModelRef); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 	if msg.SystemPrompt != nil {
 		merged.SystemPrompt = *msg.SystemPrompt
@@ -1033,8 +1094,38 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.RuntimeRef != nil {
 		newVer.RuntimeRef = *msg.RuntimeRef
 	}
-	if msg.ModelRef != nil {
-		newVer.ModelRef = *msg.ModelRef
+	if msg.ModelRef != nil || msg.Adapter != nil {
+		// ADR-0005 D2: explicit adapter input must be a registered kind and
+		// agree with the resulting ref's adapter segment (the source ref
+		// when model_ref is unset). It stays EMPTY unless the caller
+		// explicitly set it, so a model_ref-only adapter change — the
+		// picker's save path — is judged solely by validateAdapterChange.
+		var adapterSel string
+		if msg.Adapter != nil {
+			sel, err := validateAdapterInput(*msg.Adapter)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			adapterSel = sel
+		}
+		if msg.ModelRef != nil {
+			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			newVer.ModelRef = modelRef
+			// ADR-0005 D4: adapter-change validation against the source
+			// version's ref (same contract as UpdateWorkerVersion).
+			if err := validateAdapterChange(ctx, tenantID, source.ModelRef, newVer.ModelRef); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+		// Agreement runs against the MERGED ref (the source ref when
+		// model_ref is unset). An empty adapter (input not sent) is a
+		// no-op — the ref alone defines the selection.
+		if err := validateAdapterRefAgreement(adapterSel, newVer.ModelRef); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 	if msg.SystemPrompt != nil {
 		newVer.SystemPrompt = *msg.SystemPrompt
@@ -1406,6 +1497,7 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		Status:              workerVersionStatusToProto(v.Status),
 		RuntimeRef:          v.RuntimeRef,
 		ModelRef:            v.ModelRef,
+		Adapter:             adapterKindOf(v.ModelRef),
 		SystemPrompt:        composeWorkerPrompt(v),
 		Role:                v.Role,
 		Skills:              v.Skills,

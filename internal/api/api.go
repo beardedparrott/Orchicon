@@ -21,6 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -29,18 +30,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
-	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
-	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
@@ -73,8 +74,22 @@ type Dependencies struct {
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer *aigateway.ModelDiscoverer
 	MCPDiscoverer   *aigateway.MCPDiscoverer
+	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪
+	// tenant custom) for adapter-scoped model listing and legacy 2-segment
+	// inference (ADR-0003). nil falls back to the built-in catalog.
+	ModelRefRegistry adapter.ProviderRegistry
+	// AdapterKinds returns the adapter kinds registered with the Dispatcher
+	// (ADR-0004 D1) — the source of the model picker's adapter bubble tier.
+	// Injected as a func to avoid an api → scheduler import cycle; nil falls
+	// back to the default adapter kind.
+	AdapterKinds func() []string
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
+	// ProvidersService is the providers settings core (ADR-0006). Mount
+	// constructs it and stores it back here so the wiring order is a
+	// single Mount call; nil until Mount runs (or in tests that mount
+	// without the secrets KEK — token writes then fail closed).
+	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
 	// RuntimeClient talks to the host-side runtime daemon over its unix
@@ -82,13 +97,14 @@ type Dependencies struct {
 	// configured (headless serve).
 	RuntimeClient *runtime.Client
 	// SendExecutionMessage routes a mid-run human message into a live
-	// session execution (Stage 3). Nil when the session transport is
-	// unavailable.
+	// execution's adapter session (type-asserts the MessageInjector
+	// capability; a non-supporting bridge yields an actionable error, never
+	// a panic). Nil when the session transport is unavailable.
 	SendExecutionMessage func(ctx context.Context, execID, message string) error
 	// ContinueSession runs a one-shot follow-up question against a worker's
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
-	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	ContinueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 	// AbortExecution stops a live execution's opencode session when a human
 	// cancels it, so the model stops generating immediately (prevents the
 	// "terminated but still active" token burn). Nil when the session
@@ -136,8 +152,30 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	catSvc := category.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
-	// WorkerService (docs/07 §3.3).
+	// ProviderService (ADR-0006) — tenant-facing Providers management
+	// surface behind Settings → Adapters. Constructed here (before
+	// WorkerService) so the worker validation path can consume the
+	// tenant's enabled custom provider ids; the handler is registered on
+	// the mux exactly once (the earlier/only Handle call). Note: the
+	// comment above originally grouped this under WorkerService — the
+	// service construction, substrate loader registration, and handler
+	// mount all belong together.
+	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	providerSvc.Service().RegisterSubstrateLoader()
+	deps.ProvidersService = providerSvc.Service()
+	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 	workerSvc := worker.New(deps.Pool, deps.Log)
+	// Explicit adapter selections validate against the Dispatcher's
+	// registered kinds (ADR-0005 D2) — the injected func avoids the
+	// api → scheduler import cycle.
+	workerSvc.SetAdapterKinds(deps.AdapterKinds)
+	// Tenant custom providers join model-ref validation (ADR-0006 D6): the
+	// global validation registry stays built-in-only; the worker service
+	// merges the requesting tenant's enabled custom ids where tenant
+	// context exists.
+	if deps.ProvidersService != nil {
+		workerSvc.SetCustomProviderIDs(deps.ProvidersService.EnabledCustomProviderIDs)
+	}
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
 
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
@@ -220,7 +258,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
 	// AIGatewayService (docs/07 §3.10).
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC
@@ -267,6 +305,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
+	askSvc.SetAdapterKinds(deps.AdapterKinds)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}

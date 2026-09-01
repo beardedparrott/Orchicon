@@ -19,6 +19,7 @@ import (
 // model_ref/runtime_ref) was two drifted implementations.
 type CreateWorkerInput struct {
 	TenantID     string
+	Adapter      string // explicit adapter selection (ADR-0005 D2); must agree with ModelRef
 	Name         string
 	Slug         string // optional; derived from Name when empty
 	Description  string
@@ -88,7 +89,13 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 	if in.RuntimeRef, err = validateTextField(in.RuntimeRef, maxNameLen, "runtime_ref"); err != nil {
 		return err
 	}
-	if in.ModelRef, err = validateTextField(in.ModelRef, maxNameLen, "model_ref"); err != nil {
+	if in.ModelRef, err = validateModelRef(context.Background(), in.TenantID, in.ModelRef); err != nil {
+		return err
+	}
+	if in.Adapter, err = validateAdapterInput(in.Adapter); err != nil {
+		return err
+	}
+	if err := validateAdapterRefAgreement(in.Adapter, in.ModelRef); err != nil {
 		return err
 	}
 	if in.SystemPrompt, err = validateTextField(in.SystemPrompt, maxPromptLen, "system_prompt"); err != nil {

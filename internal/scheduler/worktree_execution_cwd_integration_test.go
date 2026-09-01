@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
@@ -36,6 +37,16 @@ func (b *manifestCaptureBridge) Start(_ context.Context, _ db.ExecutionRow, mani
 	defer b.mu.Unlock()
 	b.manifests = append(b.manifests, manifest)
 	return nil
+}
+
+// testDispatcher builds a Dispatcher with the bridge registered under the
+// opencode default kind, so the reconciler's model_ref → kind resolution
+// (AdapterKind) routes to it. Tests that need an unknown-kind path build
+// their own dispatcher.
+func testDispatcher(bridge AdapterBridge) *Dispatcher {
+	d := NewDispatcher()
+	d.Register(adapter.DefaultAdapterKind, bridge)
+	return d
 }
 
 // newCwdTestTask builds the minimal task + worker version + execution rows
@@ -75,7 +86,7 @@ func TestWorktreeExecutionCwdReady(t *testing.T) {
 
 	task, version, exec := newCwdTestTask(env.proj.ID, run.ID, env.itemID)
 	bridge := &manifestCaptureBridge{}
-	rec := NewTaskReconciler(env.pool, slog.Default(), bridge)
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
 	rec.startExecution(ctx, exec, task, version, db.AdapterRow{})
 
 	if len(bridge.manifests) != 1 {
@@ -100,7 +111,7 @@ func TestWorktreeExecutionCwdFallback(t *testing.T) {
 	// never run for it).
 	task, version, exec := newCwdTestTask(env.proj.ID, env.run.ID, env.itemID)
 	bridge := &manifestCaptureBridge{}
-	rec := NewTaskReconciler(env.pool, slog.Default(), bridge)
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
 	rec.startExecution(ctx, exec, task, version, db.AdapterRow{})
 
 	if len(bridge.manifests) != 1 {

@@ -42,6 +42,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// AIGatewayServiceListAdapterKindsProcedure is the fully-qualified name of the AIGatewayService's
+	// ListAdapterKinds RPC.
+	AIGatewayServiceListAdapterKindsProcedure = "/orchicon.api.v1.AIGatewayService/ListAdapterKinds"
 	// AIGatewayServiceListProvidersProcedure is the fully-qualified name of the AIGatewayService's
 	// ListProviders RPC.
 	AIGatewayServiceListProvidersProcedure = "/orchicon.api.v1.AIGatewayService/ListProviders"
@@ -67,8 +70,14 @@ const (
 
 // AIGatewayServiceClient is a client for the orchicon.api.v1.AIGatewayService service.
 type AIGatewayServiceClient interface {
+	// ListAdapterKinds returns the adapter kinds currently registered with
+	// the Dispatcher (e.g. "opencode"). New adapters appear automatically
+	// once registered — the picker's adapter bubble tier derives from this.
+	ListAdapterKinds(context.Context, *connect.Request[v1.ListAdapterKindsRequest]) (*connect.Response[v1.ListAdapterKindsResponse], error)
 	// ListProviders returns the LLM providers known to the gateway
-	// (docs/01 §2, docs/07 §3.10).
+	// (docs/01 §2, docs/07 §3.10). The optional adapter filter scopes the
+	// result to one adapter kind's provider set (built-in profiles ∪ tenant
+	// custom providers); empty = the full global list (current behavior).
 	ListProviders(context.Context, *connect.Request[v1.ListProvidersRequest]) (*connect.Response[v1.ListProvidersResponse], error)
 	// ListOpenCodeModels enumerates all models available via the `opencode`
 	// CLI by shelling out to `opencode models --verbose`. Returns full
@@ -106,6 +115,12 @@ func NewAIGatewayServiceClient(httpClient connect.HTTPClient, baseURL string, op
 	baseURL = strings.TrimRight(baseURL, "/")
 	aIGatewayServiceMethods := v1.File_orchicon_api_v1_ai_gateway_service_proto.Services().ByName("AIGatewayService").Methods()
 	return &aIGatewayServiceClient{
+		listAdapterKinds: connect.NewClient[v1.ListAdapterKindsRequest, v1.ListAdapterKindsResponse](
+			httpClient,
+			baseURL+AIGatewayServiceListAdapterKindsProcedure,
+			connect.WithSchema(aIGatewayServiceMethods.ByName("ListAdapterKinds")),
+			connect.WithClientOptions(opts...),
+		),
 		listProviders: connect.NewClient[v1.ListProvidersRequest, v1.ListProvidersResponse](
 			httpClient,
 			baseURL+AIGatewayServiceListProvidersProcedure,
@@ -153,6 +168,7 @@ func NewAIGatewayServiceClient(httpClient connect.HTTPClient, baseURL string, op
 
 // aIGatewayServiceClient implements AIGatewayServiceClient.
 type aIGatewayServiceClient struct {
+	listAdapterKinds   *connect.Client[v1.ListAdapterKindsRequest, v1.ListAdapterKindsResponse]
 	listProviders      *connect.Client[v1.ListProvidersRequest, v1.ListProvidersResponse]
 	listOpenCodeModels *connect.Client[v1.ListOpenCodeModelsRequest, v1.ListOpenCodeModelsResponse]
 	listOpenCodeMCPs   *connect.Client[v1.ListOpenCodeMCPsRequest, v1.ListOpenCodeMCPsResponse]
@@ -160,6 +176,11 @@ type aIGatewayServiceClient struct {
 	getCost            *connect.Client[v1.GetCostRequest, v1.GetCostResponse]
 	streamUsageEvents  *connect.Client[v1.StreamUsageEventsRequest, v1.StreamUsageEventsResponse]
 	getWorkflowCosts   *connect.Client[v1.GetWorkflowCostsRequest, v1.GetWorkflowCostsResponse]
+}
+
+// ListAdapterKinds calls orchicon.api.v1.AIGatewayService.ListAdapterKinds.
+func (c *aIGatewayServiceClient) ListAdapterKinds(ctx context.Context, req *connect.Request[v1.ListAdapterKindsRequest]) (*connect.Response[v1.ListAdapterKindsResponse], error) {
+	return c.listAdapterKinds.CallUnary(ctx, req)
 }
 
 // ListProviders calls orchicon.api.v1.AIGatewayService.ListProviders.
@@ -199,8 +220,14 @@ func (c *aIGatewayServiceClient) GetWorkflowCosts(ctx context.Context, req *conn
 
 // AIGatewayServiceHandler is an implementation of the orchicon.api.v1.AIGatewayService service.
 type AIGatewayServiceHandler interface {
+	// ListAdapterKinds returns the adapter kinds currently registered with
+	// the Dispatcher (e.g. "opencode"). New adapters appear automatically
+	// once registered — the picker's adapter bubble tier derives from this.
+	ListAdapterKinds(context.Context, *connect.Request[v1.ListAdapterKindsRequest]) (*connect.Response[v1.ListAdapterKindsResponse], error)
 	// ListProviders returns the LLM providers known to the gateway
-	// (docs/01 §2, docs/07 §3.10).
+	// (docs/01 §2, docs/07 §3.10). The optional adapter filter scopes the
+	// result to one adapter kind's provider set (built-in profiles ∪ tenant
+	// custom providers); empty = the full global list (current behavior).
 	ListProviders(context.Context, *connect.Request[v1.ListProvidersRequest]) (*connect.Response[v1.ListProvidersResponse], error)
 	// ListOpenCodeModels enumerates all models available via the `opencode`
 	// CLI by shelling out to `opencode models --verbose`. Returns full
@@ -234,6 +261,12 @@ type AIGatewayServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	aIGatewayServiceMethods := v1.File_orchicon_api_v1_ai_gateway_service_proto.Services().ByName("AIGatewayService").Methods()
+	aIGatewayServiceListAdapterKindsHandler := connect.NewUnaryHandler(
+		AIGatewayServiceListAdapterKindsProcedure,
+		svc.ListAdapterKinds,
+		connect.WithSchema(aIGatewayServiceMethods.ByName("ListAdapterKinds")),
+		connect.WithHandlerOptions(opts...),
+	)
 	aIGatewayServiceListProvidersHandler := connect.NewUnaryHandler(
 		AIGatewayServiceListProvidersProcedure,
 		svc.ListProviders,
@@ -278,6 +311,8 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 	)
 	return "/orchicon.api.v1.AIGatewayService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case AIGatewayServiceListAdapterKindsProcedure:
+			aIGatewayServiceListAdapterKindsHandler.ServeHTTP(w, r)
 		case AIGatewayServiceListProvidersProcedure:
 			aIGatewayServiceListProvidersHandler.ServeHTTP(w, r)
 		case AIGatewayServiceListOpenCodeModelsProcedure:
@@ -300,6 +335,10 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 
 // UnimplementedAIGatewayServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedAIGatewayServiceHandler struct{}
+
+func (UnimplementedAIGatewayServiceHandler) ListAdapterKinds(context.Context, *connect.Request[v1.ListAdapterKindsRequest]) (*connect.Response[v1.ListAdapterKindsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.ListAdapterKinds is not implemented"))
+}
 
 func (UnimplementedAIGatewayServiceHandler) ListProviders(context.Context, *connect.Request[v1.ListProvidersRequest]) (*connect.Response[v1.ListProvidersResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.ListProviders is not implemented"))

@@ -14,8 +14,15 @@ import "google/protobuf/timestamp.proto";
 import "orchicon/api/v1/ai_gateway.proto";
 
 service AIGatewayService {
+  // ListAdapterKinds returns the adapter kinds currently registered with
+  // the Dispatcher (e.g. "opencode"). New adapters appear automatically
+  // once registered — the picker's adapter bubble tier derives from this.
+  rpc ListAdapterKinds(ListAdapterKindsRequest) returns (ListAdapterKindsResponse);
+
   // ListProviders returns the LLM providers known to the gateway
-  // (docs/01 §2, docs/07 §3.10).
+  // (docs/01 §2, docs/07 §3.10). The optional adapter filter scopes the
+  // result to one adapter kind's provider set (built-in profiles ∪ tenant
+  // custom providers); empty = the full global list (current behavior).
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
 
   // ListOpenCodeModels enumerates all models available via the `opencode`
@@ -48,8 +55,16 @@ service AIGatewayService {
   rpc GetWorkflowCosts(GetWorkflowCostsRequest) returns (GetWorkflowCostsResponse);
 }
 
+message ListAdapterKindsRequest {
+  // No fields — returns all registered adapter kinds.
+}
+message ListAdapterKindsResponse {
+  repeated string adapter_kinds = 1; // registered adapter kinds, ordered + deduped
+}
+
 message ListOpenCodeModelsRequest {
   optional string provider = 1; // filter by provider id (e.g. "anthropic", "opencode")
+  optional string adapter = 2;  // filter to one adapter kind (e.g. "opencode", "claude", "orchicon"); empty = opencode (default)
 }
 message ListOpenCodeModelsResponse {
   repeated OpenCodeModel models = 1;
@@ -63,7 +78,9 @@ message ListOpenCodeMCPsResponse {
 }
 
 message ListProvidersRequest {
-  // No filters — providers are not tenant-scoped in v0.1.
+  // Optional filter: scope the provider list to one adapter kind
+  // (e.g. "opencode", "claude", "orchicon"); empty = the full global list.
+  optional string adapter = 1;
 }
 message ListProvidersResponse {
   repeated AIProvider providers = 1;

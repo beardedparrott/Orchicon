@@ -119,6 +119,12 @@ message CreateWorkerRequest {
   string behavior = 21;
   string agents_md = 22;
   string role_ref = 23; // optional RBAC role binding; empty = no plane access
+  // Optional explicit adapter selection (ADR-0005 D2): a validation and
+  // consistency affordance for API clients. Must be a Dispatcher-registered
+  // kind; when model_ref is also set the two must AGREE (the ref's parsed
+  // adapter segment == this value); a lone adapter with no model_ref is
+  // rejected — the ref is the only persisted store of the selection.
+  string adapter = 24;
 }
 
 message CreateWorkerResponse {
@@ -226,6 +232,10 @@ message WorkerListItem {
   // worker has no versions yet.
   string active_model_ref = 2;
   WorkerVersionStatus active_version_status = 3;
+  // active_adapter is the parsed adapter segment of active_model_ref
+  // (ADR-0005 D2, computed server-side). Legacy 2-segment refs report
+  // the inferred default kind ("opencode") — never a stored value.
+  string active_adapter = 4;
 }
 
 message ListWorkersResponse {
@@ -274,6 +284,12 @@ message UpdateWorkerVersionRequest {
   optional string skills = 19;
   optional string behavior = 20;
   optional string agents_md = 21;
+  // Optional explicit adapter selection (ADR-0005 D2/D4): validated
+  // against the Dispatcher's registered kinds; must agree with model_ref
+  // when both are set. When the resulting ref's adapter CHANGES, the new
+  // adapter/provider pair must be valid (provider known for the new
+  // kind) or the update is rejected InvalidArgument.
+  optional string adapter = 22;
 }
 
 message UpdateWorkerVersionResponse {
@@ -301,6 +317,9 @@ message CreateWorkerVersionRequest {
   optional string skills = 19;
   optional string behavior = 20;
   optional string agents_md = 21;
+  // Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
+  // as UpdateWorkerVersion.
+  optional string adapter = 22;
 }
 
 message CreateWorkerVersionResponse {

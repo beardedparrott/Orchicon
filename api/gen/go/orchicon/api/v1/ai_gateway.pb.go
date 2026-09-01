@@ -275,11 +275,15 @@ func (x *UsageEvent) GetReasoningTokens() int64 {
 
 // AIProvider is a configured LLM provider known to the gateway.
 type AIProvider struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // e.g. "anthropic", "openai", "local"
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"` // display name
-	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Models        []string               `protobuf:"bytes,4,rep,name=models,proto3" json:"models,omitempty"` // model ids exposed by this provider
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // e.g. "anthropic", "openai", "local"
+	Name    string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"` // display name
+	Enabled bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Models  []string               `protobuf:"bytes,4,rep,name=models,proto3" json:"models,omitempty"` // model ids exposed by this provider
+	// custom is true when this provider is a tenant-created custom provider
+	// (Settings → Adapters), false for a built-in provider profile. The
+	// picker renders custom providers with a badge + manage affordance.
+	Custom        bool `protobuf:"varint,5,opt,name=custom,proto3" json:"custom,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -340,6 +344,13 @@ func (x *AIProvider) GetModels() []string {
 		return x.Models
 	}
 	return nil
+}
+
+func (x *AIProvider) GetCustom() bool {
+	if x != nil {
+		return x.Custom
+	}
+	return false
 }
 
 // UsageRecord is a single LLM usage sample recorded by the AI Gateway
@@ -1192,13 +1203,14 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x0ecorrelation_id\x18\x0e \x01(\tR\rcorrelationId\x12*\n" +
 	"\x11cache_read_tokens\x18\x0f \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x10 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
-	"\x10reasoning_tokens\x18\x11 \x01(\x03R\x0freasoningTokens\"b\n" +
+	"\x10reasoning_tokens\x18\x11 \x01(\x03R\x0freasoningTokens\"z\n" +
 	"\n" +
 	"AIProvider\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x16\n" +
-	"\x06models\x18\x04 \x03(\tR\x06models\"\x9d\x05\n" +
+	"\x06models\x18\x04 \x03(\tR\x06models\x12\x16\n" +
+	"\x06custom\x18\x05 \x01(\bR\x06custom\"\x9d\x05\n" +
 	"\vUsageRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +

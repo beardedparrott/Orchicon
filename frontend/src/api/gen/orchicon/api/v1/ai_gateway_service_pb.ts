@@ -17,6 +17,78 @@ import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 import { AIProvider, CostSummary, OpenCodeMCP, OpenCodeModel, UsageEvent, UsageRecord, UsageRollup } from "./ai_gateway_pb.js";
 
 /**
+ * No fields — returns all registered adapter kinds.
+ *
+ * @generated from message orchicon.api.v1.ListAdapterKindsRequest
+ */
+export class ListAdapterKindsRequest extends Message<ListAdapterKindsRequest> {
+  constructor(data?: PartialMessage<ListAdapterKindsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListAdapterKindsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAdapterKindsRequest {
+    return new ListAdapterKindsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListAdapterKindsRequest {
+    return new ListAdapterKindsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListAdapterKindsRequest {
+    return new ListAdapterKindsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListAdapterKindsRequest | PlainMessage<ListAdapterKindsRequest> | undefined, b: ListAdapterKindsRequest | PlainMessage<ListAdapterKindsRequest> | undefined): boolean {
+    return proto3.util.equals(ListAdapterKindsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListAdapterKindsResponse
+ */
+export class ListAdapterKindsResponse extends Message<ListAdapterKindsResponse> {
+  /**
+   * registered adapter kinds, ordered + deduped
+   *
+   * @generated from field: repeated string adapter_kinds = 1;
+   */
+  adapterKinds: string[] = [];
+
+  constructor(data?: PartialMessage<ListAdapterKindsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListAdapterKindsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "adapter_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAdapterKindsResponse {
+    return new ListAdapterKindsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListAdapterKindsResponse {
+    return new ListAdapterKindsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListAdapterKindsResponse {
+    return new ListAdapterKindsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListAdapterKindsResponse | PlainMessage<ListAdapterKindsResponse> | undefined, b: ListAdapterKindsResponse | PlainMessage<ListAdapterKindsResponse> | undefined): boolean {
+    return proto3.util.equals(ListAdapterKindsResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListOpenCodeModelsRequest
  */
 export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest> {
@@ -27,6 +99,13 @@ export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest
    */
   provider?: string;
 
+  /**
+   * filter to one adapter kind (e.g. "opencode", "claude", "orchicon"); empty = opencode (default)
+   *
+   * @generated from field: optional string adapter = 2;
+   */
+  adapter?: string;
+
   constructor(data?: PartialMessage<ListOpenCodeModelsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -36,6 +115,7 @@ export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest
   static readonly typeName = "orchicon.api.v1.ListOpenCodeModelsRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "provider", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 2, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeModelsRequest {
@@ -163,11 +243,17 @@ export class ListOpenCodeMCPsResponse extends Message<ListOpenCodeMCPsResponse> 
 }
 
 /**
- * No filters — providers are not tenant-scoped in v0.1.
- *
  * @generated from message orchicon.api.v1.ListProvidersRequest
  */
 export class ListProvidersRequest extends Message<ListProvidersRequest> {
+  /**
+   * Optional filter: scope the provider list to one adapter kind
+   * (e.g. "opencode", "claude", "orchicon"); empty = the full global list.
+   *
+   * @generated from field: optional string adapter = 1;
+   */
+  adapter?: string;
+
   constructor(data?: PartialMessage<ListProvidersRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -176,6 +262,7 @@ export class ListProvidersRequest extends Message<ListProvidersRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.ListProvidersRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProvidersRequest {

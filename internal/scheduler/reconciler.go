@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -120,11 +121,13 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
-// dispatches them via the AdapterBridge.
+// dispatches them via the AdapterBridge resolved from the Dispatcher by
+// the execution's adapter kind (adapter.AdapterKind(manifest.ModelRef)
+// .Adapter).
 type TaskReconciler struct {
 	pool             *db.Pool
 	log              *slog.Logger
-	bridge           AdapterBridge
+	dispatcher       *Dispatcher
 	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 
@@ -163,9 +166,12 @@ type TaskReconciler struct {
 	dispatchOverlap func(inFlight int)
 }
 
-// NewTaskReconciler creates a TaskReconciler.
-func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
-	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
+// NewTaskReconciler creates a TaskReconciler. The dispatcher routes each
+// dispatch to the AdapterBridge registered for the execution's adapter
+// kind (parsed from the worker's model_ref at dispatch time) — never a
+// hardcoded singleton bridge.
+func NewTaskReconciler(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher) *TaskReconciler {
+	return &TaskReconciler{pool: pool, log: log, dispatcher: dispatcher}
 }
 
 // SetDispatchConcurrency sets the per-pass concurrency bound for the scan
@@ -589,8 +595,15 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
-	// Select an Adapter (docs/03 §4.2).
-	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, version.RuntimeRef)
+	// Select an Adapter (docs/03 §4.2). ADR-0005 D6: the row-selection kind
+	// comes from the version's runtime_ref when set (all pre-existing
+	// behavior — a divergent runtime_ref keeps its terminal
+	// failed_to_start semantics rather than being silently repointed); an
+	// EMPTY runtime_ref used to query kind "" — matching zero rows and
+	// requeueing forever (the dispatch black hole) — so it falls back to
+	// the model_ref's parsed adapter kind (the same single source of truth
+	// the bridge Resolve at dispatch uses), then the legacy default kind.
+	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.RuntimeRef, version.ModelRef))
 	if err != nil {
 		r.log.Warn("no suitable adapter for task", "task", task.ID, "worker", version.WorkerID, "error", err)
 		return nil
@@ -849,7 +862,7 @@ func mustStepWorkItemID(sr db.WorkflowStepRunRow) string {
 // runs in a goroutine so the reconcile loop is not blocked by the
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
-func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
+func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adp db.AdapterRow) {
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
 	// Use a background context (the reconciler's ctx may expire before
@@ -1063,11 +1076,129 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 		StallToolHangSeconds:         stallToolHang,
 	}
-	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
+	if r.dispatcher == nil {
+		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "error", err)
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	// Resolve the adapter bridge from the execution's adapter kind — the
+	// model_ref grammar (adapter.AdapterKind) is the SINGLE source of
+	// truth (ADR-0003). A 2-segment legacy ref (opencode/<model>) resolves
+	// to the default kind "opencode"; an unknown kind fails the execution
+	// with an actionable message (never a panic).
+	modelRef := manifest.ModelRef
+	if modelRef == "" {
+		modelRef = manifest.DefaultModelRef
+	}
+	kind := adapter.AdapterKind(modelRef)
+	if kind == "" {
+		// Empty/malformed model_ref: fall back to the default adapter
+		// kind ("opencode") so legacy workers with single-segment refs
+		// keep dispatching exactly as they did before the dispatcher
+		// (previously the bridge was a hardcoded singleton).
+		kind = adapter.DefaultAdapterKind
+	}
+	// Sequence continuation (opt-in, DEFAULT OFF): consecutive
+	// same-worker tasks in a sequence chain may resume the prior task's
+	// session transcript instead of starting fresh (tightly-coupled
+	// chains where retained context beats isolation). Resolution happens
+	// ONLY for the native engine (kind "orchicon" — the in-process
+	// session engine); opencode/other adapters never resume (their
+	// transcripts are subprocess-bound, not in-process). The flag is set
+	// only when the task has a terminal-success predecessor sibling bound
+	// to the same worker, so identity isolation holds by construction.
+	if kind == "orchicon" && task.ParentID != nil && *task.ParentID != "" {
+		if priorID, ok := r.continuationSessionID(context.Background(), task, version); ok {
+			manifest.SequenceContinue = true
+			manifest.ContinueFromSessionID = priorID
+			r.log.Info("sequence continuation armed",
+				"execution", exec.ID, "prior", priorID, "task", task.ID)
+		}
+	}
+	bridge, err := r.dispatcher.Resolve(kind)
+	if err != nil {
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "kind", kind, "error", err)
+		// The Resolve error names the missing kind and the registered
+		// kinds — surface it verbatim so the operator can act on it.
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	if err := bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
 		// Mark the execution as failed_to_start.
 		r.markFailedToStart(context.Background(), exec, err.Error())
 	}
+}
+
+// continuationSessionID resolves the prior session to continue for a
+// sequence-chain task (sequence-continuation flag, opt-in DEFAULT OFF).
+// It returns (sessionID, true) only when:
+//   - the task is a direct child of a sequence parent (ParentID set),
+//   - its immediate predecessor sibling is terminal-success (succeeded or
+//     skipped — a failed/cancelled predecessor never continues),
+//   - the predecessor's assigned worker is the SAME worker as the current
+//     task's (identity isolation by construction: no worker ever resumes
+//     another worker's transcript),
+//   - the predecessor has a completed execution (session id == execution
+//     id for the native engine).
+//
+// The session id for the native engine IS the execution id, so the prior
+// execution's id is the continuation target.
+func (r *TaskReconciler) continuationSessionID(ctx context.Context, task db.WorkItemRow, version db.WorkerVersionRow) (string, bool) {
+	if task.ParentID == nil || *task.ParentID == "" {
+		return "", false
+	}
+	ttx, err := r.pool.BeginTenantTx(context.Background(), task.TenantID)
+	if err != nil {
+		r.log.Warn("continuation: begin tx failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	defer ttx.Rollback(context.Background())
+
+	children, err := db.ListDirectChildren(context.Background(), ttx.Tx, task.TenantID, *task.ParentID)
+	if err != nil {
+		r.log.Warn("continuation: list children failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	idx := -1
+	for i, c := range children {
+		if c.ID == task.ID {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return "", false // no predecessor (first child or not found)
+	}
+	prev := children[idx-1]
+	if !domain.WorkItemIsTerminalSuccess(prev.Status) {
+		return "", false
+	}
+	// Same-worker requirement (identity isolation). The predecessor's
+	// assigned worker is parsed from its AssignedWorkerRef.
+	var ref struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if len(prev.AssignedWorkerRef) == 0 {
+		return "", false
+	}
+	if err := json.Unmarshal(prev.AssignedWorkerRef, &ref); err != nil || ref.WorkerID == "" {
+		return "", false
+	}
+	if ref.WorkerID != version.WorkerID {
+		return "", false // cross-worker never continues
+	}
+	priorExec, err := db.GetLatestExecutionForTask(context.Background(), ttx.Tx, task.TenantID, prev.ID)
+	if err != nil || priorExec.ID == "" {
+		return "", false
+	}
+	// Only a succeeded prior execution is worth continuing from.
+	if priorExec.Status != domain.ExecutionSucceeded {
+		return "", false
+	}
+	return priorExec.ID, true
 }
 
 // markFailedToStart transitions an execution to failed_to_start
@@ -1162,6 +1293,24 @@ func (r *TaskReconciler) selectWorker(ctx context.Context, tx pgx.Tx, tenantID s
 
 // selectAdapter selects a registered adapter of the matching kind with
 // a recent heartbeat and free capacity (docs/03 §4.2).
+// resolveAdapterRowKind resolves the kind used for adapter-ROW selection
+// (ADR-0005 D6): the version's runtime_ref when set (pre-existing
+// behavior; a divergent runtime_ref keeps its terminal failed_to_start
+// semantics), else the model_ref's parsed adapter kind — the same single
+// source of truth the bridge Resolve at dispatch uses — else the legacy
+// default kind. The empty-runtime_ref fallback closes the dispatch black
+// hole: kind "" matched zero runtime_adapters rows, so a worker created
+// without a runtime_ref requeued forever instead of dispatching.
+func resolveAdapterRowKind(runtimeRef, modelRef string) string {
+	if runtimeRef != "" {
+		return runtimeRef
+	}
+	if k := adapter.AdapterKind(modelRef); k != "" {
+		return k
+	}
+	return adapter.DefaultAdapterKind
+}
+
 func (r *TaskReconciler) selectAdapter(ctx context.Context, tx pgx.Tx, tenantID, kind string) (db.AdapterRow, error) {
 	adapters, err := db.ListReadyAdaptersByKind(ctx, tx, tenantID, kind, heartbeatTTL)
 	if err != nil {

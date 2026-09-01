@@ -27,7 +27,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
-	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/transcript"
 	"github.com/jackc/pgx/v5"
@@ -58,7 +58,7 @@ type Service struct {
 	// continueSession runs a one-shot follow-up question against a worker's
 	// session in place (no new execution/work item), recording the reply
 	// into the durable transcript. Injected by the server.
-	continueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	continueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 
 	// abortSession stops a live execution's opencode session when a human
 	// cancels it (wired to the opencode adapter's AbortExecution). Without it
@@ -84,7 +84,7 @@ func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, m
 
 // SetContinueSession injects the in-place follow-up runner (the opencode
 // adapter's ContinueSession). Nil = the RPC is unavailable.
-func (s *Service) SetContinueSession(fn func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)) {
+func (s *Service) SetContinueSession(fn func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)) {
 	s.continueSession = fn
 }
 
@@ -1236,7 +1236,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	}
 	startSeq++ // next seq after the original run
 
-	reply, err := s.continueSession(ctx, opencode.ContinueSessionOpts{
+	reply, err := s.continueSession(ctx, scheduler.ContinueSessionOpts{
 		ExecutionID:   msg.ExecutionId,
 		TenantID:      tenantID,
 		SystemPrompt:  systemPrompt,

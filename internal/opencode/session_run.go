@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -1070,7 +1071,7 @@ func (r *sessionRun) doCompact(steps int, reason string) {
 	r.lastCompactStep = steps
 	r.mu.Unlock()
 
-	provider, model, ok := splitModelRef(r.modelRef)
+	provider, model, ok := adapter.SplitForServe(r.modelRef)
 	if !ok {
 		r.a.log.Warn("compact skipped: malformed model ref",
 			"execution", r.execRow.ID, "modelRef", r.modelRef)

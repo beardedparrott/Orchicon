@@ -24,6 +24,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -45,6 +46,87 @@ const (
 // gate that rejects path-traversal or injection-laden slugs before they
 // reach the database (mirrors internal/project/validate.go).
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// modelRefRegistry is the provider/kind catalog used to validate model_ref
+// values at the API boundary. It defaults to the built-in catalog (opencode
+// providers plus the known adapter kinds) and can be swapped for tests via
+// SetModelRefRegistry. Tenant-created custom providers are merged in at the
+// service layer (they are not part of this static catalog).
+var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
+
+// customProviderIDs returns the requesting tenant's ENABLED custom
+// provider ids (ADR-0006 D6). Wired by the API layer; nil = no tenant
+// custom providers (built-ins only).
+var customProviderIDs func(ctx context.Context, tenantID string) ([]string, error)
+
+// SetCustomProviderIDs wires the tenant custom-provider source for
+// model-ref validation (the providers settings service). Called by the
+// server layer after construction; the package-level seam mirrors
+// SetModelRefRegistry.
+func SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
+	customProviderIDs = fn
+}
+
+// customProviderRegistry merges the tenant's enabled custom provider ids
+// into the built-in validation catalog under the default adapter kind
+// (legacy 2-segment `local-models/...` refs parse — ADR-0006 D2/D6), and
+// under the product-default "orchicon" kind when that kind is registered
+// (fresh `orchicon/local-models/...` refs validate). A merge failure is
+// non-fatal: validation degrades to the built-in catalog (never breaks
+// worker saves). No tenant context → built-ins only.
+func customProviderRegistry(ctx context.Context, tenantID string) adapter.ProviderRegistry {
+	if tenantID == "" || customProviderIDs == nil {
+		return modelRefRegistry
+	}
+	ids, err := customProviderIDs(ctx, tenantID)
+	if err != nil || len(ids) == 0 {
+		return modelRefRegistry
+	}
+	catalog, ok := modelRefRegistry.(*adapter.BuiltinProviderCatalog)
+	if !ok {
+		return modelRefRegistry
+	}
+	// Copy-on-write: never mutate the shared built-in catalog.
+	merged := adapter.NewBuiltinProviderCatalog()
+	for _, kind := range catalog.AdapterKinds() {
+		merged.AddAdapterKind(kind, catalog.Providers(kind)...)
+	}
+	merged.AddAdapterKind(adapter.DefaultAdapterKind, ids...)
+	// The adapter-change validator offers the new kind's provider set on
+	// failure; "orchicon" is the product default kind, so tenant customs
+	// join it too when registered.
+	if merged.IsKnownAdapter("orchicon") {
+		merged.AddAdapterKind("orchicon", ids...)
+	}
+	return merged
+}
+
+// SetModelRefRegistry replaces the validation catalog (test seam).
+func SetModelRefRegistry(reg adapter.ProviderRegistry) {
+	if reg != nil {
+		modelRefRegistry = reg
+	}
+}
+
+// validateModelRef trims and bounds-checks a model_ref, then validates it
+// against the adapter/provider/model grammar (ADR-0003). An empty value is
+// returned unchanged (empty model_ref is valid — the system default applies).
+// The registry is a static built-in catalog UNION the requesting tenant's
+// enabled custom providers (ADR-0006 D6); the settings/worker service
+// layers check tenant custom providers when one is configured.
+func validateModelRef(ctx context.Context, tenantID, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(ref) > maxNameLen {
+		return "", fmt.Errorf("model_ref must be at most %d characters", maxNameLen)
+	}
+	if _, err := adapter.ParseModelRef(ref, customProviderRegistry(ctx, tenantID)); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
 
 // validateName trims and bounds-checks a worker name.
 func validateName(name string) (string, error) {
@@ -147,4 +229,128 @@ func requireTenant(ctx context.Context) (string, error) {
 		return "", errors.New("no tenant in context")
 	}
 	return id, nil
+}
+
+// --- adapter selection (ADR-0005) ------------------------------------------
+
+// adapterKindsFn returns the adapter kinds currently REGISTERED with the
+// Dispatcher (ADR-0005 D2). It is injected by the server layer via
+// SetAdapterKinds (a func to avoid an api → scheduler import cycle, the
+// same seam Dependencies.AdapterKinds uses). nil falls back to the
+// validation catalog's kinds (headless/tests).
+var adapterKindsFn func() []string
+
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds into the
+// worker service's adapter-input validation (ADR-0005 D2). Explicit
+// adapter selections are deliberate routing requests, so they validate
+// against what can actually dispatch — not merely what the catalog knows.
+func SetAdapterKinds(fn func() []string) {
+	adapterKindsFn = fn
+}
+
+// registeredAdapterKinds returns the adapter kinds an explicit selection
+// may name: the Dispatcher's registered kinds when wired, else the
+// validation catalog's kinds (headless/tests), else the legacy default
+// kind so validation never accepts an empty allowlist silently.
+func registeredAdapterKinds() []string {
+	if adapterKindsFn != nil {
+		if kinds := adapterKindsFn(); len(kinds) > 0 {
+			return kinds
+		}
+	}
+	if c, ok := modelRefRegistry.(interface{ AdapterKinds() []string }); ok {
+		if kinds := c.AdapterKinds(); len(kinds) > 0 {
+			return kinds
+		}
+	}
+	return []string{adapter.DefaultAdapterKind}
+}
+
+// validateAdapterInput validates an explicit adapter selection against the
+// Dispatcher's registered kinds (ADR-0005 D2/D3). An empty value is valid
+// (no explicit selection was made); anything else must name a registered
+// kind — catalog-known-but-unregistered kinds are rejected here with an
+// actionable error, because an explicit input is a routing request.
+func validateAdapterInput(kind string) (string, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(kind) > maxNameLen {
+		return "", fmt.Errorf("adapter must be at most %d characters", maxNameLen)
+	}
+	for _, k := range registeredAdapterKinds() {
+		if k == kind {
+			return kind, nil
+		}
+	}
+	return "", fmt.Errorf("unknown or unregistered adapter %q — registered adapter kinds: %s", kind, strings.Join(registeredAdapterKinds(), ", "))
+}
+
+// validateAdapterRefAgreement enforces ADR-0005 D2 for the optional
+// explicit adapter input: it must travel WITH a model_ref (the ref is the
+// only store — a lone adapter has nowhere to persist) and must AGREE with
+// the ref's parsed adapter segment.
+func validateAdapterRefAgreement(adapterSel, modelRef string) error {
+	if adapterSel == "" {
+		return nil
+	}
+	if strings.TrimSpace(modelRef) == "" {
+		return fmt.Errorf("adapter %q was set without a model_ref — the model_ref's adapter segment is the persisted selection; send adapter/provider/model, or omit adapter", adapterSel)
+	}
+	parsed, err := adapter.ParseModelRef(modelRef, nil)
+	if err != nil {
+		return err
+	}
+	if parsed.Adapter != adapterSel {
+		return fmt.Errorf("adapter %q does not match model_ref %q (parsed adapter %q) — the explicit selection must agree with the ref's adapter segment", adapterSel, modelRef, parsed.Adapter)
+	}
+	return nil
+}
+
+// validateAdapterChange enforces the adapter-change contract (ADR-0005 D4):
+// when a version's model_ref changes to one whose parsed adapter kind
+// differs from its CURRENT ref's parsed adapter kind, the full new pair
+// must be valid FOR THE NEW adapter — the provider segment must be a known
+// provider of that kind (built-in profile ∪ tenant custom via the same
+// registry seam validateModelRef uses). Unchanged-adapter re-saves keep
+// the ADR-0004 D5 semantics verbatim (catalog-known-but-deleted providers
+// re-save flagged) and pass through here untouched.
+func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
+	current := adapterKindOf(currentRef)
+	next := adapterKindOf(newRef)
+	if current == next {
+		return nil
+	}
+	reg := customProviderRegistry(ctx, tenantID)
+	parsed, err := adapter.ParseModelRef(newRef, reg)
+	if err != nil {
+		return err
+	}
+	if parsed.Provider == "" {
+		// Legacy 1-segment ref: nothing to validate beyond the parse.
+		return nil
+	}
+	provs := reg.Providers(parsed.Adapter)
+	for _, p := range provs {
+		if p == parsed.Provider {
+			return nil
+		}
+	}
+	if len(provs) == 0 {
+		return fmt.Errorf("model_ref %q changes the worker's adapter from %q to %q, but %q has no known providers — switch to a provider of the new adapter (adapter/provider/model)", newRef, current, next, next)
+	}
+	return fmt.Errorf("model_ref %q changes the worker's adapter from %q to %q, but provider %q is not a known provider of %q — valid providers: %s", newRef, current, next, parsed.Provider, next, strings.Join(provs, ", "))
+}
+
+// adapterKindOf reports the worker-facing adapter selection for a
+// model_ref (ADR-0005 D2, computed): the parsed adapter segment; legacy
+// 1/2-segment refs report the inferred default kind ("opencode") — never
+// a stored value; an empty ref reports empty.
+func adapterKindOf(modelRef string) string {
+	ref := strings.TrimSpace(modelRef)
+	if ref == "" {
+		return ""
+	}
+	return adapter.AdapterKind(ref)
 }

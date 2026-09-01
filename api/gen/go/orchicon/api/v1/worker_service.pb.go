@@ -107,11 +107,17 @@ type CreateWorkerRequest struct {
 	RequestId           string `protobuf:"bytes,18,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
 	// Structured prompt fields — when any is set they become the version's
 	// source of truth (system_prompt is then composed server-side).
-	Role          string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`
-	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
-	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`
-	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
-	RoleRef       string `protobuf:"bytes,23,opt,name=role_ref,json=roleRef,proto3" json:"role_ref,omitempty"` // optional RBAC role binding; empty = no plane access
+	Role     string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`
+	Skills   string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	Behavior string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`
+	AgentsMd string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
+	RoleRef  string `protobuf:"bytes,23,opt,name=role_ref,json=roleRef,proto3" json:"role_ref,omitempty"` // optional RBAC role binding; empty = no plane access
+	// Optional explicit adapter selection (ADR-0005 D2): a validation and
+	// consistency affordance for API clients. Must be a Dispatcher-registered
+	// kind; when model_ref is also set the two must AGREE (the ref's parsed
+	// adapter segment == this value); a lone adapter with no model_ref is
+	// rejected — the ref is the only persisted store of the selection.
+	Adapter       string `protobuf:"bytes,24,opt,name=adapter,proto3" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -303,6 +309,13 @@ func (x *CreateWorkerRequest) GetAgentsMd() string {
 func (x *CreateWorkerRequest) GetRoleRef() string {
 	if x != nil {
 		return x.RoleRef
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetAdapter() string {
+	if x != nil {
+		return x.Adapter
 	}
 	return ""
 }
@@ -1301,8 +1314,12 @@ type WorkerListItem struct {
 	// worker has no versions yet.
 	ActiveModelRef      string              `protobuf:"bytes,2,opt,name=active_model_ref,json=activeModelRef,proto3" json:"active_model_ref,omitempty"`
 	ActiveVersionStatus WorkerVersionStatus `protobuf:"varint,3,opt,name=active_version_status,json=activeVersionStatus,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"active_version_status,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// active_adapter is the parsed adapter segment of active_model_ref
+	// (ADR-0005 D2, computed server-side). Legacy 2-segment refs report
+	// the inferred default kind ("opencode") — never a stored value.
+	ActiveAdapter string `protobuf:"bytes,4,opt,name=active_adapter,json=activeAdapter,proto3" json:"active_adapter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkerListItem) Reset() {
@@ -1354,6 +1371,13 @@ func (x *WorkerListItem) GetActiveVersionStatus() WorkerVersionStatus {
 		return x.ActiveVersionStatus
 	}
 	return WorkerVersionStatus_WORKER_VERSION_STATUS_UNSPECIFIED
+}
+
+func (x *WorkerListItem) GetActiveAdapter() string {
+	if x != nil {
+		return x.ActiveAdapter
+	}
+	return ""
 }
 
 type ListWorkersResponse struct {
@@ -1629,10 +1653,16 @@ type UpdateWorkerVersionRequest struct {
 	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
 	// Structured prompt fields; when any is set the version's system_prompt
 	// is recomposed server-side from the four fields.
-	Role          *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
-	Skills        *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
-	Behavior      *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
-	AgentsMd      *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	Role     *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
+	Skills   *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
+	Behavior *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
+	AgentsMd *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	// Optional explicit adapter selection (ADR-0005 D2/D4): validated
+	// against the Dispatcher's registered kinds; must agree with model_ref
+	// when both are set. When the resulting ref's adapter CHANGES, the new
+	// adapter/provider pair must be valid (provider known for the new
+	// kind) or the update is rejected InvalidArgument.
+	Adapter       *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1793,6 +1823,13 @@ func (x *UpdateWorkerVersionRequest) GetAgentsMd() string {
 	return ""
 }
 
+func (x *UpdateWorkerVersionRequest) GetAdapter() string {
+	if x != nil && x.Adapter != nil {
+		return *x.Adapter
+	}
+	return ""
+}
+
 type UpdateWorkerVersionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       *WorkerVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -1855,10 +1892,13 @@ type CreateWorkerVersionRequest struct {
 	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
 	// Structured prompt fields; when any is set the version's system_prompt
 	// is recomposed server-side from the four fields.
-	Role          *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
-	Skills        *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
-	Behavior      *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
-	AgentsMd      *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	Role     *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
+	Skills   *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
+	Behavior *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
+	AgentsMd *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	// Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
+	// as UpdateWorkerVersion.
+	Adapter       *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2008,6 +2048,13 @@ func (x *CreateWorkerVersionRequest) GetBehavior() string {
 func (x *CreateWorkerVersionRequest) GetAgentsMd() string {
 	if x != nil && x.AgentsMd != nil {
 		return *x.AgentsMd
+	}
+	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetAdapter() string {
+	if x != nil && x.Adapter != nil {
+		return *x.Adapter
 	}
 	return ""
 }
@@ -2727,7 +2774,7 @@ var File_orchicon_api_v1_worker_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
-	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\xfd\x05\n" +
+	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\x97\x06\n" +
 	"\x13CreateWorkerRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -2755,7 +2802,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
 	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x19\n" +
-	"\brole_ref\x18\x17 \x01(\tR\aroleRef\"\x81\x01\n" +
+	"\brole_ref\x18\x17 \x01(\tR\aroleRef\x12\x18\n" +
+	"\aadapter\x18\x18 \x01(\tR\aadapter\"\x81\x01\n" +
 	"\x14CreateWorkerResponse\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\x128\n" +
 	"\aversion\x18\x02 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xa2\x01\n" +
@@ -2813,11 +2861,12 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\asort_by\x18\x06 \x01(\tR\x06sortBy\x12\x1d\n" +
 	"\n" +
 	"sort_order\x18\a \x01(\tR\tsortOrderB\t\n" +
-	"\a_status\"\xc5\x01\n" +
+	"\a_status\"\xec\x01\n" +
 	"\x0eWorkerListItem\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\x12(\n" +
 	"\x10active_model_ref\x18\x02 \x01(\tR\x0eactiveModelRef\x12X\n" +
-	"\x15active_version_status\x18\x03 \x01(\x0e2$.orchicon.api.v1.WorkerVersionStatusR\x13activeVersionStatus\"\xad\x02\n" +
+	"\x15active_version_status\x18\x03 \x01(\x0e2$.orchicon.api.v1.WorkerVersionStatusR\x13activeVersionStatus\x12%\n" +
+	"\x0eactive_adapter\x18\x04 \x01(\tR\ractiveAdapter\"\xad\x02\n" +
 	"\x13ListWorkersResponse\x125\n" +
 	"\aworkers\x18\x01 \x03(\v2\x17.orchicon.api.v1.WorkerB\x02\x18\x01R\aworkers\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x125\n" +
@@ -2833,7 +2882,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x17GetWorkerVersionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"T\n" +
 	"\x18GetWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xe2\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\x8d\b\n" +
 	"\x1aUpdateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -2857,7 +2906,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x04role\x18\x12 \x01(\tH\fR\x04role\x88\x01\x01\x12\x1b\n" +
 	"\x06skills\x18\x13 \x01(\tH\rR\x06skills\x88\x01\x01\x12\x1f\n" +
 	"\bbehavior\x18\x14 \x01(\tH\x0eR\bbehavior\x88\x01\x01\x12 \n" +
-	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01B\x0e\n" +
+	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01\x12\x1d\n" +
+	"\aadapter\x18\x16 \x01(\tH\x10R\aadapter\x88\x01\x01B\x0e\n" +
 	"\f_runtime_refB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
@@ -2875,9 +2925,11 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\a_skillsB\v\n" +
 	"\t_behaviorB\f\n" +
 	"\n" +
-	"_agents_md\"W\n" +
+	"_agents_mdB\n" +
+	"\n" +
+	"\b_adapter\"W\n" +
 	"\x1bUpdateWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xc3\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xee\a\n" +
 	"\x1aCreateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12$\n" +
 	"\vruntime_ref\x18\x06 \x01(\tH\x00R\n" +
@@ -2899,7 +2951,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x04role\x18\x12 \x01(\tH\fR\x04role\x88\x01\x01\x12\x1b\n" +
 	"\x06skills\x18\x13 \x01(\tH\rR\x06skills\x88\x01\x01\x12\x1f\n" +
 	"\bbehavior\x18\x14 \x01(\tH\x0eR\bbehavior\x88\x01\x01\x12 \n" +
-	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01B\x0e\n" +
+	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01\x12\x1d\n" +
+	"\aadapter\x18\x16 \x01(\tH\x10R\aadapter\x88\x01\x01B\x0e\n" +
 	"\f_runtime_refB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
@@ -2917,7 +2970,9 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\a_skillsB\v\n" +
 	"\t_behaviorB\f\n" +
 	"\n" +
-	"_agents_md\"W\n" +
+	"_agents_mdB\n" +
+	"\n" +
+	"\b_adapter\"W\n" +
 	"\x1bCreateWorkerVersionResponse\x128\n" +
 	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"K\n" +
 	"\x16AcquireEditLockRequest\x12\x1b\n" +

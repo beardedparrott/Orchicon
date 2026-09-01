@@ -312,10 +312,16 @@ type WorkerVersion struct {
 	// truth; `system_prompt` above is the composed view (Role + Skills +
 	// Behavior + AGENTS.md joined with `# Heading` separators) built server-side.
 	// When all four are empty, `system_prompt` holds the raw prompt (legacy).
-	Role          string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`                         // the worker's identity/role statement
-	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
-	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
-	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	Role     string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`                         // the worker's identity/role statement
+	Skills   string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
+	Behavior string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
+	AgentsMd string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	// adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
+	// the parsed adapter segment of model_ref (server-side, read-only —
+	// never stored separately; the ref is the only store). Legacy 1/2-segment
+	// refs report the inferred default kind ("opencode"); an empty ref
+	// reports empty. Dispatch resolves the bridge from this kind.
+	Adapter       string `protobuf:"bytes,23,opt,name=adapter,proto3" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -504,6 +510,13 @@ func (x *WorkerVersion) GetAgentsMd() string {
 	return ""
 }
 
+func (x *WorkerVersion) GetAdapter() string {
+	if x != nil {
+		return x.Adapter
+	}
+	return ""
+}
+
 // EditLock is an explicit advisory lock on a Worker for the visual
 // editor (docs/07 §3.3). Prevents concurrent edits; other users see
 // "currently being edited by [user]" and can view read-only. Lock
@@ -598,7 +611,7 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x19\n" +
-	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xbb\x06\n" +
+	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xd5\x06\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +
@@ -625,7 +638,8 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
 	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
-	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\"\xbc\x01\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x18\n" +
+	"\aadapter\x18\x17 \x01(\tR\aadapter\"\xbc\x01\n" +
 	"\bEditLock\x12\x1f\n" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x17\n" +

@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -32,6 +33,9 @@ type Service struct {
 	modelDisc     *aigateway.ModelDiscoverer
 	toolRegistry  *ToolRegistry
 	runtimeClient *runtime.Client
+	// adapterKinds returns the adapter kinds registered with the
+	// Dispatcher (ADR-0004 D1) — powers the list_adapter_kinds tool.
+	adapterKinds func() []string
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
@@ -123,9 +127,34 @@ func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 	toolRuntimeClient = rt
 }
 
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004
+// D1) into the list_adapter_kinds tool. Nil falls back to the default
+// adapter kind.
+func (s *Service) SetAdapterKinds(fn func() []string) {
+	s.adapterKinds = fn
+}
+
 // registerSessionTools adds tools that depend on service-injected
 // dependencies (beyond pool/log).
 func (s *Service) registerSessionTools() {
+	s.toolRegistry.Add(ToolDefinition{
+		Name:        "list_adapter_kinds",
+		Description: "List the adapter kinds currently registered with the dispatcher (e.g. \"opencode\"). New adapters appear automatically once registered. The model_ref grammar is adapter/provider/model; this tool tells you which adapter kinds exist to put in segment 1.",
+		Mutating:    false,
+		Fn: func(_ context.Context, _ *db.Pool, _ json.RawMessage) (json.RawMessage, error) {
+			kinds := []string{adapter.DefaultAdapterKind}
+			if s.adapterKinds != nil {
+				if k := s.adapterKinds(); len(k) > 0 {
+					kinds = k
+				}
+			}
+			b, err := json.Marshal(map[string]any{"adapter_kinds": kinds})
+			if err != nil {
+				return nil, err
+			}
+			return b, nil
+		},
+	})
 	s.toolRegistry.Add(ToolDefinition{
 		Name:        "send_execution_message",
 		Description: "Send a mid-run message to a live worker execution's opencode session (e.g. a nudge or a clarifying question). This does NOT create a new execution or work item — the worker answers within its current session and the reply streams back to the execution. Fails when the execution is not running on the session transport.",

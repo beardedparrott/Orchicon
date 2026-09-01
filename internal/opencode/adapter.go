@@ -31,6 +31,7 @@ import (
 
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -98,18 +99,22 @@ type Adapter struct {
 }
 
 // SessionStoreFunc persists transcript entries for one execution. The
-// implementation owns the tenant transaction.
-type SessionStoreFunc func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error
+// implementation owns the tenant transaction. It is the opencode alias
+// for the scheduler contract type (scheduler.SessionStoreFunc) so the
+// adapter reads identically to how it did before the contract move.
+type SessionStoreFunc = scheduler.SessionStoreFunc
 
 // SetRuntimeClient injects the workflow runtime daemon client. When set,
 // executions with a RuntimeWorkflowID dispatch into that workflow's
-// runtime container; without it the adapter runs in-process.
+// runtime container; without it the adapter runs in-process. It is the
+// opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
 // SetHostServe injects the always-on host opencode serve manager. When
 // set AND sessions are enabled, local (in-process) executions run as
 // persistent sessions on it. Nil means no host serve is available — such
-// executions fail fast (the one-shot subprocess path was removed).
+// executions fail fast (the one-shot subprocess path was removed). It is
+// the opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 
 // SendExecutionMessage routes a mid-run human message into a live session
@@ -382,40 +387,26 @@ func (a *Adapter) IsExecutionActive(execID string) bool {
 
 // UsageRecord is the usage sample the adapter emits on step_finish
 // (docs/04 §6.1 step_finish carries tokens + cost). It is the opencode
-// bridge shape onto the canonical aigateway.UsageInput — the server copies
-// it field-for-field into the gateway's input so the gateway never branches
-// on provider.
-type UsageRecord struct {
-	TenantID         string
-	ProjectID        string
-	TaskID           string
-	ExecutionID      string
-	WorkerID         string
-	Provider         string
-	Model            string
-	PromptTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	CompletionTokens int64
-	ReasoningTokens  int64
-	CostUSD          float64
-	CorrelationID    string
-	TraceID          string
-	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
-}
+// alias for the scheduler contract type (scheduler.UsageRecord) — the
+// server copies it field-for-field into the gateway's input so the
+// gateway never branches on provider.
+type UsageRecord = scheduler.UsageRecord
 
 // UsageRecorderFunc records a usage sample. Decoupled from the
 // aigateway package via a function type so the adapter has no import
-// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge).
-type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
+// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge). It
+// is the opencode alias for the scheduler contract type.
+type UsageRecorderFunc = scheduler.UsageRecorderFunc
 
 // SetUsageRecorder injects the usage recording callback. The server
-// constructs it from the aigateway.UsageRecorder.
+// constructs it from the aigateway.UsageRecorder. It is the opencode
+// implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
 
 // SetSessionStore injects the durable transcript writer. The server wraps
 // db.AppendExecutionSessionParts in a tenant transaction. Nil = the
-// session transcript is not persisted.
+// session transcript is not persisted. It is the opencode implementation
+// of scheduler.ConfigurableBridge.
 func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 
 // workerAgent is the opencode agent name the adapter injects the worker's
@@ -1169,7 +1160,12 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
 	}
-	provider, model := parseModelRef(manifest.ModelRef)
+	provider, model, ok := adapter.SplitForServe(manifest.ModelRef)
+	if !ok {
+		// A malformed/empty model ref on a usage sample: attribute to
+		// "unknown" so the record is never dropped on the parse.
+		provider, model = "unknown", "unknown"
+	}
 	in := UsageRecord{
 		TenantID:         execRow.TenantID,
 		ProjectID:        execRow.ProjectID,
@@ -1237,20 +1233,6 @@ func extractErrorMessage(evt map[string]any) string {
 		return n
 	}
 	return ""
-}
-
-// parseModelRef splits a model ref like "anthropic/claude-sonnet-4" or
-// "opencode/deepseek-v4-flash-free" into (provider, model). If there is
-// no "/", provider is "unknown" and model is the whole ref.
-func parseModelRef(ref string) (provider, model string) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "unknown", "unknown"
-	}
-	if i := strings.IndexByte(ref, '/'); i > 0 {
-		return ref[:i], ref[i+1:]
-	}
-	return "unknown", ref
 }
 
 func toInt64(v any) int64 {

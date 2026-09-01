@@ -60,6 +60,12 @@ message WorkerVersion {
   string skills = 20; // bullet-style skill list
   string behavior = 21; // working-style guidance
   string agents_md = 22; // project-level conventions (AGENTS.md)
+  // adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
+  // the parsed adapter segment of model_ref (server-side, read-only —
+  // never stored separately; the ref is the only store). Legacy 1/2-segment
+  // refs report the inferred default kind ("opencode"); an empty ref
+  // reports empty. Dispatch resolves the bridge from this kind.
+  string adapter = 23;
 }
 
 // Worker lifecycle states. draft → published → deprecated → retired

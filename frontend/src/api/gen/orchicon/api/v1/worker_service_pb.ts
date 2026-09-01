@@ -196,6 +196,17 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
    */
   roleRef = "";
 
+  /**
+   * Optional explicit adapter selection (ADR-0005 D2): a validation and
+   * consistency affordance for API clients. Must be a Dispatcher-registered
+   * kind; when model_ref is also set the two must AGREE (the ref's parsed
+   * adapter segment == this value); a lone adapter with no model_ref is
+   * rejected — the ref is the only persisted store of the selection.
+   *
+   * @generated from field: string adapter = 24;
+   */
+  adapter = "";
+
   constructor(data?: PartialMessage<CreateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -227,6 +238,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 23, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 24, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerRequest {
@@ -1109,6 +1121,15 @@ export class WorkerListItem extends Message<WorkerListItem> {
    */
   activeVersionStatus = WorkerVersionStatus.UNSPECIFIED;
 
+  /**
+   * active_adapter is the parsed adapter segment of active_model_ref
+   * (ADR-0005 D2, computed server-side). Legacy 2-segment refs report
+   * the inferred default kind ("opencode") — never a stored value.
+   *
+   * @generated from field: string active_adapter = 4;
+   */
+  activeAdapter = "";
+
   constructor(data?: PartialMessage<WorkerListItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1120,6 +1141,7 @@ export class WorkerListItem extends Message<WorkerListItem> {
     { no: 1, name: "worker", kind: "message", T: Worker },
     { no: 2, name: "active_model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "active_version_status", kind: "enum", T: proto3.getEnumType(WorkerVersionStatus) },
+    { no: 4, name: "active_adapter", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerListItem {
@@ -1450,6 +1472,17 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
    */
   agentsMd?: string;
 
+  /**
+   * Optional explicit adapter selection (ADR-0005 D2/D4): validated
+   * against the Dispatcher's registered kinds; must agree with model_ref
+   * when both are set. When the resulting ref's adapter CHANGES, the new
+   * adapter/provider pair must be valid (provider known for the new
+   * kind) or the update is rejected InvalidArgument.
+   *
+   * @generated from field: optional string adapter = 22;
+   */
+  adapter?: string;
+
   constructor(data?: PartialMessage<UpdateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1476,6 +1509,7 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
     { no: 19, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionRequest {
@@ -1626,6 +1660,14 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
    */
   agentsMd?: string;
 
+  /**
+   * Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
+   * as UpdateWorkerVersion.
+   *
+   * @generated from field: optional string adapter = 22;
+   */
+  adapter?: string;
+
   constructor(data?: PartialMessage<CreateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1651,6 +1693,7 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
     { no: 19, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionRequest {
