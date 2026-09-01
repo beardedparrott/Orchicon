@@ -123,7 +123,7 @@ func TestStandaloneBlockedReadyFlipsToBlocked(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, task.ID, ""); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStandaloneBlockedStaysBlocked(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, task.ID, ""); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestStandaloneBlockedClearsAndDispatches(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, task.ID, ""); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestStandaloneBlockedScanClearsBlocked(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scan: %v", res.Error)
 	}
@@ -240,7 +240,7 @@ func TestStandaloneBlockedScanListsBlocked(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, task.ID, ""); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestStandaloneBlockedNotDispatchedWorkflowBound(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, task.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, task.ID, ""); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestStandaloneBlockedScanRotationClearsBacklog(t *testing.T) {
 	// any residue so the window is fully deterministic.
 	purgeScanResidue(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 
 	// More blocked tasks than scanBatchSize forces rotation across passes.
 	n := scanBatchSize + 4

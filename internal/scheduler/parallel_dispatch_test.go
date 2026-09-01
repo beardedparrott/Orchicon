@@ -110,7 +110,7 @@ func TestParallelScanDispatchesAllReadyInOnePass(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
 	ctx := context.Background()
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	peakInFlight := newInFlightProbe(rec)
 
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
@@ -136,7 +136,7 @@ func TestParallelScanDispatchLimitBoundsConcurrency(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
 	ctx := context.Background()
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	rec.SetDispatchConcurrency(2)
 	peakInFlight := newInFlightProbe(rec)
 
@@ -171,7 +171,7 @@ func TestParallelScanDependencyBlockedNotDispatched(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, blocked.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scan: %v", res.Error)
 	}
@@ -220,7 +220,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, created.ID, domain.DependencyBlocks)
 	setStatus(t, env.pool, blocker.ID, domain.WorkItemSucceeded)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scan: %v", res.Error)
 	}
