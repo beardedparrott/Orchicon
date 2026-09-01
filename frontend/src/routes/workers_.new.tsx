@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorker } from "@/api/workers";
+import { useListAdapterKinds } from "@/api/aigateway";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ModelPicker } from "@/components/ModelPicker";
+import { parseModelRef } from "@/lib/model-ref";
 import {
   BudgetSection,
   ContextSourcesSection,
@@ -162,6 +165,20 @@ function NewWorkerPage() {
   });
 
   const modelRef = watch("modelRef");
+  // ADR-0005 D6: the picker's chosen adapter governs the whole dispatch
+  // path (adapter-row selection + bridge) — derive runtime_ref from it
+  // when the kind is Dispatcher-registered; otherwise keep "opencode"
+  // (the only dispatchable kind today). Registered kinds are exactly what
+  // the picker's adapter tier renders, so a selection made there is by
+  // construction governable.
+  const { data: adapterKinds } = useListAdapterKinds();
+  useEffect(() => {
+    const parsed = parseModelRef(modelRef);
+    if (!parsed) return;
+    const kinds = adapterKinds ?? [];
+    const next = kinds.includes(parsed.adapter) ? parsed.adapter : "opencode";
+    setValue("runtimeRef", next, { shouldValidate: true });
+  }, [modelRef, adapterKinds, setValue]);
   const permissions = watch("permissions");
   const gatedTools = watch("gatedTools");
   const budgetOverrides = watch("budgetOverrides");

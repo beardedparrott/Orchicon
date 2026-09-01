@@ -148,6 +148,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// WorkerService (docs/07 §3.3).
 	workerSvc := worker.New(deps.Pool, deps.Log)
+	// Explicit adapter selections validate against the Dispatcher's
+	// registered kinds (ADR-0005 D2) — the injected func avoids the
+	// api → scheduler import cycle.
+	workerSvc.SetAdapterKinds(deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
 
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService

@@ -595,8 +595,15 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
-	// Select an Adapter (docs/03 §4.2).
-	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, version.RuntimeRef)
+	// Select an Adapter (docs/03 §4.2). ADR-0005 D6: the row-selection kind
+	// comes from the version's runtime_ref when set (all pre-existing
+	// behavior — a divergent runtime_ref keeps its terminal
+	// failed_to_start semantics rather than being silently repointed); an
+	// EMPTY runtime_ref used to query kind "" — matching zero rows and
+	// requeueing forever (the dispatch black hole) — so it falls back to
+	// the model_ref's parsed adapter kind (the same single source of truth
+	// the bridge Resolve at dispatch uses), then the legacy default kind.
+	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.RuntimeRef, version.ModelRef))
 	if err != nil {
 		r.log.Warn("no suitable adapter for task", "task", task.ID, "worker", version.WorkerID, "error", err)
 		return nil
@@ -1196,6 +1203,24 @@ func (r *TaskReconciler) selectWorker(ctx context.Context, tx pgx.Tx, tenantID s
 
 // selectAdapter selects a registered adapter of the matching kind with
 // a recent heartbeat and free capacity (docs/03 §4.2).
+// resolveAdapterRowKind resolves the kind used for adapter-ROW selection
+// (ADR-0005 D6): the version's runtime_ref when set (pre-existing
+// behavior; a divergent runtime_ref keeps its terminal failed_to_start
+// semantics), else the model_ref's parsed adapter kind — the same single
+// source of truth the bridge Resolve at dispatch uses — else the legacy
+// default kind. The empty-runtime_ref fallback closes the dispatch black
+// hole: kind "" matched zero runtime_adapters rows, so a worker created
+// without a runtime_ref requeued forever instead of dispatching.
+func resolveAdapterRowKind(runtimeRef, modelRef string) string {
+	if runtimeRef != "" {
+		return runtimeRef
+	}
+	if k := adapter.AdapterKind(modelRef); k != "" {
+		return k
+	}
+	return adapter.DefaultAdapterKind
+}
+
 func (r *TaskReconciler) selectAdapter(ctx context.Context, tx pgx.Tx, tenantID, kind string) (db.AdapterRow, error) {
 	adapters, err := db.ListReadyAdaptersByKind(ctx, tx, tenantID, kind, heartbeatTTL)
 	if err != nil {

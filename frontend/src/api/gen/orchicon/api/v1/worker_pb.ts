@@ -363,6 +363,17 @@ export class WorkerVersion extends Message<WorkerVersion> {
    */
   agentsMd = "";
 
+  /**
+   * adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
+   * the parsed adapter segment of model_ref (server-side, read-only —
+   * never stored separately; the ref is the only store). Legacy 1/2-segment
+   * refs report the inferred default kind ("opencode"); an empty ref
+   * reports empty. Dispatch resolves the bridge from this kind.
+   *
+   * @generated from field: string adapter = 23;
+   */
+  adapter = "";
+
   constructor(data?: PartialMessage<WorkerVersion>) {
     super();
     proto3.util.initPartial(data, this);
@@ -393,6 +404,7 @@ export class WorkerVersion extends Message<WorkerVersion> {
     { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerVersion {
