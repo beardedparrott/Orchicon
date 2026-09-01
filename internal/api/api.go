@@ -77,6 +77,11 @@ type Dependencies struct {
 	// tenant custom) for adapter-scoped model listing and legacy 2-segment
 	// inference (ADR-0003). nil falls back to the built-in catalog.
 	ModelRefRegistry adapter.ProviderRegistry
+	// AdapterKinds returns the adapter kinds registered with the Dispatcher
+	// (ADR-0004 D1) — the source of the model picker's adapter bubble tier.
+	// Injected as a func to avoid an api → scheduler import cycle; nil falls
+	// back to the default adapter kind.
+	AdapterKinds func() []string
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
 	// PostgresDSN is the Postgres connection string for backup/restore.
@@ -225,7 +230,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
 	// AIGatewayService (docs/07 §3.10).
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC
@@ -272,6 +277,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
+	askSvc.SetAdapterKinds(deps.AdapterKinds)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}

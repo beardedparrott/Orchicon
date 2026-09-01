@@ -31,6 +31,86 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ListAdapterKindsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAdapterKindsRequest) Reset() {
+	*x = ListAdapterKindsRequest{}
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAdapterKindsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAdapterKindsRequest) ProtoMessage() {}
+
+func (x *ListAdapterKindsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAdapterKindsRequest.ProtoReflect.Descriptor instead.
+func (*ListAdapterKindsRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{0}
+}
+
+type ListAdapterKindsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdapterKinds  []string               `protobuf:"bytes,1,rep,name=adapter_kinds,json=adapterKinds,proto3" json:"adapter_kinds,omitempty"` // registered adapter kinds, ordered + deduped
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAdapterKindsResponse) Reset() {
+	*x = ListAdapterKindsResponse{}
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAdapterKindsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAdapterKindsResponse) ProtoMessage() {}
+
+func (x *ListAdapterKindsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAdapterKindsResponse.ProtoReflect.Descriptor instead.
+func (*ListAdapterKindsResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ListAdapterKindsResponse) GetAdapterKinds() []string {
+	if x != nil {
+		return x.AdapterKinds
+	}
+	return nil
+}
+
 type ListOpenCodeModelsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      *string                `protobuf:"bytes,1,opt,name=provider,proto3,oneof" json:"provider,omitempty"` // filter by provider id (e.g. "anthropic", "opencode")
@@ -41,7 +121,7 @@ type ListOpenCodeModelsRequest struct {
 
 func (x *ListOpenCodeModelsRequest) Reset() {
 	*x = ListOpenCodeModelsRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -53,7 +133,7 @@ func (x *ListOpenCodeModelsRequest) String() string {
 func (*ListOpenCodeModelsRequest) ProtoMessage() {}
 
 func (x *ListOpenCodeModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -66,7 +146,7 @@ func (x *ListOpenCodeModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOpenCodeModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListOpenCodeModelsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{0}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ListOpenCodeModelsRequest) GetProvider() string {
@@ -92,7 +172,7 @@ type ListOpenCodeModelsResponse struct {
 
 func (x *ListOpenCodeModelsResponse) Reset() {
 	*x = ListOpenCodeModelsResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -104,7 +184,7 @@ func (x *ListOpenCodeModelsResponse) String() string {
 func (*ListOpenCodeModelsResponse) ProtoMessage() {}
 
 func (x *ListOpenCodeModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -117,7 +197,7 @@ func (x *ListOpenCodeModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOpenCodeModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListOpenCodeModelsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ListOpenCodeModelsResponse) GetModels() []*OpenCodeModel {
@@ -135,7 +215,7 @@ type ListOpenCodeMCPsRequest struct {
 
 func (x *ListOpenCodeMCPsRequest) Reset() {
 	*x = ListOpenCodeMCPsRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -147,7 +227,7 @@ func (x *ListOpenCodeMCPsRequest) String() string {
 func (*ListOpenCodeMCPsRequest) ProtoMessage() {}
 
 func (x *ListOpenCodeMCPsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -160,7 +240,7 @@ func (x *ListOpenCodeMCPsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOpenCodeMCPsRequest.ProtoReflect.Descriptor instead.
 func (*ListOpenCodeMCPsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{4}
 }
 
 type ListOpenCodeMCPsResponse struct {
@@ -172,7 +252,7 @@ type ListOpenCodeMCPsResponse struct {
 
 func (x *ListOpenCodeMCPsResponse) Reset() {
 	*x = ListOpenCodeMCPsResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -184,7 +264,7 @@ func (x *ListOpenCodeMCPsResponse) String() string {
 func (*ListOpenCodeMCPsResponse) ProtoMessage() {}
 
 func (x *ListOpenCodeMCPsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -197,7 +277,7 @@ func (x *ListOpenCodeMCPsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOpenCodeMCPsResponse.ProtoReflect.Descriptor instead.
 func (*ListOpenCodeMCPsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListOpenCodeMCPsResponse) GetServers() []*OpenCodeMCP {
@@ -208,14 +288,17 @@ func (x *ListOpenCodeMCPsResponse) GetServers() []*OpenCodeMCP {
 }
 
 type ListProvidersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional filter: scope the provider list to one adapter kind
+	// (e.g. "opencode", "claude", "orchicon"); empty = the full global list.
+	Adapter       *string `protobuf:"bytes,1,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListProvidersRequest) Reset() {
 	*x = ListProvidersRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -227,7 +310,7 @@ func (x *ListProvidersRequest) String() string {
 func (*ListProvidersRequest) ProtoMessage() {}
 
 func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -240,7 +323,14 @@ func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersRequest.ProtoReflect.Descriptor instead.
 func (*ListProvidersRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListProvidersRequest) GetAdapter() string {
+	if x != nil && x.Adapter != nil {
+		return *x.Adapter
+	}
+	return ""
 }
 
 type ListProvidersResponse struct {
@@ -252,7 +342,7 @@ type ListProvidersResponse struct {
 
 func (x *ListProvidersResponse) Reset() {
 	*x = ListProvidersResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -264,7 +354,7 @@ func (x *ListProvidersResponse) String() string {
 func (*ListProvidersResponse) ProtoMessage() {}
 
 func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -277,7 +367,7 @@ func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersResponse.ProtoReflect.Descriptor instead.
 func (*ListProvidersResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{5}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListProvidersResponse) GetProviders() []*AIProvider {
@@ -305,7 +395,7 @@ type GetUsageRequest struct {
 
 func (x *GetUsageRequest) Reset() {
 	*x = GetUsageRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -317,7 +407,7 @@ func (x *GetUsageRequest) String() string {
 func (*GetUsageRequest) ProtoMessage() {}
 
 func (x *GetUsageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -330,7 +420,7 @@ func (x *GetUsageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUsageRequest.ProtoReflect.Descriptor instead.
 func (*GetUsageRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{6}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetUsageRequest) GetTenantId() string {
@@ -413,7 +503,7 @@ type GetUsageResponse struct {
 
 func (x *GetUsageResponse) Reset() {
 	*x = GetUsageResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -425,7 +515,7 @@ func (x *GetUsageResponse) String() string {
 func (*GetUsageResponse) ProtoMessage() {}
 
 func (x *GetUsageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -438,7 +528,7 @@ func (x *GetUsageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUsageResponse.ProtoReflect.Descriptor instead.
 func (*GetUsageResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetUsageResponse) GetRecords() []*UsageRecord {
@@ -470,7 +560,7 @@ type GetCostRequest struct {
 
 func (x *GetCostRequest) Reset() {
 	*x = GetCostRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +572,7 @@ func (x *GetCostRequest) String() string {
 func (*GetCostRequest) ProtoMessage() {}
 
 func (x *GetCostRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +585,7 @@ func (x *GetCostRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCostRequest.ProtoReflect.Descriptor instead.
 func (*GetCostRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetCostRequest) GetTenantId() string {
@@ -557,7 +647,7 @@ type GetCostResponse struct {
 
 func (x *GetCostResponse) Reset() {
 	*x = GetCostResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -569,7 +659,7 @@ func (x *GetCostResponse) String() string {
 func (*GetCostResponse) ProtoMessage() {}
 
 func (x *GetCostResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -582,7 +672,7 @@ func (x *GetCostResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCostResponse.ProtoReflect.Descriptor instead.
 func (*GetCostResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{9}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetCostResponse) GetSummaries() []*CostSummary {
@@ -611,7 +701,7 @@ type StreamUsageEventsRequest struct {
 
 func (x *StreamUsageEventsRequest) Reset() {
 	*x = StreamUsageEventsRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -623,7 +713,7 @@ func (x *StreamUsageEventsRequest) String() string {
 func (*StreamUsageEventsRequest) ProtoMessage() {}
 
 func (x *StreamUsageEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +726,7 @@ func (x *StreamUsageEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamUsageEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamUsageEventsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StreamUsageEventsRequest) GetTenantId() string {
@@ -677,7 +767,7 @@ type StreamUsageEventsResponse struct {
 
 func (x *StreamUsageEventsResponse) Reset() {
 	*x = StreamUsageEventsResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -689,7 +779,7 @@ func (x *StreamUsageEventsResponse) String() string {
 func (*StreamUsageEventsResponse) ProtoMessage() {}
 
 func (x *StreamUsageEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -702,7 +792,7 @@ func (x *StreamUsageEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamUsageEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamUsageEventsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *StreamUsageEventsResponse) GetEvent() *UsageEvent {
@@ -730,7 +820,7 @@ type GetWorkflowCostsRequest struct {
 
 func (x *GetWorkflowCostsRequest) Reset() {
 	*x = GetWorkflowCostsRequest{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -742,7 +832,7 @@ func (x *GetWorkflowCostsRequest) String() string {
 func (*GetWorkflowCostsRequest) ProtoMessage() {}
 
 func (x *GetWorkflowCostsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -755,7 +845,7 @@ func (x *GetWorkflowCostsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowCostsRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowCostsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetWorkflowCostsRequest) GetWorkflowRunId() string {
@@ -788,7 +878,7 @@ type GetWorkflowCostsResponse struct {
 
 func (x *GetWorkflowCostsResponse) Reset() {
 	*x = GetWorkflowCostsResponse{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -800,7 +890,7 @@ func (x *GetWorkflowCostsResponse) String() string {
 func (*GetWorkflowCostsResponse) ProtoMessage() {}
 
 func (x *GetWorkflowCostsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -813,7 +903,7 @@ func (x *GetWorkflowCostsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowCostsResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowCostsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{13}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetWorkflowCostsResponse) GetWorkflows() []*WorkflowCostAggregate {
@@ -853,7 +943,7 @@ type WorkflowCostAggregate struct {
 
 func (x *WorkflowCostAggregate) Reset() {
 	*x = WorkflowCostAggregate{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -865,7 +955,7 @@ func (x *WorkflowCostAggregate) String() string {
 func (*WorkflowCostAggregate) ProtoMessage() {}
 
 func (x *WorkflowCostAggregate) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -878,7 +968,7 @@ func (x *WorkflowCostAggregate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowCostAggregate.ProtoReflect.Descriptor instead.
 func (*WorkflowCostAggregate) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{14}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WorkflowCostAggregate) GetWorkflowId() string {
@@ -997,7 +1087,7 @@ type WorkflowRunCost struct {
 
 func (x *WorkflowRunCost) Reset() {
 	*x = WorkflowRunCost{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1009,7 +1099,7 @@ func (x *WorkflowRunCost) String() string {
 func (*WorkflowRunCost) ProtoMessage() {}
 
 func (x *WorkflowRunCost) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1022,7 +1112,7 @@ func (x *WorkflowRunCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowRunCost.ProtoReflect.Descriptor instead.
 func (*WorkflowRunCost) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{15}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WorkflowRunCost) GetWorkflowRunId() string {
@@ -1138,7 +1228,7 @@ type WorkflowWorkerCost struct {
 
 func (x *WorkflowWorkerCost) Reset() {
 	*x = WorkflowWorkerCost{}
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1150,7 +1240,7 @@ func (x *WorkflowWorkerCost) String() string {
 func (*WorkflowWorkerCost) ProtoMessage() {}
 
 func (x *WorkflowWorkerCost) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1163,7 +1253,7 @@ func (x *WorkflowWorkerCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowWorkerCost.ProtoReflect.Descriptor instead.
 func (*WorkflowWorkerCost) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WorkflowWorkerCost) GetWorkerId() string {
@@ -1240,7 +1330,10 @@ var File_orchicon_api_v1_ai_gateway_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
-	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"t\n" +
+	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"\x19\n" +
+	"\x17ListAdapterKindsRequest\"?\n" +
+	"\x18ListAdapterKindsResponse\x12#\n" +
+	"\radapter_kinds\x18\x01 \x03(\tR\fadapterKinds\"t\n" +
 	"\x19ListOpenCodeModelsRequest\x12\x1f\n" +
 	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01\x12\x1d\n" +
 	"\aadapter\x18\x02 \x01(\tH\x01R\aadapter\x88\x01\x01B\v\n" +
@@ -1251,8 +1344,11 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\x06models\x18\x01 \x03(\v2\x1e.orchicon.api.v1.OpenCodeModelR\x06models\"\x19\n" +
 	"\x17ListOpenCodeMCPsRequest\"R\n" +
 	"\x18ListOpenCodeMCPsResponse\x126\n" +
-	"\aservers\x18\x01 \x03(\v2\x1c.orchicon.api.v1.OpenCodeMCPR\aservers\"\x16\n" +
-	"\x14ListProvidersRequest\"R\n" +
+	"\aservers\x18\x01 \x03(\v2\x1c.orchicon.api.v1.OpenCodeMCPR\aservers\"A\n" +
+	"\x14ListProvidersRequest\x12\x1d\n" +
+	"\aadapter\x18\x01 \x01(\tH\x00R\aadapter\x88\x01\x01B\n" +
+	"\n" +
+	"\b_adapter\"R\n" +
 	"\x15ListProvidersResponse\x129\n" +
 	"\tproviders\x18\x01 \x03(\v2\x1b.orchicon.api.v1.AIProviderR\tproviders\"\xd7\x02\n" +
 	"\x0fGetUsageRequest\x12\x1b\n" +
@@ -1346,8 +1442,9 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\x11cache_read_tokens\x18\b \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\t \x01(\x03R\x10cacheWriteTokens\x12)\n" +
 	"\x10reasoning_tokens\x18\n" +
-	" \x01(\x03R\x0freasoningTokens2\xc0\x05\n" +
-	"\x10AIGatewayService\x12^\n" +
+	" \x01(\x03R\x0freasoningTokens2\xa9\x06\n" +
+	"\x10AIGatewayService\x12g\n" +
+	"\x10ListAdapterKinds\x12(.orchicon.api.v1.ListAdapterKindsRequest\x1a).orchicon.api.v1.ListAdapterKindsResponse\x12^\n" +
 	"\rListProviders\x12%.orchicon.api.v1.ListProvidersRequest\x1a&.orchicon.api.v1.ListProvidersResponse\x12m\n" +
 	"\x12ListOpenCodeModels\x12*.orchicon.api.v1.ListOpenCodeModelsRequest\x1a+.orchicon.api.v1.ListOpenCodeModelsResponse\x12g\n" +
 	"\x10ListOpenCodeMCPs\x12(.orchicon.api.v1.ListOpenCodeMCPsRequest\x1a).orchicon.api.v1.ListOpenCodeMCPsResponse\x12O\n" +
@@ -1369,70 +1466,74 @@ func file_orchicon_api_v1_ai_gateway_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_ai_gateway_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_ai_gateway_service_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_orchicon_api_v1_ai_gateway_service_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_orchicon_api_v1_ai_gateway_service_proto_goTypes = []any{
-	(*ListOpenCodeModelsRequest)(nil),  // 0: orchicon.api.v1.ListOpenCodeModelsRequest
-	(*ListOpenCodeModelsResponse)(nil), // 1: orchicon.api.v1.ListOpenCodeModelsResponse
-	(*ListOpenCodeMCPsRequest)(nil),    // 2: orchicon.api.v1.ListOpenCodeMCPsRequest
-	(*ListOpenCodeMCPsResponse)(nil),   // 3: orchicon.api.v1.ListOpenCodeMCPsResponse
-	(*ListProvidersRequest)(nil),       // 4: orchicon.api.v1.ListProvidersRequest
-	(*ListProvidersResponse)(nil),      // 5: orchicon.api.v1.ListProvidersResponse
-	(*GetUsageRequest)(nil),            // 6: orchicon.api.v1.GetUsageRequest
-	(*GetUsageResponse)(nil),           // 7: orchicon.api.v1.GetUsageResponse
-	(*GetCostRequest)(nil),             // 8: orchicon.api.v1.GetCostRequest
-	(*GetCostResponse)(nil),            // 9: orchicon.api.v1.GetCostResponse
-	(*StreamUsageEventsRequest)(nil),   // 10: orchicon.api.v1.StreamUsageEventsRequest
-	(*StreamUsageEventsResponse)(nil),  // 11: orchicon.api.v1.StreamUsageEventsResponse
-	(*GetWorkflowCostsRequest)(nil),    // 12: orchicon.api.v1.GetWorkflowCostsRequest
-	(*GetWorkflowCostsResponse)(nil),   // 13: orchicon.api.v1.GetWorkflowCostsResponse
-	(*WorkflowCostAggregate)(nil),      // 14: orchicon.api.v1.WorkflowCostAggregate
-	(*WorkflowRunCost)(nil),            // 15: orchicon.api.v1.WorkflowRunCost
-	(*WorkflowWorkerCost)(nil),         // 16: orchicon.api.v1.WorkflowWorkerCost
-	(*OpenCodeModel)(nil),              // 17: orchicon.api.v1.OpenCodeModel
-	(*OpenCodeMCP)(nil),                // 18: orchicon.api.v1.OpenCodeMCP
-	(*AIProvider)(nil),                 // 19: orchicon.api.v1.AIProvider
-	(*timestamppb.Timestamp)(nil),      // 20: google.protobuf.Timestamp
-	(*UsageRecord)(nil),                // 21: orchicon.api.v1.UsageRecord
-	(UsageRollup)(0),                   // 22: orchicon.api.v1.UsageRollup
-	(*CostSummary)(nil),                // 23: orchicon.api.v1.CostSummary
-	(*UsageEvent)(nil),                 // 24: orchicon.api.v1.UsageEvent
+	(*ListAdapterKindsRequest)(nil),    // 0: orchicon.api.v1.ListAdapterKindsRequest
+	(*ListAdapterKindsResponse)(nil),   // 1: orchicon.api.v1.ListAdapterKindsResponse
+	(*ListOpenCodeModelsRequest)(nil),  // 2: orchicon.api.v1.ListOpenCodeModelsRequest
+	(*ListOpenCodeModelsResponse)(nil), // 3: orchicon.api.v1.ListOpenCodeModelsResponse
+	(*ListOpenCodeMCPsRequest)(nil),    // 4: orchicon.api.v1.ListOpenCodeMCPsRequest
+	(*ListOpenCodeMCPsResponse)(nil),   // 5: orchicon.api.v1.ListOpenCodeMCPsResponse
+	(*ListProvidersRequest)(nil),       // 6: orchicon.api.v1.ListProvidersRequest
+	(*ListProvidersResponse)(nil),      // 7: orchicon.api.v1.ListProvidersResponse
+	(*GetUsageRequest)(nil),            // 8: orchicon.api.v1.GetUsageRequest
+	(*GetUsageResponse)(nil),           // 9: orchicon.api.v1.GetUsageResponse
+	(*GetCostRequest)(nil),             // 10: orchicon.api.v1.GetCostRequest
+	(*GetCostResponse)(nil),            // 11: orchicon.api.v1.GetCostResponse
+	(*StreamUsageEventsRequest)(nil),   // 12: orchicon.api.v1.StreamUsageEventsRequest
+	(*StreamUsageEventsResponse)(nil),  // 13: orchicon.api.v1.StreamUsageEventsResponse
+	(*GetWorkflowCostsRequest)(nil),    // 14: orchicon.api.v1.GetWorkflowCostsRequest
+	(*GetWorkflowCostsResponse)(nil),   // 15: orchicon.api.v1.GetWorkflowCostsResponse
+	(*WorkflowCostAggregate)(nil),      // 16: orchicon.api.v1.WorkflowCostAggregate
+	(*WorkflowRunCost)(nil),            // 17: orchicon.api.v1.WorkflowRunCost
+	(*WorkflowWorkerCost)(nil),         // 18: orchicon.api.v1.WorkflowWorkerCost
+	(*OpenCodeModel)(nil),              // 19: orchicon.api.v1.OpenCodeModel
+	(*OpenCodeMCP)(nil),                // 20: orchicon.api.v1.OpenCodeMCP
+	(*AIProvider)(nil),                 // 21: orchicon.api.v1.AIProvider
+	(*timestamppb.Timestamp)(nil),      // 22: google.protobuf.Timestamp
+	(*UsageRecord)(nil),                // 23: orchicon.api.v1.UsageRecord
+	(UsageRollup)(0),                   // 24: orchicon.api.v1.UsageRollup
+	(*CostSummary)(nil),                // 25: orchicon.api.v1.CostSummary
+	(*UsageEvent)(nil),                 // 26: orchicon.api.v1.UsageEvent
 }
 var file_orchicon_api_v1_ai_gateway_service_proto_depIdxs = []int32{
-	17, // 0: orchicon.api.v1.ListOpenCodeModelsResponse.models:type_name -> orchicon.api.v1.OpenCodeModel
-	18, // 1: orchicon.api.v1.ListOpenCodeMCPsResponse.servers:type_name -> orchicon.api.v1.OpenCodeMCP
-	19, // 2: orchicon.api.v1.ListProvidersResponse.providers:type_name -> orchicon.api.v1.AIProvider
-	20, // 3: orchicon.api.v1.GetUsageRequest.start:type_name -> google.protobuf.Timestamp
-	20, // 4: orchicon.api.v1.GetUsageRequest.end:type_name -> google.protobuf.Timestamp
-	21, // 5: orchicon.api.v1.GetUsageResponse.records:type_name -> orchicon.api.v1.UsageRecord
-	22, // 6: orchicon.api.v1.GetCostRequest.rollup:type_name -> orchicon.api.v1.UsageRollup
-	20, // 7: orchicon.api.v1.GetCostRequest.start:type_name -> google.protobuf.Timestamp
-	20, // 8: orchicon.api.v1.GetCostRequest.end:type_name -> google.protobuf.Timestamp
-	23, // 9: orchicon.api.v1.GetCostResponse.summaries:type_name -> orchicon.api.v1.CostSummary
-	23, // 10: orchicon.api.v1.GetCostResponse.total:type_name -> orchicon.api.v1.CostSummary
-	24, // 11: orchicon.api.v1.StreamUsageEventsResponse.event:type_name -> orchicon.api.v1.UsageEvent
-	20, // 12: orchicon.api.v1.GetWorkflowCostsRequest.start:type_name -> google.protobuf.Timestamp
-	20, // 13: orchicon.api.v1.GetWorkflowCostsRequest.end:type_name -> google.protobuf.Timestamp
-	14, // 14: orchicon.api.v1.GetWorkflowCostsResponse.workflows:type_name -> orchicon.api.v1.WorkflowCostAggregate
-	15, // 15: orchicon.api.v1.WorkflowCostAggregate.runs:type_name -> orchicon.api.v1.WorkflowRunCost
-	20, // 16: orchicon.api.v1.WorkflowCostAggregate.finished_at:type_name -> google.protobuf.Timestamp
-	16, // 17: orchicon.api.v1.WorkflowRunCost.workers:type_name -> orchicon.api.v1.WorkflowWorkerCost
-	20, // 18: orchicon.api.v1.WorkflowRunCost.finished_at:type_name -> google.protobuf.Timestamp
-	4,  // 19: orchicon.api.v1.AIGatewayService.ListProviders:input_type -> orchicon.api.v1.ListProvidersRequest
-	0,  // 20: orchicon.api.v1.AIGatewayService.ListOpenCodeModels:input_type -> orchicon.api.v1.ListOpenCodeModelsRequest
-	2,  // 21: orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs:input_type -> orchicon.api.v1.ListOpenCodeMCPsRequest
-	6,  // 22: orchicon.api.v1.AIGatewayService.GetUsage:input_type -> orchicon.api.v1.GetUsageRequest
-	8,  // 23: orchicon.api.v1.AIGatewayService.GetCost:input_type -> orchicon.api.v1.GetCostRequest
-	10, // 24: orchicon.api.v1.AIGatewayService.StreamUsageEvents:input_type -> orchicon.api.v1.StreamUsageEventsRequest
-	12, // 25: orchicon.api.v1.AIGatewayService.GetWorkflowCosts:input_type -> orchicon.api.v1.GetWorkflowCostsRequest
-	5,  // 26: orchicon.api.v1.AIGatewayService.ListProviders:output_type -> orchicon.api.v1.ListProvidersResponse
-	1,  // 27: orchicon.api.v1.AIGatewayService.ListOpenCodeModels:output_type -> orchicon.api.v1.ListOpenCodeModelsResponse
-	3,  // 28: orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs:output_type -> orchicon.api.v1.ListOpenCodeMCPsResponse
-	7,  // 29: orchicon.api.v1.AIGatewayService.GetUsage:output_type -> orchicon.api.v1.GetUsageResponse
-	9,  // 30: orchicon.api.v1.AIGatewayService.GetCost:output_type -> orchicon.api.v1.GetCostResponse
-	11, // 31: orchicon.api.v1.AIGatewayService.StreamUsageEvents:output_type -> orchicon.api.v1.StreamUsageEventsResponse
-	13, // 32: orchicon.api.v1.AIGatewayService.GetWorkflowCosts:output_type -> orchicon.api.v1.GetWorkflowCostsResponse
-	26, // [26:33] is the sub-list for method output_type
-	19, // [19:26] is the sub-list for method input_type
+	19, // 0: orchicon.api.v1.ListOpenCodeModelsResponse.models:type_name -> orchicon.api.v1.OpenCodeModel
+	20, // 1: orchicon.api.v1.ListOpenCodeMCPsResponse.servers:type_name -> orchicon.api.v1.OpenCodeMCP
+	21, // 2: orchicon.api.v1.ListProvidersResponse.providers:type_name -> orchicon.api.v1.AIProvider
+	22, // 3: orchicon.api.v1.GetUsageRequest.start:type_name -> google.protobuf.Timestamp
+	22, // 4: orchicon.api.v1.GetUsageRequest.end:type_name -> google.protobuf.Timestamp
+	23, // 5: orchicon.api.v1.GetUsageResponse.records:type_name -> orchicon.api.v1.UsageRecord
+	24, // 6: orchicon.api.v1.GetCostRequest.rollup:type_name -> orchicon.api.v1.UsageRollup
+	22, // 7: orchicon.api.v1.GetCostRequest.start:type_name -> google.protobuf.Timestamp
+	22, // 8: orchicon.api.v1.GetCostRequest.end:type_name -> google.protobuf.Timestamp
+	25, // 9: orchicon.api.v1.GetCostResponse.summaries:type_name -> orchicon.api.v1.CostSummary
+	25, // 10: orchicon.api.v1.GetCostResponse.total:type_name -> orchicon.api.v1.CostSummary
+	26, // 11: orchicon.api.v1.StreamUsageEventsResponse.event:type_name -> orchicon.api.v1.UsageEvent
+	22, // 12: orchicon.api.v1.GetWorkflowCostsRequest.start:type_name -> google.protobuf.Timestamp
+	22, // 13: orchicon.api.v1.GetWorkflowCostsRequest.end:type_name -> google.protobuf.Timestamp
+	16, // 14: orchicon.api.v1.GetWorkflowCostsResponse.workflows:type_name -> orchicon.api.v1.WorkflowCostAggregate
+	17, // 15: orchicon.api.v1.WorkflowCostAggregate.runs:type_name -> orchicon.api.v1.WorkflowRunCost
+	22, // 16: orchicon.api.v1.WorkflowCostAggregate.finished_at:type_name -> google.protobuf.Timestamp
+	18, // 17: orchicon.api.v1.WorkflowRunCost.workers:type_name -> orchicon.api.v1.WorkflowWorkerCost
+	22, // 18: orchicon.api.v1.WorkflowRunCost.finished_at:type_name -> google.protobuf.Timestamp
+	0,  // 19: orchicon.api.v1.AIGatewayService.ListAdapterKinds:input_type -> orchicon.api.v1.ListAdapterKindsRequest
+	6,  // 20: orchicon.api.v1.AIGatewayService.ListProviders:input_type -> orchicon.api.v1.ListProvidersRequest
+	2,  // 21: orchicon.api.v1.AIGatewayService.ListOpenCodeModels:input_type -> orchicon.api.v1.ListOpenCodeModelsRequest
+	4,  // 22: orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs:input_type -> orchicon.api.v1.ListOpenCodeMCPsRequest
+	8,  // 23: orchicon.api.v1.AIGatewayService.GetUsage:input_type -> orchicon.api.v1.GetUsageRequest
+	10, // 24: orchicon.api.v1.AIGatewayService.GetCost:input_type -> orchicon.api.v1.GetCostRequest
+	12, // 25: orchicon.api.v1.AIGatewayService.StreamUsageEvents:input_type -> orchicon.api.v1.StreamUsageEventsRequest
+	14, // 26: orchicon.api.v1.AIGatewayService.GetWorkflowCosts:input_type -> orchicon.api.v1.GetWorkflowCostsRequest
+	1,  // 27: orchicon.api.v1.AIGatewayService.ListAdapterKinds:output_type -> orchicon.api.v1.ListAdapterKindsResponse
+	7,  // 28: orchicon.api.v1.AIGatewayService.ListProviders:output_type -> orchicon.api.v1.ListProvidersResponse
+	3,  // 29: orchicon.api.v1.AIGatewayService.ListOpenCodeModels:output_type -> orchicon.api.v1.ListOpenCodeModelsResponse
+	5,  // 30: orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs:output_type -> orchicon.api.v1.ListOpenCodeMCPsResponse
+	9,  // 31: orchicon.api.v1.AIGatewayService.GetUsage:output_type -> orchicon.api.v1.GetUsageResponse
+	11, // 32: orchicon.api.v1.AIGatewayService.GetCost:output_type -> orchicon.api.v1.GetCostResponse
+	13, // 33: orchicon.api.v1.AIGatewayService.StreamUsageEvents:output_type -> orchicon.api.v1.StreamUsageEventsResponse
+	15, // 34: orchicon.api.v1.AIGatewayService.GetWorkflowCosts:output_type -> orchicon.api.v1.GetWorkflowCostsResponse
+	27, // [27:35] is the sub-list for method output_type
+	19, // [19:27] is the sub-list for method input_type
 	19, // [19:19] is the sub-list for extension type_name
 	19, // [19:19] is the sub-list for extension extendee
 	0,  // [0:19] is the sub-list for field type_name
@@ -1444,15 +1545,16 @@ func file_orchicon_api_v1_ai_gateway_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_ai_gateway_proto_init()
-	file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[0].OneofWrappers = []any{}
-	file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[10].OneofWrappers = []any{}
+	file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[2].OneofWrappers = []any{}
+	file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[6].OneofWrappers = []any{}
+	file_orchicon_api_v1_ai_gateway_service_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ai_gateway_service_proto_rawDesc), len(file_orchicon_api_v1_ai_gateway_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
