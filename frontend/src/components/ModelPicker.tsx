@@ -140,16 +140,6 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     if (!models || !parsed) return null;
     return models.find((m) => catalogModelMatches(parsed, m)) ?? null;
   }, [models, parsed]);
-  // No selection yet → the panel MUST be open (the picker's entry point is
-  // the in-box panel; a closed panel with nothing selected would leave
-  // only the search input, and an orchicon flow without a provider has no
-  // model list to interact with — QA round 3 dead-end class). Declared
-  // AFTER selectedModel (temporal-dead-zone: effects close over it).
-  useEffect(() => {
-    if (!showDropdown && value.trim() === "" && !selectedModel) {
-      setShowDropdown(true);
-    }
-  }, [showDropdown, value, selectedModel]);
 
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
@@ -358,6 +348,13 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           closed state shows the selected ref; clicking opens the panel with
           search → adapter pills → provider pills → model list. The outside-
           click effect closes it (inputRef + dropdownRef cover both). */}
+      {/* Closed state: the selected ref as a clickable trigger (no auto-open
+          anywhere — QA round 3: an auto-open effect fought the user on the
+          settings Defaults tab, flash-opening the panel over the review
+          banner on every mount). When nothing is selected the INPUT is the
+          closed state: always enabled, clicking/focusing opens the panel —
+          no dead end (the QA round 3 orchicon trap is covered by the input
+          being clickable, not by forcing the panel open). */}
       {selectedModel && !showDropdown ? (
         <div
           className="flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-muted/50"
