@@ -103,8 +103,8 @@ func TestSourcingProbeFailureIsDegraded(t *testing.T) {
 	if len(res.Models) != 1 || res.Models[0].ID != "local-model" {
 		t.Fatalf("manual entries must survive probe failure: %#v", res.Models)
 	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "degraded") {
-		t.Fatalf("degradation must be logged: %v", logs)
+	if len(logs) == 0 || !strings.Contains(logs[0], "degraded") || !strings.Contains(logs[0], "NO models served") {
+		t.Fatalf("degradation must be logged with the no-fallback directive: %v", logs)
 	}
 }
 

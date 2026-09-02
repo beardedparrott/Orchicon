@@ -96,8 +96,15 @@ func TestCustomProfileLoader(t *testing.T) {
 		t.Fatal("nil provider")
 	}
 	// No credential required (no AuthEnv/AuthSecretRef) → auth-less client.
-	if _, err := p.ListModels(context.Background()); err != nil {
+	// Runtime ListModels is NON-FATAL on probe failure (chat never needs
+	// the models list): an unreachable endpoint yields an EMPTY list with
+	// a warn — never a synthesized fallback, never an error.
+	ms, err := p.ListModels(context.Background())
+	if err != nil {
 		t.Fatalf("list models: %v", err)
+	}
+	if len(ms) != 0 {
+		t.Fatalf("no synthesized fallback at runtime: %#v", ms)
 	}
 }
 

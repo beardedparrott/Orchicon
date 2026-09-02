@@ -103,8 +103,16 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		// to "" (Ollama, local servers).
 		bearer, _ := r.creds.Resolve(ctx, tenantID, p) //nolint:errcheck // probe stays non-fatal without a credential
 		res := r.src.ListModels(ctx, p, bearer)
-		if res.Degraded && len(res.Models) == 0 {
-			return nil, fmt.Errorf("sourcing: probe failed for provider %q — no models available (check endpoint/token)", p.ID)
+		if res.Degraded {
+			// Runtime model metadata stays NON-FATAL: chat never needs the
+			// models list, and compaction "must not guess" already handles
+			// missing hints — failing a worker turn because /models
+			// hiccuped would be worse than an empty list. The honest
+			// "works or it doesn't" signal lives at the UI surface
+			// (settings eyeball + picker: empty list + degraded state).
+			// NO synthesized fallback is served either way (operator
+			// directive).
+			r.warnLog("sourcing: probe failed for provider %q — no models available to runtime clients (check endpoint/token)", p.ID)
 		}
 		return res.Models, nil
 	}

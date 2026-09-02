@@ -97,7 +97,7 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 		probed, ok := s.probe(ctx, key, p, auth)
 		if !ok {
 			degraded = true
-			s.warn("sourcing: probe failed for provider %s — NO models served (no synthesized fallback); fix the endpoint/token or add manual entries", p.ID)
+			s.warn("sourcing: probe failed for provider %s — degraded, NO models served (no synthesized fallback); fix the endpoint/token or add manual entries", p.ID)
 		} else {
 			out = append(out, probed...)
 			// Catalog = metadata enrichment by id match (context/output/
