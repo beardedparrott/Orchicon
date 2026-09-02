@@ -354,44 +354,55 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 }
 
-// TestSeedVisionWorkersCarryPlaywright: the Vision canned workers must
-// carry the Playwright visual-verification block and the current safety
-// marker, and — after the git-neutral change — must NOT carry hardcoded
-// branch-workflow guidance in their AGENTS.md (per-run prompt blocks keyed on
-// worktree_status provide it instead).
-func TestSeedVisionWorkersCarryPlaywright(t *testing.T) {
+// TestSeedVisionWorkersAreRetired: the Vision canned workers (SSE/Architect/
+// QA) were retired 2026-09-02 — visual UI verification moved into the base
+// QA Engineer via the Playwright block. After seeding, the seeder must have
+// DELETED any still-seed-managed Vision worker (they carry the seed safety
+// marker), so no Vision worker remains at all.
+func TestSeedVisionWorkersAreRetired(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	for _, canned := range []struct{ id string }{
-		{"w_se_sse_vision"},
-		{"w_se_architect_vision"},
-		{"w_se_qa_vision"},
-	} {
-		if err := db.SeedDevWorkers(ctx, pool); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-		var agents string
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, id := range []string{"w_se_sse_vision", "w_se_architect_vision", "w_se_qa_vision"} {
+		var exists bool
 		if err := pool.QueryRow(ctx,
-			`SELECT agents_md FROM worker_versions
-			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			canned.id).Scan(&agents); err != nil {
-			t.Fatalf("query %s: %v", canned.id, err)
+			`SELECT EXISTS (SELECT 1 FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev')`, id,
+		).Scan(&exists); err != nil {
+			t.Fatalf("query %s: %v", id, err)
 		}
-		for _, want := range []string{
-			"Browser automation (Playwright) — VISUAL verification",
-			"read the screenshot back with your Read tool",
-			"orchicon.safety=v22",
-		} {
-			if !strings.Contains(agents, want) {
-				t.Errorf("%s agents_md missing %q", canned.id, want)
-			}
+		if exists {
+			t.Errorf("retired Vision worker %s must be deleted by the seeder, still exists", id)
 		}
-		// Git-neutral: no hardcoded branch-workflow guidance in AGENTS.md.
-		for _, forbid := range []string{"Git workflow", "Git awareness", "integration branch where all work lands"} {
-			if strings.Contains(agents, forbid) {
-				t.Errorf("%s agents_md must be git-neutral (no %q) so non-repo runs aren't told a branch exists", canned.id, forbid)
-			}
+	}
+}
+
+// TestSeedBaseQACarriesPlaywright: the base QA Engineer absorbed the Vision
+// workers' role — it must carry the Playwright visual-verification block and
+// the current safety marker at its current published version.
+func TestSeedBaseQACarriesPlaywright(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		"w_se_qa_engineer").Scan(&agents); err != nil {
+		t.Fatalf("query QA agents: %v", err)
+	}
+	for _, want := range []string{
+		"Browser automation (Playwright) — VISUAL verification",
+		"read the screenshot back with your Read tool",
+		"orchicon.safety=v22",
+	} {
+		if !strings.Contains(agents, want) {
+			t.Errorf("base QA agents_md missing %q", want)
 		}
 	}
 }
@@ -425,49 +436,43 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v22)")
 	}
 }
-
-// TestSeedVisionWorkersAreFullStack: the Vision canned workers are copies of
-// their non-UI counterparts (senior SSE, principal architect, QA engineer) —
-// they must NOT carry the old UI-only specialist identity that gated them out
-// of backend work (the "UI Developer"-style limiting framing is retired along
-// with the UI workers).
-func TestSeedVisionWorkersAreFullStack(t *testing.T) {
+// TestSeedSDLCWorkersAreTimeBoxedWorkhorses: the four SDLC workers (SSE,
+// PR Reviewer, QA, Architect) carry the workhorse contract — hard time-box
+// in the prompt, the roll-forward marker, and the per-worker wall-clock
+// budget fence (~33% grace over the box) in budget_overrides.
+func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	for _, canned := range []struct{ id string }{
-		{"w_se_sse_vision"},
-		{"w_se_architect_vision"},
-		{"w_se_qa_vision"},
-	} {
-		if err := db.SeedDevWorkers(ctx, pool); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-		var role, skills, agents string
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	want := map[string]struct {
+		box    string
+		budget string
+	}{
+		"w_se_principal_architect":        {"Hard time-box: 20 minutes", `{"wall_clock_seconds":1500}`},
+		"w_se_senior_software_engineer":   {"Hard time-box: 45 minutes", `{"wall_clock_seconds":3600}`},
+		"w_se_pr_reviewer":                {"Hard time-box: 30 minutes", `{"wall_clock_seconds":2400}`},
+		"w_se_qa_engineer":                {"Hard time-box: 30 minutes", `{"wall_clock_seconds":2400}`},
+	}
+	for id, tc := range want {
+		var agents, budget string
 		if err := pool.QueryRow(ctx,
-			`SELECT role, skills, agents_md FROM worker_versions
+			`SELECT agents_md, budget_overrides::text FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			canned.id).Scan(&role, &skills, &agents); err != nil {
-			t.Fatalf("query %s: %v", canned.id, err)
+			id).Scan(&agents, &budget); err != nil {
+			t.Fatalf("query %s: %v", id, err)
 		}
-		blob := role + "\n" + skills + "\n" + agents
-
-		// The old limiting identity is gone.
-		for _, gone := range []string{
-			"specializes in UI",
-			"specialist is UI",
-			"whose specialty is UI",
-			"specialize in UI/UX",
-			"you also happen to be",
-			"a developer first",
-			"an architect first",
-			"a QA engineer first",
-		} {
-			if strings.Contains(strings.ToLower(blob), strings.ToLower(gone)) {
-				t.Errorf("%s seed still carries limiting UI-only identity %q", canned.id, gone)
-			}
+		if !strings.Contains(agents, tc.box) {
+			t.Errorf("%s agents_md missing %q", id, tc.box)
 		}
-		// model_ref is wiped — workers fall back to the tenant default_worker_model.
+		if !strings.Contains(agents, "orchicon.safety=v22") {
+			t.Errorf("%s agents_md missing the safety marker", id)
+		}
+		if budget != tc.budget {
+			t.Errorf("%s budget_overrides = %s, want %s", id, budget, tc.budget)
+		}
 	}
 }
 
