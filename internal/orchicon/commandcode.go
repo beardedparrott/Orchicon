@@ -52,12 +52,14 @@ func (c *CommandCodeClient) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true, ReasoningEfforts: true}
 }
 
-// ListModels resolves through the sourcing service (catalog-backed).
+// ListModels resolves through the sourcing service. NO catalog fallback:
+// per the no-synthesized-models directive, a failed sourcing probe yields
+// no models — never the vendored snapshot.
 func (c *CommandCodeClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
 	}
-	return catalogListByProvider("commandcode"), nil
+	return nil, fmt.Errorf("commandcode: model sourcing not wired for this client")
 }
 
 func (c *CommandCodeClient) getenv(k string) string {

@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	refOrchiconOK  = "orchicon/command-code/deepseek/deepseek-v4-flash"
-	refOrchiconBad = "orchicon/anthropic/m" // anthropic is not an orchicon provider
+	refOrchiconOK  = "orchicon/commandcode/deepseek/deepseek-v4-flash"
+	refOrchiconBad = "orchicon/mystery/m" // mystery is not an orchicon provider
 )
 
 // adapterStrPtr returns a pointer to s (proto3 optional string fields).
@@ -83,7 +83,7 @@ func TestUpdateWorkerVersionRefOnlyAdapterChangeInvalidPair(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("invalid-pair adapter change: err = %v, want InvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "command-code") {
+	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "commandcode") {
 		t.Fatalf("invalid-pair error not actionable: %v", err)
 	}
 }

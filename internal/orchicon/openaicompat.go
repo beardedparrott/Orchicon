@@ -41,12 +41,14 @@ func (c *OpenAICompatClient) Capabilities() Capabilities {
 	}
 }
 
-// ListModels resolves through the sourcing service.
+// ListModels resolves through the sourcing service. NO catalog fallback:
+// per the no-synthesized-models directive, a failed sourcing probe yields
+// no models — never the vendored snapshot.
 func (c *OpenAICompatClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
 	}
-	return catalogListByProvider(c.ProviderID), nil
+	return nil, fmt.Errorf("%s: model sourcing not wired for this client", c.ProviderID)
 }
 
 // --- request wire types -----------------------------------------------------

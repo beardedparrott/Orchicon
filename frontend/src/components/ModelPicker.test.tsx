@@ -6,16 +6,21 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("renders three tiers: adapter bubbles, provider list, searchable model list", () => {
-    // Tier 1 — adapter bubble list from registered kinds.
-    expect(src).toContain("useListAdapterKinds");
-    expect(src).toMatch(/rounded-full border px-3 py-1/);
-    // Tier 2 — provider list from the tenant-aware providers service
+    // ALL THREE TIERS LIVE INSIDE ONE BOX (operator UX directive): the
+    // closed state shows the selected ref; the open panel contains the
+    // search input, adapter pills, provider pills, and the model list.
+    expect(src).toContain("ALL THREE TIERS LIVE INSIDE ONE BOX");
+    expect(src).toMatch(/rounded-full border px-3 py-1/); // adapter pills (in-box)
+    expect(src).toContain("Search models...");
+    // Tier 2 — provider pills from the tenant-aware providers service
     // (ADR-0006: built-ins ⊕ enabled tenant customs, auto-refresh on save).
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
-    expect(src).toContain("useListOpenCodeModels(adapter, provider)");
-    expect(src).toMatch(/Search models\.\.\./);
+    // Per-adapter data source (ADR-0004): native → providers service,
+    // legacy CLI adapters → opencode-CLI discovery.
+    expect(src).toContain("useProviderModelsForPicker");
+    expect(src).toContain("useListOpenCodeModels(");
   });
 
   it("scopes provider list by adapter and model list by provider (stale-selection guard)", () => {
@@ -29,11 +34,14 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("scopes the merged provider tier to the selected adapter (ProviderRegistry semantics)", () => {
     // The merged providers list is tenant-wide; the tier filters it to the
-    // selected adapter's provider set (legacy kinds from the catalog mirror,
-    // orchicon = full union). Regression guard: tier 2 must never render the
-    // whole tenant union under a legacy adapter kind.
-    expect(src).toContain("LEGACY_ADAPTER_PROVIDER_IDS");
-    expect(src).toContain("scopedIds");
+    // selected adapter's provider set (legacy kinds: pills derived from the
+    // live CLI discovery's distinct providerID values with an All reset —
+    // optional filters, never a gate; orchicon = the merged providers
+    // service view, which gates its model tier). Regression guard: the
+    // legacy tier must never render a static hardcoded set — it must
+    // auto-pull from the same discovery the model tier uses.
+    expect(src).toContain("legacyModelsQ");
+    expect(src).toContain("All");
     expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
   });
 
@@ -44,13 +52,12 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toContain("Manage in Settings → Adapters");
   });
 
-  it("annotates models missing context/output hints but keeps them selectable", () => {
+  it("annotates models missing the context hint but keeps them selectable", () => {
     expect(src).toContain("missingHints");
-    expect(src).toContain("no context/output hint — may misbehave in compaction");
-    // Either hint missing counts (AC says context/output, not all-three).
-    expect(src).toMatch(
-      /!model\.limits \|\| !model\.limits\.context \|\| !model\.limits\.output/,
-    );
+    // Context is the compaction-critical hint; output-max is not
+    // warning-worthy (live /models listings rarely carry it).
+    expect(src).toMatch(/!model\.limits \|\| !model\.limits\.context/);
+    expect(src).not.toMatch(/!model\.limits\.output/);
   });
 
   it("matches catalog models by parsed segments, not raw value (QA BUG-1)", () => {

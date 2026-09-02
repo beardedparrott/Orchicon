@@ -26,7 +26,7 @@ export const usageKeys = {
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
 
-export function useListOpenCodeModels(adapter?: string, provider?: string) {
+export function useListOpenCodeModels(adapter?: string, provider?: string, enabled = true) {
   return useQuery({
     queryKey: [...usageKeys.models, adapter ?? "", provider ?? ""],
     queryFn: async () => {
@@ -37,6 +37,7 @@ export function useListOpenCodeModels(adapter?: string, provider?: string) {
       return (res.models ?? []) as OpenCodeModel[];
     },
     staleTime: 5 * 60 * 1000, // 5 min cache — models don't change often
+    enabled,
   });
 }
 

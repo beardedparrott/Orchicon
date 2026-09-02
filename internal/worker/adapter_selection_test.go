@@ -92,14 +92,16 @@ func TestValidateAdapterChange(t *testing.T) {
 		t.Fatalf("legacy to 3-seg same adapter = %v; want nil", err)
 	}
 	// Adapter change to a valid provider/model pair passes.
-	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/command-code/deepseek/deepseek-v4-flash"); err != nil {
+	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/commandcode/deepseek/deepseek-v4-flash"); err != nil {
 		t.Fatalf("opencode to orchicon valid pair = %v; want nil", err)
 	}
-	// Adapter change keeping an opencode-only provider is rejected with an
-	// actionable error naming the new kind's valid providers.
-	err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/anthropic/m")
-	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "command-code") {
-		t.Fatalf("opencode to orchicon with opencode-only provider = %v; want error naming orchicon providers", err)
+	// Adapter change keeping a provider unknown for the new kind is
+	// rejected with an actionable error naming the new kind's valid
+	// providers (the native bridge serves every built-in profile, so an
+	// unknown id like "mystery" is the invalid-pair case).
+	err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/mystery/m")
+	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "commandcode") {
+		t.Fatalf("opencode to orchicon with unknown provider = %v; want error naming orchicon providers", err)
 	}
 	// 1-segment legacy ref: parse-only, nothing further to validate.
 	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "bare-model"); err != nil {
@@ -122,7 +124,7 @@ func TestAdapterKindOf(t *testing.T) {
 		{"anthropic/claude-4", "opencode"},   // 2-seg legacy inference
 		{"opencode/anthropic/m", "opencode"}, // explicit
 		// Slashed model id stays verbatim; adapter is segment 1.
-		{"orchicon/command-code/deepseek/deepseek-v4-flash", "orchicon"},
+		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon"},
 	}
 	for _, c := range cases {
 		if got := adapterKindOf(c.ref); got != c.want {

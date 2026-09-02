@@ -103,8 +103,8 @@ Grammar rules (pinned):
   ref working unchanged once `local-models` is defined in Settings →
   Adapters.
 - **3+ segments.** `{adapter: seg1, provider: seg2, model: seg3..}`. The
-  4-segment Command Code shape `orchicon/command-code/deepseek/deepseek-v4-flash`
-  parses to `{adapter: orchicon, provider: command-code, model: deepseek/deepseek-v4-flash}`.
+  4-segment Command Code shape `orchicon/commandcode/deepseek/deepseek-v4-flash`
+  parses to `{adapter: orchicon, provider: commandcode, model: deepseek/deepseek-v4-flash}`.
 - **Rejection.** Unknown adapter segment (a 3+ segment ref whose segment 1 is
   not a known adapter kind) is rejected with an error pointing at
   Settings → Adapters. A 2-segment ref whose first segment is neither a known
@@ -231,7 +231,7 @@ must never drift from the platform's actual grammar.
 | File | Change |
 |---|---|
 | `internal/adapter/modelref.go` (new) | `ModelRef` struct, `ParseModelRef`, grammar + errors (D1, D2, D4) |
-| `internal/adapter/modelref_test.go` (new) | table tests: legacy 2-seg (built-in + custom first segments), 3-seg, slashed-model refs (incl. `orchicon/command-code/deepseek/deepseek-v4-flash`), malformed, unknown-adapter-segment (D8) |
+| `internal/adapter/modelref_test.go` (new) | table tests: legacy 2-seg (built-in + custom first segments), 3-seg, slashed-model refs (incl. `orchicon/commandcode/deepseek/deepseek-v4-flash`), malformed, unknown-adapter-segment (D8) |
 | `internal/adapter/providers.go` (new) | `ProviderRegistry` interface + built-in catalog (D3) |
 | `internal/opencode/session.go` | `splitModelRef` → `adapter.ParseModelRef` in `SendMessage…` (D6) |
 | `internal/opencode/session_run.go` | `doCompact` → `adapter.ParseModelRef` (D6) |
@@ -258,8 +258,8 @@ single entry point exercised.
 3. **3-seg:** `claude/anthropic/claude-sonnet-5` →
    `{claude, anthropic, claude-sonnet-5}`; `opencode/opencode-go/deepseek-v4-flash` →
    `{opencode, opencode-go, deepseek-v4-flash}`.
-4. **Slashed model ids:** `orchicon/command-code/deepseek/deepseek-v4-flash` →
-   `{orchicon, command-code, deepseek/deepseek-v4-flash}` (model verbatim);
+4. **Slashed model ids:** `orchicon/commandcode/deepseek/deepseek-v4-flash` →
+   `{orchicon, commandcode, deepseek/deepseek-v4-flash}` (model verbatim);
    `adapter/provider/a/b/c` → model `a/b/c`.
 5. **Malformed:** empty, single segment, whitespace-only, empty adapter/
    provider/model segments → clear actionable errors.

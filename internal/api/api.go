@@ -268,7 +268,17 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	telemetrySvc := telemetry.NewService(deps.Pool, deps.TelemetryQuery, deps.Subscriber)
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
-	// AIGatewayService (docs/07 §3.10).
+	// AIGatewayService (docs/07 §3.10). The CLI-aware validation registry
+	// composes BEFORE the gateway and settings services: the static
+	// registry (builtin ∪ tenant customs) wrapped with live CLI provider
+	// discovery, so CLI-namespace refs (e.g. opencode/deepseek/…) validate
+	// at save time and the gateway's models RPC scopes through the same
+	// composition. ModelRefRegistry nil → the composition becomes the
+	// registry.
+	cliRegistry := aigateway.NewCLIProviderRegistry(deps.ModelRefRegistry, deps.ModelDiscoverer)
+	if deps.ModelRefRegistry == nil {
+		deps.ModelRefRegistry = cliRegistry
+	}
 	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
@@ -293,6 +303,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
+	// The settings validator shares the CLI-aware registry (composed above):
+	// the validator must agree with the picker or every CLI-namespace ref
+	// the picker offered fails at save with "provider not found".
+	settingsSvc.SetValidationRegistry(cliRegistry)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
 
 	// RuntimeImageService — tenant runtime container image specs + build.

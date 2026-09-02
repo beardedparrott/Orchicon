@@ -47,11 +47,11 @@ describe("parseModelRef", () => {
   });
 
   it("preserves slashed model ids verbatim (4+ segments, left-greedy)", () => {
-    expect(parseModelRef("orchicon/command-code/deepseek/deepseek-v4-flash")).toEqual({
+    expect(parseModelRef("orchicon/commandcode/deepseek/deepseek-v4-flash")).toEqual({
       adapter: "orchicon",
-      provider: "command-code",
+      provider: "commandcode",
       model: "deepseek/deepseek-v4-flash",
-      raw: "orchicon/command-code/deepseek/deepseek-v4-flash",
+      raw: "orchicon/commandcode/deepseek/deepseek-v4-flash",
     });
     expect(parseModelRef("opencode/provider/a/b/c")).toEqual({
       adapter: "opencode",
@@ -85,8 +85,8 @@ describe("formatModelRef", () => {
     expect(formatModelRef("opencode", "anthropic", "claude-sonnet-4")).toBe(
       "opencode/anthropic/claude-sonnet-4",
     );
-    expect(formatModelRef("orchicon", "command-code", "deepseek/deepseek-v4-flash")).toBe(
-      "orchicon/command-code/deepseek/deepseek-v4-flash",
+    expect(formatModelRef("orchicon", "commandcode", "deepseek/deepseek-v4-flash")).toBe(
+      "orchicon/commandcode/deepseek/deepseek-v4-flash",
     );
   });
 
@@ -101,7 +101,7 @@ describe("formatModelRef", () => {
 describe("catalogModelMatches (BUG-1: segment matching, not raw-value)", () => {
   const catalog = [
     { id: "claude-sonnet-4", providerId: "anthropic", modelRef: "anthropic/claude-sonnet-4" },
-    { id: "deepseek-v4-flash", providerId: "command-code", modelRef: "command-code/deepseek-v4-flash" },
+    { id: "deepseek-v4-flash", providerId: "commandcode", modelRef: "commandcode/deepseek-v4-flash" },
     { id: "legacy-model", providerId: "anthropic" }, // catalog entry without modelRef
   ];
 
@@ -123,9 +123,9 @@ describe("catalogModelMatches (BUG-1: segment matching, not raw-value)", () => {
   });
 
   it("matches slashed model ids (4+ segment refs)", () => {
-    const parsed = parseModelRef("orchicon/command-code/deepseek/deepseek-v4-flash");
+    const parsed = parseModelRef("orchicon/commandcode/deepseek/deepseek-v4-flash");
     // Catalog id carries the internal slashes verbatim.
-    expect(parsed && catalogModelMatches(parsed, { id: "deepseek/deepseek-v4-flash", providerId: "command-code" })).toBe(true);
+    expect(parsed && catalogModelMatches(parsed, { id: "deepseek/deepseek-v4-flash", providerId: "commandcode" })).toBe(true);
     // The bare-id entry does not match the slashed ref.
     expect(parsed && catalogModelMatches(parsed, catalog[1])).toBe(false);
     expect(parsed && catalogModelMatches(parsed, catalog[0])).toBe(false);

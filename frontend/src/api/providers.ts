@@ -2,10 +2,13 @@
 // behind Settings → Adapters. All mutations invalidate the shared
 // ["providers"] query key so every consumer — including the ModelPicker's
 // provider tier — auto-refreshes on save.
+import { useMemo } from "react";
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { providerClient } from "@/api/clients";
 import type { ProviderEntry, ProviderModel } from "@/api/gen/orchicon/api/v1/provider_pb";
+import { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 
 export const providersKeys = {
   all: ["providers"] as const,
@@ -103,4 +106,44 @@ export function useProviderModels(providerId: string, enabled = true) {
     },
     enabled: enabled && providerId !== "",
   });
+}
+
+// useProviderModelsForPicker projects the providers-service sourcing view
+// into the picker's OpenCodeModel shape (ADR-0004 three-tier contract).
+// This is the NATIVE adapter's model tier: the vendored catalog ⊕ probed ⊕
+// manual models from Settings → Adapters, NOT the opencode-CLI discovery
+// (whose provider namespace the native adapter does not share). Entries
+// keep providerId = the provider id and id = the bare model id, so
+// catalogModelMatches resolves 3-segment refs by segments; modelRef
+// mirrors the legacy 2-segment "providerId/id" shape.
+export function useProviderModelsForPicker(providerId: string, enabled = true) {
+  const q = useProviderModels(providerId, enabled);
+  const models = q.data?.models;
+  const projected = useMemo(() => {
+    if (!models) return undefined;
+    return models.map((m) => {
+      const context = Number(m.context) || 0;
+      const maxOutput = Number(m.maxOutput) || 0;
+      return new OpenCodeModel({
+        id: m.id,
+        providerId,
+        name: m.id,
+        modelRef: `${providerId}/${m.id}`,
+        family: providerId,
+        status: "active",
+        limits:
+          context > 0 || maxOutput > 0
+            ? { context: BigInt(context), output: BigInt(maxOutput) }
+            : undefined,
+        capabilities: m.reasoning ? { reasoning: true } : undefined,
+        variants: m.reasoning ? ["low", "medium", "high"] : [],
+      });
+    });
+  }, [models, providerId]);
+  return {
+    models: projected,
+    isLoading: q.isLoading,
+    error: q.error,
+    degraded: q.data?.degraded ?? false,
+  };
 }

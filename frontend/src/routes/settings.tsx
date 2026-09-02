@@ -498,6 +498,10 @@ function DefaultsTab() {
   const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
   const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState("");
   const [saving, setSaving] = useState(false);
+  // Save errors MUST surface (QA round 3: try/finally with no catch
+  // swallowed them — a rejected save looked identical to a successful one,
+  // and the old flagged ref reloaded on the next visit: "it's not saving").
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -533,6 +537,7 @@ function DefaultsTab() {
 
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
     try {
       await updateSettings.mutateAsync({
         defaultWorkerModel: draftWorkerModel,
@@ -564,6 +569,9 @@ function DefaultsTab() {
         logMaxFiles: parseInt(draftLogMaxFiles) || 0,
         maxConcurrentRuns: parseInt(draftMaxConcurrentRuns) || 0,
       } as any);
+    } catch (e) {
+      // Surface the rejection (validation errors included) — never swallow.
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
@@ -603,6 +611,12 @@ function DefaultsTab() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {saveError && (
+        <p role="alert" className="text-sm text-destructive">
+          Save failed: {saveError}
+        </p>
       )}
 
       {!isLoading && (

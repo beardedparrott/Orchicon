@@ -8,7 +8,7 @@
 //   <model>                        1 segment (legacy - adapter inferred as opencode)
 //
 // The model field is the remainder after the first two segments, VERBATIM
-// (internal slashes preserved - e.g. "orchicon/command-code/deepseek/deepseek-v4-flash"
+// (internal slashes preserved - e.g. "orchicon/commandcode/deepseek/deepseek-v4-flash"
 // parses to Model "deepseek/deepseek-v4-flash"). The parser NEVER splits the
 // model field at an internal slash.
 

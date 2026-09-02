@@ -96,7 +96,27 @@ func (r *Registry) profile(ctx context.Context, tenantID, providerID string) (Pr
 // build constructs the concrete client for a resolved profile.
 func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provider, error) {
 	modelsFn := func(ctx context.Context) ([]ModelInfo, error) {
-		res := r.src.ListModels(ctx, p)
+		// The runtime probe carries the resolved credential (secret →
+		// env) — the sourcing probe must authenticate exactly like the
+		// chat calls (live truth only; an unauthenticated probe would
+		// 401 and serve an empty list). Auth-optional profiles resolve
+		// to "" (Ollama, local servers).
+		bearer, _ := r.creds.Resolve(ctx, tenantID, p) //nolint:errcheck // probe stays non-fatal without a credential
+		res := r.src.ListModels(ctx, p, bearer)
+		if res.Degraded {
+			// Runtime model metadata stays NON-FATAL: chat never needs the
+			// models list, and compaction "must not guess" already handles
+			// missing hints — failing a worker turn because /models
+			// hiccuped would be worse than an empty list. The honest
+			// "works or it doesn't" signal lives at the UI surface
+			// (settings eyeball + picker: empty list + degraded state).
+			// NO synthesized fallback is served either way (operator
+			// directive). warnLog is nil-safe: registries built without a
+			// logger (tests) must not panic.
+			if r.warnLog != nil {
+				r.warnLog("sourcing: probe failed for provider %q — no models available to runtime clients (check endpoint/token)", p.ID)
+			}
+		}
 		return res.Models, nil
 	}
 	warn := r.warnLog

@@ -20,6 +20,12 @@ tenant-created custom providers do not exist yet (provider-layer task).
 
 This work item is the UI half of the adapter ecosystem: the picker must
 become a three-tier control — adapter bubble list (from registered kinds) →
+**2026-09-02 amendment (ADR-0010):** the three tiers now live INSIDE the selector
+box (operator UX directive): closed state = selected-ref trigger or the always-enabled
+search input; open = search → adapter pills → provider pills → model list. Provider
+pills under legacy CLI adapters are OPTIONAL filters derived from the live CLI
+discovery (with an All reset) — they gate only under the orchicon kind. One unfiltered
+CLI query feeds both the pills and the model tier (open latency halved).
 provider list (scoped to the selected adapter; built-in profiles ∪ tenant
 custom, custom flagged with a badge + "manage in Settings → Adapters"
 affordance) → searchable model list (scoped to the selected provider; manual
@@ -40,7 +46,8 @@ re-savable — never hidden, blank, or erroring).
   (`IsKnownAdapter`, `IsKnownProvider`, `Providers(adapterKind) []string`) +
   `BuiltinProviderCatalog` seeded with kinds `opencode` (providers
   anthropic/openai/local/opencode/opencode-go), `claude` (anthropic),
-  `orchicon` (command-code/local-models). **Tenant custom providers are
+  `orchicon` (commandcode/local-models — all built-in profiles serve under
+  the native bridge). **Tenant custom providers are
   contract-only** — no custom_provider table in `db/migrations` yet.
 - `internal/scheduler/dispatcher.go`: `Dispatcher.Register`/`Resolve`; only
   `opencode` is registered today (`internal/server/server.go` ~line 338).

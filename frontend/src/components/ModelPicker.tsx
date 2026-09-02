@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useListAdapterKinds, useListOpenCodeModels } from "@/api/aigateway";
-import { useProviderList } from "@/api/providers";
+import { useProviderList, useProviderModelsForPicker } from "@/api/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,14 +15,9 @@ import {
   parseModelRef,
 } from "@/lib/model-ref";
 
-// Per-adapter built-in provider scope (mirrors the backend
-// BuiltinProviderCatalog seed in internal/adapter/providers.go): the
-// provider tier shows the selected adapter's provider set, not the
-// tenant-wide union (ProviderRegistry.Providers semantics).
-const LEGACY_ADAPTER_PROVIDER_IDS: Record<string, Set<string>> = {
-  opencode: new Set(["anthropic", "openai", "local", "opencode", "opencode-go"]),
-  claude: new Set(["anthropic"]),
-};
+// Per-adapter provider scope is no longer static: under legacy CLI
+// adapters the provider pills derive from the live CLI discovery (the old
+// picker's grouping), under orchicon from the merged providers service.
 
 interface ModelPickerProps {
   value: string;
@@ -43,6 +38,25 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // ref is empty or unknown (never blank, never hidden).
   const [adapter, setAdapter] = useState<string>(() => parsed?.adapter ?? DEFAULT_ADAPTER_KIND);
   const [provider, setProvider] = useState<string>(() => parsed?.provider ?? "");
+  // The lazy useState initializers seed ONLY at mount — an externally-loaded
+  // value (async settings fetch filling the draft AFTER the picker's first
+  // render, e.g. client-side navigation into the Defaults tab) would never
+  // seed the tiers, leaving blank adapter/provider boxes until a hard
+  // refresh. This effect re-seeds the tiers whenever the value changes FROM
+  // OUTSIDE: user selections also flow through onChange→value, so re-seeding
+  // is idempotent for the same ref and only corrects external loads.
+  // While the user is mid-selection (tiers diverged from the stored ref —
+  // the stale-selection-guard state), never yank the tiers back.
+  const lastSeededRef = useRef<string>("");
+  useEffect(() => {
+    if (value === lastSeededRef.current) return; // no external change
+    lastSeededRef.current = value;
+    if (value.trim() === "") return; // empty = fresh selection flow
+    const next = parseModelRef(value);
+    if (!next) return; // malformed — leave tiers as-is (flagged instead)
+    setAdapter(next.adapter);
+    setProvider(next.provider);
+  }, [value]);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
@@ -59,23 +73,48 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     isLoading: providersLoading,
     error: providersError,
   } = useProviderList();
-  // ProviderRegistry semantics (ADR-0003 D3): the provider tier is scoped
-  // to the SELECTED ADAPTER — the merged providers list is the tenant-wide
-  // union, so scope it here (opencode → the opencode-profile providers;
-  // legacy 2-segment ref inference infers opencode, never orchicon).
-  const scopedIds =
-    adapter === ORCHICON_ADAPTER_KIND
-      ? null // the product-default kind: every built-in + enabled custom provider
-      : LEGACY_ADAPTER_PROVIDER_IDS[adapter] ?? null;
-  const providers = providerEntries
-    ?.filter((p) => p.enabled)
-    .filter((p) => scopedIds === null || scopedIds.has(p.id))
-    .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
-  const {
-    data: models,
-    isLoading: modelsLoading,
-    error: modelsError,
-  } = useListOpenCodeModels(adapter, provider);
+  // ProviderRegistry semantics (ADR-0003 D3): under the NATIVE kind the
+  // tier is the enabled merged view — providers RESOLVE the model list, so
+  // the tier gates tier 3. Under legacy CLI adapters the tier is a FILTER:
+  // pills derived from the live CLI discovery's distinct providerID values
+  // (the old picker's grouping — opencode, opencode-go, deepseek, …), with
+  // an "All" reset; the model input never requires a selection.
+  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
+  // ONE unfiltered CLI query serves BOTH the provider pills (distinct
+  // providerID values) and the model list under legacy adapters — two
+  // queries with different keys each shell out `opencode models --verbose`
+  // (~1–2s), doubling the picker's open latency.
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
+  const providers = useMemo(() => {
+    if (!useNativeSourcing) {
+      const ids = new Map<string, { id: string; name: string; custom: boolean }>();
+      for (const m of legacyModelsQ.data ?? []) {
+        if (m.providerId && !ids.has(m.providerId)) {
+          ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+        }
+      }
+      return [{ id: "", name: "All", custom: false }, ...[...ids.values()]];
+    }
+    return (providerEntries ?? [])
+      .filter((p) => p.enabled)
+      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
+  }, [useNativeSourcing, providerEntries, legacyModelsQ.data]);
+  // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
+  // resolves models from the providers service (vendored catalog ⊕ probe ⊕
+  // manual — the Settings → Adapters sourcing view); the legacy CLI
+  // adapters keep opencode-CLI discovery (whose provider namespace the
+  // native bridge does not share — filtering CLI output by orchicon
+  // providers would be structurally empty). Both hooks run unconditionally
+  // (rules of hooks); each query fetches only for its own source.
+  const nativeModelsQ = useProviderModelsForPicker(
+    useNativeSourcing ? provider : "",
+    useNativeSourcing && provider !== "",
+  );
+  // (legacyModelsQ is declared once, above, feeding both the provider
+  // pills and the model tier — one RPC, two projections.)
+  const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
+  const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
+  const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
 
   const adapterList = adapterKinds && adapterKinds.length > 0 ? adapterKinds : [DEFAULT_ADAPTER_KIND];
   // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw
@@ -124,6 +163,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
     let result = models;
+    // Legacy adapters: provider pills are OPTIONAL filters ("All" =
+    // unfiltered flat list — the red-cursor gate stays dead).
+    if (!useNativeSourcing && provider) {
+      result = result.filter((m) => m.providerId === provider);
+    }
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
@@ -139,11 +183,13 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
       if (a.providerId !== b.providerId) return a.providerId.localeCompare(b.providerId);
       return (a.cost?.input ?? 0) - (b.cost?.input ?? 0);
     });
-  }, [models, search]);
+  }, [models, search, useNativeSourcing, provider]);
 
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click. dropdownRef now wraps the INPUT (the
+  // in-box panel design), so the outside check must exclude the whole
+  // wrapper — checking only the input would close the panel instantly.
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (
@@ -159,23 +205,23 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Adapter selection: rescope provider (and reset provider/model tiers so no
-  // stale selection leaks across adapters — ADR-0004 stale-selection guard;
-  // pinned as the ADR-0005 D4 reset contract: switching adapters NEVER
-  // carries the previous selection into the new scope and no ref is written
-  // until a model under the new adapter is chosen — a clean re-selection,
-  // never a hidden mutation of the stored ref).
+  // Adapter selection: rescope provider and reset the model tier (no stale
+  // selection leaks across adapters — ADR-0004 stale-selection guard;
+  // ADR-0005 D4 reset contract: switching adapters NEVER carries the
+  // previous selection into the new scope and no ref is written until a
+  // model under the new adapter is chosen). The panel STAYS OPEN — the
+  // tiers live inside the box now, and closing it here would strand the
+  // user: orchicon with no provider yet renders a DISABLED input that can
+  // never fire onFocus to reopen (QA round 3 bug #2).
   function selectAdapter(kind: string) {
     setAdapter(kind);
     setProvider("");
     setSearch("");
-    setShowDropdown(false);
   }
 
   function selectProvider(id: string) {
     setProvider(id);
     setSearch("");
-    setShowDropdown(false);
   }
 
   function selectModel(model: OpenCodeModel) {
@@ -228,11 +274,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     }
   }
 
-  // Missing context/output hints → selectable but annotated (D3). Either
-  // hint missing (or the whole limits block absent) counts — compaction
-  // needs both the context window and the output cap.
+  // Missing context hint → selectable but annotated (D8). Context is the
+  // compaction-critical value; output-max is nice-to-have (most live
+  // /models listings don't carry it — warning on it would amber every row).
   function missingHints(model: OpenCodeModel): boolean {
-    return !model.limits || !model.limits.context || !model.limits.output;
+    return !model.limits || !model.limits.context;
   }
 
   function formatCost(cost?: { input: number; output: number }) {
@@ -292,12 +338,12 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="relative">
       {/* Stored-ref review banner (D5): flagged for review, never blank/hidden. */}
       {storedRefFlagged && (
         <div
           role="alert"
-          className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
+          className="mb-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
         >
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
@@ -317,185 +363,205 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         </div>
       )}
 
-      {/* Tier 1 — adapter bubble list (registered kinds, auto from Dispatcher). */}
-      <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Adapter</span>
-        <div className="flex flex-wrap gap-1.5">
-          {adapterList.map((kind) => {
-            const active = kind === adapter;
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-muted text-foreground hover:bg-muted/80"
-                }`}
-                onClick={() => selectAdapter(kind)}
-              >
-                {kind}
-              </button>
-            );
-          })}
-          {kindsError && (
-            <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
-              (kinds unavailable — showing default)
-            </span>
-          )}
+      {/* ALL THREE TIERS LIVE INSIDE ONE BOX (operator UX directive): the
+          closed state shows the selected ref; clicking opens the panel with
+          search → adapter pills → provider pills → model list. The outside-
+          click effect closes it (inputRef + dropdownRef cover both). */}
+      {/* Closed state: the selected ref as a clickable trigger (no auto-open
+          anywhere — QA round 3: an auto-open effect fought the user on the
+          settings Defaults tab, flash-opening the panel over the review
+          banner on every mount). When nothing is selected the INPUT is the
+          closed state: always enabled, clicking/focusing opens the panel —
+          no dead end (the QA round 3 orchicon trap is covered by the input
+          being clickable, not by forcing the panel open). */}
+      {selectedModel && !showDropdown ? (
+        <div
+          className="flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-muted/50"
+          onClick={() => setShowDropdown(true)}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              setInfoModel(selectedModel);
+            }}
+          >
+            Info
+          </Button>
         </div>
-      </div>
-
-      {/* Tier 2 — provider list scoped to the selected adapter (built-in ∪ custom). */}
-      <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Provider</span>
-        {providersLoading && <p className="text-xs text-muted-foreground">Loading providers...</p>}
-        {providersError && (
-          <div className="space-y-1">
-            <p className="text-xs text-destructive">Failed to load providers: {String(providersError)}</p>
-          </div>
-        )}
-        {!providersLoading && !providersError && providers && (
-          <div className="flex flex-wrap gap-1.5">
-            {providers.length === 0 && (
-              <span className="text-xs text-muted-foreground">
-                No providers for adapter “{adapter}”
-              </span>
-            )}
-            {providers.map((p: { id: string; name: string; custom: boolean }) => {
-              const active = p.id === provider;
-              return (
-                <div key={p.id} className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                      active
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-muted text-foreground hover:bg-muted/80"
-                    }`}
-                    onClick={() => selectProvider(p.id)}
-                  >
-                    {p.name || p.id}
-                  </button>
-                  {p.custom && (
-                    <span
-                      className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
-                      title="Manage in Settings → Adapters"
-                    >
-                      custom
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-            {customProvider && (
-              <span className="self-center text-[10px] text-muted-foreground">
-                Manage custom providers in Settings → Adapters
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Tier 3 — searchable model list scoped to the selected provider. */}
-      <div className={showDropdown ? "relative z-10 space-y-1" : "relative space-y-1"}>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Model</span>
-        {selectedModel && !showDropdown ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              onClick={() => setInfoModel(selectedModel)}
-            >
-              Info
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowDropdown(true)}>
-              Change
-            </Button>
-          </div>
-        ) : (
-          <>
-            <Input
-              ref={inputRef}
-              placeholder={provider ? "Search models..." : "Select a provider first"}
-              value={search}
-              disabled={!provider}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setShowDropdown(true);
+      ) : (
+        <div ref={dropdownRef} className="relative">
+          <Input
+            ref={inputRef}
+            placeholder={
+              useNativeSourcing && !provider
+                ? "Pick a provider below, then search models"
+                : "Search models..."
+            }
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setShowDropdown(true);
+            }}
+            onFocus={() => setShowDropdown(true)}
+            onKeyDown={handleKeyDown}
+          />
+          {showDropdown && (
+            <div
+              className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+              style={{
+                maxHeight: "420px",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
               }}
-              onFocus={() => setShowDropdown(true)}
-              onKeyDown={handleKeyDown}
-            />
-            {showDropdown && provider && (
-              <div
-                ref={dropdownRef}
-                className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
-                style={{
-                  maxHeight: "320px",
-                  overflow: "hidden",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <div className="overflow-y-auto">
-                  {modelsLoading && (
-                    <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
-                  )}
-                  {modelsError && (
-                    <p className="p-4 text-xs text-destructive text-center">
-                      Failed to load models: {String(modelsError)}
-                    </p>
-                  )}
-                  {!modelsLoading && !modelsError && filtered.length === 0 && (
-                    <p className="p-4 text-xs text-muted-foreground text-center">
-                      No models match your search
-                    </p>
-                  )}
-                  {!modelsLoading &&
-                    !modelsError &&
-                    filtered.map((model, idx) => (
-                      <button
-                        key={model.modelRef || model.id}
-                        type="button"
-                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
-                          idx === focusedIdx ? "bg-accent" : ""
-                        } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
-                        onMouseEnter={() => setFocusedIdx(idx)}
-                        onClick={() => selectModel(model)}
-                        onDoubleClick={() => {
-                          selectModel(model);
-                          setInfoModel(model);
-                        }}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium truncate">{model.name}</div>
-                          <div className="text-xs text-muted-foreground truncate">
-                            <span className="font-mono">{model.providerId}</span> /{" "}
-                            <span className="font-mono">{model.id}</span>
-                          </div>
-                          {missingHints(model) && (
-                            <div className="mt-0.5 text-[10px] text-amber-600">
-                              no context/output hint — may misbehave in compaction
-                            </div>
+            >
+              {/* Tier 1 — adapter pills (registered kinds, auto from Dispatcher). */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Adapter
+                </span>
+                {adapterList.map((kind) => {
+                  const active = kind === adapter;
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-muted text-foreground hover:bg-muted/80"
+                      }`}
+                      onClick={() => selectAdapter(kind)}
+                    >
+                      {kind}
+                    </button>
+                  );
+                })}
+                {kindsError && (
+                  <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
+                    (kinds unavailable — showing default)
+                  </span>
+                )}
+              </div>
+
+              {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the
+                  model list (gate applies). Legacy CLI adapters: OPTIONAL
+                  FILTERS from the live CLI discovery with an All reset. */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Provider
+                </span>
+                {providersLoading && (
+                  <span className="text-xs text-muted-foreground">Loading providers...</span>
+                )}
+                {providersError && (
+                  <span className="text-xs text-destructive">
+                    Failed to load providers: {String(providersError)}
+                  </span>
+                )}
+                {!providersLoading && !providersError && providers && (
+                  <>
+                    {providers.length === 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        No providers for adapter “{adapter}”
+                      </span>
+                    )}
+                    {providers.map((p: { id: string; name: string; custom: boolean }) => {
+                      const active = p.id === provider;
+                      return (
+                        <div key={p.id} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                              active
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border bg-muted text-foreground hover:bg-muted/80"
+                            }`}
+                            onClick={() => selectProvider(p.id)}
+                          >
+                            {p.name || p.id}
+                          </button>
+                          {p.custom && (
+                            <span
+                              className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
+                              title="Manage in Settings → Adapters"
+                            >
+                              custom
+                            </span>
                           )}
                         </div>
-                        <div className="text-right shrink-0">
-                          <div className="text-xs font-mono">{formatCost(model.cost)}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                </div>
+                      );
+                    })}
+                    {customProvider && (
+                      <span className="self-center text-[10px] text-muted-foreground">
+                        Manage custom providers in Settings → Adapters
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
-            )}
-          </>
-        )}
-      </div>
+
+              {/* Tier 3 — searchable model list (provider-scoped under
+                  orchicon; flat + optional pill filter under legacy). */}
+              <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
+                {modelsLoading && (
+                  <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
+                )}
+                {modelsError && (
+                  <p className="p-4 text-xs text-destructive text-center">
+                    Failed to load models: {String(modelsError)}
+                  </p>
+                )}
+                {!modelsLoading && !modelsError && filtered.length === 0 && (
+                  <p className="p-4 text-xs text-muted-foreground text-center">
+                    No models match your search
+                  </p>
+                )}
+                {!modelsLoading &&
+                  !modelsError &&
+                  filtered.map((model, idx) => (
+                    <button
+                      key={model.modelRef || model.id}
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
+                        idx === focusedIdx ? "bg-accent" : ""
+                      } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
+                      onMouseEnter={() => setFocusedIdx(idx)}
+                      onClick={() => selectModel(model)}
+                      onDoubleClick={() => {
+                        selectModel(model);
+                        setInfoModel(model);
+                      }}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{model.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          <span className="font-mono">{model.providerId}</span> /{" "}
+                          <span className="font-mono">{model.id}</span>
+                        </div>
+                        {missingHints(model) && (
+                          <div className="mt-0.5 text-[10px] text-amber-600">
+                            no context hint — compaction math may misbehave
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-xs font-mono">{formatCost(model.cost)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

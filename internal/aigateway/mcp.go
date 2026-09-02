@@ -175,14 +175,3 @@ func mergeMCPs(configured, wellknown []*apiv1.OpenCodeMCP) []*apiv1.OpenCodeMCP 
 	return result
 }
 
-// MockMCPDiscoverer returns a discoverer with a hardcoded server list.
-func MockMCPDiscoverer(log *slog.Logger) *MCPDiscoverer {
-	d := &MCPDiscoverer{
-		log:    log.With("component", "mcp_discoverer"),
-		binary: "",
-		ttl:    24 * time.Hour,
-	}
-	d.cache = mergeMCPs(nil, wellKnownMCPs)
-	d.cached = time.Now()
-	return d
-}

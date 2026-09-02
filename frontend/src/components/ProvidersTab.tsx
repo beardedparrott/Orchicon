@@ -184,6 +184,11 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
   const [showModels, setShowModels] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // Batch visibility editing (ADR-0006 D4 operator flow): checkbox toggles
+  // stage a draft hidden-set; the explicit Save button commits
+  // hiddenModels in ONE update. null = no draft open (checkboxes mirror
+  // entry.hiddenModels); non-null = the draft set being edited.
+  const [draftHidden, setDraftHidden] = useState<Set<string> | null>(null);
 
   const updateSettings = useUpdateProviderSettings();
   const setTokenMut = useSetProviderToken();
@@ -237,6 +242,41 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
     );
   }
 
+  // Draft visibility editing: checkbox source of truth while a draft is
+  // open; Save commits once, Discard reverts the staged set.
+  const storedHidden = new Set(entry.hiddenModels ?? []);
+  const currentHidden = draftHidden ?? storedHidden;
+
+  function toggleModel(id: string, visible: boolean) {
+    setMsg(null);
+    const next = new Set(currentHidden);
+    if (visible) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setDraftHidden(next);
+  }
+
+  function saveVisibility() {
+    setMsg(null);
+    if (draftHidden === null) return;
+    updateSettings.mutate(
+      { providerId: entry.id, hiddenModels: [...draftHidden] },
+      {
+        onSuccess: () => {
+          setDraftHidden(null);
+          setMsg("Model visibility saved.");
+        },
+        onError: (e) => setMsg(String(e)),
+      },
+    );
+  }
+
+  function discardVisibility() {
+    setDraftHidden(null);
+  }
+
   return (
     <Card className={entry.enabled ? "" : "opacity-70"}>
       <CardHeader className="pb-2">
@@ -277,6 +317,19 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
         <div className="flex items-center gap-2">
           <label className="w-24 shrink-0 text-xs text-muted-foreground">Base URL</label>
           <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={entry.baseUrl || "https://..."} />
+          {entry.isCustom && entry.baseUrl && !/^https?:\/\/(localhost|127\.|0\.0\.0\.0)/.test(entry.baseUrl) && (
+            <p className="w-full text-[10px] text-muted-foreground">
+              Stored address <code>{entry.baseUrl}</code> — if you originally typed localhost, this is
+              the translated form the app can actually reach (the app runs in its own container, where
+              "localhost" would mean the app itself, not your computer).
+            </p>
+          )}
+          {entry.id === "ollama" && (
+            <p className="w-full text-[10px] text-muted-foreground">
+              Default hosts a local daemon (http://localhost:11434). For Ollama Cloud set the cloud endpoint here,
+              e.g. https://ollama.com — models then list from the cloud account.
+            </p>
+          )}
           <Button size="sm" variant="outline" onClick={saveBaseUrl} disabled={updateSettings.isPending}>
             Save
           </Button>
@@ -354,13 +407,8 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
                   <label key={m.id} className="flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
-                      checked={m.visible}
-                      onChange={(e) => {
-                        const hidden = e.target.checked
-                          ? (entry.hiddenModels ?? []).filter((h) => h !== m.id)
-                          : [...(entry.hiddenModels ?? []), m.id];
-                        updateSettings.mutate({ providerId: entry.id, hiddenModels: hidden }, { onError: (err) => setMsg(String(err)) });
-                      }}
+                      checked={!currentHidden.has(m.id)}
+                      onChange={(e) => toggleModel(m.id, e.target.checked)}
                     />
                     <code>{m.id}</code>
                     {m.source === "manual" && <span className="rounded bg-muted px-1 text-[10px]">manual</span>}
@@ -374,6 +422,17 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
                     )}
                   </label>
                 ))}
+                {draftHidden !== null && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button size="sm" className="h-7" onClick={saveVisibility} disabled={updateSettings.isPending}>
+                      {updateSettings.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7" onClick={discardVisibility} disabled={updateSettings.isPending}>
+                      Discard
+                    </Button>
+                    <span className="text-[10px] text-muted-foreground">Selection staged — click Save to apply.</span>
+                  </div>
+                )}
                 {modelsQ.data && (modelsQ.data.models ?? []).length === 0 && !modelsQ.data.degraded && (
                   <p className="text-xs text-muted-foreground">No models discovered.</p>
                 )}
@@ -443,11 +502,19 @@ function EditCustomDialog({
         <p className="text-xs text-muted-foreground">ref id is immutable after create.</p>
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <p className="text-[10px] text-muted-foreground">
+          localhost works even though the app runs in a container — we translate it to the address
+          your machine is reachable at, automatically. Keep the version root at the end (…/v1).
+        </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
-          <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "none" | "token")}>
-            <option value="none">none</option>
-            <option value="token">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
+          <select
+            className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+            value={authMode}
+            onChange={(e) => setAuthMode(e.target.value as "none" | "token")}
+          >
+            <option value="none" className="text-foreground">none</option>
+            <option value="token" className="text-foreground">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
           </select>
         </label>
         {err && <p className="text-xs text-destructive">{err}</p>}
@@ -496,11 +563,21 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         <Input placeholder="ref id (e.g. local-models)" value={refId} onChange={(e) => setRefId(e.target.value)} />
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <p className="text-[10px] text-muted-foreground">
+          Point this at the server running on YOUR computer — e.g. llama-server's
+          <code className="mx-1">http://localhost:8095/v1</code> just works: if you type localhost, we
+          translate it automatically for the app's container. The URL should end in <code>/v1</code>
+          {" "}— that's where the app looks for the model list.
+        </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
-          <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "none" | "token")}>
-            <option value="none">none</option>
-            <option value="token">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
+          <select
+            className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+            value={authMode}
+            onChange={(e) => setAuthMode(e.target.value as "none" | "token")}
+          >
+            <option value="none" className="text-foreground">none</option>
+            <option value="token" className="text-foreground">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
           </select>
         </label>
         {err && <p className="text-xs text-destructive">{err}</p>}

@@ -10,6 +10,12 @@ Full design + test plan: `architecture-notes/provider-settings-ui-providers-tab-
 
 The provider-layer substrate (ADR-0003, PR #459) landed on `develop`: `internal/orchicon/` profiles (`BuiltinProfile`, `ValidateProfile`, `SetCustomProfileLoader` hook), `Registry.Get/Invalidate`, `SourcingService.ListModels` (catalog → probe → manual, manual-wins dedupe, visibility filter, `Degraded` flag), `CredentialResolver.Resolve` (tenant secret by NAME → host env → actionable `ErrAuthMissing`), and the model-ref grammar (`internal/adapter/modelref.go`, registry-driven legacy 2-segment parsing). The tenant-facing management surface for all of this does not exist: no UI, no storage for overrides/customs, no token auto-write, no custom-provider CRUD, no deletion guard.
 
+**2026-09-02 amendment (ADR-0010):** the sourcing fallback order above is superseded —
+`ListModels` is now probe → manual with the catalog as metadata-enrichment only (live
+truth only; a failed probe yields an empty, visibly-degraded list, never the catalog).
+Custom-provider base URLs gain plane-aware loopback resolution (container mode only,
+port preserved) and a self-healing probe that persists a verified repaired URL.
+
 ## Decision
 
 1. **Storage**: new `provider_settings` table (migration `20260914000000`), tenant-scoped, `UNIQUE (tenant_id, provider_id)`, RLS `tenant_isolation` (tenant_secrets pattern). Built-ins get a row only when overridden (enabled/baseURL/hidden models/num_ctx); no row = pure built-in default. `manual_models` JSONB mirrors `orchicon.ModelInfo` hints.
