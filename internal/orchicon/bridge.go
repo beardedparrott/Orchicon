@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/agentmemory"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -153,13 +154,25 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		tools = mt
 		defer func() { _ = mt.Close() }()
 	}
+	// Durable agent-memory store (D2): opened at the TRUE project dir
+	// (<projectDir>/.orchicon/memory.db) so memory survives per-step
+	// worktree pruning and is cross-session by construction. An open
+	// failure degrades to no memory tools (never fails the execution).
+	var memStore *agentmemory.Store
+	if ms, merr := agentmemory.Open(pd); merr != nil {
+		b.log.Warn("orchicon: memory store unavailable — memory tools disabled", "execution", exec.ID, "error", merr)
+	} else {
+		memStore = ms
+		defer func() { _ = ms.Close() }()
+	}
 	sess, err := NewSession(SessionConfig{
-		ExecRow:    exec,
-		Manifest:   manifest,
-		ProjectDir: pd,
-		Resolver:   b.resolver,
-		Tools:      tools,
-		Log:        b.log,
+		ExecRow:     exec,
+		Manifest:    manifest,
+		ProjectDir:  pd,
+		Resolver:    b.resolver,
+		Tools:       tools,
+		Log:         b.log,
+		MemoryStore: memStore,
 	})
 	if err != nil {
 		return fmt.Errorf("orchicon bridge: %w", err)
