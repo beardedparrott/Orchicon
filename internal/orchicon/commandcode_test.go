@@ -128,9 +128,11 @@ func TestCommandCodeTrailingUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	fin := evs[len(evs)-1].(Finish)
+	// OpenAI-compat prompt_tokens is cache-INCLUSIVE (9) and cached_tokens=2,
+	// so normalized InputTokens is the FRESH bucket 7.
 	u := fin.Usage
-	if u.InputTokens != 9 || u.OutputTokens != 4 || u.CacheReadTokens != 2 {
-		t.Fatalf("usage = %#v — trailing usage-only chunk must not be lost", u)
+	if u.InputTokens != 7 || u.OutputTokens != 4 || u.CacheReadTokens != 2 {
+		t.Fatalf("usage = %#v — trailing usage-only chunk must not be lost; fresh in=7 cacheRead=2", u)
 	}
 }
 

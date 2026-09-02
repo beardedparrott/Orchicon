@@ -99,17 +99,26 @@ func (s *Session) AssembleSystem() []SystemBlock {
 }
 
 // renderMutableZone renders the after-breakpoint mutable block from live
-// session state: memory notes (insertion order) and the latest todo
-// digest (array order). Returns "" when there is no mutable state, in
-// which case AssembleSystem emits the single cached block only.
+// session state: durable-memory digest (D3), memory notes (insertion
+// order) and the latest todo digest (array order). Returns "" when there
+// is no mutable state, in which case AssembleSystem emits the single
+// cached block only.
 func (s *Session) renderMutableZone() string {
 	notes := s.MemoryNotes()
 	todos := s.TodosDigest()
-	if len(notes) == 0 && todos == "" {
+	digest := s.memoryDigest()
+	if len(notes) == 0 && todos == "" && digest == "" {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("## Session State (mutable — after the cache breakpoint)\n")
+	if digest != "" {
+		// The durable-memory digest is capped (titles+tags only, <=1 KiB)
+		// and injected AFTER the cache breakpoint — the static prefix
+		// bytes are untouched (D3 / prefix-stability contract).
+		sb.WriteString("\n")
+		sb.WriteString(digest)
+	}
 	if len(notes) > 0 {
 		sb.WriteString("\n### Memory notes\n")
 		for _, n := range notes {

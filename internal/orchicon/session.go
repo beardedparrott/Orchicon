@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/agentmemory"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -97,6 +100,34 @@ type Session struct {
 	noteMu      sync.Mutex
 	notes       []string
 	latestTodos []byte
+	// projectDir is the TRUE project directory (manifest.ProjectDir) — the
+	// durable store location (memory.db / offload) is derived from it, NOT
+	// the per-run worktree path (worktrees are pruned per step; memory must
+	// survive).
+	projectDir string
+	// memStore is the durable agent-memory store (D2); nil = memory tools
+	// answer with a clear unavailable error.
+	memStore *agentmemory.Store
+	// mp is the session's memory policy (enabled + digest cap), parsed from
+	// the merged settings JSON.
+	mp MemoryPolicy
+	// cp is the session's compaction policy, parsed from the merged
+	// settings JSON.
+	cp CompactPolicy
+	// cs is the guarded-compaction latch + shared budget state (D1).
+	cs compactState
+	// startedAt anchors the wall-clock dimension of the budget ladder.
+	startedAt time.Time
+	// toolUses counts executed tool calls (live, for the tools dimension).
+	toolUses int
+	// window cache: resolved once per session (never per-turn probed). The
+	// resolved ModelInfo (live ListModels result) carries the context hint
+	// AND the pricing used to price each turn's usage for the budget cost
+	// dimension — one live resolution serves both.
+	windowMu       sync.Mutex
+	windowResolved bool
+	windowHint     ContextWindowHint
+	windowModel    *ModelInfo
 	// cacheStats accumulates per-session prefix-cache metrics (ADR-0009
 	// D6): cache hit/miss classification per turn + cached tokens.
 	cacheMu    sync.Mutex
@@ -131,6 +162,9 @@ type SessionConfig struct {
 	Resolver   ProviderResolver // resolves provider/model from manifest.ModelRef
 	Tools      ToolRegistry     // may be nil
 	Log        *slog.Logger
+	// MemoryStore is the durable agent-memory store (D2); nil = memory
+	// tools answer with a clear unavailable error.
+	MemoryStore *agentmemory.Store
 }
 
 // ProviderResolver resolves the provider for a (tenantID, providerID)
@@ -147,6 +181,10 @@ type ProviderResolver interface {
 func NewSession(cfg SessionConfig) (*Session, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
+	}
+	projectDir := cfg.ProjectDir
+	if projectDir == "" {
+		projectDir = cfg.Manifest.ProjectDir
 	}
 	// Parse the model ref: orchicon/<provider>/<model> (verbatim model
 	// remainder, internal slashes preserved — ADR-0003).
@@ -183,13 +221,25 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		AcceptanceCriteria: cfg.Manifest.AcceptanceCriteria,
 	}
 	s := &Session{
-		id:       cfg.ExecRow.ID,
-		identity: ident,
-		provider: prov,
-		tools:    cfg.Tools,
-		dir:      filepath.Join(cfg.ProjectDir, ".orchicon", "sessions"),
-		log:      cfg.Log,
-		output:   &strings.Builder{},
+		id:         cfg.ExecRow.ID,
+		identity:   ident,
+		provider:   prov,
+		tools:      cfg.Tools,
+		dir:        filepath.Join(projectDir, ".orchicon", "sessions"),
+		log:        cfg.Log,
+		output:     &strings.Builder{},
+		projectDir: projectDir,
+		memStore:   cfg.MemoryStore,
+		startedAt:  time.Now(),
+	}
+	s.mp = DefaultMemoryPolicy()
+	s.cp = DefaultCompactPolicy()
+	// Parse the merged settings JSON (context_compaction/memory keys ride
+	// the existing budget transport — D4).
+	if len(cfg.Manifest.Budgets) > 0 {
+		s.cp, s.mp = policyFromSettings(cfg.Manifest.Budgets)
+		s.cs.budget = opencode.ParseBudgetLadder(cfg.Manifest.Budgets)
+		s.cs.spend = opencode.NewBudgetSpend()
 	}
 	// Static-prefix env facts (ADR-0009 D2): rendered once at
 	// construction from manifest fields — constant within a run, so the

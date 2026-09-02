@@ -11,6 +11,7 @@ package db_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -293,5 +294,97 @@ func TestAdmitInPlaceRun(t *testing.T) {
 	}
 	if !admit(run2) {
 		t.Fatal("run2 not admitted after run1 terminalized")
+	}
+}
+
+// TestCompactionMemoryPolicyDBRoundTrip verifies the typed compaction +
+// memory policy columns (D4) persist through UpdateTenantSettings and come
+// back through GetTenantSettings + BudgetJSON — the full F1 wiring. The
+// BudgetJSON transport carries the context_compaction/memory keys the
+// native session and worker overrides parse, so this round-trip is the
+// proof that per-tenant policy is reachable at dispatch.
+func TestCompactionMemoryPolicyDBRoundTrip(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	const tenant = "tnt_ccmp"
+
+	// Write an explicit policy (disable compaction, keep memory with 3
+	// digest entries) via the same row shape the Settings API sends.
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	in := db.TenantSettingsRow{
+		DefaultBudgetOverrides:        []byte("{}"),
+		ContextCompactionEnabled:      false,
+		ContextCompactionPressureFrac: 0.9,
+		ContextRecentTurns:            4,
+		MemoryEnabled:                 true,
+		MemoryDigestEntries:           3,
+	}
+	row, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, in)
+	if err != nil {
+		t.Fatalf("update tenant settings: %v", err)
+	}
+	if row.ContextCompactionEnabled || row.ContextCompactionPressureFrac != 0.9 || row.ContextRecentTurns != 4 {
+		t.Fatalf("policy not written: enabled=%v frac=%v turns=%v",
+			row.ContextCompactionEnabled, row.ContextCompactionPressureFrac, row.ContextRecentTurns)
+	}
+	if !row.MemoryEnabled || row.MemoryDigestEntries != 3 {
+		t.Fatalf("memory not written: enabled=%v entries=%v", row.MemoryEnabled, row.MemoryDigestEntries)
+	}
+
+	// Read back through GetTenantSettings (fresh row) — the SELECT + scan
+	// must carry the columns.
+	got, err := db.GetTenantSettings(ctx, ttx.Tx, tenant)
+	if err != nil {
+		t.Fatalf("get tenant settings: %v", err)
+	}
+	if got.ContextCompactionEnabled || got.ContextCompactionPressureFrac != 0.9 || got.ContextRecentTurns != 4 {
+		t.Fatalf("reloaded policy mismatch: enabled=%v frac=%v turns=%v",
+			got.ContextCompactionEnabled, got.ContextCompactionPressureFrac, got.ContextRecentTurns)
+	}
+	if !got.MemoryEnabled || got.MemoryDigestEntries != 3 {
+		t.Fatalf("reloaded memory mismatch: enabled=%v entries=%v", got.MemoryEnabled, got.MemoryDigestEntries)
+	}
+	// BudgetJSON (the dispatch transport) must carry the keys.
+	var bj map[string]any
+	if err := json.Unmarshal(got.BudgetJSON(), &bj); err != nil {
+		t.Fatalf("BudgetJSON invalid: %v", err)
+	}
+	cc, _ := bj["context_compaction"].(map[string]any)
+	mem, _ := bj["memory"].(map[string]any)
+	if cc == nil || cc["enabled"] != false || cc["pressure_frac"] != 0.9 || cc["recent_turns"] != float64(4) {
+		t.Fatalf("BudgetJSON context_compaction = %v", bj["context_compaction"])
+	}
+	if mem == nil || mem["enabled"] != true || mem["digest_entries"] != float64(3) {
+		t.Fatalf("BudgetJSON memory = %v", bj["memory"])
+	}
+
+	// A partial update (only a stall field) must NOT clobber the stored
+	// policy (the policyIsSet guard overlays the current row).
+	part, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
+		StallNoProgressWindowSeconds: 300,
+	})
+	if err != nil {
+		t.Fatalf("partial update: %v", err)
+	}
+	// Preserved: the partial update must leave the policy exactly as
+	// written (enabled=false, frac=0.9, turns=4, memory=true, entries=3).
+	if part.ContextCompactionEnabled != false || part.ContextCompactionPressureFrac != 0.9 || part.ContextRecentTurns != 4 {
+		t.Fatalf("partial update clobbered policy: enabled=%v frac=%v turns=%v",
+			part.ContextCompactionEnabled, part.ContextCompactionPressureFrac, part.ContextRecentTurns)
+	}
+	if !part.MemoryEnabled || part.MemoryDigestEntries != 3 {
+		t.Fatalf("partial update clobbered memory: enabled=%v entries=%v", part.MemoryEnabled, part.MemoryDigestEntries)
+	}
+
+	// Cleanup: drop the scratch tenant row so the shared dev DB stays tidy.
+	if _, err := db.DeleteTenantSettings(ctx, ttx.Tx, tenant); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

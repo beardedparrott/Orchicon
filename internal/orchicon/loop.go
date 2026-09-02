@@ -194,9 +194,17 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		}
 		// The native memory-note tool is registered by the loop itself
 		// (session-scoped, never the MCP registry) — deduped in case a
-		// registry already surfaces the same name.
+		// registry already surfaces the same name. The four durable
+		// memory tools (D2) are registered when a store is configured.
 		if !hasToolNamed(req.Tools, memoryNoteToolDef().Name) {
 			req.Tools = append(req.Tools, memoryNoteToolDef())
+		}
+		if s.memStore != nil && s.mp.Enabled {
+			for _, d := range memoryToolDefs() {
+				if !hasToolNamed(req.Tools, d.Name) {
+					req.Tools = append(req.Tools, d)
+				}
+			}
 		}
 
 		stream, err := s.provider.StreamTurn(ctx, req)
@@ -221,6 +229,18 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
 		// miss-write / none) and accumulate cached tokens.
 		s.recordTurnUsage(usage)
+		// Price this turn's LIVE usage for the budget cost gate through the
+		// session model's resolved catalog/probe pricing (shared pipeline —
+		// ModelInfo.CostFor is the same pricing the gateway's usage recorder
+		// applies). 0 when the model has no pricing — the cost dimension
+		// then never fires; never a synthesized estimate.
+		usage.CostUSD = s.priceUsage(ctx, usage)
+
+		// Guarded compaction at the quiet turn boundary (D1): fires only on
+		// true context-window pressure (live hint) or the budget gate, from
+		// LIVE provider-reported usage. Never fires on token count alone
+		// when no window hint exists.
+		s.maybeCompact(ctx, steps, usage)
 
 		// Guard: no-progress detection (zero token growth + repeated tool
 		// signature → surfaced stall, never a silent loop).
@@ -393,7 +413,7 @@ func hasToolNamed(defs []ToolDef, name string) bool {
 // nativeToolName reports whether a call targets a loop-registered
 // session-scoped tool (handled here, never routed to the registry).
 func nativeToolName(name string) bool {
-	return name == memoryNoteToolDef().Name
+	return name == memoryNoteToolDef().Name || isMemoryTool(name)
 }
 
 // stashMutableToolCall folds a turn's tool calls into the session's
@@ -439,8 +459,21 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 	var pending []int // indices routed to the registry
 	for i, c := range calls {
 		if nativeToolName(c.Name) {
-			results[i] = toolResult{ToolCall: c, Output: `{"ok":true}`}
-			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(`{"ok":true}`))
+			var out string
+			var execErr error
+			if isMemoryTool(c.Name) {
+				out, execErr = s.execMemoryTool(ctx, c.Name, c.ArgsJSON)
+			}
+			if execErr != nil {
+				results[i] = toolResult{ToolCall: c, Err: execErr.Error()}
+			} else {
+				if out == "" {
+					out = `{"ok":true}`
+				}
+				results[i] = toolResult{ToolCall: c, Output: out}
+			}
+			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(out))
+			s.toolUses++
 			continue
 		}
 		pending = append(pending, i)

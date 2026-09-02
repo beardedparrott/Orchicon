@@ -190,6 +190,15 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
 	}
 	inRow.Budget = cur.Budget
+	// Preserve the current compaction/memory policy columns when the
+	// client's budget JSON omits the context_compaction/memory keys (D4
+	// partial-update semantics — absent keys must never clobber stored
+	// policy with zeros).
+	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
+	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
+	inRow.ContextRecentTurns = cur.ContextRecentTurns
+	inRow.MemoryEnabled = cur.MemoryEnabled
+	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
 	if err := inRow.ApplyBudgetJSON(budget); err != nil {
 		return nil, fmt.Errorf("invalid default_budget_overrides: %w", err)
 	}

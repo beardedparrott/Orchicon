@@ -43,8 +43,45 @@ func TestOpenAIStreamTrailingUsageChunk(t *testing.T) {
 		t.Fatalf("stop = %q", fin.StopReason)
 	}
 	u := fin.Usage
-	if u.InputTokens != 12 || u.OutputTokens != 34 || u.CacheReadTokens != 8 {
-		t.Fatalf("usage = %#v, want in=12 out=34 cacheRead=8 (cached_tokens)", u)
+	if u.InputTokens != 4 || u.OutputTokens != 34 || u.CacheReadTokens != 8 {
+		t.Fatalf("usage = %#v, want in=4 (fresh: 12−8) out=34 cacheRead=8 (cached_tokens)", u)
+	}
+	// No cache reported → InputTokens is the full prompt_tokens.
+	body2 := sse(
+		`{"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}`,
+		`[DONE]`,
+	)
+	srv2, _, _ := captureServer(t, 200, "text/event-stream", body2)
+	c2 := &OpenAICompatClient{BaseURL: srv2.URL, APIKey: "k", ProviderID: "openai"}
+	ts2, _ := c2.StreamTurn(context.Background(), TurnRequest{Model: "gpt-5"})
+	evs2, _ := drainStream(t, ts2)
+	u2 := evs2[len(evs2)-1].(Finish).Usage
+	if u2.InputTokens != 12 || u2.CacheReadTokens != 0 {
+		t.Fatalf("usage (no cached_tokens) = %#v, want in=12 cacheRead=0", u2)
+	}
+}
+
+// Regression for QA bug A: cached_tokens must never be double-counted —
+// normalized InputTokens is the FRESH bucket (prompt − cached), so
+// InputTokens+CacheReadTokens equals the provider's full cache-inclusive
+// prompt exactly once.
+func TestOpenAICompatUsageNormalizationNoDoubleCount(t *testing.T) {
+	body := sse(
+		`{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":60}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &OpenAICompatClient{BaseURL: srv.URL, APIKey: "k", ProviderID: "openai"}
+	ts, _ := c.StreamTurn(context.Background(), TurnRequest{Model: "gpt-5"})
+	evs, _ := drainStream(t, ts)
+	u := evs[len(evs)-1].(Finish).Usage
+	if u.InputTokens != 40 || u.CacheReadTokens != 60 {
+		t.Fatalf("usage = %#v, want fresh in=40 cacheRead=60", u)
+	}
+	if got := u.InputTokens + u.CacheReadTokens; got != 100 {
+		t.Fatalf("occupancy basis InputTokens+CacheReadTokens = %d, want 100 (full cache-inclusive prompt, counted once)", got)
 	}
 }
 

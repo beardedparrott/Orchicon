@@ -337,6 +337,17 @@ type oaUsage struct {
 	} `json:"prompt_tokens_details"`
 }
 
+// oaNoCache derives the fresh (uncached) input-token figure from an
+// OpenAI-compatible usage block: prompt_tokens is cache-INCLUSIVE, so
+// fresh = max(0, prompt − cached). Mirrors legacyNoCache for the legacy
+// envelope's cache-inclusive totalUsage.
+func oaNoCache(total, cached int64) int64 {
+	if d := total - cached; d > 0 {
+		return d
+	}
+	return 0
+}
+
 type openaiStream struct {
 	r    *sseReader
 	body io.Closer
@@ -405,12 +416,21 @@ func (s *openaiStream) Next(ctx context.Context) (Event, bool, error) {
 		// Usage arrives on the trailing usage-only chunk (choices empty) or
 		// the final content chunk — record whenever present (last wins).
 		if ch.Usage != nil {
-			s.usage.InputTokens = ch.Usage.PromptTokens
-			s.usage.OutputTokens = ch.Usage.CompletionTokens
-			s.usage.CacheReadTokens = 0
+			// Normalize InputTokens to the FRESH bucket (QA bug A):
+			// OpenAI-compat prompt_tokens is cache-INCLUSIVE — it already
+			// counts prompt_tokens_details.cached_tokens — while the
+			// normalized Usage contract prices cache sub-buckets separately
+			// (see legacyUsageToUsage). The window-pressure basis
+			// InputTokens+CacheReadTokens must not double-count a cache hit,
+			// and the fresh-token budget gate / CostFor pricing must not bill
+			// cached tokens twice.
+			cached := int64(0)
 			if ch.Usage.PromptTokensDetails != nil {
-				s.usage.CacheReadTokens = ch.Usage.PromptTokensDetails.CachedTokens
+				cached = ch.Usage.PromptTokensDetails.CachedTokens
 			}
+			s.usage.InputTokens = oaNoCache(ch.Usage.PromptTokens, cached)
+			s.usage.OutputTokens = ch.Usage.CompletionTokens
+			s.usage.CacheReadTokens = cached
 		}
 		for _, choice := range ch.Choices {
 			d := choice.Delta
