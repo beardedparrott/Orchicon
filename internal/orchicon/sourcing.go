@@ -74,19 +74,29 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 		out = append(out, catalogListByProvider(p.ID)...)
 	}
 
-	// 2. probe for custom compat entries (TTL-cached, non-fatal), and for
-	// built-ins whose effective base URL differs from the built-in table
-	// (an env/override value means the operator pointed us at a different
-	// endpoint — discover ITS models, not the vendored defaults).
+	// 2. probe for custom compat entries (TTL-cached, non-fatal); for
+	// built-ins whenever the operator has pointed the provider anywhere
+	// custom: a base-URL override, or a stored/env credential (both mean
+	// "use MY endpoint/account" — discover ITS live models, not the
+	// vendored snapshot). With no override and no credential, the vendored
+	// catalog serves as the offline default.
 	probeWanted := false
 	overrideAuthoritative := false
 	switch {
 	case p.Custom && p.Kind != ProfileKindAnthropic:
 		probeWanted = true
 	default:
-		if def, isBuiltin := builtinBaseURLs()[p.ID]; isBuiltin && p.BaseURL != def {
+		def, isBuiltin := builtinBaseURLs()[p.ID]
+		if !isBuiltin {
+			break
+		}
+		if p.BaseURL != def {
 			probeWanted = true
 			overrideAuthoritative = true
+			break
+		}
+		if auth != "" || (p.AuthEnv != "" && os.Getenv(p.AuthEnv) != "") {
+			probeWanted = true
 		}
 	}
 	if probeWanted {
@@ -98,9 +108,11 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 			} else {
 				s.warn("sourcing: probe failed for provider %s — serving manual entries only (visibly degraded)", p.ID)
 			}
-		} else if overrideAuthoritative {
-			// The override endpoint is authoritative: serve ITS models
-			// instead of the vendored catalog (manual entries merge below).
+		} else if overrideAuthoritative || auth != "" {
+			// Live truth beats the vendored snapshot: an override endpoint
+			// is authoritative by definition, and a credentialed probe of
+			// the default endpoint reflects the operator's actual account
+			// (plan-gated models etc.) — serve ITS models, not the catalog.
 			out = probed
 		} else {
 			out = append(out, probed...)

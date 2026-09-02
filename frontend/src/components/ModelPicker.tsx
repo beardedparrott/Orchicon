@@ -114,11 +114,12 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     useNativeSourcing ? provider : "",
     useNativeSourcing && provider !== "",
   );
-  const legacyModelsQ = useListOpenCodeModels(
-    useNativeSourcing ? undefined : adapter,
-    useNativeSourcing ? undefined : provider,
-    !useNativeSourcing,
-  );
+  // Legacy adapters: the OLD WAY — one flat searchable model list from the
+  // unfiltered CLI discovery (no provider filter, no provider requirement;
+  // the provider tier below renders only under orchicon). The adapter
+  // filter stays off so a CLI whose provider namespace shifted still lists
+  // its models instead of filtering to an empty set.
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
   // The CLI-sourced provider tier derives from the same unfiltered
   // discovery as the model tier (cliModelsQ above) — one RPC, two
   // projections, exactly the old method's data flow.
@@ -395,7 +396,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         </div>
       </div>
 
-      {/* Tier 2 — provider list scoped to the selected adapter (built-in ∪ custom). */}
+      {/* Tier 2 — provider list. Orchicon only: the native bridge resolves
+           models THROUGH providers, so the provider tier gates its model
+           tier. Legacy CLI adapters discover models directly from the CLI
+           (the old way) — no provider tier, no provider gate. */}
+      {useNativeSourcing && (
       <div>
         <span className="mb-1 block text-xs font-medium text-muted-foreground">Provider</span>
         {providersLoading && <p className="text-xs text-muted-foreground">Loading providers...</p>}
@@ -445,8 +450,10 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           </div>
         )}
       </div>
+      )}
 
-      {/* Tier 3 — searchable model list scoped to the selected provider. */}
+      {/* Tier 3 — searchable model list. Under orchicon: provider-scoped
+           (gated on provider). Under legacy adapters: flat, always enabled. */}
       <div className={showDropdown ? "relative z-10 space-y-1" : "relative space-y-1"}>
         <span className="mb-1 block text-xs font-medium text-muted-foreground">Model</span>
         {selectedModel && !showDropdown ? (
@@ -468,9 +475,9 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           <>
             <Input
               ref={inputRef}
-              placeholder={provider ? "Search models..." : "Select a provider first"}
+              placeholder={useNativeSourcing && !provider ? "Select a provider first" : "Search models..."}
               value={search}
-              disabled={!provider}
+              disabled={useNativeSourcing && !provider}
               onChange={(e) => {
                 setSearch(e.target.value);
                 setShowDropdown(true);
@@ -478,7 +485,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
               onFocus={() => setShowDropdown(true)}
               onKeyDown={handleKeyDown}
             />
-            {showDropdown && provider && (
+            {showDropdown && (!useNativeSourcing || provider) && (
               <div
                 ref={dropdownRef}
                 className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
