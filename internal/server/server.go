@@ -203,15 +203,34 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		webhookDisp = webhook.NewDispatcher(pool, sub, log)
 	}
 
-	// Model discoverer: shells out to opencode CLI to list models.
-	// Falls back to a static mock list in dev mode when opencode is
-	// not on PATH (docs/04 §6).
+	// Model discoverer: shells out to opencode CLI to list models (the
+	// legacy opencode/claude adapter picker path). Binary resolution: the
+	// ORCHICON_OPENCODE_BIN env override first (the path the discovery
+	// error message has always advertised), then PATH. Falls back to a
+	// static mock list ONLY in local mode — a production plane without
+	// the binary must surface the actionable Unimplemented error, never
+	// silently serve 4 fake models (docs/04 §6).
 	var modelDiscoverer *aigateway.ModelDiscoverer
-	if _, err := exec.LookPath("opencode"); err == nil {
-		modelDiscoverer = aigateway.NewModelDiscoverer(log, "opencode")
-	} else {
-		log.Warn("opencode binary not found on PATH, using mock model list", "error", err)
-		modelDiscoverer = aigateway.MockModelDiscoverer(log)
+	opencodeBin := os.Getenv("ORCHICON_OPENCODE_BIN")
+	if opencodeBin == "" {
+		if p, err := exec.LookPath("opencode"); err == nil {
+			opencodeBin = p
+		}
+	}
+	if opencodeBin != "" {
+		if _, err := os.Stat(opencodeBin); err == nil {
+			modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
+		} else {
+			log.Warn("ORCHICON_OPENCODE_BIN set but not found, ignoring", "path", opencodeBin, "error", err)
+		}
+	}
+	if modelDiscoverer == nil {
+		if cfg.Mode == config.ModeProduction {
+			log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		} else {
+			log.Warn("opencode binary not found on PATH, using mock model list", "mode", cfg.Mode)
+			modelDiscoverer = aigateway.MockModelDiscoverer(log)
+		}
 	}
 
 	// MCP discoverer: shells out to opencode CLI to list MCP servers.

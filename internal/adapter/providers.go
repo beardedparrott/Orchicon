@@ -44,6 +44,12 @@ type BuiltinProviderCatalog struct {
 // (the ADR-0003 pinned examples). The opencode kind is seeded with the
 // v0.1 provider profiles; the server extends it with the live model
 // discoverer's provider ids via AddAdapterKind (union, dedup).
+//
+// The orchicon kind (native bridge, ADR-0004) serves EVERY built-in
+// provider profile (internal/orchicon profile table) plus the operator's
+// local models — the picker's orchicon provider tier mirrors this (all
+// enabled entries from Settings → Adapters). Provider ids are the
+// canonical profile ids (commandcode, not "command-code").
 func NewBuiltinProviderCatalog() *BuiltinProviderCatalog {
 	c := &BuiltinProviderCatalog{
 		adapterKinds: make(map[string]struct{}),
@@ -52,7 +58,9 @@ func NewBuiltinProviderCatalog() *BuiltinProviderCatalog {
 	c.AddAdapterKind(DefaultAdapterKind,
 		"anthropic", "openai", "local", "opencode", "opencode-go")
 	c.AddAdapterKind("claude", "anthropic")
-	c.AddAdapterKind("orchicon", "command-code", "local-models")
+	c.AddAdapterKind("orchicon",
+		"anthropic", "openai", "openrouter", "opencode", "opencode-go",
+		"commandcode", "ollama", "local-models")
 	return c
 }
 

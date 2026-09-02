@@ -40,7 +40,8 @@ re-savable — never hidden, blank, or erroring).
   (`IsKnownAdapter`, `IsKnownProvider`, `Providers(adapterKind) []string`) +
   `BuiltinProviderCatalog` seeded with kinds `opencode` (providers
   anthropic/openai/local/opencode/opencode-go), `claude` (anthropic),
-  `orchicon` (command-code/local-models). **Tenant custom providers are
+  `orchicon` (commandcode/local-models — all built-in profiles serve under
+  the native bridge). **Tenant custom providers are
   contract-only** — no custom_provider table in `db/migrations` yet.
 - `internal/scheduler/dispatcher.go`: `Dispatcher.Register`/`Resolve`; only
   `opencode` is registered today (`internal/server/server.go` ~line 338).

@@ -1116,13 +1116,20 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	if !enabled {
 		return ModelsResult{Models: []ModelRow{}, Enabled: false}, nil
 	}
-	_, sourcing, _ := s.substrate()
+	_, sourcing, resolver := s.substrate()
+	// Resolve the credential (tenant secret → env) for the probe: an
+	// auth-requiring endpoint 401s an unauthenticated probe, which today
+	// degrades silently into a "probe failed" state. Resolve mirrors the
+	// real client path; ErrAuthMissing resolves to "" (the probe proceeds
+	// unauthenticated — non-fatal by design, and public/local endpoints
+	// succeed without a credential).
+	bearer, _ := resolver.Resolve(ctx, tenantID, profile) //nolint:errcheck // probe stays non-fatal without a credential
 	// Ask the substrate for the UNFILTERED merged list (hidden set cleared),
 	// then annotate visibility here — re-hiding is only possible when hidden
 	// entries stay visible to the operator.
 	unfiltered := profile
 	unfiltered.HiddenModels = nil
-	res := sourcing.ListModels(ctx, unfiltered)
+	res := sourcing.ListModels(ctx, unfiltered, bearer)
 	hidden := make(map[string]bool, len(profile.HiddenModels))
 	for _, id := range profile.HiddenModels {
 		hidden[id] = true

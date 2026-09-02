@@ -21,7 +21,8 @@ from the ref (`internal/scheduler/reconciler.go:1084`,
    ref (`opencode` for unset refs, `DEFAULT_ADAPTER_KIND` in
    `frontend/src/lib/model-ref.ts`). The decided product default for fresh
    selections is `orchicon` (the native adapter kind; providers
-   `command-code`, `local-models` already exist in the catalog).
+   `commandcode`, `local-models` already exist in the catalog — the native
+   bridge serves every built-in provider profile).
 3. **Adapter-change handling.** Nothing validates that a CHANGED adapter's
    provider/model are valid for the new adapter (e.g. switching
    `opencode`→`claude` while keeping an opencode-only model must be

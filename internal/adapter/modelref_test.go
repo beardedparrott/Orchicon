@@ -34,9 +34,9 @@ func TestParseModelRef(t *testing.T) {
 		{"opencode/opencode-go/deepseek-v4-flash", "opencode", "opencode-go", "deepseek-v4-flash"},
 		{"orchicon/local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL", "orchicon", "local-models", "Qwen3.6-35B-A3B-UD-Q4_K_XL"},
 		// Slashed model ids (4+ segments): the model field is VERBATIM.
-		{"orchicon/command-code/deepseek/deepseek-v4-flash", "orchicon", "command-code", "deepseek/deepseek-v4-flash"},
+		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon", "commandcode", "deepseek/deepseek-v4-flash"},
 		{"opencode/provider/a/b/c", "opencode", "provider", "a/b/c"},
-		{"opencode/command-code/deepseek/deepseek-v4-flash", "opencode", "command-code", "deepseek/deepseek-v4-flash"},
+		{"opencode/commandcode/deepseek/deepseek-v4-flash", "opencode", "commandcode", "deepseek/deepseek-v4-flash"},
 		// 1-segment legacy bare model id.
 		{"deepseek-v4-flash", "opencode", "", "deepseek-v4-flash"},
 		{"test-model", "opencode", "", "test-model"},
@@ -120,11 +120,11 @@ func TestParseModelRefNilRegistry(t *testing.T) {
 	if got.Adapter != "opencode" || got.Provider != "opencode" || got.Model != "deepseek-v4-flash-free" {
 		t.Errorf("ParseModelRef(nil reg) = %+v, want {opencode opencode deepseek-v4-flash-free}", got)
 	}
-	got, err = ParseModelRef("orchicon/command-code/deepseek/deepseek-v4-flash", nil)
+	got, err = ParseModelRef("orchicon/commandcode/deepseek/deepseek-v4-flash", nil)
 	if err != nil {
 		t.Fatalf("ParseModelRef(nil reg, slashed) error = %v", err)
 	}
-	if got.Adapter != "orchicon" || got.Provider != "command-code" || got.Model != "deepseek/deepseek-v4-flash" {
+	if got.Adapter != "orchicon" || got.Provider != "commandcode" || got.Model != "deepseek/deepseek-v4-flash" {
 		t.Errorf("ParseModelRef(nil reg, slashed) = %+v, want model verbatim", got)
 	}
 }
@@ -136,7 +136,7 @@ func TestAdapterKind(t *testing.T) {
 	}{
 		{"opencode/opencode-go/deepseek-v4-flash", "opencode"},
 		{"claude/anthropic/claude-sonnet-5", "claude"},
-		{"orchicon/command-code/deepseek/deepseek-v4-flash", "orchicon"},
+		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon"},
 		{"opencode/deepseek-v4-flash-free", "opencode"}, // legacy 2-seg
 		{"anthropic/claude-sonnet-4", "opencode"},       // legacy 2-seg
 		{"deepseek-v4-flash", "opencode"},               // legacy 1-seg
@@ -161,7 +161,7 @@ func TestSplitForServe(t *testing.T) {
 		{"opencode/deepseek-v4-flash-free", "opencode", "deepseek-v4-flash-free", true},
 		{"anthropic/claude-sonnet-4", "anthropic", "claude-sonnet-4", true},
 		{"opencode/opencode-go/deepseek-v4-flash", "opencode-go", "deepseek-v4-flash", true},
-		{"orchicon/command-code/deepseek/deepseek-v4-flash", "command-code", "deepseek/deepseek-v4-flash", true},
+		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "commandcode", "deepseek/deepseek-v4-flash", true},
 		{"claude/anthropic/claude-sonnet-5", "anthropic", "claude-sonnet-5", true},
 		{"deepseek-v4-flash", "", "", false},
 		{"", "", "", false},

@@ -26,7 +26,7 @@ func TestResolveAdapterRowKind(t *testing.T) {
 		{"claude", "opencode/anthropic/m", "claude"},
 		// Empty runtime_ref: the model_ref's parsed adapter kind governs
 		// (the persisted selection routes row selection too).
-		{"", "orchicon/command-code/deepseek/deepseek-v4-flash", "orchicon"},
+		{"", "orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon"},
 		{"", "claude/anthropic/m", "claude"},
 		// Empty runtime_ref + legacy 2-segment ref: the parser's inference
 		// (opencode) — backward compat pinned.

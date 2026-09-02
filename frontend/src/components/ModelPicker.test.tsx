@@ -14,7 +14,10 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
-    expect(src).toContain("useListOpenCodeModels(adapter, provider)");
+    // Per-adapter data source (ADR-0004): native → providers service,
+    // legacy CLI adapters → opencode-CLI discovery.
+    expect(src).toContain("useProviderModelsForPicker");
+    expect(src).toContain("useListOpenCodeModels(");
     expect(src).toMatch(/Search models\.\.\./);
   });
 

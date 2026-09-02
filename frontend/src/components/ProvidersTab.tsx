@@ -184,6 +184,11 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
   const [showModels, setShowModels] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // Batch visibility editing (ADR-0006 D4 operator flow): checkbox toggles
+  // stage a draft hidden-set; the explicit Save button commits
+  // hiddenModels in ONE update. null = no draft open (checkboxes mirror
+  // entry.hiddenModels); non-null = the draft set being edited.
+  const [draftHidden, setDraftHidden] = useState<Set<string> | null>(null);
 
   const updateSettings = useUpdateProviderSettings();
   const setTokenMut = useSetProviderToken();
@@ -235,6 +240,41 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
         onError: (e) => setMsg(String(e)),
       },
     );
+  }
+
+  // Draft visibility editing: checkbox source of truth while a draft is
+  // open; Save commits once, Discard reverts the staged set.
+  const storedHidden = new Set(entry.hiddenModels ?? []);
+  const currentHidden = draftHidden ?? storedHidden;
+
+  function toggleModel(id: string, visible: boolean) {
+    setMsg(null);
+    const next = new Set(currentHidden);
+    if (visible) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setDraftHidden(next);
+  }
+
+  function saveVisibility() {
+    setMsg(null);
+    if (draftHidden === null) return;
+    updateSettings.mutate(
+      { providerId: entry.id, hiddenModels: [...draftHidden] },
+      {
+        onSuccess: () => {
+          setDraftHidden(null);
+          setMsg("Model visibility saved.");
+        },
+        onError: (e) => setMsg(String(e)),
+      },
+    );
+  }
+
+  function discardVisibility() {
+    setDraftHidden(null);
   }
 
   return (
@@ -354,13 +394,8 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
                   <label key={m.id} className="flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
-                      checked={m.visible}
-                      onChange={(e) => {
-                        const hidden = e.target.checked
-                          ? (entry.hiddenModels ?? []).filter((h) => h !== m.id)
-                          : [...(entry.hiddenModels ?? []), m.id];
-                        updateSettings.mutate({ providerId: entry.id, hiddenModels: hidden }, { onError: (err) => setMsg(String(err)) });
-                      }}
+                      checked={!currentHidden.has(m.id)}
+                      onChange={(e) => toggleModel(m.id, e.target.checked)}
                     />
                     <code>{m.id}</code>
                     {m.source === "manual" && <span className="rounded bg-muted px-1 text-[10px]">manual</span>}
@@ -374,6 +409,17 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
                     )}
                   </label>
                 ))}
+                {draftHidden !== null && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button size="sm" className="h-7" onClick={saveVisibility} disabled={updateSettings.isPending}>
+                      {updateSettings.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7" onClick={discardVisibility} disabled={updateSettings.isPending}>
+                      Discard
+                    </Button>
+                    <span className="text-[10px] text-muted-foreground">Selection staged — click Save to apply.</span>
+                  </div>
+                )}
                 {modelsQ.data && (modelsQ.data.models ?? []).length === 0 && !modelsQ.data.degraded && (
                   <p className="text-xs text-muted-foreground">No models discovered.</p>
                 )}

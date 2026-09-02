@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useListAdapterKinds, useListOpenCodeModels } from "@/api/aigateway";
-import { useProviderList } from "@/api/providers";
+import { useProviderList, useProviderModelsForPicker } from "@/api/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -71,11 +71,26 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     ?.filter((p) => p.enabled)
     .filter((p) => scopedIds === null || scopedIds.has(p.id))
     .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
-  const {
-    data: models,
-    isLoading: modelsLoading,
-    error: modelsError,
-  } = useListOpenCodeModels(adapter, provider);
+  // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
+  // resolves models from the providers service (vendored catalog ⊕ probe ⊕
+  // manual — the Settings → Adapters sourcing view); the legacy CLI
+  // adapters keep opencode-CLI discovery (whose provider namespace the
+  // native bridge does not share — filtering CLI output by orchicon
+  // providers would be structurally empty). Both hooks run unconditionally
+  // (rules of hooks); each query fetches only for its own source.
+  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
+  const nativeModelsQ = useProviderModelsForPicker(
+    useNativeSourcing ? provider : "",
+    useNativeSourcing && provider !== "",
+  );
+  const legacyModelsQ = useListOpenCodeModels(
+    useNativeSourcing ? undefined : adapter,
+    useNativeSourcing ? undefined : provider,
+    !useNativeSourcing,
+  );
+  const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
+  const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
+  const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
 
   const adapterList = adapterKinds && adapterKinds.length > 0 ? adapterKinds : [DEFAULT_ADAPTER_KIND];
   // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw

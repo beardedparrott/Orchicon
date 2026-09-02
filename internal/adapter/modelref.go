@@ -21,7 +21,7 @@ const DefaultAdapterKind = "opencode"
 //
 // The model field is the remainder after the first two segments, VERBATIM
 // (internal slashes preserved — e.g. the Command Code ref
-// "orchicon/command-code/deepseek/deepseek-v4-flash" parses to
+// "orchicon/commandcode/deepseek/deepseek-v4-flash" parses to
 // Model "deepseek/deepseek-v4-flash"). The parser NEVER splits the model
 // field at an internal slash, and model-id validation must not forbid "/".
 type ModelRef struct {
