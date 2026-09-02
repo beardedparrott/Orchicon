@@ -206,10 +206,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// Model discoverer: shells out to opencode CLI to list models (the
 	// legacy opencode/claude adapter picker path). Binary resolution: the
 	// ORCHICON_OPENCODE_BIN env override first (the path the discovery
-	// error message has always advertised), then PATH. Falls back to a
-	// static mock list ONLY in local mode — a production plane without
-	// the binary must surface the actionable Unimplemented error, never
-	// silently serve 4 fake models (docs/04 §6).
+	// error message has always advertised), then PATH. NO mock fallback in
+	// any mode (operator directive: never serve synthesized model lists —
+	// they confuse users during connection issues). Without the binary the
+	// discoverer stays nil and ListOpenCodeModels returns the actionable
+	// Unimplemented error naming the env var.
 	var modelDiscoverer *aigateway.ModelDiscoverer
 	opencodeBin := os.Getenv("ORCHICON_OPENCODE_BIN")
 	if opencodeBin == "" {
@@ -225,12 +226,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 	}
 	if modelDiscoverer == nil {
-		if cfg.Mode == config.ModeProduction {
-			log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
-		} else {
-			log.Warn("opencode binary not found on PATH, using mock model list", "mode", cfg.Mode)
-			modelDiscoverer = aigateway.MockModelDiscoverer(log)
-		}
+		log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
 	}
 
 	// MCP discoverer: shells out to opencode CLI to list MCP servers.

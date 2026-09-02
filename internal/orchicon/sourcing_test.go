@@ -12,22 +12,44 @@ import (
 	"time"
 )
 
-// --- Model sourcing (D9): catalog → probe → manual ----------------------------
+// --- Model sourcing (D9): probe (live truth) → manual, catalog=metadata-only
 
-func TestSourcingBuiltinUsesCatalog(t *testing.T) {
+func TestSourcingProbeFailureYieldsNoModels(t *testing.T) {
+	// Built-in profile, default endpoint, unreachable: no synthesized
+	// fallback — an empty, degraded list (operator directive).
 	p, _ := BuiltinProfile("anthropic")
+	p.BaseURL = "http://127.0.0.1:1" // unreachable
+	s := NewSourcingService(nil, nil)
+	res := s.ListModels(context.Background(), p)
+	if !res.Degraded {
+		t.Fatal("unreachable endpoint must be visibly degraded")
+	}
+	if len(res.Models) != 0 {
+		t.Fatalf("no synthesized fallback allowed: %d models", len(res.Models))
+	}
+}
+
+func TestSourcingProbeServesLiveList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"claude-sonnet-4"},{"id":"claude-opus-4"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	p, _ := BuiltinProfile("anthropic")
+	p.BaseURL = srv.URL
 	s := NewSourcingService(nil, nil)
 	res := s.ListModels(context.Background(), p)
 	if res.Degraded {
-		t.Fatal("builtin must not degrade")
+		t.Fatal("live probe must not degrade")
 	}
-	if len(res.Models) == 0 {
-		t.Fatal("no catalog models")
-	}
+	// Live ids served; catalog ENRICHES the known one (context hint), never
+	// adds unknown ids.
+	byID := map[string]ModelInfo{}
 	for _, m := range res.Models {
-		if m.Context <= 0 {
-			t.Fatalf("catalog model %s missing context", m.ID)
-		}
+		byID[m.ID] = m
+	}
+	if len(res.Models) != 2 || byID["claude-sonnet-4"].Context == 0 {
+		t.Fatalf("live list + enrichment = %#v", res.Models)
 	}
 }
 
@@ -114,7 +136,10 @@ func TestSourcingMergeManualWinsDeduped(t *testing.T) {
 }
 
 func TestSourcingVisibilityToggles(t *testing.T) {
-	p, _ := BuiltinProfile("anthropic")
+	// Visibility must filter even a manual-only list (probe unreachable):
+	// hidden ids never surface regardless of source.
+	p := Profile{ID: "vis", Kind: ProfileKindCustom, Custom: true, BaseURL: "http://127.0.0.1:1", Visible: true,
+		ManualModels: []ModelInfo{{ID: "claude-opus-4", Context: 8192, Visible: true}, {ID: "keep-me", Context: 4096, Visible: true}}}
 	p.HiddenModels = []string{"claude-opus-4"}
 	s := NewSourcingService(nil, nil)
 	res := s.ListModels(context.Background(), p)
@@ -123,25 +148,16 @@ func TestSourcingVisibilityToggles(t *testing.T) {
 			t.Fatal("hidden model must be filtered")
 		}
 	}
-	if len(res.Models) == 0 {
-		t.Fatal("other models must remain")
+	if len(res.Models) != 1 || res.Models[0].ID != "keep-me" {
+		t.Fatalf("other manual models must remain: %#v", res.Models)
 	}
 }
 
 func TestSourcingWarnsNoContextHint(t *testing.T) {
 	var logs []string
 	log := slog.New(slogMock{lines: &logs})
-	p, _ := BuiltinProfile("anthropic")
-	s := NewSourcingService(log, nil)
-	s.ListModels(context.Background(), p)
-	for _, l := range logs {
-		if strings.Contains(l, "no context hint") {
-			t.Fatalf("catalog entries all have context; got %v", logs)
-		}
-	}
 
 	// A manual entry WITHOUT a context hint triggers the WARN.
-	logs = nil
 	p2 := Profile{ID: "y", Kind: ProfileKindCustom, Custom: true, BaseURL: "http://x", Visible: true,
 		ManualModels: []ModelInfo{{ID: "no-hint", Visible: true}}}
 	s2 := NewSourcingService(log, nil)

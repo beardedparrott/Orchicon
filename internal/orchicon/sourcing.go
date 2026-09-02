@@ -15,13 +15,17 @@ import (
 	"time"
 )
 
-// SourcingService (D9): model sourcing per provider, fallback order
-//  1. vendored catalog (built-in profiles),
-//  2. GET {baseURL}/models probe (custom compat entries; TTL-cached,
-//     non-fatal, visibly degraded on failure),
-//  3. manual model entries (operator-added hints).
+// SourcingService (D9): model sourcing per provider. LIVE TRUTH ONLY
+// (operator directive: no synthesized model lists — a failing connection
+// must show failure, never a list of models that "seemingly exist"):
+//  1. GET {baseURL}/models probe (per-wire URL derivation; TTL-cached;
+//     non-fatal — a failed probe yields NO models, visibly degraded),
+//  2. manual model entries (operator-added, always served).
 //
-// Probed + manual merge deduped (manual wins), filtered by visibility.
+// The vendored catalog is metadata enrichment only: probed entries are
+// enriched by id match (context/output/tools/pricing) — the catalog NEVER
+// contributes model ids. Probed ⊕ manual merge deduped (manual wins),
+// filtered by visibility.
 type SourcingService struct {
 	Log  *slog.Logger
 	HTTP *http.Client
@@ -48,7 +52,7 @@ func NewSourcingService(log *slog.Logger, httpc *http.Client) *SourcingService {
 // ListResult is one ListModels result with degraded status.
 type ListResult struct {
 	Models   []ModelInfo
-	Degraded bool // probe failed — serving manual/catalog only
+	Degraded bool // probe failed — NO models served (manual entries still list)
 }
 
 // ListModels resolves models for a provider profile.
@@ -69,53 +73,57 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 	var out []ModelInfo
 	degraded := false
 
-	// 1. vendored catalog for built-in profiles.
-	if !p.Custom {
-		out = append(out, catalogListByProvider(p.ID)...)
-	}
+	// 1. The vendored catalog is NOT a model SOURCE — live truth only
+	// (operator directive: synthesized lists confuse users during
+	// connection issues). The catalog serves as metadata enrichment:
+	// after a successful probe, entries are enriched by ID match with
+	// catalog context/pricing — never adding ids the endpoint did not
+	// report. Manual entries remain the operator's explicit model list.
 
-	// 2. probe for custom compat entries (TTL-cached, non-fatal); for
-	// built-ins whenever the operator has pointed the provider anywhere
-	// custom: a base-URL override, or a stored/env credential (both mean
-	// "use MY endpoint/account" — discover ITS live models, not the
-	// vendored snapshot). With no override and no credential, the vendored
-	// catalog serves as the offline default.
-	probeWanted := false
-	overrideAuthoritative := false
+	// 2. probe — THE source for built-ins and customs alike (with manual
+	// entries merged). For built-ins: whenever the operator has
+	// personalized the provider (base-URL override or stored/env
+	// credential) OR always (every built-in has a documented endpoint;
+	// a failed probe is non-fatal and yields an EMPTY list — never the
+	// vendored snapshot, per the no-synthesized-models directive).
+	// Override endpoints stay authoritative for their model list.
+	probeWanted := true
 	switch {
-	case p.Custom && p.Kind != ProfileKindAnthropic:
-		probeWanted = true
-	default:
-		def, isBuiltin := builtinBaseURLs()[p.ID]
-		if !isBuiltin {
-			break
-		}
-		if p.BaseURL != def {
-			probeWanted = true
-			overrideAuthoritative = true
-			break
-		}
-		if auth != "" || (p.AuthEnv != "" && os.Getenv(p.AuthEnv) != "") {
-			probeWanted = true
-		}
+	case p.Custom && p.Kind == ProfileKindAnthropic:
+		// Custom anthropic-wire profiles have no listable endpoint shape.
+		probeWanted = false
 	}
 	if probeWanted {
 		probed, ok := s.probe(ctx, key, p, auth)
 		if !ok {
 			degraded = true
-			if overrideAuthoritative {
-				s.warn("sourcing: probe failed for built-in %s (base-URL override %s) — serving vendored catalog", p.ID, p.BaseURL)
-			} else {
-				s.warn("sourcing: probe failed for provider %s — serving manual entries only (visibly degraded)", p.ID)
-			}
-		} else if overrideAuthoritative || auth != "" {
-			// Live truth beats the vendored snapshot: an override endpoint
-			// is authoritative by definition, and a credentialed probe of
-			// the default endpoint reflects the operator's actual account
-			// (plan-gated models etc.) — serve ITS models, not the catalog.
-			out = probed
+			s.warn("sourcing: probe failed for provider %s — NO models served (no synthesized fallback); fix the endpoint/token or add manual entries", p.ID)
 		} else {
 			out = append(out, probed...)
+			// Catalog = metadata enrichment by id match (context/output/
+			// tools/pricing), never new ids.
+			for i := range out {
+				c, ok := GetModel(p.ID + "/" + out[i].ID)
+				if !ok {
+					continue
+				}
+				if out[i].Context <= 0 && c.Context > 0 {
+					out[i].Context = c.Context
+				}
+				if out[i].MaxOutput <= 0 && c.MaxOutput > 0 {
+					out[i].MaxOutput = c.MaxOutput
+				}
+				if out[i].Tools == nil && c.Tools != nil {
+					t := *c.Tools
+					out[i].Tools = &t
+				}
+				if len(out[i].ReasoningEfforts) == 0 && len(c.ReasoningEfforts) > 0 {
+					out[i].ReasoningEfforts = c.ReasoningEfforts
+				}
+				if out[i].Pricing == nil && c.Pricing != nil {
+					out[i].Pricing = c.Pricing
+				}
+			}
 		}
 	}
 

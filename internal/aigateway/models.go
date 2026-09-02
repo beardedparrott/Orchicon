@@ -320,69 +320,6 @@ func parseModelJSON(ref string, data []byte) (*apiv1.OpenCodeModel, error) {
 	return m, nil
 }
 
-// MockModelDiscoverer returns a discoverer that always returns the
-// hardcoded provider/ model list without shelling out. Useful for
-// dev mode when the opencode binary is absent.
-func MockModelDiscoverer(log *slog.Logger) *ModelDiscoverer {
-	d := &ModelDiscoverer{
-		log:    log.With("component", "model_discoverer"),
-		binary: "",
-		ttl:    24 * time.Hour,
-	}
-	now := time.Now()
-	d.cache = mockModels()
-	d.cached = now
-	return d
-}
-
-func mockModels() []*apiv1.OpenCodeModel {
-	return []*apiv1.OpenCodeModel{
-		{
-			Id: "claude-sonnet-4", ProviderId: "anthropic", Name: "Claude Sonnet 4", Family: "claude-sonnet",
-			Status: "active", ModelRef: "anthropic/claude-sonnet-4", ReleaseDate: "2025-06-15",
-			Cost: &apiv1.ModelCost{Input: 3, Output: 15, CacheRead: 0.3},
-			Limits: &apiv1.ModelLimits{Context: 200000, Output: 64000},
-			Capabilities: &apiv1.ModelCapabilities{
-				Temperature: true, Reasoning: true, Attachment: true, Toolcall: true,
-				InputText: true, InputImage: true, InputPdf: true, OutputText: true,
-			},
-			Variants: []string{"none", "low", "medium", "high"},
-		},
-		{
-			Id: "claude-opus-4", ProviderId: "anthropic", Name: "Claude Opus 4", Family: "claude-opus",
-			Status: "active", ModelRef: "anthropic/claude-opus-4", ReleaseDate: "2025-06-15",
-			Cost: &apiv1.ModelCost{Input: 15, Output: 75, CacheRead: 1.5},
-			Limits: &apiv1.ModelLimits{Context: 200000, Output: 64000},
-			Capabilities: &apiv1.ModelCapabilities{
-				Temperature: false, Reasoning: true, Attachment: true, Toolcall: true,
-				InputText: true, InputImage: true, InputPdf: true, OutputText: true,
-			},
-			Variants: []string{"medium", "high", "xhigh"},
-		},
-		{
-			Id: "deepseek-v4-flash", ProviderId: "opencode-go", Name: "DeepSeek V4 Flash (Opencode Go)", Family: "deepseek",
-			Status: "active", ModelRef: "opencode-go/deepseek-v4-flash", ReleaseDate: "2025-08-01",
-			Cost: &apiv1.ModelCost{Input: 2, Output: 8, CacheRead: 0.25},
-			Limits: &apiv1.ModelLimits{Context: 128000, Output: 32000},
-			Capabilities: &apiv1.ModelCapabilities{
-				Temperature: true, Reasoning: true, Attachment: true, Toolcall: true,
-				InputText: true, InputImage: true, InputPdf: false, OutputText: true,
-			},
-			Variants: []string{"low", "medium", "high"},
-		},
-		{
-			Id: "deepseek-v4-flash-free", ProviderId: "opencode", Name: "DeepSeek V4 Flash (Free)", Family: "deepseek",
-			Status: "active", ModelRef: "opencode/deepseek-v4-flash-free", ReleaseDate: "2025-08-01",
-			Cost: &apiv1.ModelCost{Input: 0, Output: 0},
-			Limits: &apiv1.ModelLimits{Context: 128000, Output: 32000},
-			Capabilities: &apiv1.ModelCapabilities{
-				Temperature: true, Reasoning: true, Attachment: true, Toolcall: true,
-				InputText: true, InputImage: true, InputPdf: false, OutputText: true,
-			},
-			Variants: []string{"low", "medium", "high"},
-		},
-	}
-}
 
 // Ensure the discoverer respects context deadlines.
 var _ = (*ModelDiscoverer)(nil)

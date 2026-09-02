@@ -96,7 +96,16 @@ func (r *Registry) profile(ctx context.Context, tenantID, providerID string) (Pr
 // build constructs the concrete client for a resolved profile.
 func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provider, error) {
 	modelsFn := func(ctx context.Context) ([]ModelInfo, error) {
-		res := r.src.ListModels(ctx, p)
+		// The runtime probe carries the resolved credential (secret →
+		// env) — the sourcing probe must authenticate exactly like the
+		// chat calls (live truth only; an unauthenticated probe would
+		// 401 and serve an empty list). Auth-optional profiles resolve
+		// to "" (Ollama, local servers).
+		bearer, _ := r.creds.Resolve(ctx, tenantID, p) //nolint:errcheck // probe stays non-fatal without a credential
+		res := r.src.ListModels(ctx, p, bearer)
+		if res.Degraded && len(res.Models) == 0 {
+			return nil, fmt.Errorf("sourcing: probe failed for provider %q — no models available (check endpoint/token)", p.ID)
+		}
 		return res.Models, nil
 	}
 	warn := r.warnLog

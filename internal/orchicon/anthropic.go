@@ -38,12 +38,15 @@ func (c *AnthropicClient) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true, ReasoningEfforts: true, ImageInput: true, CacheBreakpoints: true}
 }
 
-// ListModels resolves through the sourcing service (or catalog fallback).
+// ListModels resolves through the sourcing service. NO catalog fallback:
+// per the no-synthesized-models directive, a failed sourcing probe yields
+// no models — never the vendored snapshot (it would show models the
+// operator's endpoint does not actually serve).
 func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
 	}
-	return catalogListByProvider("anthropic"), nil
+	return nil, fmt.Errorf("anthropic: model sourcing not wired for this client")
 }
 
 // --- request wire types -----------------------------------------------------
