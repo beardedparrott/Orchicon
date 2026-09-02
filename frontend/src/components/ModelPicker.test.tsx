@@ -40,7 +40,7 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     // service view, which gates its model tier). Regression guard: the
     // legacy tier must never render a static hardcoded set — it must
     // auto-pull from the same discovery the model tier uses.
-    expect(src).toContain("cliModelsQ");
+    expect(src).toContain("legacyModelsQ");
     expect(src).toContain("All");
     expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
   });

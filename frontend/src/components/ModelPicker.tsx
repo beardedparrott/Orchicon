@@ -61,15 +61,15 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // (the old picker's grouping — opencode, opencode-go, deepseek, …), with
   // an "All" reset; the model input never requires a selection.
   const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
-  const cliModelsQ = useListOpenCodeModels(
-    useNativeSourcing ? undefined : adapter,
-    undefined,
-    !useNativeSourcing,
-  );
+  // ONE unfiltered CLI query serves BOTH the provider pills (distinct
+  // providerID values) and the model list under legacy adapters — two
+  // queries with different keys each shell out `opencode models --verbose`
+  // (~1–2s), doubling the picker's open latency.
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
   const providers = useMemo(() => {
     if (!useNativeSourcing) {
       const ids = new Map<string, { id: string; name: string; custom: boolean }>();
-      for (const m of cliModelsQ.data ?? []) {
+      for (const m of legacyModelsQ.data ?? []) {
         if (m.providerId && !ids.has(m.providerId)) {
           ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
         }
@@ -79,7 +79,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     return (providerEntries ?? [])
       .filter((p) => p.enabled)
       .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
-  }, [useNativeSourcing, providerEntries, cliModelsQ.data]);
+  }, [useNativeSourcing, providerEntries, legacyModelsQ.data]);
   // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
   // resolves models from the providers service (vendored catalog ⊕ probe ⊕
   // manual — the Settings → Adapters sourcing view); the legacy CLI
@@ -91,15 +91,8 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     useNativeSourcing ? provider : "",
     useNativeSourcing && provider !== "",
   );
-  // Legacy adapters: the OLD WAY — one flat searchable model list from the
-  // unfiltered CLI discovery (no provider filter, no provider requirement;
-  // the provider tier below renders only under orchicon). The adapter
-  // filter stays off so a CLI whose provider namespace shifted still lists
-  // its models instead of filtering to an empty set.
-  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
-  // The CLI-sourced provider tier derives from the same unfiltered
-  // discovery as the model tier (cliModelsQ above) — one RPC, two
-  // projections, exactly the old method's data flow.
+  // (legacyModelsQ is declared once, above, feeding both the provider
+  // pills and the model tier — one RPC, two projections.)
   const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
   const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
   const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
@@ -147,6 +140,16 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     if (!models || !parsed) return null;
     return models.find((m) => catalogModelMatches(parsed, m)) ?? null;
   }, [models, parsed]);
+  // No selection yet → the panel MUST be open (the picker's entry point is
+  // the in-box panel; a closed panel with nothing selected would leave
+  // only the search input, and an orchicon flow without a provider has no
+  // model list to interact with — QA round 3 dead-end class). Declared
+  // AFTER selectedModel (temporal-dead-zone: effects close over it).
+  useEffect(() => {
+    if (!showDropdown && value.trim() === "" && !selectedModel) {
+      setShowDropdown(true);
+    }
+  }, [showDropdown, value, selectedModel]);
 
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
@@ -193,23 +196,23 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Adapter selection: rescope provider (and reset provider/model tiers so no
-  // stale selection leaks across adapters — ADR-0004 stale-selection guard;
-  // pinned as the ADR-0005 D4 reset contract: switching adapters NEVER
-  // carries the previous selection into the new scope and no ref is written
-  // until a model under the new adapter is chosen — a clean re-selection,
-  // never a hidden mutation of the stored ref).
+  // Adapter selection: rescope provider and reset the model tier (no stale
+  // selection leaks across adapters — ADR-0004 stale-selection guard;
+  // ADR-0005 D4 reset contract: switching adapters NEVER carries the
+  // previous selection into the new scope and no ref is written until a
+  // model under the new adapter is chosen). The panel STAYS OPEN — the
+  // tiers live inside the box now, and closing it here would strand the
+  // user: orchicon with no provider yet renders a DISABLED input that can
+  // never fire onFocus to reopen (QA round 3 bug #2).
   function selectAdapter(kind: string) {
     setAdapter(kind);
     setProvider("");
     setSearch("");
-    setShowDropdown(false);
   }
 
   function selectProvider(id: string) {
     setProvider(id);
     setSearch("");
-    setShowDropdown(false);
   }
 
   function selectModel(model: OpenCodeModel) {
@@ -378,10 +381,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           <Input
             ref={inputRef}
             placeholder={
-              useNativeSourcing && !provider ? "Select a provider first" : "Search models..."
+              useNativeSourcing && !provider
+                ? "Pick a provider below, then search models"
+                : "Search models..."
             }
             value={search}
-            disabled={useNativeSourcing && !provider}
             onChange={(e) => {
               setSearch(e.target.value);
               setShowDropdown(true);
