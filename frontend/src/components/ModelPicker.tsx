@@ -61,16 +61,48 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   } = useProviderList();
   // ProviderRegistry semantics (ADR-0003 D3): the provider tier is scoped
   // to the SELECTED ADAPTER — the merged providers list is the tenant-wide
-  // union, so scope it here (opencode → the opencode-profile providers;
-  // legacy 2-segment ref inference infers opencode, never orchicon).
-  const scopedIds =
-    adapter === ORCHICON_ADAPTER_KIND
-      ? null // the product-default kind: every built-in + enabled custom provider
-      : LEGACY_ADAPTER_PROVIDER_IDS[adapter] ?? null;
-  const providers = providerEntries
-    ?.filter((p) => p.enabled)
-    .filter((p) => scopedIds === null || scopedIds.has(p.id))
-    .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
+  // union, so scope it here. Legacy CLI adapters AUTO-PULL their provider
+  // tier from the live CLI discovery (the old way): the distinct
+  // providerID values `opencode models --verbose` emits, derived from the
+  // same discovery the model tier uses. The static LEGACY set remains the
+  // validation floor (the backend model RPC filters by the registry set),
+  // so a provider the CLI no longer emits is never offered; enabled
+  // customs stay selectable. Under orchicon the tier is the full union.
+  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
+  const cliModelsQ = useListOpenCodeModels(
+    useNativeSourcing ? undefined : adapter,
+    undefined,
+    !useNativeSourcing,
+  );
+  const scopedIds = useMemo(() => {
+    if (useNativeSourcing) return null;
+    const floor = LEGACY_ADAPTER_PROVIDER_IDS[adapter];
+    if (!floor) return null;
+    const s = new Set(floor);
+    for (const m of cliModelsQ.data ?? []) {
+      if (m.providerId) s.add(m.providerId);
+    }
+    return s;
+  }, [useNativeSourcing, adapter, cliModelsQ.data]);
+  // Tier-2 entries: under the NATIVE kind, the enabled merged view (full
+  // union — scopedIds is null there). Under legacy CLI adapters, the
+  // Settings entries within scope ∪ the CLI's distinct providerID values
+  // projected as entries — so the tier auto-pulls exactly like the old
+  // method (a provider the CLI emits but Settings doesn't know still
+  // shows; one without Settings entry renders under its bare id).
+  const providers = useMemo(() => {
+    const fromSettings = (providerEntries ?? [])
+      .filter((p) => p.enabled)
+      .filter((p) => scopedIds === null || scopedIds.has(p.id))
+      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
+    if (scopedIds === null) return fromSettings;
+    const byId = new Map(fromSettings.map((p) => [p.id, p]));
+    for (const m of cliModelsQ.data ?? []) {
+      if (!m.providerId || byId.has(m.providerId)) continue;
+      byId.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+    }
+    return [...byId.values()];
+  }, [providerEntries, scopedIds, cliModelsQ.data]);
   // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
   // resolves models from the providers service (vendored catalog ⊕ probe ⊕
   // manual — the Settings → Adapters sourcing view); the legacy CLI
@@ -78,7 +110,6 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // native bridge does not share — filtering CLI output by orchicon
   // providers would be structurally empty). Both hooks run unconditionally
   // (rules of hooks); each query fetches only for its own source.
-  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
   const nativeModelsQ = useProviderModelsForPicker(
     useNativeSourcing ? provider : "",
     useNativeSourcing && provider !== "",
@@ -88,6 +119,9 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     useNativeSourcing ? undefined : provider,
     !useNativeSourcing,
   );
+  // The CLI-sourced provider tier derives from the same unfiltered
+  // discovery as the model tier (cliModelsQ above) — one RPC, two
+  // projections, exactly the old method's data flow.
   const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
   const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
   const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;

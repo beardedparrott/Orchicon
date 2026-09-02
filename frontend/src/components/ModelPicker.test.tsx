@@ -32,11 +32,13 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("scopes the merged provider tier to the selected adapter (ProviderRegistry semantics)", () => {
     // The merged providers list is tenant-wide; the tier filters it to the
-    // selected adapter's provider set (legacy kinds from the catalog mirror,
-    // orchicon = full union). Regression guard: tier 2 must never render the
-    // whole tenant union under a legacy adapter kind.
+    // selected adapter's provider set (legacy kinds: the static catalog
+    // floor ∪ the live CLI's distinct providerID values — auto-pull like
+    // the old method; orchicon = full union). Regression guard: tier 2
+    // must never render the whole tenant union under a legacy adapter kind.
     expect(src).toContain("LEGACY_ADAPTER_PROVIDER_IDS");
     expect(src).toContain("scopedIds");
+    expect(src).toContain("cliModelsQ");
     expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
   });
 
