@@ -76,13 +76,17 @@ const (
 // OutputTokens — never summed into totals (matches the usage-records cache
 // migration 20260828). CacheRead/CacheWrite are Anthropic cache_read_/
 // cache_creation_input_tokens and OpenAI prompt_tokens_details.cached_tokens
-// (OpenAI has no cache-write → 0).
+// (OpenAI has no cache-write → 0). CostUSD is the LIVE provider-priced cost
+// of this turn (resolved by the wire client from the model's catalog/probe
+// pricing); 0 when the model has no pricing — the budget cost gate then
+// never fires on it, never a synthesized estimate.
 type Usage struct {
 	InputTokens      int64
 	OutputTokens     int64
 	ReasoningTokens  int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
+	CostUSD          float64
 }
 
 // TotalTokens is input + output (cache tokens are input sub-classes, and

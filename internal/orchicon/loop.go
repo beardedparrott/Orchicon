@@ -229,6 +229,12 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
 		// miss-write / none) and accumulate cached tokens.
 		s.recordTurnUsage(usage)
+		// Price this turn's LIVE usage for the budget cost gate through the
+		// session model's resolved catalog/probe pricing (shared pipeline —
+		// ModelInfo.CostFor is the same pricing the gateway's usage recorder
+		// applies). 0 when the model has no pricing — the cost dimension
+		// then never fires; never a synthesized estimate.
+		usage.CostUSD = s.priceUsage(ctx, usage)
 
 		// Guarded compaction at the quiet turn boundary (D1): fires only on
 		// true context-window pressure (live hint) or the budget gate, from

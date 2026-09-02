@@ -16,9 +16,15 @@ import (
 type ctxModelProvider struct {
 	mockProvider
 	ctxTokens int64
+	// models, when set, is returned verbatim by ListModels (overrides the
+	// ctxTokens convenience) — lets a test carry live Pricing too.
+	models []ModelInfo
 }
 
 func (p *ctxModelProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	if p.models != nil {
+		return p.models, nil
+	}
 	if p.ctxTokens <= 0 {
 		return nil, nil
 	}
@@ -146,18 +152,41 @@ func TestCompactionBudgetGateFiresOnce(t *testing.T) {
 }
 
 // AC: true-window pressure (live hint) fires at pressure_frac of the real
-// window; below it nothing fires.
+// window for the CURRENT TURN's live occupancy; below it nothing fires —
+// and many sub-threshold turns never accumulate into a fire (F3: the
+// pressure basis is the current request's occupancy, never the cumulative
+// re-sent-prefix rollup, which over-counts by ~turn count).
 func TestCompactionWindowPressureFires(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":2}}`, 1000)
 	seedHistory(s)
 	ctx := context.Background()
-	s.recordTurnUsage(Usage{InputTokens: 750})
-	if s.maybeCompact(ctx, 3, Usage{InputTokens: 750}) {
-		t.Fatalf("compaction fired below pressure_frac")
+	// Sub-threshold turns: 500 tokens on a 1000-token window = 50% — never
+	// fires, no matter how many turns accumulate (the old cumulative basis
+	// fired at step 4; the corrected per-turn basis must not).
+	for step := 2; step < 12; step++ {
+		s.recordTurnUsage(Usage{InputTokens: 500})
+		if fired := s.maybeCompact(ctx, step, Usage{InputTokens: 500}); fired {
+			t.Fatalf("compaction fired at step %d from sub-threshold turns", step)
+		}
 	}
-	s.recordTurnUsage(Usage{InputTokens: 150})
-	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 150}) {
+	if s.cs.compactions != 0 {
+		t.Fatalf("compactions = %d after sub-threshold turns, want 0", s.cs.compactions)
+	}
+	// One over-threshold turn (850/1000 = 85% ≥ 0.8) fires exactly once.
+	s.recordTurnUsage(Usage{InputTokens: 850})
+	if !s.maybeCompact(ctx, 13, Usage{InputTokens: 850}) {
 		t.Fatalf("compaction did not fire at window pressure")
+	}
+	if s.cs.compactions != 1 {
+		t.Fatalf("compactions = %d, want exactly 1", s.cs.compactions)
+	}
+	// Same-band re-evaluation does not re-fire (at-most-once per band).
+	s.recordTurnUsage(Usage{InputTokens: 860})
+	if s.maybeCompact(ctx, 14, Usage{InputTokens: 860}) {
+		t.Fatalf("compaction re-fired on the same pressure band")
+	}
+	if s.cs.compactions != 1 {
+		t.Fatalf("compactions = %d, want exactly 1", s.cs.compactions)
 	}
 }
 
@@ -209,5 +238,153 @@ func writeMem(t *testing.T, s *Session, ms *agentmemory.Store, title string) {
 	})
 	if err != nil {
 		t.Fatalf("writeMem: %v", err)
+	}
+}
+
+// F2 regression: after a middle-only eviction, every assistant tool_use
+// that REMAINS in history has a matching tool_result (and vice versa) — no
+// orphaned tool_use (invalid Anthropic/OpenAI history). The eviction unit
+// is the assistant tool_use message WITH its paired tool-result message:
+// middle rounds are evicted wholesale, while a pair that lands in the
+// recent tail survives verbatim.
+func TestCompactionEvictionPreservesToolUseResultPairing(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":4}}`, 1000)
+	// History: two old fully-evictable middle rounds, then a user turn and
+	// a RECENT round whose pair lands in the pinned tail (recent_turns=4 →
+	// last 4 messages verbatim).
+	goal := "Goal."
+	s.history = []Message{
+		{Role: RoleUser, Content: []Content{{Text: &goal}}},
+		assistantToolUseMsg("old_1", "bash", `{"cmd":"ls"}`),
+		toolResultMsg("old_1", "old output one"),
+		{Role: RoleUser, Content: []Content{{Text: ptrStr("continue")}}},
+		assistantToolUseMsg("old_2", "glob", `{}`),
+		toolResultMsg("old_2", "old output two"),
+		{Role: RoleUser, Content: []Content{{Text: ptrStr("go")}}},
+		assistantToolUseMsg("recent_use", "read", `{"path":"x"}`),
+		toolResultMsg("recent_use", "recent tail result"),
+		assistantTextMsg("Final assistant text."),
+	}
+	// Fire window pressure on an over-threshold turn.
+	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+		t.Fatalf("expected compaction to fire")
+	}
+	h := s.History()
+	// Every remaining assistant tool_use must have a matching tool_result in
+	// history AND every remaining tool_result must have a matching tool_use.
+	toolUses := map[string]bool{}
+	toolResults := map[string]bool{}
+	for _, m := range h {
+		for _, c := range m.Content {
+			if c.ToolUse != nil {
+				toolUses[c.ToolUse.ToolCallID] = true
+			}
+			if c.ToolResult != nil {
+				toolResults[c.ToolResult.ToolCallID] = true
+			}
+		}
+	}
+	for id := range toolUses {
+		if !toolResults[id] {
+			t.Errorf("ORPHANED tool_use %q (no tool_result in history)", id)
+		}
+	}
+	for id := range toolResults {
+		if !toolUses[id] {
+			t.Errorf("ORPHANED tool_result %q (no tool_use in history)", id)
+		}
+	}
+	// The recent tail pair survives; the old middle rounds are gone.
+	if !toolUses["recent_use"] || !toolResults["recent_use"] {
+		t.Errorf("recent tail pair missing: uses=%v results=%v", toolUses, toolResults)
+	}
+	for _, gone := range []string{"old_1", "old_2"} {
+		if toolUses[gone] || toolResults[gone] {
+			t.Errorf("middle round %q survived eviction: uses=%v results=%v", gone, toolUses, toolResults)
+		}
+	}
+}
+
+// The recent tail is verbatim: a tool_result that lands in the pinned tail
+// keeps its paired assistant tool_use even when the tool_use sits in the
+// middle (evicting the use would orphan the kept result), and a tool_use in
+// the tail keeps its middle result (evicting the result would orphan the
+// kept use).
+func TestCompactionTailPairingIsPreserved(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":3}}`, 1000)
+	// History: goal, old pair (fully evictable), then a user + a tool_use
+	// whose RESULT message sits in the pinned tail (recent_turns=3 → the
+	// last 3 messages are verbatim).
+	goal := "Goal."
+	s.history = []Message{
+		{Role: RoleUser, Content: []Content{{Text: &goal}}},
+		assistantToolUseMsg("old_1", "bash", `{}`),
+		toolResultMsg("old_1", "old output"),
+		{Role: RoleUser, Content: []Content{{Text: ptrStr("continue")}}},
+		assistantToolUseMsg("tail_use", "read", `{"path":"x"}`),
+		toolResultMsg("tail_use", "tail result output"),
+	}
+	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+		t.Fatalf("expected compaction to fire")
+	}
+	h := s.History()
+	foundUse, foundResult := false, false
+	for _, m := range h {
+		for _, c := range m.Content {
+			if c.ToolUse != nil && c.ToolUse.ToolCallID == "tail_use" {
+				foundUse = true
+			}
+			if c.ToolResult != nil && c.ToolResult.ToolCallID == "tail_use" {
+				foundResult = true
+			}
+		}
+	}
+	if !foundUse || !foundResult {
+		t.Fatalf("tail tool_use/result pair was broken: use=%v result=%v", foundUse, foundResult)
+	}
+	// The evictable old pair (old_1 use+result) is gone.
+	for _, m := range h {
+		for _, c := range m.Content {
+			if (c.ToolUse != nil && c.ToolUse.ToolCallID == "old_1") ||
+				(c.ToolResult != nil && c.ToolResult.ToolCallID == "old_1") {
+				t.Fatalf("old_1 pair survived — expected eviction of the full round")
+			}
+		}
+	}
+}
+
+// F4: a budget whose ONLY over-budget dimension is cost_usd fires exactly
+// once when the session prices real usage through the model's live pricing.
+// Mirrors the loop: each turn's usage is priced via priceUsage (the shared
+// ModelInfo.CostFor path) before maybeCompact folds it in.
+func TestCompactionCostBudgetGateFiresWithPricing(t *testing.T) {
+	// recent_turns:2 so the seeded middle tool rounds fall OUTSIDE the
+	// pinned tail and are evictable (the default 6 would pin them and
+	// doCompact would correctly no-op on an empty eviction).
+	s, prov, _, _ := compactTestSession(t, `{"tokens":0,"cost_usd":0.01,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
+	seedHistory(s)
+	// The mock provider reports NO context window (window trigger inert) but
+	// DOES carry live pricing for the session model.
+	prov.ctxTokens = 0
+	prov.models = []ModelInfo{{
+		ID:      "deepseek-v4-flash",
+		Pricing: &Pricing{InputPerM: 1.0, OutputPerM: 2.0, CacheReadPerM: 0.1, Currency: "USD", Source: "test"},
+	}}
+	ctx := context.Background()
+	price := func(u Usage) Usage { u.CostUSD = s.priceUsage(ctx, u); return u }
+	// 3000 input tokens at $1/M = $0.003; two such turns = $0.006 (escalate
+	// at 0.5 of a $0.01 gate) — fires on the second.
+	if s.maybeCompact(ctx, 2, price(Usage{InputTokens: 3000})) {
+		t.Fatalf("compaction fired below the cost escalate tier")
+	}
+	if !s.maybeCompact(ctx, 3, price(Usage{InputTokens: 3000})) {
+		t.Fatalf("compaction did not fire at the cost escalate tier")
+	}
+	if s.cs.compactions != 1 {
+		t.Fatalf("compactions = %d, want exactly 1", s.cs.compactions)
+	}
+	// Same-tier re-evaluation does not re-fire.
+	if s.maybeCompact(ctx, 4, price(Usage{InputTokens: 3000})) {
+		t.Fatalf("compaction re-fired on the same cost tier")
 	}
 }

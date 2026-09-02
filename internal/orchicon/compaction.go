@@ -8,11 +8,13 @@ package orchicon
 // alone when no window hint exists, never guesses a window, and never
 // uses estimated/interpolated usage.
 //
-// The compaction POLICY is middle-only eviction of OLD TOOL RESULTS
-// (originals disk-offloaded), with the pinned goal head, assistant
-// tool_use/reasoning and user turns untouched, and the recent tail kept
-// verbatim. At most once per threshold band (anti-loop latch), with a
-// min-turn floor and a per-execution cap.
+// The compaction POLICY is middle-only eviction of OLD TOOL ROUNDS (an
+// assistant tool_use with its paired tool_result — originals disk-offloaded),
+// with the pinned goal head, assistant text and user turns untouched, and
+// the recent tail kept verbatim — so no orphaned tool_use (or orphaned
+// tool_result) ever remains in the marshaled history. At most once per
+// threshold band (anti-loop latch), with a min-turn floor and a
+// per-execution cap.
 
 import (
 	"bufio"
@@ -151,21 +153,29 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) bool 
 	}
 
 	// Live usage only: fold this turn's REAL provider-reported usage into
-	// the shared accumulator (never an estimate).
-	s.cs.spend.AddFromUsage(usage.InputTokens, usage.OutputTokens, usage.ReasoningTokens, usage.CacheReadTokens, 0)
+	// the shared accumulator (never an estimate). The cost figure is the
+	// LIVE provider-priced cost the wire client resolved from the model's
+	// catalog/probe pricing (0 when the model has no pricing — the cost
+	// dimension then never fires, never a synthesized estimate).
+	s.cs.spend.AddFromUsage(usage.InputTokens, usage.OutputTokens, usage.ReasoningTokens, usage.CacheReadTokens, usage.CostUSD)
 
 	// Trigger (a): true context-window pressure (armed only when a live
-	// hint resolved — no hint means the window trigger is inert).
+	// hint resolved — no hint means the window trigger is inert). The
+	// pressure figure is THIS TURN's LIVE provider-reported occupancy —
+	// the input+cache-read tokens of the request just sent — never the
+	// cumulative rollup (which re-sums the whole re-sent prefix every turn
+	// and would over-count by ~turn count). This keeps the comparison
+	// honest: a session whose individual requests never approach the window
+	// never fires, and one request that genuinely approaches it fires once.
 	hint := s.resolveContextWindow(ctx)
 	if hint.Ok && hint.Tokens > 0 {
 		s.cs.armed = true
 		s.cs.hint = hint
-		// The pressure figure is the LIVE accumulated re-sent prefix the
-		// provider reported each turn (input + cache reads).
-		s.cacheMu.Lock()
-		input := s.cacheStats.InputTokens + s.cacheStats.CacheReadTokens
-		s.cacheMu.Unlock()
-		frac := float64(input) / float64(hint.Tokens)
+		occupancy := usage.InputTokens + usage.CacheReadTokens
+		if occupancy <= 0 {
+			return false
+		}
+		frac := float64(occupancy) / float64(hint.Tokens)
 		if frac >= s.cp.PressureFrac {
 			band := int(frac * defaultCompactionBands)
 			if band > s.cs.lastBand {
@@ -242,11 +252,15 @@ type evictedToolResult struct {
 	EvictedAt  string `json:"evicted_at"`
 }
 
-// evictMiddleToolResults removes middle RoleTool messages (keeping the
-// pinned goal head, every non-tool message, and the recent tail verbatim)
-// and returns the evicted originals for offload. Mutates s.history only
-// after eviction is committed by the caller (offload first, then the
-// caller's latch update; the mutation itself is applied here).
+// evictMiddleToolResults removes middle tool rounds — an assistant
+// tool_use and its paired tool-result message TOGETHER as a unit — keeping
+// the pinned goal head, every non-tool message, and the recent tail
+// verbatim. Evicting the pair (never a result alone, never a tool_use
+// alone) preserves the provider contract: every assistant tool_use that
+// REMAINS in history has a matching tool_result, so the marshaled next
+// request is valid for Anthropic and OpenAI. Returns the evicted originals
+// for offload. Mutates s.history only after eviction is committed by the
+// caller (offload first, then the caller's latch update).
 func (s *Session) evictMiddleToolResults() []evictedToolResult {
 	keep := s.cp.RecentTurns
 	if keep < 1 {
@@ -275,56 +289,126 @@ func (s *Session) evictMiddleToolResults() []evictedToolResult {
 		return nil
 	}
 
-	var evicted []evictedToolResult
-	headSeg := make([]Message, 0, head+1)
-	midSeg := make([]Message, 0, n)
-	tailSeg := make([]Message, 0, keep)
-	seq := 0
+	// resultMsgIndex maps each tool_call_id to the history index of its
+	// RoleTool result message. An assistant tool_use ALWAYS precedes its
+	// result message, so when the result message sits in the evictable
+	// middle (head < index < tailStart) its paired tool_use is also in the
+	// middle — the whole round is evictable as a unit. A result that landed
+	// in the pinned tail keeps its tool_use (evicting the use would orphan
+	// the kept result).
+	resultMsgIndex := map[string]int{}
 	for i, m := range s.history {
-		switch {
-		case i == head:
-			headSeg = append(headSeg, m)
-		case i >= tailStart:
-			tailSeg = append(tailSeg, m) // recent tail verbatim
-		case m.Role == RoleTool:
-			// Middle tool result: evict + offload the original.
-			for _, c := range m.Content {
-				if c.ToolResult == nil {
-					continue
-				}
-				seq++
-				name, args := "", ""
-				if j := toolCallByID(s.history, c.ToolResult.ToolCallID); j != nil {
-					name, args = j.Name, j.ArgsJSON
-				}
-				evicted = append(evicted, evictedToolResult{
-					Seq:        seq,
-					Turn:       i,
-					ToolCallID: c.ToolResult.ToolCallID,
-					Tool:       name,
-					Args:       args,
-					Output:     c.ToolResult.Content,
-					EvictedAt:  time.Now().UTC().Format(time.RFC3339),
-				})
+		if m.Role != RoleTool {
+			continue
+		}
+		for _, c := range m.Content {
+			if c.ToolResult != nil {
+				resultMsgIndex[c.ToolResult.ToolCallID] = i
 			}
-		default:
-			midSeg = append(midSeg, m) // assistant/user turns survive
+		}
+	}
+
+	// toolUseInTail marks a tool_call_id whose tool_use message sits in the
+	// pinned tail — its result message (which precedes it) must never be
+	// evicted, or the tail's tool_use would be orphaned.
+	toolUseInTail := map[string]bool{}
+	for i := tailStart; i < n; i++ {
+		for _, c := range s.history[i].Content {
+			if c.ToolUse != nil {
+				toolUseInTail[c.ToolUse.ToolCallID] = true
+			}
+		}
+	}
+
+	// dropMsg[i] = true when history[i] is removed entirely.
+	dropMsg := make([]bool, n)
+	// Evictable middle tool results: offload each original and drop the
+	// result message. A result message is skipped (kept verbatim) when its
+	// tool_use lives in the pinned tail.
+	var evicted []evictedToolResult
+	seq := 0
+	for i := head + 1; i < tailStart; i++ {
+		m := s.history[i]
+		if m.Role != RoleTool {
+			continue
+		}
+		skip := false
+		for _, c := range m.Content {
+			if c.ToolResult != nil && toolUseInTail[c.ToolResult.ToolCallID] {
+				skip = true // tail tool_use depends on this result — keep it
+			}
+		}
+		if skip {
+			continue
+		}
+		dropMsg[i] = true
+		for _, c := range m.Content {
+			if c.ToolResult == nil {
+				continue
+			}
+			seq++
+			name, args := "", ""
+			if j := toolCallByID(s.history, c.ToolResult.ToolCallID); j != nil {
+				name, args = j.Name, j.ArgsJSON
+			}
+			evicted = append(evicted, evictedToolResult{
+				Seq:        seq,
+				Turn:       i,
+				ToolCallID: c.ToolResult.ToolCallID,
+				Tool:       name,
+				Args:       args,
+				Output:     c.ToolResult.Content,
+				EvictedAt:  time.Now().UTC().Format(time.RFC3339),
+			})
 		}
 	}
 	if len(evicted) == 0 {
 		return nil
 	}
 
-	// Rebuild: head + surviving middle + digest marker + recent tail. The
-	// marker is a USER message at the eviction boundary so the model knows
-	// what disappeared and how to re-read an original.
+	// Evict the paired assistant tool_use blocks: a middle assistant
+	// message's tool_use whose result message was dropped above is removed
+	// with it. A message that had text or surviving tool_use blocks keeps
+	// them; a pure tool_use message whose every call was evicted is dropped
+	// wholesale (no orphaned tool_use remains either way).
+	for i := head + 1; i < tailStart; i++ {
+		m := s.history[i]
+		if m.Role != RoleAssistant || dropMsg[i] {
+			continue
+		}
+		kept := make([]Content, 0, len(m.Content))
+		droppedAny := false
+		for _, c := range m.Content {
+			if c.ToolUse != nil && dropMsg[resultMsgIndex[c.ToolUse.ToolCallID]] {
+				droppedAny = true
+				continue // evicted with its result
+			}
+			kept = append(kept, c)
+		}
+		if droppedAny && len(kept) == 0 {
+			dropMsg[i] = true // pure tool_use message, fully evicted
+		} else if droppedAny {
+			m.Content = kept // text and/or surviving calls stay verbatim
+			s.history[i] = m
+		}
+	}
+
+	// Rebuild: surviving messages (head + kept middle) + digest marker +
+	// recent tail. The marker is a USER message at the eviction boundary so
+	// the model knows what disappeared and how to re-read an original.
 	markerText := s.offloadDigestMarker(evicted)
 	marker := Message{Role: RoleUser, Content: []Content{{Text: &markerText}}}
-	out := make([]Message, 0, len(headSeg)+len(midSeg)+1+len(tailSeg))
-	out = append(out, headSeg...)
-	out = append(out, midSeg...)
+	out := make([]Message, 0, n+1)
+	for i := 0; i < tailStart; i++ {
+		if dropMsg[i] {
+			continue
+		}
+		out = append(out, s.history[i])
+	}
 	out = append(out, marker)
-	out = append(out, tailSeg...)
+	for i := tailStart; i < n; i++ {
+		out = append(out, s.history[i])
+	}
 	s.history = out
 	return evicted
 }

@@ -120,10 +120,14 @@ type Session struct {
 	startedAt time.Time
 	// toolUses counts executed tool calls (live, for the tools dimension).
 	toolUses int
-	// window cache: resolved once per session (never per-turn probed).
+	// window cache: resolved once per session (never per-turn probed). The
+	// resolved ModelInfo (live ListModels result) carries the context hint
+	// AND the pricing used to price each turn's usage for the budget cost
+	// dimension — one live resolution serves both.
 	windowMu       sync.Mutex
 	windowResolved bool
 	windowHint     ContextWindowHint
+	windowModel    *ModelInfo
 	// cacheStats accumulates per-session prefix-cache metrics (ADR-0009
 	// D6): cache hit/miss classification per turn + cached tokens.
 	cacheMu    sync.Mutex

@@ -38,8 +38,20 @@ type TenantSettingsRow struct {
 	MaxConcurrentRunsSet             bool         // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
 	SessionAccessTokenTtlSeconds     int64        // access-token TTL in seconds; 0 = leave unchanged on update
 	SessionRefreshTokenTtlSeconds    int64        // refresh-token TTL in seconds; 0 = leave unchanged on update
-	CreatedAt                        time.Time
-	UpdatedAt                        time.Time
+	// ContextCompactionEnabled / ContextCompactionPressureFrac /
+	// ContextRecentTurns / MemoryEnabled / MemoryDigestEntries are the typed
+	// compaction + memory policy columns (migration 20260916000000, D4).
+	// They serialize into the budget-JSON transport (context_compaction /
+	// memory keys) via BudgetJSON/ApplyBudgetJSON — the same keys the native
+	// session's policyFromSettings and a worker's budget_overrides parse —
+	// so tenant defaults + per-worker overrides layer through mergeBudgets.
+	ContextCompactionEnabled      bool
+	ContextCompactionPressureFrac float64
+	ContextRecentTurns            int
+	MemoryEnabled                 bool
+	MemoryDigestEntries           int
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
 }
 
 // GetTenantSettings returns the current settings for a tenant. If no row
@@ -69,6 +81,8 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
+		context_compaction_enabled, context_compaction_pressure_frac,
+		context_recent_turns, memory_enabled, memory_digest_entries,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -106,6 +120,8 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
+		context_compaction_enabled, context_compaction_pressure_frac,
+		context_recent_turns, memory_enabled, memory_digest_entries,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -142,6 +158,21 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 			in.Budget = cur.Budget
 		}
 	}
+	// Same guard for the compaction/memory policy columns: an all-zero
+	// policy struct means the caller did not intend to change the policy
+	// (an explicit "disable" is never all-zero — disabling compaction still
+	// carries a valid pressure_frac/recent_turns, disabling memory still a
+	// valid digest_entries). Overlay the current policy so a partial
+	// settings update can never clobber stored policy with zeros.
+	if !in.policyIsSet() {
+		if cur, err := GetTenantSettings(ctx, tx, tenantID); err == nil {
+			in.ContextCompactionEnabled = cur.ContextCompactionEnabled
+			in.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
+			in.ContextRecentTurns = cur.ContextRecentTurns
+			in.MemoryEnabled = cur.MemoryEnabled
+			in.MemoryDigestEntries = cur.MemoryDigestEntries
+		}
+	}
 	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -166,8 +197,10 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
 		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
 		stall_tool_hang_seconds,
+		context_compaction_enabled, context_compaction_pressure_frac,
+		context_recent_turns, memory_enabled, memory_digest_entries,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -226,6 +259,11 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_compact_escalate_tier = $57,
 		budget_compact_final_tier = $58,
 		stall_tool_hang_seconds = CASE WHEN $59 <> 0 THEN $59 ELSE tenant_settings.stall_tool_hang_seconds END,
+		context_compaction_enabled = $60,
+		context_compaction_pressure_frac = $61,
+		context_recent_turns = $62,
+		memory_enabled = $63,
+		memory_digest_entries = $64,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -251,6 +289,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
+		context_compaction_enabled, context_compaction_pressure_frac,
+		context_recent_turns, memory_enabled, memory_digest_entries,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -277,6 +317,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.Budget.WarnMsgTime, in.Budget.EscMsgTime, in.Budget.FinalMsgTime,
 		in.Budget.CompactWarnTier, in.Budget.CompactEscalTier, in.Budget.CompactFinalTier,
 		in.StallToolHangSeconds,
+		in.ContextCompactionEnabled, in.ContextCompactionPressureFrac,
+		in.ContextRecentTurns, in.MemoryEnabled, in.MemoryDigestEntries,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -286,6 +328,17 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		return scanTenantSettings(row)
 	}
 	return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: no row returned")
+}
+
+// DeleteTenantSettings removes a tenant's settings row. Used by tests to
+// clean up scratch tenants; returns the number of rows deleted (0 when the
+// tenant had no row).
+func DeleteTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM tenant_settings WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("db: delete tenant settings: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
@@ -315,6 +368,8 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.MaxConcurrentRuns,
 		&r.SessionAccessTokenTtlSeconds, &r.SessionRefreshTokenTtlSeconds,
 		&r.StallToolHangSeconds,
+		&r.ContextCompactionEnabled, &r.ContextCompactionPressureFrac,
+		&r.ContextRecentTurns, &r.MemoryEnabled, &r.MemoryDigestEntries,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)
