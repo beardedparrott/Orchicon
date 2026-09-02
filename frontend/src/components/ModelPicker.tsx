@@ -38,6 +38,25 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   // ref is empty or unknown (never blank, never hidden).
   const [adapter, setAdapter] = useState<string>(() => parsed?.adapter ?? DEFAULT_ADAPTER_KIND);
   const [provider, setProvider] = useState<string>(() => parsed?.provider ?? "");
+  // The lazy useState initializers seed ONLY at mount — an externally-loaded
+  // value (async settings fetch filling the draft AFTER the picker's first
+  // render, e.g. client-side navigation into the Defaults tab) would never
+  // seed the tiers, leaving blank adapter/provider boxes until a hard
+  // refresh. This effect re-seeds the tiers whenever the value changes FROM
+  // OUTSIDE: user selections also flow through onChange→value, so re-seeding
+  // is idempotent for the same ref and only corrects external loads.
+  // While the user is mid-selection (tiers diverged from the stored ref —
+  // the stale-selection-guard state), never yank the tiers back.
+  const lastSeededRef = useRef<string>("");
+  useEffect(() => {
+    if (value === lastSeededRef.current) return; // no external change
+    lastSeededRef.current = value;
+    if (value.trim() === "") return; // empty = fresh selection flow
+    const next = parseModelRef(value);
+    if (!next) return; // malformed — leave tiers as-is (flagged instead)
+    setAdapter(next.adapter);
+    setProvider(next.provider);
+  }, [value]);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
