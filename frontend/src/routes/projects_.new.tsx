@@ -1,10 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
+import { useState } from "react";
 import { z } from "zod";
 
 import { useCreateProject } from "@/api/projects";
 import { GoalField } from "@/api/gen/orchicon/api/v1/project_pb";
+import { useSetProjectMCPServers } from "@/api/mcpServers";
+import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -54,6 +57,8 @@ type CreateProjectForm = z.input<typeof createProjectSchema>;
 function NewProjectPage() {
   const navigate = useNavigate();
   const createProject = useCreateProject();
+  const setProjectMCPServers = useSetProjectMCPServers();
+  const [mcpSelection, setMcpSelection] = useState<MCPConfig[]>([]);
   const {
     register,
     control,
@@ -82,26 +87,37 @@ function NewProjectPage() {
     const fallbackGoals = [...goals];
     // keep a hidden goal for backwards compat until proto is regenerated
     // the backend will prefer the typed field when present
+    let project: { id: string };
     try {
       // @ts-ignore - git_strategy may not yet be in generated types until `make gen`
-      const project = await (createProject.mutateAsync as any)({
+      project = await (createProject.mutateAsync as any)({
         name: values.name,
         slug: values.slug || undefined,
         goals: fallbackGoals.length > 0 ? fallbackGoals : undefined,
         gitStrategy: values.gitStrategy,
         git_strategy: values.gitStrategy,
       });
-      navigate({ to: "/projects/$id", params: { id: project.id } });
     } catch (e) {
       // fallback: encode gitStrategy into goals if proto field not recognized
       const withStrategy = [...fallbackGoals, new GoalField({ key: "__git_strategy", value: values.gitStrategy })];
-      const project = await createProject.mutateAsync({
+      project = await createProject.mutateAsync({
         name: values.name,
         slug: values.slug || undefined,
         goals: withStrategy,
       } as any);
-      navigate({ to: "/projects/$id", params: { id: project.id } });
     }
+    // Persist MCP server selection (references, never copies) after creation.
+    if (mcpSelection.length > 0) {
+      try {
+        await setProjectMCPServers.mutateAsync({
+          projectId: project.id,
+          mcpServerIds: mcpSelection.map((c) => c.id),
+        });
+      } catch (err) {
+        console.error("Failed to save project MCP selection", err);
+      }
+    }
+    navigate({ to: "/projects/$id", params: { id: project.id } });
   };
 
   return (
@@ -160,6 +176,16 @@ function NewProjectPage() {
               value={gitStrategy as GitStrategy}
               onValueChange={(v) => setValue("gitStrategy", v as GitStrategy)}
             />
+
+            <div className="space-y-2">
+              <Label>MCP servers</Label>
+              <p className="text-xs text-muted-foreground">
+                MCP servers enabled for this project (references — leave
+                empty to inherit the tenant default). Configured in Settings
+                → Adapters → MCP.
+              </p>
+              <MCPPicker value={mcpSelection} onChange={setMcpSelection} />
+            </div>
 
             <div className="space-y-2">
               <Label>Goals</Label>

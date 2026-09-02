@@ -49,10 +49,15 @@ type NativeBridge struct {
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
 	// mcpConfig resolves the session's MCP server selection (ADR-0008:
-	// worker → project → none over the tenant server list). Nil/absent →
-	// no MCP tools (sessions unaffected). Defaults to the no-op source so
-	// the feature degrades safely until adapter-settings storage lands.
+	// worker → project → tenant-default → none over the tenant server list).
+	// Nil/absent → no MCP tools (sessions unaffected). Defaults to the no-op
+	// source so the feature degrades safely until adapter-settings storage
+	// lands.
 	mcpConfig mcpclient.ConfigSource
+	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
+	// env/headers with stored tenant-secret plaintext at session time.
+	// Nil → pass-through (no secret resolution).
+	mcpSecretResolver MCPSecretResolver
 }
 
 // liveSession is the bridge's handle on one running session.
@@ -90,6 +95,12 @@ func (b *NativeBridge) SetConfigSource(src mcpclient.ConfigSource) {
 	b.mcpConfig = src
 }
 
+// SetMCPSecretResolver sets the ${SECRET_NAME} → plaintext resolver used
+// before MCP connections are established. Nil disables resolution.
+func (b *NativeBridge) SetMCPSecretResolver(r MCPSecretResolver) {
+	b.mcpSecretResolver = r
+}
+
 // ProviderResolverFunc adapts a function to ProviderResolver.
 type ProviderResolverFunc func(ctx context.Context, tenantID, providerID string) (Provider, error)
 
@@ -120,37 +131,28 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if pd == "" {
 		return fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-
 	// MCP tool resolution (ADR-0008): worker selection → project selection
-	// → none, over the tenant-configured server list. Connections are
-	// established NOW — per session, never at control-plane boot — and
-	// tool discovery runs at Start so the discovered signatures are
-	// present in the model's first request. A selected-but-unconfigured
-	// or unreachable server fails the session actionably (never silent);
-	// the no-op default source degrades to no MCP tools.
-	var tools ToolRegistry
-	if b.mcpConfig != nil {
-		res, rerr := mcpclient.Resolve(ctx, b.mcpConfig, exec.WorkerID, exec.ProjectID)
-		if rerr != nil {
-			return fmt.Errorf("orchicon bridge: resolve MCP servers: %w", rerr)
-		}
-		if len(res.Missing) > 0 {
-			return fmt.Errorf("orchicon bridge: MCP server(s) selected but not configured: %v — fix the worker/project MCP selection or the tenant server list", res.Missing)
-		}
-		if len(res.Servers) > 0 {
-			mgr := mcpclient.NewManager(b.log)
-			if _, merr := mgr.Start(ctx, res.Servers); merr != nil {
-				return fmt.Errorf("orchicon bridge: MCP connect: %w", merr)
-			}
-			// Start blocks until the session's terminal result; Close runs
-			// at session end (kills stdio children, closes HTTP).
-			defer func() { _ = mgr.Close() }()
-			tools = mcpTools{mgr: mgr}
-		}
+	// → tenant-default → none, over the tenant-configured server list.
+	// Connections are established NOW — per session, never at
+	// control-plane boot — and tool discovery runs at Start so the
+	// discovered signatures are present in the model's first request. A
+	// selected-but-unconfigured or unreachable server fails the session
+	// actionably (never silent); the no-op default source degrades to no
+	// MCP tools.
+	mt, terr := b.mcpResolveAndStart(ctx, exec)
+	if terr != nil {
+		return terr
 	}
-
-	// Sessions are per-execution. Resolve the provider once here (model
-	// bound at session start — no per-turn model switch).
+	// The ToolRegistry interface must stay a bare nil when no MCP servers
+	// resolve (the platform-default state): assigning a typed-nil
+	// *mcpTools into the interface makes it non-nil for the loop's
+	// `s.tools != nil` check, nil-panicking the first turn of every
+	// session (regression of the pre-PR `var tools ToolRegistry` pattern).
+	var tools ToolRegistry
+	if mt != nil {
+		tools = mt
+		defer func() { _ = mt.Close() }()
+	}
 	sess, err := NewSession(SessionConfig{
 		ExecRow:    exec,
 		Manifest:   manifest,
@@ -351,9 +353,19 @@ func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {}
 // ToolRegistry (ADR-0008): discovered tools surface as
 // mcp__<server>__<tool> with their JSON schemas passed through verbatim,
 // and calls route to the MCP server with per-call timeouts and
-// cancellation. The manager is closed by the bridge at session end.
+// cancellation. The manager is closed by the bridge at session end via
+// the close func set by mcpResolveAndStart.
 type mcpTools struct {
-	mgr *mcpclient.Manager
+	mgr   *mcpclient.Manager
+	close func() error
+}
+
+// Close tears down the MCP manager (kills stdio children, closes HTTP).
+func (m mcpTools) Close() error {
+	if m.close != nil {
+		return m.close()
+	}
+	return nil
 }
 
 // Defs implements ToolRegistry: the discovered MCP tool definitions.

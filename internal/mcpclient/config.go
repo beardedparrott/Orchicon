@@ -49,6 +49,10 @@ type ServerSpec struct {
 	// Headers are extra HTTP request headers (e.g. Authorization) for
 	// header/bearer auth on remote servers. OAuth is out of scope for v1.
 	Headers map[string]string `json:"headers,omitempty"`
+	// Env are extra environment variables for stdio servers (e.g.
+	// GITHUB_PERSONAL_ACCESS_TOKEN). Values are already resolved from the
+	// tenant secrets store by the caller — never placeholders.
+	Env map[string]string `json:"env,omitempty"`
 	// Timeout bounds each tool call against this server (and the connect
 	// handshake). Zero → defaultToolCallTimeout.
 	Timeout time.Duration `json:"-"`

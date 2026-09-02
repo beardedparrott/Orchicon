@@ -26,5 +26,8 @@ func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
 		"ORCHICON_MCP_STDIO=1",
 		"ORCHICON_MCP_SERVER_ID="+spec.ID,
 	)
+	for k, v := range spec.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	return &mcp.CommandTransport{Command: cmd, TerminateDuration: 0}, nil
 }

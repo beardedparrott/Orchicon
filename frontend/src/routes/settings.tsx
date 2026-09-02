@@ -1,8 +1,9 @@
 import * as React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock, Plug } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock, Plug, Cable } from "lucide-react";
 import { ProvidersTab } from "@/components/ProvidersTab";
+import { MCPServersTab } from "@/components/MCPServersTab";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "providers" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "providers" | "mcp" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -44,6 +45,7 @@ function SettingsPage() {
           ["backups", "Backups", Database],
           ["secrets", "Secrets", Database],
           ["providers", "Providers", Plug],
+          ["mcp", "MCP", Cable],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
           <button
@@ -68,6 +70,7 @@ function SettingsPage() {
       {tab === "backups" && <BackupsTab />}
       {tab === "secrets" && <SecretsTab />}
       {tab === "providers" && <ProvidersTab />}
+      {tab === "mcp" && <MCPServersTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
   );
