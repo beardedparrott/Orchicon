@@ -273,10 +273,12 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	}
 	resp, err := httpc.Do(req)
 	if err != nil {
+		s.warn("sourcing: probe %s unreachable: %v (from inside the control-plane container, localhost/0.0.0.0 are the container — use the docker bridge IP / host LAN IP; base must include the version root, e.g. …/v1)", modelsURL(p), err)
 		return nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		s.warn("sourcing: probe %s → HTTP %d (401 = token problem, 404 = wrong base shape — base must include the version root …/v1, HTML body = wrong endpoint)", modelsURL(p), resp.StatusCode)
 		return nil, false
 	}
 	var body struct {

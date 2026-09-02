@@ -495,11 +495,20 @@ function EditCustomDialog({
         <p className="text-xs text-muted-foreground">ref id is immutable after create.</p>
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <p className="text-[10px] text-muted-foreground">
+          OpenAI-compatible base INCLUDES the version root (…/v1). From inside the control-plane
+          container, localhost/0.0.0.0 are the CONTAINER — use the docker bridge IP (172.17.0.1), the
+          host LAN IP, or a mapped port. Models list from {"{"}base{"}"}/models.
+        </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
-          <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "none" | "token")}>
-            <option value="none">none</option>
-            <option value="token">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
+          <select
+            className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+            value={authMode}
+            onChange={(e) => setAuthMode(e.target.value as "none" | "token")}
+          >
+            <option value="none" className="text-foreground">none</option>
+            <option value="token" className="text-foreground">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
           </select>
         </label>
         {err && <p className="text-xs text-destructive">{err}</p>}
@@ -548,11 +557,21 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         <Input placeholder="ref id (e.g. local-models)" value={refId} onChange={(e) => setRefId(e.target.value)} />
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <p className="text-[10px] text-muted-foreground">
+          OpenAI-compatible endpoint, base INCLUDES the version root (e.g. http://172.17.0.1:8095/v1 —
+          llama-server style). From inside the control-plane container, localhost/0.0.0.0 are the CONTAINER,
+          not your host: use the docker bridge IP (172.17.0.1), the host LAN IP, or run the server on 0.0.0.0
+          plus <code>--host 0.0.0.0</code> and map the port. Models list from {"{"}base{"}"}/models.
+        </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
-          <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "none" | "token")}>
-            <option value="none">none</option>
-            <option value="token">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
+          <select
+            className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+            value={authMode}
+            onChange={(e) => setAuthMode(e.target.value as "none" | "token")}
+          >
+            <option value="none" className="text-foreground">none</option>
+            <option value="token" className="text-foreground">token (auto-writes CUSTOM_&lt;REF&gt;_API_KEY)</option>
           </select>
         </label>
         {err && <p className="text-xs text-destructive">{err}</p>}
