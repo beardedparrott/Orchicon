@@ -26,6 +26,14 @@ type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
 	dsn  string // Postgres DSN for backup/restore
+
+	// validationRegistry is the model-ref validation catalog (ADR-0003).
+	// nil = the static builtin catalog. The server injects a CLI-aware
+	// registry so the validator agrees with the picker: CLI-discovered
+	// providers (e.g. deepseek) validate as opencode-adapter providers,
+	// and orchicon/custom providers validate via the merged registry the
+	// server composes (builtin ∪ tenant customs ∪ CLI ids).
+	validationRegistry adapter.ProviderRegistry
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
 
@@ -33,6 +41,22 @@ var _ apiv1connect.SettingsServiceHandler = (*Service)(nil)
 
 func New(pool *db.Pool, log *slog.Logger, dsn string) *Service {
 	return &Service{pool: pool, log: log, dsn: dsn}
+}
+
+// SetValidationRegistry injects the model-ref validation catalog (test /
+// server seam, mirroring worker.SetModelRefRegistry). nil restores the
+// static builtin catalog.
+func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
+	s.validationRegistry = reg
+}
+
+// registry returns the injected validation registry or the static
+// builtin fallback.
+func (s *Service) registry() adapter.ProviderRegistry {
+	if s.validationRegistry != nil {
+		return s.validationRegistry
+	}
+	return adapter.NewBuiltinProviderCatalog()
 }
 
 func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.GetSettingsRequest]) (*connect.Response[apiv1.GetSettingsResponse], error) {
@@ -55,12 +79,15 @@ func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.Ge
 }
 
 // validateModelRef checks a tenant-default model ref against the
-// adapter/provider/model grammar (ADR-0003). Empty means unset — valid.
-func validateModelRef(ref string) error {
+// adapter/provider/model grammar (ADR-0003) via the injected registry
+// (builtin ∪ CLI-discovered ∪ tenant-custom providers) — never the bare
+// static catalog, or CLI-namespace refs the picker happily offered would
+// be rejected at save ("provider not found"). Empty means unset — valid.
+func (s *Service) validateModelRef(ref string) error {
 	if strings.TrimSpace(ref) == "" {
 		return nil
 	}
-	if _, err := adapter.ParseModelRef(ref, adapter.NewBuiltinProviderCatalog()); err != nil {
+	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
 		return err
 	}
 	return nil
@@ -77,11 +104,11 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 		if err := validateSessionTTLs(s.SessionAccessTokenTtlSeconds, s.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		if err := validateModelRef(s.DefaultWorkerModel); err != nil {
+		if err := s.validateModelRef(s.DefaultWorkerModel); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("default_worker_model: %w", err))
 		}
-		if err := validateModelRef(s.DefaultAskOrchiconModel); err != nil {
+		if err := s.validateModelRef(s.DefaultAskOrchiconModel); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("default_ask_orchicon_model: %w", err))
 		}

@@ -101,9 +101,12 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 		} else {
 			out = append(out, probed...)
 			// Catalog = metadata enrichment by id match (context/output/
-			// tools/pricing), never new ids.
+			// tools/pricing), never new ids. GetModelForProvider is
+			// alias-aware: live ids that differ from catalog keys (e.g.
+			// commandcode's deepseek/deepseek-v4-flash under a newer id
+			// spelling) still enrich when the catalog aliases them.
 			for i := range out {
-				c, ok := GetModel(p.ID + "/" + out[i].ID)
+				c, ok := GetModelForProvider(p.ID, out[i].ID)
 				if !ok {
 					continue
 				}

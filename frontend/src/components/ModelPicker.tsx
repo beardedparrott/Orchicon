@@ -15,14 +15,9 @@ import {
   parseModelRef,
 } from "@/lib/model-ref";
 
-// Per-adapter built-in provider scope (mirrors the backend
-// BuiltinProviderCatalog seed in internal/adapter/providers.go): the
-// provider tier shows the selected adapter's provider set, not the
-// tenant-wide union (ProviderRegistry.Providers semantics).
-const LEGACY_ADAPTER_PROVIDER_IDS: Record<string, Set<string>> = {
-  opencode: new Set(["anthropic", "openai", "local", "opencode", "opencode-go"]),
-  claude: new Set(["anthropic"]),
-};
+// Per-adapter provider scope is no longer static: under legacy CLI
+// adapters the provider pills derive from the live CLI discovery (the old
+// picker's grouping), under orchicon from the merged providers service.
 
 interface ModelPickerProps {
   value: string;
@@ -59,50 +54,32 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     isLoading: providersLoading,
     error: providersError,
   } = useProviderList();
-  // ProviderRegistry semantics (ADR-0003 D3): the provider tier is scoped
-  // to the SELECTED ADAPTER — the merged providers list is the tenant-wide
-  // union, so scope it here. Legacy CLI adapters AUTO-PULL their provider
-  // tier from the live CLI discovery (the old way): the distinct
-  // providerID values `opencode models --verbose` emits, derived from the
-  // same discovery the model tier uses. The static LEGACY set remains the
-  // validation floor (the backend model RPC filters by the registry set),
-  // so a provider the CLI no longer emits is never offered; enabled
-  // customs stay selectable. Under orchicon the tier is the full union.
+  // ProviderRegistry semantics (ADR-0003 D3): under the NATIVE kind the
+  // tier is the enabled merged view — providers RESOLVE the model list, so
+  // the tier gates tier 3. Under legacy CLI adapters the tier is a FILTER:
+  // pills derived from the live CLI discovery's distinct providerID values
+  // (the old picker's grouping — opencode, opencode-go, deepseek, …), with
+  // an "All" reset; the model input never requires a selection.
   const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
   const cliModelsQ = useListOpenCodeModels(
     useNativeSourcing ? undefined : adapter,
     undefined,
     !useNativeSourcing,
   );
-  const scopedIds = useMemo(() => {
-    if (useNativeSourcing) return null;
-    const floor = LEGACY_ADAPTER_PROVIDER_IDS[adapter];
-    if (!floor) return null;
-    const s = new Set(floor);
-    for (const m of cliModelsQ.data ?? []) {
-      if (m.providerId) s.add(m.providerId);
-    }
-    return s;
-  }, [useNativeSourcing, adapter, cliModelsQ.data]);
-  // Tier-2 entries: under the NATIVE kind, the enabled merged view (full
-  // union — scopedIds is null there). Under legacy CLI adapters, the
-  // Settings entries within scope ∪ the CLI's distinct providerID values
-  // projected as entries — so the tier auto-pulls exactly like the old
-  // method (a provider the CLI emits but Settings doesn't know still
-  // shows; one without Settings entry renders under its bare id).
   const providers = useMemo(() => {
-    const fromSettings = (providerEntries ?? [])
-      .filter((p) => p.enabled)
-      .filter((p) => scopedIds === null || scopedIds.has(p.id))
-      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
-    if (scopedIds === null) return fromSettings;
-    const byId = new Map(fromSettings.map((p) => [p.id, p]));
-    for (const m of cliModelsQ.data ?? []) {
-      if (!m.providerId || byId.has(m.providerId)) continue;
-      byId.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+    if (!useNativeSourcing) {
+      const ids = new Map<string, { id: string; name: string; custom: boolean }>();
+      for (const m of cliModelsQ.data ?? []) {
+        if (m.providerId && !ids.has(m.providerId)) {
+          ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+        }
+      }
+      return [{ id: "", name: "All", custom: false }, ...[...ids.values()]];
     }
-    return [...byId.values()];
-  }, [providerEntries, scopedIds, cliModelsQ.data]);
+    return (providerEntries ?? [])
+      .filter((p) => p.enabled)
+      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
+  }, [useNativeSourcing, providerEntries, cliModelsQ.data]);
   // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
   // resolves models from the providers service (vendored catalog ⊕ probe ⊕
   // manual — the Settings → Adapters sourcing view); the legacy CLI
@@ -174,6 +151,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
     let result = models;
+    // Legacy adapters: provider pills are OPTIONAL filters ("All" =
+    // unfiltered flat list — the red-cursor gate stays dead).
+    if (!useNativeSourcing && provider) {
+      result = result.filter((m) => m.providerId === provider);
+    }
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
@@ -189,7 +171,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
       if (a.providerId !== b.providerId) return a.providerId.localeCompare(b.providerId);
       return (a.cost?.input ?? 0) - (b.cost?.input ?? 0);
     });
-  }, [models, search]);
+  }, [models, search, useNativeSourcing, provider]);
 
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
@@ -278,11 +260,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     }
   }
 
-  // Missing context/output hints → selectable but annotated (D3). Either
-  // hint missing (or the whole limits block absent) counts — compaction
-  // needs both the context window and the output cap.
+  // Missing context hint → selectable but annotated (D8). Context is the
+  // compaction-critical value; output-max is nice-to-have (most live
+  // /models listings don't carry it — warning on it would amber every row).
   function missingHints(model: OpenCodeModel): boolean {
-    return !model.limits || !model.limits.context || !model.limits.output;
+    return !model.limits || !model.limits.context;
   }
 
   function formatCost(cost?: { input: number; output: number }) {
@@ -396,11 +378,10 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         </div>
       </div>
 
-      {/* Tier 2 — provider list. Orchicon only: the native bridge resolves
-           models THROUGH providers, so the provider tier gates its model
-           tier. Legacy CLI adapters discover models directly from the CLI
-           (the old way) — no provider tier, no provider gate. */}
-      {useNativeSourcing && (
+      {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the model
+           list (gate applies). Legacy CLI adapters: OPTIONAL FILTERS derived
+           from the live CLI discovery (the old picker's grouping), with an
+           All reset — the model input never requires a selection. */}
       <div>
         <span className="mb-1 block text-xs font-medium text-muted-foreground">Provider</span>
         {providersLoading && <p className="text-xs text-muted-foreground">Loading providers...</p>}
@@ -450,10 +431,10 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           </div>
         )}
       </div>
-      )}
 
       {/* Tier 3 — searchable model list. Under orchicon: provider-scoped
-           (gated on provider). Under legacy adapters: flat, always enabled. */}
+           (gated on provider). Under legacy adapters: flat, always enabled;
+           the provider pill is an optional filter on the same flat list. */}
       <div className={showDropdown ? "relative z-10 space-y-1" : "relative space-y-1"}>
         <span className="mb-1 block text-xs font-medium text-muted-foreground">Model</span>
         {selectedModel && !showDropdown ? (
@@ -534,7 +515,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
                           </div>
                           {missingHints(model) && (
                             <div className="mt-0.5 text-[10px] text-amber-600">
-                              no context/output hint — may misbehave in compaction
+                              no context hint — compaction math may misbehave
                             </div>
                           )}
                         </div>

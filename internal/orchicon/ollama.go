@@ -54,6 +54,20 @@ func (c *OllamaClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		}
 		out = m
 	}
+	// Native metadata enrichment for SOURCED entries — BEFORE the tags
+	// call so ollama CLOUD endpoints (whose /api/tags may not exist) still
+	// get it: cloud /v1/models carries no context data, and /api/show on
+	// the same host fills the true context length. Best-effort: a
+	// /api/show failure leaves the entry as-is (0 → the picker annotates,
+	// compaction must not guess).
+	for i := range out {
+		if out[i].Context > 0 {
+			continue
+		}
+		if ctxLen := c.contextLength(ctx, out[i].ID); ctxLen > 0 {
+			out[i].Context = ctxLen
+		}
+	}
 	tags, err := c.tags(ctx)
 	if err != nil {
 		// Native discovery failure is non-fatal when sourcing already served.

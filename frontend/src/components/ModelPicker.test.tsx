@@ -32,13 +32,14 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("scopes the merged provider tier to the selected adapter (ProviderRegistry semantics)", () => {
     // The merged providers list is tenant-wide; the tier filters it to the
-    // selected adapter's provider set (legacy kinds: the static catalog
-    // floor ∪ the live CLI's distinct providerID values — auto-pull like
-    // the old method; orchicon = full union). Regression guard: tier 2
-    // must never render the whole tenant union under a legacy adapter kind.
-    expect(src).toContain("LEGACY_ADAPTER_PROVIDER_IDS");
-    expect(src).toContain("scopedIds");
+    // selected adapter's provider set (legacy kinds: pills derived from the
+    // live CLI discovery's distinct providerID values with an All reset —
+    // optional filters, never a gate; orchicon = the merged providers
+    // service view, which gates its model tier). Regression guard: the
+    // legacy tier must never render a static hardcoded set — it must
+    // auto-pull from the same discovery the model tier uses.
     expect(src).toContain("cliModelsQ");
+    expect(src).toContain("All");
     expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
   });
 
@@ -49,13 +50,12 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toContain("Manage in Settings → Adapters");
   });
 
-  it("annotates models missing context/output hints but keeps them selectable", () => {
+  it("annotates models missing the context hint but keeps them selectable", () => {
     expect(src).toContain("missingHints");
-    expect(src).toContain("no context/output hint — may misbehave in compaction");
-    // Either hint missing counts (AC says context/output, not all-three).
-    expect(src).toMatch(
-      /!model\.limits \|\| !model\.limits\.context \|\| !model\.limits\.output/,
-    );
+    // Context is the compaction-critical hint; output-max is not
+    // warning-worthy (live /models listings rarely carry it).
+    expect(src).toMatch(/!model\.limits \|\| !model\.limits\.context/);
+    expect(src).not.toMatch(/!model\.limits\.output/);
   });
 
   it("matches catalog models by parsed segments, not raw value (QA BUG-1)", () => {
