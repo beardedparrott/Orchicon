@@ -2027,6 +2027,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// in the DAG — the DB row is untouched.
 		var primaryWID string
 		var composite string
+		var promptFP string // context-file fingerprint (ADR-0009 D5)
 		for _, wid := range upstream {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 			if err != nil {
@@ -2037,9 +2038,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("load work item: %w", err)
 			}
 			wi.WorkflowStepID = sr.StepID
-			composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+			var fp string
+			composite, fp, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 			if err != nil {
 				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+			}
+			if fp != "" {
+				promptFP = fp
 			}
 			primaryWID = wid
 		}
@@ -2049,10 +2054,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// _worker_version from the step run to build the execution
 		// manifest; the ticket stays untouched.
 		stepResult, _ := json.Marshal(map[string]any{
-			"_work_item_id":   primaryWID,
-			"_prompt":         composite,
-			"_worker_id":      step.Ref,
-			"_worker_version": step.WorkerVersion,
+			"_work_item_id":       primaryWID,
+			"_prompt":             composite,
+			"_prompt_fingerprint": promptFP,
+			"_worker_id":          step.Ref,
+			"_worker_version":     step.WorkerVersion,
 		})
 		// Preserve the recovery narrative across a re-dispatch so the run
 		// view keeps showing it after the step runs again. Carries ALL
@@ -2525,6 +2531,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			var primaryWID string
 			var composite string
+			var promptFP string
 			for _, wid := range upstream {
 				wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 				if err != nil {
@@ -2535,9 +2542,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					return fmt.Errorf("load work item: %w", err)
 				}
 				wi.WorkflowStepID = sr.StepID
-				composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+				var fp string
+				composite, fp, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 				if err != nil {
 					return fmt.Errorf("build composite prompt for approver: %w", err)
+				}
+				if fp != "" {
+					promptFP = fp
 				}
 				primaryWID = wid
 			}
@@ -2546,7 +2557,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// inline DispatchTask reads _prompt / _worker_id /
 			// _worker_version from the step run to build the execution
 			// manifest; the ticket stays untouched.
-			stepResult := buildApprovalStepResult(primaryWID, composite, workerRefStr, workerVer.Version,
+			stepResult := buildApprovalStepResult(primaryWID, composite, promptFP, workerRefStr, workerVer.Version,
 				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result)
 			// Clear any stale worker_execution_id (a recovering step
 			// re-dispatched here still references its FAILED execution):
@@ -2699,8 +2710,15 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //  3. Work item context — the item's own context files/directories
 //  4. Instructions — read .orchicon/ for previous step results,
 //     then output format including decision prefix
-func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, string, error) {
 	var sb strings.Builder
+	// contextFP is the sha256 over the project + work-item context-file
+	// stamps (ADR-0009 D5): unchanged files ⇒ unchanged bytes ⇒ the
+	// rendered section is reused verbatim from the prefix cache and the
+	// static prompt prefix stays cache-warm. Returned alongside the
+	// composite so it can ride the step-run meta /
+	// ExecutionManifest.PromptFingerprint.
+	contextFP := "none"
 	// Stable prompt prefix first: shared identity + safety rules + efficiency
 	// directives + runtime environment, built ONLY from shared constants so it
 	// is byte-identical across all workers and steps of a run. llama.cpp's
@@ -2749,7 +2767,11 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			sb2.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
+			section, fp := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Project context", files, p.ProjectDir)
+			sb2.WriteString(section)
+			if fp != "" {
+				contextFP = fp
+			}
 			if sb2.Len() > 0 {
 				sb.WriteString(sb2.String())
 			}
@@ -2771,8 +2793,12 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			).Scan(&pd)
 			projectDir = pd
 		}
-		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
-			sb.WriteString(r)
+		section, fp := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Work item context", files, projectDir)
+		if section != "" {
+			sb.WriteString(section)
+		}
+		if fp != "" {
+			contextFP = contextFP + "." + fp
 		}
 	}
 
@@ -3143,7 +3169,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 
-	return sb.String(), nil
+	return sb.String(), contextFP, nil
 }
 
 // runtimeEnvironmentBlock is kept as a thin alias for the shared
@@ -3743,12 +3769,13 @@ func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, 
 // review context, and the pending decision marker. When re-dispatching a
 // recovering step, the previous _recovery_* keys are preserved so the
 // recovery-resumed dispatch keeps its seed.
-func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
+func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
 	stepResult, _ := json.Marshal(map[string]any{
-		"_work_item_id":     primaryWID,
-		"_prompt":           composite,
-		"_worker_id":        workerRefStr,
-		"_worker_version":   workerVersion,
+		"_work_item_id":       primaryWID,
+		"_prompt":             composite,
+		"_prompt_fingerprint": fingerprint,
+		"_worker_id":          workerRefStr,
+		"_worker_version":     workerVersion,
 		"_upstream_worker":  upstreamWorker,
 		"_upstream_summary": upstreamSummary,
 		"_upstream_files":   upstreamFiles,

@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
-	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -956,17 +955,22 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
+	var promptFP string // context-file fingerprint (ADR-0009 D5)
 	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if sr, err := db.GetWorkflowStepRunByStep(context.Background(), stx.Tx, exec.TenantID, exec.WorkflowRunID, exec.WorkflowStepID); err == nil {
 				stepRunResult = sr.Result
 				var srMeta struct {
-					Prompt string `json:"_prompt"`
+					Prompt      string `json:"_prompt"`
+					Fingerprint string `json:"_prompt_fingerprint"`
 				}
 				_ = json.Unmarshal(sr.Result, &srMeta)
 				if srMeta.Prompt != "" {
 					composite = srMeta.Prompt
+				}
+				if srMeta.Fingerprint != "" {
+					promptFP = srMeta.Fingerprint
 				}
 			}
 			_ = stx.Rollback(context.Background())
@@ -981,7 +985,11 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// work-item context + instructions) so standalone dispatches see
 	// project/work-item context "just like projects" (F5).
 	if systemPrompt == "" {
-		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
+		var fp string
+		systemPrompt, fp = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
+		if fp != "" {
+			promptFP = fp
+		}
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
 				"Complete the work item described in the user message and report back."
@@ -1055,6 +1063,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorkerID:                     version.WorkerID,
 		WorkerVersion:                version.Version,
 		SystemPrompt:                 systemPrompt,
+		PromptFingerprint:            promptFP,
 		Goal:                         task.Title,
 		AcceptanceCriteria:           task.AcceptanceCriteria,
 		ModelRef:                     version.ModelRef,
@@ -2569,8 +2578,13 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 //
 // Best-effort: any DB read failure degrades to the subset that succeeded
 // (the caller falls back to a bare worker prompt if the result is empty).
-func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) string {
+func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) (string, string) {
 	var sb strings.Builder
+	// Context-file fingerprint (ADR-0009 D5): same sha256 over the
+	// project + work-item context-file stamps the workflow path
+	// computes, so both dispatch paths export the cache-correlation
+	// value identically.
+	contextFP := "none"
 	// Stable prefix first: shared identity + safety + efficiency + runtime
 	// environment. Same byte-identical block the workflow path prepends, so a
 	// standalone dispatch and a workflow step share the llama.cpp KV-cache
@@ -2619,7 +2633,11 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			ctxSB.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
+			section, fp := renderContextSectionCached(globalPromptCache, standalonePromptLog(), exec.TenantID, task.ProjectID, "# Project context", files, p.ProjectDir)
+			ctxSB.WriteString(section)
+			if fp != "" {
+				contextFP = fp
+			}
 			if ctxSB.Len() > 0 {
 				sb.WriteString(ctxSB.String())
 			}
@@ -2630,8 +2648,12 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	if len(task.ContextFiles) > 0 {
 		var files []string
 		_ = json.Unmarshal(task.ContextFiles, &files)
-		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
-			sb.WriteString(r)
+		section, fp := renderContextSectionCached(globalPromptCache, standalonePromptLog(), exec.TenantID, task.ProjectID, "# Work item context", files, projectDir)
+		if section != "" {
+			sb.WriteString(section)
+		}
+		if fp != "" {
+			contextFP = contextFP + "." + fp
 		}
 	}
 
@@ -2663,7 +2685,7 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
 	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
 
-	return sb.String()
+	return sb.String(), contextFP
 }
 
 // summaryMarker is the literal line the worker's prompt instructs it to

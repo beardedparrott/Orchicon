@@ -315,7 +315,7 @@ func TestAnthropicHistoryMarshal(t *testing.T) {
 		}},
 	}
 	req := TurnRequest{Model: "m", Messages: hist}
-	wire := buildAnthropicRequest(req)
+	wire := buildAnthropicRequest(req, "")
 	b, err := json.Marshal(wire)
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestAnthropicHistoryMarshal(t *testing.T) {
 	merged := buildAnthropicRequest(TurnRequest{Model: "m", Messages: []Message{
 		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "a", Content: "x"}}}},
 		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "b", Content: "y"}}}},
-	}})
+	}}, "")
 	mb, _ := json.Marshal(merged)
 	var mparsed struct {
 		Messages []struct {

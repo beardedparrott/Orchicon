@@ -176,11 +176,11 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 		AgentsMD: "## Standards\nWrite ADRs for significant decisions.\n",
 	}
 	r := &WorkflowReconciler{}
-	a, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, swe, nil, nil)
+	a, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, swe, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, arch, nil, nil)
+	b, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, arch, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 
 	// The standalone (non-workflow) dispatch path must carry the same block
 	// via the shared stable prefix.
-	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "")
+	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "")
 	if !strings.Contains(standalone, "## Todo list") {
 		t.Errorf("standalone composite missing the Todo list block")
 	}
@@ -265,7 +265,7 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 	item := db.WorkItemRow{Title: "Efficiency directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 	item := db.WorkItemRow{Title: "Step output discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	}
 	steps := []workflow.StepWire{{ID: "step1", Name: "DevOps Engineer", Kind: "task"}}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	bare := db.WorkerVersionRow{} // nothing — a custom worker with no git content
 
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, bare, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, bare, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	}
 
 	// Standalone (non-workflow) dispatch path must carry the same in-place floor.
-	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "")
+	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "")
 	for _, want := range []string{
 		"no git branch or worktree",
 		"Do not create branches, commit, push, or open pull requests",
@@ -474,7 +474,7 @@ func TestCompositePromptOrchiconLocationNote(t *testing.T) {
 	}
 	steps := []workflow.StepWire{{ID: "step1", Name: "Step One", Kind: "task"}}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -168,8 +168,16 @@ func TestQAManifestIdentityInput(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	req := prov.lastRequest()
-	if len(req.System) != 1 || !req.System[0].Cache || req.System[0].Text != "You are the QA test worker." {
+	// ADR-0009: the static prefix carries the composite prompt + the thin
+	// native layer (+ env facts), cache-flagged as one block. Pin the
+	// identity head of the prefix rather than the exact full bytes.
+	if len(req.System) > 2 || !req.System[0].Cache || !strings.HasPrefix(req.System[0].Text, "You are the QA test worker.") {
 		t.Errorf("system = %+v", req.System)
+	}
+	for _, b := range req.System[1:] {
+		if b.Cache {
+			t.Errorf("mutable zone must never be cache-flagged: %+v", b)
+		}
 	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != RoleUser {
 		t.Errorf("first message = %+v", req.Messages[0])

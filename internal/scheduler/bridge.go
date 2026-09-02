@@ -19,6 +19,12 @@ type ExecutionManifest struct {
 	WorkerID           string
 	WorkerVersion      int
 	SystemPrompt       string
+	// PromptFingerprint is the sha256 over the project + work-item
+	// context-file stamps that produced this manifest's composite prompt
+	// (ADR-0009 D5). Unchanged fingerprint ⇒ the static prefix is
+	// byte-identical to the previous execution's ⇒ the provider prefix
+	// cache stays warm. Empty = not captured (legacy path).
+	PromptFingerprint  string
 	Goal               string
 	AcceptanceCriteria string
 	ModelRef           string // human-defined; no auto-failover (docs/05 §11)

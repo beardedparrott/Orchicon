@@ -179,7 +179,7 @@ func (c *CommandCodeClient) streamProvider(ctx context.Context, req TurnRequest)
 		// AnthropicClient appends /v1/messages → POST {base}/provider/v1/messages.
 		ac := &AnthropicClient{
 			BaseURL: strings.TrimRight(c.base(), "/") + "/provider", APIKey: c.APIKey, AuthStyle: "bearer",
-			HTTP: c.HTTP, Retry: c.Retry,
+			HTTP: c.HTTP, Retry: c.Retry, CacheTTL: anthropicCacheTTLOptIn(),
 		}
 		if c.zdr() {
 			ac.ExtraHeaders = map[string]string{"x-cmd-zdr": "1"}
