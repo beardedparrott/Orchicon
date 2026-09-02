@@ -330,11 +330,6 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
               e.g. https://ollama.com — models then list from the cloud account.
             </p>
           )}
-            <p className="text-[10px] text-muted-foreground">
-              Default hosts a local daemon (http://localhost:11434). For Ollama Cloud set the cloud endpoint here,
-              e.g. https://ollama.com — models then list from the cloud account.
-            </p>
-          )}
           <Button size="sm" variant="outline" onClick={saveBaseUrl} disabled={updateSettings.isPending}>
             Save
           </Button>
