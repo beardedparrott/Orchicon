@@ -674,6 +674,15 @@ func (s *Service) CreateCustom(ctx context.Context, tenantID string, in CreateCu
 	if err := validateBaseURL(in.BaseURL); err != nil {
 		return Entry{}, err
 	}
+	// Plane-aware loopback resolution: inside the control-plane container,
+	// "localhost:port" points at the container, not the user's machine —
+	// rewrite to the docker bridge gateway and say so in plain language.
+	if resolved, note, changed := resolveForPlane(in.BaseURL); changed {
+		in.BaseURL = resolved
+		if s.log != nil {
+			s.log.Info("providers: custom provider base URL auto-resolved for the control-plane container", "ref_id", in.RefID, "note", note)
+		}
+	}
 	if in.AuthMode == "" {
 		in.AuthMode = AuthModeNone
 	}
@@ -755,6 +764,13 @@ func (s *Service) UpdateCustom(ctx context.Context, tenantID string, in UpdateCu
 	if in.BaseURL != nil {
 		if err := validateBaseURL(strings.TrimSpace(*in.BaseURL)); err != nil {
 			return Entry{}, err
+		}
+		// Same plane-aware loopback resolution as CreateCustom.
+		if resolved, note, changed := resolveForPlane(*in.BaseURL); changed {
+			*in.BaseURL = resolved
+			if s.log != nil {
+				s.log.Info("providers: custom provider base URL auto-resolved for the control-plane container", "ref_id", in.RefID, "note", note)
+			}
 		}
 	}
 	if in.AuthMode != nil {

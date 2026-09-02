@@ -317,7 +317,19 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
         <div className="flex items-center gap-2">
           <label className="w-24 shrink-0 text-xs text-muted-foreground">Base URL</label>
           <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={entry.baseUrl || "https://..."} />
+          {entry.isCustom && entry.baseUrl && !/^https?:\/\/(localhost|127\.|0\.0\.0\.0)/.test(entry.baseUrl) && (
+            <p className="w-full text-[10px] text-muted-foreground">
+              Stored address <code>{entry.baseUrl}</code> — if you originally typed localhost, this is
+              the translated form the app can actually reach (the app runs in its own container, where
+              "localhost" would mean the app itself, not your computer).
+            </p>
+          )}
           {entry.id === "ollama" && (
+            <p className="w-full text-[10px] text-muted-foreground">
+              Default hosts a local daemon (http://localhost:11434). For Ollama Cloud set the cloud endpoint here,
+              e.g. https://ollama.com — models then list from the cloud account.
+            </p>
+          )}
             <p className="text-[10px] text-muted-foreground">
               Default hosts a local daemon (http://localhost:11434). For Ollama Cloud set the cloud endpoint here,
               e.g. https://ollama.com — models then list from the cloud account.
@@ -496,9 +508,8 @@ function EditCustomDialog({
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
         <p className="text-[10px] text-muted-foreground">
-          OpenAI-compatible base INCLUDES the version root (…/v1). From inside the control-plane
-          container, localhost/0.0.0.0 are the CONTAINER — use the docker bridge IP (172.17.0.1), the
-          host LAN IP, or a mapped port. Models list from {"{"}base{"}"}/models.
+          localhost works even though the app runs in a container — we translate it to the address
+          your machine is reachable at, automatically. Keep the version root at the end (…/v1).
         </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
@@ -558,10 +569,10 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
         <p className="text-[10px] text-muted-foreground">
-          OpenAI-compatible endpoint, base INCLUDES the version root (e.g. http://172.17.0.1:8095/v1 —
-          llama-server style). From inside the control-plane container, localhost/0.0.0.0 are the CONTAINER,
-          not your host: use the docker bridge IP (172.17.0.1), the host LAN IP, or run the server on 0.0.0.0
-          plus <code>--host 0.0.0.0</code> and map the port. Models list from {"{"}base{"}"}/models.
+          Point this at the server running on YOUR computer — e.g. llama-server's
+          <code className="mx-1">http://localhost:8095/v1</code> just works: if you type localhost, we
+          translate it automatically for the app's container. The URL should end in <code>/v1</code>
+          {" "}— that's where the app looks for the model list.
         </p>
         <label className="flex items-center gap-2 text-xs">
           auth mode
