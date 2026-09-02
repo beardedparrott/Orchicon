@@ -103,7 +103,16 @@ func TestSourcingProbeFailureIsDegraded(t *testing.T) {
 	if len(res.Models) != 1 || res.Models[0].ID != "local-model" {
 		t.Fatalf("manual entries must survive probe failure: %#v", res.Models)
 	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "degraded") || !strings.Contains(logs[0], "NO models served") {
+	// The diagnosable per-attempt log (HTTP status line) fires BEFORE the
+	// degraded directive line — scan all lines for the directive contract
+	// (degraded concept + no-fallback directive), not just the first.
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "degraded") && strings.Contains(l, "NO models served") {
+			found = true
+		}
+	}
+	if !found {
 		t.Fatalf("degradation must be logged with the no-fallback directive: %v", logs)
 	}
 }
