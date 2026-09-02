@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -29,6 +30,14 @@ type AnthropicClient struct {
 	// ModelsFn supplies ListModels (registry wires the sourcing service);
 	// nil → catalog only.
 	ModelsFn func(ctx context.Context) ([]ModelInfo, error)
+
+	// CacheTTL is the Anthropic prompt-cache TTL for cache_control
+	// breakpoints: "" or "5m" = the API default (5-minute TTL); "1h" =
+	// the extended-TTL breakpoint (opt-in via
+	// ORCHICON_ANTHROPIC_CACHE_TTL — ADR-0009 D3, revisitable: 1h is
+	// priced higher per write, so it only pays off for sparse workflow
+	// cadences).
+	CacheTTL string
 }
 
 const anthropicVersion = "2023-06-01"
@@ -53,6 +62,10 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 type anthCacheCtrl struct {
 	Type string `json:"type"`
+	// TTL is the optional Anthropic prompt-cache TTL ("1h"); empty = the
+	// API default (5m). Opt-in via AnthropicClient.CacheTTL /
+	// ORCHICON_ANTHROPIC_CACHE_TTL (ADR-0009 D3).
+	TTL string `json:"ttl,omitempty"`
 }
 
 type anthContent struct {
@@ -200,12 +213,25 @@ func parseDataURL(u string) (anthImageSource, bool) {
 }
 
 // buildAnthropicRequest shapes the wire request with cache_control
-// breakpoints (D3): breakpoint on the LAST system block and, under the
-// system+tools policy, on the LAST tool definition.
-func buildAnthropicRequest(req TurnRequest) anthRequest {
+// breakpoints (D3). Breakpoint rule for the two-zone system layout
+// (ADR-0009): when ANY system block carries an explicit Cache flag,
+// ONLY the flagged blocks get cache_control — never the last block by
+// default, because the mutable zone sits after the static prefix and a
+// blanket last-block rule would cache mutable content. When no block is
+// flagged (legacy single-block callers) the breakpoint stays on the
+// LAST system block. Under the system+tools policy the LAST tool
+// definition also carries a breakpoint. cacheTTL ("1h") is an opt-in
+// extended TTL emitted with each breakpoint; "" uses the API default.
+func buildAnthropicRequest(req TurnRequest, cacheTTL string) anthRequest {
 	policy := req.CacheControl
 	if policy == "" {
 		policy = CacheControlSystemAndTools
+	}
+	ctrl := func() *anthCacheCtrl {
+		if cacheTTL == "" {
+			return &anthCacheCtrl{Type: "ephemeral"}
+		}
+		return &anthCacheCtrl{Type: "ephemeral", TTL: cacheTTL}
 	}
 	maxTok := req.MaxTokens
 	if maxTok <= 0 {
@@ -216,10 +242,17 @@ func buildAnthropicRequest(req TurnRequest) anthRequest {
 		MaxTokens: maxTok, Stream: true, Temperature: req.Temperature,
 	}
 	if policy != CacheControlNone {
+		anyFlagged := false
+		for _, sb := range req.System {
+			if sb.Cache {
+				anyFlagged = true
+				break
+			}
+		}
 		for i, sb := range req.System {
 			b := anthSystemBlock{Text: sb.Text}
-			if sb.Cache || i == len(req.System)-1 { // last block carries the breakpoint
-				b.CacheControl = &anthCacheCtrl{Type: "ephemeral"}
+			if sb.Cache || (!anyFlagged && i == len(req.System)-1) {
+				b.CacheControl = ctrl()
 			}
 			ar.System = append(ar.System, b)
 		}
@@ -235,7 +268,7 @@ func buildAnthropicRequest(req TurnRequest) anthRequest {
 		}
 		td := anthToolDef{Name: t.Name, Description: t.Description, InputSchema: schema}
 		if policy == CacheControlSystemAndTools && i == len(req.Tools)-1 {
-			td.CacheControl = &anthCacheCtrl{Type: "ephemeral"}
+			td.CacheControl = ctrl()
 		}
 		ar.Tools = append(ar.Tools, td)
 	}
@@ -247,7 +280,7 @@ func buildAnthropicRequest(req TurnRequest) anthRequest {
 // StreamTurn streams one turn. Pre-stream failures (non-2xx, connection)
 // retry per the policy; mid-stream failures surface as StreamError + error.
 func (c *AnthropicClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
-	body, err := json.Marshal(buildAnthropicRequest(req))
+	body, err := json.Marshal(buildAnthropicRequest(req, c.CacheTTL))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
@@ -530,5 +563,19 @@ func mapAnthropicStop(reason string) StopReason {
 		return StopContentFilter
 	default:
 		return StopOther
+	}
+}
+
+// anthropicCacheTTLOptIn reads the ORCHICON_ANTHROPIC_CACHE_TTL tenant
+// env (ADR-0009 D3, revisitable default OFF): "1h" opts the session's
+// cache breakpoints into the extended 1-hour TTL; "" or "5m" keep the
+// API default. Any other value is ignored (empty → default) — an
+// invalid opt-in must never break request assembly.
+func anthropicCacheTTLOptIn() string {
+	switch os.Getenv("ORCHICON_ANTHROPIC_CACHE_TTL") {
+	case "1h":
+		return "1h"
+	default:
+		return ""
 	}
 }

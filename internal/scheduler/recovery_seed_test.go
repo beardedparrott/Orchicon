@@ -157,7 +157,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 	exec := db.ExecutionRow{TenantID: "tnt_test"}
 
 	// Same-worker recovery → reference present.
-	withSeed := buildStandaloneComposite(pool, exec, db.WorkItemRow{
+	withSeed, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{
 		TenantID: "tnt_test",
 		Title:    "Recover me",
 		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
@@ -170,7 +170,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 	}
 
 	// Different worker → no reference.
-	diffWorker := buildStandaloneComposite(pool, exec, db.WorkItemRow{
+	diffWorker, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{
 		TenantID: "tnt_test",
 		Title:    "Recover me",
 		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
@@ -183,7 +183,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 	}
 
 	// Fresh dispatch → no reference.
-	fresh := buildStandaloneComposite(pool, exec, db.WorkItemRow{TenantID: "tnt_test", Title: "Fresh"}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "")
+	fresh, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{TenantID: "tnt_test", Title: "Fresh"}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "")
 	if strings.Contains(fresh, recoveryFileReferenceMarker) {
 		t.Error("fresh dispatch must not reference the recovery file")
 	}
@@ -211,7 +211,7 @@ func TestBuildCompositePromptRecoveryBlock(t *testing.T) {
 	r := &WorkflowReconciler{}
 
 	// Same worker → file reference block present.
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, steps, runs)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestBuildCompositePromptRecoveryBlock(t *testing.T) {
 	}
 
 	// Different worker → summary-only narrative, no file reference.
-	diff, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{WorkerID: "w2", Role: "Engineer"}, steps, runs)
+	diff, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{WorkerID: "w2", Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -83,6 +83,43 @@ type Session struct {
 	writtenMu    sync.Mutex
 	writtenSet   map[string]bool
 	writtenPaths []string
+	// envFacts is the per-run environment-facts block, rendered once at
+	// construction from manifest fields (constant within a run, so it
+	// lives INSIDE the cached static prefix — ADR-0009 D2).
+	envFacts string
+	// prefixFingerprint is the sha256 (hex, first 16) of the composite
+	// prompt bytes this session's static prefix starts from — logged on
+	// change (a prefix change costs a cache miss, ADR-0009 D5).
+	prefixFingerprint string
+	// mutable session-zone state (ADR-0009 D2): memory notes (insertion
+	// order) and the latest todowrite payload. Guarded by noteMu; never
+	// read while building the static prefix.
+	noteMu      sync.Mutex
+	notes       []string
+	latestTodos []byte
+	// cacheStats accumulates per-session prefix-cache metrics (ADR-0009
+	// D6): cache hit/miss classification per turn + cached tokens.
+	cacheMu    sync.Mutex
+	cacheStats CacheStats
+}
+
+// CacheStats is the session's prefix-cache metric rollup (ADR-0009 D6).
+// Turns counts provider turns; Hits counts turns the provider reported a
+// cache read on (hit), MissWrites turns that wrote cache (miss → write),
+// NoneTurns turns with neither. Cache tokens accumulate from per-turn
+// Usage. PrefixFingerprint identifies the static-prefix bytes the stats
+// were measured against.
+type CacheStats struct {
+	Turns             int64
+	Hits              int64
+	MissWrites        int64
+	NoneTurns         int64
+	InputTokens       int64
+	OutputTokens      int64
+	ReasoningTokens   int64
+	CacheReadTokens   int64
+	CacheWriteTokens  int64
+	PrefixFingerprint string
 }
 
 // SessionConfig carries the session's construction inputs.
@@ -154,6 +191,16 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		log:      cfg.Log,
 		output:   &strings.Builder{},
 	}
+	// Static-prefix env facts (ADR-0009 D2): rendered once at
+	// construction from manifest fields — constant within a run, so the
+	// cached prefix is byte-identical across turns.
+	s.envFacts = envFactsBlock(envFactsFields{
+		ProjectDir:   cfg.Manifest.ProjectDir,
+		WorktreePath: cfg.Manifest.WorktreePath,
+		RuntimeImage: cfg.Manifest.RuntimeImage,
+		ModelRef:     cfg.Manifest.ModelRef,
+	})
+	s.prefixFingerprint = fingerprintPrefix(ident.SystemPrompt)
 	return s, nil
 }
 
@@ -195,4 +242,60 @@ func (s *Session) SetHistory(h []Message) { s.history = h }
 // session starts fresh. path is the prior session's JSONL path.
 func (s *Session) SetContinuation(path string) {
 	s.continuationPath = path
+}
+
+// AddMemoryNote persists one durable note into the session's mutable
+// zone (orchicon_memory_note tool). Bounded: the oldest notes drop past
+// maxMemoryNotes so the after-breakpoint block stays small.
+func (s *Session) AddMemoryNote(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.noteMu.Lock()
+	defer s.noteMu.Unlock()
+	s.notes = append(s.notes, text)
+	if len(s.notes) > maxMemoryNotes {
+		s.notes = s.notes[len(s.notes)-maxMemoryNotes:]
+	}
+}
+
+// MemoryNotes returns the session's memory notes in insertion order.
+func (s *Session) MemoryNotes() []string {
+	s.noteMu.Lock()
+	defer s.noteMu.Unlock()
+	return append([]string(nil), s.notes...)
+}
+
+// CacheStats returns the session's prefix-cache metric rollup.
+func (s *Session) CacheStats() CacheStats {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	out := s.cacheStats
+	out.PrefixFingerprint = s.prefixFingerprint
+	return out
+}
+
+// recordTurnUsage folds one provider turn's usage into the session's
+// cache stats. The static-prefix fingerprint is exposed via
+// CacheStats.PrefixFingerprint so an operator can correlate a miss with
+// a prefix edit (ADR-0009 D5/D6); the per-path prefix-change logging
+// lives at the composite-build layer (scheduler prompt-section cache).
+func (s *Session) recordTurnUsage(u Usage) {
+	s.cacheMu.Lock()
+	s.cacheStats.Turns++
+	s.cacheStats.InputTokens += u.InputTokens
+	s.cacheStats.OutputTokens += u.OutputTokens
+	s.cacheStats.ReasoningTokens += u.ReasoningTokens
+	s.cacheStats.CacheReadTokens += u.CacheReadTokens
+	s.cacheStats.CacheWriteTokens += u.CacheWriteTokens
+	switch {
+	case u.CacheReadTokens > 0:
+		s.cacheStats.Hits++
+	case u.CacheWriteTokens > 0:
+		s.cacheStats.MissWrites++
+	default:
+		s.cacheStats.NoneTurns++
+	}
+	s.cacheMu.Unlock()
 }

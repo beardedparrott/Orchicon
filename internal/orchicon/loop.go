@@ -179,16 +179,24 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			return nil
 		}
 
-		// Build the turn request. The static system prefix is marked as
-		// the provider cache breakpoint (Cache:true on the static block).
+		// Build the turn request. Two-zone system layout (ADR-0009 D2):
+		// the cached static prefix (composite + thin native layer + env
+		// facts) carries the cache breakpoint; the mutable zone (memory
+		// notes + todo digest) follows AFTER it and is never flagged.
 		req := TurnRequest{
 			Model:     s.identity.Model,
-			System:    []SystemBlock{{Text: s.identity.SystemPrompt, Cache: true}},
+			System:    s.AssembleSystem(),
 			Messages:  s.history,
 			MaxTokens: 4096,
 		}
 		if s.tools != nil {
 			req.Tools = s.tools.Defs()
+		}
+		// The native memory-note tool is registered by the loop itself
+		// (session-scoped, never the MCP registry) — deduped in case a
+		// registry already surfaces the same name.
+		if !hasToolNamed(req.Tools, memoryNoteToolDef().Name) {
+			req.Tools = append(req.Tools, memoryNoteToolDef())
 		}
 
 		stream, err := s.provider.StreamTurn(ctx, req)
@@ -210,6 +218,9 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
 			return nil
 		}
+		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
+		// miss-write / none) and accumulate cached tokens.
+		s.recordTurnUsage(usage)
 
 		// Guard: no-progress detection (zero token growth + repeated tool
 		// signature → surfaced stall, never a silent loop).
@@ -367,6 +378,51 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 	return text.String(), finish, calls, usage, nil
 }
 
+// hasToolNamed reports whether a tool definition list already carries a
+// name (used to dedupe the loop-registered native tools against the MCP
+// registry surface).
+func hasToolNamed(defs []ToolDef, name string) bool {
+	for _, d := range defs {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeToolName reports whether a call targets a loop-registered
+// session-scoped tool (handled here, never routed to the registry).
+func nativeToolName(name string) bool {
+	return name == memoryNoteToolDef().Name
+}
+
+// stashMutableToolCall folds a turn's tool calls into the session's
+// mutable zone state (ADR-0009 D2): the latest todowrite payload is
+// stashed for the todo digest; the memory-note tool appends a note.
+// Name-gated and tolerant — a malformed payload is skipped, never an
+// error to the model.
+func (s *Session) stashMutableToolCall(calls []ToolCall) {
+	for _, c := range calls {
+		switch c.Name {
+		case "todowrite":
+			var probe todoDigestArgs
+			if err := json.Unmarshal([]byte(c.ArgsJSON), &probe); err != nil || probe.Todos == nil {
+				continue
+			}
+			s.noteMu.Lock()
+			s.latestTodos = append([]byte(nil), c.ArgsJSON...)
+			s.noteMu.Unlock()
+		case "orchicon_memory_note":
+			var a struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(c.ArgsJSON), &a); err == nil {
+				s.AddMemoryNote(a.Text)
+			}
+		}
+	}
+}
+
 // executeTools runs the turn's tool calls (parallel where independent —
 // same-turn calls are independent by construction) with a bounded worker
 // pool, and emits OnToolCall + OnWrittenFiles + OnArtifact parity
@@ -374,9 +430,24 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 // error result (the loop's boundary recover also catches it).
 func (s *Session) executeTools(ctx context.Context, callbacks scheduler.ExecutionCallbacks, calls []ToolCall) []toolResult {
 	results := make([]toolResult, len(calls))
+	// Mutable-zone state capture (ADR-0009 D2): the latest todowrite
+	// payload and memory notes are folded into the session BEFORE the
+	// calls execute, so the next turn's digest sees this turn's intent.
+	// Session-scoped tools (orchicon_memory_note) are answered here and
+	// never routed to the registry.
+	s.stashMutableToolCall(calls)
+	var pending []int // indices routed to the registry
+	for i, c := range calls {
+		if nativeToolName(c.Name) {
+			results[i] = toolResult{ToolCall: c, Output: `{"ok":true}`}
+			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(`{"ok":true}`))
+			continue
+		}
+		pending = append(pending, i)
+	}
 	if s.tools == nil {
-		for i, c := range calls {
-			results[i] = toolResult{ToolCall: c, Err: "tool registry not configured"}
+		for _, i := range pending {
+			results[i] = toolResult{ToolCall: calls[i], Err: "tool registry not configured"}
 		}
 		return results
 	}
@@ -386,7 +457,8 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 	}
 	sem := make(chan struct{}, par)
 	var wg sync.WaitGroup
-	for i, c := range calls {
+	for _, i := range pending {
+		c := calls[i]
 		wg.Add(1)
 		go func(i int, c ToolCall) {
 			defer wg.Done()

@@ -128,7 +128,7 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		}
 		return &AnthropicClient{
 			BaseURL: p.BaseURL, APIKey: key, HTTP: r.httpc,
-			ModelsFn: modelsFn,
+			ModelsFn: modelsFn, CacheTTL: anthropicCacheTTLOptIn(),
 		}, nil
 
 	case ProfileKindOpenAICompat, ProfileKindCustom:

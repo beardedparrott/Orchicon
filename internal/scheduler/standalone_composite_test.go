@@ -27,7 +27,7 @@ func TestBuildStandaloneComposite(t *testing.T) {
 	p.Close()
 	pool := &db.Pool{Pool: p}
 
-	out := buildStandaloneComposite(pool, db.ExecutionRow{TenantID: "tnt_test"}, db.WorkItemRow{
+	out, _ := buildStandaloneComposite(pool, db.ExecutionRow{TenantID: "tnt_test"}, db.WorkItemRow{
 		TenantID:           "tnt_test",
 		Title:              "Implement feature",
 		Description:        "Build the thing.",
@@ -75,7 +75,7 @@ func TestBuildStandaloneCompositeWorkItemContextDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := buildStandaloneComposite(pool, db.ExecutionRow{TenantID: "tnt_dev"}, db.WorkItemRow{
+	out, _ := buildStandaloneComposite(pool, db.ExecutionRow{TenantID: "tnt_dev"}, db.WorkItemRow{
 		TenantID:     "tnt_dev",
 		Title:        "Standalone with context",
 		ContextFiles: []byte(`["` + dir + `", "` + root + `/note.md"]`),
