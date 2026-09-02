@@ -1076,6 +1076,45 @@ func (s *Service) invalidate(tenantID, providerID string) {
 	reg.Invalidate(tenantID, providerID)
 }
 
+// applyBaseURLRepair persists a self-healed base URL (custom providers
+// only — a built-in's override must go through the operator, since it
+// changes which endpoint the built-in wire profile targets). Audit-logged
+// with before/after; best-effort: a persist failure leaves the runtime
+// result usable for THIS listing, and the next probe retries the repair.
+func (s *Service) applyBaseURLRepair(ctx context.Context, tenantID, providerID, from, to string) error {
+	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	row, err := db.GetProviderSettings(ctx, tx.Tx, tenantID, providerID)
+	if err != nil {
+		return err
+	}
+	if !row.IsCustom {
+		return fmt.Errorf("provider %q is built-in; base-URL repair is custom-only", providerID)
+	}
+	if row.BaseURL != from {
+		// Concurrently changed (e.g. the operator edited it mid-probe):
+		// do not clobber; the next probe re-evaluates.
+		return fmt.Errorf("provider %q base URL changed during repair", providerID)
+	}
+	row.BaseURL = to
+	if _, err := db.UpsertProviderSettings(ctx, tx.Tx, row); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx.Tx, audit.Entry{TenantID: tenantID, Action: "provider.base_url_self_healed", TargetType: "provider", TargetID: providerID,
+		Before: audit.Snapshot(map[string]any{"base_url": from}),
+		After:  audit.Snapshot(map[string]any{"base_url": to})}); err != nil {
+		return fmt.Errorf("providers: audit self-heal: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.invalidate(tenantID, providerID)
+	return nil
+}
+
 // EnabledCustomProviderIDs lists the tenant's ENABLED custom provider ids
 // (the model-ref validation merge source, ADR-0006 D6; also the substrate
 // loader's filter). Served to internal/worker via the API wiring.
@@ -1146,6 +1185,29 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	unfiltered := profile
 	unfiltered.HiddenModels = nil
 	res := sourcing.ListModels(ctx, unfiltered, bearer)
+	// SELF-HEALING probe: a stored URL that was saved before plane-aware
+	// resolution existed (or that was entered in a form the container can't
+	// reach — loopback, missing /v1) fails here forever. Try the most
+	// likely repaired candidates; if one works, PERSIST it (chat uses the
+	// same base URL — the fix must apply to turns, not just the listing)
+	// and log the repair in plain language.
+	if res.Degraded && len(res.Models) == 0 {
+		for _, cand := range repairCandidates(profile.BaseURL) {
+			cp := profile
+			cp.BaseURL = cand
+			if r2 := sourcing.ListModels(ctx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
+				if err := s.applyBaseURLRepair(ctx, tenantID, providerID, profile.BaseURL, cand); err != nil {
+					break
+				}
+				if s.log != nil {
+					s.log.Info("providers: probe self-healed the base URL", "ref_id", providerID, "from", profile.BaseURL, "to", cand)
+				}
+				profile.BaseURL = cand
+				res = r2
+				break
+			}
+		}
+	}
 	hidden := make(map[string]bool, len(profile.HiddenModels))
 	for _, id := range profile.HiddenModels {
 		hidden[id] = true

@@ -82,3 +82,44 @@ func resolveForPlane(raw string) (string, string, bool) {
 		"(llama-server: --host 0.0.0.0) and that the URL includes the version root (ends in /v1)."
 	return resolved, note, true
 }
+
+// repairCandidates lists the most-likely-working base URLs for a custom
+// provider whose stored URL cannot be probed: plane-reachable host
+// (loopback → gateway, container mode only) and/or the missing version
+// root (/v1 — the OpenAI-compat convention the custom wire appends
+// /models and /chat/completions to). Candidates are ordered most-likely
+// first and deduped; the ORIGINAL url is NOT included (the caller already
+// tried it). Empty/nil when nothing can be sensibly tried.
+func repairCandidates(raw string) []string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.Port() == "" {
+		return nil
+	}
+	hosts := []string{u.Host}
+	if gw := hostGatewayIP(); gw != "" {
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "0.0.0.0", "::1":
+			hosts = append(hosts, net.JoinHostPort(gw, u.Port()))
+		}
+	}
+	pathNeedsV1 := u.Path == "" || u.Path == "/"
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range hosts {
+		c := *u
+		c.Host = h
+		if pathNeedsV1 {
+			v := c
+			v.Path = strings.TrimRight(c.Path, "/") + "/v1"
+			if !seen[v.String()] {
+				seen[v.String()] = true
+				out = append(out, v.String())
+			}
+		}
+		if !seen[c.String()] {
+			seen[c.String()] = true
+			out = append(out, c.String())
+		}
+	}
+	return out
+}

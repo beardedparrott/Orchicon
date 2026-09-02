@@ -68,7 +68,7 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 	if len(bearer) > 0 {
 		auth = bearer[0]
 	}
-	key := probeKey(p.ID, auth)
+	key := probeKey(p.ID, auth, p.BaseURL)
 
 	var out []ModelInfo
 	degraded := false
@@ -322,13 +322,21 @@ func decodeBody(r io.Reader, dst any) error {
 	return dec.Decode(dst)
 }
 
-// probeKey derives the cache key: provider id ⊕ bearer-hash suffix (a
-// credential rotation must not be served a stale unauthenticated entry).
-func probeKey(providerID, bearer string) string {
-	if bearer == "" {
+// probeKey derives the cache key: provider id ⊕ bearer-hash ⊕ base-URL
+// hash. The bearer folds in so a credential rotation is never served a
+// stale unauthenticated entry; the base URL folds in so a repaired /
+// overridden URL probes fresh instead of hitting the failed entry cached
+// for the previous URL (self-healing probes different candidates under
+// the same provider id).
+func probeKey(providerID, bearer, baseURL string) string {
+	h := sha256.New()
+	h.Write([]byte(bearer))
+	h.Write([]byte{0})
+	h.Write([]byte(baseURL))
+	sum := h.Sum(nil)
+	if bearer == "" && baseURL == "" {
 		return providerID
 	}
-	sum := sha256.Sum256([]byte(bearer))
 	return providerID + "#" + hex.EncodeToString(sum[:8])
 }
 
