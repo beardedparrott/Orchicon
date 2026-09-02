@@ -10,11 +10,15 @@ package orchicon
 //
 // The compaction POLICY is middle-only eviction of OLD TOOL ROUNDS (an
 // assistant tool_use with its paired tool_result — originals disk-offloaded),
-// with the pinned goal head, assistant text and user turns untouched, and
-// the recent tail kept verbatim — so no orphaned tool_use (or orphaned
-// tool_result) ever remains in the marshaled history. At most once per
-// threshold band (anti-loop latch), with a min-turn floor and a
-// per-execution cap.
+// with the pinned goal head (the eviction digest marker is merged INTO the
+// head user message — never a standalone user message, which would break the
+// Anthropic role-alternation rule), assistant text and non-tool user turns
+// untouched, and the recent tail kept verbatim — so no orphaned tool_use (or
+// orphaned tool_result) ever remains in the marshaled history. Eviction is
+// plan-then-offload-then-commit: s.history is replaced only after the
+// originals are safely offloaded, so a failed offload never loses data from
+// the live session. At most once per threshold band (anti-loop latch), with a
+// min-turn floor and a per-execution cap.
 
 import (
 	"bufio"
@@ -225,16 +229,20 @@ func (s *Session) doCompact(step int, reason string) bool {
 	if s.cs.lastCompactStep > 0 && step-s.cs.lastCompactStep < s.cs.budget.CompactionTurnFloor() {
 		return false // min-turn floor between compactions
 	}
-	evicted := s.evictMiddleToolResults()
-	if len(evicted) == 0 {
+	// Plan-then-offload-then-commit (QA bug B): planning computes the
+	// eviction WITHOUT mutating s.history; the offload (the originals
+	// store) runs BEFORE the replacement history is committed, so a failed
+	// offload leaves the live session byte-identical — the evicted
+	// originals are never lost from history.
+	evicted, replacement := s.planMiddleEviction()
+	if len(evicted) == 0 || replacement == nil {
 		return false // nothing to evict — never compact for show
 	}
 	if err := s.offloadToolResults(evicted); err != nil {
 		s.log.Warn("compaction: offload failed — skipping eviction", "execution", s.id, "error", err)
-		// Undo the history mutation (the offload is the originals store;
-		// without it the eviction would lose data).
 		return false
 	}
+	s.history = replacement
 	s.cs.lastCompactStep = step
 	s.cs.compactions++
 	s.cs.armed = false // re-arm only after forward progress (next step)
@@ -252,23 +260,28 @@ type evictedToolResult struct {
 	EvictedAt  string `json:"evicted_at"`
 }
 
-// evictMiddleToolResults removes middle tool rounds — an assistant
-// tool_use and its paired tool-result message TOGETHER as a unit — keeping
-// the pinned goal head, every non-tool message, and the recent tail
-// verbatim. Evicting the pair (never a result alone, never a tool_use
-// alone) preserves the provider contract: every assistant tool_use that
-// REMAINS in history has a matching tool_result, so the marshaled next
-// request is valid for Anthropic and OpenAI. Returns the evicted originals
-// for offload. Mutates s.history only after eviction is committed by the
-// caller (offload first, then the caller's latch update).
-func (s *Session) evictMiddleToolResults() []evictedToolResult {
+// planMiddleEviction computes the middle-only tool-round eviction WITHOUT
+// mutating s.history (QA bug B): it returns the evicted originals for
+// offload and the replacement history to commit AFTER the offload succeeds,
+// so a failed offload leaves the live session byte-identical — the evicted
+// originals are never lost from history. It removes an assistant tool_use
+// and its paired tool-result message TOGETHER as a unit, keeping the pinned
+// goal head, every non-tool message, and the recent tail verbatim. Evicting
+// the pair (never a result alone, never a tool_use alone) preserves the
+// provider contract: every assistant tool_use that REMAINS has a matching
+// tool_result, so the marshaled next request is valid for Anthropic and
+// OpenAI. The digest marker is merged into the pinned head user message
+// (never a standalone user message — QA bug C: consecutive plain-text user
+// messages break the Anthropic role-alternation rule). replacement is nil
+// when nothing is evictable.
+func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 	keep := s.cp.RecentTurns
 	if keep < 1 {
 		keep = 1
 	}
 	n := len(s.history)
 	if n <= keep+1 {
-		return nil
+		return nil, nil
 	}
 	// Pinned head: the first user message (the goal).
 	head := -1
@@ -286,7 +299,7 @@ func (s *Session) evictMiddleToolResults() []evictedToolResult {
 		tailStart = head + 2
 	}
 	if tailStart >= n || tailStart-head <= 1 {
-		return nil
+		return nil, nil
 	}
 
 	// resultMsgIndex maps each tool_call_id to the history index of its
@@ -363,14 +376,16 @@ func (s *Session) evictMiddleToolResults() []evictedToolResult {
 		}
 	}
 	if len(evicted) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	// Evict the paired assistant tool_use blocks: a middle assistant
+	// Plan the paired assistant tool_use removal: a middle assistant
 	// message's tool_use whose result message was dropped above is removed
 	// with it. A message that had text or surviving tool_use blocks keeps
 	// them; a pure tool_use message whose every call was evicted is dropped
-	// wholesale (no orphaned tool_use remains either way).
+	// wholesale (no orphaned tool_use remains either way). Trimming is
+	// staged in `trimmed` copies — s.history is not mutated (QA bug B).
+	trimmed := map[int]Message{}
 	for i := head + 1; i < tailStart; i++ {
 		m := s.history[i]
 		if m.Role != RoleAssistant || dropMsg[i] {
@@ -388,29 +403,62 @@ func (s *Session) evictMiddleToolResults() []evictedToolResult {
 		if droppedAny && len(kept) == 0 {
 			dropMsg[i] = true // pure tool_use message, fully evicted
 		} else if droppedAny {
-			m.Content = kept // text and/or surviving calls stay verbatim
-			s.history[i] = m
+			// Text and/or surviving calls stay verbatim — but only as a
+			// COPY staged for the replacement; s.history is not touched
+			// until the offload commits (QA bug B).
+			m.Content = kept
+			trimmed[i] = m
 		}
 	}
 
-	// Rebuild: surviving messages (head + kept middle) + digest marker +
-	// recent tail. The marker is a USER message at the eviction boundary so
-	// the model knows what disappeared and how to re-read an original.
+	// Build the replacement: surviving messages (head + kept middle, with
+	// the digest marker MERGED INTO the pinned head user message) + recent
+	// tail verbatim. The head merge (never a standalone user message) keeps
+	// the marshaled history role-alternating — QA bug C.
 	markerText := s.offloadDigestMarker(evicted)
-	marker := Message{Role: RoleUser, Content: []Content{{Text: &markerText}}}
-	out := make([]Message, 0, n+1)
+	out := make([]Message, 0, n)
 	for i := 0; i < tailStart; i++ {
 		if dropMsg[i] {
 			continue
 		}
-		out = append(out, s.history[i])
+		m := s.history[i]
+		if tm, ok := trimmed[i]; ok {
+			m = tm
+		}
+		if i == head && markerText != "" {
+			m = appendMarkerToHead(m, markerText)
+		}
+		out = append(out, m)
 	}
-	out = append(out, marker)
 	for i := tailStart; i < n; i++ {
 		out = append(out, s.history[i])
 	}
-	s.history = out
-	return evicted
+	return evicted, out
+}
+
+// appendMarkerToHead merges the compaction digest-marker text into the
+// pinned head user message (its first text block) instead of injecting a
+// standalone user message. The marker tells the model what was evicted and
+// how to re-read an original; riding the goal's user message keeps the
+// marshaled history strictly role-alternating (a second consecutive
+// plain-text user message is rejected by the Anthropic Messages API).
+func appendMarkerToHead(m Message, markerText string) Message {
+	// Copy the content slice so the merged text never writes through to
+	// s.history's shared backing array — planning must stay pure until the
+	// offload commits (QA bug B: a failed offload must leave history
+	// byte-identical).
+	content := make([]Content, len(m.Content))
+	copy(content, m.Content)
+	for i := range content {
+		if content[i].Text != nil {
+			merged := *content[i].Text + "\n\n" + markerText
+			content[i].Text = &merged
+			m.Content = content
+			return m
+		}
+	}
+	m.Content = append(content, Content{Text: &markerText})
+	return m
 }
 
 // offloadDigestMarker renders the injected marker line for the evicted

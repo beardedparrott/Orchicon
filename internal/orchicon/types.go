@@ -74,12 +74,18 @@ const (
 
 // Usage carries token accounting. ReasoningTokens is a SUB-BUCKET of
 // OutputTokens — never summed into totals (matches the usage-records cache
-// migration 20260828). CacheRead/CacheWrite are Anthropic cache_read_/
-// cache_creation_input_tokens and OpenAI prompt_tokens_details.cached_tokens
-// (OpenAI has no cache-write → 0). CostUSD is the LIVE provider-priced cost
-// of this turn (resolved by the wire client from the model's catalog/probe
-// pricing); 0 when the model has no pricing — the budget cost gate then
-// never fires on it, never a synthesized estimate.
+// migration 20260828). InputTokens is the FRESH (uncached) input bucket on
+// EVERY wire: Anthropic input_tokens already excludes cache reads, and the
+// OpenAI-compat client subtracts prompt_tokens_details.cached_tokens from
+// prompt_tokens at the edge (prompt_tokens is cache-INCLUSIVE — see
+// oaNoCache / legacyNoCache) so cache tokens are never double-counted in the
+// window-pressure basis InputTokens+CacheReadTokens or in CostFor pricing.
+// CacheRead/CacheWrite are Anthropic cache_read_/cache_creation_input_tokens
+// and OpenAI prompt_tokens_details.cached_tokens (OpenAI has no cache-write
+// → 0). CostUSD is the LIVE provider-priced cost of this turn (resolved by
+// the wire client from the model's catalog/probe pricing); 0 when the model
+// has no pricing — the budget cost gate then never fires on it, never a
+// synthesized estimate.
 type Usage struct {
 	InputTokens      int64
 	OutputTokens     int64

@@ -2,6 +2,7 @@ package orchicon
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,6 +351,144 @@ func TestCompactionTailPairingIsPreserved(t *testing.T) {
 				t.Fatalf("old_1 pair survived — expected eviction of the full round")
 			}
 		}
+	}
+}
+
+// Regression for QA bug B: a failed offload must leave history byte-identical
+// (plan-then-offload-then-commit). The probe pre-creates the offload path as
+// a DIRECTORY so offloadToolResults fails; the middle tool rounds must still
+// be present in the live session afterwards — never evicted without offload.
+func TestCompactionOffloadFailureLeavesHistoryIntact(t *testing.T) {
+	s, _, _, dir := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
+	seedHistory(s)
+	before := s.History()
+	beforeJSON := mustMarshalMessages(before)
+
+	// Sabotage the offload destination: pre-create the path as a directory,
+	// so os.OpenFile on it fails (the QA probe shape).
+	path := filepath.Join(dir, ".orchicon", "offload", s.id+".jsonl")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll offload-path-as-dir: %v", err)
+	}
+
+	ctx := context.Background()
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction fired at warn tier")
+	}
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction fired despite a failing offload")
+	}
+	if s.cs.compactions != 0 {
+		t.Fatalf("compactions = %d, want 0 after a failed offload", s.cs.compactions)
+	}
+	// History is byte-identical to before the attempt.
+	after := s.History()
+	if len(after) != len(before) || mustMarshalMessages(after) != beforeJSON {
+		t.Fatalf("history mutated despite offload failure:\nbefore=%s\nafter =%s", beforeJSON, mustMarshalMessages(after))
+	}
+	// The evictable middle originals are still in the live session.
+	var sawOld, sawMarker bool
+	for _, m := range after {
+		for _, c := range m.Content {
+			if c.ToolResult != nil && strings.Contains(c.ToolResult.Content, "big old tool output") {
+				sawOld = true
+			}
+			if c.Text != nil && strings.Contains(*c.Text, "Compacted old tool results") {
+				sawMarker = true
+			}
+		}
+	}
+	if !sawOld {
+		t.Fatalf("evictable middle originals lost from the live session after a failed offload")
+	}
+	if sawMarker {
+		t.Fatalf("digest marker injected despite a failed offload")
+	}
+}
+
+// mustMarshalMessages renders history as stable JSON for identity compares.
+func mustMarshalMessages(h []Message) string {
+	b, err := json.Marshal(h)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// Regression for QA bug C: the compaction digest marker must be MERGED into
+// the pinned head user message — never a standalone user message — so the
+// marshaled Anthropic history stays strictly role-alternating (a second
+// consecutive plain-text user message is rejected by the Messages API). The
+// seed mirrors a REAL mid-session history (goal head + alternating assistant
+// tool_use / tool-result rounds — no injected plain user turns), which
+// marshals role-alternating before compaction.
+func TestCompactionDigestMarkerMergedIntoHeadUserMessage(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":2}}`, 1000)
+	goal := "Goal."
+	s.history = []Message{
+		{Role: RoleUser, Content: []Content{{Text: &goal}}},
+		assistantToolUseMsg("old_1", "bash", `{}`),
+		toolResultMsg("old_1", "old output one"),
+		assistantToolUseMsg("old_2", "glob", `{}`),
+		toolResultMsg("old_2", "old output two"),
+		assistantToolUseMsg("recent", "read", `{"path":"x"}`),
+		toolResultMsg("recent", "recent tail result"),
+	}
+	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+		t.Fatalf("expected compaction to fire")
+	}
+	h := s.History()
+	// The marker text lives INSIDE the first user message's text content,
+	// and there is no standalone user-role message carrying ONLY the marker.
+	markerOnlyMsg := -1
+	goalHasMarker := false
+	for i, m := range h {
+		if m.Role != RoleUser {
+			continue
+		}
+		texts := []string{}
+		for _, c := range m.Content {
+			if c.Text != nil {
+				texts = append(texts, *c.Text)
+			}
+		}
+		joined := strings.Join(texts, "\n")
+		if strings.Contains(joined, "Compacted old tool results") && !strings.Contains(joined, "Goal.") {
+			markerOnlyMsg = i
+		}
+		if strings.Contains(joined, "Goal.") && strings.Contains(joined, "Compacted old tool results") {
+			goalHasMarker = true
+		}
+	}
+	if markerOnlyMsg >= 0 {
+		t.Fatalf("standalone marker-only user message at index %d — must be merged into the goal head", markerOnlyMsg)
+	}
+	if !goalHasMarker {
+		t.Fatalf("digest marker not merged into the pinned head (goal) user message")
+	}
+
+	// Marshal for Anthropic: roles must alternate strictly (the eviction
+	// removes whole assistant/tool-result rounds; the merged marker adds no
+	// message), and the marker survives inside the head message.
+	wire := marshalAnthropicHistory(h)
+	if len(wire) < 2 {
+		t.Fatalf("marshaled history too short: %#v", wire)
+	}
+	for i := 1; i < len(wire); i++ {
+		if wire[i].Role == wire[i-1].Role {
+			t.Fatalf("non-alternating roles in marshalAnthropicHistory output at %d-%d (%q %q): %#v", i-1, i, wire[i-1].Role, wire[i].Role, wire)
+		}
+	}
+	foundMarker := false
+	for _, c := range wire[0].Content {
+		if c.Type == "text" && strings.Contains(c.Text, "Compacted old tool results") {
+			foundMarker = true
+		}
+	}
+	if !foundMarker {
+		t.Fatalf("digest marker missing from the marshaled head user message")
 	}
 }
 
