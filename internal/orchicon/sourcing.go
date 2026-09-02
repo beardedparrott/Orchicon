@@ -194,6 +194,21 @@ func perProbeEntry(models []ModelInfo, ok bool, now time.Time) probeEntry {
 	return probeEntry{models: models, fetchedAt: now, failed: !ok}
 }
 
+// modelsURL derives the /models listing endpoint for a profile. The
+// commandcode profile's base is the bare origin (https://api.commandcode.ai)
+// — the chat clients derive /provider/v1/chat/completions and
+// /provider/v1/messages from it (internal/orchicon/commandcode.go), so the
+// probe must derive /provider/v1/models the same way. Every other
+// OpenAI-compatible profile treats the base as the version root and appends
+// /models directly (e.g. https://opencode.ai/zen/go/v1 → /v1/models).
+func modelsURL(p Profile) string {
+	base := strings.TrimRight(p.BaseURL, "/")
+	if p.Kind == ProfileKindCommandCode {
+		return base + "/provider/v1/models"
+	}
+	return base + "/models"
+}
+
 // fetchModels performs the GET {baseURL}/models probe, tolerating servers
 // that return unusable metadata (missing context/pricing fields).
 func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth string) ([]ModelInfo, bool) {
@@ -201,14 +216,17 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	if httpc == nil {
 		httpc = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(p.BaseURL, "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL(p), nil)
 	if err != nil {
 		return nil, false
 	}
 	// Credential: the resolver-resolved bearer first (tenant secret or env
 	// — the value the real client calls will use), then the env fallback.
 	// A missing credential never fails the probe — it stays non-fatal.
+	// Anthropic-wire endpoints authenticate with x-api-key, not Bearer.
 	switch {
+	case auth != "" && p.Kind == ProfileKindAnthropic:
+		req.Header.Set("x-api-key", auth)
 	case auth != "":
 		req.Header.Set("authorization", "Bearer "+auth)
 	case p.AuthEnv != "":
