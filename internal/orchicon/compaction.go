@@ -414,7 +414,14 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 	// Build the replacement: surviving messages (head + kept middle, with
 	// the digest marker MERGED INTO the pinned head user message) + recent
 	// tail verbatim. The head merge (never a standalone user message) keeps
-	// the marshaled history role-alternating — QA bug C.
+	// the marshaled history role-alternating — QA bug C. Surviving messages
+	// are appended verbatim; consecutive same-role survivors (a plain-text
+	// user turn whose surrounding tool rounds were evicted, or an assistant
+	// text+tool_use turn trimmed to bare text) are handled at the WIRE layer
+	// by marshalAnthropicHistory, which coalesces same-role turns — the
+	// normalized history here stays policy-true (recent tail verbatim, goal
+	// head intact) while the marshaled Anthropic history stays strictly
+	// role-alternating.
 	markerText := s.offloadDigestMarker(evicted)
 	out := make([]Message, 0, n)
 	for i := 0; i < tailStart; i++ {

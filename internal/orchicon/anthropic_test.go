@@ -387,3 +387,53 @@ func TestIsUpgradeRequired403(t *testing.T) {
 		}
 	}
 }
+
+// The Anthropic wire must stay strictly role-alternating for ANY normalized
+// history, including the realistic shapes compaction (middle eviction) can
+// produce: a plain-text user turn whose surrounding tool rounds were evicted
+// lands directly after the goal user message, and an assistant text+tool_use
+// turn trimmed to bare text can sit next to another assistant text. The
+// marshaler coalesces consecutive same-role turns (content appended in order —
+// never dropped). This is the QA-iteration-2 regression for the compaction
+// role-alternation contract (bug C's generalization).
+func TestAnthropicHistoryMarshalRoleAlternationCoalesces(t *testing.T) {
+	hist := []Message{
+		{Role: RoleUser, Content: []Content{{Text: strPtr("Goal")}}},
+		{Role: RoleUser, Content: []Content{{Text: strPtr("Interrupt after goal")}}}, // coalesce
+		{Role: RoleAssistant, Content: []Content{{Text: strPtr("alpha")}}},
+		{Role: RoleAssistant, Content: []Content{{Text: strPtr("beta")}}}, // coalesce
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c1", Content: "out"}}}},
+		{Role: RoleUser, Content: []Content{{Text: strPtr("After tool result")}}}, // coalesce AFTER tool_result
+	}
+	wire := marshalAnthropicHistory(hist)
+	for i := 1; i < len(wire); i++ {
+		if wire[i].Role == wire[i-1].Role {
+			t.Fatalf("non-alternating roles at %d-%d (%q %q): %#v", i-1, i, wire[i-1].Role, wire[i].Role, wire)
+		}
+	}
+	// [user(Goal+Interrupt)] [assistant(alpha+beta)] [user(tool_result+After tool result)]
+	if len(wire) != 3 {
+		t.Fatalf("wire = %#v, want 3 coalesced turns", wire)
+	}
+	if got := wire[0].Content[0].Text; got != "Goal" && got != "Interrupt after goal" {
+		t.Fatalf("first user text = %q", got)
+	}
+	// Text after tool_result: wire[2] holds the tool_result block FIRST then text.
+	last := wire[2].Content
+	foundText := false
+	for _, c := range last {
+		if c.Type == "text" {
+			foundText = true
+			if c.Text != "After tool result" {
+				t.Fatalf("tail text = %q", c.Text)
+			}
+			break
+		}
+		if c.Type != "tool_result" {
+			t.Fatalf("content before tool_result in tail user: %#v", c)
+		}
+	}
+	if !foundText {
+		t.Fatalf("'After tool result' text missing from tail user: %#v", last)
+	}
+}

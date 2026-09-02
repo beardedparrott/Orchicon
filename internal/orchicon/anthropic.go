@@ -126,8 +126,29 @@ type anthRequest struct {
 // marshalAnthropicHistory converts normalized messages. Assistant reasoning
 // is NEVER replayed (D2): reasoning content has no normalized storage in
 // Message.Content — text-only + tool_use + tool_result round-trip here.
-// Anthropic has no "tool" role: tool_result blocks ride USER messages, so
-// consecutive tool-role messages merge into one user message.
+// Anthropic has no "tool" role: tool_result blocks ride USER messages.
+//
+// The emitted wire history is kept strictly role-alternating: consecutive
+// normalized messages that marshal to the SAME wire role are coalesced into
+// one wire turn (their content blocks are appended in order, so no content is
+// ever dropped). This is the Anthropic training contract — the model is
+// trained on alternating user/assistant turns — and both compaction
+// (compaction.go middle eviction can leave adjacent same-role survivors) and
+// the mid-run injection path (a queued plain user turn drains after a tool
+// round's result user message) can otherwise produce adjacent plain user
+// turns. Coalescing at THIS boundary (the single place the wire shape is
+// produced) keeps every history — compacted or not — strictly alternating
+// without losing content.
+//
+// tool_result content is subject to Anthropic's isolation ordering rule: in a
+// user message the tool_result blocks must come FIRST and any text AFTER
+// them. So a plain-text user message that follows a tool-result user message
+// coalesces INTO that same wire user message with its text appended AFTER the
+// tool_result blocks (the documented valid shape — "text after all tool
+// results"), and consecutive tool-result user messages merge into one
+// tool_result user message. A plain text user can therefore never be emitted
+// as a standalone second user turn after a tool-result user, and text never
+// precedes a tool_result block in a shared user message.
 func marshalAnthropicHistory(messages []Message) []anthMessage {
 	out := make([]anthMessage, 0, len(messages))
 	appendContent := func(am *anthMessage, c Content) {
@@ -150,18 +171,48 @@ func marshalAnthropicHistory(messages []Message) []anthMessage {
 			am.Content = append(am.Content, ac)
 		}
 	}
+	lastHoldsToolResult := func() bool {
+		if len(out) == 0 {
+			return false
+		}
+		last := &out[len(out)-1]
+		return last.Role == "user" && len(last.Content) > 0 && last.Content[0].Type == "tool_result"
+	}
 	for _, m := range messages {
 		role := string(m.Role)
-		if m.Role == RoleTool {
+		isToolResult := m.Role == RoleTool
+		if isToolResult {
 			role = "user" // Anthropic tool_result lives in user messages
 		}
-		// Consecutive tool-role messages merge into ONE user message.
-		if m.Role == RoleTool && len(out) > 0 && out[len(out)-1].Role == "user" && len(out[len(out)-1].Content) > 0 && out[len(out)-1].Content[0].Type == "tool_result" {
+		if len(out) > 0 && out[len(out)-1].Role == role {
 			prev := &out[len(out)-1]
-			for _, c := range m.Content {
-				appendContent(prev, c)
+			if isToolResult {
+				// A tool_result user message merges only into a preceding
+				// tool_result user message (never into a plain-text user —
+				// text must not precede tool_result).
+				if lastHoldsToolResult() {
+					for _, c := range m.Content {
+						appendContent(prev, c)
+					}
+					continue
+				}
+			} else if lastHoldsToolResult() {
+				// Plain user (or image) after a tool-result user: coalesce
+				// with the text appended AFTER the tool_result blocks — the
+				// documented valid shape. The merge keeps the wire strictly
+				// alternating instead of emitting a second standalone user.
+				for _, c := range m.Content {
+					appendContent(prev, c)
+				}
+				continue
+			} else {
+				// Consecutive plain turns (user text, assistant text,
+				// assistant tool_use riding the same turn) merge into ONE.
+				for _, c := range m.Content {
+					appendContent(prev, c)
+				}
+				continue
 			}
-			continue
 		}
 		am := anthMessage{Role: role, Content: []anthContent{}}
 		for _, c := range m.Content {

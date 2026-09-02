@@ -527,3 +527,170 @@ func TestCompactionCostBudgetGateFiresWithPricing(t *testing.T) {
 		t.Fatalf("compaction re-fired on the same cost tier")
 	}
 }
+
+// Regression (QA iteration 2): a REALISTIC mid-session history with
+// plain-text user turns between tool rounds (human injection / continuation)
+// must remain strictly role-alternating after middle-only eviction. Evicting
+// the tool rounds that surrounded a plain user turn leaves that user turn
+// adjacent to the pinned goal head — a standalone second plain user message
+// would marshal as consecutive plain user roles (rejected by the Anthropic
+// Messages API). The eviction COALESCES consecutive same-role survivors so
+// the normalized history stays alternating and no content is lost.
+func TestCompactionRoleAlternationWithPlainTextUserTurns(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
+	seedHistory(s)
+	ctx := context.Background()
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction fired at warn tier")
+	}
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction did not fire at escalate tier")
+	}
+	h := s.History()
+	if len(h) < 2 {
+		t.Fatalf("history too short after compaction: %+v", h)
+	}
+	wire := marshalAnthropicHistory(h)
+	for i := 1; i < len(wire); i++ {
+		if wire[i].Role == wire[i-1].Role {
+			t.Fatalf("non-alternating roles in marshalAnthropicHistory after compaction with plain-text users at %d-%d (%q %q): %#v", i-1, i, wire[i-1].Role, wire[i].Role, wire)
+		}
+	}
+	// No content lost: the goal, the mid-session "Continue"/"Keep going"
+	// text, the digest marker and the recent assistant text all survive.
+	var joined strings.Builder
+	for _, m := range wire {
+		for _, c := range m.Content {
+			if c.Type == "text" {
+				joined.WriteString(c.Text)
+			}
+		}
+	}
+	all := joined.String()
+	for _, want := range []string{"Goal: implement guarded compaction.", "Continue", "Keep going", "Compacted old tool results", "Final recent assistant message."} {
+		if !strings.Contains(all, want) {
+			t.Errorf("content lost after compaction: %q missing from %q", want, all)
+		}
+	}
+}
+
+// Regression (QA iteration 2): an assistant turn that carries BOTH text and
+// a tool_use whose round is evicted is trimmed to bare text — that text must
+// coalesce with the NEXT surviving assistant message instead of producing
+// consecutive assistant wire roles. Seed is role-alternating pre-compaction
+// (u a u a u a u) and must stay alternating after middle eviction.
+func TestCompactionRoleAlternationAssistantTextAndToolUseRounds(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":3}}`, 0)
+	goal := "Goal."
+	ta1, ta2 := "Let me look.", "Let me also check."
+	s.history = []Message{
+		{Role: RoleUser, Content: []Content{{Text: &goal}}},
+		{Role: RoleAssistant, Content: []Content{{Text: &ta1}, {ToolUse: &ContentToolUse{ToolCallID: "a1", Name: "bash", ArgsJSON: "{}"}}}},
+		toolResultMsg("a1", "out1"),
+		{Role: RoleAssistant, Content: []Content{{Text: &ta2}, {ToolUse: &ContentToolUse{ToolCallID: "a2", Name: "bash", ArgsJSON: "{}"}}}},
+		toolResultMsg("a2", "out2"),
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "a3", Name: "glob", ArgsJSON: "{}"}}}},
+		toolResultMsg("a3", "out3"),
+	}
+	ctx := context.Background()
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction fired at warn tier")
+	}
+	s.recordTurnUsage(Usage{InputTokens: 60})
+	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+		t.Fatalf("compaction did not fire at escalate tier")
+	}
+	wire := marshalAnthropicHistory(s.History())
+	if len(wire) < 2 {
+		t.Fatalf("history too short after compaction: %#v", wire)
+	}
+	for i := 1; i < len(wire); i++ {
+		if wire[i].Role == wire[i-1].Role {
+			t.Fatalf("non-alternating roles after evicting text+tool_use rounds at %d-%d (%q %q): %#v", i-1, i, wire[i-1].Role, wire[i].Role, wire)
+		}
+	}
+	// Every surviving tool_use still has its paired tool_result in history.
+	h := s.History()
+	uses := map[string]bool{}
+	results := map[string]bool{}
+	for _, m := range h {
+		for _, c := range m.Content {
+			if c.ToolUse != nil {
+				uses[c.ToolUse.ToolCallID] = true
+			}
+			if c.ToolResult != nil {
+				results[c.ToolResult.ToolCallID] = true
+			}
+		}
+	}
+	for id := range uses {
+		if !results[id] {
+			t.Errorf("ORPHANED tool_use %q after eviction", id)
+		}
+	}
+	for id := range results {
+		if !uses[id] {
+			t.Errorf("ORPHANED tool_result %q after eviction", id)
+		}
+	}
+}
+
+// AC (loop-level): a budget-breach trigger demonstrably fires compaction on a
+// mock provider EXACTLY ONCE mid-Run, and the session continues afterwards to
+// a successful StopStop. Step 1's usage is excluded by the min-turn floor, so
+// the ladder reaches the escalate tier (120/200 = 60%) at step 3 and fires
+// once; the subsequent text turn streams normally.
+func TestCompactionBudgetGateFiresOnceMidRunAndSessionContinues(t *testing.T) {
+	dir := t.TempDir()
+	ms, err := agentmemory.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ms.Close()
+	man := testManifest("orchicon/mockprov/deepseek-v4-flash")
+	man.Budgets = []byte(`{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`)
+	prov := &ctxModelProvider{ctxTokens: 0}
+	prov.turns = []scriptedTurn{
+		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "t1", Name: "noop"}, ToolCallDelta{Index: 0, ArgsJSONDelta: `{"a":1}`}, ToolCallEnd{Index: 0}}, finish: StopToolUse, usage: Usage{InputTokens: 60}},
+		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "t2", Name: "noop"}, ToolCallDelta{Index: 0, ArgsJSONDelta: `{"a":2}`}, ToolCallEnd{Index: 0}}, finish: StopToolUse, usage: Usage{InputTokens: 60}},
+		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "t3", Name: "noop"}, ToolCallDelta{Index: 0, ArgsJSONDelta: `{"a":3}`}, ToolCallEnd{Index: 0}}, finish: StopToolUse, usage: Usage{InputTokens: 60}},
+		{events: []Event{TextDelta{Text: "Done after compaction."}}, finish: StopStop, usage: Usage{InputTokens: 10}},
+	}
+	s, err := NewSession(SessionConfig{ExecRow: testExecRow("exec_e2e"), Manifest: man, ProjectDir: dir, Provider: prov, MemoryStore: ms})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	if len(results) != 1 || !results[0].succeeded {
+		t.Fatalf("OnResult = %+v, want success (session continues after compaction)", results)
+	}
+	if s.cs.compactions != 1 {
+		t.Fatalf("compactions = %d, want exactly 1", s.cs.compactions)
+	}
+	// The final (post-compaction) provider turn sees a digest marker in the
+	// marshaled history head — the model is told what was evicted.
+	req := prov.lastRequest()
+	var joined string
+	for _, m := range marshalAnthropicHistory(req.Messages) {
+		for _, c := range m.Content {
+			if c.Type == "text" {
+				joined += c.Text
+			}
+		}
+	}
+	if !strings.Contains(joined, "Compacted old tool results") {
+		t.Errorf("post-compaction provider turn lacks the digest marker")
+	}
+	// Originals offloaded to the project dir.
+	b, err := os.ReadFile(filepath.Join(dir, ".orchicon", "offload", s.id+".jsonl"))
+	if err != nil || len(b) == 0 {
+		t.Errorf("offload file missing after loop-level compaction (err=%v)", err)
+	}
+}
