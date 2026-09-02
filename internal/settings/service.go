@@ -100,15 +100,17 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 
 	// Validate session TTLs and default model refs before touching the DB.
-	if s := req.Msg.Settings; s != nil {
-		if err := validateSessionTTLs(s.SessionAccessTokenTtlSeconds, s.SessionRefreshTokenTtlSeconds); err != nil {
+	// (Local named `ts`, not `s`: `s` shadows the *Service receiver, which
+	// made the validateModelRef call resolve against the proto message.)
+	if ts := req.Msg.Settings; ts != nil {
+		if err := validateSessionTTLs(ts.SessionAccessTokenTtlSeconds, ts.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		if err := s.validateModelRef(s.DefaultWorkerModel); err != nil {
+		if err := s.validateModelRef(ts.DefaultWorkerModel); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("default_worker_model: %w", err))
 		}
-		if err := s.validateModelRef(s.DefaultAskOrchiconModel); err != nil {
+		if err := s.validateModelRef(ts.DefaultAskOrchiconModel); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("default_ask_orchicon_model: %w", err))
 		}

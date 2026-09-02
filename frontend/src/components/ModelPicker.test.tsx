@@ -6,10 +6,13 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("renders three tiers: adapter bubbles, provider list, searchable model list", () => {
-    // Tier 1 — adapter bubble list from registered kinds.
-    expect(src).toContain("useListAdapterKinds");
-    expect(src).toMatch(/rounded-full border px-3 py-1/);
-    // Tier 2 — provider list from the tenant-aware providers service
+    // ALL THREE TIERS LIVE INSIDE ONE BOX (operator UX directive): the
+    // closed state shows the selected ref; the open panel contains the
+    // search input, adapter pills, provider pills, and the model list.
+    expect(src).toContain("ALL THREE TIERS LIVE INSIDE ONE BOX");
+    expect(src).toMatch(/rounded-full border px-3 py-1/); // adapter pills (in-box)
+    expect(src).toContain("Search models...");
+    // Tier 2 — provider pills from the tenant-aware providers service
     // (ADR-0006: built-ins ⊕ enabled tenant customs, auto-refresh on save).
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
@@ -18,7 +21,6 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     // legacy CLI adapters → opencode-CLI discovery.
     expect(src).toContain("useProviderModelsForPicker");
     expect(src).toContain("useListOpenCodeModels(");
-    expect(src).toMatch(/Search models\.\.\./);
   });
 
   it("scopes provider list by adapter and model list by provider (stale-selection guard)", () => {

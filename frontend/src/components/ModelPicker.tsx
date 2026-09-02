@@ -175,7 +175,9 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
 
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click. dropdownRef now wraps the INPUT (the
+  // in-box panel design), so the outside check must exclude the whole
+  // wrapper — checking only the input would close the panel instantly.
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (
@@ -324,12 +326,12 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="relative">
       {/* Stored-ref review banner (D5): flagged for review, never blank/hidden. */}
       {storedRefFlagged && (
         <div
           role="alert"
-          className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
+          className="mb-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
         >
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
@@ -349,190 +351,197 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         </div>
       )}
 
-      {/* Tier 1 — adapter bubble list (registered kinds, auto from Dispatcher). */}
-      <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Adapter</span>
-        <div className="flex flex-wrap gap-1.5">
-          {adapterList.map((kind) => {
-            const active = kind === adapter;
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-muted text-foreground hover:bg-muted/80"
-                }`}
-                onClick={() => selectAdapter(kind)}
-              >
-                {kind}
-              </button>
-            );
-          })}
-          {kindsError && (
-            <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
-              (kinds unavailable — showing default)
-            </span>
-          )}
+      {/* ALL THREE TIERS LIVE INSIDE ONE BOX (operator UX directive): the
+          closed state shows the selected ref; clicking opens the panel with
+          search → adapter pills → provider pills → model list. The outside-
+          click effect closes it (inputRef + dropdownRef cover both). */}
+      {selectedModel && !showDropdown ? (
+        <div
+          className="flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-muted/50"
+          onClick={() => setShowDropdown(true)}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              setInfoModel(selectedModel);
+            }}
+          >
+            Info
+          </Button>
         </div>
-      </div>
-
-      {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the model
-           list (gate applies). Legacy CLI adapters: OPTIONAL FILTERS derived
-           from the live CLI discovery (the old picker's grouping), with an
-           All reset — the model input never requires a selection. */}
-      <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Provider</span>
-        {providersLoading && <p className="text-xs text-muted-foreground">Loading providers...</p>}
-        {providersError && (
-          <div className="space-y-1">
-            <p className="text-xs text-destructive">Failed to load providers: {String(providersError)}</p>
-          </div>
-        )}
-        {!providersLoading && !providersError && providers && (
-          <div className="flex flex-wrap gap-1.5">
-            {providers.length === 0 && (
-              <span className="text-xs text-muted-foreground">
-                No providers for adapter “{adapter}”
-              </span>
-            )}
-            {providers.map((p: { id: string; name: string; custom: boolean }) => {
-              const active = p.id === provider;
-              return (
-                <div key={p.id} className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                      active
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-muted text-foreground hover:bg-muted/80"
-                    }`}
-                    onClick={() => selectProvider(p.id)}
-                  >
-                    {p.name || p.id}
-                  </button>
-                  {p.custom && (
-                    <span
-                      className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
-                      title="Manage in Settings → Adapters"
-                    >
-                      custom
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-            {customProvider && (
-              <span className="self-center text-[10px] text-muted-foreground">
-                Manage custom providers in Settings → Adapters
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Tier 3 — searchable model list. Under orchicon: provider-scoped
-           (gated on provider). Under legacy adapters: flat, always enabled;
-           the provider pill is an optional filter on the same flat list. */}
-      <div className={showDropdown ? "relative z-10 space-y-1" : "relative space-y-1"}>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">Model</span>
-        {selectedModel && !showDropdown ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              onClick={() => setInfoModel(selectedModel)}
-            >
-              Info
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowDropdown(true)}>
-              Change
-            </Button>
-          </div>
-        ) : (
-          <>
-            <Input
-              ref={inputRef}
-              placeholder={useNativeSourcing && !provider ? "Select a provider first" : "Search models..."}
-              value={search}
-              disabled={useNativeSourcing && !provider}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setShowDropdown(true);
+      ) : (
+        <div ref={dropdownRef} className="relative">
+          <Input
+            ref={inputRef}
+            placeholder={
+              useNativeSourcing && !provider ? "Select a provider first" : "Search models..."
+            }
+            value={search}
+            disabled={useNativeSourcing && !provider}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setShowDropdown(true);
+            }}
+            onFocus={() => setShowDropdown(true)}
+            onKeyDown={handleKeyDown}
+          />
+          {showDropdown && (
+            <div
+              className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+              style={{
+                maxHeight: "420px",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
               }}
-              onFocus={() => setShowDropdown(true)}
-              onKeyDown={handleKeyDown}
-            />
-            {showDropdown && (!useNativeSourcing || provider) && (
-              <div
-                ref={dropdownRef}
-                className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
-                style={{
-                  maxHeight: "320px",
-                  overflow: "hidden",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <div className="overflow-y-auto">
-                  {modelsLoading && (
-                    <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
-                  )}
-                  {modelsError && (
-                    <p className="p-4 text-xs text-destructive text-center">
-                      Failed to load models: {String(modelsError)}
-                    </p>
-                  )}
-                  {!modelsLoading && !modelsError && filtered.length === 0 && (
-                    <p className="p-4 text-xs text-muted-foreground text-center">
-                      No models match your search
-                    </p>
-                  )}
-                  {!modelsLoading &&
-                    !modelsError &&
-                    filtered.map((model, idx) => (
-                      <button
-                        key={model.modelRef || model.id}
-                        type="button"
-                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
-                          idx === focusedIdx ? "bg-accent" : ""
-                        } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
-                        onMouseEnter={() => setFocusedIdx(idx)}
-                        onClick={() => selectModel(model)}
-                        onDoubleClick={() => {
-                          selectModel(model);
-                          setInfoModel(model);
-                        }}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium truncate">{model.name}</div>
-                          <div className="text-xs text-muted-foreground truncate">
-                            <span className="font-mono">{model.providerId}</span> /{" "}
-                            <span className="font-mono">{model.id}</span>
-                          </div>
-                          {missingHints(model) && (
-                            <div className="mt-0.5 text-[10px] text-amber-600">
-                              no context hint — compaction math may misbehave
-                            </div>
+            >
+              {/* Tier 1 — adapter pills (registered kinds, auto from Dispatcher). */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Adapter
+                </span>
+                {adapterList.map((kind) => {
+                  const active = kind === adapter;
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-muted text-foreground hover:bg-muted/80"
+                      }`}
+                      onClick={() => selectAdapter(kind)}
+                    >
+                      {kind}
+                    </button>
+                  );
+                })}
+                {kindsError && (
+                  <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
+                    (kinds unavailable — showing default)
+                  </span>
+                )}
+              </div>
+
+              {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the
+                  model list (gate applies). Legacy CLI adapters: OPTIONAL
+                  FILTERS from the live CLI discovery with an All reset. */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Provider
+                </span>
+                {providersLoading && (
+                  <span className="text-xs text-muted-foreground">Loading providers...</span>
+                )}
+                {providersError && (
+                  <span className="text-xs text-destructive">
+                    Failed to load providers: {String(providersError)}
+                  </span>
+                )}
+                {!providersLoading && !providersError && providers && (
+                  <>
+                    {providers.length === 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        No providers for adapter “{adapter}”
+                      </span>
+                    )}
+                    {providers.map((p: { id: string; name: string; custom: boolean }) => {
+                      const active = p.id === provider;
+                      return (
+                        <div key={p.id} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                              active
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border bg-muted text-foreground hover:bg-muted/80"
+                            }`}
+                            onClick={() => selectProvider(p.id)}
+                          >
+                            {p.name || p.id}
+                          </button>
+                          {p.custom && (
+                            <span
+                              className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
+                              title="Manage in Settings → Adapters"
+                            >
+                              custom
+                            </span>
                           )}
                         </div>
-                        <div className="text-right shrink-0">
-                          <div className="text-xs font-mono">{formatCost(model.cost)}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                </div>
+                      );
+                    })}
+                    {customProvider && (
+                      <span className="self-center text-[10px] text-muted-foreground">
+                        Manage custom providers in Settings → Adapters
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
-            )}
-          </>
-        )}
-      </div>
+
+              {/* Tier 3 — searchable model list (provider-scoped under
+                  orchicon; flat + optional pill filter under legacy). */}
+              <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
+                {modelsLoading && (
+                  <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
+                )}
+                {modelsError && (
+                  <p className="p-4 text-xs text-destructive text-center">
+                    Failed to load models: {String(modelsError)}
+                  </p>
+                )}
+                {!modelsLoading && !modelsError && filtered.length === 0 && (
+                  <p className="p-4 text-xs text-muted-foreground text-center">
+                    No models match your search
+                  </p>
+                )}
+                {!modelsLoading &&
+                  !modelsError &&
+                  filtered.map((model, idx) => (
+                    <button
+                      key={model.modelRef || model.id}
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
+                        idx === focusedIdx ? "bg-accent" : ""
+                      } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
+                      onMouseEnter={() => setFocusedIdx(idx)}
+                      onClick={() => selectModel(model)}
+                      onDoubleClick={() => {
+                        selectModel(model);
+                        setInfoModel(model);
+                      }}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{model.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          <span className="font-mono">{model.providerId}</span> /{" "}
+                          <span className="font-mono">{model.id}</span>
+                        </div>
+                        {missingHints(model) && (
+                          <div className="mt-0.5 text-[10px] text-amber-600">
+                            no context hint — compaction math may misbehave
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-xs font-mono">{formatCost(model.cost)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {model.limits ? `${formatLimit(model.limits.context)} ctx` : ""}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
