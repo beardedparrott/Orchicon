@@ -218,6 +218,16 @@ const researchEphemeralMarker = "git_strategy=none"
 // — the global markers stay reserved for whole-fleet content.
 const sdlcFixForwardMarker = "Fix-forward contract"
 
+// reviewFixProposalMarker is the review/QA family's roll-forward fragment
+// (cannedWorker.RollMarker) pinning the fix-PROPOSAL requirement: when a
+// reviewer/QA reports failure on judgment-class findings, it must include the
+// specific fix it would apply (exact change, chosen option, invariants
+// checked) marked as a PROPOSAL — never applied — so the SSE's next loop
+// iteration is apply-and-verify instead of re-deriving the diagnosis. Present
+// only in the NEW content, so exactly the review/QA workers re-roll; the SSE
+// and Architect keep sdlcFixForwardMarker.
+const reviewFixProposalMarker = "PROPOSAL — not applied"
+
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers. The Automation Research workflow runs with
 // git_strategy=none (ephemeral): the run worktree is a detached HEAD — no
@@ -287,7 +297,7 @@ var cannedWorkers = []cannedWorker{
 			"## Verdict contract\n" +
 			"End your review with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
 			"- `success` — either the change passes as-is, or you fixed the mechanical findings yourself and re-verified (build + tests green). List what you fixed in the summary.\n" +
-			"- `failure` — only when judgment-class blockers remain that you must NOT fix yourself (semantic bugs, security issues, design problems the engineer must address). Cite exact file and line for each.\n\n" +
+			"- `failure` — only when judgment-class blockers remain that you must NOT fix yourself (semantic bugs, security issues, design problems the engineer must address). Cite exact file and line for each — and **propose the fix**: for each blocker, include the specific change you would apply (the exact code change, the option chosen among the alternatives you considered, and the invariants you checked), clearly marked as a PROPOSAL — not applied. The engineer should be able to apply-and-verify your proposal instead of re-deriving the diagnosis.\n\n" +
 			"A change with only mechanical issues, all fixed by you, is a SUCCESS — do not report failure for formatting after you have already fixed it.\n\n" +
 			"## Review checklist\n\n" +
 
@@ -302,7 +312,7 @@ var cannedWorkers = []cannedWorker{
 			"For each judgment-class issue, cite the exact file and line. " +
 			"Be constructive — explain why it matters, not just what's wrong. " +
 			"If you cannot reproduce a suspected issue quickly, report it as suspected, not confirmed." + lintBlock,
-		RollMarker: sdlcFixForwardMarker,
+		RollMarker: reviewFixProposalMarker,
 	},
 	{
 		ID:          "w_se_qa_engineer",
@@ -322,7 +332,7 @@ var cannedWorkers = []cannedWorker{
 			"## Verdict contract\n" +
 			"End your report with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
 			"- `success` — all acceptance criteria verified, OR the only findings were mechanical and you fixed + re-verified them yourself. List what you fixed in the summary.\n" +
-			"- `failure` — unmet acceptance criteria or functional bugs remain that the engineer must fix. Include steps to reproduce for each.\n\n" +
+			"- `failure` — unmet acceptance criteria or functional bugs remain that the engineer must fix. Include steps to reproduce for each, and **propose the fix**: for each finding, include the specific change that would resolve it (the exact code change and the invariants checked), clearly marked as a PROPOSAL — not applied. The engineer should be able to apply-and-verify your proposal instead of re-deriving the diagnosis.\n\n" +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
 			"2. **Relevant edge cases**: Empty inputs, boundary values, unexpected data types — but only the ones this change actually touches.\n" +
@@ -336,7 +346,7 @@ var cannedWorkers = []cannedWorker{
 			"- Severity (blocker / major / minor)\n" +
 			"- Environment details if relevant\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + lintBlock,
-		RollMarker: sdlcFixForwardMarker,
+		RollMarker: reviewFixProposalMarker,
 	},
 	{
 		ID:          "w_se_principal_architect",
@@ -587,7 +597,7 @@ var cannedWorkers = []cannedWorker{
 			"## Verdict contract\n" +
 			"End your report with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
 			"- `success` — all acceptance criteria verified, OR the only findings were mechanical and you fixed + re-verified them yourself. List what you fixed in the summary.\n" +
-			"- `failure` — unmet acceptance criteria or functional bugs remain that the engineer must fix. Include steps to reproduce for each.\n\n" +
+			"- `failure` — unmet acceptance criteria or functional bugs remain that the engineer must fix. Include steps to reproduce for each, and **propose the fix**: for each finding, include the specific change that would resolve it (the exact code change and the invariants checked), clearly marked as a PROPOSAL — not applied. The engineer should be able to apply-and-verify your proposal instead of re-deriving the diagnosis.\n\n" +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
 			"2. **Relevant edge cases**: Empty inputs, boundary values, unexpected data types — but only the ones this change actually touches.\n" +
@@ -601,7 +611,7 @@ var cannedWorkers = []cannedWorker{
 			"- Severity (blocker / major / minor)\n" +
 			"- Environment details if relevant\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock + lintBlock,
-		RollMarker: sdlcFixForwardMarker,
+		RollMarker: reviewFixProposalMarker,
 	},
 
 	// ---- Automation Research trio (project-agnostic). These records were
