@@ -194,19 +194,29 @@ func perProbeEntry(models []ModelInfo, ok bool, now time.Time) probeEntry {
 	return probeEntry{models: models, fetchedAt: now, failed: !ok}
 }
 
-// modelsURL derives the /models listing endpoint for a profile. The
-// commandcode profile's base is the bare origin (https://api.commandcode.ai)
-// — the chat clients derive /provider/v1/chat/completions and
-// /provider/v1/messages from it (internal/orchicon/commandcode.go), so the
-// probe must derive /provider/v1/models the same way. Every other
-// OpenAI-compatible profile treats the base as the version root and appends
-// /models directly (e.g. https://opencode.ai/zen/go/v1 → /v1/models).
+// modelsURL derives the /models listing endpoint for a profile, per wire
+// type — each provider's chat client derives its paths from the base, and
+// the probe must derive its listing path the same way:
+//   - commandcode: base is the bare origin (chat derives
+//     /provider/v1/chat/completions and /provider/v1/messages) → probe
+//     /provider/v1/models (their documented models endpoint).
+//   - anthropic: base is the bare origin ("no /v1 — path adds it",
+//     anthropic.go) → probe /v1/models (their documented Models API).
+//   - ollama: base is the host root → probe /v1/models (the OpenAI-compat
+//     listing; native discovery rides /api/tags in the OllamaClient).
+//   - every other OpenAI-compatible profile: the base IS the version root
+//     (e.g. https://api.openai.com/v1, https://opencode.ai/zen/go/v1) →
+//     append /models directly.
 func modelsURL(p Profile) string {
 	base := strings.TrimRight(p.BaseURL, "/")
-	if p.Kind == ProfileKindCommandCode {
+	switch p.Kind {
+	case ProfileKindCommandCode:
 		return base + "/provider/v1/models"
+	case ProfileKindAnthropic, ProfileKindOllama:
+		return base + "/v1/models"
+	default:
+		return base + "/models"
 	}
-	return base + "/models"
 }
 
 // fetchModels performs the GET {baseURL}/models probe, tolerating servers
@@ -223,10 +233,14 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	// Credential: the resolver-resolved bearer first (tenant secret or env
 	// — the value the real client calls will use), then the env fallback.
 	// A missing credential never fails the probe — it stays non-fatal.
-	// Anthropic-wire endpoints authenticate with x-api-key, not Bearer.
+	// Wire-specific auth headers: anthropic uses x-api-key (+ the
+	// required anthropic-version header); everything else Bearer.
 	switch {
-	case auth != "" && p.Kind == ProfileKindAnthropic:
-		req.Header.Set("x-api-key", auth)
+	case p.Kind == ProfileKindAnthropic:
+		req.Header.Set("anthropic-version", anthropicVersion)
+		if auth != "" {
+			req.Header.Set("x-api-key", auth)
+		}
 	case auth != "":
 		req.Header.Set("authorization", "Bearer "+auth)
 	case p.AuthEnv != "":
