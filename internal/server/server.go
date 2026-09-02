@@ -230,12 +230,18 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	}
 
 	// MCP discoverer: shells out to opencode CLI to list MCP servers.
+	// NO mock fallback (same directive as the model discoverer): without
+	// the binary the discoverer stays nil and ListOpenCodeMCPs returns
+	// the actionable Unimplemented error. Well-known MCP servers are a
+	// curated picker convenience in the LIVE discoverer's output, not a
+	// mock plane — they merge into real CLI results (configured wins).
 	var mcpDiscoverer *aigateway.MCPDiscoverer
-	if _, err := exec.LookPath("opencode"); err == nil {
-		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, "opencode")
+	if bin := opencodeBin; bin != "" {
+		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, bin)
+	} else if p, err := exec.LookPath("opencode"); err == nil {
+		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, p)
 	} else {
-		log.Warn("opencode binary not found on PATH, using mock MCP server list", "error", err)
-		mcpDiscoverer = aigateway.MockMCPDiscoverer(log)
+		log.Warn("opencode binary not found — MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
 	}
 
 	// Reconciler framework (docs/03 §2). Phase 5 registers the
