@@ -17,7 +17,12 @@ import { useGetSettings } from "@/api/settings";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
+import {
+  useGetProjectMCPServers,
+  useSetProjectMCPServers,
+} from "@/api/mcpServers";
 import { EntityYamlView } from "@/components/EntityYamlView";
+import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,6 +68,17 @@ function ProjectDetailPage() {
   const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy>("local");
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
+  // MCP server selection (references into Settings → Adapters → MCP).
+  // Auto-refreshes on save via react-query invalidation (mcpKeys.project).
+  const { data: projectMCPServers } = useGetProjectMCPServers(id);
+  const setProjectMCPServers = useSetProjectMCPServers();
+  const [mcpDraft, setMcpDraft] = useState<MCPConfig[]>([]);
+  const [mcpDirty, setMcpDirty] = useState(false);
+  const [savingMCP, setSavingMCP] = useState(false);
+  useEffect(() => {
+    setMcpDraft((projectMCPServers ?? []).map((srvId) => ({ id: srvId })));
+    setMcpDirty(false);
+  }, [projectMCPServers]);
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
   const { data: tenantSettings } = useGetSettings();
@@ -419,6 +435,57 @@ function ProjectDetailPage() {
                   {draftGitStrategy === "none" && "Ephemeral — no push. Work vanishes after success; only Results remain."}
                 </p>
               </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MCP servers — reference-based selection into the tenant registry */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>MCP servers</CardTitle>
+            <CardDescription>
+              MCP servers enabled for this project (references — editing an
+              entry in Settings → Adapters → MCP updates every consumer).
+              Selections here are the project defaults workers fall back to.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <MCPPicker
+              value={mcpDraft}
+              onChange={(configs) => {
+                setMcpDraft(configs);
+                setMcpDirty(true);
+              }}
+            />
+            {editing && (
+              <Button
+                variant="outline"
+                disabled={savingMCP || !mcpDirty}
+                onClick={() => {
+                  setSavingMCP(true);
+                  setProjectMCPServers.mutate(
+                    {
+                      projectId: project.id,
+                      mcpServerIds: mcpDraft.map((c) => c.id),
+                    },
+                    {
+                      onSettled: () => setSavingMCP(false),
+                      onSuccess: () => setMcpDirty(false),
+                    },
+                  );
+                }}
+              >
+                {savingMCP ? "Saving…" : "Save MCP selection"}
+              </Button>
+            )}
+            {!editing && (
+              <p className="text-xs text-muted-foreground">
+                {mcpDraft.length === 0
+                  ? "No MCP servers selected — workers fall back to the tenant default."
+                  : `${mcpDraft.length} MCP server(s) selected.`}
+              </p>
             )}
           </CardContent>
         </Card>

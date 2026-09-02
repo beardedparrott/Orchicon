@@ -139,7 +139,8 @@ export function PermissionsSection({ value, onChange }: SectionProps) {
       <div className="space-y-1">
         <Label className="text-xs">MCP servers</Label>
         <p className="text-xs text-muted-foreground mb-1">
-          MCP servers the worker may use. Searchable list pulled from opencode.
+          MCP servers the worker may use (references into Settings → Adapters → MCP).
+          Worker selection empty = project defaults.
         </p>
         <MCPPicker
           value={data.mcp_servers}

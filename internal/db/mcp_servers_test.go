@@ -58,7 +58,9 @@ func TestMCPServerJoinTables(t *testing.T) {
 		if err == nil {
 			_, _ = dttx.Exec(c, `DELETE FROM mcp_servers WHERE tenant_id=$1`, tenant)
 			_, _ = dttx.Exec(c, `DELETE FROM project_mcp_servers WHERE tenant_id=$1`, tenant)
-			_, _ = dttx.Exec(c, `DELETE FROM tenant_default_mcp_servers WHERE tenant_id=$1`, tenant)
+			// The tenant default lives in tenant_settings.default_mcp_servers
+			// (JSONB id array) — no tenant_default_mcp_servers table exists.
+			_, _ = dttx.Exec(c, `UPDATE tenant_settings SET default_mcp_servers='[]'::jsonb WHERE tenant_id=$1`, tenant)
 			_, _ = dttx.Exec(c, `DELETE FROM projects WHERE id=$1`, proj.ID)
 			_ = dttx.Commit(c)
 		}

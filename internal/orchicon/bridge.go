@@ -139,12 +139,19 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// selected-but-unconfigured or unreachable server fails the session
 	// actionably (never silent); the no-op default source degrades to no
 	// MCP tools.
-	tools, terr := b.mcpResolveAndStart(ctx, exec)
+	mt, terr := b.mcpResolveAndStart(ctx, exec)
 	if terr != nil {
 		return terr
 	}
-	if tools != nil {
-		defer func() { _ = tools.Close() }()
+	// The ToolRegistry interface must stay a bare nil when no MCP servers
+	// resolve (the platform-default state): assigning a typed-nil
+	// *mcpTools into the interface makes it non-nil for the loop's
+	// `s.tools != nil` check, nil-panicking the first turn of every
+	// session (regression of the pre-PR `var tools ToolRegistry` pattern).
+	var tools ToolRegistry
+	if mt != nil {
+		tools = mt
+		defer func() { _ = mt.Close() }()
 	}
 	sess, err := NewSession(SessionConfig{
 		ExecRow:    exec,
