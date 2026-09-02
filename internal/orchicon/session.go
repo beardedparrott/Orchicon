@@ -277,9 +277,10 @@ func (s *Session) CacheStats() CacheStats {
 }
 
 // recordTurnUsage folds one provider turn's usage into the session's
-// cache stats and logs a prefix-change note when the static prefix
-// fingerprint moved since the last turn (a miss is expected after any
-// edit to the composite — ADR-0009 D5/D6).
+// cache stats. The static-prefix fingerprint is exposed via
+// CacheStats.PrefixFingerprint so an operator can correlate a miss with
+// a prefix edit (ADR-0009 D5/D6); the per-path prefix-change logging
+// lives at the composite-build layer (scheduler prompt-section cache).
 func (s *Session) recordTurnUsage(u Usage) {
 	s.cacheMu.Lock()
 	s.cacheStats.Turns++
