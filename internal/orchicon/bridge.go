@@ -204,9 +204,10 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// execution failed_to_start AND requeue the task (PR B2).
 	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
 	err = sess.Run(runCtx, terminal)
-	// Best-effort usage record (step_finish parity).
+	// Best-effort usage record (step_finish parity) with the session's
+	// real per-turn token + prefix-cache metrics (ADR-0009 D6).
 	if b.usageRecorder != nil {
-		b.recordUsage(ctx, exec, manifest)
+		b.recordUsage(ctx, exec, manifest, sess.CacheStats())
 	}
 	// Best-effort DB session-part persistence for the live pane.
 	if b.sessionStore != nil {
@@ -383,22 +384,41 @@ func (m mcpTools) Execute(ctx context.Context, name, argsJSON string) (string, e
 	return m.mgr.Execute(ctx, name, argsJSON)
 }
 
-// recordUsage emits the execution's final usage sample (best-effort).
-func (b *NativeBridge) recordUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) {
-	// Placeholder: the session accumulates per-turn usage; emit a zero-ish
-	// sample only when the session actually produced tokens. The gateway
-	// pricing resolver fills cost from model prices.
+// recordUsage emits the execution's final usage sample (best-effort),
+// folded from the session's per-turn cache stats (ADR-0009 D6): real
+// prompt/completion/reasoning token counts plus the cache read/write
+// split. The gateway pricing resolver fills cost from model prices; the
+// cache-token classes flow into the OTel usage counters via
+// aigateway.UsageInput.
+func (b *NativeBridge) recordUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, stats CacheStats) {
+	if stats.Turns == 0 && stats.InputTokens == 0 && stats.OutputTokens == 0 {
+		return // the session never produced a provider turn — no sample
+	}
 	_ = b.usageRecorder(ctx, scheduler.UsageRecord{
-		TenantID:      exec.TenantID,
-		ProjectID:     exec.ProjectID,
-		TaskID:        exec.TaskID,
-		ExecutionID:   exec.ID,
-		WorkerID:      exec.WorkerID,
-		Provider:      "orchicon",
-		Model:         manifest.ModelRef,
-		CorrelationID: exec.ID,
-		WorkflowRunID: exec.WorkflowRunID,
+		TenantID:         exec.TenantID,
+		ProjectID:        exec.ProjectID,
+		TaskID:           exec.TaskID,
+		ExecutionID:      exec.ID,
+		WorkerID:         exec.WorkerID,
+		Provider:         "orchicon",
+		Model:            manifest.ModelRef,
+		PromptTokens:     stats.InputTokens,
+		CacheReadTokens:  stats.CacheReadTokens,
+		CacheWriteTokens: stats.CacheWriteTokens,
+		CompletionTokens: stats.OutputTokens,
+		ReasoningTokens:  stats.ReasoningTokens,
+		CorrelationID:    exec.ID,
+		WorkflowRunID:    exec.WorkflowRunID,
 	})
+	b.log.Info("orchicon: session cache stats",
+		"execution", exec.ID,
+		"turns", stats.Turns,
+		"cache_hits", stats.Hits,
+		"cache_miss_writes", stats.MissWrites,
+		"cache_none_turns", stats.NoneTurns,
+		"cache_read_tokens", stats.CacheReadTokens,
+		"cache_write_tokens", stats.CacheWriteTokens,
+		"prefix_fingerprint", stats.PrefixFingerprint)
 }
 
 // persistSession writes the transcript's DB session parts (best-effort).

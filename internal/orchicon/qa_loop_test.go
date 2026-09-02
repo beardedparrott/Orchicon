@@ -168,8 +168,17 @@ func TestQAManifestIdentityInput(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	req := prov.lastRequest()
-	if len(req.System) != 1 || !req.System[0].Cache || req.System[0].Text != "You are the QA test worker." {
-		t.Errorf("system = %+v", req.System)
+	// ADR-0009 two-zone layout: block 0 is the cached static prefix —
+	// composite prompt verbatim, then the thin native layer + env facts.
+	// No mutable state yet → the single cached block only.
+	if len(req.System) != 1 || !req.System[0].Cache {
+		t.Errorf("system = %+v, want one cache-flagged block", req.System)
+	}
+	if !strings.HasPrefix(req.System[0].Text, "You are the QA test worker.") {
+		t.Errorf("static prefix must start with the composite prompt verbatim: %q", req.System[0].Text[:min(80, len(req.System[0].Text))])
+	}
+	if !strings.Contains(req.System[0].Text, NativeStaticLayer) {
+		t.Error("static prefix must carry the thin native layer")
 	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != RoleUser {
 		t.Errorf("first message = %+v", req.Messages[0])
