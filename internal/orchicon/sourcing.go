@@ -259,9 +259,16 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	var body struct {
 		Object string `json:"object"`
 		Data   []struct {
-			ID            string `json:"id"`
-			ContextLength int64  `json:"context_length"`
-			MaxModelLen   int64  `json:"max_model_len"`
+			ID string `json:"id"`
+			// OpenAI-compat shape: context_length (vLLM et al) or
+			// max_model_len (other compat servers).
+			ContextLength int64 `json:"context_length"`
+			MaxModelLen   int64 `json:"max_model_len"`
+			// Anthropic Models API shape: max_input_tokens (+ max_tokens
+			// for output). Extra struct fields for fields a payload lacks
+			// are harmless (decode to zero); anthropic's `data[].id`
+			// matches the OpenAI field name so one decode serves both.
+			MaxInputTokens int64 `json:"max_input_tokens"`
 		} `json:"data"`
 	}
 	if err := decodeBody(resp.Body, &body); err != nil {
@@ -277,6 +284,8 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 			m.Context = d.ContextLength
 		} else if d.MaxModelLen > 0 {
 			m.Context = d.MaxModelLen
+		} else if d.MaxInputTokens > 0 {
+			m.Context = d.MaxInputTokens
 		}
 		out = append(out, m)
 	}
