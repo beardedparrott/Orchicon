@@ -3776,11 +3776,11 @@ func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr st
 		"_prompt_fingerprint": fingerprint,
 		"_worker_id":          workerRefStr,
 		"_worker_version":     workerVersion,
-		"_upstream_worker":  upstreamWorker,
-		"_upstream_summary": upstreamSummary,
-		"_upstream_files":   upstreamFiles,
-		"_ac":               ac,
-		"_decision":         "pending",
+		"_upstream_worker":    upstreamWorker,
+		"_upstream_summary":   upstreamSummary,
+		"_upstream_files":     upstreamFiles,
+		"_ac":                 ac,
+		"_decision":           "pending",
 	})
 	var prev map[string]any
 	_ = json.Unmarshal(prevResult, &prev)

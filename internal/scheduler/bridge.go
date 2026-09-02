@@ -13,12 +13,12 @@ import (
 // adapter needs to begin a WorkerExecution: identity, prompts, model,
 // context sources, budgets, permissions.
 type ExecutionManifest struct {
-	ExecutionID        string
-	TaskID             string
-	ProjectID          string
-	WorkerID           string
-	WorkerVersion      int
-	SystemPrompt       string
+	ExecutionID   string
+	TaskID        string
+	ProjectID     string
+	WorkerID      string
+	WorkerVersion int
+	SystemPrompt  string
 	// PromptFingerprint is the sha256 over the project + work-item
 	// context-file stamps that produced this manifest's composite prompt
 	// (ADR-0009 D5). Unchanged fingerprint ⇒ the static prefix is

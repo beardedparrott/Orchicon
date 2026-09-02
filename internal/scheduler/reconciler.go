@@ -955,7 +955,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
-	var promptFP string // context-file fingerprint (ADR-0009 D5)
+	var promptFP string      // context-file fingerprint (ADR-0009 D5)
 	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
