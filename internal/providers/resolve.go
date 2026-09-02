@@ -70,7 +70,12 @@ func resolveForPlane(raw string) (string, string, bool) {
 	if strings.Contains(gw, ":") {
 		gwHost = "[" + gw + "]"
 	}
-	u.Host = gwHost
+	// PRESERVE THE PORT: u.Host is the combined host:port field — replacing
+	// it with the bare gateway IP silently dropped ":8095" (QA round 4:
+	// stored URLs lost their port, probe hit port 80, and repairCandidates
+	// bailed on the portless URL — the resolver poisoned its own repair
+	// path). JoinHostPort keeps host AND port.
+	u.Host = net.JoinHostPort(gwHost, u.Port())
 	resolved := u.String()
 	if resolved == trimmed {
 		return trimmed, "", false
@@ -84,41 +89,77 @@ func resolveForPlane(raw string) (string, string, bool) {
 }
 
 // repairCandidates lists the most-likely-working base URLs for a custom
-// provider whose stored URL cannot be probed: plane-reachable host
-// (loopback → gateway, container mode only) and/or the missing version
-// root (/v1 — the OpenAI-compat convention the custom wire appends
-// /models and /chat/completions to). Candidates are ordered most-likely
-// first and deduped; the ORIGINAL url is NOT included (the caller already
-// tried it). Empty/nil when nothing can be sensibly tried.
+// provider whose stored URL cannot be probed. Dimensions explored:
+//   - host: loopback → plane-reachable host gateway (container mode only;
+//     the portless-URL legacy bug may also have stored a bare gateway),
+//   - port: preserved as entered; portless URLs (legacy bug) try common
+//     llama-server/vLLM-class ports,
+//   - path: the version root (/v1) appended when absent.
+//
+// Candidates are ordered most-likely first and deduped; the ORIGINAL URL
+// is NOT included (the caller already tried it). Empty/nil when nothing
+// can be sensibly tried.
 func repairCandidates(raw string) []string {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" || u.Port() == "" {
+	if err != nil || u.Host == "" {
 		return nil
 	}
+
+	gw := hostGatewayIP()
+
+	// Hosts to try, in order: the stored host itself, then the gateway
+	// (when the stored host is loopback OR is a portless gateway artifact,
+	// both being container-reachability failures).
 	hosts := []string{u.Host}
-	if gw := hostGatewayIP(); gw != "" {
-		switch u.Hostname() {
-		case "localhost", "127.0.0.1", "0.0.0.0", "::1":
-			hosts = append(hosts, net.JoinHostPort(gw, u.Port()))
-		}
+	loopbackOrGateway := false
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
+		loopbackOrGateway = true
+	case "", gw: // portless parse or already-stored-gateway artifact
+		loopbackOrGateway = true
 	}
+	if loopbackOrGateway && gw != "" {
+		hosts = append(hosts, gw)
+	}
+
+	// Ports to try: as entered, else the common local-inference ports.
+	port := u.Port()
+	ports := []string{port}
+	if port == "" {
+		ports = []string{"8080", "8095", "8000", "11434"}
+	}
+
 	pathNeedsV1 := u.Path == "" || u.Path == "/"
+
 	seen := map[string]bool{}
 	var out []string
-	for _, h := range hosts {
+	add := func(host, port, path string) {
 		c := *u
-		c.Host = h
-		if pathNeedsV1 {
-			v := c
-			v.Path = strings.TrimRight(c.Path, "/") + "/v1"
-			if !seen[v.String()] {
-				seen[v.String()] = true
-				out = append(out, v.String())
-			}
+		c.Host = net.JoinHostPort(host, port)
+		c.Path = path
+		s := c.String()
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
 		}
-		if !seen[c.String()] {
-			seen[c.String()] = true
-			out = append(out, c.String())
+	}
+	for _, h := range hosts {
+		for _, p := range ports {
+			if pathNeedsV1 {
+				add(h, p, strings.TrimRight(u.Path, "/")+"/v1")
+			}
+			add(h, p, u.Path)
+		}
+	}
+	// Drop the original URL (the caller already tried it).
+	if orig := u.String(); len(out) > 0 && out[0] == orig {
+		out = out[1:]
+	} else {
+		for i, s := range out {
+			if s == orig {
+				out = append(out[:i], out[i+1:]...)
+				break
+			}
 		}
 	}
 	return out
