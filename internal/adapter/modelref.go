@@ -193,13 +193,14 @@ func splitFirst(ref string) (head, rest string) {
 //	bare-model                      → opencode/bare-model  (bare ids need no rewrite)
 //	opencode/anthropic/m            → unchanged (already canonical)
 //
-// knownAdapters decides the legacy-vs-canonical cut: a head that IS a
+// knownKinds decides the legacy-vs-canonical cut: a head that IS a
 // registered adapter kind means the ref already carries an adapter segment
 // and is returned unchanged; anything else is treated as legacy and
-// normalized under DefaultAdapterKind. Pass nil to normalize structurally
-// (every 1- and 2-segment ref, plus ANY 3+ segment ref whose head is not
-// a known kind — used by the data migration where the dispatcher's live
-// kinds are unavailable). Refs are otherwise returned VERBATIM (no
+// normalized under DefaultAdapterKind. A NIL map means "no kind knowledge
+// available" — the conservative cut then applies: 1- and 2-segment refs
+// (unambiguously legacy) normalize; 3+ segment refs are AMBIGUOUS (the
+// head could be a kind or a legacy slashed provider) and are returned
+// untouched rather than risked. Refs are otherwise returned VERBATIM (no
 // re-splitting of model segments, no trimming beyond the stored value).
 func NormalizeRef(ref string, knownKinds map[string]struct{}) string {
 	ref = strings.TrimSpace(ref)
@@ -211,17 +212,15 @@ func NormalizeRef(ref string, knownKinds map[string]struct{}) string {
 	if first == "" {
 		return ref // malformed (empty head); leave for parse-time errors
 	}
+	hasTail := strings.Contains(rest, "/") // 3+ segments
 	if knownKinds != nil {
 		if _, ok := knownKinds[first]; ok {
 			return ref // already carries a registered adapter segment
 		}
+	} else if hasTail {
+		// No kind knowledge + 3+ segments: ambiguous, leave untouched.
+		return ref
 	}
-	// No further slash → 2-segment legacy (provider/model) or 1-segment
-	// bare id. Both normalize by prefixing the default adapter kind.
-	if rest == "" || !strings.Contains(rest, "/") {
-		return DefaultAdapterKind + "/" + ref
-	}
-	// 3+ segments with a non-kind head: legacy slashed provider ref.
 	return DefaultAdapterKind + "/" + ref
 }
 

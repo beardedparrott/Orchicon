@@ -175,7 +175,6 @@ func MigrationKinds() map[string]struct{} {
 	}
 	return adapter.BuiltinAdapterKinds()
 }
-}
 
 // validateModelRef trims and bounds-checks a model_ref, then validates it
 // against the adapter/provider/model grammar (ADR-0003). An empty value is
@@ -424,9 +423,12 @@ func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef str
 	current := adapterKindOf(currentRef)
 	next := adapterKindOf(newRef)
 	// Phantom current kind (not a registered adapter kind): the current
-	// ref is pre-namespace legacy data — skip the adapter-change gate. The
-	// NEW ref was already fully validated by validateModelRef.
-	if !isRegisteredKind(current) {
+	// ref is pre-namespace legacy data — skip the adapter-change gate. An
+	// EMPTY current ref is NOT phantom: it means "no selection yet", so
+	// the first selection still validates the full provider/model pair
+	// (the D4 gate applies). The NEW ref was already fully validated by
+	// validateModelRef upstream.
+	if current != "" && !isRegisteredKind(current) {
 		return nil
 	}
 	if current == next {

@@ -149,9 +149,11 @@ func TestValidateAdapterChangePhantomKindIsLegacy(t *testing.T) {
 	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "orchicon/commandcode/deepseek/deepseek-v4-flash"); err != nil {
 		t.Fatalf("phantom-kind current ref blocked a native ref: %v", err)
 	}
-	// The NEW ref must still be structurally sound: a malformed one fails.
-	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/x", "opencode/"); err == nil {
-		t.Fatal("phantom-kind skip let a malformed new ref through")
+	// An EMPTY current ref is a FIRST selection, not phantom data: the
+	// full provider/model pair gate still applies (the existing service
+	// tests pin InvalidArgument for an invalid pair from empty).
+	if err := validateAdapterChange(context.Background(), "", "", "orchicon/mystery/m"); err == nil {
+		t.Fatal("first selection with an invalid pair passed; want gate applied")
 	}
 }
 

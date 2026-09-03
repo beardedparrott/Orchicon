@@ -113,7 +113,13 @@ func (d *ModelDiscoverer) fetchOrCache(ctx context.Context) ([]*apiv1.OpenCodeMo
 		if haveStale {
 			return stale, nil
 		}
-		<-wait
+		// The probe can take up to its 30s timeout; honor caller
+		// cancellation while waiting for it.
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return d.afterWait(ctx)
 	}
 	if d.cache != nil {

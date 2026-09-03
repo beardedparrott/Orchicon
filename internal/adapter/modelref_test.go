@@ -222,3 +222,22 @@ func TestNormalizeRefForMigration(t *testing.T) {
 		}
 	}
 }
+
+// The nil-map cut is conservative: 1/2-segment refs normalize (unambiguously
+// legacy), 3+ segment refs stay untouched (the head could be a kind).
+func TestNormalizeRefNilKindsConservative(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want string
+	}{
+		{"anthropic/claude-4", "opencode/anthropic/claude-4"},
+		{"bare-model", "opencode/bare-model"},
+		{"opencode/anthropic/m", "opencode/anthropic/m"}, // ambiguous 3-seg: untouched
+		{"commandcode/a/b", "commandcode/a/b"},           // ambiguous 3-seg: untouched
+	}
+	for _, c := range cases {
+		if got := NormalizeRef(c.ref, nil); got != c.want {
+			t.Errorf("NormalizeRef(%q, nil) = %q; want %q", c.ref, got, c.want)
+		}
+	}
+}
