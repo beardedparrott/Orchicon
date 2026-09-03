@@ -689,7 +689,7 @@ function DefaultsTab() {
               />
               <StallField
                 label="Tool hang (seconds)"
-                description="A tool call with no events for longer than this is cancelled natively (synthesized cancelled result + course-correcting redirect injected). 0 = default 180s; negative = disabled."
+                description="A tool call with no events for longer than this has its in-flight turn aborted (session kept) and a course-correcting redirect injected. 0 = default 180s; negative = disabled."
                 value={draftToolHang}
                 onChange={setDraftToolHang}
                 placeholder="180"
