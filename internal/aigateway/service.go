@@ -443,7 +443,14 @@ type usageMetrics struct {
 	tokens     otelmetric.Int64Counter
 	cost       otelmetric.Float64Counter
 	executions otelmetric.Int64Counter
-	initOnce   sync.Once
+
+	// prefix-cache session metrics (D3, ADR-0009 D6): emitted once at
+	// session terminal from live per-turn usage.
+	prefixHit  otelmetric.Int64Counter
+	prefixMiss otelmetric.Int64Counter
+	prefixRate otelmetric.Float64Gauge
+
+	initOnce sync.Once
 }
 
 func newUsageMetrics(log *slog.Logger) *usageMetrics {
@@ -473,6 +480,24 @@ func (m *usageMetrics) ensure() {
 			otelmetric.WithDescription("Total worker executions by outcome"),
 		); err == nil {
 			m.executions = e
+		}
+		if ph, err := telemetry.Meter().Int64Counter(
+			"orchicon_prefix_cache_hit_total",
+			otelmetric.WithDescription("Total prefix-cache hits per session (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixHit = ph
+		}
+		if pm, err := telemetry.Meter().Int64Counter(
+			"orchicon_prefix_cache_miss_total",
+			otelmetric.WithDescription("Total prefix-cache miss-writes per session (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixMiss = pm
+		}
+		if pr, err := telemetry.Meter().Float64Gauge(
+			"orchicon_prefix_cache_hit_rate",
+			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixRate = pr
 		}
 	})
 }

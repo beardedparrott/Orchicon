@@ -132,6 +132,13 @@ type Session struct {
 	// D6): cache hit/miss classification per turn + cached tokens.
 	cacheMu    sync.Mutex
 	cacheStats CacheStats
+
+	// usageSink drains one live provider-turn Usage for per-record emission
+	// (D2, opencode step_finish parity). Nil by default — the bridge wires
+	// it only when a usage recorder is configured. It is INDEPENDENT of
+	// recordTurnUsage / cacheStats: emitting a record must never double-feed
+	// the per-session cache rollup.
+	usageSink func(ctx context.Context, u Usage)
 }
 
 // CacheStats is the session's prefix-cache metric rollup (ADR-0009 D6).
@@ -292,6 +299,15 @@ func (s *Session) SetHistory(h []Message) { s.history = h }
 // session starts fresh. path is the prior session's JSONL path.
 func (s *Session) SetContinuation(path string) {
 	s.continuationPath = path
+}
+
+// SetUsageSink registers a per-turn usage drain (D2, opencode step_finish
+// parity). The loop calls it once per provider turn with the LIVE
+// provider-reported usage (after pricing). It is a SEPARATE drain from
+// recordTurnUsage — the per-session CacheStats rollup never depends on
+// whether a per-record usage is emitted.
+func (s *Session) SetUsageSink(fn func(ctx context.Context, u Usage)) {
+	s.usageSink = fn
 }
 
 // AddMemoryNote persists one durable note into the session's mutable

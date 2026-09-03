@@ -524,6 +524,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		})
 		return err
 	})
+	// Session-terminal prefix-cache telemetry (D3, ADR-0009 D6): the native
+	// bridge drains the per-session cache rollup to the OTel metrics
+	// recorder (hit/miss counters + hit-rate gauge). Live usage only.
+	nativeBridge.SetCacheSink(func(ctx context.Context, exec db.ExecutionRow, st orchicon.CacheStats) {
+		_ = usageRecorder.RecordPrefixCache(ctx, exec.TenantID, exec.ProjectID, exec.WorkerID, exec.ID, st.Turns, st.Hits, st.MissWrites, st.CacheReadTokens, st.CacheWriteTokens)
+	})
 	nativeBridge.SetSessionStore(func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
 		ttx, err := pool.BeginTenantTx(ctx, tenantID)
 		if err != nil {
