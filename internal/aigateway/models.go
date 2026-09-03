@@ -17,17 +17,36 @@ import (
 )
 
 // ModelDiscoverer discovers models by shelling out to the `opencode` CLI
-// (docs/04 §6). It caches results with a TTL so repeated fetches don't
-// hammer the subprocess. Like OpenChamber, Orchicon discovers models
-// dynamically from the opencode registry rather than hardcoding them.
+// (docs/04 §6). Caching strategy (2026-09: the probe costs ~1.2s — a full
+// CLI subprocess spawn parsing ~470 models — so reads never block on it
+// once a list exists):
+//
+//   - Fresh cache: served instantly (the only blocking read is the cold
+//     first load).
+//   - TTL expired: STALE-WHILE-REVALIDATE — the stale list is served
+//     immediately and a single-flight background refresh runs on a
+//     detached bounded context. New models appear without any caller
+//     paying the subprocess latency; the next read picks them up.
+//   - Provider-landscape changes out-of-band (custom provider CRUD,
+//     provider token saves) call Invalidate() so the next read refreshes
+//     immediately — "new models usable right away" is an invalidation
+//     contract, not a TTL wait.
+//   - A failed refresh backs off for the TTL window (the last error is
+//     surfaced without re-spawning the probe on every call).
 type ModelDiscoverer struct {
 	log    *slog.Logger
 	binary string // path to opencode binary
 
-	mu     sync.RWMutex
-	cache  []*apiv1.OpenCodeModel
-	cached time.Time
-	ttl    time.Duration
+	mu       sync.Mutex
+	cache    []*apiv1.OpenCodeModel
+	cached   time.Time
+	failedAt time.Time // zero when the last refresh succeeded (or none ran)
+	lastErr  error     // surfaced during the failure backoff window
+	// Single-flight coordination: at most one subprocess probe runs at a
+	// time; concurrent cold loads WAIT on the channel instead of erroring.
+	refreshing  bool
+	refreshDone chan struct{}
+	ttl         time.Duration
 }
 
 // NewModelDiscoverer creates a discoverer that shells out to the opencode
@@ -62,33 +81,129 @@ func (d *ModelDiscoverer) ListModels(ctx context.Context, provider string) ([]*a
 	return filtered, nil
 }
 
-func (d *ModelDiscoverer) fetchOrCache(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
-	d.mu.RLock()
-	if d.cache != nil && time.Since(d.cached) < d.ttl {
-		d.mu.RUnlock()
-		return d.cache, nil
-	}
-	d.mu.RUnlock()
-
+// Invalidate drops the cached model list so the NEXT read triggers a
+// single-flight background refresh. Call it whenever the provider
+// landscape changes out-of-band (custom provider created/deleted, provider
+// token saved/cleared, opencode config edited): freshly added models
+// become discoverable immediately instead of after the TTL.
+func (d *ModelDiscoverer) Invalidate() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.cached = time.Time{}
+	d.mu.Unlock()
+}
 
-	// Double-check under write lock.
+// fetchOrCache returns the model list under the SWR contract documented on
+// the struct. The ctx bounds a COLD first load; background revalidations
+// run on their own detached context (the caller's ctx may end with the
+// request).
+func (d *ModelDiscoverer) fetchOrCache(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
+	d.mu.Lock()
 	if d.cache != nil && time.Since(d.cached) < d.ttl {
-		return d.cache, nil
+		models := d.cache
+		d.mu.Unlock()
+		return models, nil
 	}
+	if d.refreshing {
+		// A probe is in flight: cold loads WAIT for it (they have nothing
+		// to serve), warm loads fall through to stale below.
+		wait := d.refreshDone
+		haveStale := d.cache != nil
+		stale := d.cache
+		d.mu.Unlock()
+		if haveStale {
+			return stale, nil
+		}
+		<-wait
+		return d.afterWait(ctx)
+	}
+	if d.cache != nil {
+		// TTL expired (or invalidated): serve stale instantly and refresh
+		// single-flighted in the background.
+		stale := d.cache
+		d.startRefreshLocked()
+		d.mu.Unlock()
+		go d.refresh(context.Background())
+		return stale, nil
+	}
+	// Cold cache with no probe in flight: the first load is synchronous
+	// (callers need real rows; a picker must not show nothing).
+	if d.failedAt.After(time.Time{}) && d.lastErr != nil && time.Since(d.failedAt) < d.ttl {
+		// Failure backoff: a recent refresh failed; surface the error
+		// without re-spawning the subprocess on every call.
+		err := d.lastErr
+		d.mu.Unlock()
+		return nil, err
+	}
+	d.startRefreshLocked()
+	d.mu.Unlock()
+	return d.refresh(ctx)
+}
 
+// afterWait re-reads the cache state after a cold-load waiter was released
+// by the refresh completing.
+func (d *ModelDiscoverer) afterWait(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
+	d.mu.Lock()
+	if d.cache != nil {
+		models := d.cache
+		d.mu.Unlock()
+		return models, nil
+	}
+	// The winner failed and there was never a cache: surface the error
+	// (the backoff contract still applies on the NEXT call).
+	err := d.lastErr
+	if err == nil {
+		err = fmt.Errorf("opencode model discovery: refresh produced no models")
+	}
+	d.mu.Unlock()
+	return nil, err
+}
+
+// startRefreshLocked arms a single-flight refresh. Caller holds the lock.
+func (d *ModelDiscoverer) startRefreshLocked() {
+	d.refreshing = true
+	d.refreshDone = make(chan struct{})
+}
+
+// finishRefreshLocked completes the in-flight marker. Caller holds the
+// lock. Returns the done channel to broadcast (close wakes cold-load
+// waiters).
+func (d *ModelDiscoverer) finishRefreshLocked() chan struct{} {
+	d.refreshing = false
+	ch := d.refreshDone
+	d.refreshDone = nil
+	return ch
+}
+
+// refresh shells out once and stores the result. Callers must NOT hold
+// the lock; ctx bounds the subprocess call (cold loads pass the caller's
+// ctx, background revalidations pass a detached one). The refreshDone
+// channel is closed on completion to wake any cold-load waiters.
+func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
 	models, err := d.fetchModels(ctx)
+	d.mu.Lock()
+	done := d.finishRefreshLocked()
 	if err != nil {
-		// On error, return stale cache if available rather than failing.
+		d.failedAt = time.Now()
+		d.lastErr = err
 		if d.cache != nil {
-			d.log.Warn("failed to refresh models from opencode, using stale cache", "error", err)
+			// Keep serving stale; stamp the timestamp so a broken CLI does
+			// not cause a spawn-per-call stampede (backoff = TTL).
+			d.cached = time.Now()
+			d.mu.Unlock()
+			close(done)
+			d.log.Warn("failed to refresh models from opencode, serving stale cache", "error", err)
 			return d.cache, nil
 		}
+		d.mu.Unlock()
+		close(done)
 		return nil, err
 	}
 	d.cache = models
 	d.cached = time.Now()
+	d.failedAt = time.Time{}
+	d.lastErr = nil
+	d.mu.Unlock()
+	close(done)
 	return models, nil
 }
 

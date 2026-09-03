@@ -134,6 +134,17 @@ func AdapterKind(ref string) string {
 // verbatim remainder as the model; a legacy 2-segment ref uses segment 1
 // as the provider and segment 2 as the model. ok=false when no
 // provider/model can be derived (empty or 1-segment ref).
+//
+// The 3+-segment branch assumes CANONICAL refs (adapter/provider/model).
+// Pre-namespace legacy refs with a slashed head (e.g. "commandcode/a/b")
+// are NOT canonical: their head is a legacy provider id, not an adapter
+// kind, and left-greedy would yield provider=seg2 — the WRONG serve pair.
+// The canonicalize-pre-namespace-refs migration (20260917000000) rewrites
+// such rows into canonical form, and worker validation's phantom-kind rule
+// (internal/worker/validate.go) rejects new saves of that shape, so this
+// path only ever sees canonical 3+-segment refs in practice. It is kept
+// purely structural (no registry access) because serve/usage callers deep
+// in the adapter layer have no tenant registry.
 func SplitForServe(ref string) (provider, model string, ok bool) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -165,4 +176,63 @@ func splitFirst(ref string) (head, rest string) {
 		return ref, ""
 	}
 	return ref[:i], ref[i+1:]
+}
+
+// NormalizeRef rewrites a PRE-NAMESPACE legacy model ref into canonical
+// adapter/provider/model form. Legacy refs are free-form provider/<model>
+// entries written before the adapter namespace existed (ADR-0003): their
+// head can be a plain provider id (opencode-go), a slashed model path
+// (commandcode/deepseek/deepseek-v4-flash), or a bare model id. The new
+// left-greedy grammar misreads such refs — head becomes an "adapter kind",
+// which poisons adapter-change validation (a phantom adapter selection
+// nobody made), dispatch row-kind resolution, and SplitForServe's serve
+// pair. NormalizeRef converts them to the canonical shape:
+//
+//	opencode-go/deepseek-v4-flash   → opencode/opencode-go/deepseek-v4-flash
+//	commandcode/a/b/c               → opencode/commandcode/a/b/c
+//	bare-model                      → opencode/bare-model  (bare ids need no rewrite)
+//	opencode/anthropic/m            → unchanged (already canonical)
+//
+// knownAdapters decides the legacy-vs-canonical cut: a head that IS a
+// registered adapter kind means the ref already carries an adapter segment
+// and is returned unchanged; anything else is treated as legacy and
+// normalized under DefaultAdapterKind. Pass nil to normalize structurally
+// (every 1- and 2-segment ref, plus ANY 3+ segment ref whose head is not
+// a known kind — used by the data migration where the dispatcher's live
+// kinds are unavailable). Refs are otherwise returned VERBATIM (no
+// re-splitting of model segments, no trimming beyond the stored value).
+func NormalizeRef(ref string, knownKinds map[string]struct{}) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	first, rest := splitFirst(ref)
+	first = strings.TrimSpace(first)
+	if first == "" {
+		return ref // malformed (empty head); leave for parse-time errors
+	}
+	if knownKinds != nil {
+		if _, ok := knownKinds[first]; ok {
+			return ref // already carries a registered adapter segment
+		}
+	}
+	// No further slash → 2-segment legacy (provider/model) or 1-segment
+	// bare id. Both normalize by prefixing the default adapter kind.
+	if rest == "" || !strings.Contains(rest, "/") {
+		return DefaultAdapterKind + "/" + ref
+	}
+	// 3+ segments with a non-kind head: legacy slashed provider ref.
+	return DefaultAdapterKind + "/" + ref
+}
+
+// NormalizeRefForMigration is NormalizeRef for the data migration: it
+// reports (normalized, changed) — changed=true only when the normalized
+// form differs from the input, so the migration skips canonical and
+// empty/malformed rows untouched.
+func NormalizeRefForMigration(ref string, knownKinds map[string]struct{}) (string, bool) {
+	out := NormalizeRef(ref, knownKinds)
+	if out == "" {
+		return ref, false
+	}
+	return out, out != ref
 }

@@ -173,3 +173,52 @@ func TestSplitForServe(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRef(t *testing.T) {
+	kinds := map[string]struct{}{"opencode": {}, "claude": {}, "orchicon": {}}
+	cases := []struct {
+		ref  string
+		want string
+	}{
+		// Pre-namespace legacy refs → canonical.
+		{"commandcode/deepseek/deepseek-v4-flash", "opencode/commandcode/deepseek/deepseek-v4-flash"},
+		{"opencode-go/deepseek-v4-flash", "opencode/opencode-go/deepseek-v4-flash"},
+		{"anthropic/claude-4", "opencode/anthropic/claude-4"},
+		{"bare-model", "opencode/bare-model"},
+		// Already-canonical refs → unchanged.
+		{"opencode/anthropic/m", "opencode/anthropic/m"},
+		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon/commandcode/deepseek/deepseek-v4-flash"},
+		{"claude/anthropic/claude-sonnet-4", "claude/anthropic/claude-sonnet-4"},
+		// Empty/malformed → returned as-is for parse-time errors.
+		{"", ""},
+		{"   ", ""},
+		{"/model", "/model"},
+	}
+	for _, c := range cases {
+		if got := NormalizeRef(c.ref, kinds); got != c.want {
+			t.Errorf("NormalizeRef(%q) = %q; want %q", c.ref, got, c.want)
+		}
+	}
+}
+
+// The migration cut must use the built-in kind set as fallback: a head that
+// IS a built-in kind stays canonical; anything else normalizes.
+func TestNormalizeRefForMigration(t *testing.T) {
+	builtin := BuiltinAdapterKinds()
+	cases := []struct {
+		ref     string
+		want    string
+		changed bool
+	}{
+		{"commandcode/deepseek/deepseek-v4-flash", "opencode/commandcode/deepseek/deepseek-v4-flash", true},
+		{"opencode/commandcode/deepseek/deepseek-v4-flash", "opencode/commandcode/deepseek/deepseek-v4-flash", false},
+		{"claude/anthropic/m", "claude/anthropic/m", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, changed := NormalizeRefForMigration(c.ref, builtin)
+		if got != c.want || changed != c.changed {
+			t.Errorf("NormalizeRefForMigration(%q) = (%q, %v); want (%q, %v)", c.ref, got, changed, c.want, c.changed)
+		}
+	}
+}

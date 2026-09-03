@@ -132,3 +132,71 @@ func TestAdapterKindOf(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAdapterChangePhantomKindIsLegacy: a current ref whose parsed
+// head is NOT a registered adapter kind (pre-namespace legacy data, e.g.
+// "commandcode/deepseek/x") never expressed an adapter selection — the
+// adapter-change gate is skipped entirely and any validated new ref saves.
+// Regression for the 2026-09 QA save-brick (phantom "commandcode" kind).
+func TestValidateAdapterChangePhantomKindIsLegacy(t *testing.T) {
+	origReg := modelRefRegistry
+	defer func() { modelRefRegistry = origReg }()
+	modelRefRegistry = adapter.NewBuiltinProviderCatalog()
+
+	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "opencode/commandcode/deepseek/deepseek-v4-flash"); err != nil {
+		t.Fatalf("phantom-kind current ref blocked a valid new ref: %v", err)
+	}
+	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "orchicon/commandcode/deepseek/deepseek-v4-flash"); err != nil {
+		t.Fatalf("phantom-kind current ref blocked a native ref: %v", err)
+	}
+	// The NEW ref must still be structurally sound: a malformed one fails.
+	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/x", "opencode/"); err == nil {
+		t.Fatal("phantom-kind skip let a malformed new ref through")
+	}
+}
+
+// TestValidateAdapterChangeIdenticalResaveNoOp: re-saving the EXACT current
+// ref is a pure no-op — even when the stored ref would fail fresh grammar
+// validation (legacy data). Only a DIFFERENT ref triggers the gate.
+func TestValidateAdapterChangeIdenticalResaveNoOp(t *testing.T) {
+	origReg := modelRefRegistry
+	defer func() { modelRefRegistry = origReg }()
+	modelRefRegistry = adapter.NewBuiltinProviderCatalog()
+
+	// Identical legacy ref: no-op despite the phantom head.
+	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "commandcode/deepseek/deepseek-v4-flash"); err != nil {
+		t.Fatalf("identical legacy re-save rejected: %v", err)
+	}
+	// Identical known-but-deleted provider re-save stays a no-op (D5).
+	if err := validateAdapterChange(context.Background(), "", "opencode/ghost/m", "opencode/ghost/m"); err != nil {
+		t.Fatalf("identical re-save rejected: %v", err)
+	}
+	// Whitespace-only differences are still identical.
+	if err := validateAdapterChange(context.Background(), "", "opencode/ghost/m", " opencode/ghost/m "); err != nil {
+		t.Fatalf("whitespace-identical re-save rejected: %v", err)
+	}
+}
+
+// TestValidateModelRefForUpdateNoOp: the update-aware ref validator passes
+// an identical legacy ref through WITHOUT grammar re-validation, and
+// validates any different ref fully.
+func TestValidateModelRefForUpdateNoOp(t *testing.T) {
+	origReg := modelRefRegistry
+	defer func() { modelRefRegistry = origReg }()
+	modelRefRegistry = adapter.NewBuiltinProviderCatalog()
+
+	// Identical legacy ref: no-op despite failing fresh grammar parse
+	// ("commandcode" is not a registered adapter kind).
+	got, err := validateModelRefForUpdate(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "commandcode/deepseek/deepseek-v4-flash")
+	if err != nil || got != "commandcode/deepseek/deepseek-v4-flash" {
+		t.Fatalf("identical legacy re-save = (%q, %v); want verbatim, nil", got, err)
+	}
+	// A different ref is fully validated (this one is valid).
+	if _, err := validateModelRefForUpdate(context.Background(), "", "commandcode/deepseek/x", "opencode/commandcode/deepseek/deepseek-v4-flash"); err != nil {
+		t.Fatalf("changed valid ref rejected: %v", err)
+	}
+	// A different ref that fails the grammar is rejected.
+	if _, err := validateModelRefForUpdate(context.Background(), "", "commandcode/deepseek/x", "commandcode/other/y"); err == nil {
+		t.Fatal("changed legacy-shaped ref accepted; want parse error")
+	}
+}

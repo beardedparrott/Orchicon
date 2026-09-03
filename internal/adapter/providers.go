@@ -64,6 +64,29 @@ func NewBuiltinProviderCatalog() *BuiltinProviderCatalog {
 	return c
 }
 
+// BuiltinAdapterKinds returns the built-in catalog's adapter kinds as a
+// set — the fallback cut for ref canonicalization when the dispatcher's
+// live kinds are unavailable (migrations run before the server registers
+// anything live).
+func BuiltinAdapterKinds() map[string]struct{} {
+	c := NewBuiltinProviderCatalog()
+	out := make(map[string]struct{}, len(c.adapterKinds))
+	for k := range c.adapterKinds {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
+// ProviderKindExtender is the optional seam for registries that can be
+// extended with provider ids per adapter kind without mutating the
+// shared instance. The worker service's tenant-custom merge uses it so
+// composition works with ANY installed registry (built-in catalog,
+// CLI-aware registry, or a custom implementation that declines the seam).
+type ProviderKindExtender interface {
+	// Clone returns an independent copy that AddAdapterKind may mutate.
+	Clone() ProviderRegistry
+}
+
 // AddAdapterKind registers an adapter kind and (re)adds its built-in
 // provider profiles. Adding an existing provider id is a no-op (union).
 func (c *BuiltinProviderCatalog) AddAdapterKind(kind string, providers ...string) {
@@ -106,6 +129,26 @@ func (c *BuiltinProviderCatalog) IsKnownProvider(adapterKind, provider string) b
 	}
 	_, ok := set[provider]
 	return ok
+}
+
+// Clone implements ProviderKindExtender: an independent deep copy that
+// AddAdapterKind may mutate (the tenant-custom merge is copy-on-write).
+func (c *BuiltinProviderCatalog) Clone() ProviderRegistry {
+	out := &BuiltinProviderCatalog{
+		adapterKinds: make(map[string]struct{}, len(c.adapterKinds)),
+		providers:    make(map[string]map[string]struct{}, len(c.providers)),
+	}
+	for k := range c.adapterKinds {
+		out.adapterKinds[k] = struct{}{}
+	}
+	for kind, set := range c.providers {
+		m := make(map[string]struct{}, len(set))
+		for p := range set {
+			m[p] = struct{}{}
+		}
+		out.providers[kind] = m
+	}
+	return out
 }
 
 // Providers implements ProviderRegistry (sorted, stable).

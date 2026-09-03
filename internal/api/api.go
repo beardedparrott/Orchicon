@@ -162,6 +162,12 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// service construction, substrate loader registration, and handler
 	// mount all belong together.
 	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	// Provider-landscape mutations invalidate the model discoverer's cache
+	// immediately (custom provider CRUD, token saves): new models become
+	// usable right away instead of after the discovery TTL.
+	if deps.ModelDiscoverer != nil {
+		providerSvc.OnProviderChange = deps.ModelDiscoverer.Invalidate
+	}
 	providerSvc.Service().RegisterSubstrateLoader()
 	deps.ProvidersService = providerSvc.Service()
 	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
@@ -278,6 +284,27 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	cliRegistry := aigateway.NewCLIProviderRegistry(deps.ModelRefRegistry, deps.ModelDiscoverer)
 	if deps.ModelRefRegistry == nil {
 		deps.ModelRefRegistry = cliRegistry
+	}
+	// Worker model_ref validation shares the same composition as the
+	// picker and settings (builtin ∪ tenant customs ∪ live CLI provider
+	// ids): validation must agree with what the picker offers, or every
+	// freshly-selected ref fails at save ("provider not found"). Without
+	// this, a plugin-served provider like commandcode is picker-valid but
+	// worker-save-invalid.
+	worker.SetModelRefRegistry(cliRegistry)
+	// The ref-canonicalization migration cuts legacy vs canonical refs by
+	// the dispatcher's registered kinds (live set). Never install an EMPTY
+	// set — NormalizeRef would read every canonical head as legacy and
+	// double-prefix refs. Nil snapshot = the migration falls back to the
+	// built-in kind set.
+	if deps.AdapterKinds != nil {
+		if kinds := deps.AdapterKinds(); len(kinds) > 0 {
+			kindSet := make(map[string]struct{}, len(kinds))
+			for _, k := range kinds {
+				kindSet[k] = struct{}{}
+			}
+			worker.SetMigrationKinds(kindSet)
+		}
 	}
 	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
