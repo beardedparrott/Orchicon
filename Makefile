@@ -122,7 +122,7 @@ clean-docker: ## Prune dangling Docker images, stopped containers, and unused vo
 	@docker volume prune -f
 
 # --- Database --------------------------------------------------------------
-.PHONY: migrate migrate-diff migrate-hash rls-check
+.PHONY: migrate migrate-diff migrate-hash rls-check synth-data
 migrate: ## Apply pending Atlas migrations to $$DB_URL
 	cd db && $(ATLAS) migrate apply --env local --url "$(DB_URL)"
 
@@ -135,6 +135,9 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
+
+synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
+	scripts/check_no_synth_data.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint
@@ -231,4 +234,4 @@ install-uninstall: ## Uninstall Orchicon via the install script
 
 # --- CI --------------------------------------------------------------------
 .PHONY: ci
-ci: lint gen vet test rls-check ## Run the full CI gate locally
+ci: lint gen vet test synth-data rls-check ## Run the full CI gate locally
