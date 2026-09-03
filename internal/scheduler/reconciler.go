@@ -1818,7 +1818,7 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		// the embedded "## Facts learned (this run)" prompt block was
 		// removed). Append to any facts earlier steps already recorded.
 		// Each line carries the originating step name so downstream workers
-		// keep the same per-attribution the embedded block used to give.
+		// keep the same per-step attribution the embedded block used to give.
 		facts := extractFactsLearned(summary)
 		if len(facts) > 0 {
 			stepName := r.stepNameForExecution(ctx, exec)
@@ -1929,16 +1929,11 @@ func (r *TaskReconciler) extractTranscriptFacts(ctx context.Context, exec db.Exe
 
 // stepNameForExecution resolves the workflow step name that dispatched an
 // execution, so facts written to .orchicon/<run>/facts_learned can carry
-// per-step attribution (the embedded "## Facts learned (run)" prompt
-// block that used to supply that attribution is gone). Looks up the step run
-// that owns the exchange via worker_execution_id. Best-effort: returns ""
-// when the execution isn't tied to a step run (direct dispatch) or the lookup
-// fails — the facts then fall back to the plain marker. resolves the workflow step name that dispatched an
-// execution, so facts written to .orchicon/<run>/facts_learned can carry
 // per-step attribution (the embedded "## Facts learned (this run)" prompt
 // block that used to supply that attribution is gone). Looks up the step run
 // that owns the execution via worker_execution_id. Best-effort: returns ""
-// when the execution is tied to a step run (direct dispatch) or the lookup
+// when the execution isn't tied to a step run (direct dispatch) or the lookup
+// fails — the facts then fall back to the plain marker.
 func (r *TaskReconciler) stepNameForExecution(ctx context.Context, exec db.ExecutionRow) string {
 	if exec.TenantID == "" || exec.ID == "" {
 		return ""

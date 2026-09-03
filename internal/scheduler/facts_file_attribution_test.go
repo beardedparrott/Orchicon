@@ -157,10 +157,18 @@ func TestFactsFileExtractsFromTranscriptOnTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const execID = "exec-stalled"
+	execID := "exec-stalled-" + db.NewID()
 	if _, err := ttx.Tx.Exec(ctx,
 		`UPDATE workflow_step_runs SET worker_execution_id = $1
 		  WHERE id = $2 AND tenant_id = $3`, execID, sr.ID, approvalTestTenant); err != nil {
+		t.Fatal(err)
+	}
+	// execution_session_parts.execution_id has an FK on worker_executions, so
+	// the execution row must exist before we seed the transcript.
+	if _, err := ttx.Tx.Exec(ctx,
+		`INSERT INTO worker_executions (id, tenant_id, project_id, task_id, worker_id, worker_version, status, health_state)
+		 VALUES ($1, $2, $3, $4, $5, 1, 'failed', 'healthy')`,
+		execID, approvalTestTenant, proj.ID, item.ID, execID); err != nil {
 		t.Fatal(err)
 	}
 	// Seed the transcript: recon, a tool use, then a stalled FINAL assistant
