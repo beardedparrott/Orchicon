@@ -79,6 +79,15 @@ type Adapter struct {
 	// transcript is not recorded (e.g. tests).
 	sessionStore SessionStoreFunc
 
+	// resolveBinary is the adapter-CLI resolution seam. Default
+	// (resolveOpenCodeBinary) probes PATH then $HOME/.opencode/bin —
+	// Orchicon never ships the binary; the operator's host install is the
+	// single source. Tests override it via SetBinaryResolver so hermetic
+	// CI (bare runners, no adapter CLI installed) exercises the real
+	// fail-fast paths without provisioning anything. Each future adapter
+	// gets its own equivalent resolver + seam.
+	resolveBinary func() (string, error)
+
 	// consecutiveSessionErrors counts back-to-back model-layer session
 	// failures across executions (guarded by mu). When it reaches
 	// sessionErrorRecycleThreshold, the adapter recycles the affected
@@ -466,10 +475,39 @@ const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
 const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
 // New creates an OpenCode adapter bridge.
+// SetBinaryResolver overrides the adapter-CLI resolver (test seam —
+// hermetic CI: bare runners never install adapter CLIs, so tests stub
+// the resolution instead of provisioning a binary; nil restores the
+// default PATH + $HOME/.opencode/bin probe).
+func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
+	if f == nil {
+		f = resolveOpenCodeBinary
+	}
+	a.resolveBinary = f
+}
+
+// resolveOpenCodeBinary is the production resolver: probe PATH, then the
+// operator's host install at $HOME/.opencode/bin (the runtime daemon and
+// scripts/container.sh mount it there — Orchicon never ships the binary).
+func resolveOpenCodeBinary() (string, error) {
+	binary, err := exec.LookPath("opencode")
+	if err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			cand := filepath.Join(home, ".opencode", "bin", "opencode")
+			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
+				return cand, nil
+			}
+		}
+		return "", fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
+	}
+	return binary, nil
+}
+
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
-		log:      log,
-		sessions: make(map[string]*sessionRun),
+		log:           log,
+		resolveBinary: resolveOpenCodeBinary,
+		sessions:      make(map[string]*sessionRun),
 	}
 }
 
@@ -518,17 +556,12 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// standard mounts), so besides PATH we also probe that location
 	// directly. The error is loud either way: the caller (TaskReconciler)
 	// marks the execution failed_to_start and the operator sees it
-	// (AGENTS.md).
-	binary, err := exec.LookPath("opencode")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				binary = cand
-			}
-		}
-	}
-	if binary == "" {
+	// (AGENTS.md). resolveBinary is a test seam (see SetBinaryResolver):
+	// hermetic CI never installs adapter CLIs, so tests stub the resolver
+	// instead of provisioning one — the pattern scales to every future
+	// adapter (claude code etc.), whose tests stub their own resolver.
+	binary, err := a.resolveBinary()
+	if binary == "" || err != nil {
 		return fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
 	}
 

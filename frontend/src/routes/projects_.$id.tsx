@@ -88,13 +88,15 @@ function ProjectDetailPage() {
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
-    const raw = (project as any)?.gitStrategy ?? (project as any)?.git_strategy ?? (() => {
+    const proj = project as (typeof project & { git_strategy?: unknown; goals?: unknown }) | undefined;
+    const raw = proj?.gitStrategy ?? proj?.git_strategy ?? (() => {
       try {
-        const g = JSON.parse((project as any)?.goals ?? "{}");
+        const g = JSON.parse(typeof proj?.goals === "string" ? proj.goals : "{}") as { __git_strategy?: unknown };
         return g.__git_strategy;
-      } catch { return undefined; }
+      } catch { /* goals not JSON — no embedded strategy */ }
+      return undefined;
     })();
-    const mapped = protoToGitStrategy(raw as any);
+    const mapped = protoToGitStrategy(typeof raw === "number" || typeof raw === "string" ? raw : undefined);
     if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("local");
   }, [project]);
@@ -412,11 +414,11 @@ function ProjectDetailPage() {
                 <Button
                   variant="outline"
                   disabled={savingGitStrategy}
-                  onClick={() => {
-                    setSavingGitStrategy(true);
-                    (updateProject.mutate as any)(
-                      { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
-                      { onSettled: () => setSavingGitStrategy(false) },
+                    onClick={() => {
+                      setSavingGitStrategy(true);
+                      updateProject.mutate(
+                        { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
+                        { onSettled: () => setSavingGitStrategy(false) },
                     );
                   }}
                 >
@@ -728,7 +730,7 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
   };
   if (isLoading) return <p className="text-xs text-muted-foreground py-2">Loading…</p>;
   if (error) return <p className="text-xs text-destructive py-2">Error: {String(error)}</p>;
-  const dirs = (data?.entries ?? []).filter((e: any) => e.isDir);
+  const dirs = (data?.entries ?? []).filter((e) => e.isDir);
   return (
     <div className="rounded-md border max-h-[300px] overflow-y-auto">
       <div className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b" onClick={() => onNavigate(parentOf(path))}>
@@ -736,7 +738,7 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
         <span className="text-muted-foreground text-xs">..</span>
       </div>
       {dirs.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>}
-      {dirs.map((entry: any) => (
+      {dirs.map((entry) => (
         <div key={entry.path} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0">
           <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span className="flex-1 truncate" onClick={() => onNavigate(entry.path)}>{entry.name}/</span>

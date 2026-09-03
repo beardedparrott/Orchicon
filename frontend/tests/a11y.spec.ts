@@ -12,7 +12,7 @@ test.describe("a11y axe", () => {
             document.documentElement.setAttribute("data-theme", theme);
             if (m === "dark") document.documentElement.classList.add("dark");
             else document.documentElement.classList.remove("dark");
-          } catch {}
+          } catch { /* localStorage may be unavailable — theme pre-set is best-effort */ }
         }, mode);
         await page.goto(route, { waitUntil: "networkidle" });
         const results = await new AxeBuilder({ page }).withTags(["wcag2a","wcag2aa"]).analyze();

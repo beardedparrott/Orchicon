@@ -89,22 +89,21 @@ function NewProjectPage() {
     // the backend will prefer the typed field when present
     let project: { id: string };
     try {
-      // @ts-ignore - git_strategy may not yet be in generated types until `make gen`
-      project = await (createProject.mutateAsync as any)({
+      // gitStrategy rides on the typed CreateProjectRequest proto field.
+      project = await createProject.mutateAsync({
         name: values.name,
         slug: values.slug || undefined,
         goals: fallbackGoals.length > 0 ? fallbackGoals : undefined,
         gitStrategy: values.gitStrategy,
-        git_strategy: values.gitStrategy,
       });
-    } catch (e) {
+    } catch {
       // fallback: encode gitStrategy into goals if proto field not recognized
       const withStrategy = [...fallbackGoals, new GoalField({ key: "__git_strategy", value: values.gitStrategy })];
       project = await createProject.mutateAsync({
         name: values.name,
         slug: values.slug || undefined,
         goals: withStrategy,
-      } as any);
+      });
     }
     // Persist MCP server selection (references, never copies) after creation.
     if (mcpSelection.length > 0) {

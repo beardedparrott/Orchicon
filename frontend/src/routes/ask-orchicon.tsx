@@ -307,7 +307,7 @@ function AskOrchiconPage() {
       const next = !prev;
       try {
         localStorage.setItem("orchicon_conversation_panel_collapsed", String(next));
-      } catch {}
+      } catch { /* storage may be disabled (private mode) — collapse state is best-effort */ }
       return next;
     });
   }, []);
@@ -2029,7 +2029,7 @@ function ChatInputField({
                 // chunk to avoid stack overflow on large images
                 previewUrl = `data:${a.mimeType};base64,${btoa(binary)}`;
               }
-            } catch {}
+            } catch { /* inline base64 decode is best-effort — fall through to no-preview */ }
             return (
               <span
                 key={i}

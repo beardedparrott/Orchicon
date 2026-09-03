@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type { AgentConfig } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
@@ -117,7 +118,7 @@ export function useGetAgentConfig() {
 export function useUpdateAgentConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (config: any) => {
+    mutationFn: async (config: AgentConfig) => {
       const res = await askOrchiconClient.updateAgentConfig({ config });
       return res.config;
     },

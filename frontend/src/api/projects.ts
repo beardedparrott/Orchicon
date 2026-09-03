@@ -8,8 +8,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
+import { CreateProjectRequest, UpdateProjectRequest } from "@/api/gen/orchicon/api/v1/project_pb";
 import type { GoalField, Project, ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import { gitStrategyToProto } from "@/components/GitStrategySelect";
+import type { GitStrategy as GitStrategyName, GitStrategyNullable } from "@/components/GitStrategySelect";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof. New project-scoped queries extend this tree.
@@ -53,10 +55,11 @@ export function useUpdateProject() {
       gitStrategy?: string;
       git_strategy?: string;
     }) => {
-      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
-      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
-      const payload: any = { ...input };
-      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const raw = input as { gitStrategy?: string; git_strategy?: string };
+      const protoVal = raw.gitStrategy ?? raw.git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as GitStrategyName | GitStrategyNullable) : undefined;
+      const payload = new UpdateProjectRequest({ id: input.id });
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; }
       const res = await projectClient.updateProject(payload);
       return res.project as Project;
     },
@@ -99,10 +102,11 @@ export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[]; gitStrategy?: string; git_strategy?: string }) => {
-      const protoVal = (input as any).gitStrategy ?? (input as any).git_strategy;
-      const enumVal = protoVal ? gitStrategyToProto(protoVal as any) : undefined;
-      const payload: any = { ...input };
-      if (enumVal !== undefined) { payload.gitStrategy = enumVal; payload.git_strategy = enumVal; } else { delete payload.gitStrategy; delete payload.git_strategy; }
+      const raw = input as { gitStrategy?: string; git_strategy?: string };
+      const protoVal = raw.gitStrategy ?? raw.git_strategy;
+      const enumVal = protoVal ? gitStrategyToProto(protoVal as GitStrategyName | GitStrategyNullable) : undefined;
+      const payload = new CreateProjectRequest({ tenantId: "", name: input.name, slug: input.slug ?? "", goals: input.goals ?? [] });
+      if (enumVal !== undefined) { payload.gitStrategy = enumVal; }
       const res = await projectClient.createProject(payload);
       return res.project as Project;
     },

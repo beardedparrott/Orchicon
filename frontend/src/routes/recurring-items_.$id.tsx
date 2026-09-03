@@ -104,7 +104,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
     setWorkflowId(item.workflowId ?? "");
     setRuntimeImage(item.runtimeImage ?? "");
     setContextFiles(item.contextFiles ?? []);
-    setSecretIds((item as any).secretIds ?? []);
+    setSecretIds(item.secretIds ?? []);
     setRecurringSchedule(
       item.recurringSchedule ? new RecurringSchedule(item.recurringSchedule) : undefined,
     );

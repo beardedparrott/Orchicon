@@ -31,7 +31,11 @@ describe("ProvidersTab (ADR-0006)", () => {
   it("per-provider model visibility toggles invalidate on save and re-render the list", () => {
     expect(api).toContain("invalidateQueries({ queryKey: providersKeys.all })");
     expect(src).toContain("hiddenModels");
-    expect(src).toContain("m.visible");
+    // Batch visibility save (040b48962): checkboxes stage a draftHidden
+    // set; Save commits it in ONE updateSettings.mutate call (the old
+    // per-model m.visible immediate-save UI is gone).
+    expect(src).toContain("draftHidden");
+    expect(src).toContain("updateSettings.mutate");
   });
 
   it("renders sourcing state: WARN badge for missing context hint, degraded banner on probe failure", () => {

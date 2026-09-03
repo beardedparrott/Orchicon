@@ -398,7 +398,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
             ref={inputRef}
             placeholder={
               useNativeSourcing && !provider
-                ? "Pick a provider below, then search models"
+                ? "Select a provider first"
                 : "Search models..."
             }
             value={search}
