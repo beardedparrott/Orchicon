@@ -60,6 +60,7 @@ type stallWindows struct {
 	textLoop    time.Duration // pure text without meaningful action
 	repetitionN int
 	repetitionW time.Duration
+	toolHang    time.Duration // in-flight tool call with zero events (Tier A)
 }
 
 func defaultStallWindows() stallWindows {
@@ -69,7 +70,26 @@ func defaultStallWindows() stallWindows {
 		textLoop:    envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
 		repetitionN: envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
 		repetitionW: envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
+		toolHang:    toolHangDefaultWindow(),
 	}
+}
+
+// toolHangDefaultWindow resolves the Tier A in-flight tool-hang watchdog
+// window: canonical ORCHICON_STALL_TOOL_HANG_WINDOW first, deprecated
+// ORCHICON_TOOL_HANG_WINDOW fallback (kept for one release), then the 180s
+// code default. A resolved value <= 0 disables the watchdog.
+func toolHangDefaultWindow() time.Duration {
+	if v := os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	if v := os.Getenv("ORCHICON_TOOL_HANG_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 180 * time.Second
 }
 
 // stallWindowsFromManifest builds stallWindows from ExecutionManifest
@@ -116,6 +136,13 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 			w.repetitionW = v
 		}
 	}
+	// Tier A (tool-hang) mirrors the textLoop pattern: 0/unset keeps the
+	// env/code default, positive overrides, negative disables (the
+	// resulting duration is <= 0, which every consumer gates on `> 0`).
+	// Env wins over manifest for dev/debugging overrides.
+	if m.StallToolHangSeconds != 0 && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
+		w.toolHang = time.Duration(m.StallToolHangSeconds) * time.Second
+	}
 	return w
 }
 
@@ -157,6 +184,19 @@ type progressMonitor struct {
 	// response (docs/06 §9 idempotency guards against re-trigger).
 	fired bool
 
+	// In-flight tool-hang tracking (Tier A detection): the single
+	// currently in-flight tool call (name + last-activity time). Only one
+	// call is tracked — a new tool start supersedes the previous slot.
+	// ANY event observed while a call is in flight refreshes toolHangStart,
+	// so only a call with zero events for the whole window trips.
+	// toolHangFired latches once per monitor (= per execution). The hang
+	// signal stays ADVISORY (isFatalStall is unchanged): a still-stuck
+	// worker escalates through the existing probe → kill path.
+	toolHangName  string
+	toolHangStart time.Time
+	toolInFlight  bool
+	toolHangFired bool
+
 	// warned tracks an active ADVISORY stall (no_file_progress). Unlike a
 	// fatal trip, an advisory trip does not end monitoring: the subprocess
 	// is not killed, the execution stays running with a non-terminal
@@ -194,6 +234,13 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
+	// Tier A (tool-hang): ANY non-tool event while a tool call is in flight
+	// is activity — refresh the hang start so only a call with zero events
+	// for the whole window trips. Terminal tool resolutions disarm in the
+	// tool_use case below.
+	if m.toolInFlight && eventType != "tool_use" && eventType != "tool_call" {
+		m.toolHangStart = now
+	}
 	switch eventType {
 	case "text", "reasoning":
 		// Text output counts as progress — reviewers produce text without
@@ -226,6 +273,18 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "tool_use", "tool_call":
 		m.lastMeaningfulAction = now
 		status, _ := part["state"].(map[string]any)["status"].(string)
+		// Tier A: a tool part still in flight (running / no status) arms or
+		// refreshes the single in-flight slot (a new start supersedes the
+		// previous one); a resolved part (completed/error) disarms it.
+		if status == "completed" || status == "error" {
+			m.toolInFlight = false
+		} else {
+			if tool, _ := part["tool"].(string); tool != "" {
+				m.toolHangName = tool
+			}
+			m.toolHangStart = now
+			m.toolInFlight = true
+		}
 		sig := toolUseSignature(part)
 		cutoff := now.Add(-m.w.repetitionW)
 		// Tier 1 (existing): only ERROR-status tool calls count toward the
@@ -244,6 +303,68 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		// resets the count (reset-on-progress).
 		m.sigsAll[sig] = appendInWindow(m.sigsAll[sig], now, cutoff)
 	}
+}
+
+// observeToolStart arms the Tier A tool-hang slot for one in-flight tool
+// call (a new start supersedes the previous slot — only the longest/single
+// in-flight call is tracked). Called with the tool name from the raw bus
+// tool-start event (a hung tool never produces a completed part).
+func (m *progressMonitor) observeToolStart(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if name != "" {
+		m.toolHangName = name
+	}
+	m.toolHangStart = m.now()
+	m.toolInFlight = true
+}
+
+// observeToolEnd disarms the Tier A tool-hang slot: the in-flight call
+// resolved (completed/error), so the hang window resets.
+func (m *progressMonitor) observeToolEnd() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolInFlight = false
+}
+
+// noteToolActivity refreshes the Tier A hang start without disarming: the
+// in-flight call produced (or was followed by) an event, so the
+// zero-events-only trip condition restarts. Never arms an idle slot.
+func (m *progressMonitor) noteToolActivity() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.toolInFlight {
+		m.toolHangStart = m.now()
+	}
+}
+
+// checkToolHang reports the hung in-flight tool call when it has produced
+// zero events for the whole toolHang window. Latched once per monitor
+// (= per execution); a disabled window (<= 0) never trips. The second and
+// later calls after a trip return ("", false) — the still-stuck worker
+// escalates through the existing probe → liveness_probe_no_response →
+// kill path, never through a second hang intervention.
+func (m *progressMonitor) checkToolHang() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.checkToolHangLocked()
+}
+
+// checkToolHangLocked is checkToolHang for callers that already hold m.mu
+// (notably check()).
+func (m *progressMonitor) checkToolHangLocked() (string, bool) {
+	if m.w.toolHang <= 0 || !m.toolInFlight || m.toolHangFired {
+		return "", false
+	}
+	if m.now().Sub(m.toolHangStart) <= m.w.toolHang {
+		return "", false
+	}
+	m.toolHangFired = true
+	name := m.toolHangName
+	if name == "" {
+		name = "unknown"
+	}
+	return name, true
 }
 
 // appendInWindow appends a timestamp to a signature history, dropping
@@ -370,6 +491,9 @@ func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason s
 	if m.w.textLoop > 0 && m.w.textLoop < poll {
 		poll = m.w.textLoop
 	}
+	if m.w.toolHang > 0 && m.w.toolHang < poll {
+		poll = m.w.toolHang
+	}
 	if poll > 30*time.Second {
 		poll = 30 * time.Second
 	}
@@ -410,6 +534,15 @@ func (m *progressMonitor) check() string {
 		return ""
 	}
 	now := m.now()
+	// tool_hang (Tier A): an in-flight tool call with zero events for the
+	// whole window. ADVISORY and latched once (toolHangFired, never fired):
+	// the run's actuator aborts only the in-flight turn and redirects; a
+	// still-stuck worker escalates through the existing probe → kill
+	// path. Checked BEFORE no_progress so a hung tool redirects before
+	// silence kills. Disabled when the window is <= 0.
+	if tool, ok := m.checkToolHangLocked(); ok {
+		return "stalled:tool_hang:" + tool
+	}
 	// no_progress: no step_finish (no token progress) within the window.
 	if now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
