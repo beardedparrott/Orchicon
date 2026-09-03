@@ -216,6 +216,31 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 	t.Helper()
 	ctx := context.Background()
 	userID := "usr_" + cannedID
+	// Restore the canned worker after the test: without this cleanup the
+	// usr_-prefixed shell (and the seeder's adoption of it) leaks into every
+	// later test that queries the canned ID at version 1 — test order became
+	// load-bearing and content tests failed with "no rows in result set".
+	t.Cleanup(func() {
+		ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+		if err != nil {
+			t.Fatalf("cleanup begin tx: %v", err)
+		}
+		defer ttx.Rollback(ctx)
+		if _, err := ttx.Exec(ctx,
+			`DELETE FROM worker_versions WHERE worker_id IN ($1, $2) AND tenant_id = 'tnt_dev'`, cannedID, userID); err != nil {
+			t.Fatalf("cleanup delete versions: %v", err)
+		}
+		if _, err := ttx.Exec(ctx,
+			`DELETE FROM workers WHERE id IN ($1, $2) AND tenant_id = 'tnt_dev'`, cannedID, userID); err != nil {
+			t.Fatalf("cleanup delete workers: %v", err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatalf("cleanup commit: %v", err)
+		}
+		if err := db.SeedDevWorkers(ctx, pool); err != nil {
+			t.Fatalf("cleanup re-seed: %v", err)
+		}
+	})
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -386,9 +411,7 @@ func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	resetWorker(t, pool, "w_se_qa_engineer")
 	var agents string
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions
@@ -403,6 +426,58 @@ func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	} {
 		if !strings.Contains(agents, want) {
 			t.Errorf("base QA agents_md missing %q", want)
+		}
+	}
+}
+
+// TestSeedQACarriesSurfaceImpactCheck: the QA Engineer's UI-verification
+// trigger is the MANDATORY surface-impact check — UI verification keys on
+// whether the change affects anything user-visible (displayed data, budgets,
+// costs, tokens, statuses, counts), never on which file types the diff
+// touches. Regression pins the 2026-09-03 native usage/telemetry/budget run
+// where QA verified a backend diff entirely at code level and never opened
+// the UI, although the work item's criteria referenced budget display in the
+// UI. The old conditional trigger ("UI changes get visual verification") must
+// be gone.
+func TestSeedQACarriesSurfaceImpactCheck(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+
+	resetWorker(t, pool, "w_se_qa_engineer")
+	var agents, purpose, skills string
+	if err := pool.QueryRow(ctx,
+		`SELECT v.agents_md, w.purpose, v.skills
+		   FROM workers w
+		   JOIN worker_versions v ON v.worker_id = w.id AND v.tenant_id = w.tenant_id
+		  WHERE w.id = $1 AND w.tenant_id = 'tnt_dev' AND v.version = 1`,
+		"w_se_qa_engineer").Scan(&agents, &purpose, &skills); err != nil {
+		t.Fatalf("query QA worker: %v", err)
+	}
+	for _, want := range []string{
+		"Surface-impact check — mandatory, before any verdict",
+		"Diff file types are not the test",
+		"Verifying only the backend while a criterion references displayed data is an incomplete pass",
+		"State your surface-impact determination",
+		"Surface-impact analysis",
+	} {
+		if !strings.Contains(agents, want) && !strings.Contains(purpose, want) && !strings.Contains(skills, want) {
+			t.Errorf("base QA missing surface-impact wording %q", want)
+		}
+	}
+	if strings.Contains(agents, "UI changes get visual verification") {
+		t.Errorf("base QA still carries the old conditional UI trigger %q", "UI changes get visual verification")
+	}
+	for _, w := range []string{"w_se_senior_software_engineer", "w_se_pr_reviewer", "w_se_principal_architect"} {
+		resetWorker(t, pool, w)
+		var agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			w).Scan(&agents); err != nil {
+			t.Fatalf("query %s agents: %v", w, err)
+		}
+		if strings.Contains(agents, "Surface-impact check — mandatory, before any verdict") {
+			t.Errorf("%s must NOT carry the QA-only surface-impact step", w)
 		}
 	}
 }
@@ -436,6 +511,7 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v22)")
 	}
 }
+
 // TestSeedSDLCWorkersAreTimeBoxedWorkhorses: the four SDLC workers (SSE,
 // PR Reviewer, QA, Architect) carry the workhorse contract — hard time-box
 // in the prompt, the roll-forward marker, and the per-worker wall-clock
@@ -451,15 +527,16 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		box    string
 		budget string
 	}{
-		"w_se_principal_architect":        {"Hard time-box: 20 minutes", `{"wall_clock_seconds":1500}`},
-		"w_se_senior_software_engineer":   {"Hard time-box: 45 minutes", `{"wall_clock_seconds":3600}`},
-		"w_se_pr_reviewer":                {"Hard time-box: 30 minutes", `{"wall_clock_seconds":2400}`},
-		"w_se_qa_engineer":                {"Hard time-box: 30 minutes", `{"wall_clock_seconds":2400}`},
+		"w_se_principal_architect":      {"Hard time-box: 20 minutes", "1500"},
+		"w_se_senior_software_engineer": {"Hard time-box: 45 minutes", "3600"},
+		"w_se_pr_reviewer":              {"Hard time-box: 30 minutes", "2400"},
+		"w_se_qa_engineer":              {"Hard time-box: 30 minutes", "2400"},
 	}
 	for id, tc := range want {
+		resetWorker(t, pool, id)
 		var agents, budget string
 		if err := pool.QueryRow(ctx,
-			`SELECT agents_md, budget_overrides::text FROM worker_versions
+			`SELECT agents_md, budget_overrides->>'wall_clock_seconds' FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
 			id).Scan(&agents, &budget); err != nil {
 			t.Fatalf("query %s: %v", id, err)
@@ -473,6 +550,27 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		if budget != tc.budget {
 			t.Errorf("%s budget_overrides = %s, want %s", id, budget, tc.budget)
 		}
+	}
+	// The QA Engineer rolls on its own marker so QA-only wording changes
+	// never re-roll the other three SDLC workers.
+	var qaMarker, sseMarker string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		"w_se_qa_engineer").Scan(&qaMarker); err != nil {
+		t.Fatalf("query QA agents: %v", err)
+	}
+	if !strings.Contains(qaMarker, db.QASurfaceImpactMarker) {
+		t.Errorf("QA agents_md missing its roll-forward marker %q", db.QASurfaceImpactMarker)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		"w_se_senior_software_engineer").Scan(&sseMarker); err != nil {
+		t.Fatalf("query SSE agents: %v", err)
+	}
+	if strings.Contains(sseMarker, db.QASurfaceImpactMarker) {
+		t.Errorf("SSE must NOT carry the QA-only roll-forward marker")
 	}
 }
 
@@ -721,7 +819,7 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		slug   string
 		expect string // purpose fragment that must be present
 	}{
-		{"01M13DYHKHEF71MVGY07GMGMJ6", "automation-research-planner", "capability landscape"},
+		{"01M13DYHKHEF71MVGY07GMGMJ6", "automation-research-planner", "market capability"},
 		{"01M13DYJWHCYHWQ1X85J1BWWZ1", "automation-research-analyst", "project codebase"},
 		{"01M13DYM3A7CTY8ECP4R7M33SR", "automation-research-synthesizer", "project codebase"},
 	}

@@ -204,14 +204,36 @@ const researchSynthesizerRejectedMarker = "state=\"rejected\""
 const researchEphemeralMarker = "git_strategy=none"
 
 // sdlcWorkhorseMarker is the SDLC implementation/review group's roll-forward
-// fragment (cannedWorker.RollMarker) covering the SSE, PR Reviewer, QA
-// Engineer, and Principal Architect. It pins the workhorse contract: each
-// worker carries a HARD prompt time-box (20/45/30/30 min), fixes its own
-// findings (review/QA never bounce fixable bugs back), grounds every design
+// fragment (cannedWorker.RollMarker) covering the SSE, PR Reviewer, and
+// Principal Architect. It pins the workhorse contract: each
+// worker carries a HARD prompt time-box (20/45/30 min), fixes its own
+// findings (review never bounces fixable bugs back), grounds every design
 // claim in code proof, and finishes fast with minimal tokens/tool calls.
-// Fragment appears only in the NEW agents_md content, so exactly these four
+// Fragment appears only in the NEW agents_md content, so exactly these three
 // re-roll — the global markers stay reserved for whole-fleet content.
+// (The QA Engineer carries its own qaSurfaceImpactMarker instead, so QA-only
+// wording changes never re-roll the other three.)
 const sdlcWorkhorseMarker = "Hard time-box"
+
+// qaSurfaceImpactMarker is the QA Engineer's per-worker roll-forward fragment
+// (cannedWorker.RollMarker): it pins the mandatory surface-impact check — UI
+// verification is triggered by whether the change affects anything the user
+// can see or interact with (displayed data, budgets, costs, tokens, statuses,
+// counts), NOT by whether the diff edits frontend files. A Go-only diff that
+// feeds displayed values (usage/telemetry/budget wiring) is UI-affecting and
+// must be screenshotted via the Playwright loop. Added after the native
+// usage/telemetry/budget run (2026-09-03): its QA step verified the change
+// entirely at the code level and never opened the UI, although the work item
+// itself named budget display in the UI. Fragment chosen from the new
+// workflow-step text so exactly the QA Engineer re-rolls — never the SSE,
+// PR Reviewer, or Architect.
+const qaSurfaceImpactMarker = "Surface-impact check — mandatory, before any verdict"
+
+// QASurfaceImpactMarker is the exported twin of qaSurfaceImpactMarker so the
+// package-external seeder tests can pin the QA Engineer's roll-forward
+// fragment. Keep in sync by construction (the exported value is assigned
+// from the internal one in init).
+var QASurfaceImpactMarker = qaSurfaceImpactMarker
 
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers. The Automation Research workflow runs with
@@ -284,10 +306,10 @@ var cannedWorkers = []cannedWorker{
 		Name:        "QA Engineer",
 		Slug:        "qa-engineer",
 		Description: "A QA workhorse who regression-tests and UI-tests the change, fixes every bug it finds itself, and drives to a verified success within the time box.",
-		Purpose:     "True UI and regression testing of the change; fixes all bugs found and drives to success, reporting failure only when genuinely stuck.",
+		Purpose:     "Regression testing of the change AND visual verification of every user-visible surface it affects; fixes all bugs found and drives to success, reporting failure only when genuinely stuck.",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
-		Skills:      "Regression testing • UI verification (Playwright screenshots) • Bug fixing • Re-verification • Proportionate test scoping",
-		Behavior:    "Verify each acceptance criterion works, fix what doesn't, re-verify, report. Never expand testing to the whole system; never run destructive or system-level security tests. Write clear, reproducible bug reports only when escalation is genuinely required.",
+		Skills:      "Regression testing • Surface-impact analysis • UI verification (Playwright screenshots) • Bug fixing • Re-verification • Proportionate test scoping",
+		Behavior:    "Verify each acceptance criterion works — in code AND on every user-visible surface it affects — fix what doesn't, re-verify, report. Never expand testing to the whole system; never run destructive or system-level security tests. Write clear, reproducible bug reports only when escalation is genuinely required.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Hard time-box: 30 minutes\n" +
 			"You have 30 minutes of wall clock to test, fix, and re-verify. Budget roughly half the box for the testing pass, the rest for fixes + re-verification.\n\n" +
@@ -295,16 +317,17 @@ var cannedWorkers = []cannedWorker{
 			"You are the last gate: regression-test the change against its acceptance criteria, and **when you find bugs, fix ALL of them yourself and drive to a verified success**. You report `failure` only when you have genuinely exhausted your ability to fix the problem.\n\n" +
 			"## Workflow\n" +
 			"1. **Scope**: verify each acceptance criterion with a concrete test; on later loop iterations re-test the specific fixes, not the whole change.\n" +
-			"2. **Test what the change touches**: functional behavior, the relevant edge cases, integration spot-checks. UI changes get visual verification via the Playwright loop below. Never expand to the whole system.\n" +
-			"3. **Fix, don't bounce**: when a test fails or the UI misbehaves, find the cause and fix it yourself (code or test-harness both fair game), then re-run/re-screenshot to CONFIRM the fix. Never rewrite engineer logic to make a test pass — fix the real cause.\n" +
-			"4. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion). If a task asks for that, refuse and flag it — the execution guard blocks them anyway.\n\n" +
+			"2. **Test what the change touches**: functional behavior, the relevant edge cases, integration spot-checks. Never expand to the whole system.\n" +
+			"3. **Surface-impact check — mandatory, before any verdict**: decide explicitly whether this change affects ANYTHING the user can see or interact with — displayed data, numbers, budgets, costs, tokens, statuses, counts, lists, labels, forms. **Diff file types are not the test**: a Go-only diff that feeds displayed values (usage, pricing, budgets, telemetry) is UI-affecting. If any user-visible surface is affected — or you cannot confidently rule it out — you MUST verify it visually via the Playwright loop below: start the app, screenshot the affected surface, read the pixels, and confirm the actual displayed values against the acceptance criteria. Verifying only the backend while a criterion references displayed data is an incomplete pass.\n" +
+			"4. **Fix, don't bounce**: when a test fails or the UI misbehaves, find the cause and fix it yourself (code or test-harness both fair game), then re-run/re-screenshot to CONFIRM the fix. Never rewrite engineer logic to make a test pass — fix the real cause.\n" +
+			"5. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion). If a task asks for that, refuse and flag it — the execution guard blocks them anyway.\n\n" +
 			"## Verdict contract\n" +
 			"End your report with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
-			"- `success` — all acceptance criteria verified, or every finding fixed + re-verified by you. List what you fixed.\n" +
+			"- `success` — all acceptance criteria verified, or every finding fixed + re-verified by you. State your surface-impact determination: what UI you verified, or why no user-visible surface was affected. List what you fixed.\n" +
 			"- `failure` — ONLY when you absolutely cannot fix the problem after exhausting your approaches. Include steps to reproduce and state exactly what you already tried. Never pass a fixable bug back for someone else to fix.\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock,
 		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      sdlcWorkhorseMarker,
+		RollMarker:      qaSurfaceImpactMarker,
 	},
 	{
 		ID:          "w_se_principal_architect",
@@ -752,7 +775,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), targetID,
 			)
 		} else {
-	// Newer versions are user-created; preserve them and append
+			// Newer versions are user-created; preserve them and append
 			// a new published version carrying the seed context. BudgetOverrides:
 			// nil = keep the current version's; a canned JSON value overrides it.
 			var budgetParam any
