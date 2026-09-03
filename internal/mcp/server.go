@@ -169,22 +169,30 @@ func loadRunContext(log *slog.Logger, pool *db.Pool, tenantID string) []byte {
 
 // Run reads JSON-RPC requests from stdin and writes responses to stdout until
 // stdin closes. It blocks; call in a goroutine.
+//
+// The reader is a bufio.Reader.ReadString('\n') loop, NOT a bufio.Scanner:
+// a scanner's default max token size is 64 KiB (bufio.MaxScanTokenSize), and a
+// single JSON-RPC `tools/call` whose params.arguments carries a multi-hundred-
+// line `content` string is one JSON line >64 KiB — the scanner would return
+// bufio.ErrTooLong and the WHOLE MCP server would exit (the batch_write
+// large-payload failure). A ReadString loop has no token-size cap, so large
+// writes reach the worktree Layer. There is no scanner.Err() to surface —
+// the loop simply exits on EOF or a read error.
 func (s *Server) Run(ctx context.Context) error {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		line, err := reader.ReadString('\n')
+		if strings.TrimSpace(line) != "" {
+			var req jsonRPCRequest
+			if jerr := json.Unmarshal([]byte(line), &req); jerr != nil {
+				s.writeError(nil, codeParse, "Parse error", nil)
+			} else {
+				s.handle(ctx, req)
+			}
 		}
-		var req jsonRPCRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			s.writeError(nil, codeParse, "Parse error", nil)
-			continue
+		if err != nil {
+			break // io.EOF or a read error ends the loop
 		}
-		s.handle(ctx, req)
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("mcp stdin scan: %w", err)
 	}
 	return nil
 }

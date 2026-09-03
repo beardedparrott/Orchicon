@@ -25,13 +25,14 @@ import (
 // carrying several operations = one turn instead of N); the single-op
 // variants are thin wrappers over the same batch engine.
 type worktreeRegistry struct {
-	baseDir string
+	baseDir     string
+	projectRoot string
 }
 
 // NewWorktreeRegistry returns a ToolRegistry bound to a worktree base
 // directory. All path arguments are resolved against it and can never escape.
-func NewWorktreeRegistry(baseDir string) ToolRegistry {
-	return &worktreeRegistry{baseDir: baseDir}
+func NewWorktreeRegistry(baseDir, projectRoot string) ToolRegistry {
+	return &worktreeRegistry{baseDir: baseDir, projectRoot: projectRoot}
 }
 
 func (r *worktreeRegistry) List() []ToolDef {
@@ -128,13 +129,18 @@ func (r *worktreeRegistry) List() []ToolDef {
 // Executes a batch tool. The db.Pool is intentionally unused: these are
 // filesystem tools scoped to the worktree base, never the platform DB.
 func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, args json.RawMessage) (json.RawMessage, error) {
+	// b is the scoping boundary for every worktree.* call: reads reach the
+	// worktree + the sanctioned scratch + the READ-only project root (the
+	// run-state .orchicon/<run>/ and architecture-notes); writes reach only
+	// the worktree + scratch, so batch_write never lands in the main checkout.
+	b := worktree.Base{Worktree: r.baseDir, ProjectRoot: r.projectRoot, ScratchDir: worktree.DefaultScratchDir}
 	switch name {
 	case "batch_read":
 		var a worktree.ReadArgs
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_read: %w", err)
 		}
-		out, err := worktree.BatchRead(r.baseDir, a)
+		out, err := worktree.BatchRead(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_read: %w", err)
 		}
@@ -144,7 +150,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_grep: %w", err)
 		}
-		out, err := worktree.BatchGrep(r.baseDir, a)
+		out, err := worktree.BatchGrep(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_grep: %w", err)
 		}
@@ -154,7 +160,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_write: %w", err)
 		}
-		out, err := worktree.BatchWrite(r.baseDir, a)
+		out, err := worktree.BatchWrite(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_write: %w", err)
 		}
@@ -164,7 +170,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("read: %w", err)
 		}
-		out, err := worktree.Read(r.baseDir, a)
+		out, err := worktree.Read(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("read: %w", err)
 		}
@@ -174,7 +180,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("grep: %w", err)
 		}
-		out, err := worktree.Grep(r.baseDir, a)
+		out, err := worktree.Grep(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("grep: %w", err)
 		}
@@ -184,7 +190,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("write: %w", err)
 		}
-		out, err := worktree.SingleWrite(r.baseDir, a)
+		out, err := worktree.SingleWrite(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("write: %w", err)
 		}
@@ -194,7 +200,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("edit: %w", err)
 		}
-		out, err := worktree.SingleEdit(r.baseDir, a)
+		out, err := worktree.SingleEdit(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("edit: %w", err)
 		}
@@ -204,13 +210,13 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("list: %w", err)
 		}
-		out, err := worktree.List(r.baseDir, a)
+		out, err := worktree.List(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("list: %w", err)
 		}
 		return json.RawMessage(out), nil
 	case "todoread":
-		out, err := worktree.TodoRead(r.baseDir, worktree.TodoReadArgs{})
+		out, err := worktree.TodoRead(b, worktree.TodoReadArgs{})
 		if err != nil {
 			return nil, fmt.Errorf("todoread: %w", err)
 		}

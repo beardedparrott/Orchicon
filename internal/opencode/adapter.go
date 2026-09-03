@@ -293,6 +293,19 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 	// process cwd is the last-resort fallback. CompositeTools is only set when
 	// a worktree dir resolves, so the batch MCP is always registered alongside
 	// the read/grep deny (no lockout).
+	// ProjectRoot is the READ-only extra scope the composite worktree tools may
+	// reach for the run-state files (.orchicon/<run>/) and architecture-notes,
+	// which live at the project root — a sibling of the run worktree. Derived
+	// from the worktree path: when the worktree sits under
+	// <root>/.orchicon-worktrees/<runID>, the project root is its
+	// parent-of-parent; in-place runs (worktree == project dir) derive to the
+	// project dir itself. The project root is reachable in-container as an
+	// ancestor of the worktree (projectMount(manifest.ProjectDir)).
+	projectRoot := projectDir
+	if filepath.Base(filepath.Dir(projectDir)) == ".orchicon-worktrees" {
+		projectRoot = filepath.Dir(filepath.Dir(projectDir))
+	}
+	opts.ProjectDir = projectRoot
 	opts.WorktreeDir = projectDir
 	if opts.WorktreeDir == "" {
 		opts.WorktreeDir = os.Getenv("ORCHICON_WORKTREE_DIR")
@@ -359,7 +372,10 @@ func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
 // runtime does not expose them falls back to the built-ins without error, and
 // it explicitly forbids the granular tools so the model does not keep reaching
 // for read/grep in batches (the conflicting behaviour the old guidance caused).
-const worktreePathDiscipline = "\n\nAll file reads/writes must use paths relative to the current worktree; the main checkout is not accessible.\n"
+const worktreePathDiscipline = "\n\n## File scoping\n" +
+	"- Reads may resolve the project root too: run-state files under `.orchicon/<run>/` and `architecture-notes/` live at the project root, a sibling of this worktree — `batch_read`/`read`/`grep`/`list` can read them (by project-root or `../../.orchicon/<run>/...` path).\n" +
+	"- Writes land ONLY in this worktree and the sanctioned scratch dir `/tmp/orchicon` — never the main checkout at the project root.\n" +
+	"- Deletes are scoped to this worktree and `/tmp/orchicon`; anything escaping the worktree/project root stays blocked.\n"
 
 const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n" +
 	"Use the composite file tools for ALL file access:\n" +
@@ -882,7 +898,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		// is a log-level concern, never a tool failure.
 		if toolName == "todowrite" {
 			items := parseTodoItems(inRaw)
-			worktree.SaveTodoSnapshot(executionDir(manifest), items)
+			worktree.SaveTodoSnapshot(worktree.BaseFor(executionDir(manifest)), items)
 		}
 
 		// Detect `write` tool calls (opencode built-in file writer)

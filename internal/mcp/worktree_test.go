@@ -18,7 +18,7 @@ var allToolNames = []string{
 }
 
 func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir())
+	r := NewWorktreeRegistry(t.TempDir(), "")
 	defs := r.List()
 	if len(defs) != len(allToolNames) {
 		t.Fatalf("expected %d tools, got %d", len(allToolNames), len(defs))
@@ -47,7 +47,7 @@ func TestWorktreeRegistryExecuteBatchRead(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"a.txt"}})
 	res, err := r.Execute(context.Background(), nil, "batch_read", args)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestWorktreeRegistrySingleOpWrappers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	ctx := context.Background()
 
 	// read wrapper
@@ -103,7 +103,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(base, "a.txt"), []byte("hi"), 0o644)
 	os.WriteFile(filepath.Join(base, "sub", "b.txt"), []byte("hi"), 0o644)
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{})
 	res, err := r.Execute(context.Background(), nil, "list", args)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 
 func TestWorktreeRegistryTodoRead(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	// No snapshot yet — must return a graceful empty message, not an error.
 	res, err := r.Execute(context.Background(), nil, "todoread", nil)
 	if err != nil {
@@ -145,7 +145,7 @@ func TestWorktreeRegistryTodoRead(t *testing.T) {
 
 func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"../etc/passwd"}})
 	if _, err := r.Execute(context.Background(), nil, "batch_read", args); err == nil {
 		t.Fatal("expected a path-traversal error")
@@ -158,7 +158,7 @@ func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 }
 
 func TestWorktreeRegistryExecuteUnknownTool(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir())
+	r := NewWorktreeRegistry(t.TempDir(), "")
 	if _, err := r.Execute(context.Background(), nil, "nope", nil); err == nil {
 		t.Fatal("expected an unknown-tool error")
 	}

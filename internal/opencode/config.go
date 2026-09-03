@@ -447,6 +447,12 @@ type ConfigOptions struct {
 	// resolves its paths against: the worker's project/worktree directory. It
 	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
 	WorktreeDir string
+	// ProjectDir is the project root, a READ-only extra scope the composite
+	// worktree MCP server may reach for the run-state `.orchicon/<run>/` files
+	// and `architecture-notes/`, which live at the project root — a sibling of
+	// the run worktree. Injected as the sidecar's ORCHICON_MCP_PROJECT_DIR env
+	// var. Writes never reach it (batch_write stays in the worktree).
+	ProjectDir string
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -517,7 +523,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	}
 	if o.CompositeTools && o.WorktreeDir != "" {
 		if _, exists := mcp["orchicon-worktree"]; !exists {
-			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.MCPBinaryPath)
+			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.MCPBinaryPath)
 		}
 	}
 	if len(mcp) > 0 {
@@ -563,7 +569,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	// bounds the DURABLE transcript persisted for recovery/follow-ups, so the
 	// two caps are independent: opencode controls what the model per-turn
 	// sees, Orchicon controls what is stored.
-	cfg["tool_output"] = map[string]any{"max_bytes": 512000, "max_lines": 5000}
+	cfg["tool_output"] = map[string]any{"max_bytes": 1000000, "max_lines": 5000}
 
 	// Ask opencode to batch independent tool calls into a single assistant
 	// turn rather than emit them one at a time. Being explicit about batching
@@ -662,18 +668,20 @@ func planeMCPServer(extraEnv map[string]string, binaryPath string) map[string]an
 // runMCP select the worktree registry (no Postgres needed) bound to the
 // worker's project/worktree directory. binaryPath overrides the orchicon
 // binary used as the command (the runtime container forces the daemon mount).
-func worktreeMCPServer(dir, binaryPath string) map[string]any {
+func worktreeMCPServer(dir, projectDir, binaryPath string) map[string]any {
 	if binaryPath == "" {
 		binaryPath = orchiconBinaryPath()
 	}
+	env := map[string]string{"ORCHICON_MCP_WORKTREE_DIR": dir}
+	if projectDir != "" {
+		env["ORCHICON_MCP_PROJECT_DIR"] = projectDir
+	}
 	return map[string]any{
-		"type":    "local",
-		"command": []string{binaryPath, "mcp"},
-		"environment": map[string]string{
-			"ORCHICON_MCP_WORKTREE_DIR": dir,
-		},
-		"enabled": true,
-		"timeout": 15000,
+		"type":        "local",
+		"command":     []string{binaryPath, "mcp"},
+		"environment": env,
+		"enabled":     true,
+		"timeout":     15000,
 	}
 }
 

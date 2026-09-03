@@ -142,7 +142,7 @@ func TestExecutionSystemPrompt(t *testing.T) {
 			if hasWorktree := strings.Contains(got, worktreePathDiscipline); hasWorktree != tc.wantWorktree {
 				t.Errorf("executionSystemPrompt() worktree note present = %v, want %v; prompt=%q", hasWorktree, tc.wantWorktree, got)
 			}
-			hasBatch := strings.Contains(got, "batch_read")
+			hasBatch := strings.Contains(got, batchToolsDiscipline)
 			if hasBatch != tc.wantBatch {
 				t.Errorf("executionSystemPrompt() batch discipline present = %v, want %v; prompt=%q", hasBatch, tc.wantBatch, got)
 			}
@@ -258,7 +258,7 @@ func TestTodoWriteSnapshotSidecar(t *testing.T) {
 	adapter.parseEvent(context.Background(), db.ExecutionRow{ID: "exec-1"}, manifest, evt, callbacks, nil, &output, nil, &textSeq, nil, nil)
 
 	// todoread must now return the snapshot.
-	out, err := worktree.TodoRead(execDir, worktree.TodoReadArgs{})
+	out, err := worktree.TodoRead(worktree.BaseFor(execDir), worktree.TodoReadArgs{})
 	if err != nil {
 		t.Fatalf("TodoRead err: %v", err)
 	}

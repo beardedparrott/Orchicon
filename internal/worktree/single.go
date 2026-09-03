@@ -49,7 +49,7 @@ type ListArgs struct {
 // (directories suffixed with "/") plus a one-line stat hint, bounded and
 // traversal-safe. A path naming a regular file is reported as a single
 // entry with its size.
-func List(base string, args ListArgs) (string, error) {
+func List(b Base, args ListArgs) (string, error) {
 	paths := args.Paths
 	if len(paths) == 0 {
 		paths = []string{"."}
@@ -58,10 +58,10 @@ func List(base string, args ListArgs) (string, error) {
 	if maxEntries <= 0 {
 		maxEntries = defaultListEntries
 	}
-	var b strings.Builder
+	var sb strings.Builder
 	var skipped []string
 	for _, e := range paths {
-		p, err := safeResolve(base, e)
+		p, err := safeResolve(b, e, false)
 		if err != nil {
 			return "", fmt.Errorf("list: %w", err)
 		}
@@ -71,11 +71,11 @@ func List(base string, args ListArgs) (string, error) {
 			continue
 		}
 		if !info.IsDir() {
-			rel := relPath(base, p)
+			rel := relPath(b.Worktree, p)
 			if strings.HasPrefix(rel, "..") {
 				rel = p
 			}
-			b.WriteString(fmt.Sprintf("%s (%s)\n", rel, humanBytes(int(info.Size()))))
+			sb.WriteString(fmt.Sprintf("%s (%s)\n", rel, humanBytes(int(info.Size()))))
 			continue
 		}
 		des, rerr := os.ReadDir(p)
@@ -83,7 +83,7 @@ func List(base string, args ListArgs) (string, error) {
 			skipped = append(skipped, e+" ("+rerr.Error()+")")
 			continue
 		}
-		rel := relPath(base, p)
+		rel := relPath(b.Worktree, p)
 		if strings.HasPrefix(rel, "..") {
 			rel = p
 		}
@@ -91,7 +91,7 @@ func List(base string, args ListArgs) (string, error) {
 		if rel == "." {
 			header = "."
 		}
-		b.WriteString(header + "/\n")
+		sb.WriteString(header + "/\n")
 		names := make([]string, 0, len(des))
 		for _, de := range des {
 			name := de.Name()
@@ -107,19 +107,19 @@ func List(base string, args ListArgs) (string, error) {
 				trunc++
 				continue
 			}
-			b.WriteString("  " + n + "\n")
+			sb.WriteString("  " + n + "\n")
 		}
 		if trunc > 0 {
-			b.WriteString(fmt.Sprintf("  ... [%d more entries — re-list with max_entries raised or a narrower path]\n", trunc))
+			sb.WriteString(fmt.Sprintf("  ... [%d more entries — re-list with max_entries raised or a narrower path]\n", trunc))
 		}
 	}
 	if len(skipped) > 0 {
-		b.WriteString(fmt.Sprintf("list: %d path(s) skipped: %s\n", len(skipped), strings.Join(skipped, "; ")))
+		sb.WriteString(fmt.Sprintf("list: %d path(s) skipped: %s\n", len(skipped), strings.Join(skipped, "; ")))
 	}
-	if b.Len() == 0 && len(skipped) == 0 {
+	if sb.Len() == 0 && len(skipped) == 0 {
 		return "list: nothing to list.", nil
 	}
-	return b.String(), nil
+	return sb.String(), nil
 }
 
 // TodoItem is one entry of the latest todo list, matching the shape the
@@ -142,11 +142,11 @@ const todoSnapshotFile = ".orchicon/todos.json"
 // file is written atomically (temp + rename) and best-effort: a failed
 // snapshot write is a log-level concern, never a tool failure — the
 // todowrite call itself (an opencode built-in) already succeeded.
-func SaveTodoSnapshot(base string, items []TodoItem) {
+func SaveTodoSnapshot(b Base, items []TodoItem) {
 	if len(items) == 0 {
 		return
 	}
-	abs, err := safeResolve(base, todoSnapshotFile)
+	abs, err := safeResolve(b, todoSnapshotFile, true)
 	if err != nil {
 		return
 	}
@@ -174,8 +174,8 @@ type TodoReadArgs struct{}
 // When no snapshot exists yet (no todowrite has been issued in this
 // session), it returns an explicit empty-list message instead of an error
 // — a worker that just started has no todos, which is not a failure.
-func TodoRead(base string, _ TodoReadArgs) (string, error) {
-	abs, err := safeResolve(base, todoSnapshotFile)
+func TodoRead(b Base, _ TodoReadArgs) (string, error) {
+	abs, err := safeResolve(b, todoSnapshotFile, false)
 	if err != nil {
 		return "", fmt.Errorf("todoread: %w", err)
 	}
@@ -190,8 +190,8 @@ func TodoRead(base string, _ TodoReadArgs) (string, error) {
 	if err := json.Unmarshal(data, &items); err != nil {
 		return "", fmt.Errorf("todoread: malformed snapshot: %w", err)
 	}
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("todoread: %d todo item(s):\n", len(items)))
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("todoread: %d todo item(s):\n", len(items)))
 	for i, t := range items {
 		status := t.Status
 		if status == "" {
@@ -201,10 +201,10 @@ func TodoRead(base string, _ TodoReadArgs) (string, error) {
 		if pri == "" {
 			pri = "-"
 		}
-		b.WriteString(fmt.Sprintf("  %d. [%s] (priority: %s) %s\n", i+1, status, pri, t.Content))
+		sb.WriteString(fmt.Sprintf("  %d. [%s] (priority: %s) %s\n", i+1, status, pri, t.Content))
 	}
-	b.WriteString("\nraw:\n" + string(data))
-	return b.String(), nil
+	sb.WriteString("\nraw:\n" + string(data))
+	return sb.String(), nil
 }
 
 // SingleReadArgs are the single-op `read` wrapper inputs.
@@ -216,11 +216,11 @@ type SingleReadArgs struct {
 
 // Read implements the single-op `read` wrapper: a one-element batch_read
 // for a single path.
-func Read(base string, args SingleReadArgs) (string, error) {
+func Read(b Base, args SingleReadArgs) (string, error) {
 	if strings.TrimSpace(args.Path) == "" {
 		return "", fmt.Errorf("read: path is required")
 	}
-	return BatchRead(base, ReadArgs{Paths: []string{args.Path}, MaxBytes: args.MaxBytes, LineNumbers: args.LineNumbers})
+	return BatchRead(b, ReadArgs{Paths: []string{args.Path}, MaxBytes: args.MaxBytes, LineNumbers: args.LineNumbers})
 }
 
 // SingleGrepArgs are the single-op `grep` wrapper inputs.
@@ -232,7 +232,7 @@ type SingleGrepArgs struct {
 }
 
 // Grep implements the single-op `grep` wrapper: a one-pattern batch_grep.
-func Grep(base string, args SingleGrepArgs) (string, error) {
+func Grep(b Base, args SingleGrepArgs) (string, error) {
 	if strings.TrimSpace(args.Pattern) == "" {
 		return "", fmt.Errorf("grep: pattern is required")
 	}
@@ -240,7 +240,7 @@ func Grep(base string, args SingleGrepArgs) (string, error) {
 	if args.Path != "" {
 		paths = []string{args.Path}
 	}
-	return BatchGrep(base, GrepArgs{Patterns: []string{args.Pattern}, Paths: paths, ContextLines: args.ContextLines, MaxMatches: args.MaxMatches})
+	return BatchGrep(b, GrepArgs{Patterns: []string{args.Pattern}, Paths: paths, ContextLines: args.ContextLines, MaxMatches: args.MaxMatches})
 }
 
 // SingleWriteArgs are the single-op `write` wrapper inputs (opencode-builtin
@@ -251,11 +251,11 @@ type SingleWriteArgs struct {
 }
 
 // SingleWrite implements the single-op `write` wrapper: a one-op batch_write.
-func SingleWrite(base string, args SingleWriteArgs) (string, error) {
+func SingleWrite(b Base, args SingleWriteArgs) (string, error) {
 	if strings.TrimSpace(args.FilePath) == "" {
 		return "", fmt.Errorf("write: filePath is required")
 	}
-	return BatchWrite(base, WriteArgs{Writes: []Write{{Path: args.FilePath, Mode: "overwrite", Content: args.Content}}})
+	return BatchWrite(b, WriteArgs{Writes: []Write{{Path: args.FilePath, Mode: "overwrite", Content: args.Content}}})
 }
 
 // SingleEditArgs are the single-op `edit` wrapper inputs (opencode-builtin
@@ -267,12 +267,12 @@ type SingleEditArgs struct {
 }
 
 // SingleEdit implements the single-op `edit` wrapper: a one-op batch_write.
-func SingleEdit(base string, args SingleEditArgs) (string, error) {
+func SingleEdit(b Base, args SingleEditArgs) (string, error) {
 	if strings.TrimSpace(args.FilePath) == "" {
 		return "", fmt.Errorf("edit: filePath is required")
 	}
 	if args.OldString == "" {
 		return "", fmt.Errorf("edit: oldString is required")
 	}
-	return BatchWrite(base, WriteArgs{Writes: []Write{{Path: args.FilePath, Mode: "edit", Old: args.OldString, New: args.NewString}}})
+	return BatchWrite(b, WriteArgs{Writes: []Write{{Path: args.FilePath, Mode: "edit", Old: args.OldString, New: args.NewString}}})
 }
