@@ -1822,29 +1822,23 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		facts := extractFactsLearned(summary)
 		if len(facts) > 0 {
 			stepName := r.stepNameForExecution(ctx, exec)
-			existing := ""
-			if b, err := os.ReadFile(filepath.Join(orchDir, "facts_learned")); err == nil {
-				existing = string(b)
+			if err := appendFactsToOrchiconFile(orchDir, stepName, facts); err != nil {
+				r.log.Warn("write facts_learned (from summary)", "error", err)
 			}
-			var sb strings.Builder
-			if existing != "" {
-				sb.WriteString(existing)
-				if !strings.HasSuffix(existing, "\n") {
-					sb.WriteString("\n")
-				}
-			}
-			for _, f := range facts {
-				if stepName != "" {
-					sb.WriteString("FACTS LEARNED (from ")
-					sb.WriteString(stepName)
-					sb.WriteString("): ")
-				} else {
-					sb.WriteString("FACTS LEARNED: ")
-				}
-				sb.WriteString(f)
-				sb.WriteString("\n")
-			}
-			write("facts_learned", strings.TrimSpace(sb.String()))
+		}
+	}
+	// Deterministic terminal-time backstop: at EVERY execution terminal
+	// (succeeded/failed/stalled/fail-lost — the single writeOrchiconFiles
+	// funnel) we also extract any FACTS LEARNED lines from the persisted
+	// session transcript (execution_session_parts). A stall-killed worker
+	// dies before emitting its ORCHICON WORKER SUMMARY, so the worker-emitted
+	// fold-in above would capture nothing; the transcript tail survives the
+	// silent death and is the backstop. Deduplication against the file makes
+	// this idempotent with the worker-emitted path above.
+	stepName := r.stepNameForExecution(ctx, exec)
+	if tFacts := r.extractTranscriptFacts(ctx, exec); len(tFacts) > 0 {
+		if err := appendFactsToOrchiconFile(orchDir, stepName, tFacts); err != nil {
+			r.log.Warn("append facts_learned (from transcript)", "execution", exec.ID, "error", err)
 		}
 	}
 	// The `issues` file is the feedback channel the composite prompt points
@@ -1905,6 +1899,32 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 			}
 		}
 	}
+}
+
+// extractTranscriptFacts reads the persisted session-parts transcript tail
+// for an execution (both the opencode and native adapters persist to
+// execution_session_parts) and mechanically extracts any `FACTS LEARNED:`
+// lines the worker's final assistant block recorded — the deterministic
+// terminal-time backstop. Best-effort: returns nil on an empty/absent
+// transcript or any read failure so the existing worker-emitted path is
+// never disturbed.
+func (r *TaskReconciler) extractTranscriptFacts(ctx context.Context, exec db.ExecutionRow) []string {
+	if exec.TenantID == "" || exec.ID == "" {
+		return nil
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Warn("transcript facts: begin tx", "execution", exec.ID, "error", err)
+		return nil
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.ListExecutionSessionPartsTail(ctx, ttx.Tx, exec.TenantID, exec.ID, factsTranscriptMaxParts)
+	if err != nil {
+		r.log.Warn("transcript facts: read tail", "execution", exec.ID, "error", err)
+		return nil
+	}
+	_ = ttx.Commit(ctx)
+	return extractFactsFromTranscript(parts)
 }
 
 // stepNameForExecution resolves the workflow step name that dispatched an
