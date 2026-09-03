@@ -42,6 +42,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -745,6 +747,76 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	return nil
 }
 
+// foldRecoverySummaryToFacts appends the recovery's summary into the
+// run's .orchicon/<run>/facts_learned as a step-attributed entry so ALL of
+// a run's steps see the recovery summary — not just the restarted execution
+// (which receives it via the composite prompt's `_recovery_summary`).
+// Best-effort: a failure to resolve the project dir / run id, or a file
+// error, is logged and never blocks the resume.
+func (r *Reconciler) foldRecoverySummaryToFacts(ctx context.Context, tenantID string, rec db.RecoveryExecutionRow) {
+	if rec.Summary == "" {
+		return
+	}
+	projectDir := ""
+	if ttx, err := r.pool.BeginTenantTx(ctx, tenantID); err == nil {
+		if err := ttx.Tx.QueryRow(ctx,
+			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+			rec.ProjectID, tenantID,
+		).Scan(&projectDir); err != nil {
+			projectDir = ""
+		}
+		_ = ttx.Commit(ctx)
+	} else {
+		ttx.Rollback(ctx)
+	}
+	if projectDir == "" {
+		r.log.Warn("recovery fold facts: no project dir", "recovery", rec.ID)
+		return
+	}
+	runID := ""
+	if ttx, err := r.pool.BeginTenantTx(ctx, tenantID); err == nil {
+		if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+			runID = exec.WorkflowRunID
+		}
+		_ = ttx.Commit(ctx)
+	} else {
+		ttx.Rollback(ctx)
+	}
+	if runID == "" {
+		r.log.Warn("recovery fold facts: no run id", "recovery", rec.ID)
+		return
+	}
+	orchDir := filepath.Join(projectDir, ".orchicon", runID)
+	if err := os.MkdirAll(orchDir, 0o755); err != nil {
+		r.log.Warn("recovery fold facts: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+	factsPath := filepath.Join(orchDir, "facts_learned")
+	existing := ""
+	if b, err := os.ReadFile(factsPath); err == nil {
+		existing = string(b)
+	}
+	line := "FACTS LEARNED (from Recovery): " + rec.Summary
+	// Dedup exact-string against existing content (terminal idempotency).
+	for _, l := range strings.Split(existing, "\n") {
+		if strings.TrimSpace(l) == line {
+			return
+		}
+	}
+	var sb strings.Builder
+	if existing != "" {
+		sb.WriteString(existing)
+		if !strings.HasSuffix(existing, "\n") {
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString(line)
+	sb.WriteString("\n")
+	if err := os.WriteFile(factsPath, []byte(strings.TrimSpace(sb.String())), 0o644); err != nil {
+		r.log.Warn("recovery fold facts: write", "file", factsPath, "error", err)
+	}
+}
+
 // progressRecovery advances a single recovery through its step DAG
 // (docs/06 §3, §9). Idempotent: re-running resumes from the last
 // completed step.
@@ -925,6 +997,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				})
 			}
 		}
+		r.foldRecoverySummaryToFacts(ctx, tenantID, rec)
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, rec, "", "", rec.TriggerReason, "recovery completed; task resumed to ready", "")
 		progressed = true
 	} else if anyFailed {
