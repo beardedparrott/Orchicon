@@ -32,14 +32,21 @@ describe("availableActions (parent — has children, a sequence run)", () => {
     ]);
   });
   it("offers nothing when succeeded", () => {
-    expect(availableActions(S.SUCCEEDED, true)).toEqual([]);
+    // Terminal succeeded: only START (re-fire from child #1) remains —
+    // STOP and RESUME are meaningless on a finished chain.
+    expect(availableActions(S.SUCCEEDED, true)).toEqual([
+      SequenceAction.START,
+    ]);
   });
 });
 
 describe("availableActions (leaf — no children, runs its own workflow)", () => {
   it("offers START while pending", () => {
+    // Pending leaf: START fires the bound workflow. STOP remains offered
+    // so a parked-but-scheduled item can be halted before it runs.
     expect(availableActions(S.PENDING, false)).toEqual([
       SequenceAction.START,
+      SequenceAction.STOP,
     ]);
   });
   it("offers START + STOP while running", () => {
@@ -59,7 +66,10 @@ describe("availableActions (leaf — no children, runs its own workflow)", () =>
       SequenceAction.RESUME,
     ]);
   });
-  it("offers nothing when succeeded", () => {
-    expect(availableActions(S.SUCCEEDED, false)).toEqual([]);
+  it("offers START when succeeded (re-run the bound workflow)", () => {
+    // Terminal succeeded: only START (re-fire) remains.
+    expect(availableActions(S.SUCCEEDED, false)).toEqual([
+      SequenceAction.START,
+    ]);
   });
 });

@@ -675,7 +675,7 @@ function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId:
     const result = JSON.parse(stepRun.result ?? "{}");
     if (result._review_context) context = result._review_context;
     decision = result._decision ?? "";
-  } catch {}
+  } catch { /* result is not valid JSON or lacks review fields — keep defaults */ }
 
   const isPending = stepRun.status === StepRunStatus.APPROVAL_PENDING;
   const isResolved = stepRun.status === StepRunStatus.SUCCEEDED;

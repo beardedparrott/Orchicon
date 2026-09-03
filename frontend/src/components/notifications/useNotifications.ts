@@ -50,7 +50,7 @@ export function formatRelativeTime(d: Date | string, nowMs = Date.now()): string
 
 function humanizeAction(action: string): string {
   if (!action) return "Event";
-  return action.replace(/[_\.]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return action.replace(/[_.]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export function mapKind(event: AuditEvent): NotificationKind {
@@ -88,7 +88,7 @@ export function buildTitle(event: AuditEvent, kind: NotificationKind): string {
   try {
     const parsed = JSON.parse(event.after || "{}");
     afterName = parsed.name ?? parsed.title ?? parsed.display_name ?? "";
-  } catch {}
+  } catch { /* after is not valid JSON — no display suffix */ }
   const suffix = afterName ? ` — ${afterName}` : "";
   switch (kind) {
     case "workflow.kicked":
@@ -191,7 +191,43 @@ export function auditEventToNotification(event: AuditEvent, lastReadAt: Date | n
   };
 }
 
-export function workflowRunToNotification(run: any, lastReadAt: Date | null): NotificationItem | null {
+// Synthetic-item inputs. The workflow-run and execution list endpoints are
+// consumed loosely here (the map functions only read status + id +
+// timestamps), so these structural shapes — not `any` — carry the contract.
+export type WorkflowRunLike = {
+  id: string;
+  workflowId?: string;
+  status: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  startedAt?: unknown;
+  endedAt?: unknown;
+};
+
+export type ExecutionLike = {
+  id: string;
+  status: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  endedAt?: unknown;
+};
+
+// WorkItem carries camelCase proto fields; a few older server payloads
+// surface snake_case. Normalize through one accessor instead of
+// per-site `as any` casts.
+export type WorkItemTimestamps = {
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  created_at?: unknown;
+  updated_at?: unknown;
+  recurring_schedule?: unknown;
+};
+
+export function workItemTimestamps(item: WorkItem): WorkItemTimestamps {
+  return item as unknown as WorkItemTimestamps;
+}
+
+export function workflowRunToNotification(run: WorkflowRunLike, lastReadAt: Date | null): NotificationItem | null {
   const status: number = run.status;
   let kind: NotificationKind | null = null;
   let title = "";
@@ -222,7 +258,7 @@ export function workflowRunToNotification(run: any, lastReadAt: Date | null): No
   };
 }
 
-export function executionToNotification(exec: any, lastReadAt: Date | null): NotificationItem | null {
+export function executionToNotification(exec: ExecutionLike, lastReadAt: Date | null): NotificationItem | null {
   const status: number = exec.status;
   let kind: NotificationKind | null = null;
   let title = "";
@@ -260,9 +296,10 @@ export function executionToNotification(exec: any, lastReadAt: Date | null): Not
 }
 
 export function recurringItemToNotification(item: WorkItem, lastReadAt: Date | null): NotificationItem | null {
-  const hasSchedule = Boolean((item as any).recurringSchedule ?? (item as any).recurring_schedule);
+  const timestamps = workItemTimestamps(item);
+  const hasSchedule = Boolean(item.recurringSchedule ?? timestamps.recurring_schedule);
   if (!hasSchedule) return null;
-  const occurredAt = toDateAny((item as any).updatedAt ?? (item as any).updated_at ?? (item as any).createdAt ?? (item as any).created_at);
+  const occurredAt = toDateAny(timestamps.updatedAt ?? timestamps.updated_at ?? timestamps.createdAt ?? timestamps.created_at);
   if (occurredAt.getTime() === 0) return null;
   const unread = lastReadAt ? occurredAt.getTime() > lastReadAt.getTime() : true;
   const title = item.title ? `Recurring schedule started — ${item.title}` : "Recurring schedule started";
@@ -290,12 +327,12 @@ export function mergeNotifications(
   const mapped = auditEvents.slice(0, 50).map((e) => auditEventToNotification(e, lastReadAt));
   const wrSynthetic: NotificationItem[] = [];
   for (const r of workflowRuns ?? []) {
-    const n = workflowRunToNotification(r as any, lastReadAt);
+    const n = workflowRunToNotification(r as WorkflowRunLike, lastReadAt);
     if (n) wrSynthetic.push(n);
   }
   const execSynthetic: NotificationItem[] = [];
   for (const ex of executions ?? []) {
-    const n = executionToNotification(ex as any, lastReadAt);
+    const n = executionToNotification(ex as ExecutionLike, lastReadAt);
     if (n) execSynthetic.push(n);
   }
   const recSynthetic: NotificationItem[] = [];
@@ -394,13 +431,13 @@ export function useNotifications(opts?: { enabled?: boolean }) {
               sortOrder: "desc",
             });
             all.push(...((res.workItems ?? []) as WorkItem[]));
-          } catch {}
+          } catch { /* per-project listing failure is non-fatal for notifications */ }
         }),
       );
-      all.sort((a: any, b: any) => {
-        const at = (a.updatedAt ?? (a as any).updated_at ?? a.createdAt) as unknown;
-        const bt = (b.updatedAt ?? (b as any).updated_at ?? b.createdAt) as unknown;
-        return toDateAny(bt).getTime() - toDateAny(at).getTime();
+      all.sort((a, b) => {
+        const at = workItemTimestamps(a);
+        const bt = workItemTimestamps(b);
+        return toDateAny(bt.updatedAt ?? bt.updated_at ?? b.createdAt).getTime() - toDateAny(at.updatedAt ?? at.updated_at ?? a.createdAt).getTime();
       });
       return all.slice(0, 20);
     },

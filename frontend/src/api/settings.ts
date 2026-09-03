@@ -4,6 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { settingsClient } from "@/api/clients";
+import type { PartialMessage } from "@bufbuild/protobuf";
 import type { TenantSettings } from "@/api/gen/orchicon/api/v1/settings_pb";
 import type { BackupEntry, CreateBackupResponse } from "@/api/gen/orchicon/api/v1/settings_service_pb";
 
@@ -25,7 +26,10 @@ export function useGetSettings() {
 export function useUpdateSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (settings: TenantSettings) => {
+    // PartialMessage (not TenantSettings): every settings tab mutates a
+    // few fields at a time, and the server merges non-nil fields —
+    // demanding the full class here forced per-site `as any` casts.
+    mutationFn: async (settings: PartialMessage<TenantSettings>) => {
       const res = await settingsClient.updateSettings({ settings });
       return res.settings as TenantSettings | undefined;
     },

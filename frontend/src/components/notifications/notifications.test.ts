@@ -13,6 +13,7 @@ import {
 import { Timestamp } from "@bufbuild/protobuf";
 import { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { ExecutionStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
+import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 function ts(secAgo: number): Timestamp {
   const sec = BigInt(Math.floor(Date.now() / 1000) - secAgo);
@@ -246,7 +247,7 @@ describe("mergeNotifications", () => {
     const auditEv = mkEvent({ id: "a1", action: "workflow.run_started", targetType: "workflow", targetId: "wf1", occurredAt: ts(60) });
     const runs = [{ id: "r1", workflowId: "wf99", status: WorkflowRunStatus.RUNNING, updatedAt: new Date().toISOString() }];
     const execs = [{ id: "e1", status: ExecutionStatus.SUCCEEDED, updatedAt: new Date(Date.now() - 5000).toISOString() }];
-    const rec = [{ id: "wi-rec", title: "Rec", recurringSchedule: { frequency: "DAILY" }, updatedAt: new Date(Date.now() - 2000).toISOString() } as unknown as any];
+    const rec = [({ id: "wi-rec", title: "Rec", recurringSchedule: { frequency: "DAILY" }, updatedAt: new Date(Date.now() - 2000).toISOString() } as unknown) as WorkItem];
     const merged = mergeNotifications([auditEv], runs, execs, rec, null);
     expect(merged.length).toBe(4);
     expect(merged[0].id).toBe("syn:wr:r1");

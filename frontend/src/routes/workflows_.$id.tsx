@@ -61,7 +61,8 @@ import {
   type StepData,
 } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
-import type { GitStrategy } from "@/components/GitStrategySelect";
+import { GitStrategy } from "@/api/gen/orchicon/api/v1/project_pb";
+import type { GitStrategy as GitStrategyName } from "@/components/GitStrategySelect";
 import { gitStrategyToProto, protoToGitStrategy } from "@/components/GitStrategySelect";
 import { useGetProject } from "@/api/projects";
 import { Route as rootRoute } from "@/routes/__root";
@@ -139,12 +140,12 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const [dropActive, setDropActive] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState("");
-  const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy | "inherit">("inherit");
+  const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategyName | "inherit">("inherit");
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
 
   useEffect(() => {
-    const raw = (data?.workflow as any)?.gitStrategy ?? (data?.workflow as any)?.git_strategy;
-    const mapped = protoToGitStrategy(raw as any);
+    const raw = data?.workflow?.gitStrategy;
+    const mapped = protoToGitStrategy(raw === GitStrategy.UNSPECIFIED ? undefined : raw);
     if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("inherit");
   }, [data?.workflow]);
@@ -757,15 +758,15 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 <span className="text-xs text-muted-foreground">Git strategy:</span>
                 <select
                   value={draftGitStrategy}
-                  onChange={(e) => setDraftGitStrategy(e.target.value as any)}
+                  onChange={(e) => setDraftGitStrategy(e.target.value as GitStrategyName | "inherit")}
                   className="h-7 rounded-md border border-input bg-background px-2 text-xs"
                 >
-                  <option value="inherit">Inherit {projectForGit ? `(${protoToGitStrategy((projectForGit as any).gitStrategy ?? (projectForGit as any).git_strategy as any) ?? "local"})` : "(project default)"}</option>
+                  <option value="inherit">Inherit {projectForGit ? `(${protoToGitStrategy(projectForGit.gitStrategy) ?? "local"})` : "(project default)"}</option>
                   <option value="local">Local — push branch only</option>
                   <option value="pr">PR — push + PR</option>
                   <option value="none">Ephemeral — no push</option>
                 </select>
-                {draftGitStrategy !== ((wf as any).gitStrategy ?? (wf as any).git_strategy ?? "inherit") && (
+                {draftGitStrategy !== (wf.gitStrategy === GitStrategy.UNSPECIFIED ? "inherit" : protoToGitStrategy(wf.gitStrategy) ?? "inherit") && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -773,7 +774,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     disabled={savingGitStrategy}
                     onClick={() => {
                       setSavingGitStrategy(true);
-                      (updateWorkflow.mutate as any)({ workflowId: wf.id, gitStrategy: draftGitStrategy === "inherit" ? undefined : gitStrategyToProto(draftGitStrategy as any), git_strategy: draftGitStrategy === "inherit" ? undefined : gitStrategyToProto(draftGitStrategy as any) }, { onSettled: () => setSavingGitStrategy(false) });
+                      updateWorkflow.mutate({ workflowId: wf.id, gitStrategy: draftGitStrategy === "inherit" ? undefined : gitStrategyToProto(draftGitStrategy) }, { onSettled: () => setSavingGitStrategy(false) });
                     }}
                   >
                     {savingGitStrategy ? "Saving…" : "Save"}

@@ -140,7 +140,7 @@ synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
 
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -165,6 +165,9 @@ fe-build: ## Build the frontend for production (skipped when dist is up to date;
 
 fe-lint: ## Lint the frontend
 	cd frontend && npm run lint
+
+fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
+	cd frontend && npm test
 
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
@@ -234,4 +237,4 @@ install-uninstall: ## Uninstall Orchicon via the install script
 
 # --- CI --------------------------------------------------------------------
 .PHONY: ci
-ci: lint gen vet test synth-data rls-check ## Run the full CI gate locally
+ci: lint gen vet test synth-data rls-check fe-lint fe-test ## Run the full CI gate locally
