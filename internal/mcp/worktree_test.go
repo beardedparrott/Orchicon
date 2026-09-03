@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
 // allToolNames is the full worktree tool suite: 3 batch tools, 4 single-op
@@ -18,7 +20,7 @@ var allToolNames = []string{
 }
 
 func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir())
+	r := NewWorktreeRegistry(t.TempDir(), "")
 	defs := r.List()
 	if len(defs) != len(allToolNames) {
 		t.Fatalf("expected %d tools, got %d", len(allToolNames), len(defs))
@@ -47,7 +49,7 @@ func TestWorktreeRegistryExecuteBatchRead(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"a.txt"}})
 	res, err := r.Execute(context.Background(), nil, "batch_read", args)
 	if err != nil {
@@ -63,7 +65,7 @@ func TestWorktreeRegistrySingleOpWrappers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	ctx := context.Background()
 
 	// read wrapper
@@ -103,7 +105,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(base, "a.txt"), []byte("hi"), 0o644)
 	os.WriteFile(filepath.Join(base, "sub", "b.txt"), []byte("hi"), 0o644)
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{})
 	res, err := r.Execute(context.Background(), nil, "list", args)
 	if err != nil {
@@ -117,7 +119,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 
 func TestWorktreeRegistryTodoRead(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	// No snapshot yet — must return a graceful empty message, not an error.
 	res, err := r.Execute(context.Background(), nil, "todoread", nil)
 	if err != nil {
@@ -145,7 +147,7 @@ func TestWorktreeRegistryTodoRead(t *testing.T) {
 
 func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base)
+	r := NewWorktreeRegistry(base, "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"../etc/passwd"}})
 	if _, err := r.Execute(context.Background(), nil, "batch_read", args); err == nil {
 		t.Fatal("expected a path-traversal error")
@@ -158,8 +160,77 @@ func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 }
 
 func TestWorktreeRegistryExecuteUnknownTool(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir())
+	r := NewWorktreeRegistry(t.TempDir(), "")
 	if _, err := r.Execute(context.Background(), nil, "nope", nil); err == nil {
 		t.Fatal("expected an unknown-tool error")
+	}
+}
+
+// TestWorktreeRegistryExecuteProjectRootRead pins AC1 at the registry level
+// with a NON-EMPTY project root (the exact wiring RuntimeServeConfig injects:
+// worktree under <proj>/.orchicon-worktrees/<run>, project root = <proj>). A
+// worker must be able to batch_read a run-state .orchicon/<run>/ file by both
+// a `..`-relative path and an absolute project-root path — without the tools
+// it would shell out (or re-derive facts). This closes the coverage gap the
+// PR step noted (the worktree unit tests cover the mechanism, not the wiring).
+func TestWorktreeRegistryExecuteProjectRootRead(t *testing.T) {
+	proj := t.TempDir()
+	run := "run-qa"
+	wt := filepath.Join(proj, ".orchicon-worktrees", run)
+	if err := os.MkdirAll(filepath.Join(proj, ".orchicon", run), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "FACTS LEARNED: the project root is readable.\n"
+	if err := os.WriteFile(filepath.Join(proj, ".orchicon", run, "facts_learned"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewWorktreeRegistry(wt, proj)
+	ctx := context.Background()
+
+	// `..`-relative project-root path.
+	args, _ := json.Marshal(map[string]any{"paths": []string{"../../.orchicon/" + run + "/facts_learned"}})
+	res, err := r.Execute(ctx, nil, "batch_read", args)
+	if err != nil {
+		t.Fatalf("relative project-root read should be allowed: %v", err)
+	}
+	if !strings.Contains(string(res), content) {
+		t.Fatalf("relative read missing run-file content: %s", res)
+	}
+
+	// Absolute project-root path.
+	abs := filepath.Join(proj, ".orchicon", run, "facts_learned")
+	argsAbs, _ := json.Marshal(map[string]any{"paths": []string{abs}})
+	resAbs, err := r.Execute(ctx, nil, "batch_read", argsAbs)
+	if err != nil {
+		t.Fatalf("absolute project-root read should be allowed: %v", err)
+	}
+	if !strings.Contains(string(resAbs), content) {
+		t.Fatalf("absolute read missing run-file content: %s", resAbs)
+	}
+}
+
+// TestWorktreeRegistryExecuteScratchWrite pins AC2 at the registry level: a
+// batch_write (and its read-back) to the sanctioned scratch dir /tmp/orchicon
+// must be permitted — the tools are not confined to the worktree for scratch.
+func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
+	if err := os.MkdirAll(worktree.DefaultScratchDir, 0o755); err != nil {
+		t.Skipf("cannot create scratch dir %s: %v", worktree.DefaultScratchDir, err)
+	}
+	base := t.TempDir()
+	r := NewWorktreeRegistry(base, "")
+	target := filepath.Join(worktree.DefaultScratchDir, "reg-scratch-"+filepath.Base(t.TempDir())+".txt")
+	defer os.Remove(target)
+
+	args, _ := json.Marshal(map[string]any{"writes": []map[string]any{{"path": target, "mode": "create", "content": "scratch-ok"}}})
+	if _, err := r.Execute(context.Background(), nil, "batch_write", args); err != nil {
+		t.Fatalf("scratch write should be allowed: %v", err)
+	}
+	got, rerr := os.ReadFile(target)
+	if rerr != nil || string(got) != "scratch-ok" {
+		t.Fatalf("scratch write did not persist: %q err=%v", got, rerr)
 	}
 }

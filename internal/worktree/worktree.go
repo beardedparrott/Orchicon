@@ -93,25 +93,65 @@ type WriteArgs struct {
 
 // --- path safety ----------------------------------------------------------
 
-// allowedTempRoot returns an additional root the batch tools may operate
-// within, alongside the worktree base. The runtime container's /tmp is a
-// private, exec-capable tmpfs (wiped at run end) that workers legitimately use
-// for Go build-cache/tmp and scratch work, so the file tools must be able to
-// read/write there — not just the project root.
-func allowedTempRoot() string { return os.TempDir() }
+// Base is the scoping boundary for the composite file tools. Each tool
+// resolves every worker-supplied path against Worktree (the read+write
+// root — the run worktree / in-place project dir), plus ProjectRoot for
+// READ-only access and ScratchDir for read+write access.
+type Base struct {
+	// Worktree is the read+write root: the run worktree (provisioned) or the
+	// in-place project dir. File writes and deletes resolve only inside it.
+	Worktree string
+	// ProjectRoot is the READ-only extra root: the project root that holds
+	// the run-state `.orchicon/<run>/` files and `architecture-notes/`, which
+	// sit OUTSIDE the run worktree (a sibling of it). Reads may additionally
+	// reach here; writes never do (so batch_write stays out of the main
+	// checkout). Empty in tests and in-place runs (worktree == project root).
+	ProjectRoot string
+	// ScratchDir is the read+write root for the sanctioned ephemeral scratch
+	// area (guard.ScratchDir / opencode.ScratchDir, /tmp/orchicon). Replaces
+	// the previously-broad os.TempDir() allow.
+	ScratchDir string
+}
 
-// safeResolve resolves a worker-supplied path against the worktree base and
+// DefaultScratchDir is the sanctioned scratch area the composite tools may
+// read and write: ONE documented boundary, aligned with guard.ScratchDir and
+// opencode.ScratchDir (replaces the broad os.TempDir() allow).
+const DefaultScratchDir = "/tmp/orchicon"
+
+// BaseFor builds a Base for a plain worktree directory with the sanctioned
+// scratch dir and NO project root. Used by direct-call tests and by callers
+// that only need worktree+scratch scoping (e.g. the todo snapshot).
+func BaseFor(worktreeDir string) Base {
+	return Base{Worktree: worktreeDir, ScratchDir: DefaultScratchDir}
+}
+
+// safeResolve resolves a worker-supplied path against the scoping Base and
 // rejects anything that escapes it. It is the single enforcement point for
-// every composite tool. Absolute paths are permitted only under an allowed
-// root (the worktree base or the temp dir), so the worker can reach the
-// mounted /tmp scratch without being able to traverse anywhere else.
-func safeResolve(base, rel string) (string, error) {
+// every composite tool.
+//
+// writable selects the read vs write roots:
+//   - reads (writable==false): roots = {Worktree, ScratchDir, ProjectRoot}.
+//     A `..` traversal is permitted ONLY when the cleaned, joined path still
+//     lands under one of those roots — which lets a worktree worker read
+//     <root>/.orchicon/<run>/facts_learned (via ../../.orchicon/<run>/... or
+//     an absolute project-root path) without allowing arbitrary escape.
+//   - writes (writable==true): roots = {Worktree, ScratchDir}. A `..` that
+//     escapes to the project root is still rejected (batch_write must never
+//     land in the main checkout); an absolute /tmp/orchicon/... path is
+//     allowed via ScratchDir.
+func safeResolve(b Base, rel string, writable bool) (string, error) {
 	if strings.TrimSpace(rel) == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	roots := []string{filepath.Clean(base)}
-	if tmp := allowedTempRoot(); tmp != "" {
-		roots = append(roots, tmp)
+	if b.Worktree == "" {
+		return "", fmt.Errorf("empty worktree base")
+	}
+	roots := []string{filepath.Clean(b.Worktree)}
+	if b.ScratchDir != "" {
+		roots = append(roots, filepath.Clean(b.ScratchDir))
+	}
+	if !writable && b.ProjectRoot != "" {
+		roots = append(roots, filepath.Clean(b.ProjectRoot))
 	}
 	under := func(p string) bool {
 		for _, r := range roots {
@@ -126,13 +166,23 @@ func safeResolve(base, rel string) (string, error) {
 		if under(clean) {
 			return clean, nil
 		}
-		return "", fmt.Errorf("absolute path is outside the allowed roots (worktree or tmp)")
+		return "", fmt.Errorf("absolute path is outside the allowed roots (worktree/scratch/project root)")
 	}
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes the worktree (..)")
+		// `..` is allowed for a READ only when the joined path still resolves
+		// under a read root (e.g. reaching the project-root run-state). For a
+		// WRITE it is always rejected, so batch_write cannot escape the worktree.
+		if writable {
+			return "", fmt.Errorf("path escapes the worktree (..)")
+		}
+		p := filepath.Join(b.Worktree, clean)
+		if under(p) {
+			return p, nil
+		}
+		return "", fmt.Errorf("path escapes the workspace (..)")
 	}
-	p := filepath.Join(base, clean)
+	p := filepath.Join(b.Worktree, clean)
 	if !under(p) {
 		return "", fmt.Errorf("path escapes the workspace")
 	}
@@ -161,7 +211,7 @@ func pruneDirName(name string) bool {
 // Missing paths are skipped with a note. truncated reports that the walk
 // stopped at a cap with entries left unvisited — callers must surface it so
 // a partial read/search is never mistaken for an exhaustive one.
-func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []string, skipped []string, truncated bool, err error) {
+func expandPaths(b Base, entries []string, maxFiles, maxDirs int) (files []string, skipped []string, truncated bool, err error) {
 	seen := map[string]bool{}
 	dirs := 0
 	var walk func(dir string)
@@ -210,7 +260,7 @@ func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []
 		}
 	}
 	for i, e := range entries {
-		p, rerr := safeResolve(base, e)
+		p, rerr := safeResolve(b, e, false)
 		if rerr != nil {
 			return nil, nil, false, rerr
 		}
@@ -253,7 +303,7 @@ func expandPaths(base string, entries []string, maxFiles, maxDirs int) (files []
 
 // BatchRead implements batch_read. It returns a bounded text block with a
 // per-file header, explicit truncation markers, and a dedupe/skip summary.
-func BatchRead(base string, args ReadArgs) (string, error) {
+func BatchRead(b Base, args ReadArgs) (string, error) {
 	maxBytes := args.MaxBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBytes
@@ -262,7 +312,7 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 	if perFile <= 0 {
 		perFile = defaultPerFileMax
 	}
-	files, skipped, walkTruncated, err := expandPaths(base, args.Paths, defaultMaxFiles, defaultMaxDirs)
+	files, skipped, walkTruncated, err := expandPaths(b, args.Paths, defaultMaxFiles, defaultMaxDirs)
 	if err != nil {
 		return "", err
 	}
@@ -291,7 +341,7 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 	par := readParallelism()
 	sem := make(chan struct{}, par)
 	for _, fp := range files {
-		reads = append(reads, fileRead{fp: fp, rel: relPath(base, fp)})
+		reads = append(reads, fileRead{fp: fp, rel: relPath(b.Worktree, fp)})
 	}
 	for i := range reads {
 		readWg.Add(1)
@@ -308,7 +358,7 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 	}
 	readWg.Wait()
 
-	var b bytes.Buffer
+	var buf bytes.Buffer
 	total := 0
 	truncated := 0
 	for _, fr := range reads {
@@ -325,7 +375,7 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 			truncated++
 			continue
 		}
-		b.WriteString(line)
+		buf.WriteString(line)
 		total += len(line)
 
 		content := data
@@ -338,19 +388,19 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 		}
 		if args.LineNumbers {
 			for i, l := range bytes.Split(shown, []byte("\n")) {
-				b.WriteString(fmt.Sprintf("%6d: %s\n", i+1, l))
+				buf.WriteString(fmt.Sprintf("%6d: %s\n", i+1, l))
 			}
 		} else {
 			if len(shown) > 0 {
-				b.Write(shown)
+				buf.Write(shown)
 				if shown[len(shown)-1] != '\n' {
-					b.WriteByte('\n')
+					buf.WriteByte('\n')
 				}
 			}
 		}
 		total += len(shown)
 		if len(content) > perFile {
-			b.WriteString(fmt.Sprintf("... [truncated %s in %s]\n", humanBytes(len(content)-perFile), rel))
+			buf.WriteString(fmt.Sprintf("... [truncated %s in %s]\n", humanBytes(len(content)-perFile), rel))
 			total += 40
 		}
 		if total >= maxBytes {
@@ -370,14 +420,14 @@ func BatchRead(base string, args ReadArgs) (string, error) {
 		summary += fmt.Sprintf(", %d skipped", len(skipped))
 	}
 	summary += "\n"
-	return summary + b.String(), nil
+	return summary + buf.String(), nil
 }
 
 // --- batch_grep -----------------------------------------------------------
 
 // BatchGrep implements batch_grep. It greps each pattern across the selected
 // subtree (default ".") and returns only the matches, capped.
-func BatchGrep(base string, args GrepArgs) (string, error) {
+func BatchGrep(b Base, args GrepArgs) (string, error) {
 	if len(args.Patterns) == 0 {
 		return "", fmt.Errorf("batch_grep: at least one pattern is required")
 	}
@@ -394,7 +444,7 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 		maxMatches = defaultMaxMatches
 	}
 
-	files, skipped, truncated, err := expandPaths(base, paths, defaultMaxGrepFiles, defaultMaxGrepDirs)
+	files, skipped, truncated, err := expandPaths(b, paths, defaultMaxGrepFiles, defaultMaxGrepDirs)
 	if err != nil {
 		return "", err
 	}
@@ -405,7 +455,7 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 		return fmt.Sprintf("batch_grep: no files to search (no matching files for paths: %s)", strings.Join(paths, ", ")), nil
 	}
 
-	var b bytes.Buffer
+	var buf bytes.Buffer
 	matched := 0
 	bytesOut := 0
 	for _, fp := range files {
@@ -413,7 +463,7 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 		if err != nil {
 			continue
 		}
-		rel := relPath(base, fp)
+		rel := relPath(b.Worktree, fp)
 		lines := bytes.Split(data, []byte("\n"))
 		// Which lines match any pattern.
 		hit := make([]bool, len(lines))
@@ -446,17 +496,17 @@ func BatchGrep(base string, args GrepArgs) (string, error) {
 					prefix = " "
 				}
 				lineOut := fmt.Sprintf("%s%s:%d:%s\n", prefix, rel, j+1, pathSafeLine(lines[j]))
-				b.WriteString(lineOut)
+				buf.WriteString(lineOut)
 				bytesOut += len(lineOut)
 			}
-			b.WriteString("\n")
+			buf.WriteString("\n")
 			bytesOut++
 		}
-		if b.Len() > maxBytesOut() {
+		if buf.Len() > maxBytesOut() {
 			break
 		}
 	}
-	out := b.String()
+	out := buf.String()
 	summary := fmt.Sprintf("batch_grep: %d match line(s) across %d file(s)", matched, len(files))
 	if truncated {
 		summary += fmt.Sprintf(", walk capped at %d files", len(files))
@@ -530,7 +580,7 @@ type writeOp struct {
 // are correctly assessed), then applies each in order. Any write failure
 // triggers a best-effort rollback of every applied path to its original disk
 // state, so the batch is all-or-nothing.
-func BatchWrite(base string, args WriteArgs) (string, error) {
+func BatchWrite(b Base, args WriteArgs) (string, error) {
 	if len(args.Writes) == 0 {
 		return "batch_write: no writes provided.", nil
 	}
@@ -546,7 +596,7 @@ func BatchWrite(base string, args WriteArgs) (string, error) {
 	var ops []writeOp
 	var invalid []string
 	for i, w := range args.Writes {
-		abs, err := safeResolve(base, w.Path)
+		abs, err := safeResolve(b, w.Path, true)
 		if err != nil {
 			return "", fmt.Errorf("batch_write aborted (path traversal) op %d (%s): %v", i, w.Path, err)
 		}
