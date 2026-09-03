@@ -12,12 +12,13 @@
 4. [Project Structure](#project-structure)
 5. [Installation Guide](#installation-guide)
 6. [User Guide](#user-guide)
-7. [Development Guide](#development-guide)
-8. [Deployment](#deployment)
-9. [Environment Variables Reference](#environment-variables-reference)
-10. [Troubleshooting](#troubleshooting)
-11. [Contributing](#contributing)
-12. [License](#license)
+7. [Operator Setup (Adapters)](#operator-setup-adapters)
+8. [Development Guide](#development-guide)
+9. [Deployment](#deployment)
+10. [Environment Variables Reference](#environment-variables-reference)
+11. [Troubleshooting](#troubleshooting)
+12. [Contributing](#contributing)
+13. [License](#license)
 
 ---
 
@@ -1165,6 +1166,40 @@ The multi-tenant schema (`tenants` table, RLS, admin `CreateTenant`/`ListTenants
 The remaining hardcoded `tnt_dev` literals outside auth (MCP / recovery / scheduler / sequence / runtime / seed paths) are swept to the same config value as documented follow-ups of decision #178; the auth surface above is the first consumer of the shared config field.
 
 ---
+
+## Operator Setup (Adapters)
+
+The multi-adapter surface (ADR-0003..0010) is configured under **Settings → Adapters**. This is the operator-setup guide for the `orchicon`-kind native adapter and its providers.
+
+### Providers (Settings → Adapters)
+
+Orchicon ships built-in provider profiles and lets you add custom OpenAI-compatible entries:
+
+| Provider | Id | Kind | Token (secret) |
+|---|---|---|---|
+| Anthropic | `anthropic` | native Messages | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | Chat Completions | `OPENAI_API_KEY` |
+| OpenRouter | `openrouter` | Chat Completions | `OPENROUTER_API_KEY` |
+| OpenCode Zen | `opencode` | Chat Completions | `OPENCODE_API_KEY` |
+| OpenCode Go | `opencode-go` | Chat Completions | `OPENCODE_API_KEY` |
+| CommandCode | `commandcode` | dual-transport | `COMMANDCODE_API_KEY` |
+| Ollama | `ollama` | compat + native metadata | none (local server) |
+
+- **Model ids are LIVE only** (probe-or-nothing, ADR-0010): the Settings eyeball lists only the ids the endpoint's `/models` (or `/v1/models`) probe returned, enriched with catalog metadata (context/output/tools/pricing). A failed probe shows the **degraded/amber** state with **zero** rows and a diagnosable log line (`sourcing: probe <url> → HTTP <code>` / `unreachable`) — never a synthesized list.
+- **Custom OpenAI-compatible providers** (e.g. a llama-server gateway): the base URL **must include the version root** (`…/v1`); in container mode a loopback `localhost` base is rewritten to the host gateway (plane-aware; host **and** port preserved); auth-mode is `none` or `token`.
+- **Tokens / secrets**: Settings → Adapters → a provider → add the token. It is stored in the tenant **secrets store** (AES-256-GCM at rest) under the provider's canonical env name (`ANTHROPIC_API_KEY`, `CUSTOM_<REF>_API_KEY`, …). Secret-first, env-fallback; a token rotation invalidates the probe cache (the cache key folds the bearer hash).
+
+### MCP servers (Settings → Adapters → MCP)
+
+The **MCP** tab manages tenant MCP server entries (stdio / streamable-http); env/header values are `${SECRET_NAME}` references into the same secrets store, and the curated catalog is one-click add. See the User Guide MCP section above for the full flow: worker → project → tenant-default selection over the tenant server list, connections established per session at `Start`, never at control-plane boot.
+
+### Memory
+
+Agent-memory session storage is configured per tenant; the memory tools (`orchicon_memory_*`) persist durable notes to `<projectDir>/.orchicon/memory.db` (scope + persistence toggles under Settings → Adapters). When a store is not configured the memory tools answer with an explicit unavailable error — never a silent no-op.
+
+### Compaction controls
+
+Set under **Settings → Defaults → Execution budget** (per-worker `budget_overrides`): the budget gates (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`) and the `compact_max_turns`/`compact_tiers` ladder drive the native engine's context management (see the User Guide Defaults section above for the exact semantics). Compaction only fires on a **LIVE context-hint source** (never guessed context): a model that reports real metadata (Ollama `/api/show` true metadata) or a probed/catalog context window; when no hint exists the picker shows a `WARN` and compaction never guesses the window.
 
 ## Development Guide
 

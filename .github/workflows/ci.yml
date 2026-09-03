@@ -1,0 +1,69 @@
+name: CI
+
+# Standing CI for the Multi-adapter gate. Runs the control-plane gate on
+# every PR targeting `develop` so the no-synthesized-data audit (and the
+# rest of `make ci`) is actually standing, plus the frontend linter.
+#
+# `make ci` = lint gen vet test synth-data rls-check. `synth-data` (the
+# ADR-0010 no-synthesized-data audit) is the gate this workflow exists to
+# make permanent: a new synthesized-data fallback in non-test source fails
+# the build.
+#
+# Notes:
+#   - gen/lint need buf (installed below) and the frontend node_modules for
+#     the local protoc-gen-es / protoc-gen-connect-es plugins, so the
+#     frontend deps are installed BEFORE `make ci`.
+#   - rls-check (scripts/check-rls.sh) needs Postgres; in CI without a
+#     reachable DB it SKIPS (exits 0) rather than failing.
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  go-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install buf (protobuf lint + gen)
+        run: |
+          tool_dir="$(go env GOPATH)/bin"
+          go install github.com/bufbuild/buf/cmd/buf@latest
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps (protoc-gen-es + lint)
+        run: cd frontend && npm ci
+
+      - name: Run control-plane gate (make ci)
+        run: make ci
+
+  fe-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Lint frontend
+        run: make fe-lint
