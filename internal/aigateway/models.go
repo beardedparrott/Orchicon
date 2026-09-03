@@ -187,12 +187,14 @@ func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, 
 		d.lastErr = err
 		if d.cache != nil {
 			// Keep serving stale; stamp the timestamp so a broken CLI does
-			// not cause a spawn-per-call stampede (backoff = TTL).
+			// not cause a spawn-per-call stampede (backoff = TTL). Capture
+			// the slice under the lock — it must not be read after unlock.
+			stale := d.cache
 			d.cached = time.Now()
 			d.mu.Unlock()
 			close(done)
 			d.log.Warn("failed to refresh models from opencode, serving stale cache", "error", err)
-			return d.cache, nil
+			return stale, nil
 		}
 		d.mu.Unlock()
 		close(done)

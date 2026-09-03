@@ -8,8 +8,14 @@
 -- which poisoned adapter-change validation (workers could not re-save any
 -- model ref), dispatch row-kind resolution, and the serve pair.
 --
--- This migration rewrites stored refs into canonical form, mirroring
--- adapter.NormalizeRef with the built-in adapter-kind cut exactly:
+-- This migration rewrites stored refs into canonical form. The legacy-vs-
+-- canonical cut is PINNED to the adapter kinds that exist at migration-
+-- authoring time — (opencode, claude, orchicon), the built-in catalog's
+-- kind set — because a migration must be a frozen snapshot, never
+-- dependent on live runtime registration (migrations run before the
+-- server starts). The Go twin of this rewrite is adapter.NormalizeRef /
+-- worker.NormalizeRefForMigration (internal/adapter/modelref.go), kept in
+-- sync for future repair tooling:
 --
 --   no slash          → opencode/<ref>            (bare model id)
 --   one slash         → opencode/<ref>            (legacy provider/model)

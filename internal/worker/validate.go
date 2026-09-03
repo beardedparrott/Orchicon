@@ -153,20 +153,22 @@ func SetModelRefRegistry(reg adapter.ProviderRegistry) {
 	}
 }
 
-// migrationKindsSnapshot captures the registered adapter kinds at server
-// construction for migration-time normalization (NormalizeRef's
-// knownKinds input). The dispatcher's live kinds are authoritative; the
-// built-in catalog's kinds are the fallback.
+// migrationKindsSnapshot overrides the adapter-kind cut used by
+// NormalizeRefForMigration (test seam). Production migrations run BEFORE
+// the server starts, so they cannot read live dispatcher kinds — the
+// migration SQL pins the kind list at authoring time instead (a migration
+// must be a frozen snapshot, never live-config-dependent). This seam
+// exists so tests can exercise the snapshot mechanism; production always
+// uses the built-in kind set via MigrationKinds' fallback.
 var migrationKindsSnapshot map[string]struct{}
 
-// SetMigrationKinds wires the registered adapter kinds used by the
-// ref-canonicalization migration to cut legacy vs canonical refs.
+// SetMigrationKinds overrides the migration kind cut (test seam).
 func SetMigrationKinds(kinds map[string]struct{}) {
 	migrationKindsSnapshot = kinds
 }
 
-// MigrationKinds returns the snapshot (never nil — falls back to the
-// built-in kinds so the migration always has a cut).
+// MigrationKinds returns the migration kind cut (never nil — falls back
+// to the built-in kinds so normalization always has a valid cut).
 func MigrationKinds() map[string]struct{} {
 	if migrationKindsSnapshot != nil {
 		return migrationKindsSnapshot

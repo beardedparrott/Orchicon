@@ -292,20 +292,6 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// this, a plugin-served provider like commandcode is picker-valid but
 	// worker-save-invalid.
 	worker.SetModelRefRegistry(cliRegistry)
-	// The ref-canonicalization migration cuts legacy vs canonical refs by
-	// the dispatcher's registered kinds (live set). Never install an EMPTY
-	// set — NormalizeRef would read every canonical head as legacy and
-	// double-prefix refs. Nil snapshot = the migration falls back to the
-	// built-in kind set.
-	if deps.AdapterKinds != nil {
-		if kinds := deps.AdapterKinds(); len(kinds) > 0 {
-			kindSet := make(map[string]struct{}, len(kinds))
-			for _, k := range kinds {
-				kindSet[k] = struct{}{}
-			}
-			worker.SetMigrationKinds(kindSet)
-		}
-	}
 	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
