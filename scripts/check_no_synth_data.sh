@@ -26,15 +26,19 @@ cd "$ROOT"
 readonly PATTERN='MockModelDiscoverer|MockMCPDiscoverer|mockModels|mockMCP|MockProvider'
 
 # Walk only the source the audit owns; skip generated/vendored/build dirs.
-# Test files (_test.go, *.test.ts, *.test.tsx) are excluded — the mock
-# provider is intentionally a test-harness-only double.
+# Test files (_test.go, _test.ts/_test.tsx, *.test.ts/*.test.tsx,
+# *.spec.ts/*.spec.tsx) are excluded — the mock provider is intentionally
+# a test-harness-only double.
 mapfile -t hits < <(
   grep -RInE "$PATTERN" \
     --include='*.go' --include='*.ts' --include='*.tsx' \
+    --exclude='*_test.go' \
+    --exclude='*_test.ts' --exclude='*_test.tsx' \
+    --exclude='*.test.ts' --exclude='*.test.tsx' \
+    --exclude='*.spec.ts' --exclude='*.spec.tsx' \
     --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=vendor \
     --exclude-dir=gen \
     . 2>/dev/null \
-    | grep -vE '(_test\.go|\.test\.(ts|tsx))$' \
   || true
 )
 
