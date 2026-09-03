@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -36,7 +37,7 @@ const (
 	maxDescLen        = 1 << 14 // 16 KiB
 	maxPurposeLen     = 1 << 14
 	maxPromptLen      = 1 << 20 // 1 MiB — system prompts can be large
-	maxJSONFieldLen  = 1 << 20 // 1 MiB for permissions/budgets/labels/etc.
+	maxJSONFieldLen   = 1 << 20 // 1 MiB for permissions/budgets/labels/etc.
 	maxVersionNoteLen = 1 << 14
 	maxActorLen       = 200
 )
@@ -47,11 +48,12 @@ const (
 // reach the database (mirrors internal/project/validate.go).
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// modelRefRegistry is the provider/kind catalog used to validate model_ref
-// values at the API boundary. It defaults to the built-in catalog (opencode
-// providers plus the known adapter kinds) and can be swapped for tests via
-// SetModelRefRegistry. Tenant-created custom providers are merged in at the
-// service layer (they are not part of this static catalog).
+// modelRefRegistry is the validation catalog for model refs: the built-in
+// provider profiles, wrapped with the same CLI-aware live discovery the
+// model picker uses. The server wires it via SetModelRefRegistry at
+// construction (api.go composes builtin ∪ tenant customs ∪ CLI ids);
+// the static catalog alone is the test/fallback floor so validation never
+// breaks saves when discovery is unavailable.
 var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
 
 // customProviderIDs returns the requesting tenant's ENABLED custom
@@ -68,12 +70,19 @@ func SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]strin
 }
 
 // customProviderRegistry merges the tenant's enabled custom provider ids
-// into the built-in validation catalog under the default adapter kind
-// (legacy 2-segment `local-models/...` refs parse — ADR-0006 D2/D6), and
-// under the product-default "orchicon" kind when that kind is registered
-// (fresh `orchicon/local-models/...` refs validate). A merge failure is
-// non-fatal: validation degrades to the built-in catalog (never breaks
-// worker saves). No tenant context → built-ins only.
+// into the validation catalog under the default adapter kind (legacy
+// 2-segment `local-models/...` refs parse — ADR-0006 D2/D6), and under the
+// product-default "orchicon" kind when that kind is registered (fresh
+// `orchicon/local-models/...` refs validate). A merge failure is
+// non-fatal: validation degrades to the base registry (never breaks
+// worker saves). No tenant context → base registry only.
+//
+// The merge uses the ProviderKindExtender seam (aigateway.CLIProviderRegistry
+// satisfies it) so composition works with ANY registry the server installs
+// — including the CLI-aware one — not just the built-in catalog. When the
+// base registry cannot be extended (e.g. a custom test implementation),
+// tenant customs are unioned via a fallback overlay instead of silently
+// vanishing.
 func customProviderRegistry(ctx context.Context, tenantID string) adapter.ProviderRegistry {
 	if tenantID == "" || customProviderIDs == nil {
 		return modelRefRegistry
@@ -82,30 +91,89 @@ func customProviderRegistry(ctx context.Context, tenantID string) adapter.Provid
 	if err != nil || len(ids) == 0 {
 		return modelRefRegistry
 	}
-	catalog, ok := modelRefRegistry.(*adapter.BuiltinProviderCatalog)
-	if !ok {
-		return modelRefRegistry
+	if ext, ok := modelRefRegistry.(adapter.ProviderKindExtender); ok {
+		merged := ext.Clone()
+		merged.AddAdapterKind(adapter.DefaultAdapterKind, ids...)
+		// The adapter-change validator offers the new kind's provider set
+		// on failure; "orchicon" is the product default kind, so tenant
+		// customs join it too when registered.
+		if merged.IsKnownAdapter("orchicon") {
+			merged.AddAdapterKind("orchicon", ids...)
+		}
+		return merged
 	}
-	// Copy-on-write: never mutate the shared built-in catalog.
-	merged := adapter.NewBuiltinProviderCatalog()
-	for _, kind := range catalog.AdapterKinds() {
-		merged.AddAdapterKind(kind, catalog.Providers(kind)...)
-	}
-	merged.AddAdapterKind(adapter.DefaultAdapterKind, ids...)
-	// The adapter-change validator offers the new kind's provider set on
-	// failure; "orchicon" is the product default kind, so tenant customs
-	// join it too when registered.
-	if merged.IsKnownAdapter("orchicon") {
-		merged.AddAdapterKind("orchicon", ids...)
-	}
-	return merged
+	// The base registry has no extension seam: union the customs via an
+	// overlay so they still validate.
+	return &customKindOverlay{base: modelRefRegistry, customs: ids}
 }
 
-// SetModelRefRegistry replaces the validation catalog (test seam).
+// customKindOverlay unions tenant custom provider ids over a base
+// registry for the default kind and the product-default "orchicon" kind.
+type customKindOverlay struct {
+	base    adapter.ProviderRegistry
+	customs []string
+}
+
+func (o *customKindOverlay) IsKnownAdapter(kind string) bool { return o.base.IsKnownAdapter(kind) }
+
+func (o *customKindOverlay) IsKnownProvider(adapterKind, provider string) bool {
+	if o.base.IsKnownProvider(adapterKind, provider) {
+		return true
+	}
+	return (adapterKind == "" || adapterKind == adapter.DefaultAdapterKind || adapterKind == "orchicon") &&
+		slices.Contains(o.customs, provider)
+}
+
+func (o *customKindOverlay) Providers(adapterKind string) []string {
+	if adapterKind == "" {
+		adapterKind = adapter.DefaultAdapterKind
+	}
+	out := o.base.Providers(adapterKind)
+	if adapterKind == adapter.DefaultAdapterKind || adapterKind == "orchicon" {
+		seen := make(map[string]struct{}, len(out)+len(o.customs))
+		for _, p := range out {
+			seen[p] = struct{}{}
+		}
+		for _, p := range o.customs {
+			if _, dup := seen[p]; !dup {
+				seen[p] = struct{}{}
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// SetModelRefRegistry replaces the validation catalog (server wiring —
+// api.go installs the CLI-aware registry so worker validation agrees with
+// the model picker; also the test seam).
 func SetModelRefRegistry(reg adapter.ProviderRegistry) {
 	if reg != nil {
 		modelRefRegistry = reg
 	}
+}
+
+// migrationKindsSnapshot overrides the adapter-kind cut used by
+// NormalizeRefForMigration (test seam). Production migrations run BEFORE
+// the server starts, so they cannot read live dispatcher kinds — the
+// migration SQL pins the kind list at authoring time instead (a migration
+// must be a frozen snapshot, never live-config-dependent). This seam
+// exists so tests can exercise the snapshot mechanism; production always
+// uses the built-in kind set via MigrationKinds' fallback.
+var migrationKindsSnapshot map[string]struct{}
+
+// SetMigrationKinds overrides the migration kind cut (test seam).
+func SetMigrationKinds(kinds map[string]struct{}) {
+	migrationKindsSnapshot = kinds
+}
+
+// MigrationKinds returns the migration kind cut (never nil — falls back
+// to the built-in kinds so normalization always has a valid cut).
+func MigrationKinds() map[string]struct{} {
+	if migrationKindsSnapshot != nil {
+		return migrationKindsSnapshot
+	}
+	return adapter.BuiltinAdapterKinds()
 }
 
 // validateModelRef trims and bounds-checks a model_ref, then validates it
@@ -126,6 +194,22 @@ func validateModelRef(ctx context.Context, tenantID, ref string) (string, error)
 		return "", err
 	}
 	return ref, nil
+}
+
+// validateModelRefForUpdate validates a NEW model ref for an EXISTING
+// version whose stored ref is currentRef. An identical re-save (modulo
+// whitespace) is a pure no-op — the value is already-stored data, and
+// re-running grammar validation against it would brick saves of legacy
+// refs written under the pre-namespace free-form grammar (e.g. a re-save
+// of the stored "commandcode/deepseek/x" fails the new grammar's
+// unknown-adapter parse). This pins the ADR-0004 D5 re-save semantics for
+// the full legacy surface. Any DIFFERENT ref goes through the full
+// validateModelRef (fresh selection, fully validated).
+func validateModelRefForUpdate(ctx context.Context, tenantID, currentRef, newRef string) (string, error) {
+	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {
+		return newRef, nil
+	}
+	return validateModelRef(ctx, tenantID, newRef)
 }
 
 // validateName trims and bounds-checks a worker name.
@@ -316,9 +400,37 @@ func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 // registry seam validateModelRef uses). Unchanged-adapter re-saves keep
 // the ADR-0004 D5 semantics verbatim (catalog-known-but-deleted providers
 // re-save flagged) and pass through here untouched.
+//
+// Two legacy-data contracts (2026-09 QA: pre-namespace refs bricked saves):
+//
+//   - PHANTOM KINDS ARE LEGACY DATA, NOT SELECTIONS. A current ref whose
+//     parsed head is NOT a registered adapter kind (e.g. the pre-namespace
+//     "commandcode/deepseek/x" parsing to kind "commandcode") never
+//     expressed an adapter selection — the old grammar was free-form. The
+//     gate is skipped: whatever the operator saves is validated as a fresh
+//     selection, never diffed against a phantom. This survives data
+//     migrations cannot foresee (backups restored, imported tenants, refs
+//     written between release windows).
+//   - IDENTICAL-REF RE-SAVES ARE NO-OPS. Re-storing the exact current ref
+//     creates no new state; nothing beyond the parse is validated. This
+//     pins D5's "re-save flagged values keep working" semantics across the
+//     full legacy surface, including phantom-kind heads.
 func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
+	// Identical re-save: a pure no-op (the new ref already parsed upstream).
+	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {
+		return nil
+	}
 	current := adapterKindOf(currentRef)
 	next := adapterKindOf(newRef)
+	// Phantom current kind (not a registered adapter kind): the current
+	// ref is pre-namespace legacy data — skip the adapter-change gate. An
+	// EMPTY current ref is NOT phantom: it means "no selection yet", so
+	// the first selection still validates the full provider/model pair
+	// (the D4 gate applies). The NEW ref was already fully validated by
+	// validateModelRef upstream.
+	if current != "" && !isRegisteredKind(current) {
+		return nil
+	}
 	if current == next {
 		return nil
 	}
@@ -341,6 +453,20 @@ func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef str
 		return fmt.Errorf("model_ref %q changes the worker's adapter from %q to %q, but %q has no known providers — switch to a provider of the new adapter (adapter/provider/model)", newRef, current, next, next)
 	}
 	return fmt.Errorf("model_ref %q changes the worker's adapter from %q to %q, but provider %q is not a known provider of %q — valid providers: %s", newRef, current, next, parsed.Provider, next, strings.Join(provs, ", "))
+}
+
+// isRegisteredKind reports whether kind is a registered adapter kind per
+// the base validation registry. Kinds come from the dispatcher's live set
+// (wired at construction) with the built-in catalog as floor; tenant
+// customs only extend provider sets under existing kinds, so the base
+// registry's kind set is authoritative here. An empty kind (empty or
+// malformed current ref) is NOT a registered selection — callers treat it
+// as legacy data.
+func isRegisteredKind(kind string) bool {
+	if kind == "" {
+		return false
+	}
+	return modelRefRegistry.IsKnownAdapter(kind)
 }
 
 // adapterKindOf reports the worker-facing adapter selection for a

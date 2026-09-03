@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -525,12 +526,16 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
 	}
-	modelRef, err := validateModelRef(ctx, tenantID, req.Msg.ModelRef)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
+	// Structural bounds only here: grammar validation is per-worker inside
+	// applyModelChange (the identical-ref no-op must be judged against each
+	// worker's CURRENT ref — a batch re-save of workers that already carry
+	// a legacy ref is a no-op for them, not a validation failure).
+	modelRef := strings.TrimSpace(req.Msg.ModelRef)
 	if modelRef == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref must not be empty"))
+	}
+	if utf8.RuneCountInString(modelRef) > maxNameLen {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("model_ref must be at most %d characters", maxNameLen))
 	}
 
 	resp := &apiv1.BulkUpdateWorkerModelResponse{}
@@ -637,11 +642,20 @@ func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, m
 // is called so current_version follows the latest published version (mirrors
 // PublishWorkerVersion).
 func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
-	// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair
-	// valid for the NEW adapter. A violation becomes this worker's Error
-	// outcome (the batch keeps going — partial-success contract).
-	if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
-		return db.WorkerVersionRow{}, err
+	// Validation is per-worker here (not at the bulk request level): an
+	// IDENTICAL re-save is a pure no-op — no grammar re-validation (legacy
+	// refs re-save cleanly, ADR-0004 D5), no adapter-change gate. A
+	// CHANGED ref is fully validated as a fresh selection.
+	if strings.TrimSpace(latest.ModelRef) != strings.TrimSpace(modelRef) {
+		if _, err := validateModelRef(ctx, worker.TenantID, modelRef); err != nil {
+			return db.WorkerVersionRow{}, err
+		}
+		// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair
+		// valid for the NEW adapter. A violation becomes this worker's Error
+		// outcome (the batch keeps going — partial-success contract).
+		if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
+			return db.WorkerVersionRow{}, err
+		}
 	}
 	var (
 		before    db.WorkerVersionRow
@@ -938,7 +952,10 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
-			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
+			// Identical re-save is a no-op (validateModelRefForUpdate);
+			// a changed ref is fully validated, then adapter-change
+			// validation runs against the merged value.
+			modelRef, err := validateModelRefForUpdate(ctx, tenantID, current.ModelRef, *msg.ModelRef)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
@@ -1109,7 +1126,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
-			modelRef, err := validateModelRef(ctx, tenantID, *msg.ModelRef)
+			modelRef, err := validateModelRefForUpdate(ctx, tenantID, source.ModelRef, *msg.ModelRef)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}

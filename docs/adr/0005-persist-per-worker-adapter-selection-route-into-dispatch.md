@@ -219,3 +219,72 @@ infer `opencode`). No new tool param (the ref is the write surface).
 - The picker never defaults to a kind that is not registered.
 - Empty-runtime_ref dispatch black hole is fixed without changing the
   divergent case's terminal-failure semantics.
+
+## Amendment (2026-09-03): phantom kinds are legacy data, not selections
+
+Live QA on the prod instance surfaced a save-brick class this ADR's
+original D4 did not anticipate. A worker carrying a PRE-NAMESPACE legacy
+ref with a slashed model id (e.g. `commandcode/deepseek/deepseek-v4-flash`,
+written when refs were free-form `provider/<model>`) parses under the new
+left-greedy grammar to adapter-kind `commandcode` — a kind that was never
+registered. `validateAdapterChange` then treated any save as an "adapter
+change" FROM that phantom kind, and rejected the correct
+`opencode/commandcode/deepseek/deepseek-v4-flash-fast` ref because the
+built-in catalog registers `commandcode` only under the `orchicon` kind.
+Every model_ref update path was bricked for such workers.
+
+D4 is amended with two contracts (both pinned by tests in
+`internal/worker/adapter_selection_test.go`):
+
+1. **Phantom kinds are legacy data, not adapter selections.** A current
+   ref whose parsed head is NOT a registered adapter kind never expressed
+   an adapter choice; the adapter-change gate is skipped entirely and the
+   new ref is validated as a fresh selection. This survives data the
+   migration cannot foresee (restored backups, imported tenants, refs
+   written between release windows).
+2. **Identical-ref re-saves are no-ops.** Re-storing the exact current
+   value creates no new state: no grammar re-validation (a stored legacy
+   ref re-saves cleanly), no adapter-change gate. Whitespace-equal values
+   count as identical. This generalizes ADR-0004 D5's re-save semantics
+   from "catalog-known-but-deleted providers" to the full legacy surface.
+
+Supporting changes shipped with the amendment:
+
+- **Ref canonicalization migration** (`20260917000000_canonicalize_model_refs`):
+  stored pre-namespace refs are rewritten to canonical
+  `opencode/<provider>/<model>` form (worker_versions + both tenant
+  settings defaults). The legacy/canonical cut is pinned to the built-in
+  kind set at migration-authoring time (a migration is a frozen snapshot,
+  never live-config-dependent; migrations run before the server starts).
+  `adapter.NormalizeRef`/`NormalizeRefForMigration` are the Go twins kept
+  in sync for future repair tooling. This also heals `SplitForServe`'s
+  serve pair and `resolveAdapterRowKind`'s dispatch row selection for
+  phantom-headed refs.
+- **One validation registry everywhere.** `api.go` now installs the
+  CLI-aware `CLIProviderRegistry` into the worker service via the existing
+  `SetModelRefRegistry` seam, so worker validation agrees with the picker
+  and the settings validator (builtin ∪ tenant customs ∪ live CLI provider
+  ids). Tenant-custom merging uses the new `adapter.ProviderKindExtender`
+  seam (`Clone`-then-extend, copy-on-write) instead of asserting the
+  concrete `*BuiltinProviderCatalog` type, so composition works with any
+  installed registry; a non-extensible registry falls back to a union
+  overlay rather than silently dropping tenant customs.
+- **Discovery freshness is invalidation-based, not TTL-bound.** The model
+  discoverer serves fresh entries from an in-memory list, serves STALE
+  instantly when the TTL expires while single-flight refreshing in the
+  background (cold loads wait on the in-flight probe; concurrent cold
+  loads never error), and exposes `Invalidate()` — wired to every provider
+  landscape mutation (custom provider CRUD, provider token save/clear,
+  settings visibility save) so newly added models/providers are usable
+  immediately. The `CLIProviderRegistry`'s own 10-minute provider-id TTL
+  cache is removed (it was a cache of a cache; the ids derive from the
+  discoverer's in-memory list per call).
+
+Reviewer checklist addition:
+
+- A current ref with an unregistered head never gates a save (phantom
+  rule) and never re-parses on an identical re-save (no-op rule).
+- The migration's kind cut is hardcoded in the SQL, matching
+  `adapter.BuiltinAdapterKinds()` at authoring time.
+- Worker validation, settings validation, and the picker all consume the
+  SAME composed registry (one source of truth).

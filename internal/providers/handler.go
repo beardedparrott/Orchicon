@@ -18,6 +18,12 @@ import (
 type Handler struct {
 	svc *Service
 	log *slog.Logger
+	// OnProviderChange, when set, fires after every mutation of the
+	// provider landscape (custom provider create/update/delete, provider
+	// token save/clear, settings visibility batch). Wired by api.go to the
+	// model discoverer's Invalidate: freshly added models/providers become
+	// discoverable immediately instead of after the discovery TTL.
+	OnProviderChange func()
 	apiv1connect.UnimplementedProviderServiceHandler
 }
 
@@ -33,6 +39,17 @@ func NewHandler(pool *db.Pool, kek []byte, log *slog.Logger) *Handler {
 
 // Service exposes the core service (tests, wiring seams).
 func (h *Handler) Service() *Service { return h.svc }
+
+// notifyChange invokes the invalidation hook (never blocks the RPC on a
+// panic from a bad hook).
+func (h *Handler) notifyChange() {
+	if h.OnProviderChange != nil {
+		func() {
+			defer func() { recover() }()
+			h.OnProviderChange()
+		}()
+	}
+}
 
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)
@@ -93,6 +110,7 @@ func (h *Handler) UpdateProviderSettings(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderUpdateSettingsResponse{Provider: entryToProto(entry)}), nil
 }
 
@@ -110,6 +128,7 @@ func (h *Handler) CreateCustomProvider(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderCreateCustomResponse{Provider: entryToProto(entry)}), nil
 }
 
@@ -133,6 +152,7 @@ func (h *Handler) UpdateCustomProvider(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderUpdateCustomResponse{Provider: entryToProto(entry)}), nil
 }
 
@@ -157,6 +177,7 @@ func (h *Handler) DeleteCustomProvider(ctx context.Context, req *connect.Request
 		}
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderDeleteCustomResponse{}), nil
 }
 
@@ -169,6 +190,7 @@ func (h *Handler) SetProviderToken(ctx context.Context, req *connect.Request[api
 	if err != nil {
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderSetTokenResponse{SecretName: name}), nil
 }
 
@@ -180,6 +202,7 @@ func (h *Handler) ClearProviderToken(ctx context.Context, req *connect.Request[a
 	if err := h.svc.ClearProviderToken(ctx, tenantID, req.Msg.ProviderId); err != nil {
 		return nil, h.mapErr(err)
 	}
+	h.notifyChange()
 	return connect.NewResponse(&apiv1.ProviderClearTokenResponse{}), nil
 }
 
