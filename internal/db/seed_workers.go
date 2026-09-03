@@ -235,6 +235,18 @@ const qaSurfaceImpactMarker = "Surface-impact check — mandatory, before any ve
 // from the internal one in init).
 var QASurfaceImpactMarker = qaSurfaceImpactMarker
 
+// CannedWorkers returns the canned-worker seed definitions (read-only view
+// for tooling: out-of-band roll-forward generators, prompt-diff utilities).
+// The returned slice must not be mutated.
+func CannedWorkers() []cannedWorker { return cannedWorkers }
+
+// SeedAgentsMD is the exported form of seedAgentsMD for the same tooling.
+func SeedAgentsMD(w *cannedWorker) string { return seedAgentsMD(*w) }
+
+// CannedWorker is the exported read-only alias of the cannedWorker seed
+// definition struct (field-for-field identical; used by prompt tooling).
+type CannedWorker = cannedWorker
+
 // researchHygieneBlock is the worktree discipline for the automation
 // research workers. The Automation Research workflow runs with
 // git_strategy=none (ephemeral): the run worktree is a detached HEAD — no
