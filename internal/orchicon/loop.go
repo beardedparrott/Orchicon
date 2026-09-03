@@ -235,6 +235,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// applies). 0 when the model has no pricing — the cost dimension
 		// then never fires; never a synthesized estimate.
 		usage.CostUSD = s.priceUsage(ctx, usage)
+		// Per-turn usage emission (D2, opencode step_finish parity): drain
+		// this turn's LIVE provider-reported usage to the per-record sink
+		// (the bridge wires it only when a usage recorder is configured).
+		// Independent of recordTurnUsage — emitting a record never feeds the
+		// per-session CacheStats rollup.
+		if s.usageSink != nil {
+			s.usageSink(ctx, usage)
+		}
 
 		// Guarded compaction at the quiet turn boundary (D1): fires only on
 		// true context-window pressure (live hint) or the budget gate, from

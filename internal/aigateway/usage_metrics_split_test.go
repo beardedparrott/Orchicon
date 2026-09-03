@@ -57,6 +57,14 @@ func (tm *testMeter) collect(t *testing.T) map[string]map[string]float64 {
 				for _, dp := range d.DataPoints {
 					vals[classValue(dp.Attributes)] = dp.Value
 				}
+			case metricdata.Gauge[float64]:
+				for _, dp := range d.DataPoints {
+					vals[classValue(dp.Attributes)] = dp.Value
+				}
+			case metricdata.Gauge[int64]:
+				for _, dp := range d.DataPoints {
+					vals[classValue(dp.Attributes)] = float64(dp.Value)
+				}
 			default:
 				t.Fatalf("unexpected metric data type for %s: %T", m.Name, m.Data)
 			}
@@ -323,6 +331,52 @@ func TestEmitModelCostPricedPath(t *testing.T) {
 	got := tm.collect(t)["orchicon_cost_usd"]
 	if sum := mapSum(got); !approx(sum, row.CostUSD, 1e-9) {
 		t.Fatalf("priced-path Σ cost shares = %v, want %v", sum, row.CostUSD)
+	}
+}
+
+// TestRecordPrefixCacheEmitsHitMissAndRate drills the D3 prefix-cache
+// metric: the session-terminal segment of the native adapter's cache
+// telemetry emits the hit/miss counters and the hit-rate gauge, carrying
+// tenant/execution/worker attrs, and is a no-op when Turns==0.
+func TestRecordPrefixCacheEmitsHitMissAndRate(t *testing.T) {
+	tm := newTestMeter(t)
+	defer tm.restore()
+
+	rec := NewUsageRecorder(nil, discardLogger())
+	if err := rec.RecordPrefixCache(context.Background(), "tnt_dev", "prj_dev", "worker_dev", "exec_dev", 10, 7, 3, 5000, 200); err != nil {
+		t.Fatalf("RecordPrefixCache: %v", err)
+	}
+
+	gotHits := tm.collect(t)["orchicon_prefix_cache_hit_total"]
+	gotMiss := tm.collect(t)["orchicon_prefix_cache_miss_total"]
+	gotRate := tm.collect(t)["orchicon_prefix_cache_hit_rate"]
+	if gotHits[""] != 7 {
+		t.Fatalf("prefix_cache_hit_total = %v, want 7", gotHits)
+	}
+	if gotMiss[""] != 3 {
+		t.Fatalf("prefix_cache_miss_total = %v, want 3", gotMiss)
+	}
+	if gotRate[""] != 0.7 {
+		t.Fatalf("prefix_cache_hit_rate = %v, want 0.7 (7/10)", gotRate)
+	}
+}
+
+// TestRecordPrefixCacheNoOpOnZeroTurns guards the degenerate case: a session
+// that never produced a provider turn must not emit the prefix-cache family.
+func TestRecordPrefixCacheNoOpOnZeroTurns(t *testing.T) {
+	tm := newTestMeter(t)
+	defer tm.restore()
+
+	rec := NewUsageRecorder(nil, discardLogger())
+	if err := rec.RecordPrefixCache(context.Background(), "tnt_dev", "prj_dev", "worker_dev", "exec_dev", 0, 0, 0, 0, 0); err != nil {
+		t.Fatalf("RecordPrefixCache(zero turns): %v", err)
+	}
+	got := tm.collect(t)
+	if _, ok := got["orchicon_prefix_cache_hit_total"]; ok {
+		t.Fatalf("hit_total emitted for a zero-turn session: %v", got)
+	}
+	if _, ok := got["orchicon_prefix_cache_hit_rate"]; ok {
+		t.Fatalf("hit_rate emitted for a zero-turn session: %v", got)
 	}
 }
 

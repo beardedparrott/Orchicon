@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/agentmemory"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -47,6 +48,9 @@ type NativeBridge struct {
 
 	// usage records per-execution usage at terminal (step_finish parity).
 	usageRecorder scheduler.UsageRecorderFunc
+	// cacheSink drains the session's terminal prefix-cache rollup for OTel
+	// metrics (D3, ADR-0009 D6). Nil → no cache metric is emitted.
+	cacheSink func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
 	// mcpConfig resolves the session's MCP server selection (ADR-0008:
@@ -216,11 +220,32 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// double-terminate: the reconciler's startExecution would mark the
 	// execution failed_to_start AND requeue the task (PR B2).
 	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
-	err = sess.Run(runCtx, terminal)
-	// Best-effort usage record (step_finish parity) with the session's
-	// real per-turn token + prefix-cache metrics (ADR-0009 D6).
+	// Per-turn usage emission (D2, opencode step_finish parity): wire the
+	// live per-turn usage sink ONLY when a usage recorder is configured, so
+	// each provider turn emits exactly one usage record from REAL provider
+	// usage. The terminal aggregate is dropped to avoid double-counting.
 	if b.usageRecorder != nil {
-		b.recordUsage(ctx, exec, manifest, sess.CacheStats())
+		sess.SetUsageSink(func(ctx context.Context, u Usage) { b.emitTurnUsage(ctx, exec, manifest, u) })
+	}
+	err = sess.Run(runCtx, terminal)
+	// Terminal prefix-cache rollup (D3, ADR-0009 D6): log the session's
+	// per-turn cache stats and, when a cache sink is wired (the server
+	// attaches the OTel prefix-cache metrics recorder), forward the rollup
+	// to it. Live usage only — never synthesized. The per-turn usage records
+	// are emitted from inside the loop; this terminal rollup is metrics-only
+	// (no UsageRecorder call), so a turn is never double-counted.
+	stats := sess.CacheStats()
+	b.log.Info("orchicon: session cache stats",
+		"execution", exec.ID,
+		"turns", stats.Turns,
+		"cache_hits", stats.Hits,
+		"cache_miss_writes", stats.MissWrites,
+		"cache_none_turns", stats.NoneTurns,
+		"cache_read_tokens", stats.CacheReadTokens,
+		"cache_write_tokens", stats.CacheWriteTokens,
+		"prefix_fingerprint", stats.PrefixFingerprint)
+	if b.cacheSink != nil {
+		b.cacheSink(ctx, exec, stats)
 	}
 	// Best-effort DB session-part persistence for the live pane.
 	if b.sessionStore != nil {
@@ -352,6 +377,13 @@ func (b *NativeBridge) SetUsageRecorder(fn scheduler.UsageRecorderFunc) {
 	b.usageRecorder = fn
 }
 
+// SetCacheSink wires the session-terminal prefix-cache rollup drain (D3,
+// ADR-0009 D6). The server attaches the OTel prefix-cache metrics recorder.
+// Nil → no cache metric is emitted (sessions unaffected).
+func (b *NativeBridge) SetCacheSink(fn func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)) {
+	b.cacheSink = fn
+}
+
 // SetSessionStore implements scheduler.ConfigurableBridge.
 func (b *NativeBridge) SetSessionStore(fn scheduler.SessionStoreFunc) {
 	b.sessionStore = fn
@@ -397,15 +429,22 @@ func (m mcpTools) Execute(ctx context.Context, name, argsJSON string) (string, e
 	return m.mgr.Execute(ctx, name, argsJSON)
 }
 
-// recordUsage emits the execution's final usage sample (best-effort),
-// folded from the session's per-turn cache stats (ADR-0009 D6): real
-// prompt/completion/reasoning token counts plus the cache read/write
-// split. The gateway pricing resolver fills cost from model prices; the
-// cache-token classes flow into the OTel usage counters via
-// aigateway.UsageInput.
-func (b *NativeBridge) recordUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, stats CacheStats) {
-	if stats.Turns == 0 && stats.InputTokens == 0 && stats.OutputTokens == 0 {
-		return // the session never produced a provider turn — no sample
+// emitTurnUsage emits ONE usage record for a provider turn (D2, opencode
+// step_finish parity — per turn, not per session). Provider/model are
+// split from the manifest model ref (D1) so get_usage/cost attribute
+// native executions to the real provider/model; a ref with no
+// provider/model falls back to "unknown"/"unknown". A genuinely-empty
+// turn (all buckets zero) is dropped, but a cache-only turn (nonzero
+// cache, zero prompt/completion) is kept — it is REAL usage. No estimate
+// is ever synthesized here (operator directive).
+func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, u Usage) {
+	provider, model, ok := adapter.SplitForServe(manifest.ModelRef)
+	if !ok {
+		provider, model = "unknown", "unknown"
+	}
+	if u.InputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
+		u.OutputTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == 0 {
+		return // genuinely empty — no sample (a cache-only turn is kept)
 	}
 	_ = b.usageRecorder(ctx, scheduler.UsageRecord{
 		TenantID:         exec.TenantID,
@@ -413,25 +452,17 @@ func (b *NativeBridge) recordUsage(ctx context.Context, exec db.ExecutionRow, ma
 		TaskID:           exec.TaskID,
 		ExecutionID:      exec.ID,
 		WorkerID:         exec.WorkerID,
-		Provider:         "orchicon",
-		Model:            manifest.ModelRef,
-		PromptTokens:     stats.InputTokens,
-		CacheReadTokens:  stats.CacheReadTokens,
-		CacheWriteTokens: stats.CacheWriteTokens,
-		CompletionTokens: stats.OutputTokens,
-		ReasoningTokens:  stats.ReasoningTokens,
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     u.InputTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
+		CompletionTokens: u.OutputTokens,
+		ReasoningTokens:  u.ReasoningTokens,
+		CostUSD:          u.CostUSD,
 		CorrelationID:    exec.ID,
 		WorkflowRunID:    exec.WorkflowRunID,
 	})
-	b.log.Info("orchicon: session cache stats",
-		"execution", exec.ID,
-		"turns", stats.Turns,
-		"cache_hits", stats.Hits,
-		"cache_miss_writes", stats.MissWrites,
-		"cache_none_turns", stats.NoneTurns,
-		"cache_read_tokens", stats.CacheReadTokens,
-		"cache_write_tokens", stats.CacheWriteTokens,
-		"prefix_fingerprint", stats.PrefixFingerprint)
 }
 
 // persistSession writes the transcript's DB session parts (best-effort).

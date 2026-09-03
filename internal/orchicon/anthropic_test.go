@@ -132,6 +132,40 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
+// Accumulation, not summation: message_start assigns the input/cache buckets
+// once, and each message_delta ASSIGNS the running-total output tokens (and
+// re-assigns cache buckets when >0) rather than ADDING to them. Two deltas
+// carrying cumulative totals must yield the LAST total, never the sum.
+func TestAnthropicCumulativeDeltaUsageAccumulatedNotSummed(t *testing.T) {
+	body := sseEvent("message_start", `{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`) +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":7}}`) +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}`) + // cumulative running total
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &AnthropicClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "claude-sonnet-4", MaxTokens: 100})
+	if err != nil {
+		t.Fatalf("StreamTurn: %v", err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	fin, ok := evs[len(evs)-1].(Finish)
+	if !ok {
+		t.Fatalf("last event = %#v, want Finish", evs[len(evs)-1])
+	}
+	u := fin.Usage
+	// Cumulative assigned, NOT summed: 7 then 12 → 12 (not 19).
+	if u.OutputTokens != 12 {
+		t.Fatalf("OutputTokens = %d, want 12 (cumulative assigned, not summed to 19)", u.OutputTokens)
+	}
+	// The cache buckets come from message_start (assigned once).
+	if u.InputTokens != 10 || u.CacheReadTokens != 5 || u.CacheWriteTokens != 3 {
+		t.Fatalf("usage = %#v, want in=10 cacheRead=5 cacheWrite=3 (assigned at message_start)", u)
+	}
+}
+
 func TestAnthropicStreamToolUse(t *testing.T) {
 	body := sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather"}}`) +
 		sseEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}`) +
