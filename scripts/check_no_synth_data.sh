@@ -21,26 +21,41 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Synthesized-data markers that must never appear in shipped adapter,
-# discovery, or registry code.
-readonly PATTERN='MockModelDiscoverer|MockMCPDiscoverer|mockModels|mockMCP|MockProvider'
-
-# Walk only the source the audit owns; skip generated/vendored/build dirs.
+# Scan only files git owns: tracked files + untracked-but-not-ignored files.
+# This makes .gitignore authoritative — scratch dirs (.gotmp/, .qa-gotmp/,
+# .orchicon-worktrees/, .dev/) hold stale worktree snapshots from past runs
+# (including checkouts from the era when the mocks still existed) and a
+# plain `grep -R .` would flag that debris as if it were shipped source.
+# NUL-safe read (mapfile cannot parse -z output — bash C-string truncation).
 # Test files (_test.go, _test.ts/_test.tsx, *.test.ts/*.test.tsx,
 # *.spec.ts/*.spec.tsx) are excluded — the mock provider is intentionally
 # a test-harness-only double.
-mapfile -t hits < <(
-  grep -RInE "$PATTERN" \
-    --include='*.go' --include='*.ts' --include='*.tsx' \
-    --exclude='*_test.go' \
-    --exclude='*_test.ts' --exclude='*_test.tsx' \
-    --exclude='*.test.ts' --exclude='*.test.tsx' \
-    --exclude='*.spec.ts' --exclude='*.spec.tsx' \
-    --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=vendor \
-    --exclude-dir=gen \
-    . 2>/dev/null \
-  || true
+declare -a files=()
+while IFS= read -r -d '' f; do
+  case "$f" in
+    *_test.go|*_test.ts|*_test.tsx|*.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx) continue ;;
+  esac
+  files+=("$f")
+done < <(
+  git ls-files --cached --others --exclude-standard -z -- '*.go' '*.ts' '*.tsx' 2>/dev/null
 )
+
+# Hard floor: if the file list is implausibly small the plumbing above broke
+# (git missing, wrong cwd) — fail loudly rather than scan nothing and pass.
+if [ "${#files[@]}" -lt 100 ]; then
+  echo "No-synthesized-data audit FAILED: file enumeration returned only ${#files[@]} files — audit plumbing broken, not scanning." >&2
+  exit 1
+fi
+
+readonly PATTERN='MockModelDiscoverer|MockMCPDiscoverer|mockModels|mockMCP|MockProvider'
+declare -a hits=()
+if [ "${#files[@]}" -gt 0 ]; then
+  mapfile -t hits < <(
+    printf '%s\0' "${files[@]}" \
+    | xargs -0 grep -HnE "$PATTERN" -- 2>/dev/null \
+    || true
+  )
+fi
 
 if [ "${#hits[@]}" -gt 0 ]; then
   echo "No-synthesized-data audit FAILED — synthesized data-plane marker(s) found in non-test source:" >&2
