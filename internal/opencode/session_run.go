@@ -67,13 +67,13 @@ type sessionRun struct {
 	nudgeReplyWindowVal time.Duration
 	nudgeCooldownVal    time.Duration
 
-	// In-flight tool-hang watchdog (D6): a tool call with no events for
-	// longer than toolHangWindowVal is interrupted NATIVELY — the call is
-	// cancelled (synthesized `cancelled: tool exceeded tool-hang window`
-	// result) and a course-correcting redirect is injected as the next user
-	// turn (session + cache prefix preserved). Latched once per session;
-	// an unheeded hang escalates to the stall/liveness layer (probe →
-	// fatal). toolHangWindowVal <= 0 disables the watchdog.
+	// In-flight tool-hang watchdog (Tier A): a tool call with no events for
+	// longer than toolHangWindowVal is aborted-and-redirected — only the
+	// in-flight turn is cancelled (session + history preserved) and a
+	// course-correcting redirect is injected as the next user turn.
+	// Latched once per session; an unheeded hang escalates to the
+	// stall/liveness layer (probe → fatal). toolHangWindowVal <= 0
+	// disables the watchdog.
 	toolHangWindowVal time.Duration
 	hangLatched       bool
 	hangMu            sync.Mutex
@@ -220,7 +220,7 @@ func (r *sessionRun) initNudgeTuning() {
 // startToolHangWatchdog arms the in-flight tool-hang watchdog for this
 // session: a background goroutine that watches for a tool call that has
 // been silent for longer than toolHangWindowVal. It latches once per
-// session (the first hang is interrupted natively; a second unheeded hang
+// session (the first hang is aborted-and-redirected; a second unheeded hang
 // escalates to the stall/liveness layer). Returns a stop func.
 func (r *sessionRun) startToolHangWatchdog(ctx context.Context) func() {
 	stop := make(chan struct{})
