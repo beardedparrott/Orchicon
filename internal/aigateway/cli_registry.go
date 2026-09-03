@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
@@ -29,6 +30,12 @@ import (
 type CLIProviderRegistry struct {
 	static adapter.ProviderRegistry
 	disc   *ModelDiscoverer
+
+	// extra is the additive layer applied on CLONES only (Clone + the
+	// merge seam): kind → additional provider ids unioned over the static
+	// registry. The shared instance never carries state — tenant-custom
+	// merges are copy-on-write.
+	extra map[string]map[string]struct{}
 }
 
 // NewCLIProviderRegistry wraps a static registry with live CLI provider
@@ -75,12 +82,45 @@ func (r *CLIProviderRegistry) providerIDs(ctx context.Context) []string {
 var _ adapter.ProviderRegistry = (*CLIProviderRegistry)(nil)
 var _ adapter.ProviderKindExtender = (*CLIProviderRegistry)(nil)
 
-// Clone implements adapter.ProviderKindExtender: an independent copy with
-// the same static registry and discoverer (the discoverer is shared
-// state by design — the clone's AddAdapterKind never mutates the
-// original's static registry).
-func (r *CLIProviderRegistry) Clone() adapter.ProviderRegistry {
+// Clone implements adapter.ProviderKindExtender: an independent copy that
+// shares the static registry and discoverer (read-only) and starts with an
+// empty additive layer — AddAdapterKind on the clone never mutates the
+// original.
+func (r *CLIProviderRegistry) Clone() adapter.ProviderKindExtender {
 	return &CLIProviderRegistry{static: r.static, disc: r.disc}
+}
+
+// AddAdapterKind implements adapter.ProviderKindExtender: unions provider
+// ids into the clone's additive layer (a shared instance is never
+// mutated; copy-on-write is the caller's contract via Clone).
+func (r *CLIProviderRegistry) AddAdapterKind(kind string, providers ...string) {
+	if r.extra == nil {
+		r.extra = make(map[string]map[string]struct{})
+	}
+	set := r.extra[kind]
+	if set == nil {
+		set = make(map[string]struct{})
+		r.extra[kind] = set
+	}
+	for _, p := range providers {
+		if p = strings.TrimSpace(p); p != "" {
+			set[p] = struct{}{}
+		}
+	}
+}
+
+// extraIDs returns the additive provider ids for a kind (nil when none).
+func (r *CLIProviderRegistry) extraIDs(kind string) []string {
+	set := r.extra[kind]
+	if set == nil {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // IsKnownAdapter implements ProviderRegistry. The static catalog decides;
@@ -91,10 +131,16 @@ func (r *CLIProviderRegistry) IsKnownAdapter(kind string) bool {
 }
 
 // IsKnownProvider implements ProviderRegistry: the static catalog first,
-// then the live CLI ids under the default kind.
+// then the live CLI ids under the default kind, then the additive layer
+// (clones carrying tenant customs).
 func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool {
 	if r.static.IsKnownProvider(adapterKind, provider) {
 		return true
+	}
+	if set := r.extra[adapterKind]; set != nil {
+		if _, ok := set[provider]; ok {
+			return true
+		}
 	}
 	for _, id := range r.providerIDs(context.Background()) {
 		if id == provider {
@@ -104,8 +150,9 @@ func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool
 	return false
 }
 
-// Providers implements ProviderRegistry: the static set first, CLI ids
-// appended (deduped, sorted) — mirroring the picker's union derivation.
+// Providers implements ProviderRegistry: the static set, the additive
+// layer, then CLI ids appended (deduped, sorted) — mirroring the picker's
+// union derivation.
 func (r *CLIProviderRegistry) Providers(adapterKind string) []string {
 	out := r.static.Providers(adapterKind)
 	seen := map[string]struct{}{}
@@ -113,10 +160,17 @@ func (r *CLIProviderRegistry) Providers(adapterKind string) []string {
 		seen[p] = struct{}{}
 	}
 	var extra []string
-	for _, id := range r.providerIDs(context.Background()) {
-		if _, dup := seen[id]; !dup {
-			extra = append(extra, id)
+	add := func(p string) {
+		if _, dup := seen[p]; !dup {
+			seen[p] = struct{}{}
+			extra = append(extra, p)
 		}
+	}
+	for _, p := range r.extraIDs(adapterKind) {
+		add(p)
+	}
+	for _, id := range r.providerIDs(context.Background()) {
+		add(id)
 	}
 	sort.Strings(extra)
 	return append(out, extra...)

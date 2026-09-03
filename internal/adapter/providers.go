@@ -79,12 +79,20 @@ func BuiltinAdapterKinds() map[string]struct{} {
 
 // ProviderKindExtender is the optional seam for registries that can be
 // extended with provider ids per adapter kind without mutating the
-// shared instance. The worker service's tenant-custom merge uses it so
-// composition works with ANY installed registry (built-in catalog,
-// CLI-aware registry, or a custom implementation that declines the seam).
+// shared instance. It extends ProviderRegistry with the extension
+// primitive and a cloning constructor, so callers can copy-then-extend
+// (copy-on-write) and still hold a full registry. The worker service's
+// tenant-custom merge uses it so composition works with ANY installed
+// registry (built-in catalog, CLI-aware registry, or a custom
+// implementation that declines the seam).
 type ProviderKindExtender interface {
-	// Clone returns an independent copy that AddAdapterKind may mutate.
-	Clone() ProviderRegistry
+	ProviderRegistry
+	// Clone returns an independent copy; AddAdapterKind on the copy never
+	// mutates the original's state.
+	Clone() ProviderKindExtender
+	// AddAdapterKind registers an adapter kind and unions provider ids
+	// into it (existing ids are a no-op).
+	AddAdapterKind(kind string, providers ...string)
 }
 
 // AddAdapterKind registers an adapter kind and (re)adds its built-in
@@ -133,7 +141,7 @@ func (c *BuiltinProviderCatalog) IsKnownProvider(adapterKind, provider string) b
 
 // Clone implements ProviderKindExtender: an independent deep copy that
 // AddAdapterKind may mutate (the tenant-custom merge is copy-on-write).
-func (c *BuiltinProviderCatalog) Clone() ProviderRegistry {
+func (c *BuiltinProviderCatalog) Clone() ProviderKindExtender {
 	out := &BuiltinProviderCatalog{
 		adapterKinds: make(map[string]struct{}, len(c.adapterKinds)),
 		providers:    make(map[string]map[string]struct{}, len(c.providers)),

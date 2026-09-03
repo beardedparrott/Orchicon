@@ -73,10 +73,10 @@ type resolvedConfig struct {
 }
 
 type mcpEntry struct {
-	Type    string   `json:"type"`
-	URL     string   `json:"url,omitempty"`
-	Command any      `json:"command,omitempty"`
-	Enabled *bool    `json:"enabled,omitempty"`
+	Type    string `json:"type"`
+	URL     string `json:"url,omitempty"`
+	Command any    `json:"command,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
 }
 
 // fetchMCPs shells out to `opencode debug config` and reads the resolved
@@ -174,4 +174,3 @@ func mergeMCPs(configured, wellknown []*apiv1.OpenCodeMCP) []*apiv1.OpenCodeMCP 
 	}
 	return result
 }
-

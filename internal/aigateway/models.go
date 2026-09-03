@@ -345,11 +345,11 @@ type rawModel struct {
 }
 
 type rawCost struct {
-	Input       float64    `json:"input"`
-	Output      float64    `json:"output"`
-	Cache       *rawCache  `json:"cache,omitempty"`
-	Experimental any      `json:"experimentalOver200K,omitempty"`
-	Tiers       []any      `json:"tiers,omitempty"`
+	Input        float64   `json:"input"`
+	Output       float64   `json:"output"`
+	Cache        *rawCache `json:"cache,omitempty"`
+	Experimental any       `json:"experimentalOver200K,omitempty"`
+	Tiers        []any     `json:"tiers,omitempty"`
 }
 
 type rawCache struct {
@@ -364,13 +364,13 @@ type rawLimit struct {
 }
 
 type rawCapabs struct {
-	Temperature bool           `json:"temperature"`
-	Reasoning   bool           `json:"reasoning"`
-	Attachment  bool           `json:"attachment"`
-	Toolcall    bool           `json:"toolcall"`
-	Input       *rawIO         `json:"input,omitempty"`
-	Output      *rawIO         `json:"output,omitempty"`
-	Interleaved any            `json:"interleaved"`
+	Temperature bool   `json:"temperature"`
+	Reasoning   bool   `json:"reasoning"`
+	Attachment  bool   `json:"attachment"`
+	Toolcall    bool   `json:"toolcall"`
+	Input       *rawIO `json:"input,omitempty"`
+	Output      *rawIO `json:"output,omitempty"`
+	Interleaved any    `json:"interleaved"`
 }
 
 type rawIO struct {
@@ -442,7 +442,6 @@ func parseModelJSON(ref string, data []byte) (*apiv1.OpenCodeModel, error) {
 
 	return m, nil
 }
-
 
 // Ensure the discoverer respects context deadlines.
 var _ = (*ModelDiscoverer)(nil)

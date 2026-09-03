@@ -37,7 +37,7 @@ const (
 	maxDescLen        = 1 << 14 // 16 KiB
 	maxPurposeLen     = 1 << 14
 	maxPromptLen      = 1 << 20 // 1 MiB — system prompts can be large
-	maxJSONFieldLen  = 1 << 20 // 1 MiB for permissions/budgets/labels/etc.
+	maxJSONFieldLen   = 1 << 20 // 1 MiB for permissions/budgets/labels/etc.
 	maxVersionNoteLen = 1 << 14
 	maxActorLen       = 200
 )

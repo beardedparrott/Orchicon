@@ -441,8 +441,8 @@ func TestProvidersManualModels(t *testing.T) {
 
 	// Replace wipes everything not in the replacement list.
 	_, err = svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
-		ProviderID:   "local-models-mm",
-		ManualModels: []providers.ManualModel{{ID: "only-one"}},
+		ProviderID:    "local-models-mm",
+		ManualModels:  []providers.ManualModel{{ID: "only-one"}},
 		ManualReplace: true,
 	})
 	if err != nil {
