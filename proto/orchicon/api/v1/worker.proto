@@ -39,8 +39,8 @@ message WorkerVersion {
   int32 version = 3; // monotonic integer
   string version_note = 4;
   WorkerVersionStatus status = 5;
-  string runtime_ref = 6; // adapter kind, e.g. "opencode"
-  string model_ref = 7; // exact provider + model id; no failover (docs/05 §11)
+  reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  string model_ref = 7; // exact provider + model id; its adapter segment selects the dispatch adapter; no failover (docs/05 §11)
   string system_prompt = 8; // Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
   string context_sources = 9; // JSON: ordered list of context source refs
   string permissions = 10; // JSON: capability allowlist (docs/05 §7)

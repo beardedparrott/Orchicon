@@ -12,11 +12,9 @@ import (
 
 // CreateWorkerInput is the full input for creating a worker header plus
 // its first draft version. Both the Connect service (Service.CreateWorker)
-// and the AskOrchicon tool adapter (toolCreateWorker) funnel through
-// ValidateCreateWorkerInput + CreateWorkerTx so there is exactly ONE
 // implementation of "create a worker" — the ghost-record bug (tool path
 // committed a workers row with no worker_versions row and dropped
-// model_ref/runtime_ref) was two drifted implementations.
+// model_ref) was two drifted implementations.
 type CreateWorkerInput struct {
 	TenantID     string
 	Adapter      string // explicit adapter selection (ADR-0005 D2); must agree with ModelRef
@@ -26,7 +24,6 @@ type CreateWorkerInput struct {
 	Purpose      string
 	RoleRef      string // RBAC role binding; empty = no plane access (deny-by-default)
 	VersionNote  string
-	RuntimeRef   string
 	ModelRef     string
 	Role         string
 	Skills       string
@@ -40,6 +37,9 @@ type CreateWorkerInput struct {
 	GatedTools      string // JSON array
 	BudgetOverrides string // JSON object
 	Labels          string // JSON object
+
+	// NOTE: worker-level RuntimeRef was retired (ADR-0003 single source of
+	// truth): the model_ref's adapter segment alone governs dispatch.
 
 	ExecutionPolicyRef  string
 	ConcurrencyLimit    int
@@ -84,9 +84,6 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 		return err
 	}
 	if in.VersionNote, err = validateTextField(in.VersionNote, maxVersionNoteLen, "version_note"); err != nil {
-		return err
-	}
-	if in.RuntimeRef, err = validateTextField(in.RuntimeRef, maxNameLen, "runtime_ref"); err != nil {
 		return err
 	}
 	if in.ModelRef, err = validateModelRef(context.Background(), in.TenantID, in.ModelRef); err != nil {
@@ -186,7 +183,6 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Version:             1,
 		VersionNote:         in.VersionNote,
 		Status:              domain.WorkerVersionDraft,
-		RuntimeRef:          in.RuntimeRef,
 		ModelRef:            in.ModelRef,
 		Role:                in.Role,
 		Skills:              in.Skills,

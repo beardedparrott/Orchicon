@@ -66,6 +66,21 @@ type JSONLTranscript struct {
 	f    *os.File
 	seq  int64
 	done bool // Close already called (or fatal write error)
+	// observer, when set, is invoked after every durable append (while mu
+	// is held) with the entry's seq/type/marshaled payload. The bridge
+	// uses it to mirror the transcript into the DB session-parts store
+	// (execution_session_parts) for the live/terminal session pane — the
+	// same durable surface the opencode adapter writes. It must be cheap
+	// (no I/O): implementations batch and flush separately.
+	observer func(seq int64, typ string, data []byte)
+}
+
+// SetObserver installs the transcript observer. Must be called before the
+// first Append (the bridge wires it between transcript open and Run).
+func (t *JSONLTranscript) SetObserver(fn func(seq int64, typ string, data []byte)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.observer = fn
 }
 
 // openTranscript opens (creating if needed) the JSONL at path in append
@@ -148,6 +163,9 @@ func (t *JSONLTranscript) Append(typ string, data any) error {
 		t.done = true
 		_ = t.f.Close()
 		return fmt.Errorf("transcript: fsync: %w", err)
+	}
+	if t.observer != nil {
+		t.observer(e.Seq, e.Type, payload)
 	}
 	return nil
 }

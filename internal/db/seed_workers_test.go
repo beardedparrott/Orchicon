@@ -56,7 +56,6 @@ func insertDraftVersion(t *testing.T, pool *db.Pool, workerID string, version in
 		WorkerID:         workerID,
 		Version:          version,
 		Status:           "draft",
-		RuntimeRef:       "opencode",
 		ModelRef:         "opencode-go/deepseek-v4-flash",
 		ContextSources:   []byte("[]"),
 		Permissions:      []byte("{}"),
@@ -268,10 +267,10 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 	}
 	if _, err := ttx.Exec(ctx,
 		`INSERT INTO worker_versions (id, tenant_id, worker_id, version, version_note, status,
-			runtime_ref, model_ref, role, skills, behavior, agents_md,
+			model_ref, role, skills, behavior, agents_md,
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
-		 VALUES ($1, 'tnt_dev', $2, 1, 'user', 'published', 'opencode', 'opencode-go/deepseek-v4-flash',
+		 VALUES ($1, 'tnt_dev', $2, 1, 'user', 'published', 'opencode-go/deepseek-v4-flash',
 			$3, '', '', '', '[]', '{}', '[]', '{}', '', 1, '', '{}', now(), now())`,
 		"vusr_"+cannedID, userID, role); err != nil {
 		t.Fatalf("insert user version: %v", err)
@@ -759,12 +758,12 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 	if _, err := ttx.Exec(ctx,
 		`INSERT INTO worker_versions
 		    (id, tenant_id, worker_id, version, version_note, status,
-		     runtime_ref, model_ref, role, skills, behavior, agents_md,
+		     model_ref, role, skills, behavior, agents_md,
 		     context_sources, permissions, gated_tools, budget_overrides,
 		     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 		     labels, published_at, created_at)
 		 SELECT $1, 'tnt_dev', worker_id, 2, 'user version', 'published',
-		        runtime_ref, 'google/gemini-2.5-pro', role, skills, behavior,
+		        'google/gemini-2.5-pro', role, skills, behavior,
 		        replace(agents_md, 'orchicon.safety=v22', 'orchicon.safety=v0'),
 		        context_sources, permissions, gated_tools, budget_overrides,
 		        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
@@ -848,14 +847,17 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 				t.Errorf("%s purpose still carries project bias %q", tc.slug, bias)
 			}
 		}
-		var agents, runtimeRef string
+		var agents, modelRef string
 		if err := ttx.QueryRow(ctx,
-			`SELECT agents_md, runtime_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			tc.id).Scan(&agents, &runtimeRef); err != nil {
+			`SELECT agents_md, model_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			tc.id).Scan(&agents, &modelRef); err != nil {
 			t.Fatalf("query version %s: %v", tc.slug, err)
 		}
-		if runtimeRef != "orchicon-runtime:web-research" {
-			t.Errorf("%s runtime_ref = %q, want orchicon-runtime:web-research", tc.slug, runtimeRef)
+		// Worker-level runtime_ref is retired (ADR-0003): the trio seeds an
+		// empty model_ref (dispatch derives the kind at run time), so the
+		// version row must carry no model_ref and no runtime_ref column.
+		if modelRef != "" {
+			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)
 		}
 		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v22") {
 			t.Errorf("%s agents_md missing seed markers", tc.slug)

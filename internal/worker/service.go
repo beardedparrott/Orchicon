@@ -81,7 +81,6 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		Purpose:             msg.Purpose,
 		RoleRef:             msg.RoleRef,
 		VersionNote:         msg.VersionNote,
-		RuntimeRef:          msg.RuntimeRef,
 		Adapter:             msg.Adapter,
 		ModelRef:            msg.ModelRef,
 		Role:                msg.Role,
@@ -932,9 +931,6 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 
 	// Build merged row: apply only non-nil proto fields over current.
 	merged := current
-	if msg.RuntimeRef != nil {
-		merged.RuntimeRef = *msg.RuntimeRef
-	}
 	if msg.ModelRef != nil || msg.Adapter != nil {
 		// ADR-0005 D2: the explicit adapter input is a consistency
 		// affordance — it must be a registered kind and must agree with
@@ -1092,7 +1088,6 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		WorkerID:            msg.WorkerId,
 		Version:             nextVer,
 		Status:              domain.WorkerVersionDraft,
-		RuntimeRef:          source.RuntimeRef,
 		ModelRef:            source.ModelRef,
 		SystemPrompt:        source.SystemPrompt,
 		Role:                source.Role,
@@ -1107,9 +1102,6 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		ConcurrencyLimit:    source.ConcurrencyLimit,
 		RecoveryWorkflowRef: source.RecoveryWorkflowRef,
 		Labels:              source.Labels,
-	}
-	if msg.RuntimeRef != nil {
-		newVer.RuntimeRef = *msg.RuntimeRef
 	}
 	if msg.ModelRef != nil || msg.Adapter != nil {
 		// ADR-0005 D2: explicit adapter input must be a registered kind and
@@ -1512,7 +1504,6 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		Version:             int32(v.Version),
 		VersionNote:         v.VersionNote,
 		Status:              workerVersionStatusToProto(v.Status),
-		RuntimeRef:          v.RuntimeRef,
 		ModelRef:            v.ModelRef,
 		Adapter:             adapterKindOf(v.ModelRef),
 		SystemPrompt:        composeWorkerPrompt(v),

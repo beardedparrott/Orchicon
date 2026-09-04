@@ -1,11 +1,9 @@
-import { useEffect } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorker } from "@/api/workers";
-import { useListAdapterKinds } from "@/api/aigateway";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,7 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ModelPicker } from "@/components/ModelPicker";
-import { parseModelRef } from "@/lib/model-ref";
 import {
   BudgetSection,
   ContextSourcesSection,
@@ -33,7 +30,8 @@ import { Route as rootRoute } from "@/routes/__root";
 //
 // The Worker entity (docs/05_Worker_Specification.md §3) carries:
 //   - Identity: name, slug, description, purpose
-//   - Execution profile: runtime_ref, model_ref, system_prompt, context_sources
+//   - Execution profile: model_ref (its adapter segment governs dispatch —
+//     worker-level runtime_ref is retired), system_prompt, context_sources
 //   - Governance: permissions, gated_tools, budget_overrides, concurrency_limit
 //
 // Zod validation mirrors the server-side rules (internal/worker/validate.go)
@@ -65,10 +63,6 @@ const createWorkerSchema = z.object({
   description: z.string().max(16000, "Description is too long").optional(),
   purpose: z.string().max(16000, "Purpose is too long").optional(),
   roleRef: z.string().max(200, "Role is too long").optional(),
-  runtimeRef: z
-    .string()
-    .min(1, "Runtime ref is required")
-    .max(200, "Runtime ref is too long"),
   modelRef: z
     .string()
     .min(1, "Model ref is required")
@@ -149,7 +143,6 @@ function NewWorkerPage() {
       description: "",
       purpose: "",
       roleRef: "",
-      runtimeRef: "opencode",
       modelRef: "",
       role: "",
       skills: "",
@@ -165,20 +158,8 @@ function NewWorkerPage() {
   });
 
   const modelRef = watch("modelRef");
-  // ADR-0005 D6: the picker's chosen adapter governs the whole dispatch
-  // path (adapter-row selection + bridge) — derive runtime_ref from it
-  // when the kind is Dispatcher-registered; otherwise keep "opencode"
-  // (the only dispatchable kind today). Registered kinds are exactly what
-  // the picker's adapter tier renders, so a selection made there is by
-  // construction governable.
-  const { data: adapterKinds } = useListAdapterKinds();
-  useEffect(() => {
-    const parsed = parseModelRef(modelRef);
-    if (!parsed) return;
-    const kinds = adapterKinds ?? [];
-    const next = kinds.includes(parsed.adapter) ? parsed.adapter : "opencode";
-    setValue("runtimeRef", next, { shouldValidate: true });
-  }, [modelRef, adapterKinds, setValue]);
+  // Worker-level runtime_ref is retired (ADR-0003 single source of truth):
+  // the model_ref's adapter segment alone governs dispatch.
   const permissions = watch("permissions");
   const gatedTools = watch("gatedTools");
   const budgetOverrides = watch("budgetOverrides");
@@ -191,7 +172,6 @@ function NewWorkerPage() {
       description: values.description || undefined,
       purpose: values.purpose || undefined,
       roleRef: values.roleRef || undefined,
-      runtimeRef: values.runtimeRef,
       modelRef: values.modelRef,
       role: values.role,
       skills: values.skills,
@@ -303,19 +283,6 @@ function NewWorkerPage() {
             </CardHeader>
 
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="runtimeRef">Runtime ref</Label>
-                <Input
-                  id="runtimeRef"
-                  placeholder="opencode"
-                  {...register("runtimeRef")}
-                />
-                {errors.runtimeRef && (
-                  <p className="text-xs text-destructive">
-                    {errors.runtimeRef.message}
-                  </p>
-                )}
-              </div>
               <div className="space-y-2">
                 <Label>Model</Label>
                 <ModelPicker

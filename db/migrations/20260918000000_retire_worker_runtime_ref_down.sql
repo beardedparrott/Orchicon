@@ -1,0 +1,12 @@
+-- Reverse of 20260918000000_retire_worker_runtime_ref (best-effort).
+--
+-- The forward migration dropped worker_versions.runtime_ref, whose data
+-- is gone. This restores the COLUMN (per the schema.hcl shape: text,
+-- NOT NULL, default '') but cannot reconstruct the dropped values —
+-- restored rows all carry the empty runtime_ref, which is exactly the
+-- pre-ADR-0005-D6 state whose dispatch behavior (model_ref kind →
+-- default kind fallback) the current code still implements. The down
+-- migration is a dev-rollback convenience, not a data guarantee;
+-- migrations are forward-only (developer.md invariant #9) and this file
+-- exists to satisfy the paired _down.sql convention.
+ALTER TABLE worker_versions ADD COLUMN runtime_ref text NOT NULL DEFAULT '';

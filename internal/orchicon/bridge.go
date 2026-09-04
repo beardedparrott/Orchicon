@@ -148,14 +148,27 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if terr != nil {
 		return terr
 	}
-	// The ToolRegistry interface must stay a bare nil when no MCP servers
-	// resolve (the platform-default state): assigning a typed-nil
-	// *mcpTools into the interface makes it non-nil for the loop's
-	// `s.tools != nil` check, nil-panicking the first turn of every
-	// session (regression of the pre-PR `var tools ToolRegistry` pattern).
-	var tools ToolRegistry
+	// HOST tool suite: the core file/shell tools every native session
+	// needs (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped
+	// to the execution's working dir (worktree when provisioned, else the
+	// project dir) with the project root READ-only. Before this, the
+	// session carried only MCP + memory tools and every core tool call
+	// returned "tool registry not configured" — native workers could
+	// neither survey nor write anything.
+	//
+	// The working dir MUST be manifest.WorktreePath when a run worktree is
+	// provisioned (mirroring the opencode adapter's executionDir()): tools
+	// scoped to the project dir ran bash/read/write in the MAIN checkout —
+	// wrong branch (worktree-hygiene violation, git rev-parse in a
+	// scratch/out-of-repo cwd learns "not a git repository" facts) and
+	// writes never landed on the run branch.
+	workingDir := pd
+	if manifest.WorktreePath != "" {
+		workingDir = manifest.WorktreePath
+	}
+	var tools ToolRegistry = NewHostTools(workingDir, manifest.ProjectDir)
 	if mt != nil {
-		tools = mt
+		tools = &combinedRegistry{primary: tools, secondary: mt}
 		defer func() { _ = mt.Close() }()
 	}
 	// Durable agent-memory store (D2): opened at the TRUE project dir
@@ -220,6 +233,17 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// double-terminate: the reconciler's startExecution would mark the
 	// execution failed_to_start AND requeue the task (PR B2).
 	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
+	// Durable transcript mirroring: the JSONL transcript is the crash-safe
+	// record; the sessionPartsRecorder mirrors it into the DB
+	// (execution_session_parts) in opencode part shapes so the session
+	// pane renders native executions exactly like opencode ones. Attached
+	// BEFORE Run (the loop appends from the first turn) and drained at
+	// session end. Best-effort: with no store configured the recorder
+	// still runs (its flush no-ops) — simpler lifecycle, zero cost.
+	recorder := newSessionPartsRecorder(b.sessionStore, exec.ID, exec.TenantID)
+	sess.SetTranscriptObserver(recorder.observe)
+	recorder.start()
+	defer recorder.Close()
 	// Per-turn usage emission (D2, opencode step_finish parity): wire the
 	// live per-turn usage sink ONLY when a usage recorder is configured, so
 	// each provider turn emits exactly one usage record from REAL provider
@@ -395,6 +419,39 @@ func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {}
 
 // --- internal ------------------------------------------------------------
 
+// combinedRegistry serves the host suite plus a secondary registry
+// (MCP). Defs concatenate (deduped: MCP wins nothing — host names win,
+// an MCP tool shadowing a host name is refused at Execute); Execute
+// routes by which side advertised the name.
+type combinedRegistry struct {
+	primary   ToolRegistry
+	secondary ToolRegistry
+}
+
+func (c *combinedRegistry) Defs() []ToolDef {
+	out := c.primary.Defs()
+	seen := make(map[string]bool, len(out))
+	for _, d := range out {
+		seen[d.Name] = true
+	}
+	for _, d := range c.secondary.Defs() {
+		if !seen[d.Name] {
+			out = append(out, d)
+			seen[d.Name] = true
+		}
+	}
+	return out
+}
+
+func (c *combinedRegistry) Execute(ctx context.Context, name, argsJSON string) (string, error) {
+	for _, d := range c.primary.Defs() {
+		if d.Name == name {
+			return c.primary.Execute(ctx, name, argsJSON)
+		}
+	}
+	return c.secondary.Execute(ctx, name, argsJSON)
+}
+
 // mcpTools adapts the per-session MCP client manager to the loop's
 // ToolRegistry (ADR-0008): discovered tools surface as
 // mcp__<server>__<tool> with their JSON schemas passed through verbatim,
@@ -466,10 +523,376 @@ func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, 
 }
 
 // persistSession writes the transcript's DB session parts (best-effort).
+// The parts recorder (sessionPartsRecorder) mirrors the JSONL transcript
+// into execution_session_parts — the SAME durable surface the opencode
+// adapter writes — so the session pane renders native executions as
+// separate line items exactly like opencode ones. Before this, the
+// native bridge persisted nil (the deferred session-parts task never
+// landed) and terminal native executions rendered as one output blob.
 func (b *NativeBridge) persistSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) {
-	_ = b.sessionStore(ctx, exec.ID, exec.TenantID, nil) // parts wiring lands with the session-parts task
+	_ = b.sessionStore(ctx, exec.ID, exec.TenantID, nil)
 }
 
+// sessionPartsRecorder mirrors a native session's JSONL transcript into
+// the DB session-parts store in opencode part shapes (the frontend's
+// transcriptItems parses exactly these): user_message{text,source},
+// text{part:{text}}, reasoning{part:{text}}, tool_use{part:{tool,callID,
+// state:{status,input,output}}}, step_start/step_finish turn boundaries,
+// error{error:{message}}, and session_info at open. Batches under a mutex
+// and flushes every 2s on a ticker (the pane's transcript-flush cadence),
+// plus a final drain at Close. Best-effort end to end: a failed batch is
+// dropped (the JSONL transcript remains the durable record); persistence
+// never breaks a session.
+type sessionPartsRecorder struct {
+	mu      sync.Mutex
+	store   scheduler.SessionStoreFunc
+	execID  string
+	tenant  string
+	pending []db.SessionPart
+	// open holds in-flight tool_use parts by callID: the invocation part
+	// is stashed at TransToolCall and flushed only when the matching
+	// TransToolResult arrives (with state.output merged in). This is the
+	// opencode parity shape — ONE completed tool_use part per call
+	// carrying state.input + state.output; emitting both an input part and
+	// an output part would render duplicate tool bubbles.
+	open map[string]db.SessionPart
+	stop chan struct{}
+	// stopped is closed by run() on shutdown. Close only waits when the
+	// pump was actually started (go recorder.run() in Start); tests that
+	// drive the recorder synchronously (no pump) must not deadlock, so
+	// started is set by the starter and Close skips the wait when absent.
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func newSessionPartsRecorder(store scheduler.SessionStoreFunc, execID, tenant string) *sessionPartsRecorder {
+	return &sessionPartsRecorder{
+		store:   store,
+		execID:  execID,
+		tenant:  tenant,
+		open:    map[string]db.SessionPart{},
+		started: make(chan struct{}),
+		stop:    make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+}
+
+// start launches the flush pump (Start calls this once, before Run).
+func (r *sessionPartsRecorder) start() {
+	close(r.started)
+	go r.run()
+}
+
+// observe implements the transcript observer contract: convert one JSONL
+// entry into its opencode part shape and queue it. Runs on the loop's
+// hot path — conversion only, no I/O.
+//
+// Seq contract (opencode parity): the DB store's unique key is
+// (tenant_id, execution_id, seq) with ON CONFLICT DO NOTHING, so every
+// part must carry a DISTINCT seq; the pane orders strictly by seq. One
+// transcript event may expand into SEVERAL parts (a tool_call event
+// becomes the step-close + step-open boundary plus one tool_use part per
+// call), so parts derive their seq as seq<<8 | subIndex from the source
+// event's seq — resume-safe (the JSONL seq continues past the last
+// durable line), replay-idempotent (the same event derives the same
+// seqs, so a re-appended transcript entry cannot double-record), and
+// bounded (subIndex < 256 per event by construction).
+func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
+	// sub pushes one derived part for the source event (subIndex < 256).
+	sub := func(subIndex int64, kind string, payload map[string]any) {
+		r.push(r.part(seq<<8 | subIndex, kind, payload))
+	}
+	switch typ {
+	case TransSession:
+		// Identity block → the session_info part (pane header parity).
+		var d struct {
+			Identity Identity `json:"identity"`
+		}
+		if jsonUnmarshal(data, &d) != nil {
+			return
+		}
+		r.push(r.part(seq<<8, db.SessionPartSessionInfo, map[string]any{
+			"session_id": d.Identity.ExecutionID,
+		}))
+	case TransUserMessage:
+		var d struct {
+			Text   string `json:"text"`
+			Source string `json:"source"`
+		}
+		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
+			return
+		}
+		sub(0, db.SessionPartUserMessage, map[string]any{"text": d.Text, "source": d.Source})
+	case TransText:
+		var d struct {
+			Text string `json:"text"`
+		}
+		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
+			return
+		}
+		sub(0, db.SessionPartText, map[string]any{"part": map[string]any{"text": d.Text}})
+	case TransReasoning:
+		var d struct {
+			Text string `json:"text"`
+		}
+		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
+			return
+		}
+		sub(0, db.SessionPartReasoning, map[string]any{"part": map[string]any{"text": d.Text}})
+	case TransToolCall:
+		// One turn's assistant tool_use. Tool calls mark a generation
+		// boundary (close the previous step, open the next). Each call's
+		// tool_use part (with state.input) is STASHED open, not flushed —
+		// it completes when the matching TransToolResult arrives, so the
+		// DB holds exactly ONE completed part per call (opencode parity:
+		// state.input + state.output in one part; the todos parser walks
+		// part.state.input for the latest todowrite).
+		var d struct {
+			Text      string     `json:"text"`
+			ToolCalls []ToolCall `json:"tool_calls"`
+		}
+		if jsonUnmarshal(data, &d) != nil {
+			return
+		}
+		sub(0, db.SessionPartStepFinish, map[string]any{})
+		sub(1, db.SessionPartStepStart, map[string]any{})
+		for i, c := range d.ToolCalls {
+			callID := c.ToolCallID
+			if callID == "" {
+				callID = fmt.Sprintf("%d-%d", seq, i)
+			}
+			// Guard: an empty ArgsJSON cannot ride json.RawMessage (the
+			// encoder rejects empty bytes and would blank the payload).
+			args := c.ArgsJSON
+			if args == "" {
+				args = "{}"
+			}
+			partBody := map[string]any{
+				"tool":   c.Name,
+				"callID": callID,
+				"state":  map[string]any{
+					"status": "completed",
+					"input":  json.RawMessage(args),
+				},
+			}
+			r.holdOpen(db.SessionPart{
+				ExecutionID: r.execID,
+				TenantID:    r.tenant,
+				Seq:         seq<<8 | int64(2+i),
+				Kind:        db.SessionPartToolUse,
+				Payload:     db.MarshalPartPayload(map[string]any{"part": partBody}),
+			}, callID)
+		}
+		return
+	case TransToolResult:
+		// The call's completion: merge state.output into the held
+		// invocation part and flush it (one completed part per call). An
+		// orphan result (no held call — e.g. a crash between the two
+		// events) flushes standalone so the output is never lost.
+		d, okData := toolResultFromTranscript(data)
+		if !okData {
+			return
+		}
+		callID := d.ToolCall.ToolCallID
+		if callID == "" {
+			return
+		}
+		state := map[string]any{"status": "completed", "output": d.Output}
+		if d.Err != "" {
+			state = map[string]any{"status": "error", "output": d.Err}
+		}
+		if r.releaseOpen(callID, func(p db.SessionPart) db.SessionPart {
+			var pl map[string]any
+			_ = jsonUnmarshal(p.Payload, &pl)
+			inner, _ := pl["part"].(map[string]any)
+			if inner == nil {
+				inner = map[string]any{}
+			}
+			// Preserve the held call's state.input; ride the completion's
+			// status/output (an error result flips status to error).
+			prevState, _ := inner["state"].(map[string]any)
+			prevInput, _ := prevState["input"]
+			state["input"] = prevInput
+			inner["state"] = state
+			pl["part"] = inner
+			return db.SessionPart{
+				ExecutionID: p.ExecutionID,
+				TenantID:    p.TenantID,
+				Seq:         p.Seq,
+				Kind:        p.Kind,
+				Payload:     db.MarshalPartPayload(pl),
+			}
+		}) {
+			return // merged into the held part
+		}
+		// Orphan completion (no matching held call) — record it standalone
+		// so the pane still shows the call.
+		sub(0, db.SessionPartToolUse, map[string]any{"part": map[string]any{
+			"tool": d.ToolCall.Name, "callID": callID, "state": state,
+		}})
+	case TransFinish:
+		sub(0, db.SessionPartStepFinish, map[string]any{})
+	case TransError:
+		var d struct {
+			Error string `json:"error"`
+		}
+		if jsonUnmarshal(data, &d) != nil {
+			return
+		}
+		sub(0, db.SessionPartError, map[string]any{"error": map[string]any{"message": d.Error}})
+	default:
+		return // state/written_files: no pane-facing shape
+	}
+}
+
+// holdOpen stashes one tool_use part for callID under mu.
+func (r *sessionPartsRecorder) holdOpen(p db.SessionPart, callID string) {
+	r.mu.Lock()
+	r.open[callID] = p
+	r.mu.Unlock()
+}
+
+// toolResultFromTranscript decodes a TransToolResult entry tolerantly:
+// the loop marshals ToolCall without JSON tags (Go field names —
+// "ToolCallID"), while some tests/tools use snake_case
+// ("tool_call_id"). Try the strict shape first, then the tagged one.
+func toolResultFromTranscript(data []byte) (toolResult, bool) {
+	var strict toolResult
+	if err := jsonUnmarshal(data, &strict); err == nil && strict.ToolCall.ToolCallID != "" {
+		return strict, true
+	}
+	var tagged struct {
+		ToolCall struct {
+			ToolCallID string `json:"tool_call_id"`
+			Name       string `json:"name"`
+			ArgsJSON   string `json:"args_json"`
+		} `json:"tool_call"`
+		Output string `json:"output"`
+		Err    string `json:"error"`
+	}
+	if err := jsonUnmarshal(data, &tagged); err == nil && tagged.ToolCall.ToolCallID != "" {
+		return toolResult{
+			ToolCall: ToolCall{ToolCallID: tagged.ToolCall.ToolCallID, Name: tagged.ToolCall.Name, ArgsJSON: tagged.ToolCall.ArgsJSON},
+			Output:   tagged.Output,
+			Err:      tagged.Err,
+		}, true
+	}
+	return toolResult{}, false
+}
+
+// releaseOpen pops the held part for callID and, when present, applies
+// merge (state.output ride-along) and queues it. Returns whether a held
+// part existed (false = caller records the result standalone).
+func (r *sessionPartsRecorder) releaseOpen(callID string, merge func(db.SessionPart) db.SessionPart) bool {
+	r.mu.Lock()
+	p, ok := r.open[callID]
+	if ok {
+		delete(r.open, callID)
+		r.pending = append(r.pending, merge(p))
+	}
+	r.mu.Unlock()
+	return ok
+}
+
+// drainOpen flushes any still-held invocation parts (session end without a
+// result: crash/cancel mid-call). The input is preserved (status
+// completed, empty output) so the operator sees what the worker was
+// about to do — never a silently missing call.
+func (r *sessionPartsRecorder) drainOpen() {
+	r.mu.Lock()
+	for callID, p := range r.open {
+		var pl map[string]any
+		_ = jsonUnmarshal(p.Payload, &pl)
+		inner, _ := pl["part"].(map[string]any)
+		if inner == nil {
+			inner = map[string]any{}
+		}
+		// Preserve the held input; mark it completed with an empty output
+		// (session ended before the result arrived).
+		prevState, _ := inner["state"].(map[string]any)
+		prevInput, _ := prevState["input"]
+		inner["state"] = map[string]any{"status": "completed", "input": prevInput, "output": ""}
+		pl["part"] = inner
+		p.Payload = db.MarshalPartPayload(pl)
+		r.pending = append(r.pending, p)
+		delete(r.open, callID)
+	}
+	r.mu.Unlock()
+}
+
+func (r *sessionPartsRecorder) part(seq int64, kind string, payload map[string]any) db.SessionPart {
+	return db.SessionPart{
+		ExecutionID: r.execID,
+		TenantID:    r.tenant,
+		Seq:         seq,
+		Kind:        kind,
+		Payload:     db.MarshalPartPayload(payload),
+	}
+}
+
+func (r *sessionPartsRecorder) push(p db.SessionPart) {
+	r.mu.Lock()
+	r.pending = append(r.pending, p)
+	r.mu.Unlock()
+}
+
+// run flushes every 2s until Close.
+func (r *sessionPartsRecorder) run() {
+	defer close(r.stopped)
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.stop:
+			r.flush()
+			return
+		case <-t.C:
+			r.flush()
+		}
+	}
+}
+
+func (r *sessionPartsRecorder) flush() {
+	r.mu.Lock()
+	if len(r.pending) == 0 || r.store == nil {
+		r.pending = nil
+		r.mu.Unlock()
+		return
+	}
+	batch := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+	if r.store != nil {
+		_ = r.store(context.Background(), r.execID, r.tenant, batch)
+	}
+}
+
+// Close drains both pending parts and any still-held open tool calls,
+// then stops the pump. The wait is skipped when start() was never called
+// (tests drive the recorder synchronously) and bounded when the pump is
+// mid-flush against a slow store — best-effort by contract.
+func (r *sessionPartsRecorder) Close() {
+	r.drainOpen()
+	r.flush()
+	select {
+	case <-r.stop:
+		// already closed
+	default:
+		close(r.stop)
+	}
+	select {
+	case <-r.started:
+		// Pump was started: its exit-path flush covers everything queued
+		// up to close(r.stop). Bounded wait — a slow store never blocks
+		// the session end.
+		select {
+		case <-r.stopped:
+		case <-time.After(2 * time.Second):
+		}
+	default:
+		// Pump never started — nothing to wait for.
+	}
+}
 // transcriptPath returns the JSONL path for a session id.
 func transcriptPath(projectDir, sessionID string) string {
 	return fmt.Sprintf("%s/.orchicon/sessions/%s.jsonl", projectDir, sessionID)

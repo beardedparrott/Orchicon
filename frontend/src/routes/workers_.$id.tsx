@@ -73,7 +73,6 @@ const DEFAULT_BUDGETS = `{
 // Fields on UpdateWorkerVersionRequest — only version-level fields,
 // not worker header fields (name, slug, description, purpose).
 interface EditFormData {
-  runtimeRef: string;
   modelRef: string;
   role: string;
   skills: string;
@@ -134,7 +133,6 @@ function WorkerDetailPage() {
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<EditFormData>({
     defaultValues: {
-      runtimeRef: "",
       modelRef: "",
       role: "",
       skills: "",
@@ -150,7 +148,6 @@ function WorkerDetailPage() {
       ? (() => {
           const pf = promptFields(selectedVersion ?? latestVersion);
           return {
-            runtimeRef: (selectedVersion ?? latestVersion)!.runtimeRef ?? "",
             modelRef: (selectedVersion ?? latestVersion)!.modelRef ?? "",
             role: pf.role,
             skills: pf.skills,
@@ -259,11 +256,10 @@ function WorkerDetailPage() {
               <Button
                 onClick={() => {
                   handleSubmit(async (formData) => {
-                    await updateVersion.mutateAsync({
-                      workerId: id,
-                      versionId: draftVersion.id,
-                      runtimeRef: formData.runtimeRef,
-                      modelRef: formData.modelRef,
+                await updateVersion.mutateAsync({
+                  workerId: id,
+                  versionId: draftVersion.id,
+                  modelRef: formData.modelRef,
                       role: formData.role,
                       skills: formData.skills,
                       behavior: formData.behavior,
@@ -368,7 +364,6 @@ function WorkerDetailPage() {
                   latest_version: {
                     version: latestVersion.version,
                     status: versionStatusLabel(latestVersion.status),
-                    runtime_ref: latestVersion.runtimeRef,
                     model_ref: latestVersion.modelRef,
                     system_prompt: latestVersion.systemPrompt || undefined,
                     permissions: safeParseJson(latestVersion.permissions),
@@ -401,7 +396,6 @@ function WorkerDetailPage() {
               slug: `${worker.slug}-clone`,
               description: worker.description,
               purpose: worker.purpose,
-              runtimeRef: latestVersion?.runtimeRef,
               modelRef: latestVersion?.modelRef,
               role: pf.role,
               skills: pf.skills,
@@ -435,14 +429,6 @@ function WorkerDetailPage() {
             <CardDescription>Current version</CardDescription>
             <CardTitle className="text-base">
               v{worker.currentVersion || "—"}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className="min-w-0">
-          <CardHeader>
-            <CardDescription>Runtime</CardDescription>
-            <CardTitle className="break-all text-base font-mono text-sm">
-              {(selectedVersion ?? latestVersion)?.runtimeRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -557,22 +543,21 @@ function WorkerDetailPage() {
             <form
               id="draftForm"
               onSubmit={handleSubmit(async (formData) => {
-                await updateVersion.mutateAsync({
-                  workerId: id,
-                  versionId: draftVersion.id,
-                  runtimeRef: formData.runtimeRef,
-                  modelRef: formData.modelRef,
-                  role: formData.role,
-                  skills: formData.skills,
-                  behavior: formData.behavior,
-                  agentsMd: formData.agentsMd,
-                  permissions: formData.permissions,
-                  gatedTools: formData.gatedTools,
-                  budgetOverrides: formData.budgetOverrides,
-                  contextSources: formData.contextSources,
-                  versionNote: formData.versionNote,
-                });
-                setEditing(false);
+                    await updateVersion.mutateAsync({
+                      workerId: id,
+                      versionId: draftVersion.id,
+                      modelRef: formData.modelRef,
+                      role: formData.role,
+                      skills: formData.skills,
+                      behavior: formData.behavior,
+                      agentsMd: formData.agentsMd,
+                      permissions: formData.permissions,
+                      gatedTools: formData.gatedTools,
+                      budgetOverrides: formData.budgetOverrides,
+                      contextSources: formData.contextSources,
+                      versionNote: formData.versionNote,
+                    });
+                    setEditing(false);
               })}
               className="space-y-6"
             >
@@ -582,10 +567,6 @@ function WorkerDetailPage() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="runtimeRef">Runtime</Label>
-                  <Input id="runtimeRef" {...register("runtimeRef")} />
-                </div>
                 <div className="space-y-2">
                   <ModelPicker
                     value={watch("modelRef")}
@@ -798,7 +779,6 @@ function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/a
         <JsonField label="Context sources" value={version.contextSources} />
       </div>
       <div className="grid gap-4 md:grid-cols-2 text-sm">
-        <JsonField label="Runtime" value={version.runtimeRef || "—"} />
         <JsonField label="Model" value={version.modelRef || "—"} />
       </div>
       <div className="grid gap-4 md:grid-cols-2 text-sm">

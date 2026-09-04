@@ -594,15 +594,15 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
-	// Select an Adapter (docs/03 §4.2). ADR-0005 D6: the row-selection kind
-	// comes from the version's runtime_ref when set (all pre-existing
-	// behavior — a divergent runtime_ref keeps its terminal
-	// failed_to_start semantics rather than being silently repointed); an
-	// EMPTY runtime_ref used to query kind "" — matching zero rows and
-	// requeueing forever (the dispatch black hole) — so it falls back to
-	// the model_ref's parsed adapter kind (the same single source of truth
-	// the bridge Resolve at dispatch uses), then the legacy default kind.
-	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.RuntimeRef, version.ModelRef))
+	// Select an Adapter (docs/03 §4.2). ADR-0003 single source of truth:
+	// the row-selection kind derives from the model_ref's parsed adapter
+	// kind — the same source the bridge Resolve at dispatch uses — then
+	// the legacy default kind. Worker-level runtime_ref (the former
+	// independently-settable override that could misroute a native model
+	// to an opencode row) is retired with the runtime_ref column; the
+	// empty-ref fallback that closed the original dispatch black hole
+	// (kind "" matching zero rows, requeueing forever) still applies.
+	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.ModelRef))
 	if err != nil {
 		r.log.Warn("no suitable adapter for task", "task", task.ID, "worker", version.WorkerID, "error", err)
 		return nil
@@ -1303,17 +1303,14 @@ func (r *TaskReconciler) selectWorker(ctx context.Context, tx pgx.Tx, tenantID s
 // selectAdapter selects a registered adapter of the matching kind with
 // a recent heartbeat and free capacity (docs/03 §4.2).
 // resolveAdapterRowKind resolves the kind used for adapter-ROW selection
-// (ADR-0005 D6): the version's runtime_ref when set (pre-existing
-// behavior; a divergent runtime_ref keeps its terminal failed_to_start
-// semantics), else the model_ref's parsed adapter kind — the same single
-// source of truth the bridge Resolve at dispatch uses — else the legacy
-// default kind. The empty-runtime_ref fallback closes the dispatch black
-// hole: kind "" matched zero runtime_adapters rows, so a worker created
-// without a runtime_ref requeued forever instead of dispatching.
-func resolveAdapterRowKind(runtimeRef, modelRef string) string {
-	if runtimeRef != "" {
-		return runtimeRef
-	}
+// (ADR-0003 single source of truth): the model_ref's parsed adapter kind —
+// the same source the bridge Resolve at dispatch uses — else the legacy
+// default kind. The empty-ref fallback closes the dispatch black hole:
+// kind "" matched zero runtime_adapters rows, so a worker created without
+// a model_ref requeued forever instead of dispatching. Worker-level
+// runtime_ref (the former first-choice kind that could diverge from the
+// ref and misroute dispatch) is retired; nothing reads it anymore.
+func resolveAdapterRowKind(modelRef string) string {
 	if k := adapter.AdapterKind(modelRef); k != "" {
 		return k
 	}

@@ -99,7 +99,7 @@ message CreateWorkerRequest {
   string description = 4; // Markdown
   string purpose = 5;
   // First-version snapshot fields (docs/05 §3):
-  string runtime_ref = 6;
+  reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
   string model_ref = 7;
   string system_prompt = 8; // Markdown + template variables (docs/05 §11)
   string context_sources = 9; // JSON
@@ -266,7 +266,7 @@ message UpdateWorkerVersionRequest {
   string worker_id = 1;
   string version_id = 2;
   // Fields to update (only draft versions):
-  optional string runtime_ref = 6;
+  reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;
@@ -299,7 +299,7 @@ message UpdateWorkerVersionResponse {
 message CreateWorkerVersionRequest {
   string worker_id = 1;
   // Optional fields to override from the source version.
-  optional string runtime_ref = 6;
+  reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;

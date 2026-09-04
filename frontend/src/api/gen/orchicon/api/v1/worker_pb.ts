@@ -250,14 +250,7 @@ export class WorkerVersion extends Message<WorkerVersion> {
   status = WorkerVersionStatus.UNSPECIFIED;
 
   /**
-   * adapter kind, e.g. "opencode"
-   *
-   * @generated from field: string runtime_ref = 6;
-   */
-  runtimeRef = "";
-
-  /**
-   * exact provider + model id; no failover (docs/05 §11)
+   * exact provider + model id; its adapter segment selects the dispatch adapter; no failover (docs/05 §11)
    *
    * @generated from field: string model_ref = 7;
    */
@@ -387,7 +380,6 @@ export class WorkerVersion extends Message<WorkerVersion> {
     { no: 3, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 4, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(WorkerVersionStatus) },
-    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */ },

@@ -3,8 +3,8 @@ package server
 // Regression test for PR-Reviewer blocker B1: the native session engine
 // (adapter kind "orchicon") must be registered as a ready runtime
 // adapter row (adp_orchicon_dev) so the TaskReconciler's selectAdapter
-// can dispatch native workers (model_ref orchicon/<provider>/<model>,
-// empty runtime_ref → resolveAdapterRowKind falls back to "orchicon").
+// can dispatch native workers (model_ref orchicon/<provider>/<model> —
+// the ref's adapter segment is the dispatch kind).
 // Before this fix the DB only ever had adp_opencode_dev, so a native
 // worker found no ready adapter and the task requeued forever.
 //
@@ -13,6 +13,8 @@ package server
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -34,8 +36,12 @@ func TestSeedNativeAdapterRegistersOrchiconKind(t *testing.T) {
 
 	// seedNativeAdapter is idempotent (upsert + heartbeat), so calling
 	// it twice must not error and must leave exactly one ready row.
-	seedNativeAdapter(ctx, pool, nil)
-	seedNativeAdapter(ctx, pool, nil)
+	// A real (discard) logger is required — seedDevAdapterKind writes a
+	// Warn through it when the kind row already exists, and a nil logger
+	// panics.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	seedNativeAdapter(ctx, pool, logger)
+	seedNativeAdapter(ctx, pool, logger)
 
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {

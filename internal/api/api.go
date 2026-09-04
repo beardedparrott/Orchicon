@@ -124,7 +124,19 @@ type Dependencies struct {
 // per-RPC (docs/07 §6.3). The whole surface is wrapped by the
 // auth-resolution middleware so every tenant-scoped RPC carries
 // identity + tenant context into the data-access layer.
-func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
+//
+// deps is taken by POINTER and mutated: Mount constructs services that
+// callers need back (ProvidersService for the native bridge's lazy
+// ProviderResolver, ModelRefRegistry when nil) and writes them through
+// the pointer. A by-value signature silently dropped those writes into
+// Mount's local copy — the caller's struct stayed nil forever and every
+// orchicon-kind dispatch failed with "providers service not yet
+// constructed" (latent until the runtime_ref retirement made the native
+// path live; regression-pinned by TestMountBackfillsDependencies).
+func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
+	if deps == nil {
+		panic("api.Mount: nil *Dependencies — programming error")
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

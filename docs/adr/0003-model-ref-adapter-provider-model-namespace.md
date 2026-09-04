@@ -193,6 +193,10 @@ legacy refs remain first-class forever (D2).
   `runtime_ref` adapter kind when both are present (validation-time
   consistency check, mismatch → actionable error). This is the invariant
   that keeps `adapter/provider/model` honest.
+  **[AMENDED 2026-09-04, superseded]** Worker-level `runtime_ref` is
+  retired outright (ADR-0005 amendment 2026-09-04): the model_ref's
+  segment-1 adapter kind is the sole dispatch identity — see that
+  amendment for the misroute/black-hole evidence and the migration.
 
 **D7 — Platform-change sync (AGENTS.md).**
 The AskOrchicon tool registry (`internal/askorchicon/tools.go` + tool files)
@@ -217,9 +221,12 @@ must never drift from the platform's actual grammar.
   (custom providers are inert). The parser must degrade gracefully: a
   `local-models/...` ref parses once the provider exists, and is rejected
   with the Settings → Adapters pointer before that.
-- **Watch:** `runtime_ref`/model-ref adapter mismatch is a new validation
+- **Watch:** ~~`runtime_ref`/model-ref adapter mismatch is a new validation
   failure; the error must tell the operator which field to fix. Keep the
-  check at save time, not dispatch time.
+  check at save time, not dispatch time.~~ **[RESOLVED 2026-09-04]** the
+  mismatch class was eliminated by retiring worker-level `runtime_ref`
+  (ADR-0005 amendment 2026-09-04) — the duality this watch item guarded
+  against no longer exists.
 - **Watch:** the serve boundary is untouched (`providerID`/`modelID`), so
   opencode itself never sees the adapter segment — no vendor coupling.
 - **Scale:** parsing is O(n) over the ref string and registry lookups are
