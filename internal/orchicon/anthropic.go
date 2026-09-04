@@ -579,7 +579,12 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 		case "message_stop":
 			s.st.finished = true
 			if s.st.stop == "" {
-				s.st.stop = StopStop
+				// message_stop without a prior message_delta stop_reason:
+				// the provider never delivered an end-of-response signal —
+				// a truncated/aborted response, not a completed one
+				// (parity: openaicompat/legacycc report StopOther here).
+				// The loop's success gate treats StopOther as a failure.
+				s.st.stop = StopOther
 			}
 			return Finish{StopReason: s.st.stop, Usage: s.st.usage}, true, nil
 		default:
@@ -604,7 +609,7 @@ type anthUsage struct {
 
 func mapAnthropicStop(reason string) StopReason {
 	switch reason {
-	case "end_turn", "stop_sequence", "":
+	case "end_turn", "stop_sequence":
 		return StopStop
 	case "max_tokens":
 		return StopLength
@@ -613,6 +618,10 @@ func mapAnthropicStop(reason string) StopReason {
 	case "refusal":
 		return StopContentFilter
 	default:
+		// An empty/unrecognized stop_reason is NOT an end_of-turn signal —
+		// StopOther is the honest terminal (the loop's success gate treats
+		// it as a failure). Synthesizing StopStop from "" recorded hollow
+		// successes on truncated responses.
 		return StopOther
 	}
 }

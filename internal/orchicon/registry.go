@@ -18,6 +18,14 @@ type Registry struct {
 	src   *SourcingService
 	httpc *http.Client
 
+	// builtinOverrides loads the tenant's provider-settings overrides for a
+	// BUILT-IN provider id (the settings-UI service registers it). Without
+	// it a built-in id always resolves to the built-in default profile and
+	// tenant overrides (base URL, num_ctx, hidden models) are silently
+	// ignored at chat time (observed: an ollama CLOUD override in Settings
+	// → Adapters → Providers while chat kept dialing localhost:11434).
+	builtinOverrides func(ctx context.Context, tenantID, providerID string) (Profile, bool, error)
+
 	mu      sync.Mutex
 	cache   map[string]Provider // tenantID|providerID → live client
 	warnLog func(string, ...any)
@@ -29,6 +37,19 @@ func NewRegistry(creds *CredentialResolver, src *SourcingService, httpc *http.Cl
 		httpc = defaultHTTPClient() // per-provider connect/total timeouts (D11)
 	}
 	return &Registry{creds: creds, src: src, httpc: httpc, cache: map[string]Provider{}, warnLog: warn}
+}
+
+// SetBuiltinOverridesLoader installs the tenant built-in provider override
+// loader (the providers settings service). Once registered, Get resolves a
+// BUILT-IN provider as built-in default ⊕ stored tenant overrides via the
+// service's EffectiveProfile (same mapping the RPC views use) — falling
+// back to the pure built-in table when no row is stored. Before this hook
+// existed, every built-in chat client used the built-in defaults regardless
+// of operator overrides.
+func (r *Registry) SetBuiltinOverridesLoader(fn func(ctx context.Context, tenantID, providerID string) (Profile, bool, error)) {
+	r.mu.Lock()
+	r.builtinOverrides = fn
+	r.mu.Unlock()
 }
 
 // Invalidate drops the cached provider instance for one (tenant, provider)
@@ -75,11 +96,34 @@ func (r *Registry) Get(ctx context.Context, tenantID, providerID string) (Provid
 	return prov, nil
 }
 
-// profile resolves the Profile row for a provider id (built-in first,
-// then the tenant-custom loader).
+// profile resolves the Profile row for a provider id: built-in ids resolve
+// through the built-in table ⊕ the tenant override loader (when the
+// settings service has registered one), custom ids load through the
+// custom-profile loader (registered by the settings-UI task via
+// SetCustomProfileLoader).
 func (r *Registry) profile(ctx context.Context, tenantID, providerID string) (Profile, error) {
-	if p, ok := BuiltinProfile(providerID); ok {
-		return p, nil
+	if _, builtin := BuiltinProfile(providerID); builtin {
+		r.mu.Lock()
+		loader := r.builtinOverrides
+		r.mu.Unlock()
+		if loader != nil {
+			// Resolve the tenant-effective profile for the built-in id. The
+			// loader returns (profile, found, err): found=false covers both
+			// "no stored row" (pure built-in default) and "provider
+			// disabled/deleted" (also fall back to the built-in default —
+			// dispatch gates decide enabled-ness upstream, not the registry;
+			// disabling mid-flight must not break in-flight sessions that
+			// already resolved a client).
+			if p, found, err := loader(ctx, tenantID, providerID); err == nil && found {
+				return p, nil
+			} else if err != nil && r.warnLog != nil {
+				r.warnLog("registry: built-in overrides lookup failed for %q — using built-in defaults", providerID)
+			}
+		}
+		if base, ok := BuiltinProfile(providerID); ok {
+			return base, nil
+		}
+		return Profile{}, fmt.Errorf("registry: unknown built-in provider %q", providerID)
 	}
 	customs, err := loadCustomProfiles(ctx, tenantID)
 	if err != nil {

@@ -38,13 +38,13 @@ func TestParityMatrix(t *testing.T) {
 		if started != 1 {
 			t.Errorf("OnStarted = %d, want 1", started)
 		}
-		if joined := strings.Join(text, ""); joined != "Hello, world!" {
+		if joined := strings.Join(text, ""); !strings.Contains(joined, "Hello, world!") {
 			t.Errorf("OnText = %q, want %q", joined, "Hello, world!")
 		}
 		if len(stalls) != 0 {
 			t.Errorf("stalls = %v, want none", stalls)
 		}
-		if len(results) != 1 || !results[0].succeeded || results[0].output != "Hello, world!" {
+		if len(results) != 1 || !results[0].succeeded || !strings.Contains(results[0].output, "Hello, world!") {
 			t.Errorf("OnResult = %+v", results)
 		}
 	})

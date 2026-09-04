@@ -501,7 +501,14 @@ func (s *openaiStream) flush() {
 	s.toolOrd = nil
 	s.drained = true
 	if !s.haveStop {
-		s.stop = StopStop
+		// NO provider stop reason: the stream ended without delivering an
+		// end-of-response signal (a truncated/aborted generation, not a
+		// completed turn). Synthesizing StopStop here recorded hollow
+		// successes: the loop's success gate ran on a turn the provider
+		// never actually ended (observed: executions "succeeded" with the
+		// model mid-monologue). StopOther is the honest terminal — the
+		// loop fails a turn that ended without the provider's signal.
+		s.stop = StopOther
 	}
 	s.queue = append(s.queue, Finish{StopReason: s.stop, Usage: s.usage})
 }

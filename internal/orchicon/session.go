@@ -86,6 +86,12 @@ type Session struct {
 	// session (goal-append gate: a continued session carries its own new
 	// goal as a user message after the seeded history).
 	continued bool
+	// completionProbesSent counts the completion-probe interjections this
+	// session has sent (decision-signal guard, completion.go). Bounded by
+	// completionProbeMaxTurns — a session that cannot deliver its
+	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
+	// instead of recording a hollow success.
+	completionProbesSent int
 	// written-tracking (deduped, OnWrittenFiles parity).
 	writtenMu    sync.Mutex
 	writtenSet   map[string]bool

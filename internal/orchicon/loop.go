@@ -315,13 +315,38 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			}
 			continue
 
-		case StopStop, StopLength, StopOther:
+		case StopStop:
+			// Success gate (opencode parity — decision-signal guard): a
+			// session that ends WITHOUT a real ORCHICON WORKER SUMMARY is
+			// not a completed worker. The marker is the worker's contract
+			// sign-off; its absence means the final response was truncated
+			// (StopLength — the 4096-token cap mid-monologue), the model
+			// went idle early, or it echoed the marker as a plan
+			// placeholder. First run the completion probe: a fresh turn
+			// asking for the sign-off. The probe turn either delivers the
+			// marker (loop continues; the NEXT StopStop turn settles with
+			// the marker present) or fails the execution honestly when the
+			// probe budget is spent. A genuinely finished session settles.
+			if !s.decisionMarkerPresent() {
+				if !s.runCompletionProbe(ctx, callbacks) {
+					return nil // probe failed the execution — OnResult already fired
+				}
+				continue
+			}
 			_ = s.markState(ctx, "done")
 			_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
 			callbacks.OnResult(ctx, s.id, true, s.output.String(), "")
 			return nil
 
-		default: // StopContentFilter / StopError / StopOther non-success
+		case StopLength, StopOther, StopError, StopContentFilter:
+			fallthrough
+		default:
+			// A turn that ended WITHOUT the provider's end-of-response
+			// signal is a truncated/aborted response, not a completed one.
+			// StopLength = the MaxTokens cap cut the model mid-generation
+			// (the exact failure shape of the reported hollow successes).
+			// StopOther arrives when a provider stream never delivered a
+			// stop reason at all. Neither may be recorded as success.
 			msg := fmt.Sprintf("model terminated with stop reason %q", finish)
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")

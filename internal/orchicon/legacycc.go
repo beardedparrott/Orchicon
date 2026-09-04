@@ -204,7 +204,7 @@ func legacyUsageToUsage(u *legacyUsage) Usage {
 
 func mapLegacyStop(reason string) StopReason {
 	switch reason {
-	case "stop", "":
+	case "stop":
 		return StopStop
 	case "length", "max-tokens":
 		return StopLength
@@ -213,6 +213,10 @@ func mapLegacyStop(reason string) StopReason {
 	case "content-filter":
 		return StopContentFilter
 	default:
+		// An empty/unrecognized finishReason is NOT an end-of-turn signal —
+		// StopOther is the honest terminal (the loop's success gate treats
+		// it as a failure). Synthesizing StopStop from "" recorded hollow
+		// successes on truncated responses.
 		return StopOther
 	}
 }
@@ -307,7 +311,11 @@ func (s *legacyStream) Next(ctx context.Context) (Event, bool, error) {
 func (s *legacyStream) flush() (Event, bool, error) {
 	s.drained = true
 	if s.stop == "" {
-		s.stop = StopStop
+		// NO finish event arrived: the stream ended without an
+		// end-of-response signal — a truncated/aborted generation, not a
+		// completed turn (parity: openaicompat/anthropic report StopOther
+		// here; synthesizing StopStop recorded hollow successes).
+		s.stop = StopOther
 	}
 	return Finish{StopReason: s.stop, Usage: s.usage}, true, nil
 }

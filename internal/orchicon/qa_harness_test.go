@@ -22,6 +22,20 @@ type scriptedTurn struct {
 	finish    StopReason
 	usage     Usage
 	streamErr error
+	// bare opts out of the harness's automatic decision-marker delivery:
+	// the scripted turn ends exactly as scripted (no synthesized
+	// ORCHICON WORKER SUMMARY text). Tests of the decision-signal gate
+	// set bare to script marker-less turns.
+	bare bool
+	// markerSuffix overrides the auto-delivered marker body (StopStop
+	// turns only, bare=false). Empty → the harness default sign-off.
+	markerSuffix string
+}
+
+// markerText is the canonical scripted sign-off for a finished worker turn
+// (mirrors what a conforming worker model emits before ending a session).
+func markerText(body string) string {
+	return "\nORCHICON WORKER SUMMARY: success — " + body
 }
 
 // mockProvider pops scripted turns per StreamTurn call and records
@@ -46,7 +60,7 @@ func (m *mockProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnStr
 	}
 	t := m.turns[0]
 	m.turns = m.turns[1:]
-	st := &mockStream{events: t.events, finish: t.finish, usage: t.usage, streamErr: t.streamErr}
+	st := &mockStream{events: t.events, finish: t.finish, usage: t.usage, streamErr: t.streamErr, bare: t.bare, markerSuffix: t.markerSuffix}
 	m.lastStream = st
 	return st, nil
 }
@@ -71,11 +85,14 @@ func (m *mockProvider) lastRequest() TurnRequest {
 
 // mockStream is an in-memory TurnStream.
 type mockStream struct {
-	events    []Event
-	finish    StopReason
-	usage     Usage
-	streamErr error
-	i         int
+	events       []Event
+	finish       StopReason
+	usage        Usage
+	streamErr    error
+	bare         bool
+	markerSuffix string
+	markerDone   bool
+	i            int
 }
 
 func (s *mockStream) Next(ctx context.Context) (Event, bool, error) {
@@ -90,6 +107,18 @@ func (s *mockStream) Next(ctx context.Context) (Event, bool, error) {
 		return e, true, nil
 	}
 	if s.i == len(s.events) {
+		// Decision-signal parity: a scripted turn that ends StopStop
+		// without bare delivers the ORCHICON WORKER SUMMARY sign-off as
+		// its final text — the default shape of a legitimately-finished
+		// worker turn. Gate tests opt out via bare / markerSuffix.
+		if s.finish == StopStop && !s.bare && !s.markerDone {
+			s.markerDone = true
+			body := s.markerSuffix
+			if body == "" {
+				body = "task completed"
+			}
+			return TextDelta{Text: markerText(body)}, true, nil
+		}
 		s.i++
 		return Finish{StopReason: s.finish, Usage: s.usage}, true, nil
 	}

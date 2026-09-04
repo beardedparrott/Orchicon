@@ -278,6 +278,13 @@ func (s *Service) substrate() (*orchicon.Registry, *orchicon.SourcingService, *o
 			}
 		}
 		s.registry = orchicon.NewRegistry(resolver, src, nil, warn)
+		// BUILT-IN provider overrides (ADR-0006 D6 parity): registry.Get for
+		// a built-in id resolves built-in default ⊕ tenant provider-settings
+		// overrides via EffectiveProfile — the SAME mapping the RPC views
+		// use. Without this hook every built-in chat client used the
+		// built-in defaults (observed: an ollama CLOUD BaseURLOverride in
+		// Settings while chat kept dialing http://localhost:11434).
+		s.registry.SetBuiltinOverridesLoader(s.EffectiveProfile)
 		s.sourcing = src
 		s.resolver = resolver
 	})

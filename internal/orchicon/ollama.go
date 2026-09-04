@@ -313,9 +313,6 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 			s.usage.OutputTokens = ch.EvalCount
 			s.stop = mapOllamaDone(ch.DoneReason)
 			s.drained = true
-			if s.stop == "" {
-				s.stop = StopStop
-			}
 			return Finish{StopReason: s.stop, Usage: s.usage}, true, nil
 		}
 	}
@@ -332,13 +329,19 @@ func (s *ollamaNativeStream) fail(err error) (Event, bool, error) {
 
 func mapOllamaDone(reason string) StopReason {
 	switch reason {
-	case "stop", "":
+	case "stop":
 		return StopStop
 	case "length":
 		return StopLength
 	case "load":
 		return StopOther
 	default:
+		// The native /api/chat contract: done_reason "" means the stream
+		// ended without a real end-of-response signal (a truncated or
+		// aborted generation, NOT a completed turn). Synthesizing StopStop
+		// here recorded hollow successes — the loop's success gate ran on
+		// a turn the provider never actually ended. StopOther is the
+		// honest terminal: the loop's success gate treats it as a failure.
 		return StopOther
 	}
 }
