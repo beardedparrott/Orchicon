@@ -360,6 +360,15 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 		Visible:       true,
 		HiddenModels:  r.HiddenModels,
 		NumCtxDefault: r.NumCtxDefault,
+		// Custom providers are OpenAI-compatible by definition (Settings →
+		// Adapters → Providers only accepts compat endpoints), and Orchicon
+		// native sessions are inherently tool-driven (every turn requests
+		// tools). Zero-value Quirks here silently dropped the tools array
+		// from every wire request — a tool-trained model then improvises
+		// its native token-format tool calls as PLAIN TEXT, the loop sees a
+		// text-only finish, and executions "succeed" in 1-2 seconds with
+		// markup garbage ("<｜DSML｜tool_calls>…") as the final message.
+		Quirks: orchicon.Quirks{SupportsToolCalls: true},
 	}
 	if r.AuthMode == AuthModeToken {
 		p.AuthSecretRef = CustomSecretName(r.ProviderID)

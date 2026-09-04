@@ -207,6 +207,23 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			}
 		}
 
+		// Defense-in-depth (no-tools wire): a provider that reports no
+		// tool capability can never drive a session — the loop IS tool
+		// calls. Silently omitting the tools array makes a tool-trained
+		// model improvise its native token-format tool calls as plain
+		// text ("<｜DSML｜tool_calls>…"), which the loop reads as a
+		// text-only final answer: executions "succeed" in seconds with
+		// markup garbage. Fail fast with an actionable message instead.
+		if len(req.Tools) > 0 && !s.provider.Capabilities().Tools {
+			msg := fmt.Sprintf(
+				"provider %q (model %q) reports no tool-call capability, but Orchicon sessions are tool-driven — refusing to send a tool-less request (the model would improvise tool calls as plain text). Enable tool support for this provider in Settings → Adapters → Providers, or pick a tool-capable model.",
+				s.identity.ProviderID, s.identity.Model)
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			return nil
+		}
+
 		stream, err := s.provider.StreamTurn(ctx, req)
 		if err != nil {
 			// Pre-stream failure → execution fails (error surfaced).

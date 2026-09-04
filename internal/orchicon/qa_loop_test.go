@@ -33,6 +33,68 @@ func qaSession(t *testing.T, prov Provider, tools ToolRegistry) *Session {
 	return s
 }
 
+// noToolsProvider honestly reports no tool capability. Guards the
+// no-tools-wire defense: the loop must refuse to send a tool-less request
+// (a tool-trained model would improvise its native token-format tool calls
+// as plain text — the silent-instant-finish bug class).
+type noToolsProvider struct {
+	turns []scriptedTurn
+	sent  []TurnRequest
+}
+
+func (p *noToolsProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
+	p.sent = append(p.sent, req)
+	return &mockStream{events: p.turns[0].events, finish: p.turns[0].finish}, nil
+}
+func (p *noToolsProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
+func (p *noToolsProvider) Capabilities() Capabilities                          { return Capabilities{Streaming: true} }
+
+// AC: a provider without tool capability fails the execution FAST with an
+// actionable message — never a silently tool-less wire request.
+func TestQANoToolsCapabilityFailsFast(t *testing.T) {
+	prov := &noToolsProvider{turns: []scriptedTurn{
+		{events: []Event{TextDelta{Text: "I would call a tool now…"}}, finish: StopStop},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	if len(results) != 1 || results[0].succeeded {
+		t.Fatalf("OnResult = %+v, want exactly one failed result", results)
+	}
+	for _, frag := range []string{"no tool-call capability", "tool-driven", "Settings → Adapters → Providers"} {
+		if !strings.Contains(results[0].errMsg, frag) {
+			t.Errorf("OnResult error missing %q: %q", frag, results[0].errMsg)
+		}
+	}
+	// The provider must never have been called — the refusal is pre-stream.
+	if len(prov.sent) != 0 {
+		t.Errorf("StreamTurn called %d times, want 0 (refusal must be pre-stream)", len(prov.sent))
+	}
+	// Transcript is marked failed (resumable, replayable).
+	evs, err := Load(s.TranscriptPath())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	failed := false
+	for _, e := range evs {
+		if e.Type == TransState {
+			var d struct {
+				State string `json:"state"`
+			}
+			_ = jsonUnmarshal(e.Data, &d)
+			if d.State == "failed" {
+				failed = true
+			}
+		}
+	}
+	if !failed {
+		t.Error("transcript not marked failed after no-tools refusal")
+	}
+}
+
 // AC1: text-only run → OnStarted / OnText (chunked) / OnResult(success)
 // with full accumulated output.
 func TestQATextOnlyCallbackParity(t *testing.T) {
@@ -505,7 +567,9 @@ func (p *panicProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnSt
 	return p.stream, nil
 }
 func (p *panicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
-func (p *panicProvider) Capabilities() Capabilities                          { return Capabilities{} }
+func (p *panicProvider) Capabilities() Capabilities {
+	return Capabilities{Streaming: true, Tools: true}
+}
 
 // AC: sequence continuation (opt-in, DEFAULT OFF) — a new session seeded
 // from a prior session's transcript replays the full prior conversation
