@@ -72,6 +72,10 @@ type Session struct {
 	history []Message
 	// output accumulates the session's assistant text (OnResult parity).
 	output *strings.Builder
+	// pendingObserver holds a transcript observer set before the
+	// transcript exists (SetTranscriptObserver pre-Run); OpenTranscript
+	// applies it.
+	pendingObserver func(seq int64, typ string, data []byte)
 	// inj is the mid-run injection queue (nil until first inject).
 	inj *injected
 	// continuationPath is the prior session's transcript path when this
@@ -275,12 +279,36 @@ func (s *Session) TranscriptPath() string {
 	return filepath.Join(s.dir, s.id+".jsonl")
 }
 
+// Transcript returns the session's transcript handle (nil before the
+// first OpenTranscript — Run opens it). The bridge sets its DB-mirroring
+// observer via SetTranscriptObserver BEFORE Run; the observer is applied
+// the moment the transcript opens, so no first-turn events are missed.
+func (s *Session) Transcript() *JSONLTranscript {
+	return s.transcript
+}
+
+// SetTranscriptObserver installs the transcript observer that the
+// session applies the instant its transcript opens in Run (before any
+// event is appended). Calling it after the transcript is already open
+// applies it immediately.
+func (s *Session) SetTranscriptObserver(fn func(seq int64, typ string, data []byte)) {
+	if t := s.transcript; t != nil {
+		t.SetObserver(fn)
+		return
+	}
+	s.pendingObserver = fn
+}
+
 // OpenTranscript opens (or reopens, for resume) the session's JSONL in
 // append mode. Caller must Close it.
 func (s *Session) OpenTranscript() (*JSONLTranscript, error) {
 	t, err := openTranscript(s.TranscriptPath())
 	if err != nil {
 		return nil, err
+	}
+	if s.pendingObserver != nil && t.observer == nil {
+		t.SetObserver(s.pendingObserver)
+		s.pendingObserver = nil
 	}
 	s.transcript = t
 	return t, nil
