@@ -480,7 +480,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		HostServe:  hostServe,
 		SecretsKEK: secretsKEK,
 	}
-	handler := api.Mount(mux, deps)
+	handler := api.Mount(mux, &deps)
 
 	// Native in-process session engine (adapter kind "orchicon"). The
 	// Dispatcher treats it like any other adapter: Start blocks until the

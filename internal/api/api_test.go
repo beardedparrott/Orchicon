@@ -33,13 +33,34 @@ func testDeps() Dependencies {
 	}
 }
 
+// TestMountBackfillsDependencies pins the pointer contract of Mount: the
+// struct the CALLER holds must observe the services Mount constructs
+// (ProvidersService for the native bridge's lazy ProviderResolver;
+// ModelRefRegistry when the caller passed nil). Mount takes
+// *Dependencies precisely so these back-fills are visible to the caller —
+// the by-value signature silently dropped them into a local copy, which
+// made every orchicon-kind dispatch fail with "providers service not yet
+// constructed (api.Mount)".
+func TestMountBackfillsDependencies(t *testing.T) {
+	mux := http.NewServeMux()
+	deps := testDeps()
+	Mount(mux, &deps)
+	if deps.ProvidersService == nil {
+		t.Fatal("deps.ProvidersService still nil after Mount — by-value shadow regression: the native bridge's lazy ProviderResolver would fail every orchicon dispatch")
+	}
+	if deps.ModelRefRegistry == nil {
+		t.Fatal("deps.ModelRefRegistry still nil after Mount — settings/gateway composition lost")
+	}
+}
+
 // TestMountRequiresCredential pins AC1/AC2 at the api.Mount level: a
 // request with no Authorization header is 401. There is no tenant-only
 // fallback — Mount always wraps with ResolveAuth, so no credential-less
 // request can reach tenant-scoped data.
 func TestMountRequiresCredential(t *testing.T) {
 	mux := http.NewServeMux()
-	handler := Mount(mux, testDeps())
+	deps := testDeps()
+	handler := Mount(mux, &deps)
 	req := httptest.NewRequest(http.MethodPost, "/orchicon.api.v1.ProjectService/ListProjects", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -53,7 +74,8 @@ func TestMountRequiresCredential(t *testing.T) {
 // for a resolved identity.
 func TestMountTenantHeaderIsNotIdentity(t *testing.T) {
 	mux := http.NewServeMux()
-	handler := Mount(mux, testDeps())
+	deps := testDeps()
+	handler := Mount(mux, &deps)
 	req := httptest.NewRequest(http.MethodPost, "/orchicon.api.v1.ProjectService/ListProjects", nil)
 	req.Header.Set("x-orchicon-tenant-id", "tnt_dev")
 	rec := httptest.NewRecorder()
@@ -67,7 +89,8 @@ func TestMountTenantHeaderIsNotIdentity(t *testing.T) {
 // tenant-only fallback did not break the public health endpoint.
 func TestMountPublicPathsRemainPublic(t *testing.T) {
 	mux := http.NewServeMux()
-	handler := Mount(mux, testDeps())
+	deps := testDeps()
+	handler := Mount(mux, &deps)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
