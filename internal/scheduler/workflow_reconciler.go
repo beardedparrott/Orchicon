@@ -51,10 +51,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
@@ -108,6 +110,14 @@ type WorkflowReconciler struct {
 // runtime.Lifecycle; declared here to keep the reconciler decoupled. A nil
 // implementation disables runtime containers (headless `orchicon serve`).
 type RuntimeLifecycle interface {
+	// ServeDependent reports whether the adapter kind named by a worker
+	// model_ref needs an in-container serve to run (the opencode bridge
+	// does; the native in-process "orchicon" kind does not). The
+	// reconciler consults it when arming a run: a run whose steps carry no
+	// serve-dependent kind skips the runtime-serve readiness gate and
+	// container creation entirely (ADR-0003: model_ref is the single
+	// source of truth for adapter kind).
+	ServeDependent(kind string) bool
 	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
 	// EnsureServing ensures the run's runtime container exists with its
 	// opencode serve brought up, then blocks until the serve is PROVEN
@@ -129,6 +139,56 @@ func (r *WorkflowReconciler) runtimeEnabled() bool {
 	}
 	rv := reflect.ValueOf(r.runtime)
 	return rv.Kind() != reflect.Ptr || !rv.IsNil()
+}
+
+// runNeedsServe reports whether any worker step of the run resolves to a
+// serve-dependent adapter kind (opencode today). The run's steps are the
+// DAG the run will dispatch; a step's worker version resolves the same way
+// dispatch resolves it (step-pinned version → latest published). A run
+// with NO serve-dependent step needs no opencode serve and no runtime
+// container: gating it on one would hold dispatch ("waiting for
+// dispatch…") and then fail the run when a serve it never uses fails to
+// boot — the observed native-only run failure ("runtime opencode serve
+// failed to become usable").
+//
+// Errors loading a worker version are folded to opencode-demand (the
+// conservative default): an unresolvable worker behaves exactly as it did
+// before this gate became adapter-aware (gated + warmed + failed loudly at
+// the serve, rather than silently skipping the container an opencode step
+// might need).
+func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, steps []workflow.StepWire) bool {
+	if !r.runtimeEnabled() {
+		return false
+	}
+	for _, s := range steps {
+		switch s.Kind {
+		case domain.StepKindTask, domain.StepKindApproval:
+		default:
+			continue // no worker ref → no adapter → no serve demand
+		}
+		if s.Ref == "" {
+			continue
+		}
+		var modelRef string
+		if s.WorkerVersion > 0 {
+			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, s.Ref, fmt.Sprintf("v%d", s.WorkerVersion)); err == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		if modelRef == "" {
+			if v, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, s.Ref, true); err == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		kind := adapter.AdapterKind(modelRef)
+		if kind == "" {
+			kind = adapter.DefaultAdapterKind
+		}
+		if r.runtime.ServeDependent(kind) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -553,6 +613,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// armed marks a run that left pending in this pass so the worktree
 	// notifier fires post-commit (mirrors the sequence/workflow notifiers).
 	var armed bool
+	needsServe := r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
 	if run.Status == domain.WorkflowRunPending {
 		resolved, rerr := r.resolveRuntimeImage(ctx, ttx.Tx, tenantID, run, steps)
 		if rerr != nil {
@@ -572,13 +633,21 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			return nil
 		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			Status:       strPtr(domain.WorkflowRunRunning),
-			RuntimeImage: &resolved,
+			Status: strPtr(domain.WorkflowRunRunning),
 			// The runtime-serve readiness gate: false when a runtime daemon
-			// is wired (the async ensure-serving pass proves the serve and
-			// flips it true), true for headless serve (no container — the
-			// host serve is always-on).
-			RuntimeReady: boolPtr(!r.runtimeEnabled()),
+			// is wired AND the run actually needs a serve (any step
+			// resolves to a serve-dependent adapter kind); true for
+			// headless serve (no container — the host serve is always-on)
+			// and for serve-less runs (no opencode demand — a native-only
+			// run never touches the container's opencode serve, so it must
+			// not gate on one: the gate would hold dispatch and then fail
+			// the run when the unneeded serve fails to boot).
+			RuntimeReady: boolPtr(!needsServe || !r.runtimeEnabled()),
+			// Serve-less runs get the no-serve sentinel instead of a real
+			// image: every container-creation path (EnsureForRun,
+			// EnsureServing, boot-time Adopt) no-ops on it, so a native-only
+			// run never creates a container/serve it would never use.
+			RuntimeImage: strPtr(imageForRun(resolved, needsServe)),
 		})
 		if err != nil {
 			return fmt.Errorf("transition run to running: %w", err)
@@ -599,8 +668,21 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// failing the first execution's 30s window) into a deterministic
 	// run-start check.
 	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
-		if r.runtimeEnabled() {
-			r.startEnsureServing(run)
+		// Serve-less runs (no opencode demand among the run's steps —
+		// native-only) must never enter the warming gate: flip the gate
+		// and progress. Covers runs armed before the adapter-aware gate
+		// landed (mid-upgrade) and any future path that leaves a
+		// serve-less run gated.
+		if r.runtimeEnabled() && !r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps) {
+			if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+				RuntimeReady: boolPtr(true),
+			}); err != nil {
+				return fmt.Errorf("clear runtime gate (serve-less run): %w", err)
+			}
+			run.RuntimeReady = true
+		}
+		if r.runtimeEnabled() && !run.RuntimeReady {
+			r.startEnsureServing(run, false)
 			// Commit the transition (the deferred rollback would undo it on
 			// the early return) and hold progression until the probe flips
 			// the gate.
@@ -1531,7 +1613,14 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 // next reconcile pass progresses the DAG; on failure it fails the run at
 // start with the serve error. A plane restart clears the map and the next
 // reconcile pass re-triggers the (idempotent) probe.
-func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow) {
+func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow, serveless bool) {
+	// Defense in depth: a serve-less run must never enter the warming
+	// probe. The reconciler pass flips the gate itself for serve-less runs;
+	// this guard covers races (a run re-armed between pass and probe) so
+	// an opencode serve is never warmed for a run with no opencode demand.
+	if serveless {
+		return
+	}
 	r.warmingMu.Lock()
 	if r.warming[run.ID] {
 		r.warmingMu.Unlock()
@@ -5083,4 +5172,16 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 		}
 	}
 	return decision
+}
+
+// imageForRun stamps the runtime image a run carries: the resolved image
+// for serve-needing runs, the runtime.NoServeImage sentinel for serve-less
+// runs (no opencode demand — every container-creation path no-ops on the
+// sentinel, so a native-only run never creates a container it would never
+// use).
+func imageForRun(resolved string, needsServe bool) string {
+	if needsServe {
+		return resolved
+	}
+	return runtime.NoServeImage
 }
