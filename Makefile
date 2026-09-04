@@ -37,20 +37,43 @@ help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
+# buf is pinned (version + SHA256) and installed into ./bin by `make tools`
+# so codegen is reproducible everywhere: no `@latest` drift, no 80s
+# compile-from-source in CI. Targets resolve buf at recipe time — ./bin/buf
+# when present (CI, or any dev who ran `make tools`), else the PATH binary.
+BUF_VERSION := 1.72.0
+BUF_SHA256  := a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
+BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
+
 .PHONY: tools
-tools: ## Install buf and atlas into $$GOPATH/bin
-	$(GO) install github.com/bufbuild/buf/cmd/buf@latest
-	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+tools: ## Install pinned buf v$(BUF_VERSION) into bin/ (SHA256-verified)
+	@if [ "$$(uname -m)" != "x86_64" ]; then \
+		echo "==> make tools: pinned buf download is x86_64-only; using buf from PATH"; \
+	elif [ -x "$(BIN_DIR)/buf" ] && "$(BIN_DIR)/buf" --version 2>/dev/null | grep -q "$(BUF_VERSION)"; then \
+		echo "==> buf $(BUF_VERSION) already installed"; \
+	else \
+		mkdir -p $(BIN_DIR); \
+		curl -sSfL -o $(BIN_DIR)/buf.tgz "https://github.com/bufbuild/buf/releases/download/v$(BUF_VERSION)/buf-Linux-x86_64.tar.gz"; \
+		echo "$(BUF_SHA256)  buf.tgz" | (cd $(BIN_DIR) && sha256sum -c -); \
+		tar -xzf $(BIN_DIR)/buf.tgz -C $(BIN_DIR) --strip-components=2 buf/bin/buf; \
+		rm -f $(BIN_DIR)/buf.tgz; \
+		echo "==> installed $(BIN_DIR)/buf v$(BUF_VERSION)"; \
+	fi
 
 # --- Codegen ---------------------------------------------------------------
 .PHONY: gen lint proto
-gen: ## Generate Go + TypeScript from the Protobuf schema (buf generate)
-	PATH="$(CURDIR)/frontend/node_modules/.bin:$$PATH" $(BUF) generate
+gen: tools ## Generate Go + TypeScript from the Protobuf schema (buf generate)
+	PATH="$(CURDIR)/frontend/node_modules/.bin:$$PATH" $(BUF_BIN) generate
 
-lint: ## Lint the Protobuf schema (buf lint)
-	$(BUF) lint
+lint: tools ## Lint the Protobuf schema (buf lint)
+	$(BUF_BIN) lint
 
 proto: lint gen ## Lint + generate
+
+gen-check: ## CI drift gate: regenerate and fail on any diff in generated code
+	$(MAKE) gen
+	@git diff --exit-code -- api/gen frontend/src/api/gen \
+		|| { echo "ERROR: generated code drifted from committed files. Run 'make gen' and commit."; exit 1; }
 
 # --- Go control plane ------------------------------------------------------
 # fetch-tags syncs local tags with origin before a build. `git pull` does
@@ -124,6 +147,7 @@ clean-docker: ## Prune dangling Docker images, stopped containers, and unused vo
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
 migrate: ## Apply pending Atlas migrations to $$DB_URL
+	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
 	cd db && $(ATLAS) migrate apply --env local --url "$(DB_URL)"
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
@@ -236,5 +260,10 @@ install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
 
 # --- CI --------------------------------------------------------------------
-.PHONY: ci
-ci: lint gen vet test synth-data rls-check fe-lint fe-test ## Run the full CI gate locally
+# The CI gate, split the same way .github/workflows/ci.yml splits it:
+# ci-go is the Go control-plane gate (no full Node install — `gen` pulls
+# only the two protoc plugin packages); fe-lint/fe-test are the frontend
+# gate and run in the fe CI job. `ci` is the local convenience union.
+.PHONY: ci ci-go
+ci-go: lint gen-check vet test synth-data rls-check ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)

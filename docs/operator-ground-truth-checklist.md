@@ -27,7 +27,7 @@
   probe-or-nothing contract.
 - [ ] The same `synth-data` gate is **standing CI**: a PR touching
   non-test adapter code that introduces a synthesized-data fallback FAILS
-  the build (`.github/workflows/ci.yml` runs `make ci` on PRs → `develop`).
+  the build (`.github/workflows/ci.yml` runs `make ci-go` on PRs → `develop`).
 - [ ] The one sanctioned simulation switch, `ORCHICON_SIMULATE_ADAPTER`
   (ADR-0010 D2, opencode offline-dev opt-in), is **NOT** flagged — confirm
   the audit is silent on it.

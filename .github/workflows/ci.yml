@@ -2,22 +2,30 @@ name: CI
 
 # Standing CI for the Multi-adapter gate. Runs the control-plane gate on
 # every PR targeting `develop` so the no-synthesized-data audit (and the
-# rest of `make ci`) is actually standing, plus the frontend linter.
+# rest of the Go gate) is actually standing, plus the frontend lint+tests.
 #
-# `make ci` = lint gen vet test synth-data rls-check. `synth-data` (the
-# ADR-0010 no-synthesized-data audit) is the gate this workflow exists to
-# make permanent: a new synthesized-data fallback in non-test source fails
-# the build.
+# The gate is split the same way the Makefile splits it (`ci-go` vs
+# `fe-lint`/`fe-test`) so the two jobs run fully in parallel:
+#
+#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check.
+#             No Node setup at all: `gen` runs the local protoc-gen-es /
+#             protoc-gen-connect-es plugins from a scratch npm prefix
+#             containing ONLY those two packages (~30s) instead of the
+#             full frontend node_modules (4-7m). The gen-check step then
+#             fails on any drift between regenerated and committed code.
+#             buf is pinned (version + SHA256) via `make tools` — no
+#             80s `go install buf@latest` per run, no @latest drift.
+#   fe-lint — fe-lint + fe-test (vitest) with the full npm install.
 #
 # Notes:
-#   - gen/lint need buf (installed below) and the frontend node_modules for
-#     the local protoc-gen-es / protoc-gen-connect-es plugins, so the
-#     frontend deps are installed BEFORE `make ci`.
+#   - The TS protoc plugin versions below are pinned to the exact versions
+#     locked in frontend/package-lock.json; a drifting plugin release would
+#     silently change generated code, so they never float.
 #   - rls-check (scripts/check-rls.sh) needs a MIGRATED Postgres: on an
 #     empty database the gate is vacuous (zero tables = zero violations),
 #     so the go-ci job runs a Postgres service and applies the Atlas
 #     migrations (via `go run tools/atlas-ci` — no atlas binary on the
-#     runner) before `make ci` with DB_URL exported.
+#     runner) before `make ci-go` with DB_URL exported.
 #   - Hermetic CI: bare runners never install adapter CLIs (opencode
 #     today, claude code etc. tomorrow). The opencode adapter's
 #     binary-resolution seam is stubbed by its tests instead — the
@@ -58,26 +66,22 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Install buf (protobuf lint + gen)
+      - name: Install pinned buf (version + SHA256)
+        run: make tools
+
+      - name: Install TS protoc plugins (protoc-gen-es + protoc-gen-connect-es)
         run: |
-          tool_dir="$(go env GOPATH)/bin"
-          go install github.com/bufbuild/buf/cmd/buf@latest
-          echo "$tool_dir" >> "$GITHUB_PATH"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend deps (protoc-gen-es + lint)
-        run: cd frontend && npm ci
+          mkdir -p "$RUNNER_TEMP/protoc-plugins"
+          npm install --prefix "$RUNNER_TEMP/protoc-plugins" \
+            @bufbuild/protoc-gen-es@1.10.1 \
+            @connectrpc/protoc-gen-connect-es@1.7.0
+          echo "$RUNNER_TEMP/protoc-plugins/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Apply migrations (make rls-check non-vacuous)
         run: go run ./tools/atlas-ci
 
-      - name: Run control-plane gate (make ci)
-        run: make ci
+      - name: Run Go control-plane gate (make ci-go)
+        run: make ci-go
 
   fe-lint:
     runs-on: ubuntu-latest
@@ -95,3 +99,6 @@ jobs:
 
       - name: Lint frontend
         run: make fe-lint
+
+      - name: Test frontend (vitest)
+        run: make fe-test
