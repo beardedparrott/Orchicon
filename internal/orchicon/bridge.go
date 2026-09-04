@@ -148,14 +148,16 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if terr != nil {
 		return terr
 	}
-	// The ToolRegistry interface must stay a bare nil when no MCP servers
-	// resolve (the platform-default state): assigning a typed-nil
-	// *mcpTools into the interface makes it non-nil for the loop's
-	// `s.tools != nil` check, nil-panicking the first turn of every
-	// session (regression of the pre-PR `var tools ToolRegistry` pattern).
-	var tools ToolRegistry
+	// HOST tool suite: the core file/shell tools every native session
+	// needs (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped
+	// to the execution's working dir (worktree when provisioned, else the
+	// project dir) with the project root READ-only. Before this, the
+	// session carried only MCP + memory tools and every core tool call
+	// returned "tool registry not configured" — native workers could
+	// neither survey nor write anything.
+	var tools ToolRegistry = NewHostTools(pd, manifest.ProjectDir)
 	if mt != nil {
-		tools = mt
+		tools = &combinedRegistry{primary: tools, secondary: mt}
 		defer func() { _ = mt.Close() }()
 	}
 	// Durable agent-memory store (D2): opened at the TRUE project dir
@@ -394,6 +396,39 @@ func (b *NativeBridge) SetSessionStore(fn scheduler.SessionStoreFunc) {
 func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {}
 
 // --- internal ------------------------------------------------------------
+
+// combinedRegistry serves the host suite plus a secondary registry
+// (MCP). Defs concatenate (deduped: MCP wins nothing — host names win,
+// an MCP tool shadowing a host name is refused at Execute); Execute
+// routes by which side advertised the name.
+type combinedRegistry struct {
+	primary   ToolRegistry
+	secondary ToolRegistry
+}
+
+func (c *combinedRegistry) Defs() []ToolDef {
+	out := c.primary.Defs()
+	seen := make(map[string]bool, len(out))
+	for _, d := range out {
+		seen[d.Name] = true
+	}
+	for _, d := range c.secondary.Defs() {
+		if !seen[d.Name] {
+			out = append(out, d)
+			seen[d.Name] = true
+		}
+	}
+	return out
+}
+
+func (c *combinedRegistry) Execute(ctx context.Context, name, argsJSON string) (string, error) {
+	for _, d := range c.primary.Defs() {
+		if d.Name == name {
+			return c.primary.Execute(ctx, name, argsJSON)
+		}
+	}
+	return c.secondary.Execute(ctx, name, argsJSON)
+}
 
 // mcpTools adapts the per-session MCP client manager to the loop's
 // ToolRegistry (ADR-0008): discovered tools surface as
