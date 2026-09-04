@@ -82,15 +82,14 @@ func toolGetWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (js
 
 // toolCreateWorker creates a worker AND its first draft version-1 row in
 // one transaction via the shared worker.CreateWorkerTx core (the service
-// path's implementation), persisting model_ref/runtime_ref and the prompt
-// fields on the version and writing the worker.created audit row. The
-// worker is immediately editable and publishable from the UI.
+// path's implementation), persisting model_ref and the prompt fields on
+// the version and writing the worker.created audit row. The worker is
+// immediately editable and publishable from the UI.
 func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Name         string `json:"name"`
 		Purpose      string `json:"purpose"`
 		ModelRef     string `json:"model_ref"`
-		RuntimeRef   string `json:"runtime_ref"`
 		Description  string `json:"description"`
 		VersionNote  string `json:"version_note"`
 		Role         string `json:"role"`
@@ -111,7 +110,6 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 		Name:         params.Name,
 		Purpose:      params.Purpose,
 		ModelRef:     params.ModelRef,
-		RuntimeRef:   params.RuntimeRef,
 		Description:  params.Description,
 		VersionNote:  params.VersionNote,
 		Role:         params.Role,

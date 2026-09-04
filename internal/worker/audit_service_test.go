@@ -104,7 +104,6 @@ func TestAuditServiceWorkerMutations(t *testing.T) {
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "Audit Worker " + strings.ToLower(db.NewID()),
 		ModelRef:   "opencode/deepseek-v4-flash-free",
-		RuntimeRef: "opencode",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker: %v", err)

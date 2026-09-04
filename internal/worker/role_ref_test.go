@@ -63,7 +63,6 @@ func TestCreateWorkerRoleRefRoundTrip(t *testing.T) {
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "role-bound",
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 		RoleRef:    roleID,
 	}))
 	if err != nil {
@@ -93,7 +92,6 @@ func TestCreateWorkerUnknownRoleRejected(t *testing.T) {
 	_, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "bad-role",
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 		RoleRef:    "r_does_not_exist",
 	}))
 	if err == nil {

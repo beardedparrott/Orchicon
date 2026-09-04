@@ -86,13 +86,6 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   purpose = "";
 
   /**
-   * First-version snapshot fields (docs/05 §3):
-   *
-   * @generated from field: string runtime_ref = 6;
-   */
-  runtimeRef = "";
-
-  /**
    * @generated from field: string model_ref = 7;
    */
   modelRef = "";
@@ -220,7 +213,6 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 3, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "purpose", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */ },
@@ -1388,13 +1380,6 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
   versionId = "";
 
   /**
-   * Fields to update (only draft versions):
-   *
-   * @generated from field: optional string runtime_ref = 6;
-   */
-  runtimeRef?: string;
-
-  /**
    * @generated from field: optional string model_ref = 7;
    */
   modelRef?: string;
@@ -1493,7 +1478,6 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "version_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
@@ -1574,13 +1558,6 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
    * @generated from field: string worker_id = 1;
    */
   workerId = "";
-
-  /**
-   * Optional fields to override from the source version.
-   *
-   * @generated from field: optional string runtime_ref = 6;
-   */
-  runtimeRef?: string;
 
   /**
    * @generated from field: optional string model_ref = 7;
@@ -1677,7 +1654,6 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
   static readonly typeName = "orchicon.api.v1.CreateWorkerVersionRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },

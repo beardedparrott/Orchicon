@@ -1054,9 +1054,9 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 
 // seedNativeAdapter registers the in-process native session engine
 // (adapter kind "orchicon") the same way seedDevAdapter registers
-// opencode, so a worker with model_ref orchicon/<provider>/<model> (and
-// an empty runtime_ref, which falls back to the model_ref's adapter kind
-// per resolveAdapterRowKind) can find a ready adapter row at dispatch.
+// opencode, so a worker with model_ref orchicon/<provider>/<model> (the
+// ref's adapter segment governs dispatch per resolveAdapterRowKind)
+// can find a ready adapter row at dispatch.
 // Without this row, selectAdapter finds no ready adapter of kind
 // "orchicon" and the task requeues forever (the dispatch black hole).
 // Idempotent — re-runs on every boot update the heartbeat timestamp.

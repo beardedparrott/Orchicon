@@ -1,0 +1,29 @@
+-- Retire worker_versions.runtime_ref (ADR-0003 single source of truth).
+--
+-- Worker-level runtime_ref was the second, independently-settable source
+-- of adapter truth: adapter-ROW selection preferred it over the model_ref
+-- (resolveAdapterRowKind, ADR-0005 D6). Two failure classes fell out of
+-- that duality:
+--
+--   1. Misroute: the new-worker form persisted runtime_ref "opencode" as
+--      a field default while the picker selected an orchicon model_ref —
+--      a native worker dispatched through the opencode adapter path.
+--   2. Black hole: the canned research trio's runtime_ref carried a
+--      runtime IMAGE TAG ("orchicon-runtime:web-research") in a column
+--      dispatch read as an ADAPTER KIND — zero runtime_adapters rows
+--      match, so those workers could never dispatch at all.
+--
+-- The model_ref namespace (ADR-0003 adapter/provider/model) makes the
+-- ref's segment-1 adapter kind the single source of truth for the whole
+-- dispatch path (adapter-row selection and bridge Resolve alike), so the
+-- override column is dropped outright. Dispatch semantics after this
+-- migration match the pre-drop empty-runtime_ref fallback exactly:
+-- kind(model_ref), else the legacy default (opencode) — no behavior
+-- change for any worker that never set runtime_ref, and the misrouted
+-- populations above heal to their model_ref's kind.
+--
+-- Forward-only: the column carries no data that the model_ref does not
+-- already express (every reader is rewritten in the same change). The
+-- paired _down.sql exists only for the dev-rollback convention; see its
+-- header for the accepted lossiness.
+ALTER TABLE worker_versions DROP COLUMN runtime_ref;

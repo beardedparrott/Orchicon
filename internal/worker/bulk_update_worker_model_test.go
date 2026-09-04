@@ -89,7 +89,6 @@ func createDraftWorker(t *testing.T, ctx context.Context, s *Service, name strin
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       name,
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker %s: %v", name, err)

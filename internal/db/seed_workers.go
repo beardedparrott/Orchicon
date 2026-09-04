@@ -131,7 +131,8 @@ type cannedWorker struct {
 	Behavior    string
 	AgentsMD    string
 	RoleRef     string // RBAC role binding (plane-channel entitlements); empty = none
-	RuntimeRef  string // runtime image tag; empty = base image ('opencode' for fresh seeds)
+	// NOTE: worker-level RuntimeRef is retired (ADR-0003 single source of
+	// truth) — the model_ref's adapter segment alone governs dispatch.
 	// BudgetOverrides is the per-worker execution-budget fence merged over the
 	// tenant defaults at dispatch (scheduler mergeBudgets). Canned SDLC
 	// workers carry wall_clock fences that give their prompt time-boxes
@@ -523,8 +524,11 @@ var cannedWorkers = []cannedWorker{
 			"- **Synthesize the opportunity grid** in `research/plan.md`: market capability × product-inventory gap → strongest candidates, each with the market evidence URL already attached. The Analyst deepens evidence; the plan is NOT a list of pre-chewed hypotheses — it is derived from what the market shows, not from what yesterday's fire concluded.\n" +
 			"- **Classification rule**: feature-class = the kind of capability a competitor advertises as a headline feature; internal hardening = BUG-R, cap ONE per fire, never crowd out market-driven features. State this rule in the plan.\n\n" +
 			researchHygieneBlock,
-		RoleRef:    automationResearchRoleID,
-		RuntimeRef: "orchicon-runtime:web-research",
+		RoleRef: automationResearchRoleID,
+		// Worker-level runtime_ref is retired (ADR-0003): the model_ref's
+		// adapter segment alone governs dispatch. The former
+		// "orchicon-runtime:web-research" here was an image tag read as an
+		// adapter kind — a dispatch black hole for these canned workers.
 		RollMarker: researchEphemeralMarker,
 	},
 	{
@@ -545,8 +549,8 @@ var cannedWorkers = []cannedWorker{
 			"- **Feature-class verification**: for each proposed candidate, capture at least one external reference (docs page, marketing page, launch post) that describes the capability as a standalone feature elsewhere — evidence without that shape goes to the BUG-R lane in findings.md, capped at one per fire.\n" +
 			"- **Evidence**: write one note per finding to `research/evidence/` — URL, capture date, source type, confidence. **Never echo API keys or credentials into the conversation.**\n\n" +
 			researchHygieneBlock,
-		RoleRef:    automationResearchRoleID,
-		RuntimeRef: "orchicon-runtime:web-research",
+		RoleRef: automationResearchRoleID,
+		// runtime_ref retired — see the Planner note above.
 		RollMarker: researchEphemeralMarker,
 	},
 	{
@@ -567,8 +571,8 @@ var cannedWorkers = []cannedWorker{
 			"- **Hierarchy**: only `epic` may be top-level — spawn ONE umbrella epic first, then attach feature proposals to it via `parent_id`.\n" +
 			"- Spawn accepted proposals as idea-state work items via `orchicon_plane_create_idea_item` — IDEA landing is FORCED by the tool (provenance from the run's trusted context, never call arguments). The response is a self-verifying envelope: it must report `landed_status: \"idea\"` + `idea_state: true` + spawned provenance — a refused spawn or anything else is a WRONG landing: record the observation as a `FACTS LEARNED:` line, do NOT report success, and ship the manifests in the brief for UI spawning instead. If the runtime has no plane access (no `orchicon_plane_*` tools despite a role — a platform bug, record it as a `FACTS LEARNED:` line), ship the manifests in the brief so they can be spawned from the UI.\n\n" +
 			researchHygieneBlock,
-		RoleRef:    automationResearchRoleID,
-		RuntimeRef: "orchicon-runtime:web-research",
+		RoleRef: automationResearchRoleID,
+		// runtime_ref retired — see the Planner note above.
 		// Trio roll marker: the ephemeral (git_strategy=none) hygiene
 		// contract. Fragment present in the NEW researchHygieneBlock only,
 		// so exactly the trio re-rolls for this wording change — the
@@ -798,12 +802,12 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			_, _ = ttx.Exec(ctx,
 				`INSERT INTO worker_versions
 				    (id, tenant_id, worker_id, version, version_note, status,
-				     runtime_ref, model_ref, role, skills, behavior, agents_md,
+				     model_ref, role, skills, behavior, agents_md,
 				     context_sources, permissions, gated_tools, budget_overrides,
 				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				     labels, published_at, created_at)
 				 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
-				        'published', runtime_ref, COALESCE(NULLIF(model_ref,''), ''),
+				        'published', COALESCE(NULLIF(model_ref,''), ''),
 				        $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools,
 				        COALESCE(NULLIF($8::jsonb, 'null'::jsonb), budget_overrides),
@@ -1021,16 +1025,16 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	}
 	_, err = ttx.Exec(ctx,
 		`INSERT INTO worker_versions (id, tenant_id, worker_id, version, version_note, status,
-			runtime_ref, model_ref, role, skills, behavior, agents_md,
+			model_ref, role, skills, behavior, agents_md,
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
 		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
-			COALESCE(NULLIF($7, ''), 'opencode'), '',
+			'',
 			$3, $4, $5, $6,
-			'[]', '{}', '[]', COALESCE($8::jsonb, '{}'::jsonb), '', 1, '', '{}',
+			'[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', 1, '', '{}',
 			now(), now())
 		 ON CONFLICT DO NOTHING`,
-		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.RuntimeRef, budgetParam,
+		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam,
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker version: %w", err)

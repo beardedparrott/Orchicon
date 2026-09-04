@@ -363,14 +363,13 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_worker",
-			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref/runtime_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id.",
+			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
 			Properties: map[string]PropertySchema{
 				"name":          {Type: "string", Description: "Worker name"},
 				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"runtime_ref":   {Type: "string", Description: "Runtime reference (e.g. opencode)"},
-				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter (ADR-0005): fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed."},
+				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter (ADR-0005): fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
 				"description":   {Type: "string", Description: "Optional human-readable description"},
 				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
 				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},
@@ -838,8 +837,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolSetMCPServerSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name (e.g. GITHUB_PERSONAL_ACCESS_TOKEN)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}},
-			Required:    []string{"id", "name", "value"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name (e.g. GITHUB_PERSONAL_ACCESS_TOKEN)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}},
+			Required:   []string{"id", "name", "value"},
 		},
 		{
 			Name:        "clear_mcp_server_secret",
@@ -848,8 +847,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolClearMCPServerSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name"}},
-			Required:    []string{"id", "name"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name"}},
+			Required:   []string{"id", "name"},
 		},
 		{
 			Name:        "set_project_mcp_servers",

@@ -403,11 +403,6 @@ table "worker_versions" {
     null = false
     default = "draft"
   }
-  column "runtime_ref" {
-    type = text
-    null = false
-    default = ""
-  }
   column "model_ref" {
     type = text
     null = false

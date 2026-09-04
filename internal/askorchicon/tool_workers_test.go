@@ -17,7 +17,7 @@ import (
 
 // DB-backed tests for the create_worker / update_worker tool paths. They
 // guard the ghost-record fix: toolCreateWorker must produce a draft
-// version-1 row (with model_ref/runtime_ref persisted), a worker.created
+// version-1 row (with model_ref persisted), a worker.created
 // audit row, and a publishable worker — not the header-only husk the old
 // implementation created. Skipped unless ORCHICON_TEST_DSN points at a
 // disposable database (the migrations are applied on every run):
@@ -124,7 +124,7 @@ func createWorkerViaTool(t *testing.T, ctx context.Context, pool *db.Pool, args 
 func TestToolCreateWorkerCreatesDraftV1(t *testing.T) {
 	pool, ctx, tenantID := toolGhostEnv(t)
 	w, resp := createWorkerViaTool(t, ctx, pool,
-		`{"name":"Ghost Buster","purpose":"retire ghost records","model_ref":"opencode-go/deepseek-v4-flash","runtime_ref":"opencode","description":"tool created","version_note":"initial draft"}`)
+		`{"name":"Ghost Buster","purpose":"retire ghost records","model_ref":"opencode-go/deepseek-v4-flash","description":"tool created","version_note":"initial draft"}`)
 	if w.ID == "" {
 		t.Fatal("response missing worker ID")
 	}
@@ -156,8 +156,8 @@ func TestToolCreateWorkerCreatesDraftV1(t *testing.T) {
 	if ver.Version != 1 || ver.Status != "draft" {
 		t.Fatalf("version = %d (%s), want 1 (draft)", ver.Version, ver.Status)
 	}
-	if ver.ModelRef != "opencode-go/deepseek-v4-flash" || ver.RuntimeRef != "opencode" {
-		t.Fatalf("refs not persisted: model=%q runtime=%q", ver.ModelRef, ver.RuntimeRef)
+	if ver.ModelRef != "opencode-go/deepseek-v4-flash" {
+		t.Fatalf("model_ref not persisted: model=%q", ver.ModelRef)
 	}
 	if string(ver.ContextSources) != "[]" || string(ver.Permissions) != "{}" {
 		t.Fatalf("json defaults not canonical: context_sources=%s permissions=%s", ver.ContextSources, ver.Permissions)
@@ -203,7 +203,7 @@ func TestToolCreateWorkerSlugDedupe(t *testing.T) {
 
 func TestToolCreateWorkerPublishable(t *testing.T) {
 	pool, ctx, tenantID := toolGhostEnv(t)
-	w, _ := createWorkerViaTool(t, ctx, pool, `{"name":"Publish Me","model_ref":"m","runtime_ref":"opencode"}`)
+	w, _ := createWorkerViaTool(t, ctx, pool, `{"name":"Publish Me","model_ref":"m"}`)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)

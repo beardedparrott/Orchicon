@@ -288,3 +288,64 @@ Reviewer checklist addition:
   `adapter.BuiltinAdapterKinds()` at authoring time.
 - Worker validation, settings validation, and the picker all consume the
   SAME composed registry (one source of truth).
+
+## Amendment (2026-09-04): D6 is retired — runtime_ref dropped, model_ref is the sole dispatch identity
+
+D6 persisted the picker's adapter choice into a worker-level
+`runtime_ref` column and made it the FIRST-choice kind for adapter-row
+selection (falling back to the model_ref's kind only when empty). Two
+live failure classes proved the two-field design unworkable — both
+stems of the same root cause, two independently-settable sources of
+adapter truth that can disagree:
+
+1. **Misroute.** The new-worker form initialized `runtime_ref` to
+   `"opencode"` as a field default while the picker selected an orchicon
+   model_ref. `resolveAdapterRowKind` preferred the stale runtime_ref,
+   so a native worker dispatched through the opencode adapter path
+   (wrong capacity accounting, wrong adapter row, phantom requeue
+   pressure whenever the opencode row was busy).
+2. **Black hole.** The canned research trio carried
+   `runtime_ref: "orchicon-runtime:web-research"` — a runtime IMAGE TAG
+   in a column dispatch read as an ADAPTER KIND. Zero runtime_adapters
+   rows match that kind, so those workers could never dispatch at all.
+
+D6 is RETIRED. The `worker_versions.runtime_ref` column is dropped
+(migration `20260918000000_retire_worker_runtime_ref` + paired down;
+forward-only — the column carried no data the model_ref does not already
+express, and every reader is rewritten in the same change). The
+model_ref's segment-1 adapter kind (ADR-0003) is now the single source
+of truth for the ENTIRE dispatch path:
+
+- adapter-ROW selection (`resolveAdapterRowKind`): kind(model_ref),
+  else the legacy default (opencode) — byte-for-byte the pre-D6
+  empty-runtime_ref fallback, so workers that never set runtime_ref
+  see no behavior change;
+- bridge resolution (`adapter.SplitForServe` / dispatcher Resolve):
+  unchanged — already model_ref-derived;
+- the run-start serve gate (`runNeedsServe`, PR #480): already
+  resolves kinds from step model_refs — unchanged.
+
+Proto field 6 is `reserved` (not reused) in `WorkerVersion`,
+`CreateWorkerRequest`, `UpdateWorkerVersionRequest`, and
+`CreateWorkerVersionRequest`; the generated Go + TS code is
+regenerated. The worker service no longer validates or stores a
+runtime_ref on create/update (the two-field lockstep update burden dies
+with the field). The new-worker form loses the runtimeRef field and its
+ADR-0005-D6 derivation effect (the picker's adapter choice governs
+dispatch through the model_ref itself). The canned research trio's
+image-tag runtime_ref is gone from the seeds.
+
+This is also the prerequisite for the future human-configured
+model-failover feature: a fallback chain needs ONE canonical identity
+per model choice to build ordered refs from; with the duality gone, a
+chain is just a list of model_refs the dispatcher already resolves
+kind→bridge per execution. Nothing failover-shaped is built here.
+
+Reviewer checklist addition:
+
+- No reader of worker adapter identity consults anything but the
+  model_ref (grep for `runtime_ref` outside migrations/ADRs returns
+  only retirement notes).
+- The migration's forward direction is the only data-bearing direction;
+  the down migration restores the column shape only (documented
+  lossiness, dev-rollback convenience per convention).

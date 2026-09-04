@@ -99,7 +99,7 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 	pool := approvalTestPool(t)
 	r := &WorkflowReconciler{pool: pool, runtime: stubLifecycle{}}
 
-	seedWorkerVersion := func(t *testing.T, name, modelRef, runtimeRef string) string {
+	seedWorkerVersion := func(t *testing.T, name, modelRef string) string {
 		t.Helper()
 		ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 		if err != nil {
@@ -117,7 +117,7 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 		}
 		if _, err := db.CreateWorkerVersion(ctx, ttx.Tx, db.WorkerVersionRow{
 			ID: db.NewID(), TenantID: approvalTestTenant, WorkerID: w.ID, Version: 1,
-			Status: domain.WorkerVersionPublished, ModelRef: modelRef, RuntimeRef: runtimeRef,
+			Status: domain.WorkerVersionPublished, ModelRef: modelRef,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -127,8 +127,8 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 		return w.ID
 	}
 
-	nativeWorker := seedWorkerVersion(t, "native", "orchicon/deepseek/deepseek-v4-flash", "")
-	ocWorker := seedWorkerVersion(t, "oc", "anthropic/claude-sonnet-4", "")
+	nativeWorker := seedWorkerVersion(t, "native", "orchicon/deepseek/deepseek-v4-flash")
+	ocWorker := seedWorkerVersion(t, "oc", "anthropic/claude-sonnet-4")
 
 	nativeOnly := r.runNeedsServe(ctx, nil, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
 		{ID: "w", Kind: domain.StepKindTask, Ref: nativeWorker},
