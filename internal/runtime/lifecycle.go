@@ -24,6 +24,25 @@ import (
 // reconcilers (docs/03 §1). Multi-tenant scheduling arrives with auth.
 const devTenantID = "tnt_dev"
 
+// opencodeAdapterKind is the adapter kind whose executions need the
+// in-container opencode serve. Kept as a local constant so the runtime
+// layer does not import the scheduler (and to keep the single seam the
+// adapter namespace lands on explicit).
+const opencodeAdapterKind = "opencode"
+
+// runtimeNoServeImage is the sentinel RuntimeImage value the
+// WorkflowReconciler stamps on runs with no serve-dependent adapter
+// demand (adapter-aware arm gate). A run carrying it creates no runtime
+// container: EnsureForRun/EnsureServing/Adopt all no-op on it. The value
+// is syntactically a plain tag so any legacy path that treats it as a
+// string still round-trips; the daemon never sees it (all three callers
+// return before Create).
+const runtimeNoServeImage = "no-serve"
+
+// NoServeImage is the exported sentinel the WorkflowReconciler stamps on
+// serve-less runs; see runtimeNoServeImage.
+const NoServeImage = runtimeNoServeImage
+
 // worktreeDirName mirrors the WorktreeReconciler's namespace under
 // project_dir where per-run worktrees are provisioned
 // (internal/scheduler/worktree_reconciler.go). The runtime layer must know
@@ -463,10 +482,32 @@ func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, ru
 	return ""
 }
 
+// ServeDependent implements the scheduler.RuntimeLifecycle capability
+// probe: the only serve-dependent adapter kind today is "opencode" (the
+// in-container opencode serve). The native "orchicon" kind runs the
+// in-process session engine on the control plane and needs no serve. The
+// empty/legacy kinds resolve through the adapter package's default kind so
+// the predicate and the dispatcher cannot disagree.
+func (l *Lifecycle) ServeDependent(kind string) bool {
+	if kind == "" {
+		kind = opencodeAdapterKind
+	}
+	return kind == opencodeAdapterKind
+}
+
 // EnsureForRun creates the runtime container for a workflow run
 // (idempotent) with its opencode serve warmed at create time. Executions
 // dispatch into this container for the whole lifetime of the run.
+//
+// noServeSentinel: runs with no serve-dependent adapter demand must never
+// create a container (a container implies a warmed opencode serve — and
+// its 30s boot window — that a native-only run would never use, and a
+// failed serve boot would fail the run). The sentinel round-trips from
+// the WorkflowReconciler's adapter-aware arm gate.
 func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error {
+	if run.RuntimeImage == runtimeNoServeImage {
+		return nil
+	}
 	if l.client == nil {
 		return nil
 	}
@@ -496,7 +537,14 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 // execution for the run until this returns nil — a cold-starting serve that
 // would previously fail the first dispatch's 30s window now gets the full
 // window at run start, off the dispatch hot path.
+//
+// Serve-less runs (RuntimeImage == runtimeNoServeImage) return nil
+// immediately: there is nothing to prove, and the reconciler must not
+// gate or fail them on a serve they never use.
 func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) error {
+	if run.RuntimeImage == runtimeNoServeImage {
+		return nil
+	}
 	if l.client == nil {
 		return nil
 	}
@@ -633,6 +681,9 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		return fmt.Errorf("adopt: list runs: %w", err)
 	}
 	for _, run := range runs {
+		if run.RuntimeImage == runtimeNoServeImage {
+			continue // native-only run: no container to adopt
+		}
 		if err := l.EnsureForRun(ctx, run); err != nil {
 			l.log.Warn("adopt: ensure runtime failed", "run", run.ID, "error", err)
 		}
