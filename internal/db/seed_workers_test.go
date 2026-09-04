@@ -365,8 +365,12 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
-		t.Fatalf("re-seed: %v", err)
+		t.Fatalf("seed: %v", err)
 	}
+	// Content tests read version 1 — reset the worker so the seed's own v1
+	// is what's read (this box's dev DB carries stale old-seed v1s under
+	// rolled-forward current versions; row 260's hygiene, applied here).
+	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
@@ -492,6 +496,10 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// Content tests read version 1 — reset so the seed's own v1 is what's
+	// read (stale old-seed v1s under rolled-forward current versions; row
+	// 260's hygiene).
+	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
@@ -573,6 +581,71 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	}
 }
 
+// TestSeedPreExistingFailureRemedyContract pins the autonomous remedy
+// contract on the three quality-owning SDLC workers: a test that already
+// fails without the change is remedied BY the worker autonomously — it owns
+// the decision and executes it (fix the cause by default; remove/correct the
+// test only when its own investigation proves the test no longer protects
+// anything needed) — never left red, never proposed upward, with the
+// decision recorded as a FACTS LEARNED line. Pinned via the exported
+// roll-forward marker so a wording drift breaks the test, not the contract.
+func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, id := range []string{
+		"w_se_senior_software_engineer",
+		"w_se_pr_reviewer",
+		"w_se_qa_engineer",
+	} {
+		resetWorker(t, pool, id)
+		var agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			id).Scan(&agents); err != nil {
+			t.Fatalf("query %s: %v", id, err)
+		}
+		if !strings.Contains(agents, db.PreExistingRemedyMarker) {
+			t.Errorf("%s agents_md missing the remedy-contract marker %q", id, db.PreExistingRemedyMarker)
+		}
+		if !strings.Contains(agents, "FACTS LEARNED") {
+			t.Errorf("%s must require recording the remedy decision as a FACTS LEARNED line", id)
+		}
+		// The contract is AUTONOMOUS by design: the worker decides and
+		// executes (fix by default; remove/correct only when its own
+		// investigation proves the test no longer protects anything
+		// needed). It must never be instructed to propose the remedy
+		// upward or merely note the failure.
+		for _, bad := range []string{"propose", "PROPOSAL", "escalate to a human"} {
+			if strings.Contains(agents, bad) {
+				t.Errorf("%s remedy contract must be autonomous — found %q", id, bad)
+			}
+		}
+		if !strings.Contains(agents, "You own the decision and execute it") {
+			t.Errorf("%s must carry the autonomous ownership wording", id)
+		}
+	}
+	// The Architect and DevOps are NOT quality gates for the suite — they
+	// must not carry the marker (marker text is specific to the remedy
+	// contract).
+	for _, id := range []string{"w_se_principal_architect", "w_se_devops_engineer"} {
+		var agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			id).Scan(&agents); err != nil {
+			t.Fatalf("query %s: %v", id, err)
+		}
+		if strings.Contains(agents, db.PreExistingRemedyMarker) {
+			t.Errorf("%s must NOT carry the remedy-contract marker", id)
+		}
+	}
+}
+
 // TestSeedDesignApproverCarriesDesignReviewContract: the canned Design
 // Approver's seed content must statically review the PLAN only — no
 // implementation expectations, no predecessor-type inference. The review
@@ -626,6 +699,10 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// Content tests read version 1 — reset so the seed's own v1 is what's
+	// read (stale old-seed v1s under rolled-forward current versions; row
+	// 260's hygiene).
+	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
@@ -821,6 +898,12 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		{"01M13DYHKHEF71MVGY07GMGMJ6", "automation-research-planner", "market capability"},
 		{"01M13DYJWHCYHWQ1X85J1BWWZ1", "automation-research-analyst", "project codebase"},
 		{"01M13DYM3A7CTY8ECP4R7M33SR", "automation-research-synthesizer", "project codebase"},
+	}
+	// Content tests read version 1 — reset the workers so the seed's own v1
+	// is what's read (this box's dev DB carries stale old-seed v1s under
+	// rolled-forward current versions; row 260's hygiene, applied here).
+	for _, tc := range trio {
+		resetWorker(t, pool, tc.id)
 	}
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {

@@ -158,9 +158,12 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
+	// The stall monitor trips, aborts the serve session, and persists a
+	// clear retryable error naming the model + remediation (the deliberate
+	// diagnostics wording from 7390089e1) — not a 30-minute timeout wait.
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled") {
-		t.Errorf("metadata.error = %q, want a stall message mentioning 'stuck' and 'stalled'", errText)
+	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled") {
+		t.Errorf("metadata.error = %q, want a stall message mentioning 'stopped responding' and 'stalled'", errText)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -201,7 +204,7 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled:repetition") {
+	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled:repetition") {
 		t.Errorf("metadata.error = %q, want a repetition stall message", errText)
 	}
 }
@@ -577,6 +580,80 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 	final := waitForMessage(t, pool, convID, ackID)
 	if strings.TrimSpace(final.Content) != "The answer is 42" {
 		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
+	}
+}
+
+// TestPartialReplyTrailingFlush: the mirror freeze class — a final delta
+// burst that ends INSIDE the 200ms throttle window with no further bus
+// events (short final generation, or the stream going quiet). Before the
+// trailing flush the row stayed frozen on the last on-time snapshot until
+// the turn finalized (the exact symptom the mirror exists to fix); the
+// trailing flush must drain the unflushed delta tail ~200ms after the last
+// delta with NO further events.
+func TestPartialReplyTrailingFlush(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// Completed reasoning part, then a delta burst that lands entirely
+	// inside the throttle window. No part completion, no idle — nothing
+	// further feeds the drain loop until the trailing flush fires.
+	client.sub.feed(busReasoning("ses_1", "thinking hard"))
+	client.sub.feed(busDelta("ses_1", "The "))
+	client.sub.feed(busDelta("ses_1", "answer"))
+	client.sub.feed(busDelta("ses_1", " is 42"))
+
+	// The trailing flush must drain the tail within ~200ms of the last
+	// delta — without any further event from the bus.
+	deadline := time.After(3 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var row *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil && strings.Contains(row.Content, "The answer is 42") {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("trailing flush never drained the throttled delta tail")
+		}
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight (a trailing flush is not a completed reply)")
+	}
+
+	// Finalize cleanly: the authoritative reply replaces the delta text and
+	// a stale-but-disarmed timer cannot corrupt it.
+	client.sub.feed(busText("ses_1", "The answer is 42"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline = time.After(5 * time.Second)
+	for {
+		if _, ok := s.turns.get(convID); !ok {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("turn never released after finalize")
+		}
+	}
+	final := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(final.Content) != "The answer is 42" {
+		t.Errorf("final reply = %q, want %q (the trailing flush must not corrupt the durable record)", final.Content, "The answer is 42")
 	}
 }
 

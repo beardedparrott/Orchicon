@@ -106,7 +106,14 @@ func (c *promptSectionCache) rememberStamps(scope string, stamps []contextfiles.
 // the per-path diff is logged so the miss is attributable. Returns the
 // rendered section and the fingerprint.
 func (r *WorkflowReconciler) renderContextSectionCached(tenantID, projectID, rootNote string, paths []string, projectDir string) (string, string) {
-	return renderContextSectionCached(globalPromptCache, r.log, tenantID, projectID, rootNote, paths, projectDir)
+	// Normalize a typed-nil logger (*slog.Logger(nil) boxed in the
+	// Info-capable interface is != nil) — struct-literal reconcilers
+	// (tests) carry a nil log, and calling Info on it would panic.
+	var lg interface{ Info(string, ...any) }
+	if r.log != nil {
+		lg = r.log
+	}
+	return renderContextSectionCached(globalPromptCache, lg, tenantID, projectID, rootNote, paths, projectDir)
 }
 
 func renderContextSectionCached(cache *promptSectionCache, log interface{ Info(string, ...any) }, tenantID, projectID, rootNote string, paths []string, projectDir string) (string, string) {

@@ -1068,10 +1068,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				if branchChild[sr.StepID] {
 					switch sr.WorktreeStatus {
 					case domain.WorktreePending, domain.WorktreePruned, "":
+						// Held + queued for provisioning: collected here,
+						// fired ONCE post-commit (below) — an in-loop fire
+						// here would double-notify (pre-#393 this loop
+						// collected only; #393 added a second in-loop fire
+						// without removing this one, so every held branch
+						// was enqueued with the WorktreeReconciler twice
+						// per pass).
 						branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
-						if r.worktreeNotifier != nil {
-							r.worktreeNotifier(context.Background(), run.ID+":"+sr.ID)
-						}
 						continue
 					case domain.WorktreeFailed:
 						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,

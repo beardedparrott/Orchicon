@@ -230,6 +230,25 @@ const sdlcWorkhorseMarker = "Hard time-box"
 // PR Reviewer, or Architect.
 const qaSurfaceImpactMarker = "Surface-impact check — mandatory, before any verdict"
 
+// preExistingRemedyMarker is the roll-forward fragment (cannedWorker.RollMarker)
+// pinning the pre-existing-failure remedy contract on the SSE, PR Reviewer,
+// and QA Engineer: a test that already fails without the change is remedied
+// AUTONOMOUSLY by the worker — it owns the decision and executes it (fix the
+// cause by default; remove or correct the test only when its own
+// investigation proves the test no longer protects anything needed), never
+// left red, never proposed upward, with the decision + rationale recorded as
+// a FACTS LEARNED line. Added after the native-adapter branch exposed 3
+// pre-existing askorchicon failures that had been dismissed as 'pre-existing'
+// (2026-09-04): a red suite makes every green signal meaningless, and
+// 'pre-existing' is not an acceptable terminal state for any worker. Fragment
+// appears only in the new content so exactly these three re-roll on boot.
+const preExistingRemedyMarker = "failures are yours to remedy"
+
+// PreExistingRemedyMarker is the exported twin of preExistingRemedyMarker so
+// package-external seeder tests can pin the remedy-contract roll-forward
+// fragment. Keep in sync by construction (assigned from the internal one).
+var PreExistingRemedyMarker = preExistingRemedyMarker
+
 // QASurfaceImpactMarker is the exported twin of qaSurfaceImpactMarker so the
 // package-external seeder tests can pin the QA Engineer's roll-forward
 // fragment. Keep in sync by construction (the exported value is assigned
@@ -281,11 +300,12 @@ var cannedWorkers = []cannedWorker{
 			"2. **Implement per the numbered list.** Handle errors and edge cases the plan names. When a reviewer or QA step reported fixable findings earlier in this run, treat their reports as your todo list.\n" +
 			"3. **Chunk discipline (stall-critical, never skip)**: never produce a file in one giant generation — scaffold first, then extend section by section across tool calls; same for edits. A single turn emitting hundreds of lines trips the stall detector or gets truncated mid-stream; both kill the execution and destroy all your context.\n" +
 			"4. **Build + run the focused tests after each meaningful chunk** — fix failures immediately, while context is fresh. Bugs found downstream cost a full extra cycle you do not have.\n" +
-			"5. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
+			"5. **Pre-existing failures are yours to remedy (autonomous)**: a test that fails WITHOUT your change is still a failure in the suite you are shipping — \"pre-existing\" is a root cause to chase, not an excuse. You own the decision and execute it: fix the underlying cause (the default), or — only when your investigation proves the test no longer protects anything needed — remove or correct it yourself and say so. Never leave the suite red and never merely note the failure: record what you found and what you decided as a `FACTS LEARNED:` line so downstream steps inherit it.\n" +
+			"6. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, and pushed; `failure` only if the plan itself proved unimplementable (say exactly where it broke down).",
+			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green (pre-existing failures remedied by you, per step 5), and pushed; `failure` only if the plan itself proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides: []byte(`{"wall_clock_seconds":3600}`),
-		RollMarker:      sdlcWorkhorseMarker,
+		RollMarker:      preExistingRemedyMarker,
 	},
 	{
 		ID:          "w_se_pr_reviewer",
@@ -303,16 +323,16 @@ var cannedWorkers = []cannedWorker{
 			"You are the code gate before QA: verify the change is sound and builds properly, and **you FIX all code bugs you find** — you do not pass fixable bugs back to the engineer.\n\n" +
 			"## Workflow\n" +
 			"1. **Scope**: on a later loop iteration, review the delta since the last review, not the whole change.\n" +
-			"2. **Verify**: build the project; review the change against its acceptance criteria for correctness and obvious security issues in THIS change. Check tests exist for new behavior; missing tests for the new code are fixable — add them.\n" +
+			"2. **Verify**: build the project; review the change against its acceptance criteria for correctness and obvious security issues in THIS change. Check tests exist for new behavior; missing tests for the new code are fixable — add them. **Run the suite, not just the build** — pre-existing failures are yours to remedy: a test that already fails before this change makes every green signal meaningless, and \"pre-existing\" is a root cause to chase, not an excuse. You own the decision and execute it: fix the underlying cause (the default), or — only when your investigation proves the test no longer protects anything needed — remove or correct it yourself and say so. Record what you found and what you decided as a `FACTS LEARNED:` line. Never report success on a suite you know is red.\n" +
 			"3. **Fix, don't bounce**: when you find a code bug (logic error, build breakage, security hole, missing test), fix it yourself, right now. After fixing, re-verify (build + tests green) and list what you fixed in your report. Style, naming, and minor edge cases are optional suggestions at most — never blockers, never fixes.\n" +
 			"4. **One lint pass**: run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` once before reporting (install with `pip install semgrep` if missing). Report only genuine, relevant findings.\n\n" +
 			"## Verdict contract\n" +
 			"End your review with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
-			"- `success` — the change passes as-is, or you fixed the bugs yourself and re-verified (build + code tests green). List what you fixed.\n" +
+			"- `success` — the change passes as-is, or you fixed the bugs yourself and re-verified (build + code tests green, including any pre-existing failure you remedied yourself). List what you fixed.\n" +
 			"- `failure` — ONLY when you genuinely cannot fix the issue yourself after real attempts. Cite the exact file and line, state exactly what remains broken and what you already tried. Never pass a fixable bug back for someone else to fix — regression/UI testing is the QA Engineer's step, not yours.\n\n" +
 			"A change with only bugs you already fixed is a SUCCESS — do not report failure for what you have already fixed.",
 		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      sdlcWorkhorseMarker,
+		RollMarker:      preExistingRemedyMarker,
 	},
 	{
 		ID:          "w_se_qa_engineer",
@@ -333,14 +353,15 @@ var cannedWorkers = []cannedWorker{
 			"2. **Test what the change touches**: functional behavior, the relevant edge cases, integration spot-checks. Never expand to the whole system.\n" +
 			"3. **Surface-impact check — mandatory, before any verdict**: decide explicitly whether this change affects ANYTHING the user can see or interact with — displayed data, numbers, budgets, costs, tokens, statuses, counts, lists, labels, forms. **Diff file types are not the test**: a Go-only diff that feeds displayed values (usage, pricing, budgets, telemetry) is UI-affecting. If any user-visible surface is affected — or you cannot confidently rule it out — you MUST verify it visually via the Playwright loop below: start the app, screenshot the affected surface, read the pixels, and confirm the actual displayed values against the acceptance criteria. Verifying only the backend while a criterion references displayed data is an incomplete pass.\n" +
 			"4. **Fix, don't bounce**: when a test fails or the UI misbehaves, find the cause and fix it yourself (code or test-harness both fair game), then re-run/re-screenshot to CONFIRM the fix. Never rewrite engineer logic to make a test pass — fix the real cause.\n" +
-			"5. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion). If a task asks for that, refuse and flag it — the execution guard blocks them anyway.\n\n" +
+			"5. **Pre-existing failures are yours to remedy (autonomous)**: a test that fails for reasons unrelated to this change is still a red suite — \"it was already failing\" is not an acceptable success state. You own the decision and execute it: fix the underlying cause (the default), or — only when your investigation proves the test no longer protects anything needed — remove or correct it yourself and say so. Record what you found and what you decided as a `FACTS LEARNED:` line so the run inherits it.\n" +
+			"6. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion). If a task asks for that, refuse and flag it — the execution guard blocks them anyway.\n\n" +
 			"## Verdict contract\n" +
 			"End your report with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — `success` or `failure`:\n" +
-			"- `success` — all acceptance criteria verified, or every finding fixed + re-verified by you. State your surface-impact determination: what UI you verified, or why no user-visible surface was affected. List what you fixed.\n" +
+			"- `success` — all acceptance criteria verified, or every finding fixed + re-verified by you, **and the suite you ran is green** (any pre-existing failure you encountered has been remedied by you — fixed, or the test corrected/removed after verification). State your surface-impact determination: what UI you verified, or why no user-visible surface was affected. List what you fixed.\n" +
 			"- `failure` — ONLY when you absolutely cannot fix the problem after exhausting your approaches. Include steps to reproduce and state exactly what you already tried. Never pass a fixable bug back for someone else to fix.\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock,
 		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      qaSurfaceImpactMarker,
+		RollMarker:      preExistingRemedyMarker,
 	},
 	{
 		ID:          "w_se_principal_architect",
@@ -756,10 +777,12 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Load the current published version to decide whether the seed's
 	// safety context is already present on it.
 	var curVer int
-	var pubID, curAgents string
-	_ = ttx.QueryRow(ctx,
+	if err := ttx.QueryRow(ctx,
 		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, targetID,
-	).Scan(&curVer)
+	).Scan(&curVer); err != nil {
+		return fmt.Errorf("seed worker %s: current version: %w", w.ID, err)
+	}
+	var pubID, curAgents string
 	verErr := ttx.QueryRow(ctx,
 		`SELECT id, agents_md FROM worker_versions
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
@@ -775,31 +798,142 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// updates reach EVERY canned worker, not just untouched v1s.
 	// Idempotent: once both markers are present no further versions are
 	// created.
-	needSync := verErr != nil ||
-		!strings.Contains(curAgents, seedSafetyMarker) ||
-		!strings.Contains(curAgents, sandboxPlaneMarker) ||
-		(w.RollMarker != "" && !strings.Contains(curAgents, w.RollMarker))
+	// Repair a dangling current_version BEFORE any content sync: the
+	// version row the pointer names may be gone (crashed boot between
+	// the worker upsert and the version insert, or a deleted publish).
+	// The old code copy-inserted from a source row that did not exist
+	// (affected 0 rows, no error) and then set current_version to a
+	// version that was never created — a dispatch black hole. Repair
+	// re-points at the highest PUBLISHED version, else the highest
+	// version of any status, and only when NO version rows exist at all
+	// inserts a fresh published v1 carrying the seed content.
+	draftCurrent := false
+	if verErr != nil {
+		var bestVer int
+		var bestStatus string
+		berr := ttx.QueryRow(ctx,
+			`SELECT version, status FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
+			  ORDER BY version DESC LIMIT 1`,
+			targetID,
+		).Scan(&bestVer, &bestStatus)
+		if errors.Is(berr, pgx.ErrNoRows) {
+			berr = ttx.QueryRow(ctx,
+				`SELECT version, status FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
+				  ORDER BY version DESC LIMIT 1`,
+				targetID,
+			).Scan(&bestVer, &bestStatus)
+		}
+		switch {
+		case berr == nil:
+			// A usable row exists below the broken pointer — re-point
+			// and continue from it.
+			if _, err := ttx.Exec(ctx,
+				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
+				bestVer, targetID,
+			); err != nil {
+				return fmt.Errorf("seed worker %s: repair current version pointer: %w", w.ID, err)
+			}
+			curVer = bestVer
+			verErr = nil
+			draftCurrent = bestStatus != "published"
+			if err := ttx.QueryRow(ctx,
+				`SELECT id, agents_md FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+				targetID, curVer,
+			).Scan(&pubID, &curAgents); err != nil {
+				return fmt.Errorf("seed worker %s: reload repaired version: %w", w.ID, err)
+			}
+		case errors.Is(berr, pgx.ErrNoRows):
+			// No version rows exist at all — rebuild fresh as v1.
+			var budgetParam any
+			if len(w.BudgetOverrides) > 0 {
+				budgetParam = string(w.BudgetOverrides)
+			}
+			if _, err := ttx.Exec(ctx,
+				`INSERT INTO worker_versions
+				    (id, tenant_id, worker_id, version, version_note, status,
+				     model_ref, role, skills, behavior, agents_md,
+				     context_sources, permissions, gated_tools, budget_overrides,
+				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+				     labels, published_at, created_at)
+				 VALUES ($1, 'tnt_dev', $2, 1, 'Safety context roll-forward', 'published',
+				        '', $3, $4, $5, $6,
+				        '[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', 1, '', '{}',
+				        now(), now())`,
+				NewID(), targetID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam,
+			); err != nil {
+				return fmt.Errorf("seed worker %s: rebuild missing version as v1: %w", w.ID, err)
+			}
+			curVer = 1
+			verErr = nil
+			curAgents = seedAgentsMD(w)
+			pubID = ""
+		default:
+			return fmt.Errorf("seed worker %s: locate current version: %w", w.ID, berr)
+		}
+	}
+
+	// The seed is the source of truth for canned-worker prompt context.
+	// When the current published version is missing the safety marker —
+	// e.g. the worker predates this seed change, or a user edit dropped
+	// the safety rules — or is missing the current sandbox-plane wording
+	// (the block text changed), sync the seed context onto it. This
+	// ensures safety AND wording updates reach EVERY canned worker, not
+	// just untouched v1s. Idempotent: once all markers are present no
+	// further changes are made. A DRAFT current version is never synced
+	// here — the promote block below owns publishing it (converges on
+	// the next boot's marker check).
+	needSync := verErr == nil && !draftCurrent &&
+		(!strings.Contains(curAgents, seedSafetyMarker) ||
+			!strings.Contains(curAgents, sandboxPlaneMarker) ||
+			(w.RollMarker != "" && !strings.Contains(curAgents, w.RollMarker)))
 
 	if needSync {
+		// Every statement below is checked: a swallowed error poisons
+		// the seed transaction — it aborts and only COMMIT surfaces the
+		// failure, as the opaque pgx 'commit unexpectedly resulted in
+		// rollback'. (The 2026-09-04 seed-test wedge was exactly this:
+		// a version collision at curVer+1 errored, was swallowed, and
+		// every test that seeded died with the commit message instead
+		// of the real constraint violation.)
+		var maxVer int
+		if err := ttx.QueryRow(ctx,
+			`SELECT COALESCE(max(version), 0) FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, targetID,
+		).Scan(&maxVer); err != nil {
+			return fmt.Errorf("seed worker %s: max version: %w", w.ID, err)
+		}
 		if curVer == 1 {
 			// v1 is the canonical seed version — sync it in place.
-			_, _ = ttx.Exec(ctx,
+			if _, err := ttx.Exec(ctx,
 				`UPDATE worker_versions
 				    SET role = $1, skills = $2, behavior = $3, agents_md = $4
 				  WHERE worker_id = $5 AND tenant_id = 'tnt_dev'
 				    AND version = 1`,
 				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), targetID,
-			)
+			); err != nil {
+				return fmt.Errorf("seed worker %s: sync v1: %w", w.ID, err)
+			}
 		} else {
 			// Newer versions are user-created; preserve them and append
-			// a new published version carrying the seed context. BudgetOverrides:
-			// nil = keep the current version's; a canned JSON value overrides it.
+			// a new published version carrying the seed context, copied
+			// from the current published version (model_ref included).
+			// The new version number must clear EVERY existing version —
+			// a preserved user draft (or stray residue from a killed
+			// run) at curVer+1 collides with the UNIQUE
+			// (worker_id, version) index and aborts the seed
+			// transaction. max(version)+1 across ALL statuses is
+			// collision-free by construction. BudgetOverrides: nil =
+			// keep the current version's; a canned JSON value overrides
+			// it.
+			newVer := maxVer + 1
 			var budgetParam any
 			if len(w.BudgetOverrides) > 0 {
 				budgetParam = string(w.BudgetOverrides)
 			}
-			newVer := curVer + 1
-			_, _ = ttx.Exec(ctx,
+			if _, err := ttx.Exec(ctx,
 				`INSERT INTO worker_versions
 				    (id, tenant_id, worker_id, version, version_note, status,
 				     model_ref, role, skills, behavior, agents_md,
@@ -816,11 +950,15 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				   FROM worker_versions
 				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
 				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID, budgetParam,
-			)
-			_, _ = ttx.Exec(ctx,
+			); err != nil {
+				return fmt.Errorf("seed worker %s: roll forward to v%d: %w", w.ID, newVer, err)
+			}
+			if _, err := ttx.Exec(ctx,
 				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
 				newVer, targetID,
-			)
+			); err != nil {
+				return fmt.Errorf("seed worker %s: set current version: %w", w.ID, err)
+			}
 		}
 	}
 
@@ -835,7 +973,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// published version are left untouched. When a draft is promoted,
 	// current_version follows it so dispatch never points at a missing
 	// version.
-	pubTag, _ := ttx.Exec(ctx,
+	pubTag, err := ttx.Exec(ctx,
 		`UPDATE worker_versions SET status = 'published',
 			model_ref = COALESCE(NULLIF(model_ref, ''), '')
 		 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
@@ -852,15 +990,20 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		   )`,
 		targetID,
 	)
+	if err != nil {
+		return fmt.Errorf("seed worker %s: promote draft: %w", w.ID, err)
+	}
 	if pubTag.RowsAffected() > 0 {
-		_, _ = ttx.Exec(ctx,
+		if _, err := ttx.Exec(ctx,
 			`UPDATE workers SET current_version = (
 			   SELECT max(version) FROM worker_versions
 			   WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
 			 )
 			 WHERE id = $1 AND tenant_id = 'tnt_dev'`,
 			targetID,
-		)
+		); err != nil {
+			return fmt.Errorf("seed worker %s: set current version after promotion: %w", w.ID, err)
+		}
 	}
 	return nil
 }
