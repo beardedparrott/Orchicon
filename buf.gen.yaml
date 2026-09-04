@@ -13,10 +13,10 @@ managed:
       value: github.com/beardedparrott/orchicon/api/gen/go
 plugins:
   # Go: connect-go service + messages
-  - remote: buf.build/connectrpc/go
+  - remote: buf.build/connectrpc/go:v1.20.0
     out: api/gen/go
     opt: paths=source_relative
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.36.12
     out: api/gen/go
     opt: paths=source_relative
   # TypeScript: Connect-ES clients + messages (frontend).
