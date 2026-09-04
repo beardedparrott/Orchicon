@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 )
+
 // AC: a bare StopStop turn (no marker) is NOT settled as success — the
 // completion probe fires (one extra provider turn), the probe turn
 // delivers the marker, and the session settles with the marker in output.
@@ -136,8 +137,13 @@ func TestQADecisionGatePlaceholderMarkerProbes(t *testing.T) {
 // AC: StopLength never settles as success — the 4096-cap mid-monologue
 // truncation shape (the reported hollow successes) must fail.
 func TestQADecisionGateStopLengthFails(t *testing.T) {
+	// StopLength recovery parity: the turn continues via a bounded
+	// continuation (the mock provider exhausts its scripted turns → the
+	// continuation turn's pre-stream failure fails the execution). The
+	// failure carries the length-continuation message, never a hollow
+	// success.
 	prov := &mockProvider{turns: []scriptedTurn{
-		{events: []Event{TextDelta{Text: "Maybe also handle `"}}, finish: StopLength, usage: Usage{InputTokens: 100, OutputTokens: 4096}},
+		{events: []Event{TextDelta{Text: "Maybe also handle `"}}, finish: StopLength, usage: Usage{InputTokens: 100, OutputTokens: 4096}, bare: true},
 	}}
 	s := qaSession(t, prov, nil)
 	cb := &recordedCallback{}
@@ -148,7 +154,7 @@ func TestQADecisionGateStopLengthFails(t *testing.T) {
 	if len(results) != 1 || results[0].succeeded {
 		t.Errorf("StopLength without marker = %+v, want failure", results)
 	}
-	if len(results) == 1 && !strings.Contains(results[0].errMsg, `"length"`) {
+	if len(results) == 1 && !strings.Contains(results[0].errMsg, "length") && !strings.Contains(results[0].errMsg, "provider stream failed") {
 		t.Errorf("errMsg = %q, want the stop-reason failure", results[0].errMsg)
 	}
 }
@@ -187,6 +193,7 @@ func TestQADecisionGateTruncatedMarkerFails(t *testing.T) {
 		t.Errorf("Truncated marker = %+v, want failure (partial sign-off is not a completed turn)", results)
 	}
 }
+
 // --- provider-stream regression tests (all families) ------------------------
 
 // AC: openaicompat stream ends WITHOUT finish_reason/[DONE] (proxy drop /

@@ -125,6 +125,8 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 		s.log.Warn("native session idle without decision marker after probes — failing",
 			"execution", s.id, "probes", s.completionProbesSent)
 		callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
 		return false
 	}
 	s.completionProbesSent++
@@ -134,7 +136,9 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 		// never a silent success.
 		msg := fmt.Sprintf("completion probe transcript append failed: %v", err)
 		_ = s.markState(ctx, "failed")
-		callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+		s.fireTerminalOnce(callbacks, s.id, false, msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
 		return false
 	}
 	s.log.Info("native session settled without decision marker — sending completion probe",

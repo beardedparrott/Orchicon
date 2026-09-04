@@ -147,9 +147,10 @@ type ollamaChatRequest struct {
 	Tools    []oaToolDef   `json:"tools,omitempty"`
 }
 
-// ollamaOptions carries num_ctx (pointer: omit when unset).
+// ollamaOptions carries num_ctx / num_predict (pointers: omit when unset).
 type ollamaOptions struct {
-	NumCtx int64 `json:"num_ctx,omitempty"`
+	NumCtx     int64 `json:"num_ctx,omitempty"`
+	NumPredict int64 `json:"num_predict,omitempty"`
 }
 
 type ollamaNMsg struct {
@@ -167,10 +168,16 @@ type ollamaNToolCall struct {
 }
 
 // buildOllamaNativeRequest shapes the native /api/chat body (system rides
-// the system message; assistant reasoning never replayed).
+// the system message; assistant reasoning never replayed). num_predict
+// carries the per-turn output cap (parity with the OpenAI-compat
+// max_tokens path — the previous omission let ollama generate unbounded
+// turns on the native transport).
 func buildOllamaNativeRequest(req TurnRequest, numCtx int64) ollamaChatRequest {
 	r := ollamaChatRequest{Model: req.Model, Stream: true}
 	r.Options.NumCtx = numCtx
+	if req.MaxTokens > 0 {
+		r.Options.NumPredict = req.MaxTokens
+	}
 	if sys := systemText(req.System); sys != "" {
 		r.Messages = append(r.Messages, ollamaNMsg{Role: "system", Content: sys})
 	}
@@ -267,6 +274,10 @@ type ollamaNativeStream struct {
 	stop    StopReason
 	toolIdx int
 	drained bool
+	// pending queues events produced by one decoded chunk: a final chunk
+	// can carry tail content AND done:true — both must surface to the
+	// consumer (the drain loop), never a dropped tail.
+	pending []Event
 }
 
 func (s *ollamaNativeStream) Close() error {
@@ -281,6 +292,11 @@ func (s *ollamaNativeStream) Close() error {
 // failure per D11).
 func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, true, nil
+	}
 	if s.drained {
 		return nil, false, nil
 	}
@@ -305,15 +321,24 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 			s.toolIdx++
 			return ToolCall{Index: idx, ToolCallID: fmt.Sprintf("ollama_call_%d", idx), Name: tc.Function.Name, ArgsJSON: args}, true, nil
 		}
-		if ch.Message.Content != "" {
+		if ch.Message.Content != "" && !ch.Done {
 			return TextDelta{Text: ch.Message.Content}, true, nil
 		}
 		if ch.Done {
+			// A final chunk may carry BOTH the tail content and done:true —
+			// emitting the content first keeps the last delta from being
+			// dropped (the old shape lost the tail and truncated output).
+			if ch.Message.Content != "" {
+				s.pending = append(s.pending, TextDelta{Text: ch.Message.Content})
+			}
 			s.usage.InputTokens = ch.PromptEvalCount
 			s.usage.OutputTokens = ch.EvalCount
 			s.stop = mapOllamaDone(ch.DoneReason)
 			s.drained = true
-			return Finish{StopReason: s.stop, Usage: s.usage}, true, nil
+			s.pending = append(s.pending, Finish{StopReason: s.stop, Usage: s.usage})
+			ev := s.pending[0]
+			s.pending = s.pending[1:]
+			return ev, true, nil
 		}
 	}
 	if err := s.sc.Err(); err != nil {

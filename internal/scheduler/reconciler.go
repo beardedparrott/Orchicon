@@ -1068,6 +1068,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		AcceptanceCriteria:           task.AcceptanceCriteria,
 		ModelRef:                     version.ModelRef,
 		DefaultModelRef:              defaultModelRef,
+		ContextWindow:                task.ContextWindow,
 		ContextSources:               version.ContextSources,
 		Budgets:                      budgetsJSON,
 		Permissions:                  version.Permissions,

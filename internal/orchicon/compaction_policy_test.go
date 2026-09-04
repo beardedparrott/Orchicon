@@ -94,7 +94,7 @@ func TestCompactionNoHintNoFireOnTokensAlone(t *testing.T) {
 	seedHistory(s)
 	for step := 2; step < 12; step++ {
 		s.recordTurnUsage(Usage{InputTokens: 100_000, OutputTokens: 10_000})
-		if fired := s.maybeCompact(context.Background(), step, Usage{InputTokens: 100_000, OutputTokens: 10_000}); fired {
+		if r := s.maybeCompact(context.Background(), step, Usage{InputTokens: 100_000, OutputTokens: 10_000}); r != "" {
 			t.Fatalf("compaction fired at step %d with no window hint and no enabled gate", step)
 		}
 	}
@@ -112,17 +112,17 @@ func TestCompactionBudgetGateFiresOnce(t *testing.T) {
 
 	// Turn at 60/200 = 30% (warn) → no compaction.
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) != "" {
 		t.Fatalf("compaction fired at warn tier")
 	}
 	// 60 more → 120/200 = 60% (escalate, compact_tiers[1]=true) → fires.
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) == "" {
 		t.Fatalf("compaction did not fire at escalate tier")
 	}
 	// Same-tier re-evaluation (session continues) → no re-fire.
 	s.recordTurnUsage(Usage{})
-	if s.maybeCompact(ctx, 5, Usage{}) {
+	if s.maybeCompact(ctx, 5, Usage{}) != "" {
 		t.Fatalf("compaction re-fired on the same escalate tier")
 	}
 	if s.cs.compactions != 1 {
@@ -166,7 +166,7 @@ func TestCompactionWindowPressureFires(t *testing.T) {
 	// fired at step 4; the corrected per-turn basis must not).
 	for step := 2; step < 12; step++ {
 		s.recordTurnUsage(Usage{InputTokens: 500})
-		if fired := s.maybeCompact(ctx, step, Usage{InputTokens: 500}); fired {
+		if r := s.maybeCompact(ctx, step, Usage{InputTokens: 500}); r != "" {
 			t.Fatalf("compaction fired at step %d from sub-threshold turns", step)
 		}
 	}
@@ -175,7 +175,7 @@ func TestCompactionWindowPressureFires(t *testing.T) {
 	}
 	// One over-threshold turn (850/1000 = 85% ≥ 0.8) fires exactly once.
 	s.recordTurnUsage(Usage{InputTokens: 850})
-	if !s.maybeCompact(ctx, 13, Usage{InputTokens: 850}) {
+	if s.maybeCompact(ctx, 13, Usage{InputTokens: 850}) == "" {
 		t.Fatalf("compaction did not fire at window pressure")
 	}
 	if s.cs.compactions != 1 {
@@ -183,7 +183,7 @@ func TestCompactionWindowPressureFires(t *testing.T) {
 	}
 	// Same-band re-evaluation does not re-fire (at-most-once per band).
 	s.recordTurnUsage(Usage{InputTokens: 860})
-	if s.maybeCompact(ctx, 14, Usage{InputTokens: 860}) {
+	if s.maybeCompact(ctx, 14, Usage{InputTokens: 860}) != "" {
 		t.Fatalf("compaction re-fired on the same pressure band")
 	}
 	if s.cs.compactions != 1 {
@@ -267,7 +267,7 @@ func TestCompactionEvictionPreservesToolUseResultPairing(t *testing.T) {
 		assistantTextMsg("Final assistant text."),
 	}
 	// Fire window pressure on an over-threshold turn.
-	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+	if s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) == "" {
 		t.Fatalf("expected compaction to fire")
 	}
 	h := s.History()
@@ -325,7 +325,7 @@ func TestCompactionTailPairingIsPreserved(t *testing.T) {
 		assistantToolUseMsg("tail_use", "read", `{"path":"x"}`),
 		toolResultMsg("tail_use", "tail result output"),
 	}
-	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+	if s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) == "" {
 		t.Fatalf("expected compaction to fire")
 	}
 	h := s.History()
@@ -373,11 +373,11 @@ func TestCompactionOffloadFailureLeavesHistoryIntact(t *testing.T) {
 
 	ctx := context.Background()
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) != "" {
 		t.Fatalf("compaction fired at warn tier")
 	}
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) != "" {
 		t.Fatalf("compaction fired despite a failing offload")
 	}
 	if s.cs.compactions != 0 {
@@ -436,7 +436,7 @@ func TestCompactionDigestMarkerMergedIntoHeadUserMessage(t *testing.T) {
 		assistantToolUseMsg("recent", "read", `{"path":"x"}`),
 		toolResultMsg("recent", "recent tail result"),
 	}
-	if !s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) {
+	if s.maybeCompact(context.Background(), 3, Usage{InputTokens: 900, CacheReadTokens: 100}) == "" {
 		t.Fatalf("expected compaction to fire")
 	}
 	h := s.History()
@@ -513,17 +513,17 @@ func TestCompactionCostBudgetGateFiresWithPricing(t *testing.T) {
 	price := func(u Usage) Usage { u.CostUSD = s.priceUsage(ctx, u); return u }
 	// 3000 input tokens at $1/M = $0.003; two such turns = $0.006 (escalate
 	// at 0.5 of a $0.01 gate) — fires on the second.
-	if s.maybeCompact(ctx, 2, price(Usage{InputTokens: 3000})) {
+	if s.maybeCompact(ctx, 2, price(Usage{InputTokens: 3000})) != "" {
 		t.Fatalf("compaction fired below the cost escalate tier")
 	}
-	if !s.maybeCompact(ctx, 3, price(Usage{InputTokens: 3000})) {
+	if s.maybeCompact(ctx, 3, price(Usage{InputTokens: 3000})) == "" {
 		t.Fatalf("compaction did not fire at the cost escalate tier")
 	}
 	if s.cs.compactions != 1 {
 		t.Fatalf("compactions = %d, want exactly 1", s.cs.compactions)
 	}
 	// Same-tier re-evaluation does not re-fire.
-	if s.maybeCompact(ctx, 4, price(Usage{InputTokens: 3000})) {
+	if s.maybeCompact(ctx, 4, price(Usage{InputTokens: 3000})) != "" {
 		t.Fatalf("compaction re-fired on the same cost tier")
 	}
 }
@@ -541,11 +541,11 @@ func TestCompactionRoleAlternationWithPlainTextUserTurns(t *testing.T) {
 	seedHistory(s)
 	ctx := context.Background()
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) != "" {
 		t.Fatalf("compaction fired at warn tier")
 	}
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) == "" {
 		t.Fatalf("compaction did not fire at escalate tier")
 	}
 	h := s.History()
@@ -596,11 +596,11 @@ func TestCompactionRoleAlternationAssistantTextAndToolUseRounds(t *testing.T) {
 	}
 	ctx := context.Background()
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 3, Usage{InputTokens: 60}) != "" {
 		t.Fatalf("compaction fired at warn tier")
 	}
 	s.recordTurnUsage(Usage{InputTokens: 60})
-	if !s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) {
+	if s.maybeCompact(ctx, 4, Usage{InputTokens: 60}) == "" {
 		t.Fatalf("compaction did not fire at escalate tier")
 	}
 	wire := marshalAnthropicHistory(s.History())
@@ -692,5 +692,36 @@ func TestCompactionBudgetGateFiresOnceMidRunAndSessionContinues(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(dir, ".orchicon", "offload", s.id+".jsonl"))
 	if err != nil || len(b) == 0 {
 		t.Errorf("offload file missing after loop-level compaction (err=%v)", err)
+	}
+}
+
+// AC (budget-abort parity): the budget ladder's ABORT tier is terminal on
+// the native engine — the session fails with the budget_abort:<dim>
+// reason (opencode parity: abort is a hard kill, never a compaction).
+func TestCompactionBudgetAbortTerminal(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":100,"compact_tiers":[false,false,false]}`, 0)
+	seedHistory(s)
+	ctx := context.Background()
+	// Fresh tokens far past the 100-token abort line in ONE turn:
+	// fresh = input+output (no cache) = 50_000 → frac = 500 → abort.
+	s.recordTurnUsage(Usage{InputTokens: 50_000})
+	res := s.maybeCompact(ctx, 3, Usage{InputTokens: 50_000})
+	if res != "budget_abort:tokens" {
+		t.Fatalf("maybeCompact = %q, want the terminal budget_abort:tokens", res)
+	}
+	// No compaction may have run (abort is not a compaction).
+	if s.cs.compactions != 0 {
+		t.Fatalf("compactions = %d, want 0 (abort never compacts)", s.cs.compactions)
+	}
+}
+
+// AC (disabled gate never aborts): an explicit tokens:0 disables the
+// tokens dimension entirely — even massive spend stays inert.
+func TestCompactionBudgetAbortDisabledDim(t *testing.T) {
+	s, _, _, _ := compactTestSession(t, `{"tokens":0,"compact_tiers":[false,false,false]}`, 0)
+	seedHistory(s)
+	s.recordTurnUsage(Usage{InputTokens: 5_000_000})
+	if res := s.maybeCompact(context.Background(), 3, Usage{InputTokens: 5_000_000}); res != "" {
+		t.Fatalf("disabled dimension aborted: %q", res)
 	}
 }

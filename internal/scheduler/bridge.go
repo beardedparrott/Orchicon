@@ -29,9 +29,14 @@ type ExecutionManifest struct {
 	AcceptanceCriteria string
 	ModelRef           string // human-defined; no auto-failover (docs/05 §11)
 	DefaultModelRef    string // tenant-level default from settings; fallback if ModelRef empty
-	ContextSources     []byte // jsonb
-	Budgets            []byte // jsonb
-	Permissions        []byte // jsonb
+	// ContextWindow is the work item's declared context window (tokens).
+	// Adapters use it as a FALLBACK context-window hint when live provider
+	// metadata is unavailable (e.g. a custom local provider whose models
+	// report no context length) — never a replacement for a live hint.
+	ContextWindow  int
+	ContextSources []byte // jsonb
+	Budgets        []byte // jsonb
+	Permissions    []byte // jsonb
 	// ProjectDir is the project root: the container bind-mount source and
 	// the daemon-level guard/serve boundary. Always the true project dir.
 	ProjectDir string

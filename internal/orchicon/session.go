@@ -92,6 +92,11 @@ type Session struct {
 	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
 	// instead of recording a hollow success.
 	completionProbesSent int
+	// lengthContinuationsSent counts the output-cap continuation turns
+	// (StopLength recovery, loop.go). Bounded by
+	// lengthContinuationMaxTurns — a session that keeps hitting the cap
+	// past the budget fails honestly instead of looping forever.
+	lengthContinuationsSent int
 	// written-tracking (deduped, OnWrittenFiles parity).
 	writtenMu    sync.Mutex
 	writtenSet   map[string]bool
@@ -149,6 +154,44 @@ type Session struct {
 	// recordTurnUsage / cacheStats: emitting a record must never double-feed
 	// the per-session cache rollup.
 	usageSink func(ctx context.Context, u Usage)
+
+	// pm is the progress monitor (opencode parity — internal/orchicon/
+	// progress.go): time-based stall detection (no_progress / no_file_diff /
+	// text_loop / repetition / tool_hang) with the advisory-first nudge
+	// escalation. Started by Run, stopped at session end.
+	pm *progressMonitor
+	// stallCh carries fatal stall reasons from the monitor to the loop's
+	// select (the loop unwinds; the verdict was already delivered by the
+	// monitor handler — fireTerminalOnce — so the loop never re-fires).
+	stallCh chan string
+	// doneCh is closed when Run unwinds; the nudge reply watchdog listens
+	// so it never outlives the session.
+	doneCh chan struct{}
+	// terminalFired guards the ONE terminal OnResult per session (the
+	// monitor goroutine and the turn loop both own terminal paths —
+	// opencode parity: finish() is first-arrival-wins).
+	terminalMu    sync.Mutex
+	terminalFired bool
+	// nudgePending tracks an unanswered nudge (reply-window watchdog);
+	// nudgeFinished latches session end.
+	nudgePending  bool
+	nudgeFinished bool
+	// nudge knobs (opencode parity): manifest (tenant settings) first,
+	// env fallback. Resolved once at construction so the nudge budget is
+	// stable for the session's lifetime.
+	nudgeMaxVal         int
+	nudgeReplyWindowVal time.Duration
+	nudgeCooldownVal    time.Duration
+	// nudgesSent counts the escalating liveness nudges this session sent
+	// (advisory-stall path); lastNudgeAt is the last nudge time (cooldown).
+	nudgesSent  int
+	lastNudgeAt time.Time
+	// contextWindowFallback is the work item's configured context window
+	// (ExecutionManifest.ContextWindow). Used as the compaction hint ONLY
+	// when the live provider resolution fails, so an operator-declared
+	// window still arms window-pressure math instead of leaving the
+	// trigger permanently disarmed. 0 = none.
+	contextWindowFallback int64
 }
 
 // CacheStats is the session's prefix-cache metric rollup (ADR-0009 D6).
@@ -258,6 +301,25 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		s.cs.budget = opencode.ParseBudgetLadder(cfg.Manifest.Budgets)
 		s.cs.spend = opencode.NewBudgetSpend()
 	}
+	// Progress monitor (opencode parity): stall windows from the manifest
+	// (tenant settings) with env fallback. Started by Run.
+	s.pm = newProgressMonitor(cfg.ExecRow.ID, stallWindowsFromManifest(
+		cfg.Manifest.StallNoProgressWindowSeconds,
+		cfg.Manifest.StallNoFileDiffWindowSeconds,
+		cfg.Manifest.StallTextLoopWindowSeconds,
+		cfg.Manifest.StallRepetitionCount,
+		cfg.Manifest.StallRepetitionWindowSeconds,
+		cfg.Manifest.StallToolHangSeconds,
+	))
+	s.stallCh = make(chan string, 1)
+	s.doneCh = make(chan struct{})
+	// Nudge knobs: manifest value first, env fallback (opencode parity).
+	s.nudgeMaxVal = nudgeMaxFromManifest(cfg.Manifest.StallNudgeMax)
+	s.nudgeReplyWindowVal = nudgeReplyWindowFromManifest(cfg.Manifest.StallNudgeReplyWindowSeconds)
+	s.nudgeCooldownVal = nudgeCooldownFromManifest(cfg.Manifest.StallNudgeCooldownSeconds)
+	// Work-item-declared context window (parity input): used only as the
+	// compaction hint fallback when the live provider resolution fails.
+	s.contextWindowFallback = int64(cfg.Manifest.ContextWindow)
 	// Static-prefix env facts (ADR-0009 D2): rendered once at
 	// construction from manifest fields — constant within a run, so the
 	// cached prefix is byte-identical across turns.

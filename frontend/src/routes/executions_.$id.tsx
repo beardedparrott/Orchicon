@@ -27,6 +27,7 @@ import {
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
 import { usageKeys } from "@/api/aigateway";
+import { useGetWorkItem } from "@/api/workItems";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
@@ -49,6 +50,15 @@ function ExecutionDetailPage() {
 
   const { data: exec, isLoading, error } = useGetExecution(id);
   const { data: usage } = useGetUsage({ executionId: id });
+  // The bound work item's declared context window (adapter parity): a
+  // native-engine execution's model may not appear in opencode model
+  // discovery (custom local providers), so the sidebar's window resolver
+  // gets an explicit fallback from the work item that scheduled this run.
+  const { data: workItem } = useGetWorkItem(exec?.taskId ?? "");
+  const declaredContextWindow =
+    workItem?.contextWindow && Number(workItem.contextWindow) > 0
+      ? Number(workItem.contextWindow)
+      : undefined;
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
@@ -220,6 +230,7 @@ function ExecutionDetailPage() {
           exec={exec}
           events={events}
           usage={usage ?? []}
+          contextWindow={declaredContextWindow}
           streamStatus={status}
           executionId={exec.id}
         />

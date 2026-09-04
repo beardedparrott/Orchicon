@@ -193,6 +193,11 @@ type TurnRequest struct {
 	// OpenAI-compat does not accept num_ctx). 0 = server default.
 	OllamaNumCtx int64
 
+	// OllamaNumPredict rides native /api/chat options.num_predict — the
+	// per-turn output cap (Ollama only; the OpenAI-compat path carries
+	// MaxTokens as max_tokens instead). 0 = server default.
+	OllamaNumPredict int64
+
 	// CacheControl is the Anthropic breakpoint policy (default: system+tools
 	// for anthropic-format routes; ignored elsewhere).
 	CacheControl CacheControlTTL

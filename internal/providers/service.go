@@ -375,7 +375,18 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 		// its native token-format tool calls as PLAIN TEXT, the loop sees a
 		// text-only finish, and executions "succeed" in 1-2 seconds with
 		// markup garbage ("<｜DSML｜tool_calls>…") as the final message.
-		Quirks: orchicon.Quirks{SupportsToolCalls: true},
+		//
+		// Usage parity (D2): a compat endpoint that accepts streaming
+		// serves usage the standard way — request it (include_usage) and
+		// parse the trailing usage-only chunk. Without these quirks the
+		// native loop saw 0-usage turns: no cost explorer rows, no budget
+		// cost gate, and the old zero-growth stall guard false-tripped.
+		Quirks: orchicon.Quirks{
+			SupportsToolCalls:                true,
+			StreamOptionsIncludeUsage:        true,
+			UsageInFinalChunk:                true,
+			CacheReadFromPromptTokensDetails: true,
+		},
 	}
 	if r.AuthMode == AuthModeToken {
 		p.AuthSecretRef = CustomSecretName(r.ProviderID)

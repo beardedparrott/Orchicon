@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,12 @@ const (
 	toolResultGrace = 5 * time.Second
 )
 
+// lengthContinuationMaxTurns bounds the StopLength continuation budget:
+// two continuation turns (the same budget shape as the completion probe
+// in completion.go). A session that hits the output cap three times in a
+// row is pathological — it fails honestly instead of looping.
+const lengthContinuationMaxTurns = 2
+
 // loopEnv reads an env-tunable integer with a default.
 func loopEnvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
@@ -53,6 +60,32 @@ func loopEnvInt(key string, def int) int {
 func maxSteps() int { return loopEnvInt("ORCHICON_SESSION_MAX_STEPS", maxStepsDefault) }
 func toolParallelism() int {
 	return loopEnvInt("ORCHICON_SESSION_TOOL_PARALLELISM", toolParallelismDefault)
+}
+
+// maxOutputTokensEnv / defaultMaxOutputTokens tune the per-turn output cap
+// (the `length` stop-reason ceiling). The hardcoded 4096 previously cut
+// long-form workers mid-generation (the reported stop-reason "length"
+// failures). ORCHICON_SESSION_MAX_OUTPUT_TOKENS overrides; 0 → default.
+const defaultMaxOutputTokens = 32768
+
+func maxOutputTokens() int64 {
+	if v := os.Getenv("ORCHICON_SESSION_MAX_OUTPUT_TOKENS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxOutputTokens
+}
+
+// turnMaxTokens resolves the per-turn output cap: the model's KNOWN max
+// output (live ModelInfo.MaxOutput) when resolved, bounded above by the
+// env-tunable ceiling — never exceeding what the model reports.
+func (s *Session) turnMaxTokens(ctx context.Context) int64 {
+	cap := maxOutputTokens()
+	if m, _ := s.resolveModelInfo(ctx); m != nil && m.MaxOutput > 0 && m.MaxOutput < cap {
+		return m.MaxOutput
+	}
+	return cap
 }
 
 // Run executes the agent turn loop for the session and streams lifecycle
@@ -71,6 +104,18 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 	if callbacks == nil {
 		return fmt.Errorf("session: nil callbacks")
 	}
+	// Per-run lifecycle reset (resume parity): Run is safe to call again
+	// on the same session, so each invocation gets a fresh terminal gate,
+	// a live done channel, and a clear probe latch — a resumed session
+	// must be able to deliver its OWN verdict and nudge watchdog.
+	s.terminalMu.Lock()
+	s.terminalFired = false
+	s.terminalMu.Unlock()
+	s.noteMu.Lock()
+	s.nudgePending = false
+	s.nudgeFinished = false
+	s.noteMu.Unlock()
+	s.doneCh = make(chan struct{})
 	// Open (or reopen) the crash-safe transcript FIRST so the panic
 	// boundary below can mark the transcript failed while it is still
 	// open. Defer order is LIFO: Close is registered BEFORE the recover
@@ -102,7 +147,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			if s.transcript != nil {
 				_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			}
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), "panic: "+fmt.Sprint(r))
+			s.fireTerminalOnce(callbacks, s.id, false, "panic: "+fmt.Sprint(r))
 			err = fmt.Errorf("%w: %v", ErrPanic, r)
 		}
 	}()
@@ -156,26 +201,76 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		}
 	}
 
+	// Progress monitor (opencode parity): started for the session's
+	// lifetime; the monitor's stall/recovered callbacks route advisory
+	// signals into nudge interjections and fatal signals into the
+	// terminal failure path. Run in a goroutine — run() blocks on its
+	// ticker loop (a synchronous call would deadlock the turn loop
+	// before the first turn ever streamed).
+	go s.pm.run(
+		func(execID, reason string) {
+			s.handleStallSignal(callbacks, execID, reason)
+		},
+		func(execID, recovered string) {
+			callbacks.OnRecovered(ctx, execID, recovered)
+		},
+	)
+	defer s.pm.close()
+	// Session-end latches for the nudge reply watchdog: registered here so
+	// EVERY exit path (terminal verdict, transcript-error return, panic,
+	// cancellation) stops the watchdog — not just the guarded terminals.
+	defer s.markNudgeFinished()
+	defer s.closeDoneCh()
+
 	// Turn loop bounded by maxSteps.
 	steps := 0
 	var lastUsage Usage
-	toolSigs := map[string]int{} // tool signature → consecutive repeats
+	_ = lastUsage // token-growth telemetry (monitor feeds via observeStepFinish)
 	for {
 		select {
 		case <-ctx.Done():
-			// Cancellation: mark cancelled, leave resumable, no new
-			// provider call.
+			// Cancellation (or the wall-clock deadline): mark cancelled,
+			// leave resumable, no new provider call. The terminal verdict
+			// fires here — fireTerminalOnce dedupes against the monitor's
+			// terminal paths (opencode finish() first-arrival parity).
 			_ = s.markState(ctx, "cancelled")
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), "cancelled")
+			s.markNudgeFinished()
+			s.fireTerminalOnce(callbacks, s.id, false, "cancelled")
+			s.closeDoneCh()
+			return nil
+		case <-s.stallCh:
+			// Fatal monitor stall (no_progress / liveness timeout): the
+			// monitor handler already fired the terminal OnResult and the
+			// reconciler's OnStall marked the execution unhealthy — the
+			// loop unwinds WITHOUT a second verdict (opencode parity).
+			_ = s.markState(ctx, "failed")
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		default:
 		}
 
 		steps++
 		if steps > maxSteps() {
+			// Turn-budget exhaustion is its OWN failure shape — the time-
+			// based no_progress monitor owns "no progress within the
+			// window". Mislabeled reasons put a step cap in the fatal
+			// prefix class and mislead the recovery evidence.
 			_ = s.markState(ctx, "failed")
-			callbacks.OnStall(ctx, s.id, "stalled:no_progress", true)
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), "max_steps_exceeded")
+			reason := fmt.Sprintf("stalled:max_steps:turn budget of %d exhausted", maxSteps())
+			callbacks.OnStall(ctx, s.id, reason, true)
+			if s.fireTerminalOnce(callbacks, s.id, false, "max_steps_exceeded") {
+				s.markNudgeFinished()
+				s.closeDoneCh()
+				return nil
+			}
+			// A concurrent monitor escalation already delivered the
+			// verdict — unwind through the stall channel if it is pending.
+			select {
+			case r := <-s.stallCh:
+				_ = r
+			default:
+			}
 			return nil
 		}
 
@@ -187,7 +282,16 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			Model:     s.identity.Model,
 			System:    s.AssembleSystem(),
 			Messages:  s.history,
-			MaxTokens: 4096,
+			MaxTokens: s.turnMaxTokens(ctx),
+		}
+		// Context-window realization (D5, ollama parity): when the live
+		// hint resolved (or the work item declared a window), ride it as
+		// options.num_ctx on the native /api/chat transport so the server
+		// serves the full window instead of silently truncating to ~4096.
+		// OpenAI-compat transports ignore OllamaNumCtx (the header is
+		// Ollama-only).
+		if hint := s.resolveContextWindow(ctx); hint.Ok && hint.Tokens > 0 {
+			req.OllamaNumCtx = hint.Tokens
 		}
 		if s.tools != nil {
 			req.Tools = s.tools.Defs()
@@ -220,7 +324,9 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 				s.identity.ProviderID, s.identity.Model)
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		}
 
@@ -230,17 +336,23 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			msg := fmt.Sprintf("provider stream failed: %v", err)
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		}
 
 		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
 		_ = stream.Close()
+		s.pm.observeStepFinish(usage)
+		s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
 		if streamErr != nil {
 			msg := fmt.Sprintf("stream error: %v", streamErr)
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		}
 		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
@@ -264,20 +376,27 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// Guarded compaction at the quiet turn boundary (D1): fires only on
 		// true context-window pressure (live hint) or the budget gate, from
 		// LIVE provider-reported usage. Never fires on token count alone
-		// when no window hint exists.
-		s.maybeCompact(ctx, steps, usage)
-
-		// Guard: no-progress detection (zero token growth + repeated tool
-		// signature → surfaced stall, never a silent loop).
-		prev := lastUsage.TotalTokens()
-		lastUsage = usage
-		repeated := s.checkNoProgress(prev, usage, toolCalls, toolSigs)
-		if repeated != "" {
+		// when no window hint exists. A budget_abort result is TERMINAL
+		// (opencode parity): the spend crossed the abort tier — the
+		// session fails with the budget_abort reason (recovery owns the
+		// re-dispatch decision).
+		if res := s.maybeCompact(ctx, steps, usage); strings.HasPrefix(res, "budget_abort:") {
+			_ = s.transcript.Append(TransError, map[string]any{"error": res})
 			_ = s.markState(ctx, "failed")
-			callbacks.OnStall(ctx, s.id, repeated, true)
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), repeated)
+			s.fireTerminalOnce(callbacks, s.id, false, res)
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		}
+
+		// No-progress guard: the time-based progressMonitor (progress.go)
+		// owns repetition/no-progress detection with opencode parity —
+		// windowed history, reset-on-progress, nudge-first escalation.
+		// There is NO same-turn instant-kill in the opencode adapter, so
+		// the native engine has none either (the old ≥2-repeat kill was
+		// the reported false-positive killer of healthy local-model
+		// sessions).
+		lastUsage = usage
 
 		switch finish {
 		case StopToolUse:
@@ -296,7 +415,20 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 				s.appendAssistantToolUse(text, toolCalls)
 				// Execute pending tool calls (parallel where independent),
 				// append results to history, drain injection queue, loop.
+				for _, tc := range toolCalls {
+					s.pm.observeToolStart(tc.Name)
+				}
 				results := s.executeTools(ctx, callbacks, toolCalls)
+				// Monitor feed (opencode parity): every executed call is
+				// observed with its result status; a file-writing call is
+				// file progress (resets the advisory windows + repetition
+				// history).
+				for _, r := range results {
+					s.pm.observeToolCall(r.ToolCall.Name, r.ToolCall.ArgsJSON, r.Err != "")
+					if r.Err == "" && isFileWritingTool(r.ToolCall.Name) {
+						s.pm.observeFileDiff()
+					}
+				}
 				for _, r := range results {
 					if err := s.transcript.Append(TransToolResult, r); err != nil {
 						return err
@@ -320,7 +452,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// session that ends WITHOUT a real ORCHICON WORKER SUMMARY is
 			// not a completed worker. The marker is the worker's contract
 			// sign-off; its absence means the final response was truncated
-			// (StopLength — the 4096-token cap mid-monologue), the model
+			// (StopLength — the output cap mid-monologue), the model
 			// went idle early, or it echoed the marker as a plan
 			// placeholder. First run the completion probe: a fresh turn
 			// asking for the sign-off. The probe turn either delivers the
@@ -335,59 +467,248 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			}
 			_ = s.markState(ctx, "done")
 			_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
-			callbacks.OnResult(ctx, s.id, true, s.output.String(), "")
+			s.fireTerminalOnce(callbacks, s.id, true, "")
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 
-		case StopLength, StopOther, StopError, StopContentFilter:
+		case StopLength:
+			// Output-cap continuation (opencode parity — a truncated turn
+			// is a RECOVERABLE condition, not a terminal failure): the
+			// model hit the per-turn output cap mid-generation. Interject
+			// a continuation turn (bounded, like the completion probe) so
+			// a long-form worker keeps its accumulated context instead of
+			// dying and forcing a cold recovery re-dispatch. After the
+			// continuation budget is spent the execution fails honestly.
+			if !s.runLengthContinuation(ctx, callbacks) {
+				return nil // continuation budget spent — OnResult already fired
+			}
+			continue
+
+		case StopOther, StopError, StopContentFilter:
 			fallthrough
 		default:
 			// A turn that ended WITHOUT the provider's end-of-response
 			// signal is a truncated/aborted response, not a completed one.
-			// StopLength = the MaxTokens cap cut the model mid-generation
-			// (the exact failure shape of the reported hollow successes).
 			// StopOther arrives when a provider stream never delivered a
 			// stop reason at all. Neither may be recorded as success.
 			msg := fmt.Sprintf("model terminated with stop reason %q", finish)
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
-			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
 			return nil
 		}
 	}
 }
 
-// checkNoProgress detects a stall: a turn with no token growth that
-// repeats a prior tool signature. Returns the stall reason string
-// (parity vocabulary) or "" when healthy.
-func (s *Session) checkNoProgress(prevTokens int64, usage Usage, toolCalls []ToolCall, sigs map[string]int) string {
-	// Only treat zero-growth + REPEATED tool signature as a stall (a
-	// single zero-growth tool round is healthy — e.g. a read turn that
-	// produces no tokens; the NEXT round with the same signature trips
-	// the guard). A final StopStop turn legitimately adds output tokens.
-	if len(toolCalls) == 0 {
-		return ""
-	}
-	growth := usage.TotalTokens() - prevTokens
-	if growth > 0 {
-		// Progress made: reset repetition counters.
-		for k := range sigs {
-			delete(sigs, k)
+// checkNoProgress was REMOVED (opencode parity): the time-based
+// progressMonitor (progress.go) owns repetition/no-progress detection with
+// windowed history, reset-on-progress, and nudge-first escalation. The
+// native engine has no same-turn instant-kill — the old ≥2-repeat guard
+// was the reported false-positive killer of healthy local-model sessions
+// (0-usage telemetry made every identical read a fatal stall).
+
+// handleStallSignal is the monitor's onStall callback (opencode parity,
+// nudge-first routing): a FATAL stall (no_progress) surfaces the stall,
+// fires the terminal OnResult(false, reason) (the reconciler's OnStall
+// has already marked the execution unhealthy → recovery), and signals the
+// turn loop through stallCh so it unwinds without a second verdict —
+// the exact onStall shape of the opencode adapter (OnStall(fatal) then
+// finish(false, reason)). An ADVISORY stall injects an escalating nudge
+// into the live session — the worker is responsive and holds full
+// context, so killing it destroys that context for no reason. When the
+// nudge budget is spent the session escalates: the execution is failed
+// with the stall reason (recovery takes over with the evidence).
+//
+// The monitor goroutine owns this handler; the nudge-reply watchdog below
+// is the only other writer. Both route through the same nudgesSent /
+// lastNudgeAt / stallCh state under noteMu.
+func (s *Session) handleStallSignal(callbacks scheduler.ExecutionCallbacks, execID, reason string) {
+	if isFatalStall(reason) {
+		callbacks.OnStall(context.Background(), execID, reason, true)
+		// Terminal verdict (opencode finish(false, reason) parity): the
+		// reconciler's OnStall already flipped the execution unhealthy;
+		// the terminal OnResult carries the reason so recovery gets the
+		// evidence. fireTerminalOnce guards against a double verdict
+		// (e.g. the loop's select raced a concurrent escalation).
+		if s.fireTerminalOnce(callbacks, execID, false, reason) {
+			select {
+			case s.stallCh <- reason:
+			default:
+			}
 		}
-		return ""
+		return
 	}
-	// Zero token growth + tool calls: stall only when the SAME signature
-	// repeats (the platform's repetition detector semantics). A single
-	// zero-growth round is healthy — the guard needs a repeat to trip.
-	for _, tc := range toolCalls {
-		sig := tc.Name + ":" + tc.ArgsJSON
-		sigs[sig]++
-		if sigs[sig] >= 2 {
-			return "stalled:repetition:" + tc.Name
+	// Advisory: surface the notice, then nudge-first.
+	callbacks.OnStall(context.Background(), execID, reason, false)
+	now := time.Now()
+	s.noteMu.Lock()
+	budgetSpent := s.nudgesSent >= s.nudgeMaxVal
+	inCooldown := now.Sub(s.lastNudgeAt) < s.nudgeCooldownVal
+	s.noteMu.Unlock()
+	if budgetSpent || inCooldown {
+		if budgetSpent {
+			// Nudge budget spent and the pattern persists — escalate to a
+			// fatal stall (opencode parity: "the worker has had its
+			// nudges and has not broken the pattern").
+			esc := reason + ":nudge_budget_spent"
+			s.log.Warn("native session: advisory stall escalated after nudge budget spent",
+				"execution", execID, "reason", reason, "nudges", s.nudgesSent, "max", s.nudgeMaxVal)
+			callbacks.OnStall(context.Background(), execID, esc, true)
+			if s.fireTerminalOnce(callbacks, execID, false, esc) {
+				select {
+				case s.stallCh <- esc:
+				default:
+				}
+			}
 		}
+		return
 	}
-	// No repeated signature yet: healthy, keep the round count for the
-	// next round (the repetition counter already advanced above).
-	return ""
+	s.noteMu.Lock()
+	s.nudgesSent++
+	s.lastNudgeAt = now
+	idx := s.nudgesSent - 1
+	s.noteMu.Unlock()
+	if idx >= len(stallNudgeMessages) {
+		idx = len(stallNudgeMessages) - 1
+	}
+	msg := stallNudgeMessages[idx]
+	s.log.Info("native session: advisory stall — nudging live session",
+		"execution", execID, "reason", reason, "nudge", s.nudgesSent, "max", s.nudgeMaxVal)
+	s.queueInjected(msg)
+	s.noteMu.Lock()
+	s.nudgePending = true
+	s.noteMu.Unlock()
+	_ = s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "nudge"})
+	// Nudge reply-window enforcement (opencode parity — the probe
+	// deadline): a nudged session must ANSWER within the window. The
+	// loop drains queued injections between tool rounds, so the reply
+	// lands as continued turn activity; observeText/observeStepFinish
+	// clear pending. No reply within the window → the worker is not
+	// responding to its nudges → fatal stall (the true-hang case).
+	if s.nudgeReplyWindowVal <= 0 {
+		return
+	}
+	window := s.nudgeReplyWindowVal
+	go func() {
+		timer := time.NewTimer(window)
+		defer timer.Stop()
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-timer.C:
+				s.noteMu.Lock()
+				// Session end always wins over the watchdog: a finished
+				// session never escalates through the reply window.
+				pending := s.nudgePending && !s.nudgeFinished
+				s.noteMu.Unlock()
+				if pending {
+					s.log.Warn("native session: nudge reply window elapsed with no response — escalating fatal",
+						"execution", execID, "window", window)
+					esc := "stalled:no_file_progress:liveness_probe_no_response"
+					callbacks.OnStall(context.Background(), execID, esc, true)
+					if s.fireTerminalOnce(callbacks, execID, false, esc) {
+						select {
+						case s.stallCh <- esc:
+						default:
+						}
+					}
+				}
+				return
+			case <-tick.C:
+				s.noteMu.Lock()
+				pending := s.nudgePending
+				finished := s.nudgeFinished
+				s.noteMu.Unlock()
+				if finished || !pending {
+					return // the nudged turn replied — probe cleared
+				}
+			case <-s.doneCh:
+				return
+			}
+		}
+	}()
+}
+
+// fireTerminalOnce delivers the terminal OnResult exactly once per
+// session (the monitor goroutine and the turn loop both own terminal
+// paths — opencode parity: finish() is first-arrival-wins). succeeded
+// carries the verdict (true only on the success path); reason is the
+// error message ("" on success). Returns true when THIS call delivered
+// the verdict (the caller may then signal stallCh); false when a verdict
+// already fired.
+func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execID string, succeeded bool, reason string) bool {
+	s.terminalMu.Lock()
+	if s.terminalFired {
+		s.terminalMu.Unlock()
+		return false
+	}
+	s.terminalFired = true
+	s.terminalMu.Unlock()
+	callbacks.OnResult(context.Background(), execID, succeeded, s.output.String(), reason)
+	return true
+}
+
+// nudgeObserved marks nudge-reply progress: any text/step activity after
+// a nudge clears the pending probe (the reply IS the liveness evidence).
+func (s *Session) nudgeObserved() {
+	s.noteMu.Lock()
+	s.nudgePending = false
+	s.noteMu.Unlock()
+}
+
+// markNudgeFinished latches session end so the reply watchdog stops.
+func (s *Session) markNudgeFinished() {
+	s.noteMu.Lock()
+	s.nudgeFinished = true
+	s.noteMu.Unlock()
+}
+
+// closeDoneCh closes the done channel (idempotent) so the nudge reply
+// watchdog exits instead of leaking past session end.
+func (s *Session) closeDoneCh() {
+	if s.doneCh == nil {
+		return
+	}
+	select {
+	case <-s.doneCh:
+	default:
+		close(s.doneCh)
+	}
+}
+
+// runLengthContinuation interjects ONE continuation turn when the model
+// hit the output cap mid-generation (StopLength), up to a bounded budget.
+// Returns true when the loop should continue (the probe was delivered);
+// false when the budget is spent — the execution has been failed and
+// OnResult fired.
+func (s *Session) runLengthContinuation(ctx context.Context, callbacks scheduler.ExecutionCallbacks) bool {
+	if s.lengthContinuationsSent >= lengthContinuationMaxTurns {
+		msg := fmt.Sprintf("model terminated with stop reason \"length\" — output-cap continuation budget of %d spent", lengthContinuationMaxTurns)
+		_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+		_ = s.markState(ctx, "failed")
+		s.fireTerminalOnce(callbacks, s.id, false, msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
+		return false
+	}
+	s.lengthContinuationsSent++
+	msg := "Your previous response was cut off by the output limit. Continue EXACTLY where you stopped — do not restart, do not repeat what you already wrote. If you were mid-thought, continue it; if the turn is effectively done, deliver the final ORCHICON WORKER SUMMARY now."
+	s.appendUser(TransUserMessage, msg, "length_continuation")
+	if err := s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "length_continuation"}); err != nil {
+		msg := fmt.Sprintf("length continuation transcript append failed: %v", err)
+		_ = s.markState(ctx, "failed")
+		s.fireTerminalOnce(callbacks, s.id, false, msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
+		return false
+	}
+	s.log.Info("native session: StopLength — sending continuation turn",
+		"execution", s.id, "continuation", s.lengthContinuationsSent, "max", lengthContinuationMaxTurns)
+	return true
 }
 
 // drain reads the turn stream until Finish, mapping every event type onto
@@ -414,12 +735,16 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 		case TextDelta:
 			text.WriteString(e.Text)
 			s.output.WriteString(e.Text)
+			s.pm.observeText()
+			s.nudgeObserved() // continued output = the nudged turn replied
 			s.emitTextChunked(ctx, callbacks, e.Text)
 			_ = s.transcript.Append(TransText, map[string]any{"text": e.Text})
 		case ReasoningDelta:
 			reasoning.WriteString(e.Text)
 			// Parity: reasoning is emitted via a {"kind":"reasoning"}
 			// JSON wrapper and NEVER replayed into history.
+			s.pm.observeText()
+			s.nudgeObserved()
 			payload := map[string]any{"kind": "reasoning", "text": e.Text}
 			callbacks.OnText(ctx, s.id, mustJSON(payload))
 			_ = s.transcript.Append(TransReasoning, map[string]any{"text": e.Text})

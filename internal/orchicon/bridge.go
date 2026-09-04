@@ -213,6 +213,15 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	// Wall-clock budget (opencode parity): the merged budget JSON's
+	// wall_clock_seconds (worker override → tenant default → 3600s
+	// backstop) applies a hard deadline to the SESSION context; explicit
+	// 0 disables. When it hits, the loop's ctx.Done path marks the
+	// execution cancelled → recovery (reason "wall_clock_timeout" shape).
+	if deadline, ok := wallClockDeadline(manifest.Budgets); ok {
+		runCtx, cancel = context.WithDeadline(runCtx, deadline)
+		b.log.Info("orchicon: session wall-clock deadline armed", "execution", exec.ID, "deadline", deadline.Format(time.RFC3339))
+	}
 	ls := &liveSession{session: sess, cancel: cancel, execRow: exec, manifest: manifest, done: make(chan struct{})}
 	b.mu.Lock()
 	b.live[exec.ID] = ls
@@ -600,7 +609,7 @@ func (r *sessionPartsRecorder) start() {
 func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 	// sub pushes one derived part for the source event (subIndex < 256).
 	sub := func(subIndex int64, kind string, payload map[string]any) {
-		r.push(r.part(seq<<8 | subIndex, kind, payload))
+		r.push(r.part(seq<<8|subIndex, kind, payload))
 	}
 	switch typ {
 	case TransSession:
@@ -670,7 +679,7 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 			partBody := map[string]any{
 				"tool":   c.Name,
 				"callID": callID,
-				"state":  map[string]any{
+				"state": map[string]any{
 					"status": "completed",
 					"input":  json.RawMessage(args),
 				},
@@ -893,6 +902,7 @@ func (r *sessionPartsRecorder) Close() {
 		// Pump never started — nothing to wait for.
 	}
 }
+
 // transcriptPath returns the JSONL path for a session id.
 func transcriptPath(projectDir, sessionID string) string {
 	return fmt.Sprintf("%s/.orchicon/sessions/%s.jsonl", projectDir, sessionID)

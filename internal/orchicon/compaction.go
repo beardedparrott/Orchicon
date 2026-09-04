@@ -140,20 +140,23 @@ func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 
 // maybeCompact evaluates the two guarded triggers at a quiet boundary
 // (after a tool round) and fires compactPolicy when a trigger is armed.
-// usage is this turn's LIVE provider-reported usage. Returns true when a
-// compaction ran.
-func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) bool {
+// usage is this turn's LIVE provider-reported usage. Returns "" when
+// nothing fired, "compacted:<reason>" when a compaction ran, or the
+// TERMINAL abort reason ("budget_abort:<dim>") when the budget ladder's
+// abort tier has been reached (opencode parity: abort is terminal, NOT a
+// compaction — the caller fails the session).
+func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) string {
 	s.cs.mu.Lock()
 	defer s.cs.mu.Unlock()
 	if !s.cp.Enabled || s.cs.budget == nil {
-		return false
+		return ""
 	}
 	if step < 2 {
-		return false // min-turn floor: never compact at session start
+		return "" // min-turn floor: never compact at session start
 	}
 	maxC := s.cs.budget.CompactionMax()
 	if maxC == 0 || s.cs.compactions >= maxC {
-		return false // per-execution cap reached
+		return "" // per-execution cap reached
 	}
 
 	// Live usage only: fold this turn's REAL provider-reported usage into
@@ -177,29 +180,39 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) bool 
 		s.cs.hint = hint
 		occupancy := usage.InputTokens + usage.CacheReadTokens
 		if occupancy <= 0 {
-			return false
+			return ""
 		}
 		frac := float64(occupancy) / float64(hint.Tokens)
 		if frac >= s.cp.PressureFrac {
 			band := int(frac * defaultCompactionBands)
 			if band > s.cs.lastBand {
 				s.cs.lastBand = band
-				return s.doCompact(step, "window_pressure")
+				if s.doCompact(step, "window_pressure") {
+					return "compacted:window_pressure"
+				}
 			}
 		}
 	}
 
 	// Trigger (b): the budget gate (shared ladder over the merged JSON).
 	// Escalate/final tiers compact when the tier AND dimension permit it;
-	// abort is terminal and is NOT a compaction. Fires at most once per
-	// reached tier.
+	// abort is terminal and is NOT a compaction — it returns the terminal
+	// reason and the caller fails the session (opencode budget_abort
+	// parity). Fires at most once per reached tier.
 	for _, dim := range []string{"tokens", "cost_usd"} {
-		if !s.cs.budget.CompactsDim(dim) {
+		if !s.cs.budget.CompactsDim(dim) && !s.cs.budget.CompactsAt("abort") {
 			continue
 		}
 		frac := s.cs.spend.Fraction(s.cs.budget, dim, time.Since(s.startedAt), s.toolUses)
 		if frac < 0 {
 			continue
+		}
+		// Abort tier (checked FIRST — terminal): once crossed, the
+		// session ends; the accumulator is cumulative so the breach is
+		// latched by the fraction itself.
+		lvl := s.cs.budget.LevelName(dim, frac)
+		if lvl == "abort" {
+			return "budget_abort:" + dim
 		}
 		for _, tier := range []string{"escalate", "final"} {
 			if !s.cs.budget.CompactsAt(tier) {
@@ -214,10 +227,13 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) bool 
 				continue // already fired on this tier
 			}
 			s.cs.lastBudgetTier = key
-			return s.doCompact(step, "budget:"+key)
+			if s.doCompact(step, "budget:"+key) {
+				return "compacted:budget:" + key
+			}
+			return ""
 		}
 	}
-	return false
+	return ""
 }
 
 // doCompact applies the middle-only compaction policy to history.
