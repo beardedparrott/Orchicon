@@ -962,12 +962,23 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			// the dead session's transcript back into it. Written beside
 			// _recovery_summary so the scheduler's single recoverySeedFor
 			// predicate reads them all from the same result JSON.
+			// _recovery_worker_version + _recovery_adapter pin the exact
+			// version/adapter the dead execution ran on: same worker ID
+			// with a different version may resolve a different adapter
+			// (e.g. v3 opencode vs v4 orchicon), and the dispatch gate
+			// must fail fast instead of resuming cross-adapter.
 			merged["_recovery_execution_id"] = rec.FailedExecutionID
 			failedWorkerID := ""
+			failedWorkerVersion := 0
+			failedAdapter := ""
 			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 				failedWorkerID = failedExec.WorkerID
+				failedWorkerVersion = failedExec.WorkerVersion
+				failedAdapter = adapterRef(failedExec)
 			}
 			merged["_recovery_worker_id"] = failedWorkerID
+			merged["_recovery_worker_version"] = failedWorkerVersion
+			merged["_recovery_adapter"] = failedAdapter
 			mergedJSON, _ := json.Marshal(merged)
 			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
 				Result: &mergedJSON,
@@ -984,12 +995,18 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				if rec.Summary != "" {
 					wiResults["_recovery_summary"] = rec.Summary
 				}
-				wiResults["_recovery_execution_id"] = rec.FailedExecutionID
-				failedWorkerID := ""
-				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
-					failedWorkerID = failedExec.WorkerID
-				}
-				wiResults["_recovery_worker_id"] = failedWorkerID
+			wiResults["_recovery_execution_id"] = rec.FailedExecutionID
+			failedWorkerID := ""
+			failedWorkerVersion := 0
+			failedAdapter := ""
+			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+				failedWorkerID = failedExec.WorkerID
+				failedWorkerVersion = failedExec.WorkerVersion
+				failedAdapter = adapterRef(failedExec)
+			}
+			wiResults["_recovery_worker_id"] = failedWorkerID
+			wiResults["_recovery_worker_version"] = failedWorkerVersion
+			wiResults["_recovery_adapter"] = failedAdapter
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),

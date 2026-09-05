@@ -2169,6 +2169,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 						newResult[k] = v
 					}
 				}
+				// Pin the re-dispatch to the dead execution's worker
+				// version: model_ref (hence adapter) is a per-version
+				// property, so resolving the step's active version here
+				// could silently switch adapters (v3 opencode vs v4
+				// orchicon). The gate (R7b) fails fast when no pin is
+				// available and the version moved; legacy rows without
+				// the key keep resolving the step version.
+				if rv, ok := prev["_recovery_worker_version"].(float64); ok && rv != 0 {
+					newResult["_worker_version"] = rv
+				}
 				stepResult, _ = json.Marshal(newResult)
 			}
 		}
@@ -3944,8 +3954,12 @@ type recoveryTriggerReq struct {
 // dead-execution identity + strategy the dispatch path persists at the
 // recovering transition — all must survive WorkerExecutionID being cleared
 // at re-dispatch so the recovery seed stays resolvable.
+// _recovery_worker_version / _recovery_adapter pin the exact version and
+// adapter the dead execution ran on (model_ref is per-version); the gate
+// fails fast when the step's current version moved off the pin.
 var recoveryResultKeys = []string{
 	"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id",
+	"_recovery_worker_version", "_recovery_adapter",
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
 }
 
@@ -4006,12 +4020,15 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 // recovery that never resumed — never dispatch cold).
 func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, error) {
 	var meta struct {
-		WorkItemID       string `json:"_work_item_id"`
-		FailedExecID     string `json:"_failed_execution_id"`
-		RecoveryExecID   string `json:"_recovery_execution_id"`
-		RecoveryStrategy string `json:"_recovery_strategy"`
-		WorkerID         string `json:"_worker_id"`
-		FailedWorkerID   string `json:"_failed_worker_id"`
+		WorkItemID            string  `json:"_work_item_id"`
+		FailedExecID          string  `json:"_failed_execution_id"`
+		RecoveryExecID        string  `json:"_recovery_execution_id"`
+		RecoveryStrategy      string  `json:"_recovery_strategy"`
+		WorkerID              string  `json:"_worker_id"`
+		WorkerVersion         float64 `json:"_worker_version"`
+		FailedWorkerID        string  `json:"_failed_worker_id"`
+		RecoveryWorkerVersion float64 `json:"_recovery_worker_version"`
+		RecoveryAdapter       string  `json:"_recovery_adapter"`
 	}
 	if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.WorkItemID == "" {
 		// No ticket recorded — cannot gate; dispatchStep/failStep will
@@ -4097,6 +4114,20 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 		return false, fmt.Errorf(
 			"step recovery worker changed: dead execution ran on %s but step %s is now assigned to %s — manual re-arbitration required",
 			meta.FailedWorkerID, sr.StepID, meta.WorkerID)
+	}
+
+	// R7b — fail fast when the dead execution's worker VERSION no longer
+	// matches the currently-assigned version. Same worker ID with a
+	// different version may resolve a different adapter (model_ref is a
+	// per-version property: v3 opencode vs v4 orchicon), and the recovery
+	// seed + transcript tail are not portable cross-adapter. Pre-deploy
+	// rows carry neither key (both zero) and keep legacy behavior; a
+	// re-dispatch that pinned the dead version (see the recovering
+	// re-dispatch path) always satisfies this check.
+	if meta.RecoveryWorkerVersion != 0 && meta.WorkerVersion != 0 && meta.RecoveryWorkerVersion != meta.WorkerVersion {
+		return false, fmt.Errorf(
+			"step recovery worker version changed: dead execution ran on %s v%v (%s) but step %s is now assigned to %s v%v — manual re-arbitration required",
+			meta.FailedWorkerID, meta.RecoveryWorkerVersion, meta.RecoveryAdapter, sr.StepID, meta.WorkerID, meta.WorkerVersion)
 	}
 
 	// 3. A seed must be resolvable for the exact dispatching worker

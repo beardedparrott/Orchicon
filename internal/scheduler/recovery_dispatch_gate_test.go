@@ -320,6 +320,10 @@ func TestRecoveryDispatchGateRace(t *testing.T) {
 	merged["_recovery_summary"] = "dead session summarized"
 	merged["_recovery_execution_id"] = env.exec.ID
 	merged["_recovery_worker_id"] = "w_se_devops_engineer"
+	// Same-version pin (fixture step is _worker_version 1): the R7b
+	// version check must pass and the dispatcher must fire exactly once.
+	merged["_recovery_worker_version"] = float64(1)
+	merged["_recovery_adapter"] = "test-adapter"
 	mergedJSON, _ := json.Marshal(merged)
 	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, approvalTestTenant, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 		Result: &mergedJSON,
@@ -565,6 +569,74 @@ func TestRecoveryGateWorkerChangeFailsFast(t *testing.T) {
 	}
 	if fail == nil || !strings.Contains(fail.Error(), "worker changed") {
 		t.Fatalf("worker-changed step must fail fast with a 'worker changed' reason, got %v", fail)
+	}
+}
+
+// TestRecoveryGateWorkerVersionChangeFailsFast is R7b: a recovery-resumed
+// step whose worker ID is unchanged but whose VERSION moved off the dead
+// execution's version must FAIL loud with a "worker version changed"
+// reason — same ID + different version may resolve a different adapter
+// (model_ref is per-version: the v3-opencode vs v4-orchicon flip that
+// dispatched four executions into a dead serve). Never wedge, never
+// dispatch cross-adapter.
+func TestRecoveryGateWorkerVersionChangeFailsFast(t *testing.T) {
+	env := newRecoveryGateTestEnv(t, "summarize_restart")
+	ctx := context.Background()
+
+	// Same worker, bumped version: the step now pins _worker_version 2
+	// while the dead execution ran version 1.
+	sr := env.getStepRun(ctx, env.stepRun.ID)
+	merged := map[string]any{}
+	_ = json.Unmarshal(sr.Result, &merged)
+	if merged["_worker_version"] != float64(1) {
+		t.Fatalf("fixture must pin _worker_version 1, got %v", merged["_worker_version"])
+	}
+	merged["_worker_version"] = float64(2)
+	// Engine-published pin for the dead execution (version 1, opencode).
+	merged["_recovery_summary"] = "dead session summarized"
+	merged["_recovery_execution_id"] = env.exec.ID
+	merged["_recovery_worker_id"] = "w_se_devops_engineer"
+	merged["_recovery_worker_version"] = float64(1)
+	merged["_recovery_adapter"] = "opencode"
+	mj, _ := json.Marshal(merged)
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, approvalTestTenant, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{Result: &mj}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("bump step worker version: %v", err)
+	}
+
+	// A terminal `resumed` recovery must exist so the gate reaches the R7b
+	// version check rather than failing via "recovery did not resume".
+	now := time.Now().UTC()
+	if _, err := db.CreateRecoveryExecution(ctx, ttx.Tx, db.RecoveryExecutionRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		ProjectID: env.projectID, TaskID: env.ticketID,
+		FailedExecutionID: env.exec.ID, RecoveryWorkflowID: "wf-recovery",
+		TriggerReason: "step_recovery", Level: 1,
+		Status: domain.RecoveryResumed, CurrentStep: "summarize", EndedAt: &now,
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("create resumed recovery: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit version-change fixture: %v", err)
+	}
+
+	sr = env.getStepRun(ctx, env.stepRun.ID)
+	ttx2, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx2.Rollback(ctx)
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx2.Tx, approvalTestTenant, env.run, sr)
+	if ready {
+		t.Fatalf("version-changed step must NOT dispatch against the dead version's seed")
+	}
+	if fail == nil || !strings.Contains(fail.Error(), "worker version changed") {
+		t.Fatalf("version-changed step must fail fast with a 'worker version changed' reason, got %v", fail)
 	}
 }
 
