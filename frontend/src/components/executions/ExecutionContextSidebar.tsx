@@ -219,10 +219,11 @@ export function ExecutionContextSidebar({
   const { data: models } = useListOpenCodeModels();
   const latestUsage = usage[usage.length - 1];
   const nativeProviderId = latestUsage?.provider ?? "";
-  const { data: nativeModels } = useProviderModels(
+  const { data: nativeModelsState } = useProviderModels(
     nativeProviderId,
     Boolean(latestUsage?.provider),
   );
+  const nativeModels = nativeModelsState?.models;
   const resolvedContextWindow = useMemo(() => {
     if (contextWindow && contextWindow > 0) return contextWindow;
     if (nativeModels && nativeModels.length > 0 && latestUsage?.model) {
