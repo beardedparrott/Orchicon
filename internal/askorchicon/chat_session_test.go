@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
@@ -1335,4 +1336,280 @@ func TestTurnRegistrySweep(t *testing.T) {
 	}
 	// The expired cancel fired with errTurnExpired (captured above via
 	// context.Cause on the cancelled context).
+}
+
+// --- Folded think-segment demux (GLM/DeepSeek) -------------------------------
+
+// collectTurnEvents drives collectConversationReply and captures both the
+// partial-mirror snapshots and the stream events so a test can assert the
+// exact channels (text vs reasoning) a folded-think demux produces.
+type turnEvents struct {
+	mu       sync.Mutex
+	partials []struct {
+		text      string
+		reasoning []string
+	}
+	chunks  []string // TextChunk event contents, in order
+	reasons []string // Reasoning event contents, in order
+}
+
+func (e *turnEvents) onStreamEvent(resp *apiv1.ChatStreamResponse) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch ev := resp.Event.(type) {
+	case *apiv1.ChatStreamResponse_TextChunk:
+		if ev.TextChunk != nil {
+			e.chunks = append(e.chunks, ev.TextChunk.Content)
+		}
+	case *apiv1.ChatStreamResponse_Reasoning:
+		if ev.Reasoning != nil {
+			e.reasons = append(e.reasons, ev.Reasoning.Content)
+		}
+	}
+}
+
+func (e *turnEvents) onPartial(text string, reasoning []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.partials = append(e.partials, struct {
+		text      string
+		reasoning []string
+	}{text: text, reasoning: append([]string(nil), reasoning...)})
+}
+
+func (e *turnEvents) snapshot() (partials []struct {
+	text      string
+	reasoning []string
+}, chunks, reasons []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	partials = append([]struct {
+		text      string
+		reasoning []string
+	}(nil), e.partials...)
+	chunks = append([]string(nil), e.chunks...)
+	reasons = append([]string(nil), e.reasons...)
+	return partials, chunks, reasons
+}
+
+// collectTurnWithEvents runs collectConversationReply and returns the reply,
+// reasoning, sid, error plus the captured stream/partial events.
+func collectTurnWithEvents(t *testing.T, client *fakeSessionClient, opts turnCollectOpts) (string, []string, string, error, *turnEvents) {
+	t.Helper()
+	ev := &turnEvents{}
+	opts.onStreamEvent = ev.onStreamEvent
+	opts.onPartial = ev.onPartial
+	reply, reasoning, sid, err := collectTurn(t, client, opts)
+	return reply, reasoning, sid, err, ev
+}
+
+// TestThinkSegmenterSplitOpenTagAcrossThreeChunks verifies the cross-delta
+// carry-over state machine recognizes a think open/close tag split across
+// three chunks (GLM's folded-think output arrives token by token). No tag
+// fragment may leak into text; the body must come out via the think channel.
+func TestThinkSegmenterSplitOpenTagAcrossThreeChunks(t *testing.T) {
+	var text, body strings.Builder
+	seg := thinkSegmenter{}
+	feed := func(s string) {
+		seg.feed(s, func(t string) { text.WriteString(t) }, func(b string) {}, func(b string) { body.WriteString(b) })
+	}
+	// Open tag split across three chunks: "|<t", "hink", "ing>".
+	feed("|<t")
+	feed("hink")
+	feed("ing>")
+	// Body + close tag split across three chunks: "|</thi", "nking>".
+	feed("hidden body ")
+	feed("|</thi")
+	feed("nking>")
+	// Unterminated trailing think (flushed at the boundary): "|<thinking>more"
+	// is an open tag whose body "more" never gets a close. Must not leak to
+	// text; flushBody drains it to the think channel.
+	feed("|<thinking>more")
+	seg.flushBody(func(b string) { body.WriteString(b) })
+
+	if got := body.String(); got != "hidden body more" {
+		t.Errorf("think body = %q, want %q", got, "hidden body more")
+	}
+	if got := text.String(); got != "" {
+		t.Errorf("text = %q, want empty (no tag fragments leaked)", got)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkInCompletedTextPart verifies a
+// completed text part carrying a folded think block is demuxed: the reply is
+// the clean text, the reasoning array carries the folded body, and the
+// emitted TextChunk events exclude the body.
+func TestCollectConversationReplyFoldedThinkInCompletedTextPart(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "|<thinking>hidden</thinking>answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, ev := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want %q (folded body stripped)", reply, "answer")
+	}
+	want := []string{"hidden"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v", reasoning, want)
+	}
+	_, chunks, _ := ev.snapshot()
+	if len(chunks) != 1 || chunks[0] != "answer" {
+		t.Errorf("TextChunk events = %v, want [answer] (body excluded)", chunks)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkLiveDeltaDemux verifies the common
+// leak case: a folded think body streamed as TEXT deltas (not a native
+// reasoning part), followed by a CLEAN completed text part. The body must grow
+// the live reasoning tail (partial mirror's reasoning side) and commit to the
+// final reasoning array; the text side stays clean.
+func TestCollectConversationReplyFoldedThinkLiveDeltaDemux(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busDelta("ses_live", "|<thinking>hi"))
+		client.sub.feed(busDelta("ses_live", " there"))
+		client.sub.feed(busDelta("ses_live", "|</thinking>"))
+		client.sub.feed(busText("ses_live", "answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, ev := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want %q (delta think body must not leak into text)", reply, "answer")
+	}
+	want := []string{"hi there"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v", reasoning, want)
+	}
+	partials, chunks, _ := ev.snapshot()
+	// The live partial mirror's text side must never carry the think body
+	// ("hi there") or a tag remnant. The completed "answer" text legitimately
+	// appears in a partial.
+	for _, p := range partials {
+		if strings.Contains(p.text, "hi there") || strings.Contains(p.text, "think") {
+			t.Errorf("partial text = %q, contains leaked think body/remnant", p.text)
+		}
+	}
+	// TextChunk events must only carry the completed clean text.
+	if len(chunks) != 1 || chunks[0] != "answer" {
+		t.Errorf("TextChunk events = %v, want [answer]", chunks)
+	}
+}
+
+// TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning verifies a
+// turn that ends (idle) with an UNTERMINATED think block flushes the buffered
+// body to the reasoning channel and leaves content clean.
+func TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busDelta("ses_live", "|<thinking>unterminated"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, _ := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want empty (no leaked think body)", reply)
+	}
+	want := []string{"unterminated"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v (flushed)", reasoning, want)
+	}
+}
+
+// TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial verifies a
+// supersede mid-think (context cancel) persists a partial whose content is
+// clean text and whose reasoning array has the partial body.
+func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	cancelCtx := context.Background()
+	// Use interject-style supersede: cancel the collector context.
+	ctx, cancel := context.WithCancelCause(cancelCtx)
+	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
+	done := make(chan struct{})
+	var reply string
+	var reasoning []string
+	go func() {
+		defer close(done)
+		reply, reasoning, _, _ = s.collectConversationReply(ctx, opts)
+	}()
+	waitForSend(t, client, 1)
+	client.sub.feed(busDelta("ses_live", "|<thinking>partial"))
+	cancel(errTurnSuperseded)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseded collector did not return")
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want clean (no think body leaked)", reply)
+	}
+	want := []string{"partial"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v (flush on supersede)", reasoning, want)
+	}
+	// Ensure no think-tag remnant in the reply content.
+	if strings.Contains(reply, "thinking") || strings.Contains(reply, "</think") {
+		t.Errorf("reply contains think remnant: %q", reply)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkNoDedupe verifies a native reasoning
+// part AND a folded think body in the same turn coexist as separate reasoning
+// entries (no dedupe/merge against native entries).
+func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busReasoning("ses_live", "think step 1"))
+		client.sub.feed(busDelta("ses_live", "|<thinking>folded</thinking>"))
+		client.sub.feed(busText("ses_live", "answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, _ := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want answer", reply)
+	}
+	want := []string{"think step 1", "folded"}
+	if len(reasoning) != len(want) {
+		t.Fatalf("reasoning = %v, want %v", reasoning, want)
+	}
+	for i := range want {
+		if reasoning[i] != want[i] {
+			t.Errorf("reasoning[%d] = %q, want %q (no dedupe against native)", i, reasoning[i], want[i])
+		}
+	}
 }

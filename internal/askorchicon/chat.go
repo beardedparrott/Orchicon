@@ -704,20 +704,20 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 
 		go func() {
 			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
-				client:                  client,
-				tenantID:                tenantID,
-				convID:                  convID,
-				token:                   token,
-				assistantMsgID:          assistantID,
-				sessionID:               useSessionID,
-				modelRef:                modelRef,
-				seedSystem:              seedSystem,
-				reuseSystem:             reuseSystem,
-				userMsg:                 msg,
-				attachments:             attachments,
-				onStreamEvent:           onStreamEvent,
-				stallNoProgressSeconds:  settings.StallNoProgressWindowSeconds,
-				onPartial:               onPartial,
+				client:                 client,
+				tenantID:               tenantID,
+				convID:                 convID,
+				token:                  token,
+				assistantMsgID:         assistantID,
+				sessionID:              useSessionID,
+				modelRef:               modelRef,
+				seedSystem:             seedSystem,
+				reuseSystem:            reuseSystem,
+				userMsg:                msg,
+				attachments:            attachments,
+				onStreamEvent:          onStreamEvent,
+				stallNoProgressSeconds: settings.StallNoProgressWindowSeconds,
+				onPartial:              onPartial,
 			})
 			// Drain the partial mirror before finalizing: stop the flusher,
 			// wait for any in-flight write, then write whatever is still dirty
@@ -1247,6 +1247,20 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// subsumes the deltas that built it, so the mirror never double-counts).
 	var liveText strings.Builder
 	var liveReasoning strings.Builder
+	// segThink demuxes folded think segments (GLM/DeepSeek) out of the TEXT
+	// delta stream: think bodies route into the reasoning channel as ONE
+	// growing entry, plain text grows liveText, and tag fragments / leaked
+	// bodies never reach the mirror's text side or the authoritative reply.
+	// Its state carries ACROSS deltas so a tag split into pieces is
+	// recognized. It is REPLACED (reset) at the completed-text-part boundary
+	// because the completed part subsumes the deltas that built it.
+	segThink := thinkSegmenter{}
+	// committedThink tracks bodies already committed to the durable reasoning
+	// slice so a folded body that arrives via BOTH the live delta path and a
+	// later completed text part is not double-counted. This is a dedupe of
+	// the SAME folded body across the two demux channels only — it never
+	// dedupes against native reasoning parts (they are distinct segments).
+	committedThink := map[string]bool{}
 	// lastMirror throttles how often the drain loop snapshots the live buffers
 	// into the partial mirror (the flusher further throttles the DB writes).
 	var lastMirror time.Time
@@ -1283,6 +1297,44 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			rsn = append(rsn, liveReasoning.String())
 		}
 		return reply.String() + liveText.String(), rsn
+	}
+	// commitThink appends a demuxed folded-think body to the durable reasoning
+	// slice and emits it as a reasoning stream event. It is the SINGLE commit
+	// authority for folded bodies: it is called by the live delta path (a
+	// terminated folded body arriving in the text stream), by the completed-
+	// text-part demux (a folded body carried by a completed part), and by the
+	// terminal flush (an unterminated body at turn end). Each folded body is
+	// committed exactly once — committedThink guards the subsumed case where a
+	// delta-streamed body is REPEATED in the completed part text. This is NOT
+	// a dedupe against native reasoning parts (those are distinct segments and
+	// are always appended separately by the "reasoning" case below).
+	commitThink := func(body string) {
+		if body == "" {
+			return
+		}
+		if committedThink[body] {
+			return
+		}
+		committedThink[body] = true
+		reasoning = append(reasoning, body)
+		if c.onStreamEvent != nil {
+			c.onStreamEvent(&apiv1.ChatStreamResponse{
+				Event: &apiv1.ChatStreamResponse_Reasoning{
+					Reasoning: &apiv1.ReasoningChunk{Content: body},
+				},
+			})
+		}
+	}
+	// flushThinkDrain commits any unterminated folded-think body accumulated in
+	// the live segmenter to the durable reasoning slice (provider truncation /
+	// abort / supersede at turn end — the body must land in the reasoning
+	// channel, NEVER in text). It also clears the live reasoning tail so a
+	// committed body replaces its growing tail in the mirror (matching how a
+	// completed reasoning part resets liveReasoning after appending to the
+	// durable slice).
+	flushThinkDrain := func() {
+		segThink.flushBody(commitThink)
+		liveReasoning.Reset()
 	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
@@ -1322,8 +1374,10 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// finalize behaviour per cause, and carry the partial text (the
 			// superseded turn's partial content is persisted as a plain
 			// message).
+			flushThinkDrain()
 			return turnAttemptResult{kind: turnFailed, text: reply.String(), reasoning: reasoning, err: context.Cause(subCtx)}
 		case <-window.C:
+			flushThinkDrain()
 			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
@@ -1347,6 +1401,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// like a "stuck" model to the user.
 				_ = c.client.Abort(context.WithoutCancel(subCtx), sid)
 				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
+				flushThinkDrain()
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
 			}
 		case <-flushTick.C:
@@ -1377,6 +1432,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
 				// by the reply window in the collector loop).
+				flushThinkDrain()
 				return turnAttemptResult{kind: turnReattach, reasoning: reasoning}
 			}
 			if esid, _ := evt.Properties["sessionID"].(string); esid != "" && esid != sid {
@@ -1388,6 +1444,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
+					flushThinkDrain()
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
 			case "permission.asked":
@@ -1406,6 +1463,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					}
 				}
 				s.log.Warn("opencode session error", "conversation", c.convID, "message", msg)
+				flushThinkDrain()
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: errors.New(msg)}
 			default:
 				// Telemetry: collect completed text and reasoning parts (the
@@ -1443,7 +1501,27 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					if kind == "reasoning" {
 						liveReasoning.WriteString(delta)
 					} else {
-						liveText.WriteString(delta)
+						// Demux folded think segments out of the text delta
+						// stream: think bodies grow the reasoning tail
+						// (liveReasoning, mirror) and COMMIT once terminated;
+						// plain text grows liveText. The segmenter state
+						// carries ACROSS deltas so a tag split into pieces is
+						// recognized. A body that terminates here is committed
+						// immediately (the fold is the common leak case — the
+						// completed part following it is usually clean text),
+						// so it lands in `reasoning` rather than being lost.
+						segThink.feed(delta,
+							func(t string) { liveText.WriteString(t) },
+							func(b string) { liveReasoning.WriteString(b) },
+							func(b string) {
+								// The body is now committed to the durable
+								// reasoning slice — clear the live tail so the
+								// mirror doesn't show it twice (once as the
+								// committed entry, once as the in-flight tail).
+								liveReasoning.Reset()
+								commitThink(b)
+							},
+						)
 					}
 					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
 						lastMirror = time.Now()
@@ -1494,21 +1572,60 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					switch t {
 					case "text":
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
-							reply.WriteString(text)
-							reply.WriteString("\n\n")
-							// The completed part subsumes the deltas that
-							// built it — reset the live text tail so the
-							// mirror doesn't double-count.
+							// Completed text part may itself carry one or more
+							// folded think segments (GLM/DeepSeek). Demux with a
+							// FRESH segmenter (never the live one — the
+							// completed part is authoritative and must not reuse
+							// carry-over state from the delta tail). Folded
+							// bodies commit to the durable reasoning array via
+							// commitThink (deduped against a body the live delta
+							// path already committed); the leftover clean text is
+							// what the reply / TextChunk / partial mirror carry.
+							pseg := thinkSegmenter{}
+							var cleanText strings.Builder
+							var foldedBodies []string
+							pseg.feed(text,
+								func(t string) { cleanText.WriteString(t) },
+								func(b string) {},
+								func(b string) { foldedBodies = append(foldedBodies, b) },
+							)
+							// Drain any unterminated think body inside this
+							// completed part to the reasoning channel (a
+							// malformed/trailing open-<thinking> in a completed
+							// part must not be silently dropped — it lands in
+							// reasoning like the turn-end flush).
+							pseg.flushBody(func(b string) { foldedBodies = append(foldedBodies, b) })
+							// Reset the live text tail AND the live source
+							// segmenter: the completed part subsumes the deltas
+							// that built it, so the mirror never double-counts
+							// and no stale live seg state survives.
 							liveText.Reset()
+							liveReasoning.Reset()
+							segThink.reset()
+							// Commit the folded bodies (distinct reasoning
+							// segments — deduped only against the same body via
+							// the live delta path).
+							for _, b := range foldedBodies {
+								commitThink(b)
+							}
+							// Write the CLEAN text (folded segments stripped).
+							ct := cleanText.String()
+							if ct != "" {
+								reply.WriteString(ct)
+								reply.WriteString("\n\n")
+							}
 							disarmFlush()
 							if c.onPartial != nil {
 								snapText, snapRsn := mirrorSnapshot()
 								c.onPartial(snapText, snapRsn)
 							}
-							if c.onStreamEvent != nil {
+							// Emit TextChunk ONLY for the clean text (think
+							// bodies are not assistant content — they were
+							// emitted as Reasoning events via commitThink).
+							if ct != "" && c.onStreamEvent != nil {
 								c.onStreamEvent(&apiv1.ChatStreamResponse{
 									Event: &apiv1.ChatStreamResponse_TextChunk{
-										TextChunk: &apiv1.TextChunk{Content: text},
+										TextChunk: &apiv1.TextChunk{Content: ct},
 									},
 								})
 							}
