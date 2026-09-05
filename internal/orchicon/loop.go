@@ -19,10 +19,10 @@ import (
 // Loop tuning constants (env-tunable, matching the opencode parity
 // surface; defaults below).
 const (
-	// maxStepsDefault bounds the turn loop per execution. The budget JSON
-	// has no max_steps key today; this env-tunable constant is the guard.
-	// (The opencode simulation path uses a hardcoded 3; the native engine
-	// defaults to 25.)
+	// maxStepsDefault bounds the turn loop per execution when neither the
+	// work item's budgets.max_steps nor ORCHICON_SESSION_MAX_STEPS sets
+	// one. (The opencode simulation path uses a hardcoded 3; the native
+	// engine defaults to 25.)
 	maxStepsDefault = 25
 	// toolParallelism bounds the tool execution worker pool.
 	toolParallelismDefault = 4
@@ -58,6 +58,62 @@ func loopEnvInt(key string, def int) int {
 }
 
 func maxSteps() int { return loopEnvInt("ORCHICON_SESSION_MAX_STEPS", maxStepsDefault) }
+
+// maxStepsFromBudgets resolves the per-execution turn budget. Precedence:
+// an explicit budgets.max_steps on the work item/worker (layered over
+// tenant defaults by the scheduler's mergeBudgets, so a worker value wins
+// per key) beats the server env ORCHICON_SESSION_MAX_STEPS, which beats
+// the 25-turn default. Non-positive or non-numeric values fall through —
+// the guard is never silently disabled by a bad key.
+//
+// Parity note: the REAL opencode path has no step cap at all (the CLI
+// runs its own loop; only the in-process simulation hardcodes 3), so this
+// guard is native-only and intentionally stricter. The budgets key makes
+// it per-execution configurable; a tenant-level max_steps would need a
+// typed budget-ladder column (ApplyBudgetJSON drops unknown keys), so
+// tenant defaults cannot set it today.
+func maxStepsFromBudgets(budgets []byte) int {
+	if len(budgets) > 0 {
+		var m map[string]any
+		if json.Unmarshal(budgets, &m) == nil {
+			if v, ok := m["max_steps"]; ok {
+				if f, ok := jsonNumber(v); ok && f > 0 {
+					return int(f)
+				}
+			}
+		}
+	}
+	return maxSteps()
+}
+
+// turnBudget returns the session's resolved turn budget. A zero
+// maxStepsVal (a Session built outside NewSession, e.g. older call sites)
+// falls back to env/default rather than failing on step one.
+func (s *Session) turnBudget() int {
+	if s.maxStepsVal > 0 {
+		return s.maxStepsVal
+	}
+	return maxSteps()
+}
+
+// jsonNumber coerces a decoded JSON number (float64 from encoding/json,
+// json.Number, or a numeric string) to float64.
+func jsonNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return f, true
+		}
+	case string:
+		var f float64
+		if _, err := fmt.Sscanf(n, "%f", &f); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
 func toolParallelism() int {
 	return loopEnvInt("ORCHICON_SESSION_TOOL_PARALLELISM", toolParallelismDefault)
 }
@@ -251,13 +307,13 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		}
 
 		steps++
-		if steps > maxSteps() {
+		if steps > s.turnBudget() {
 			// Turn-budget exhaustion is its OWN failure shape — the time-
 			// based no_progress monitor owns "no progress within the
 			// window". Mislabeled reasons put a step cap in the fatal
 			// prefix class and mislead the recovery evidence.
 			_ = s.markState(ctx, "failed")
-			reason := fmt.Sprintf("stalled:max_steps:turn budget of %d exhausted", maxSteps())
+			reason := fmt.Sprintf("stalled:max_steps:turn budget of %d exhausted", s.turnBudget())
 			callbacks.OnStall(ctx, s.id, reason, true)
 			if s.fireTerminalOnce(callbacks, s.id, false, "max_steps_exceeded") {
 				s.markNudgeFinished()
