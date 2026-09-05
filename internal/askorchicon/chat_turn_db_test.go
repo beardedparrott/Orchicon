@@ -869,3 +869,103 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 		t.Errorf("metadata.session_id = %q, want ses_1", sid)
 	}
 }
+
+// TestPersistFoldedThinkSegmentsSeparateEntries verifies persistence of a
+// turn containing BOTH a native reasoning part and a folded think body: the
+// assistant message's Reasoning array carries both as SEPARATE entries (no
+// dedupe/merge), and the Content has no think-tag remnant and no leaked body.
+func TestPersistFoldedThinkSegmentsSeparateEntries(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A native reasoning part, then a folded think body streamed as TEXT
+	// deltas, then a COMPLETED text part that itself carries a folded body.
+	client.sub.feed(busReasoning("ses_1", "native step"))
+	client.sub.feed(busDelta("ses_1", "|<thinking>folded delta"))
+	client.sub.feed(busDelta("ses_1", "|</thinking>"))
+	client.sub.feed(busText("ses_1", "|<thinking>complete-body</thinking>final answer"))
+	client.sub.feed(busIdle("ses_1"))
+
+	msg := waitForMessage(t, pool, convID, ackID)
+	// Content must be the clean text with no think-tag remnant and no leaked
+	// think body.
+	content := strings.TrimSpace(msg.Content)
+	if content != "final answer" {
+		t.Errorf("persisted content = %q, want %q (folded bodies stripped)", content, "final answer")
+	}
+	if strings.Contains(content, "thinking") || strings.Contains(content, "</think") {
+		t.Errorf("persisted content has think remnant: %q", content)
+	}
+	// Both the native reasoning entry and the demuxed folded bodies persist as
+	// SEPARATE entries (no dedupe against native, no merge of folded bodies).
+	want := []string{"native step", "folded delta", "complete-body"}
+	if len(msg.Reasoning) != len(want) {
+		t.Fatalf("persisted reasoning = %v, want %v", msg.Reasoning, want)
+	}
+	for i := range want {
+		if msg.Reasoning[i] != want[i] {
+			t.Errorf("reasoning[%d] = %q, want %q (separate entries)", i, msg.Reasoning[i], want[i])
+		}
+	}
+}
+
+// TestPersistMidThinkSupersedeCleanPartial verifies a supersede mid-think
+// persists a partial whose content is clean text (no think remnant) and whose
+// reasoning array carries the partial folded body.
+func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A folded think body streamed as deltas, then a SUPERSEDE (interjection
+	// cancels the collector's context mid-think). The partial folded body must
+	// be flushed to the reasoning channel and the content left clean.
+	client.sub.feed(busDelta("ses_1", "|<thinking>partial body"))
+	s.turns.cancel(convID, errTurnSuperseded)
+
+	// The superseded turn persists its partial as a PLAIN assistant message
+	// (content clean, reasoning carries the flushed body).
+	deadline := time.After(5 * time.Second)
+	var row *db.MessageRow
+	for {
+		msgs := listMessages(t, pool, convID)
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("superseded partial was never persisted")
+		}
+	}
+	if strings.Contains(row.Content, "thinking") || strings.Contains(row.Content, "</think") {
+		t.Errorf("superseded partial content has think remnant: %q", row.Content)
+	}
+	want := []string{"partial body"}
+	if len(row.Reasoning) != len(want) || row.Reasoning[0] != want[0] {
+		t.Errorf("superseded reasoning = %v, want %v (flushed body)", row.Reasoning, want)
+	}
+}
