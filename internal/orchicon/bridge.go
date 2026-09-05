@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -545,7 +546,8 @@ func (b *NativeBridge) persistSession(ctx context.Context, exec db.ExecutionRow,
 // sessionPartsRecorder mirrors a native session's JSONL transcript into
 // the DB session-parts store in opencode part shapes (the frontend's
 // transcriptItems parses exactly these): user_message{text,source},
-// text{part:{text}}, reasoning{part:{text}}, tool_use{part:{tool,callID,
+// text{part:{text}} (consecutive text coalesced: one part per run),
+// reasoning{part:{text}}, tool_use{part:{tool,callID,
 // state:{status,input,output}}}, step_start/step_finish turn boundaries,
 // error{error:{message}}, and session_info at open. Batches under a mutex
 // and flushes every 2s on a ticker (the pane's transcript-flush cadence),
@@ -565,7 +567,15 @@ type sessionPartsRecorder struct {
 	// carrying state.input + state.output; emitting both an input part and
 	// an output part would render duplicate tool bubbles.
 	open map[string]db.SessionPart
-	stop chan struct{}
+	// textSeq/textBuf/textSub hold the in-flight coalesced text run: the
+	// session loop emits TransText per token, so consecutive text events
+	// append to this buffer instead of each becoming its own SessionPartText
+	// row (which buried the SUMMARY + FACTS LEARNED past the pane window).
+	// Sealed parts keep textSeq<<8|textSub (seq contract preserved).
+	textSeq int64
+	textBuf strings.Builder
+	textSub int64
+	stop    chan struct{}
 	// stopped is closed by run() on shutdown. Close only waits when the
 	// pump was actually started (go recorder.run() in Start); tests that
 	// drive the recorder synchronously (no pump) must not deadlock, so
@@ -606,7 +616,16 @@ func (r *sessionPartsRecorder) start() {
 // durable line), replay-idempotent (the same event derives the same
 // seqs, so a re-appended transcript entry cannot double-record), and
 // bounded (subIndex < 256 per event by construction).
+// Consecutive TransText events coalesce: one growing SessionPartText per
+// contiguous run (chunked at maxCoalescedTextBytes), anchored at the run
+// first event seq -- N tokens become 1 part, so the SUMMARY + FACTS
+// LEARNED tail stays inside the pane fetch window.
 func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
+	// A text run ends at any non-text event: seal first so the part
+	// lands in pending BEFORE this event parts (seq order preserved).
+	if typ != TransText {
+		r.flushText()
+	}
 	// sub pushes one derived part for the source event (subIndex < 256).
 	sub := func(subIndex int64, kind string, payload map[string]any) {
 		r.push(r.part(seq<<8|subIndex, kind, payload))
@@ -639,7 +658,8 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
 			return
 		}
-		sub(0, db.SessionPartText, map[string]any{"part": map[string]any{"text": d.Text}})
+		// Coalesce into the in-flight run instead of one part per token.
+		r.appendText(seq, d.Text)
 	case TransReasoning:
 		var d struct {
 			Text string `json:"text"`
@@ -754,6 +774,69 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 	}
 }
 
+// maxCoalescedTextBytes bounds one coalesced text part: longer runs seal
+// into multiple chunked parts (still far fewer rows than one-per-token).
+const maxCoalescedTextBytes = 32 * 1024
+
+// appendText extends the in-flight text run with one TransText fragment
+// (overflow seals full chunks, sub-indexed, so seqs stay distinct).
+func (r *sessionPartsRecorder) appendText(seq int64, text string) {
+	if text == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.textSeq == 0 {
+		r.textSeq, r.textSub = seq, 0
+	}
+	rest := text
+	for len(rest) > 0 {
+		room := maxCoalescedTextBytes - r.textBuf.Len()
+		if room <= 0 {
+			r.sealTextLocked()
+			if r.textSeq != seq {
+				r.textSeq, r.textSub = seq, 0
+			}
+			room = maxCoalescedTextBytes - r.textBuf.Len()
+		}
+		if len(rest) <= room {
+			r.textBuf.WriteString(rest)
+			break
+		}
+		r.textBuf.WriteString(rest[:room])
+		rest = rest[room:]
+		r.sealTextLocked()
+		if r.textSeq != seq {
+			r.textSeq, r.textSub = seq, 0
+		}
+	}
+}
+
+// sealTextLocked appends the buffered run as one SessionPartText part
+// (no-op when empty). Caller must hold r.mu.
+func (r *sessionPartsRecorder) sealTextLocked() {
+	if r.textBuf.Len() == 0 {
+		return
+	}
+	r.pending = append(r.pending, db.SessionPart{
+		ExecutionID: r.execID,
+		TenantID:    r.tenant,
+		Seq:         r.textSeq<<8 | r.textSub,
+		Kind:        db.SessionPartText,
+		Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"text": r.textBuf.String()}}),
+	})
+	r.textBuf.Reset()
+	r.textSub++
+}
+
+// flushText seals any open text run and resets the anchor (idempotent).
+func (r *sessionPartsRecorder) flushText() {
+	r.mu.Lock()
+	r.sealTextLocked()
+	r.textSeq, r.textSub = 0, 0
+	r.mu.Unlock()
+}
+
 // holdOpen stashes one tool_use part for callID under mu.
 func (r *sessionPartsRecorder) holdOpen(p db.SessionPart, callID string) {
 	r.mu.Lock()
@@ -807,8 +890,11 @@ func (r *sessionPartsRecorder) releaseOpen(callID string, merge func(db.SessionP
 // result: crash/cancel mid-call). The input is preserved (status
 // completed, empty output) so the operator sees what the worker was
 // about to do — never a silently missing call.
+// drainOpen seals the open text run, then flushes still-held tool calls.
 func (r *sessionPartsRecorder) drainOpen() {
 	r.mu.Lock()
+	r.sealTextLocked()
+	r.textSeq, r.textSub = 0, 0
 	for callID, p := range r.open {
 		var pl map[string]any
 		_ = jsonUnmarshal(p.Payload, &pl)

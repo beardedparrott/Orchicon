@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,7 +153,7 @@ func TestSessionPartsRecorderOrphanResultAndHold(t *testing.T) {
 	defer rec.Close() // pump never started — must NOT deadlock
 
 	tc, _ := json.Marshal(map[string]any{
-		"text":       "",
+		"text": "",
 		"tool_calls": []ToolCall{
 			{Index: 0, ToolCallID: "hold1", Name: "bash", ArgsJSON: `{"command":"ls"}`},
 		},
@@ -275,7 +276,9 @@ func TestSessionSetTranscriptObserverBeforeRun(t *testing.T) {
 		case db.SessionPartText:
 			var pl map[string]any
 			_ = json.Unmarshal(p.Payload, &pl)
-			if inner, _ := pl["part"].(map[string]any); inner["text"] == "hello" {
+			inner, _ := pl["part"].(map[string]any)
+			s, _ := inner["text"].(string)
+			if strings.Contains(s, "hello") {
 				foundText = true
 			}
 		}
