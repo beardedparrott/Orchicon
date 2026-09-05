@@ -90,10 +90,14 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 	}
 
 	// The user message is persisted synchronously (seq = StartSeq, source
-	// follow_up).
+	// follow_up). It is ALWAYS parts[0] because the synchronous write
+	// happens before the reply goroutine is even spawned; the count after
+	// it is non-deterministic (the fire-and-forget reply may already have
+	// landed), so only pin parts[0] here and let the poll below settle the
+	// rest.
 	parts := store.snapshot()
-	if len(parts) != 1 || parts[0].Kind != db.SessionPartUserMessage || parts[0].Seq != 5 {
-		t.Fatalf("synchronous parts = %+v, want exactly one user_message at seq 5", parts)
+	if len(parts) < 1 || parts[0].Kind != db.SessionPartUserMessage || parts[0].Seq != 5 {
+		t.Fatalf("synchronous parts = %+v, want the user_message first at seq 5", parts)
 	}
 	var um map[string]any
 	if err := jsonUnmarshal(parts[0].Payload, &um); err != nil {
