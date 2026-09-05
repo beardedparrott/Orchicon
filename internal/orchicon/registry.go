@@ -3,6 +3,7 @@ package orchicon
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -209,9 +210,28 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 	}
 }
 
-// defaultHTTPClient applies the per-provider connect/total timeouts (D11).
+// defaultHTTPClient applies the per-provider transport timeouts (D11).
+//
+// NO http.Client.Timeout: it is a TOTAL deadline covering the entire
+// request INCLUDING the streamed body, and a long prefill (observed: 48k
+// prompt tokens on a local llama-server) is silent longer than any cap
+// that still tolerates slow local hardware — the healthy generation died
+// mid-stream with "stream read: context deadline exceeded". Connect /
+// TLS / response-header phases are bounded at the Transport instead; the
+// body carries the idle-read watchdog (newIdleWatchBody in postJSON) and
+// the per-execution wall-clock budget remains the outer bound.
 func defaultHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Minute, // streams are long-lived; per-attempt cap
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = limitedDial(30 * time.Second)
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.ResponseHeaderTimeout = 5 * time.Minute
+	return &http.Client{Transport: tr}
+}
+
+// limitedDial returns a DialContext with a connect timeout.
+func limitedDial(to time.Duration) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		d := &net.Dialer{Timeout: to, KeepAlive: 30 * time.Second}
+		return d.DialContext(ctx, network, addr)
 	}
 }

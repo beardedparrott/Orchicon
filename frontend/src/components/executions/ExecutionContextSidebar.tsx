@@ -24,6 +24,7 @@ import { TodoStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { TodoPriority } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { useGetExecutionSession, useGetExecutionTodos } from "@/api/executions";
 import { useListOpenCodeModels } from "@/api/aigateway";
+import { useProviderModels } from "@/api/providers";
 import { cn } from "@/lib/utils";
 
 const EXEC_STATUS_LABELS: Record<number, string> = {
@@ -204,24 +205,40 @@ export function ExecutionContextSidebar({
   }, [events, transcript]);
 
   // Resolve the REAL model context window from the model that actually ran.
-  // The usage records carry provider+model; we match that against model
-  // discovery's opencode model and take limits.context. When the panel
-  // received an explicit contextWindow prop (or the model can't be
-  // resolved), fall back to that / unknown rather than fabricating a window.
+  // The usage records carry provider+model (emitTurnUsage splits the
+  // manifest model ref: canonical native/adapter/provider/model refs use
+  // segment 2 = the provider entry id). Resolution order:
+  //   1. explicit contextWindow prop (work item declared window);
+  //   2. the native provider's sourced models (Settings → Adapters probe —
+  //      the SAME enrichment the session's compaction trigger uses, which
+  //      decodes llama.cpp's meta.n_ctx_train) matched by model id;
+  //   3. opencode discovery limits.context (legacy adapter path).
+  // When the panel received an explicit contextWindow prop (or the model
+  // can't be resolved), fall back to that / unknown rather than fabricating
+  // a window.
   const { data: models } = useListOpenCodeModels();
+  const latestUsage = usage[usage.length - 1];
+  const nativeProviderId = latestUsage?.provider ?? "";
+  const { data: nativeModels } = useProviderModels(
+    nativeProviderId,
+    Boolean(latestUsage?.provider),
+  );
   const resolvedContextWindow = useMemo(() => {
     if (contextWindow && contextWindow > 0) return contextWindow;
+    if (nativeModels && nativeModels.length > 0 && latestUsage?.model) {
+      const found = nativeModels.find((m) => m.id === latestUsage.model);
+      const ctx = Number(found?.context) || 0;
+      if (ctx > 0) return ctx;
+    }
     if (!models || models.length === 0) return 0;
-    // Pick the model from the most recent usage record (provider+model).
-    const latest = usage[usage.length - 1];
-    if (!latest?.provider || !latest?.model) return 0;
-    const ref = `${latest.provider}/${latest.model}`;
+    if (!latestUsage?.provider || !latestUsage?.model) return 0;
+    const ref = `${latestUsage.provider}/${latestUsage.model}`;
     const found =
       models.find((m) => m.modelRef === ref) ??
-      models.find((m) => m.id === latest.model);
+      models.find((m) => m.id === latestUsage.model);
     const ctx = found?.limits?.context ? Number(found.limits.context) : 0;
     return ctx > 0 ? ctx : 0;
-  }, [contextWindow, models, usage]);
+  }, [contextWindow, nativeModels, models, latestUsage]);
 
   // Token usage breakdown from usage_records (AI Gateway dual-write).
   // `workingSet` is the PEAK single-step FRESH token count

@@ -388,6 +388,10 @@ func (c *AnthropicClient) requestHeaders() map[string]string {
 }
 
 // postJSON is the shared POST helper (connection errors classify for retry).
+// The response body is wrapped in the idle-read watchdog (streamidle.go):
+// after the first body byte, a silent gap past ORCHICON_STREAM_IDLE_TIMEOUT
+// aborts the stream with ErrStreamIdle instead of hanging until the
+// wall-clock reaper. Pre-first-byte silence (the prefill) is exempt.
 func postJSON(ctx context.Context, httpc *http.Client, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
@@ -396,7 +400,12 @@ func postJSON(ctx context.Context, httpc *http.Client, url string, headers map[s
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return httpc.Do(req)
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = newIdleWatchBody(resp.Body, streamIdleTimeout())
+	return resp, nil
 }
 
 // --- SSE event decoding ------------------------------------------------------
