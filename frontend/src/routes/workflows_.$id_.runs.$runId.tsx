@@ -1,5 +1,6 @@
-import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { createRoute } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import { z } from "zod";
 import { CheckCircle2, FastForward, RefreshCw, XCircle } from "lucide-react";
 import ReactFlow, {
   Background,
@@ -43,6 +44,20 @@ import { WorktreeTiles, worktreeTileItems } from "@/components/WorktreeTiles";
 import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { LiveDuration } from "@/components/ui/live-duration";
+import {
+  buildHeadsUpTiles,
+  parseViewParam,
+  readStoredView,
+  storeView,
+  type HeadsUpTileData,
+  type RunView,
+} from "@/components/workflow-runs/headsUp";
+import { HeadsUpExpandedModal } from "@/components/workflow-runs/HeadsUpExpandedModal";
+import { HeadsUpGrid } from "@/components/workflow-runs/HeadsUpGrid";
+import {
+  ExecStatusBadge,
+  StepStatusPill,
+} from "@/components/workflow-runs/status";
 import { Route as rootRoute } from "@/routes/__root";
 
 import "reactflow/dist/style.css";
@@ -51,9 +66,20 @@ import "reactflow/dist/style.css";
 // transitions on the same canvas"). Streams workflow events over NATS
 // and overlays the step-run status on the editor canvas. A live event
 // feed shows step transitions in real-time.
+//
+// The DEFAULT view is the tiled Heads-Up Dashboard (rows×columns, the
+// active worker lit up, click-to-expand interrogation); the ReactFlow
+// canvas survives unchanged behind the `Graph` tab.
+const runViewSearchSchema = z.object({
+  // Free-form: parseViewParam coerces garbage (a bad shared link lands
+  // on the tile default instead of a validation error page).
+  view: z.string().optional(),
+});
+
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workflows/$id/runs/$runId",
+  validateSearch: runViewSearchSchema,
   component: WorkflowRunPage,
 });
 
@@ -102,7 +128,7 @@ const STEP_RUN_STATUS_COLORS: Record<number, string> = {
 };
 
 function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string }) {
-  const navigate = useNavigate();
+  const navigate = Route.useNavigate();
   const qc = useQueryClient();
   const { data: wfData } = useGetWorkflow(workflowId);
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
@@ -111,6 +137,44 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const abortRun = useAbortWorkflow();
   const forceProgress = useForceProgressWorkflowRun();
   const retryFailed = useRetryFailedWorkflowRun();
+
+  // Heads-Up view state: URL `?view=tile|graph` wins, then localStorage,
+  // then the tile default. Changing tabs writes both so refresh and
+  // shared links restore the same tab. parseViewParam coerces garbage
+  // (zod's enum would reject it) so a bad shared link still lands on
+  // the tile default instead of an error page.
+  const search = Route.useSearch() as { view?: string };
+  const urlView: RunView | null =
+    search.view === undefined ? null : parseViewParam(search.view);
+  const [viewOverride, setViewOverride] = useState<RunView | null>(null);
+  const initialStored = useMemo(() => readStoredView(), []);
+  const view: RunView = viewOverride ?? urlView ?? initialStored;
+  useEffect(() => {
+    storeView(view);
+  }, [view]);
+  const setView = (next: RunView) => {
+    setViewOverride(next);
+    void navigate({ search: (prev) => ({ ...prev, view: next }) });
+  };
+
+  // Expanded tile (expand-to-interrogate modal). The grid stays mounted
+  // underneath — closing returns without losing streams.
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
+
+  // Tiled HUD data-join: steps LEFT JOIN latest step-run LEFT JOIN
+  // execution (same superseded-filter semantics as the canvas overlay
+  // below so both tabs agree on status).
+  const tiles = useMemo(
+    () =>
+      buildHeadsUpTiles(
+        wfData?.latestVersion?.steps,
+        stepRuns,
+        runExecs,
+      ),
+    [wfData?.latestVersion?.steps, stepRuns, runExecs],
+  );
+  const expandedTile: HeadsUpTileData | null =
+    tiles.find((t) => t.stepId === expandedStepId) ?? null;
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
   // filtered to this run; invalidates the run + step-runs queries so the
@@ -325,7 +389,29 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
             )}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-md border" role="tablist" aria-label="Run view">
+            <Button
+              size="sm"
+              variant={view === "tile" ? "default" : "ghost"}
+              className="rounded-none"
+              role="tab"
+              aria-selected={view === "tile"}
+              onClick={() => setView("tile")}
+            >
+              Heads-Up
+            </Button>
+            <Button
+              size="sm"
+              variant={view === "graph" ? "default" : "ghost"}
+              className="rounded-none"
+              role="tab"
+              aria-selected={view === "graph"}
+              onClick={() => setView("graph")}
+            >
+              Graph
+            </Button>
+          </div>
           {run.status === 4 && (
             <Button
               variant="outline"
@@ -366,6 +452,29 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
+
+      {view === "tile" ? (
+        <>
+          {/* Heads-Up Dashboard: one tile per DAG step in queue order. */}
+          <HeadsUpGrid
+            tiles={tiles}
+            runId={runId}
+            suspendedStepId={expandedStepId}
+            onExpand={(t) => setExpandedStepId(t.stepId)}
+          />
+          {expandedTile && (
+            <HeadsUpExpandedModal
+              tile={expandedTile}
+              onClose={() => setExpandedStepId(null)}
+            />
+          )}
+        </>
+      ) : (
+        <></>
+      )}
+      {view === "graph" && (
+        <>
+          {/* Graph tab: pixel-identical legacy ReactFlow canvas below. */}
 
       {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
         <div className="rounded-2xl glass-panel p-4">
@@ -651,6 +760,8 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -905,19 +1016,6 @@ function RunStatusBadge({ status }: { status: number }) {
   );
 }
 
-function StepStatusPill({ status }: { status: number }) {
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        STEP_RUN_STATUS_COLORS[status] ?? "bg-gray-200 text-gray-700",
-      )}
-    >
-      {STEP_RUN_STATUS_LABELS[status] ?? "pending"}
-    </span>
-  );
-}
-
 function StreamStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     idle: "text-muted-foreground",
@@ -993,35 +1091,3 @@ const STEP_RUN_STATUS_LABELS: Record<number, string> = {
   7: "blocked",
   8: "approval_pending",
 };
-
-function ExecStatusBadge({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "dispatching",
-    2: "running",
-    3: "healthy",
-    4: "stalled",
-    5: "unhealthy",
-    6: "terminating",
-    7: "terminated",
-    8: "failed_to_start",
-    9: "succeeded",
-    10: "failed",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-blue-100 text-blue-800",
-    2: "bg-green-100 text-green-800",
-    3: "bg-green-600 text-white",
-    4: "bg-yellow-100 text-yellow-800",
-    5: "bg-red-100 text-red-800",
-    6: "bg-orange-100 text-orange-800",
-    7: "bg-gray-200 text-gray-700",
-    8: "bg-red-600 text-white",
-    9: "bg-emerald-100 text-emerald-800",
-    10: "bg-red-700 text-white",
-  };
-  return (
-    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", styles[status] ?? "bg-muted text-muted-foreground")}>
-      {labels[status] ?? "unknown"}
-    </span>
-  );
-}
