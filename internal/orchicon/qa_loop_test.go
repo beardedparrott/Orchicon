@@ -530,6 +530,9 @@ func TestQABridgeCapabilities(t *testing.T) {
 }
 
 // AC: ContinueSession verifies identity; identity-less transcript refused.
+// The follow-up fires-and-forgets: on success the RPC returns "" (the
+// reply flows via the durable transcript, never the RPC field), and the
+// provider turn runs against the same worker as the prior session.
 func TestQAContinueSessionIdentityVerified(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
@@ -544,10 +547,24 @@ func TestQAContinueSessionIdentityVerified(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = tr.Close()
-	b := NewBridge(nil, dir, nil)
-	ack, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{SessionID: "exec_prior", ExecutionID: "exec_prior"})
-	if err != nil || !strings.Contains(ack, "exec_prior") {
-		t.Errorf("ContinueSession = %q, %v", ack, err)
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{TextDelta{Text: "follow-up reply"}}, finish: StopStop, usage: Usage{InputTokens: 3, OutputTokens: 8}, bare: true},
+	}}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return prov, nil
+	}), dir, nil)
+	reply, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+		SessionID:   "exec_prior",
+		ExecutionID: "exec_prior",
+		TenantID:    "tnt_test",
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		Message:     "Are you done?",
+	})
+	if err != nil {
+		t.Fatalf("ContinueSession error: %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("reply = %q, want empty (async — reply flows via transcript)", reply)
 	}
 	// No-identity transcript refused.
 	p2 := filepath.Join(dir, "noid.jsonl")
