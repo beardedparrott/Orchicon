@@ -472,3 +472,60 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestProvidersRegistryEndToEnd proves the substrate hook wires the tenant
+// override through to the registry's built-in resolution: a stored ollama
+// BaseURLOverride MUST be visible on the Provider that Registry.Get builds
+// — not just on the settings view (the reported chat-dials-localhost bug).
+func TestProvidersRegistryEndToEnd(t *testing.T) {
+	svc, pool := newProvidersTestService(t)
+	ensureTenant(t, pool, testTenant)
+	ctx := context.Background()
+
+	override := "https://ollama-cloud.example.com"
+	enabled := true
+	if _, err := svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID: "ollama", Enabled: &enabled, BaseURLOverride: &override,
+	}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	// The settings service invalidates the registry on every mutation —
+	// Get must observe the override on the very next call (no stale cache).
+	reg := svc.Registry()
+	prof, ok, err := svc.EffectiveProfile(ctx, testTenant, "ollama")
+	if err != nil || !ok || prof.BaseURL != override {
+		t.Fatalf("effective profile: %+v ok=%v err=%v", prof, ok, err)
+	}
+	prov, err := reg.Get(ctx, testTenant, "ollama")
+	if err != nil {
+		t.Fatalf("registry get: %v", err)
+	}
+	// The registry builds the runtime client FROM the effective profile —
+	// assert the override survived into the built client.
+	oc, ok := prov.(*orchicon.OllamaClient)
+	if !ok {
+		t.Fatalf("registry returned %T — expected *orchicon.OllamaClient", prov)
+	}
+	if host := oc.Host; host != override {
+		t.Fatalf("registry client host = %q, want the tenant override %q (chat must not dial localhost)", host, override)
+	}
+
+	// Clearing the override reverts to the built-in default.
+	empty := ""
+	if _, err := svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID: "ollama", BaseURLOverride: &empty,
+	}); err != nil {
+		t.Fatalf("clear override: %v", err)
+	}
+	prov2, err := reg.Get(ctx, testTenant, "ollama")
+	if err != nil {
+		t.Fatalf("registry get after clear: %v", err)
+	}
+	oc2, ok := prov2.(*orchicon.OllamaClient)
+	if !ok {
+		t.Fatalf("registry returned %T", prov2)
+	}
+	if host := oc2.Host; host == override {
+		t.Fatalf("registry client host still %q after the override was cleared — stale cache", host)
+	}
+}

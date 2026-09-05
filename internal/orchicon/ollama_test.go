@@ -216,3 +216,45 @@ func TestOllamaNativeDisconnectFails(t *testing.T) {
 		t.Fatalf("want clean failure on missing done chunk, got %v", err)
 	}
 }
+
+// AC (final-chunk parity): a final native chunk carrying BOTH tail content
+// AND done:true must surface the tail text BEFORE the Finish — the old
+// shape dropped the tail delta and truncated output.
+func TestOllamaNativeTailContentOnDoneChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"content":"Hello"}}` + "\n" +
+				`{"message":{"content":" tail"},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":9}` + "\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &OllamaClient{Host: srv.URL, NumCtxDefault: 8192}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "llama3.2", MaxTokens: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err2 := drainStream(t, ts)
+	if err2 != nil {
+		t.Fatalf("native stream: %v", err2)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("events = %d, want 3 (Hello, tail, Finish): %#v", len(evs), evs)
+	}
+	if td, ok := evs[0].(TextDelta); !ok || td.Text != "Hello" {
+		t.Fatalf("event 0 = %#v, want Hello", evs[0])
+	}
+	td, ok := evs[1].(TextDelta)
+	if !ok || td.Text != " tail" {
+		t.Fatalf("event 1 = %#v, want the tail TextDelta", evs[1])
+	}
+	fin, ok := evs[2].(Finish)
+	if !ok || fin.StopReason != StopStop {
+		t.Fatalf("event 1 = %#v, want Finish(stop)", evs[1])
+	}
+	// num_predict rides options when MaxTokens is set (output-cap parity).
+	c2 := &OllamaClient{Host: srv.URL, NumCtxDefault: 8192}
+	if _, err := c2.StreamTurn(context.Background(), TurnRequest{Model: "m", MaxTokens: 777, OllamaNumCtx: 4096}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -294,6 +294,15 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 			// are harmless (decode to zero); anthropic's `data[].id`
 			// matches the OpenAI field name so one decode serves both.
 			MaxInputTokens int64 `json:"max_input_tokens"`
+			// llama.cpp server (/v1/models) reports the model's trained
+			// context under meta.n_ctx_train (and, on some builds, as a
+			// top-level n_ctx_train). Without these the local llama-serve
+			// probe resolved Context=0 → "model window unknown" and the
+			// window-trigger compaction stayed disarmed.
+			NCtxTrain int64 `json:"n_ctx_train"`
+			Meta      *struct {
+				NCtxTrain int64 `json:"n_ctx_train"`
+			} `json:"meta"`
 		} `json:"data"`
 	}
 	if err := decodeBody(resp.Body, &body); err != nil {
@@ -305,12 +314,17 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 			continue
 		}
 		m := ModelInfo{ID: d.ID, Visible: true, Provenance: "probe"}
-		if d.ContextLength > 0 {
+		switch {
+		case d.ContextLength > 0:
 			m.Context = d.ContextLength
-		} else if d.MaxModelLen > 0 {
+		case d.MaxModelLen > 0:
 			m.Context = d.MaxModelLen
-		} else if d.MaxInputTokens > 0 {
+		case d.MaxInputTokens > 0:
 			m.Context = d.MaxInputTokens
+		case d.Meta != nil && d.Meta.NCtxTrain > 0:
+			m.Context = d.Meta.NCtxTrain
+		case d.NCtxTrain > 0:
+			m.Context = d.NCtxTrain
 		}
 		out = append(out, m)
 	}

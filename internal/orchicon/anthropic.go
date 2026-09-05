@@ -388,6 +388,10 @@ func (c *AnthropicClient) requestHeaders() map[string]string {
 }
 
 // postJSON is the shared POST helper (connection errors classify for retry).
+// The response body is wrapped in the idle-read watchdog (streamidle.go):
+// after the first body byte, a silent gap past ORCHICON_STREAM_IDLE_TIMEOUT
+// aborts the stream with ErrStreamIdle instead of hanging until the
+// wall-clock reaper. Pre-first-byte silence (the prefill) is exempt.
 func postJSON(ctx context.Context, httpc *http.Client, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
@@ -396,7 +400,12 @@ func postJSON(ctx context.Context, httpc *http.Client, url string, headers map[s
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return httpc.Do(req)
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = newIdleWatchBody(resp.Body, streamIdleTimeout())
+	return resp, nil
 }
 
 // --- SSE event decoding ------------------------------------------------------
@@ -420,11 +429,19 @@ type anthropicStream struct {
 	r    *sseReader
 	body io.Closer
 	st   anthStreamState
-	err  error
+	// think splits INLINE reasoning (the "think" tag pair inside a
+	// text_delta — some gateways inline chain-of-thought instead of using
+	// thinking blocks) into ReasoningDelta events (thinksplit.go), the
+	// same global routing every provider wire applies.
+	think *thinkSplitter
+	// pending queues splitter output (+ the trailing Finish) so one
+	// decoded frame can surface several events across Next calls.
+	pending []Event
+	err     error
 }
 
 func newAnthropicStream(body io.ReadCloser) *anthropicStream {
-	return &anthropicStream{r: newSSEReader(body), body: body, st: anthStreamState{blocks: map[int]*anthBlockAcc{}}}
+	return &anthropicStream{r: newSSEReader(body), body: body, st: anthStreamState{blocks: map[int]*anthBlockAcc{}}, think: newThinkSplitter()}
 }
 
 func (s *anthropicStream) Close() error {
@@ -437,6 +454,11 @@ func (s *anthropicStream) Close() error {
 // Next yields the next normalized event.
 func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, true, nil
+	}
 	if s.st.finished {
 		return nil, false, nil
 	}
@@ -527,9 +549,20 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 			if err := json.Unmarshal(payload.Delta, &d); err != nil {
 				return s.fail(fmt.Errorf("anthropic: bad delta: %w", err))
 			}
-			switch d.Type {
-			case "text_delta":
-				return TextDelta{Text: d.Text}, true, nil
+		switch d.Type {
+		case "text_delta":
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+			// inside the delta becomes ReasoningDelta (native thinking
+			// blocks still arrive as thinking_delta below and are
+			// untouched). A fully-held split-tag prefix yields no event
+			// yet — keep decoding.
+			s.think.feed(d.Text, &s.pending)
+			if len(s.pending) > 0 {
+				ev := s.pending[0]
+				s.pending = s.pending[1:]
+				return ev, true, nil
+			}
+			continue
 			case "thinking_delta":
 				return ReasoningDelta{Text: d.Thinking}, true, nil
 			case "input_json_delta":
@@ -579,9 +612,21 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 		case "message_stop":
 			s.st.finished = true
 			if s.st.stop == "" {
-				s.st.stop = StopStop
+				// message_stop without a prior message_delta stop_reason:
+				// the provider never delivered an end-of-response signal —
+				// a truncated/aborted response, not a completed one
+				// (parity: openaicompat/legacycc report StopOther here).
+				// The loop's success gate treats StopOther as a failure.
+				s.st.stop = StopOther
 			}
-			return Finish{StopReason: s.st.stop, Usage: s.st.usage}, true, nil
+			// Drain any think-splitter holdback first so a truncated final
+			// tag cannot swallow the response tail; an unterminated think
+			// block drains to reasoning, never text.
+			s.think.drain(&s.pending)
+			s.pending = append(s.pending, Finish{StopReason: s.st.stop, Usage: s.st.usage})
+			ev := s.pending[0]
+			s.pending = s.pending[1:]
+			return ev, true, nil
 		default:
 			continue
 		}
@@ -604,7 +649,7 @@ type anthUsage struct {
 
 func mapAnthropicStop(reason string) StopReason {
 	switch reason {
-	case "end_turn", "stop_sequence", "":
+	case "end_turn", "stop_sequence":
 		return StopStop
 	case "max_tokens":
 		return StopLength
@@ -613,6 +658,10 @@ func mapAnthropicStop(reason string) StopReason {
 	case "refusal":
 		return StopContentFilter
 	default:
+		// An empty/unrecognized stop_reason is NOT an end_of-turn signal —
+		// StopOther is the honest terminal (the loop's success gate treats
+		// it as a failure). Synthesizing StopStop from "" recorded hollow
+		// successes on truncated responses.
 		return StopOther
 	}
 }

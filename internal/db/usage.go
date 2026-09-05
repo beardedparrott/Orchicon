@@ -142,6 +142,27 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 	return out, rows.Err()
 }
 
+// SumUsageForExecution returns the cumulative usage-record totals for one
+// execution (the AI Gateway dual-write source of truth). The
+// worker_executions.token_usage / cost_usd ROW columns are write-never
+// (nothing ever updates them — they sit at their create-time zero), so
+// every consumer that reports per-execution spend must use this sum, never
+// the row. SUM(total_tokens) is the cumulative transport figure (each
+// step_finish row carries the full per-step request size); the peak
+// working-set math lives with the callers that need it (the execution
+// detail sidebar computes it from the rows).
+func SumUsageForExecution(ctx context.Context, tx pgx.Tx, tenantID, executionID string) (tokens int64, costUSD float64, err error) {
+	if tenantID == "" || executionID == "" {
+		return 0, 0, fmt.Errorf("db: sum usage for execution: tenant_id and execution_id required")
+	}
+	const q = `SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0)
+		FROM usage_records WHERE tenant_id = $1 AND execution_id = $2`
+	if err := tx.QueryRow(ctx, q, tenantID, executionID).Scan(&tokens, &costUSD); err != nil {
+		return 0, 0, fmt.Errorf("db: sum usage for execution: %w", err)
+	}
+	return tokens, costUSD, nil
+}
+
 // CostSummaryRow is an aggregated cost roll-up at one drill-down level
 // (docs/10 §11: Tenant → Project → Task → Execution).
 type CostSummaryRow struct {

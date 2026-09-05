@@ -85,6 +85,37 @@ func TestSourcingProbeCustomEntries(t *testing.T) {
 	}
 }
 
+func TestSourcingProbeLlamaCppMetaContext(t *testing.T) {
+	// llama.cpp server /v1/models reports the trained context under
+	// meta.n_ctx_train (not context_length / max_model_len). Regression:
+	// the probe decoder missed that shape → Context=0 → "model window
+	// unknown" in the execution sidebar and a disarmed compaction trigger.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"id":"TielCoder-242k","meta":{"n_ctx_train":242576}},
+			{"id":"top-level-ctx","n_ctx_train":32768},
+			{"id":"explicit-wins","meta":{"n_ctx_train":242576},"max_model_len":4096}
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := Profile{ID: "my-llamacpp", Kind: ProfileKindCustom, Custom: true, BaseURL: srv.URL, Visible: true}
+	s := NewSourcingService(nil, nil)
+	res := s.ListModels(context.Background(), p)
+	if res.Degraded || len(res.Models) != 3 {
+		t.Fatalf("probe result = %#v deg=%v", res.Models, res.Degraded)
+	}
+	if res.Models[0].Context != 242576 {
+		t.Fatalf("meta.n_ctx_train not decoded: %d", res.Models[0].Context)
+	}
+	if res.Models[1].Context != 32768 {
+		t.Fatalf("top-level n_ctx_train not decoded: %d", res.Models[1].Context)
+	}
+	if res.Models[2].Context != 4096 {
+		t.Fatalf("explicit hint must win over meta: %d", res.Models[2].Context)
+	}
+}
+
 func TestSourcingProbeFailureIsDegraded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // server does not expose /models

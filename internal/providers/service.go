@@ -278,6 +278,13 @@ func (s *Service) substrate() (*orchicon.Registry, *orchicon.SourcingService, *o
 			}
 		}
 		s.registry = orchicon.NewRegistry(resolver, src, nil, warn)
+		// BUILT-IN provider overrides (ADR-0006 D6 parity): registry.Get for
+		// a built-in id resolves built-in default ⊕ tenant provider-settings
+		// overrides via EffectiveProfile — the SAME mapping the RPC views
+		// use. Without this hook every built-in chat client used the
+		// built-in defaults (observed: an ollama CLOUD BaseURLOverride in
+		// Settings while chat kept dialing http://localhost:11434).
+		s.registry.SetBuiltinOverridesLoader(s.EffectiveProfile)
 		s.sourcing = src
 		s.resolver = resolver
 	})
@@ -368,7 +375,18 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 		// its native token-format tool calls as PLAIN TEXT, the loop sees a
 		// text-only finish, and executions "succeed" in 1-2 seconds with
 		// markup garbage ("<｜DSML｜tool_calls>…") as the final message.
-		Quirks: orchicon.Quirks{SupportsToolCalls: true},
+		//
+		// Usage parity (D2): a compat endpoint that accepts streaming
+		// serves usage the standard way — request it (include_usage) and
+		// parse the trailing usage-only chunk. Without these quirks the
+		// native loop saw 0-usage turns: no cost explorer rows, no budget
+		// cost gate, and the old zero-growth stall guard false-tripped.
+		Quirks: orchicon.Quirks{
+			SupportsToolCalls:                true,
+			StreamOptionsIncludeUsage:        true,
+			UsageInFinalChunk:                true,
+			CacheReadFromPromptTokensDetails: true,
+		},
 	}
 	if r.AuthMode == AuthModeToken {
 		p.AuthSecretRef = CustomSecretName(r.ProviderID)

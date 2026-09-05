@@ -1250,6 +1250,29 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// lastMirror throttles how often the drain loop snapshots the live buffers
 	// into the partial mirror (the flusher further throttles the DB writes).
 	var lastMirror time.Time
+	// Trailing flush for the throttled mirror: when a delta lands inside the
+	// 200ms throttle window, flushTick is armed for the remainder so the
+	// unflushed delta tail drains shortly after the LAST delta — a short
+	// final burst (or the stream ending entirely) would otherwise freeze the
+	// partial row on the previous snapshot until the turn finalizes (the
+	// exact "nothing until the final message" symptom the mirror exists to
+	// fix). The timer is armed/stopped ONLY on the drain loop's goroutine and
+	// its expiry is consumed by the loop's select below, so mirrorSnapshot's
+	// reads of the live buffers stay single-goroutine by construction (no
+	// locks, no race with the finalize — the timer cannot fire after the
+	// loop returns).
+	flushTick := time.NewTimer(time.Hour)
+	defer flushTick.Stop()
+	flushArmed := false
+	disarmFlush := func() {
+		if !flushTick.Stop() {
+			select {
+			case <-flushTick.C:
+			default:
+			}
+		}
+		flushArmed = false
+	}
 	// mirrorSnapshot builds the live partial snapshot for onPartial:
 	// authoritative completed parts + the delta tail. The reasoning tail is
 	// appended as ONE growing entry (the frontend joins reasoning parts into a
@@ -1325,6 +1348,16 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				_ = c.client.Abort(context.WithoutCancel(subCtx), sid)
 				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
+			}
+		case <-flushTick.C:
+			// Trailing mirror flush: the throttle window elapsed with an
+			// unflushed delta tail. Drain it NOW on the drain loop's own
+			// goroutine (single-goroutine snapshot reads by construction).
+			flushArmed = false
+			if c.onPartial != nil {
+				lastMirror = time.Now()
+				snapText, snapRsn := mirrorSnapshot()
+				c.onPartial(snapText, snapRsn)
 			}
 		case res := <-sendCh:
 			if res != nil {
@@ -1414,8 +1447,29 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					}
 					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
 						lastMirror = time.Now()
+						disarmFlush()
 						snapText, snapRsn := mirrorSnapshot()
 						c.onPartial(snapText, snapRsn)
+					} else if c.onPartial != nil {
+						// Throttled: arm the one-shot trailing flush for the
+						// throttle-window remainder (min 10ms) so the delta
+						// tail drains shortly after the LAST delta — a burst
+						// that ends within the throttle window (short final
+						// generation, or the stream ending entirely) would
+						// otherwise freeze the partial row on the previous
+						// snapshot until the turn finalizes (the exact
+						// 'nothing until the final message' symptom this
+						// mirror exists to fix). An on-time flush or a
+						// completed part disarms it; arming keeps the
+						// earliest deadline (only arm when not already armed).
+						if !flushArmed {
+							delay := 200*time.Millisecond - time.Since(lastMirror)
+							if delay < 10*time.Millisecond {
+								delay = 10 * time.Millisecond
+							}
+							flushTick.Reset(delay)
+							flushArmed = true
+						}
 					}
 					continue
 				}
@@ -1446,6 +1500,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 							// built it — reset the live text tail so the
 							// mirror doesn't double-count.
 							liveText.Reset()
+							disarmFlush()
 							if c.onPartial != nil {
 								snapText, snapRsn := mirrorSnapshot()
 								c.onPartial(snapText, snapRsn)
@@ -1462,6 +1517,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 						if text, ok2 := part["text"].(string); ok2 && text != "" {
 							reasoning = append(reasoning, text)
 							liveReasoning.Reset()
+							disarmFlush()
 							if c.onPartial != nil {
 								snapText, snapRsn := mirrorSnapshot()
 								c.onPartial(snapText, snapRsn)

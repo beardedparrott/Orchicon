@@ -360,6 +360,13 @@ type openaiStream struct {
 	tools   map[int]*oaToolAcc
 	toolOrd []int
 	queue   []Event // ordered event backlog (Start → Delta → … → Finish)
+
+	// think splits llama.cpp-style INLINE reasoning (the "think" tag
+	// pair in delta.content) into ReasoningDelta events (thinksplit.go).
+	// Servers that emit a native reasoning field are unaffected (content
+	// never contains the tag pair) — the splitter passes plain text
+	// through byte-identical.
+	think *thinkSplitter
 }
 
 type oaToolAcc struct {
@@ -370,7 +377,7 @@ type oaToolAcc struct {
 }
 
 func newOpenAIStream(body io.ReadCloser) *openaiStream {
-	return &openaiStream{r: newSSEReader(body), body: body, tools: map[int]*oaToolAcc{}}
+	return &openaiStream{r: newSSEReader(body), body: body, tools: map[int]*oaToolAcc{}, think: newThinkSplitter()}
 }
 
 func (s *openaiStream) Close() error {
@@ -435,7 +442,10 @@ func (s *openaiStream) Next(ctx context.Context) (Event, bool, error) {
 		for _, choice := range ch.Choices {
 			d := choice.Delta
 			if d.Content != "" {
-				s.queue = append(s.queue, TextDelta{Text: d.Content})
+				// Inline-reasoning routing: the "think" tag pair inside
+				// content becomes ReasoningDelta (llama.cpp default),
+				// everything else passes through as content.
+				s.think.feed(d.Content, &s.queue)
 			}
 			switch {
 			case d.ReasoningContent != "":
@@ -488,8 +498,10 @@ func (s *openaiStream) pop() Event {
 }
 
 // flush emits accumulated complete tool calls (in first-appearance order),
-// then the held Finish.
+// then the held Finish. Any think-splitter holdback is drained first so a
+// truncated final tag cannot swallow the response tail.
 func (s *openaiStream) flush() {
+	s.think.drain(&s.queue)
 	for _, idx := range s.toolOrd {
 		acc := s.tools[idx]
 		args := acc.Args.String()
@@ -501,7 +513,14 @@ func (s *openaiStream) flush() {
 	s.toolOrd = nil
 	s.drained = true
 	if !s.haveStop {
-		s.stop = StopStop
+		// NO provider stop reason: the stream ended without delivering an
+		// end-of-response signal (a truncated/aborted generation, not a
+		// completed turn). Synthesizing StopStop here recorded hollow
+		// successes: the loop's success gate ran on a turn the provider
+		// never actually ended (observed: executions "succeeded" with the
+		// model mid-monologue). StopOther is the honest terminal — the
+		// loop fails a turn that ended without the provider's signal.
+		s.stop = StopOther
 	}
 	s.queue = append(s.queue, Finish{StopReason: s.stop, Usage: s.usage})
 }

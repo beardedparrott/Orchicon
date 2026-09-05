@@ -240,7 +240,7 @@ func (c *CommandCodeClient) streamLegacy(ctx context.Context, req TurnRequest) (
 	if err != nil {
 		return nil, err
 	}
-	return &legacyStream{r: newSSEReader(resp.Body), body: resp.Body}, nil
+	return &legacyStream{r: newSSEReader(resp.Body), body: resp.Body, think: newThinkSplitter()}, nil
 }
 
 // legacyHeaders builds the documented legacy header set.

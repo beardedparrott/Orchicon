@@ -47,30 +47,49 @@ func (s *Session) resolveModelInfo(ctx context.Context) (*ModelInfo, ContextWind
 	}
 	s.windowResolved = true
 	s.windowModel = nil
-	if s.provider == nil {
-		s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":provider_unset"}
-		return nil, s.windowHint
-	}
-	models, err := s.provider.ListModels(ctx)
-	if err != nil {
-		s.windowHint = ContextWindowHint{Reason: fmt.Sprintf("%s:list_models_error:%v", NoContextWindow, err)}
-		return nil, s.windowHint
-	}
-	for i := range models {
-		if models[i].ID != s.identity.Model {
-			continue
-		}
-		m := models[i]
-		s.windowModel = &m
-		if m.Context > 0 {
-			s.windowHint = ContextWindowHint{Tokens: m.Context, Ok: true, Reason: "live"}
+	if s.provider != nil {
+		models, err := s.provider.ListModels(ctx)
+		if err != nil {
+			s.windowHint = ContextWindowHint{Reason: fmt.Sprintf("%s:list_models_error:%v", NoContextWindow, err)}
+			s.log.Warn("native session: context-window resolution failed — falling back to the work item's declared window (if any)",
+				"execution", s.id, "reason", s.windowHint.Reason)
 		} else {
-			s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":context_zero"}
+			found := false
+			for i := range models {
+				if models[i].ID != s.identity.Model {
+					continue
+				}
+				m := models[i]
+				s.windowModel = &m
+				found = true
+				if m.Context > 0 {
+					s.windowHint = ContextWindowHint{Tokens: m.Context, Ok: true, Reason: "live"}
+				} else {
+					s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":context_zero"}
+				}
+				break
+			}
+			if !found {
+				s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":model_not_found"}
+			}
+			// FALLBACK (work-item parity): when the live resolution has no
+			// usable window but the work item declared one, use it — an
+			// operator-set window is better than a permanently disarmed
+			// trigger. The reason string records the provenance.
+			if !s.windowHint.Ok && s.contextWindowFallback > 0 {
+				s.windowHint = ContextWindowHint{Tokens: s.contextWindowFallback, Ok: true, Reason: "manifest_fallback:" + s.windowHint.Reason}
+				s.log.Info("native session: using work item's declared context window (live hint unavailable)",
+					"execution", s.id, "window", s.contextWindowFallback, "live_reason", s.windowHint.Reason)
+			}
 		}
-		return s.windowModel, s.windowHint
+	} else {
+		s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":provider_unset"}
+		// Same fallback applies when no provider is bound (tests).
+		if !s.windowHint.Ok && s.contextWindowFallback > 0 {
+			s.windowHint = ContextWindowHint{Tokens: s.contextWindowFallback, Ok: true, Reason: "manifest_fallback:" + s.windowHint.Reason}
+		}
 	}
-	s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":model_not_found"}
-	return nil, s.windowHint
+	return s.windowModel, s.windowHint
 }
 
 // resolveContextWindow returns the live context-window hint (cached once

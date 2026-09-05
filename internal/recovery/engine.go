@@ -962,12 +962,23 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			// the dead session's transcript back into it. Written beside
 			// _recovery_summary so the scheduler's single recoverySeedFor
 			// predicate reads them all from the same result JSON.
+			// _recovery_worker_version + _recovery_adapter pin the exact
+			// version/adapter the dead execution ran on: same worker ID
+			// with a different version may resolve a different adapter
+			// (e.g. v3 opencode vs v4 orchicon), and the dispatch gate
+			// must fail fast instead of resuming cross-adapter.
 			merged["_recovery_execution_id"] = rec.FailedExecutionID
 			failedWorkerID := ""
+			failedWorkerVersion := 0
+			failedAdapter := ""
 			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 				failedWorkerID = failedExec.WorkerID
+				failedWorkerVersion = failedExec.WorkerVersion
+				failedAdapter = adapterRef(failedExec)
 			}
 			merged["_recovery_worker_id"] = failedWorkerID
+			merged["_recovery_worker_version"] = failedWorkerVersion
+			merged["_recovery_adapter"] = failedAdapter
 			mergedJSON, _ := json.Marshal(merged)
 			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
 				Result: &mergedJSON,
@@ -984,12 +995,18 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				if rec.Summary != "" {
 					wiResults["_recovery_summary"] = rec.Summary
 				}
-				wiResults["_recovery_execution_id"] = rec.FailedExecutionID
-				failedWorkerID := ""
-				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
-					failedWorkerID = failedExec.WorkerID
-				}
-				wiResults["_recovery_worker_id"] = failedWorkerID
+			wiResults["_recovery_execution_id"] = rec.FailedExecutionID
+			failedWorkerID := ""
+			failedWorkerVersion := 0
+			failedAdapter := ""
+			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+				failedWorkerID = failedExec.WorkerID
+				failedWorkerVersion = failedExec.WorkerVersion
+				failedAdapter = adapterRef(failedExec)
+			}
+			wiResults["_recovery_worker_id"] = failedWorkerID
+			wiResults["_recovery_worker_version"] = failedWorkerVersion
+			wiResults["_recovery_adapter"] = failedAdapter
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),
@@ -1100,19 +1117,26 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	if err != nil {
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
+	// Spend comes from the usage-records sum (the worker_executions row
+	// columns are write-never and always read zero); fall back to the row
+	// on query failure so capture never fails for telemetry.
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	snapshot := map[string]any{
 		"execution_id":   exec.ID,
 		"status":         exec.Status,
 		"health_state":   exec.HealthState,
-		"token_usage":    exec.TokenUsage,
-		"cost_usd":       exec.CostUSD,
+		"token_usage":    tokens,
+		"cost_usd":       cost,
 		"worker_id":      exec.WorkerID,
 		"worker_version": exec.WorkerVersion,
 		"started_at":     exec.StartedAt,
 		"ended_at":       exec.EndedAt,
 	}
 	result, _ := json.Marshal(snapshot)
-	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", exec.TokenUsage, "cost", exec.CostUSD)
+	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", tokens, "cost", cost)
 	return result, nil
 }
 
@@ -1126,8 +1150,13 @@ func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID stri
 	if err != nil {
 		return nil, fmt.Errorf("get execution: %w", err)
 	}
+	// Same usage-records source as capture (row columns always read zero).
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	summary := fmt.Sprintf("Execution %s failed after %d tokens ($%.4f). Worker %s v%d. Resuming from captured state.",
-		exec.ID, exec.TokenUsage, exec.CostUSD, exec.WorkerID, exec.WorkerVersion)
+		exec.ID, tokens, cost, exec.WorkerID, exec.WorkerVersion)
 	// Persist the summary on the recovery + refresh rec.Version.
 	updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Summary: &summary,

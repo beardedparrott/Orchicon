@@ -142,6 +142,7 @@ func (s *Service) GetExecution(ctx context.Context, req *connect.Request[apiv1.G
 	}
 	p := rowToProto(e)
 	s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+	s.enrichUsageTotals(ctx, ttx.Tx, tenantID, p, e.ID)
 	return connect.NewResponse(&apiv1.GetExecutionResponse{Execution: p}), nil
 }
 
@@ -186,6 +187,7 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	for _, e := range execs {
 		p := rowToProto(e)
 		s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+		s.enrichUsageTotals(ctx, ttx.Tx, tenantID, p, e.ID)
 		resp.Executions = append(resp.Executions, p)
 	}
 	if len(execs) > 0 {
@@ -1033,6 +1035,26 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 		p.PrState = *e.PrState
 	}
 	return p
+}
+
+// enrichUsageTotals fills the execution's tokenUsage/costUsd from the
+// usage-records sum (the AI Gateway dual-write source of truth). The
+// worker_executions row columns are write-never (always zero), so without
+// this every API consumer — including Ask Orchicon agents — reports 0
+// tokens for executions the detail card correctly shows spend for.
+// Best-effort: a query failure leaves the row values rather than failing
+// the whole read.
+func (s *Service) enrichUsageTotals(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkerExecution, executionID string) {
+	if p == nil || executionID == "" {
+		return
+	}
+	tokens, cost, err := db.SumUsageForExecution(ctx, tx, tenantID, executionID)
+	if err != nil {
+		s.log.Warn("usage totals unavailable, leaving row values", "execution", executionID, "error", err)
+		return
+	}
+	p.TokenUsage = tokens
+	p.CostUsd = cost
 }
 
 // enrichSystemPrompt resolves the ACTUAL system prompt the execution was
