@@ -5,8 +5,10 @@
 // with all zeroes looks broken).
 //
 // Data sources (all already on the page — no extra fetches):
-//   - exec.{status, healthState, tokenUsage, costUsd, workerId, ...}
-//     — the WorkerExecution row, polled every 3s
+//   - exec.{status, healthState, workerId, ...} — the WorkerExecution
+//     row, polled every 3s. NOTE: exec.tokenUsage/costUsd are served from
+//     the usage-records sum (the row columns are write-never) — usage[]
+//     below is still the source for the bucket breakdown.
 //   - events[] — the live StreamExecutionEvents stream
 //   - usage[]  — usage_records via useGetUsage({ executionId }),
 //     for prompt/completion/cache breakdown when the AI gateway
@@ -317,11 +319,12 @@ export function ExecutionContextSidebar({
         )
       : 0;
 
-  // Working set is the PEAK FRESH single-step token count. Falls back to
-  // exec.tokenUsage when no usage records exist (a legacy single number).
-  const totalTokens = usageBreakdown.workingSet || Number(exec.tokenUsage) || 0;
-  const cost =
-    usageBreakdown.cost > 0 ? usageBreakdown.cost : Number(exec.costUsd);
+  // Working set is the PEAK FRESH single-step token count, computed from
+  // usage_records (the source of truth). The worker_executions row columns
+  // are write-never and always read zero, so there is no row fallback —
+  // no records means no spend to show.
+  const totalTokens = usageBreakdown.workingSet || 0;
+  const cost = usageBreakdown.cost > 0 ? usageBreakdown.cost : 0;
   // The % bar only exists when the RESOLVED context window is known. When
   // it isn't, we show the working set with a "window unknown" label instead
   // of a fabricated percentage.

@@ -70,6 +70,53 @@ func TestGetWorkflowRunCostsWorkItemName(t *testing.T) {
 	}
 }
 
+// TestSumUsageForExecution verifies the per-execution usage-record sum
+// that now backs every per-execution token/cost figure (the
+// worker_executions row columns are write-never). Guarded by
+// ORCHICON_TEST_DSN like the seed tests.
+func TestSumUsageForExecution(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed cost test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	const tenant = "tnt_dev"
+	const workflowID = "workflow-cost-test"
+	seedCostData(t, pool, tenant, workflowID)
+
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// exec-cost-1 has a single 150-token / $0.0015 record.
+	tokens, cost, err := db.SumUsageForExecution(ctx, ttx.Tx, tenant, "exec-cost-1")
+	if err != nil {
+		t.Fatalf("SumUsageForExecution: %v", err)
+	}
+	if tokens != 150 || cost != 0.0015 {
+		t.Errorf("exec-cost-1: got %d tokens $%f, want 150 $0.0015", tokens, cost)
+	}
+	// Unknown execution: zero sum, no error (consumers fall back cleanly).
+	tokens, cost, err = db.SumUsageForExecution(ctx, ttx.Tx, tenant, "exec-cost-missing")
+	if err != nil {
+		t.Fatalf("SumUsageForExecution missing: %v", err)
+	}
+	if tokens != 0 || cost != 0 {
+		t.Errorf("missing execution: got %d tokens $%f, want zeros", tokens, cost)
+	}
+}
+
 // seedCostData inserts the minimal row set the run-cost query joins
 // (projects → workflows → work_items → workflow_runs → worker_executions →
 // usage_records) for two bound runs and one one-shot run, all scoped to the

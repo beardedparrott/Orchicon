@@ -1100,19 +1100,26 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	if err != nil {
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
+	// Spend comes from the usage-records sum (the worker_executions row
+	// columns are write-never and always read zero); fall back to the row
+	// on query failure so capture never fails for telemetry.
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	snapshot := map[string]any{
 		"execution_id":   exec.ID,
 		"status":         exec.Status,
 		"health_state":   exec.HealthState,
-		"token_usage":    exec.TokenUsage,
-		"cost_usd":       exec.CostUSD,
+		"token_usage":    tokens,
+		"cost_usd":       cost,
 		"worker_id":      exec.WorkerID,
 		"worker_version": exec.WorkerVersion,
 		"started_at":     exec.StartedAt,
 		"ended_at":       exec.EndedAt,
 	}
 	result, _ := json.Marshal(snapshot)
-	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", exec.TokenUsage, "cost", exec.CostUSD)
+	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", tokens, "cost", cost)
 	return result, nil
 }
 
@@ -1126,8 +1133,13 @@ func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID stri
 	if err != nil {
 		return nil, fmt.Errorf("get execution: %w", err)
 	}
+	// Same usage-records source as capture (row columns always read zero).
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	summary := fmt.Sprintf("Execution %s failed after %d tokens ($%.4f). Worker %s v%d. Resuming from captured state.",
-		exec.ID, exec.TokenUsage, exec.CostUSD, exec.WorkerID, exec.WorkerVersion)
+		exec.ID, tokens, cost, exec.WorkerID, exec.WorkerVersion)
 	// Persist the summary on the recovery + refresh rec.Version.
 	updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Summary: &summary,
