@@ -124,7 +124,12 @@ func TestQABridgeStartNoProjectDirFails(t *testing.T) {
 // refused (the old code compared prior.TenantID to itself).
 func TestQAContinueSessionRefusesCrossTenant(t *testing.T) {
 	dir := t.TempDir()
-	b := NewBridge(nil, dir, nil)
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{TextDelta{Text: "follow-up reply"}}, finish: StopStop, usage: Usage{InputTokens: 3, OutputTokens: 8}, bare: true},
+	}}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return prov, nil
+	}), dir, nil)
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior_tenant.jsonl")
 	writeIdentityTranscript(t, path, Identity{
 		ExecutionID: "exec_prior_tenant",
@@ -136,18 +141,27 @@ func TestQAContinueSessionRefusesCrossTenant(t *testing.T) {
 		SessionID:   "exec_prior_tenant",
 		ExecutionID: "exec_now",
 		TenantID:    "tnt_B", // different tenant → must refuse
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		WorkerID:    "worker_test",
+		Message:     "Are you done?",
 	})
 	if err == nil {
 		t.Fatal("cross-tenant continuation must be refused")
 	}
-	// Same tenant passes.
-	_, err = b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+	// Same tenant passes (fire-and-forget → reply "", error nil).
+	reply, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
 		SessionID:   "exec_prior_tenant",
 		ExecutionID: "exec_now",
 		TenantID:    "tnt_A",
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		WorkerID:    "worker_test",
+		Message:     "Are you done?",
 	})
 	if err != nil {
 		t.Fatalf("same-tenant continuation refused: %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("same-tenant reply = %q, want empty (async follow-up)", reply)
 	}
 }
 

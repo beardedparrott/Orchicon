@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -338,11 +339,16 @@ func (b *NativeBridge) SendExecutionMessage(ctx context.Context, execID, message
 	return nil
 }
 
-// ContinueSession implements scheduler.SessionContinuer: replay the
-// prior session's transcript and continue the loop in the same session.
-// The identity block must match (same worker) — a mismatched worker is
-// refused (identity isolation). This is the sequence-continuation flag
-// path (opt-in, default off — the caller sets ContinueFromSessionID).
+// ContinueSession implements scheduler.SessionContinuer: run a one-shot
+// follow-up question against a worker's session IN PLACE (no new
+// execution/work item). The user's question is recorded into the durable
+// transcript synchronously (so the session chat shows it immediately) and
+// the model runs ONE text-only turn; the reply is then collected
+// ASYNCHRONOUSLY on a request-independent context and appended to the
+// transcript when it lands. The RPC returns immediately — a long model
+// turn can never block the browser connection nor discard the reply on
+// client disconnect. The identity block must match (same worker) — a
+// mismatched worker/tenant is refused (identity isolation).
 func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
 	if opts.SessionID == "" {
 		return "", fmt.Errorf("orchicon bridge: continue requires a prior session id")
@@ -362,21 +368,98 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		return "", fmt.Errorf("orchicon bridge: load prior transcript: %w", err)
 	}
 	prior := identityFromReplay(evs)
-	// Identity isolation by construction: a continuation must belong to
-	// the same worker+tenant as the prior session (sequence chains are
-	// same-worker by definition). Cross-worker resumption is refused —
-	// no worker ever sees another worker's transcript. When the caller
-	// does not carry a tenant (bridge-level tests), the tenant check is
-	// skipped rather than refused.
+	// Identity isolation by construction: a follow-up must belong to the
+	// same worker+tenant as the original session. Cross-worker /
+	// cross-tenant resumption is refused — no worker ever sees another
+	// worker's transcript. When the caller does not carry a tenant
+	// (bridge-level tests), the tenant check is skipped rather than
+	// refused.
 	if prior.WorkerID != "" && opts.ExecutionID != "" {
 		if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
 			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
+		}
+		if prior.WorkerID != "" && opts.WorkerID != "" && prior.WorkerID != opts.WorkerID {
+			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to worker %q, this follow-up is worker %q (identity isolation)", prior.WorkerID, opts.WorkerID)
 		}
 	}
 	if prior.WorkerID == "" {
 		return "", fmt.Errorf("orchicon bridge: prior session %q has no identity block — cannot verify continuation", opts.SessionID)
 	}
-	return fmt.Sprintf("session %q resumed (identity verified: worker %q)", opts.SessionID, prior.WorkerName), nil
+
+	// Resolve the provider + model for the one-shot follow-up turn. The
+	// model ref shape is orchicon/<provider>/<model> (ADR-0003); the
+	// provider segment 2 is the registry key (same split as emitTurnUsage).
+	providerID, model, ok := adapter.SplitForServe(opts.ModelRef)
+	if !ok || providerID == "" || model == "" {
+		return "", fmt.Errorf("orchicon bridge: follow-up model ref %q has no provider/model", opts.ModelRef)
+	}
+	if b.resolver == nil {
+		// Test seam: a pre-resolved provider is injected via the resolver;
+		// a nil resolver means no provider can be resolved for a turn.
+		return "", fmt.Errorf("orchicon bridge: no provider resolver for the follow-up (model ref %q)", opts.ModelRef)
+	}
+	prov, err := b.resolver.Get(ctx, opts.TenantID, providerID)
+	if err != nil {
+		return "", fmt.Errorf("orchicon bridge: resolve follow-up provider: %w", err)
+	}
+
+	// Record the user's question into the durable transcript UP FRONT so
+	// the session chat shows the bubble immediately while the model works
+	// — the reply is written separately once it lands (opencode parity).
+	// seq = opts.StartSeq (the caller passes the next seq after the
+	// original run); a fresh/legacy caller with seq<=0 defaults to 1.
+	seq := opts.StartSeq
+	if seq <= 0 {
+		seq = 1
+	}
+	nextSeq := seq + 1
+	if b.sessionStore != nil {
+		parts := []db.SessionPart{
+			{
+				ExecutionID: opts.ExecutionID,
+				TenantID:    opts.TenantID,
+				Seq:         seq,
+				Kind:        db.SessionPartUserMessage,
+				Payload:     db.MarshalPartPayload(map[string]any{"text": opts.Message, "source": "follow_up"}),
+			},
+		}
+		if err := b.sessionStore(ctx, opts.ExecutionID, opts.TenantID, parts); err != nil {
+			b.log.Warn("orchicon: follow-up question write failed", "execution", opts.ExecutionID, "error", err)
+		}
+	}
+
+	// Fire-and-forget the reply collection. The model turn runs on a
+	// context deliberately DETACHED from the HTTP request (WithoutCancel
+	// strips the request's cancellation/deadline while preserving values),
+	// so a browser disconnect or the RPC returning can neither cancel the
+	// turn nor lose the reply. Bounded by the follow-up reply window. The
+	// collected text is written to the durable transcript in the same
+	// goroutine. A failed collection logs a warning and leaves the
+	// question part — the RPC NEVER fails after the question is recorded.
+	go func() {
+		detached := context.WithoutCancel(ctx)
+		ctxT, cancel := context.WithTimeout(detached, followUpReplyWindow())
+		defer cancel()
+		reply, err := collectFollowUp(ctxT, prov, model, opts)
+		if err != nil {
+			b.log.Warn("orchicon: follow-up reply collection failed", "execution", opts.ExecutionID, "error", err)
+			return
+		}
+		if b.sessionStore == nil || reply == "" {
+			return
+		}
+		_ = b.sessionStore(detached, opts.ExecutionID, opts.TenantID, []db.SessionPart{
+			{
+				ExecutionID: opts.ExecutionID,
+				TenantID:    opts.TenantID,
+				Seq:         nextSeq,
+				Kind:        db.SessionPartText,
+				Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"type": "text", "text": reply}}),
+			},
+		})
+	}()
+
+	return "", nil
 }
 
 // AbortExecution implements scheduler.Aborter: cancel the session's run
@@ -956,6 +1039,88 @@ var jsonUnmarshal = func(b []byte, v any) error {
 // this resolves it from the replay identity.
 func tenantOf(sessionID string, id Identity) string {
 	return id.TenantID
+}
+
+// followUpReplyWindow bounds how long a follow-up waits for the model's
+// reply (opencode parity). The follow-up runs asynchronously (the RPC
+// returns at once), so the window can be generous enough to cover a long
+// answer without ever blocking the UI. Env-overridable via
+// ORCHICON_FOLLOWUP_REPLY_WINDOW.
+func followUpReplyWindow() time.Duration {
+	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
+}
+
+// collectFollowUp runs ONE text-only provider turn for a follow-up
+// question and returns the accumulated assistant text. It is a pure text
+// accumulator: it never touches the session's callbacks, output, or
+// JSONL transcript (a follow-up is a fire-and-forget one-shot against a
+// TERMINAL execution, mirrored purely to the DB session parts). The
+// system prompt is opts.SystemPrompt (the composed follow-up prompt the
+// execution service built); the question is the user message, seeded with
+// opts.Context (the bounded durable-transcript render) as context. No
+// MCP/host tools are wired — a follow-up is deliberately text-only.
+func collectFollowUp(ctx context.Context, prov Provider, model string, opts scheduler.ContinueSessionOpts) (string, error) {
+	if prov == nil {
+		return "", errors.New("orchicon: follow-up has no provider")
+	}
+	sys := opts.SystemPrompt
+	if sys == "" {
+		sys = followUpDefaultPrompt()
+	}
+	userMsg := opts.Message
+	if opts.Context != "" {
+		userMsg = opts.Context + "\n\n# Follow-up question\n\n" + opts.Message
+	}
+	stream, err := prov.StreamTurn(ctx, TurnRequest{
+		Model: model,
+		System: []SystemBlock{
+			{Text: sys, Cache: true},
+		},
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{{Text: &userMsg}}},
+		},
+		MaxTokens:    maxOutputTokens(),
+		CacheControl: CacheControlSystemAndTools,
+	})
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+	return drainText(ctx, stream)
+}
+
+// followerDefaultPrompt is the belt-and-suspenders fallback when a
+// caller does not supply a per-turn system prompt. The execution service
+// ALWAYS composes one (composeFollowUpPrompt), so this is never used in
+// production — it only bounds against a bare bridge-level test caller.
+func followUpDefaultPrompt() string {
+	return "You are answering a follow-up question from the user about the work you just completed. Be concise and directly address the question. If the requested change is substantial, describe the concrete plan before making it."
+}
+
+// drainText accumulates TextDelta text from a turn stream until the
+// Finish event / stream end / error. It is a pure text accumulator — it
+// never injects a decision marker or synthesizes output.
+func drainText(ctx context.Context, stream TurnStream) (string, error) {
+	if stream == nil {
+		return "", errors.New("orchicon: nil turn stream")
+	}
+	var sb strings.Builder
+	for {
+		evt, ok, err := stream.Next(ctx)
+		if err != nil {
+			return sb.String(), err
+		}
+		if !ok {
+			return sb.String(), nil
+		}
+		if td, isText := evt.(TextDelta); isText {
+			sb.WriteString(td.Text)
+			continue
+		}
+		if _, isFinish := evt.(Finish); isFinish {
+			return sb.String(), nil
+		}
+	}
 }
 
 var _ = time.Second // keep import if unused in some build tag

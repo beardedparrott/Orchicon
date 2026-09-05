@@ -1269,6 +1269,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		SessionID:     sessionID,
 		ServeURL:      serveURL,
 		ServePassword: servePassword,
+		WorkerID:      exec.WorkerID,
 		StartSeq:      startSeq,
 	})
 	if err != nil {

@@ -245,6 +245,12 @@ type ContinueSessionOpts struct {
 	SessionID     string
 	ServeURL      string
 	ServePassword string
+	// WorkerID is the caller's execution worker. The bridge uses it to
+	// enforce identity isolation by comparing it against the prior
+	// transcript's identity block (a follow-up must belong to the same
+	// worker as the original run — no worker ever sees another worker's
+	// transcript). Empty (bridge-level tests) skips the worker check.
+	WorkerID string
 	// StartSeq is the next transcript seq to use (the last existing part's
 	// seq + 1), so the follow-up entries append after the original run.
 	StartSeq int64
