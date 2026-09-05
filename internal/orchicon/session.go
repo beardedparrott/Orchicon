@@ -92,10 +92,6 @@ type Session struct {
 	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
 	// instead of recording a hollow success.
 	completionProbesSent int
-	// maxStepsVal is the resolved per-execution turn budget
-	// (budgets.max_steps → ORCHICON_SESSION_MAX_STEPS → 25; loop.go).
-	// Resolved once at construction — constant within a run.
-	maxStepsVal int
 	// lengthContinuationsSent counts the output-cap continuation turns
 	// (StopLength recovery, loop.go). Bounded by
 	// lengthContinuationMaxTurns — a session that keeps hitting the cap
@@ -137,7 +133,9 @@ type Session struct {
 	cs compactState
 	// startedAt anchors the wall-clock dimension of the budget ladder.
 	startedAt time.Time
-	// toolUses counts executed tool calls (live, for the tools dimension).
+	// toolUses counts emitted tool calls (live, for the budget ladder's
+	// tool_call_count dimension — counted once per call at emission in
+	// drain, before the call executes).
 	toolUses int
 	// window cache: resolved once per session (never per-turn probed). The
 	// resolved ModelInfo (live ListModels result) carries the context hint
@@ -305,9 +303,6 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		s.cs.budget = opencode.ParseBudgetLadder(cfg.Manifest.Budgets)
 		s.cs.spend = opencode.NewBudgetSpend()
 	}
-	// Resolve the turn budget from the same merged payload (worker
-	// budgets.max_steps over tenant defaults, then env, then 25).
-	s.maxStepsVal = maxStepsFromBudgets(cfg.Manifest.Budgets)
 	// Progress monitor (opencode parity): stall windows from the manifest
 	// (tenant settings) with env fallback. Started by Run.
 	s.pm = newProgressMonitor(cfg.ExecRow.ID, stallWindowsFromManifest(

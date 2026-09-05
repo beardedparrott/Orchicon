@@ -43,12 +43,12 @@ session; work autonomously to completion and report via the ORCHICON
 WORKER SUMMARY contract given above.
 
 ### Tool discipline
-Turn economy: every tool round-trip costs one turn against your
-max_steps budget — 30 file operations as 30 single calls dies at the
-cap, as one batched turn each it costs a handful. If you need 2+ files
-or 2+ searches, you MUST use batch_read / batch_grep / batch_write so
-they ride ONE tool call, not N calls over N turns (batch_read with
-["a.go", "b.go"], never two read calls).
+Turn economy: every tool round-trip costs a turn and spends your
+tool-call budget — 30 file operations as 30 single calls burns both,
+batched they cost a handful. If you need 2+ files or 2+ searches, you
+MUST use batch_read / batch_grep / batch_write so they ride ONE tool
+call, not N calls over N turns (batch_read with ["a.go", "b.go"],
+never two read calls).
 Never re-read a file whose content is already in your context — every
 extra call re-sends the whole conversation. Prefer one turn carrying
 several calls over several turns of one call each.

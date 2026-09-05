@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
 func TestParityMatrix(t *testing.T) {
@@ -193,14 +195,14 @@ func TestParityMatrix(t *testing.T) {
 		}
 	})
 
-	// recovery round trip: a FATAL stall surfaces OnStall(fatal) + OnResult
-	// failure; a recovered execution (new session over the same durable
-	// transcript) replays history and continues to success.
+	// recovery round trip: a TERMINAL budget abort surfaces OnResult
+	// failure with no stall; a recovered execution (new session over the
+	// same durable transcript) replays history and continues to success.
 	t.Run("recovery_round_trip", func(t *testing.T) {
-		t.Setenv("ORCHICON_SESSION_MAX_STEPS", "3")
 		dir := t.TempDir()
 
-		// Phase 1 — drive the session into the max-steps FATAL stall.
+		// Phase 1 — drive the session into the tool-call-budget abort
+		// (the ladder's terminal tier, replacing the old step guillotine).
 		toolsA := newMockTools()
 		toolsA.results["noop"] = "ok"
 		var turns []scriptedTurn
@@ -221,19 +223,21 @@ func TestParityMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession: %v", err)
 		}
+		sA.cs.budget = opencode.ParseBudgetLadder([]byte(`{"tool_call_count":3}`))
+		sA.cs.spend = opencode.NewBudgetSpend()
 		cbA := &recordedCallback{}
 		if err := sA.Run(context.Background(), cbA); err != nil {
 			t.Fatalf("phase1 Run: %v", err)
 		}
 		_, _, _, _, stalls, stallFatal, resultsA := cbA.snapshot()
-		if len(resultsA) != 1 || resultsA[0].succeeded || !strings.Contains(resultsA[0].errMsg, "max_steps") {
-			t.Errorf("phase1 OnResult = %+v, want failure max_steps", resultsA)
+		if len(resultsA) != 1 || resultsA[0].succeeded || !strings.Contains(resultsA[0].errMsg, "budget_abort:tool_call_count") {
+			t.Errorf("phase1 OnResult = %+v, want failure budget_abort:tool_call_count", resultsA)
 		}
-		if len(stalls) != 1 || len(stallFatal) != 1 || !stallFatal[0] {
-			t.Errorf("phase1 OnStall = %v (fatal=%v), want one FATAL stall", stalls, stallFatal)
+		if len(stalls) != 0 || len(stallFatal) != 0 {
+			t.Errorf("phase1 OnStall = %v (fatal=%v), want none (ladder abort is terminal-direct)", stalls, stallFatal)
 		}
 		if provA.requestCount() != 3 {
-			t.Errorf("phase1 provider turns = %d, want 3 (max steps)", provA.requestCount())
+			t.Errorf("phase1 provider turns = %d, want 3 (abort on the 3rd tool call)", provA.requestCount())
 		}
 
 		// Phase 2 — recovery resume: a new execution over the SAME durable

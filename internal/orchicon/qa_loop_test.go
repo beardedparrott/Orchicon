@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -340,9 +341,10 @@ func TestQANoProgressGuardNeedsRepeat(t *testing.T) {
 	}
 }
 
-// AC: max-steps guard fires and surfaces.
-func TestQAMaxStepsGuard(t *testing.T) {
-	t.Setenv("ORCHICON_SESSION_MAX_STEPS", "3")
+// AC: runaway tool use is stopped by the tool-call budget ladder (not a
+// step guillotine): the tool_call_count abort tier fails the session with
+// budget_abort:tool_call_count, terminal-direct with no stall.
+func TestQAToolsBudgetAbort(t *testing.T) {
 	tools := newMockTools()
 	tools.results["noop"] = "ok"
 	var turns []scriptedTurn
@@ -354,19 +356,21 @@ func TestQAMaxStepsGuard(t *testing.T) {
 	}
 	prov := &mockProvider{turns: turns}
 	s := qaSession(t, prov, tools)
+	s.cs.budget = opencode.ParseBudgetLadder([]byte(`{"tool_call_count":3}`))
+	s.cs.spend = opencode.NewBudgetSpend()
 	cb := &recordedCallback{}
 	if err := s.Run(context.Background(), cb); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	_, _, _, _, stalls, _, results := cb.snapshot()
 	if prov.requestCount() != 3 {
-		t.Errorf("provider turns = %d, want 3 (max steps)", prov.requestCount())
+		t.Errorf("provider turns = %d, want 3 (abort on the 3rd tool call)", prov.requestCount())
 	}
-	if len(results) != 1 || results[0].succeeded || !strings.Contains(results[0].errMsg, "max_steps") {
-		t.Errorf("OnResult = %+v, want failure max_steps", results)
+	if len(results) != 1 || results[0].succeeded || !strings.Contains(results[0].errMsg, "budget_abort:tool_call_count") {
+		t.Errorf("OnResult = %+v, want failure budget_abort:tool_call_count", results)
 	}
-	if len(stalls) != 1 {
-		t.Errorf("stalls = %v, want 1 (max steps surfaced via OnStall)", stalls)
+	if len(stalls) != 0 {
+		t.Errorf("stalls = %v, want none (ladder abort is terminal-direct)", stalls)
 	}
 }
 

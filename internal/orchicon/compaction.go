@@ -198,21 +198,48 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 	// Escalate/final tiers compact when the tier AND dimension permit it;
 	// abort is terminal and is NOT a compaction — it returns the terminal
 	// reason and the caller fails the session (opencode budget_abort
-	// parity). Fires at most once per reached tier.
-	for _, dim := range []string{"tokens", "cost_usd"} {
-		if !s.cs.budget.CompactsDim(dim) && !s.cs.budget.CompactsAt("abort") {
-			continue
-		}
+	// parity). Fires at most once per reached tier. The tool_call_count
+	// dimension rides the SAME ladder as opencode (evaluated per tool
+	// round-trip via s.toolUses): tier crossings latch without compacting
+	// unless the operator opted the dimension into compact_dims — a
+	// tool-budget warning must never trigger a lossy collapse that would
+	// force yet more tool calls — while the abort tier fails the session
+	// with budget_abort:tool_call_count. Worker budget_overrides and
+	// tenant default_budget_overrides are both first-class keys
+	// end-to-end (typed ladder column, BudgetJSON emit, mergeBudgets
+	// layering); unset tool_call_count falls back to the ladder default
+	// (100), explicit <= 0 disables the gate.
+	for _, dim := range []string{"tokens", "cost_usd", "tool_call_count"} {
 		frac := s.cs.spend.Fraction(s.cs.budget, dim, time.Since(s.startedAt), s.toolUses)
 		if frac < 0 {
-			continue
+			continue // no effective limit on this dimension
 		}
-		// Abort tier (checked FIRST — terminal): once crossed, the
-		// session ends; the accumulator is cumulative so the breach is
-		// latched by the fraction itself.
+		// Abort tier (checked FIRST — terminal and independent of the
+		// compaction policy): once crossed, the session ends; the
+		// accumulator is cumulative so the breach latches itself. (The
+		// old skip condition folded abort into the compaction policy via
+		// CompactsAt("abort"), which is always false — dims outside
+		// compact_dims silently lost their abort. Abort is evaluated
+		// unconditionally now.)
 		lvl := s.cs.budget.LevelName(dim, frac)
 		if lvl == "abort" {
 			return "budget_abort:" + dim
+		}
+		if !s.cs.budget.CompactsDim(dim) {
+			// Opted out of compaction (tool_call_count by default):
+			// latch warn-tier crossings with a one-shot warn log and
+			// keep going — never collapse context on tool pressure
+			// (opencode parity: a tool-budget warning must not force
+			// yet more tool calls).
+			if lvl == "warn" || lvl == "escalate" || lvl == "final" {
+				key := dim + ":" + lvl
+				if s.cs.lastBudgetTier != key {
+					s.cs.lastBudgetTier = key
+					s.log.Warn("budget tier crossed without compaction (dimension opted out of compact_dims)",
+						"execution", s.id, "dimension", dim, "tier", lvl)
+				}
+			}
+			continue
 		}
 		for _, tier := range []string{"escalate", "final"} {
 			if !s.cs.budget.CompactsAt(tier) {

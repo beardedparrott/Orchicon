@@ -19,19 +19,6 @@ import (
 // Loop tuning constants (env-tunable, matching the opencode parity
 // surface; defaults below).
 const (
-	// maxStepsDefault bounds the turn loop per execution when neither the
-	// work item's budgets.max_steps nor ORCHICON_SESSION_MAX_STEPS sets
-	// one. (The opencode simulation path uses a hardcoded 3.)
-	//
-	// 100, not 25: one loop iteration is one MODEL turn, and a tool-using
-	// engineer spends a turn per tool round-trip — 25 kills honest
-	// tool-heavy work (observed: two SSE runs died at 25 doing nothing
-	// but singular reads). Genuine loops are caught far earlier by the
-	// progress monitor (repetition N-in-window, no-progress window), and
-	// wall-clock bounds absolute cost, so this cap is only the
-	// catastrophic backstop against pathological-but-progressing sessions.
-	// Per-work-item budgets.max_steps still overrides it.
-	maxStepsDefault = 100
 	// toolParallelism bounds the tool execution worker pool.
 	toolParallelismDefault = 4
 	// textStreamingChunkSize / Delay match opencode's emitTextChunked
@@ -65,65 +52,19 @@ func loopEnvInt(key string, def int) int {
 	return def
 }
 
-func maxSteps() int { return loopEnvInt("ORCHICON_SESSION_MAX_STEPS", maxStepsDefault) }
-
-// maxStepsFromBudgets resolves the per-execution turn budget. Precedence:
-// an explicit budgets.max_steps on the work item/worker (layered over
-// tenant defaults by the scheduler's mergeBudgets, so a worker value wins
-// per key) beats the server env ORCHICON_SESSION_MAX_STEPS, which beats
-// the 25-turn default. Non-positive or non-numeric values fall through —
-// the guard is never silently disabled by a bad key.
-//
-// Parity note: the REAL opencode path has no step cap at all (the CLI
-// runs its own loop; only the in-process simulation hardcodes 3), so this
-// guard is native-only and intentionally stricter. The budgets key makes
-// it per-execution configurable; a tenant-level max_steps would need a
-// typed budget-ladder column (ApplyBudgetJSON drops unknown keys), so
-// tenant defaults cannot set it today.
-func maxStepsFromBudgets(budgets []byte) int {
-	if len(budgets) > 0 {
-		var m map[string]any
-		if json.Unmarshal(budgets, &m) == nil {
-			if v, ok := m["max_steps"]; ok {
-				if f, ok := jsonNumber(v); ok && f > 0 {
-					return int(f)
-				}
-			}
-		}
-	}
-	return maxSteps()
-}
-
-// turnBudget returns the session's resolved turn budget. A zero
-// maxStepsVal (a Session built outside NewSession, e.g. older call sites)
-// falls back to env/default rather than failing on step one.
-func (s *Session) turnBudget() int {
-	if s.maxStepsVal > 0 {
-		return s.maxStepsVal
-	}
-	return maxSteps()
-}
-
-// jsonNumber coerces a decoded JSON number (float64 from encoding/json,
-// json.Number, or a numeric string) to float64.
-func jsonNumber(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case json.Number:
-		if f, err := n.Float64(); err == nil {
-			return f, true
-		}
-	case string:
-		var f float64
-		if _, err := fmt.Sscanf(n, "%f", &f); err == nil {
-			return f, true
-		}
-	}
-	return 0, false
-}
 func toolParallelism() int {
 	return loopEnvInt("ORCHICON_SESSION_TOOL_PARALLELISM", toolParallelismDefault)
+}
+
+// countToolUse records one emitted tool call for the budget ladder's
+// tool_call_count dimension. Counting happens in drain at emission
+// (opencode evtToolUse parity), never at execution: every path — native
+// fast-path, registry pool, concurrent workers — funnels through drain,
+// so this is the single counting point (mutex-guarded for safety).
+func (s *Session) countToolUse() {
+	s.noteMu.Lock()
+	s.toolUses++
+	s.noteMu.Unlock()
 }
 
 // maxOutputTokensEnv / defaultMaxOutputTokens tune the per-turn output cap
@@ -286,7 +227,8 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 	defer s.markNudgeFinished()
 	defer s.closeDoneCh()
 
-	// Turn loop bounded by maxSteps.
+	// Turn loop — deliberately uncapped (no terminal turn cap; see NOTE
+	// below for why the old max_steps guillotine is gone).
 	steps := 0
 	var lastUsage Usage
 	_ = lastUsage // token-growth telemetry (monitor feeds via observeStepFinish)
@@ -315,28 +257,15 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		}
 
 		steps++
-		if steps > s.turnBudget() {
-			// Turn-budget exhaustion is its OWN failure shape — the time-
-			// based no_progress monitor owns "no progress within the
-			// window". Mislabeled reasons put a step cap in the fatal
-			// prefix class and mislead the recovery evidence.
-			_ = s.markState(ctx, "failed")
-			reason := fmt.Sprintf("stalled:max_steps:turn budget of %d exhausted", s.turnBudget())
-			callbacks.OnStall(ctx, s.id, reason, true)
-			if s.fireTerminalOnce(callbacks, s.id, false, "max_steps_exceeded") {
-				s.markNudgeFinished()
-				s.closeDoneCh()
-				return nil
-			}
-			// A concurrent monitor escalation already delivered the
-			// verdict — unwind through the stall channel if it is pending.
-			select {
-			case r := <-s.stallCh:
-				_ = r
-			default:
-			}
-			return nil
-		}
+		// NOTE: there is deliberately NO terminal turn cap here. An
+		// earlier max_steps guillotine (fail the execution past N turns)
+		// punished honest tool-heavy work — 100 tool calls IS 100 turns —
+		// while genuine loops are caught far earlier by the progress
+		// monitor (repetition N-in-window, no-progress window, tool hang),
+		// tool pressure is governed by the budget ladder's tool_call_count
+		// dimension (warn tiers latch, abort tier fails the session), and
+		// wall-clock bounds absolute cost. The opencode path likewise has
+		// no step cap. steps is retained for compaction pacing below.
 
 		// Build the turn request. Two-zone system layout (ADR-0009 D2):
 		// the cached static prefix (composite + thin native layer + env
@@ -819,14 +748,20 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 				tc.ArgsJSON += e.ArgsJSONDelta
 			}
 		case ToolCallEnd:
-			// Complete: promoted to the turn's pending set.
+			// Complete: promoted to the turn's pending set and counted
+			// toward the tool_call_count budget dimension AT EMISSION
+			// (opencode evtToolUse parity) — so the ladder's abort tier
+			// fires before the over-limit call executes, not a turn
+			// later on stale counts.
 			if tc, ok := inflight[e.Index]; ok {
 				calls = append(calls, *tc)
+				s.countToolUse()
 				delete(inflight, e.Index)
 			}
 		case ToolCall:
 			// Already-complete tool call event.
 			calls = append(calls, e)
+			s.countToolUse()
 		case StreamError:
 			return text.String(), finish, calls, usage, e.Err
 		case Finish:
@@ -912,7 +847,6 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 				results[i] = toolResult{ToolCall: c, Output: out}
 			}
 			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(out))
-			s.toolUses++
 			continue
 		}
 		pending = append(pending, i)
