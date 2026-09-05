@@ -226,6 +226,15 @@ type legacyStream struct {
 	r    *sseReader
 	body io.Closer
 
+	// think splits GLM-style INLINE reasoning (the "think" tag pair in
+	// text-delta content) into ReasoningDelta events (thinksplit.go) —
+	// the same global routing every provider wire applies, so folded
+	// thinking never renders raw in the execution chat on any transport.
+	think *thinkSplitter
+	// pending queues splitter output (+ the trailing Finish) so one
+	// decoded frame can surface several events across Next calls.
+	pending []Event
+
 	stop    StopReason
 	usage   Usage
 	drained bool
@@ -241,6 +250,11 @@ func (s *legacyStream) Close() error {
 // Next yields normalized events; finish arrives only after drain.
 func (s *legacyStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, true, nil
+	}
 	if s.drained {
 		return nil, false, nil
 	}
@@ -274,7 +288,17 @@ func (s *legacyStream) Next(ctx context.Context) (Event, bool, error) {
 			if t == "" {
 				continue
 			}
-			return TextDelta{Text: t}, true, nil
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+			// inside the delta becomes ReasoningDelta, everything else
+			// passes through as TextDelta. A fully-held split-tag prefix
+			// yields no event yet — keep decoding.
+			s.think.feed(t, &s.pending)
+			if len(s.pending) > 0 {
+				ev := s.pending[0]
+				s.pending = s.pending[1:]
+				return ev, true, nil
+			}
+			continue
 		case "reasoning-delta":
 			t := ev.Delta
 			if t == "" {
@@ -317,7 +341,14 @@ func (s *legacyStream) flush() (Event, bool, error) {
 		// here; synthesizing StopStop recorded hollow successes).
 		s.stop = StopOther
 	}
-	return Finish{StopReason: s.stop, Usage: s.usage}, true, nil
+	// Drain any think-splitter holdback first so a truncated final tag
+	// cannot swallow the response tail; an unterminated think block
+	// drains to reasoning, never text.
+	s.think.drain(&s.pending)
+	s.pending = append(s.pending, Finish{StopReason: s.stop, Usage: s.usage})
+	ev := s.pending[0]
+	s.pending = s.pending[1:]
+	return ev, true, nil
 }
 
 func (s *legacyStream) fail(err error) (Event, bool, error) {

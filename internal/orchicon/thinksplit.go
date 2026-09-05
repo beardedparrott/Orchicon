@@ -17,9 +17,13 @@ import "strings"
 // holdback is re-emitted on the next delta, so worst case a chunk's text
 // arrives a few bytes later.
 //
-// Scope guard: only the openai-compat wire feeds this (llama.cpp /
-// llama-serve); the opencode route already has native reasoning fields
-// and the anthropic wire has thinking blocks — both stay untouched.
+// Scope guard: EVERY provider wire feeds content deltas through this
+// (openai-compat, ollama native, anthropic text deltas, commandcode
+// legacy) — any server that inlines chain-of-thought instead of using a
+// native reasoning field routes to ReasoningDelta here. Native reasoning
+// fields (openai reasoning_content/reasoning, anthropic thinking blocks,
+// legacy reasoning-delta) bypass the splitter untouched, as does the
+// opencode route with its native reasoning parts.
 
 // The tag literals are built by concatenation (never one verbatim literal
 // in source) so tooling that rewrites raw markup cannot corrupt them.

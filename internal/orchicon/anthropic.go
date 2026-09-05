@@ -429,11 +429,19 @@ type anthropicStream struct {
 	r    *sseReader
 	body io.Closer
 	st   anthStreamState
-	err  error
+	// think splits INLINE reasoning (the "think" tag pair inside a
+	// text_delta — some gateways inline chain-of-thought instead of using
+	// thinking blocks) into ReasoningDelta events (thinksplit.go), the
+	// same global routing every provider wire applies.
+	think *thinkSplitter
+	// pending queues splitter output (+ the trailing Finish) so one
+	// decoded frame can surface several events across Next calls.
+	pending []Event
+	err     error
 }
 
 func newAnthropicStream(body io.ReadCloser) *anthropicStream {
-	return &anthropicStream{r: newSSEReader(body), body: body, st: anthStreamState{blocks: map[int]*anthBlockAcc{}}}
+	return &anthropicStream{r: newSSEReader(body), body: body, st: anthStreamState{blocks: map[int]*anthBlockAcc{}}, think: newThinkSplitter()}
 }
 
 func (s *anthropicStream) Close() error {
@@ -446,6 +454,11 @@ func (s *anthropicStream) Close() error {
 // Next yields the next normalized event.
 func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
+	if len(s.pending) > 0 {
+		ev := s.pending[0]
+		s.pending = s.pending[1:]
+		return ev, true, nil
+	}
 	if s.st.finished {
 		return nil, false, nil
 	}
@@ -536,9 +549,20 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 			if err := json.Unmarshal(payload.Delta, &d); err != nil {
 				return s.fail(fmt.Errorf("anthropic: bad delta: %w", err))
 			}
-			switch d.Type {
-			case "text_delta":
-				return TextDelta{Text: d.Text}, true, nil
+		switch d.Type {
+		case "text_delta":
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+			// inside the delta becomes ReasoningDelta (native thinking
+			// blocks still arrive as thinking_delta below and are
+			// untouched). A fully-held split-tag prefix yields no event
+			// yet — keep decoding.
+			s.think.feed(d.Text, &s.pending)
+			if len(s.pending) > 0 {
+				ev := s.pending[0]
+				s.pending = s.pending[1:]
+				return ev, true, nil
+			}
+			continue
 			case "thinking_delta":
 				return ReasoningDelta{Text: d.Thinking}, true, nil
 			case "input_json_delta":
@@ -595,7 +619,14 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 				// The loop's success gate treats StopOther as a failure.
 				s.st.stop = StopOther
 			}
-			return Finish{StopReason: s.st.stop, Usage: s.st.usage}, true, nil
+			// Drain any think-splitter holdback first so a truncated final
+			// tag cannot swallow the response tail; an unterminated think
+			// block drains to reasoning, never text.
+			s.think.drain(&s.pending)
+			s.pending = append(s.pending, Finish{StopReason: s.st.stop, Usage: s.st.usage})
+			ev := s.pending[0]
+			s.pending = s.pending[1:]
+			return ev, true, nil
 		default:
 			continue
 		}

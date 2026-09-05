@@ -108,6 +108,15 @@ type sessionRun struct {
 	seq          int64
 	pendingParts []db.SessionPart
 
+	// thinkState demuxes folded think blocks out of completed text parts
+	// (think_demux.go): GLM-style models emit thinking INLINE wrapped in
+	// the "think" tag pair, and a completed text part carrying such a
+	// block would otherwise persist verbatim into the transcript and
+	// render raw in the execution chat. Lazily initialized on the event
+	// loop (nil-safe via splitThink) so test-constructed runs work
+	// without a constructor change.
+	thinkState *completedThinkDemux
+
 	// Unified warn→escalate→abort budget ladder (see compact.go). budget is
 	// the per-execution spend accumulator fed on each step_finish via
 	// parseEvent; budgetSpec is the parsed merged budget. startedAt anchors
@@ -775,14 +784,49 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		} else if t != "" {
 			r.observeToolEnd()
 		}
-		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
-			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
-		// Record the raw part for the durable transcript, with the tool
-		// OUTPUT capped like the live forward (a follow-up or a
-		// recovery-resumed session re-seeds this transcript as context, so
-		// an uncapped giant build log would re-inflate it).
-		if t, _ := legacy["type"].(string); t != "" {
-			r.recordPart(t, map[string]any{"part": r.a.capPartOutput(legacy["part"], r.execRow.ID, executionDir(r.manifest)), "error": legacy["error"]})
+	// Folded-think segmentation (think_demux.go): a completed text part
+		// carrying a GLM-style inline think block must not reach the output
+		// accumulator, the live UI, or the durable transcript verbatim.
+		// Strip the blocks BEFORE parseEvent so all three see clean text,
+		// and persist each block body as its own reasoning part — the same
+		// channel native reasoning parts use (no dedupe: folded blocks and
+		// native reasoning parts are distinct segments). A part that carried
+		// nothing but thinking skips text handling entirely.
+		evtType, _ := legacy["type"].(string)
+		var thinkBodies []string
+		if evtType == evtText {
+			if part, _ := legacy["part"].(map[string]any); part != nil {
+				if raw, _ := part["text"].(string); raw != "" {
+					clean, bodies := r.splitThink(raw)
+					thinkBodies = bodies
+					part["text"] = clean
+				}
+			}
+		}
+		hasCleanText := true
+		if evtType == evtText && len(thinkBodies) > 0 {
+			if part, _ := legacy["part"].(map[string]any); part != nil {
+				if txt, _ := part["text"].(string); txt == "" {
+					hasCleanText = false
+				}
+			}
+		}
+		if hasCleanText {
+			r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
+				r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
+			// Record the raw part for the durable transcript, with the tool
+			// OUTPUT capped like the live forward (a follow-up or a
+			// recovery-resumed session re-seeds this transcript as context, so
+			// an uncapped giant build log would re-inflate it).
+			if t, _ := legacy["type"].(string); t != "" {
+				r.recordPart(t, map[string]any{"part": r.a.capPartOutput(legacy["part"], r.execRow.ID, executionDir(r.manifest)), "error": legacy["error"]})
+			}
+		}
+		for _, body := range thinkBodies {
+			thinkLegacy := map[string]any{"type": evtReasoning, "part": map[string]any{"text": body}}
+			r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, thinkLegacy, r.callbacks,
+				r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
+			r.recordPart(evtReasoning, map[string]any{"part": r.a.capPartOutput(thinkLegacy["part"], r.execRow.ID, executionDir(r.manifest))})
 		}
 		// Unified warn→escalate→abort budget ladder, evaluated on its own
 		// event boundary: step_finish feeds the spend accumulator and then
@@ -816,6 +860,16 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 			r.maybeEnforceLadder(dimTools)
 		}
 	}
+}
+
+// splitThink demuxes folded think blocks out of one completed text part
+// (think_demux.go). The splitter is lazily initialized: production runs
+// flow through run(), but tests construct sessionRun literals directly.
+func (r *sessionRun) splitThink(text string) (string, []string) {
+	if r.thinkState == nil {
+		r.thinkState = newCompletedThinkDemux()
+	}
+	return r.thinkState.segment(text)
 }
 
 // recordPart appends one transcript entry to the pending batch.

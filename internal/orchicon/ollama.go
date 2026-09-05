@@ -247,7 +247,7 @@ func (c *OllamaClient) streamNative(ctx context.Context, req TurnRequest, numCtx
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	return &ollamaNativeStream{sc: sc, body: resp.Body}, nil
+	return &ollamaNativeStream{sc: sc, body: resp.Body, think: newThinkSplitter()}, nil
 }
 
 // ollamaNativeChunk is one /api/chat NDJSON stream line — the native API
@@ -269,6 +269,13 @@ type ollamaNativeChunk struct {
 type ollamaNativeStream struct {
 	sc   *bufio.Scanner
 	body io.Closer
+
+	// think splits GLM-style INLINE reasoning (the "think" tag pair in
+	// message.content — observed with GLM on ollama) into ReasoningDelta
+	// events (thinksplit.go), mirroring the openai-compat wire. Without
+	// it the tags rendered raw in the execution chat while the thinking
+	// never reached the reasoning channel.
+	think *thinkSplitter
 
 	usage   Usage
 	stop    StopReason
@@ -322,15 +329,28 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 			return ToolCall{Index: idx, ToolCallID: fmt.Sprintf("ollama_call_%d", idx), Name: tc.Function.Name, ArgsJSON: args}, true, nil
 		}
 		if ch.Message.Content != "" && !ch.Done {
-			return TextDelta{Text: ch.Message.Content}, true, nil
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+			// inside content becomes ReasoningDelta, everything else
+			// passes through as TextDelta. A chunk that is entirely a
+			// split-tag prefix yields no event yet — keep scanning.
+			s.think.feed(ch.Message.Content, &s.pending)
+			if len(s.pending) > 0 {
+				ev := s.pending[0]
+				s.pending = s.pending[1:]
+				return ev, true, nil
+			}
+			continue
 		}
 		if ch.Done {
 			// A final chunk may carry BOTH the tail content and done:true —
-			// emitting the content first keeps the last delta from being
-			// dropped (the old shape lost the tail and truncated output).
+			// route the tail through the splitter first (it may itself
+			// open/close a think block), then drain any holdback so a
+			// truncated final tag cannot swallow the response tail. An
+			// unterminated think block drains to reasoning, never text.
 			if ch.Message.Content != "" {
-				s.pending = append(s.pending, TextDelta{Text: ch.Message.Content})
+				s.think.feed(ch.Message.Content, &s.pending)
 			}
+			s.think.drain(&s.pending)
 			s.usage.InputTokens = ch.PromptEvalCount
 			s.usage.OutputTokens = ch.EvalCount
 			s.stop = mapOllamaDone(ch.DoneReason)

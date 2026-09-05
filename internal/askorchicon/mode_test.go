@@ -26,6 +26,10 @@ func TestBuildSystemPromptBrainstorm(t *testing.T) {
 		"Tenant additional instructions.",
 		"## About Orchicon",
 		"Be planner first, implementer second",
+		"ALWAYS ask clarifying questions",
+		"source-code truth",
+		"NEVER light",
+		"Context is our friend",
 		"Workflow & runtime prompt",
 		"workflow they want to bind",
 	} {
