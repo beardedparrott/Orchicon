@@ -21,9 +21,17 @@ import (
 const (
 	// maxStepsDefault bounds the turn loop per execution when neither the
 	// work item's budgets.max_steps nor ORCHICON_SESSION_MAX_STEPS sets
-	// one. (The opencode simulation path uses a hardcoded 3; the native
-	// engine defaults to 25.)
-	maxStepsDefault = 25
+	// one. (The opencode simulation path uses a hardcoded 3.)
+	//
+	// 100, not 25: one loop iteration is one MODEL turn, and a tool-using
+	// engineer spends a turn per tool round-trip — 25 kills honest
+	// tool-heavy work (observed: two SSE runs died at 25 doing nothing
+	// but singular reads). Genuine loops are caught far earlier by the
+	// progress monitor (repetition N-in-window, no-progress window), and
+	// wall-clock bounds absolute cost, so this cap is only the
+	// catastrophic backstop against pathological-but-progressing sessions.
+	// Per-work-item budgets.max_steps still overrides it.
+	maxStepsDefault = 100
 	// toolParallelism bounds the tool execution worker pool.
 	toolParallelismDefault = 4
 	// textStreamingChunkSize / Delay match opencode's emitTextChunked
