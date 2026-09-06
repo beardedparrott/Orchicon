@@ -95,6 +95,65 @@ func TestValidateSessionTTLs(t *testing.T) {
 	}
 }
 
+// TEST-MERGE-OURS-BEGIN
+// TestValidateModelRef_CLIRegistry pins that tenant-default model refs are
+// validated against the CLI-aware registry injected via SetValidationRegistry
+// (builtin catalog ∪ CLI-discovered provider ids), never the bare builtin
+// catalog. This is the settings-service half of the "CLI-aware validation"
+// acceptance: a CLI-namespace provider (e.g. "deepseek") that the picker
+// happily offers must not be rejected at save-time. Both tenant defaults
+// (DefaultAskOrchiconModel, DefaultWorkerModel) flow through the same
+// validateModelRef, so this exercises the shared contract.
+//
+// The observable CLI-aware distinction lives on the LEGACY 2-SEGMENT form
+// (provider/model), where the head is validated as a provider: the builtin
+// catalog does not know "deepseek", so a 2-seg "deepseek/..." ref is
+// rejected; the CLI-aware registry accepts it. A fully-qualified 3-segment
+// "opencode/deepseek/model" ref validates its ADAPTER segment only, so it
+// passes under either registry (and confirms the left-greedy grammar keeps
+// a slashed model id like "deepseek/deepseek-v4-flash" as one model segment).
+func TestValidateModelRef_CLIRegistry(t *testing.T) {
+	cliRegistry := adapter.NewBuiltinProviderCatalog().Clone()
+	cliRegistry.AddAdapterKind(adapter.DefaultAdapterKind, "deepseek")
+
+	builtin := New(nil, nil, "")          // no registry injected → static catalog
+	cliAware := New(nil, nil, "")
+	cliAware.SetValidationRegistry(cliRegistry)
+
+	cases := []struct {
+		name    string
+		svc     *Service
+		ref     string
+		wantErr bool
+	}{
+		// Empty = unset → valid under every registry.
+		{"empty builtin", builtin, "", false},
+		{"empty cli-aware", cliAware, "", false},
+
+		// 3-seg with a known adapter passes under both (adapter-only check).
+		{"3-seg opencode/openai builtin", builtin, "opencode/openai/gpt-4o", false},
+		{"3-seg opencode/deepseek slashed cli-aware", cliAware, "opencode/deepseek/deepseek-v4-flash", false},
+
+		// Legacy 2-seg CLI-namespace provider: rejected by builtin, accepted
+		// by the CLI-aware registry.
+		{"2-seg deepseek builtin rejected", builtin, "deepseek/deepseek-v4-flash", true},
+		{"2-seg deepseek cli-aware accepted", cliAware, "deepseek/deepseek-v4-flash", false},
+
+		// Unknown provider (2-seg) always rejected.
+		{"2-seg mystery cli-aware rejected", cliAware, "mystery-provider/some-model", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.svc.validateModelRef(c.ref)
+			gotErr := err != nil
+			if gotErr != c.wantErr {
+				t.Errorf("validateModelRef(%q) error = %v, wantErr = %v", c.ref, err, c.wantErr)
+			}
+		})
+	}
+}
+// TEST-MERGE-OURS-END
+
 // --- validateModelRef (ADR-0003) ---
 
 // settingsTestCLI mirrors the server's merged validation catalog: the builtin
