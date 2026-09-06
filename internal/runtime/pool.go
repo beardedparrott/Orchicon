@@ -236,6 +236,15 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 	return resp, nil
 }
 
+// containerForRun returns the leased container name for a run ("" when
+// the run holds no lease). Read-only: exec routing must never create or
+// mutate a lease.
+func (p *daemonPool) containerForRun(runID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.leased[runID]
+}
+
 // release ends a run's lease: the container is removed and reset in the
 // background (fresh container + warm serve) back into the pool — the run's
 // environment never touches the next run's. The reset is off the dispatch

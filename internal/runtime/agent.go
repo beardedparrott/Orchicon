@@ -26,11 +26,12 @@ import (
 // AgentRequest is a single dispatch from the daemon to the in-container
 // supervisor. It travels as one JSON document over the supervisor's unix
 // socket (written by `orchicon runtime-client`, which the daemon reaches
-// via `docker exec`). The only commands left after the one-shot exec
-// transport was removed are "ping" (readiness) and "serve" (the container's
-// opencode serve handshake).
+// via `docker exec`). Commands: "ping" (readiness), "serve" (the
+// container's opencode serve handshake), and "exec" (one-shot shell
+// command for always-container native sessions — argv is fixed to
+// bash/sh -c by the allowlist below).
 type AgentRequest struct {
-	Cmd        string   `json:"cmd"` // "ping" | "serve"
+	Cmd        string   `json:"cmd"` // "ping" | "serve" | "exec"
 	Argv       []string `json:"argv,omitempty"`
 	Env        []string `json:"env,omitempty"`
 	Cwd        string   `json:"cwd,omitempty"`
@@ -136,9 +137,10 @@ var runtimeBinAllowlist = map[string]bool{
 }
 
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
-// ping/serve requests on socketPath and runs each as a child
-// process, streaming stdout/stderr and tracking children by exec_id so a
-// later signal request can target one.
+// ping/serve/exec requests on socketPath: ping (readiness), serve (bring
+// up the container's opencode serve), exec (run one shell command with
+// streamed output — the always-container native transport). Each serve is
+// a tracked child process; execs are one-shot with a terminal exit event.
 func RunSupervisor(socketPath string, log *slog.Logger) error {
 	if socketPath == "" {
 		socketPath = DefaultAgentSocket
@@ -278,6 +280,8 @@ func (h *childRegistry) serve(conn net.Conn) {
 		_ = enc.Encode(AgentEvent{Pong: true})
 	case "serve":
 		h.runServe(enc, req)
+	case "exec":
+		h.runExec(enc, req)
 	default:
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown cmd: " + req.Cmd})
 	}
@@ -418,6 +422,94 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	}
 	_ = cmd.Process.Kill()
 	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
+}
+
+// runExec runs one synchronous shell command inside the container — the
+// always-container native transport. Native sessions keep their model loop
+// on the plane but execute every `bash` tool call here: cwd is the
+// in-container worktree path (bind-mounted at the same absolute path as the
+// host, so host and container paths agree), env carries the sandbox DSN,
+// and stdout+stderr stream back as {stream,data} chunks followed by a
+// terminal {event:exit, exit_code} (a non-zero exit is a RESULT the worker
+// course-corrects on, not a transport error). argv[0] is allowlisted to
+// bash/sh (same gate family as the serve's runtimeBinAllowlist) and the
+// execution-guard shim applies, so a worker subprocess cannot run
+// destructive commands even inside the container.
+func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
+	base := ""
+	if len(req.Argv) > 0 {
+		base = filepath.Base(req.Argv[0])
+	}
+	if base != "bash" && base != "sh" {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "exec argv[0] not allowlisted: " + base})
+		return
+	}
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+	env := agentEnv(req)
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
+	if guardErr != nil {
+		h.log.Warn("supervisor: guard not applied to exec", "error", guardErr)
+	} else {
+		env = prependGuard(env, guardDir)
+		defer os.RemoveAll(guardDir)
+	}
+	cmd.Env = env
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	// json.Encoder is not safe for concurrent use: serialize the two
+	// stream pumps through a local mutex.
+	var wmu sync.Mutex
+	write := func(ev AgentEvent) {
+		wmu.Lock()
+		defer wmu.Unlock()
+		_ = enc.Encode(ev)
+	}
+	var wg sync.WaitGroup
+	pump := func(stream string, r io.Reader) {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := r.Read(buf)
+			if n > 0 {
+				write(AgentEvent{Stream: stream, Data: string(buf[:n])})
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go pump("stdout", stdout)
+	go pump("stderr", stderr)
+	werr := cmd.Wait()
+	wg.Wait()
+	code := 0
+	emsg := ""
+	if werr != nil {
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			emsg = werr.Error()
+			code = 1
+		}
+	}
+	write(AgentEvent{Event: "exit", ExitCode: code, Error: emsg})
 }
 
 // pidOrZero returns the child's process id (0 when not started).

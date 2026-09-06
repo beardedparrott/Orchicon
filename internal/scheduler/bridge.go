@@ -302,6 +302,11 @@ type RuntimeClient interface {
 	Ready(ctx context.Context) bool
 	// Kill tears down a workflow run's runtime container.
 	Kill(ctx context.Context, workflowID string) error
+	// Exec runs one shell command inside the run's leased runtime
+	// container (always-container native transport). A nil client means
+	// the daemon is absent (headless/local) and the adapter stays
+	// in-process.
+	Exec(ctx context.Context, workflowID string, req runtime.ExecRequest) (*runtime.ExecResult, error)
 	// Images lists the daemon's stock runtime images.
 	Images(ctx context.Context) (*runtime.ImageList, error)
 }

@@ -133,6 +133,17 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	// New items always start recurrence-enabled: nothing in the create path
 	// represents "create already-paused" — pause is a later UpdateWorkItem.
 	w.RecurringEnabled = true
+	// Always-container runtime: an empty runtime_image inherits the
+	// project's default_runtime_image (future creates inherit; explicit
+	// per-item values win; updating the project default never
+	// retro-mutates existing items). Best-effort — a project-read failure
+	// never fails the create (the arm-site resolution chain falls back to
+	// base).
+	if strings.TrimSpace(w.RuntimeImage) == "" && strings.TrimSpace(w.ProjectID) != "" {
+		if p, perr := GetProject(ctx, tx, w.TenantID, w.ProjectID); perr == nil && p.DefaultRuntimeImage != nil && strings.TrimSpace(*p.DefaultRuntimeImage) != "" {
+			w.RuntimeImage = *p.DefaultRuntimeImage
+		}
+	}
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,

@@ -47,7 +47,34 @@ type ProjectRow struct {
 
 	// GitStrategy controls how worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral. Values: local, pr, none.
 	GitStrategy string
+
+	// DefaultRuntimeImage is the project-level default runtime container
+	// image tag (always-container runtime). NULL (nil) = inherit
+	// tenant/base. Copied onto work items at create time when the caller
+	// passes an empty runtime_image; explicit per-item values win, and
+	// updating the default never retro-mutates existing items.
+	DefaultRuntimeImage *string
+
+	// ExecutionMode controls where native executions run: "runtime"
+	// (default) = always-container, "local" = in-process allowed with an
+	// honest prompt block + a hard DSN fence.
+	ExecutionMode string
 }
+
+// Execution modes for ProjectRow.ExecutionMode (always-container runtime):
+//   - ExecutionModeRuntime (default): executions run inside the run's
+//     container; runtime mode fails LOUD without a daemon.
+//   - ExecutionModeLocal: in-process execution allowed; the prompt renders
+//     an honest local block and the dispatcher enforces the DSN fence.
+const (
+	ExecutionModeRuntime = "runtime"
+	ExecutionModeLocal   = "local"
+)
+
+// BaseRuntimeImage is the fallback image of the resolve chain
+// (explicit work-item image -> project default -> base). It is never
+// empty and never the no-serve sentinel.
+const BaseRuntimeImage = "orchicon-runtime:base"
 
 // ErrNotFound is returned when a single-row query matches no rows. The
 // data-access layer treats this as a not-found condition; the API layer
@@ -70,21 +97,25 @@ var ErrVersionConflict = errors.New("db: version conflict")
 // and RLS is the backstop (docs/09 §8.5).
 func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
-		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy, default_runtime_image, execution_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	row := p
 	if row.GitStrategy == "" {
 		row.GitStrategy = "local"
 	}
 	p.GitStrategy = row.GitStrategy
+	if row.ExecutionMode == "" {
+		row.ExecutionMode = ExecutionModeRuntime
+	}
+	p.ExecutionMode = row.ExecutionMode
 	err := tx.QueryRow(ctx, q,
-		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns, p.GitStrategy,
+		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns, p.GitStrategy, p.DefaultRuntimeImage, p.ExecutionMode,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
-		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy,
+		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy, &row.DefaultRuntimeImage, &row.ExecutionMode,
 	)
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
@@ -97,13 +128,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -165,7 +196,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		sortOrder = "DESC"
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects
 		WHERE %s
 		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
@@ -180,7 +211,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		var p ProjectRow
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status,
 			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt,
-			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy); err != nil {
+			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode); err != nil {
 			return nil, fmt.Errorf("db: scan project: %w", err)
 		}
 		out = append(out, p)
@@ -194,13 +225,15 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 // fields are written; nil fields are left untouched (field-mask
 // semantics — docs/07 §5.4).
 type UpdateProjectFields struct {
-	Name              *string
-	Slug              *string
-	Goals             *[]byte
-	ProjectDir        *string
-	ContextFiles      *[]byte
-	MaxConcurrentRuns *int
-	GitStrategy       *string
+	Name                *string
+	Slug                *string
+	Goals               *[]byte
+	ProjectDir          *string
+	ContextFiles        *[]byte
+	MaxConcurrentRuns   *int
+	GitStrategy         *string
+	DefaultRuntimeImage *string
+	ExecutionMode       *string
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
@@ -251,13 +284,23 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		args = append(args, *f.GitStrategy)
 		setIdx++
 	}
+	if f.DefaultRuntimeImage != nil {
+		q += fmt.Sprintf(`, default_runtime_image = $%d`, setIdx)
+		args = append(args, *f.DefaultRuntimeImage)
+		setIdx++
+	}
+	if f.ExecutionMode != nil {
+		q += fmt.Sprintf(`, execution_mode = $%d`, setIdx)
+		args = append(args, *f.ExecutionMode)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -278,12 +321,12 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 	q := `UPDATE projects SET updated_at = now(), version = version + 1,
 		git_work_tree = $4, git_detected_at = now(), repo_slug = $5
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, isWorkTree, repoSlug).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -353,12 +396,12 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		SET status = 'archived', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound

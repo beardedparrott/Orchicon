@@ -105,7 +105,34 @@ const memoryPlaybookBlock = "\n## Memory playbook — project memory survives pe
 // about its execution sandbox so it does not waste cycles empirically probing
 // the container (and so it uses the rootless system-library escape hatch
 // instead of hitting a wall).
-func RuntimeEnvironmentBlock(image string) string {
+//
+// mode selects the branch (always-container runtime):
+//   - "runtime" (default, "" legacy): the worker runs INSIDE the run's
+//     ephemeral container — the existing container text with the resolved
+//     image name.
+//   - "local": the worker runs IN-PROCESS on the host — no container, and
+//     127.0.0.1:5432/8080 is the LIVE plane. Only /tmp/orchicon scratch is
+//     safe; DB writes must use a disposable DSN (the dispatcher enforces
+//     the fence and fails closed).
+//
+// KV-cache note: the prefix is shared WITHIN a mode (byte-identical for
+// identical image+mode) and split ACROSS modes — the honest local text
+// must never share cache bytes with the container claim.
+func RuntimeEnvironmentBlock(image, mode string) string {
+	if mode == ExecutionModeLocal {
+		return localEnvironmentBlock()
+	}
+	return containerEnvironmentBlock(image)
+}
+
+// RuntimeEnvironmentBlockLegacy preserves the old one-arg shape for tests
+// and thin wrappers that render the container branch explicitly.
+func runtimeEnvironmentBlockLegacy(image string) string {
+	return containerEnvironmentBlock(image)
+}
+
+// containerEnvironmentBlock renders the runtime-mode (in-container) truth.
+func containerEnvironmentBlock(image string) string {
 	img := strings.TrimSpace(image)
 	if img == "" {
 		img = "the default Orchicon runtime base image"
@@ -120,6 +147,22 @@ func RuntimeEnvironmentBlock(image string) string {
 	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
 	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb /tmp/libs && export LD_LIBRARY_PATH=/tmp/libs/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH\n\n")
 	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`), or install the missing libs with the pattern above.\n")
+	return sb.String()
+}
+
+// localEnvironmentBlock renders the local-mode (in-process on host) HONEST
+// block: no container exists, and the loopback plane addresses are LIVE.
+// This is the prompt half of the local-mode contract; the dispatcher
+// enforces the DSN fence (refuses 127.0.0.1:5432/localhost:5432/
+// 172.17.0.1:8080 writes, fails closed without a disposable DSN).
+func localEnvironmentBlock() string {
+	var sb strings.Builder
+	sb.WriteString("\n## Runtime environment\n\n")
+	sb.WriteString("You are running IN-PROCESS on the host — there is NO container for this run (the project is in `local` execution mode). Everything you install or write outside the project directory persists on the host.\n\n")
+	sb.WriteString("- **LIVE plane warning:** `127.0.0.1:5432`, `localhost:5432`, and `172.17.0.1:8080` are the LIVE Orchicon plane. NEVER point `ORCHICON_TEST_DSN` at them and never write test rows there — the dispatcher refuses those DSNs and fails the execution closed. Use a disposable database (or run with no DSN) for DB-backed tests.\n")
+	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). Always save final outputs to the project directory.\n")
+	sb.WriteString("- You run as the host user: do not attempt `sudo`.\n")
+	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`).\n")
 	return sb.String()
 }
 
@@ -139,8 +182,12 @@ func RuntimeEnvironmentBlock(image string) string {
 //
 // The runtime image is per-run (all steps of a run dispatch the same work
 // item, so it is constant within a run), which is what makes the prefix
-// identical across the steps of a run.
-func StablePromptPrefix(runtimeImage string) string {
+// identical across the steps of a run. The prefix is shared WITHIN an
+// execution mode and split ACROSS modes: StablePromptPrefix(image, "local")
+// and StablePromptPrefix(image, "runtime") intentionally differ (honest
+// local block vs container claim) so no cache bytes are shared between the
+// two truths.
+func StablePromptPrefix(runtimeImage, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
@@ -148,7 +195,7 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(stepOutputBlock)
 	sb.WriteString(todoListBlock)
 	sb.WriteString(memoryPlaybookBlock)
-	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
+	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage, mode))
 	return sb.String()
 }
 

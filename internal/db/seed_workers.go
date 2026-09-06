@@ -78,7 +78,8 @@ func seedAgentsMD(w cannedWorker) string {
 // access to it is deny-by-default through the worker's identity — no role
 // binding means no plane channel, and that absence is expected, never a
 // reason to invent a real-instance write.
-const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated workflow runtime container. " +
+const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated workflow runtime container " +
+	"(projects in `local` execution_mode run in-process on the host instead — your `## Runtime environment` prompt block states which mode this run uses; when it says in-process, there is NO container and `127.0.0.1:5432/8080` is the LIVE plane). " +
 	"The `:orchicon-dev` runtime image boots a **disposable in-container sandbox plane** (Postgres → NATS → `orchicon serve` on container-local ports) for building and DB-testing the Orchicon repo — it dies with the container and never touches the real instance's database. " +
 	"The **real instance** (the plane your work item was created on) holds the actual work items, workers, workflows, runs, and data. " +
 	"Plane access is **deny-by-default**: the plane credential is minted only for published workers with a role binding — workers without a research/Idea role have **no plane channel and must not call `orchicon_plane_*`**; the tools' absence is expected, not an error, and never a reason to invent a real-instance write. " +

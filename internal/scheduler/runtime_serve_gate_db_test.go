@@ -19,12 +19,11 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
-	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
 type failingLifecycle struct{ stubLifecycle }
 
-func (failingLifecycle) EnsureServing(context.Context, db.WorkflowRunRow) error {
+func (failingLifecycle) EnsureServing(context.Context, db.WorkflowRunRow, bool) error {
 	// Mirror the observed failure: the serve never becomes usable.
 	return errServeNeverUsable
 }
@@ -86,8 +85,8 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	if got.Status != domain.WorkflowRunRunning {
 		t.Fatalf("run status = %q, want running (run failed at the serve gate)", got.Status)
 	}
-	if got.RuntimeImage != runtime.NoServeImage {
-		t.Errorf("runtime_image = %q, want sentinel %q", got.RuntimeImage, runtime.NoServeImage)
+	if got.RuntimeImage != db.BaseRuntimeImage {
+		t.Errorf("runtime_image = %q, want base %q (always-container: resolved image, never the sentinel)", got.RuntimeImage, db.BaseRuntimeImage)
 	}
 	if !got.RuntimeReady {
 		t.Error("runtime_ready = false, want true (native-only run must not gate)")

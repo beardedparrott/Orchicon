@@ -584,6 +584,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
+			// Always-container native: the native bridge routes `bash`
+			// into the run's container (same lease the gate ensured).
+			nativeBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane
 			// restart or a lost runtime container so recovery re-dispatches.
 			// The probe resolves the execution's adapter kind (worker

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -39,8 +40,19 @@ import (
 // HostTools is the ToolRegistry handed to every native session: the core
 // file/shell suite scoped to the execution's working directory. The bridge
 // composes MCP tools on top (multi-registry).
+//
+// Always-container: when containerExec is set (runtime mode with a run
+// container), `bash` tool calls execute INSIDE the run's container at the
+// same absolute worktree path (bind-mounted, so host and container paths
+// agree) with the sandbox DSN env — the session's `pwd`/`go version`/DB
+// writes all land in-container. File tools (batch_read/grep/write) stay
+// host-side against the same bind-mounted path: host and container see
+// identical bytes. When containerExec is nil (local mode, standalone
+// tasks, or headless serve) bash runs in-process as before.
 type HostTools struct {
 	base worktree.Base
+	// containerExec routes bash into the run container; nil = in-process.
+	containerExec func(ctx context.Context, command string, env []string, cwd string) (stdout, stderr string, exitCode int, err error)
 }
 
 // NewHostTools builds the host tool suite scoped to the execution's
@@ -54,6 +66,15 @@ func NewHostTools(workingDir, projectRoot string) *HostTools {
 		ProjectRoot: projectRoot,
 		ScratchDir:  worktree.DefaultScratchDir,
 	}}
+}
+
+// NewContainerHostTools is NewHostTools with bash routed into the run's
+// container via execFn (command + env + cwd -> stdout/stderr/exit). env
+// carries the sandbox DSN so DB-backed tests hit the in-container plane.
+func NewContainerHostTools(workingDir, projectRoot string, execFn func(ctx context.Context, command string, env []string, cwd string) (string, string, int, error)) *HostTools {
+	h := NewHostTools(workingDir, projectRoot)
+	h.containerExec = execFn
+	return h
 }
 
 // hostToolDefs is the core suite advertised to the model every turn. Arg
@@ -384,6 +405,28 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	}
 	cctx, cancel := context.WithTimeout(ctx, to)
 	defer cancel()
+	// Always-container: route through the run's container when wired.
+	// The supervisor streams stdout/stderr back; a non-zero exit is a
+	// RESULT (returned like the in-process path below) so the model
+	// course-corrects on it. A transport error (no lease, daemon down)
+	// IS an error — the reconciler fails LOUD, never silent host exec.
+	if h.containerExec != nil {
+		stdout, stderr, code, err := h.containerExec(cctx, a.Command, []string{"ORCHICON_TEST_DSN=" + runtime.SandboxPostgresDSN}, h.base.Worktree)
+		if err != nil {
+			return "", fmt.Errorf("bash (container): %w", err)
+		}
+		msg := stdout
+		if stderr != "" {
+			if msg != "" {
+				msg += "\n"
+			}
+			msg += stderr
+		}
+		if code != 0 && msg == "" {
+			msg = fmt.Sprintf("exit code %d", code)
+		}
+		return msg, nil
+	}
 	cmd := exec.CommandContext(cctx, "bash", "-c", a.Command)
 	cmd.Dir = h.base.Worktree
 	var stderr strings.Builder

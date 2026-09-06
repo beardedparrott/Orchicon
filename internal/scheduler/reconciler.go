@@ -261,6 +261,75 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 	return reconciler.Result{}
 }
 
+// projectExecutionMode returns the project's execution_mode
+// (runtime|local), defaulting to runtime on any read failure (preserves
+// current opencode behavior; fail-open toward the container, never toward
+// silent host exec).
+func projectExecutionMode(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
+	if strings.TrimSpace(projectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
+// liveDSNHosts are the loopback/bridge addresses that reach the LIVE plane
+// from an in-process worker. A DSN whose host:port matches one of these is
+// refused by the local-mode fence (fail closed).
+var liveDSNHosts = []string{"127.0.0.1:5432", "localhost:5432", "172.17.0.1:8080"}
+
+// isLiveDSN reports whether a Postgres (or plane-URL) DSN points at the
+// live plane: host ∈ {127.0.0.1:5432, localhost:5432} for DB DSNs, or the
+// string contains the 172.17.0.1:8080 bridge-plane address.
+func isLiveDSN(dsn string) bool {
+	lower := strings.ToLower(strings.TrimSpace(dsn))
+	if strings.Contains(lower, "172.17.0.1:8080") {
+		return true
+	}
+	host := lower
+	// Strip scheme://userinfo@ prefix.
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	} else if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	// Strip path/query.
+	if i := strings.IndexAny(host, "/?"); i >= 0 {
+		host = host[:i]
+	}
+	for _, live := range []string{"127.0.0.1:5432", "localhost:5432"} {
+		if host == live {
+			return true
+		}
+	}
+	return false
+}
+
+// redactDSNHost returns the DSN's host portion for error messages (never
+// the credentials).
+func redactDSNHost(dsn string) string {
+	lower := strings.TrimSpace(dsn)
+	host := lower
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	} else if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?"); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		return "(unparseable DSN)"
+	}
+	return host
+}
+
 // scan is the empty-key scan pass (docs/03 §4): find ready + blocked tasks
 // and dispatch them with a BOUNDED IN-PASS FAN-OUT. Independent,
 // dependency-satisfied items dispatch CONCURRENTLY (up to
@@ -572,6 +641,23 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 				}
 			}
 			_ = rtx.Rollback(context.Background())
+		}
+	}
+
+	// Local-mode DSN fence: in-process executions must never touch the
+	// LIVE plane. When the task's project is in local execution_mode, a
+	// live ORCHICON_TEST_DSN fails the execution CLOSED (blocked, not
+	// warned) — DB-backed tests require a disposable DSN.
+	if task.ProjectID != "" {
+		if mtx, merr := r.pool.BeginTenantTx(context.Background(), tenantID); merr == nil {
+			mode := projectExecutionMode(context.Background(), mtx.Tx, tenantID, task.ProjectID)
+			_ = mtx.Rollback(context.Background())
+			if mode == db.ExecutionModeLocal {
+				if dsn := strings.TrimSpace(os.Getenv("ORCHICON_TEST_DSN")); dsn != "" && isLiveDSN(dsn) {
+					r.log.Error("local-mode DSN fence: refusing live-plane DSN", "task", task.ID, "project", task.ProjectID)
+					return fmt.Errorf("local-mode DSN fence: ORCHICON_TEST_DSN points at the LIVE plane (%q) — use a disposable database or unset it", redactDSNHost(dsn))
+				}
+			}
 		}
 	}
 
@@ -897,6 +983,10 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
 					worktreePath = run.WorktreePath
 				}
+				// NOTE: the run-bound composite prompt (step-run _prompt)
+				// already carries the run-effective image+mode — baked by
+				// buildCompositePrompt at dispatch. This runtimeImage is
+				// only the adapter's container self-heal tag.
 			}
 			// D2: a parallel-branch child execution runs in the STEP RUN's
 			// OWN branch worktree — its cwd must be the branch worktree,
@@ -986,7 +1076,16 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// project/work-item context "just like projects" (F5).
 	if systemPrompt == "" {
 		var fp string
-		systemPrompt, fp = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
+		// Standalone dispatch: no run row exists, so the mode comes from
+		// the task's project (best-effort — failures degrade to runtime).
+		standaloneMode := db.ExecutionModeRuntime
+		if task.ProjectID != "" {
+			if stx, serr := r.pool.BeginTenantTx(context.Background(), exec.TenantID); serr == nil {
+				standaloneMode = projectExecutionMode(context.Background(), stx.Tx, exec.TenantID, task.ProjectID)
+				_ = stx.Rollback(context.Background())
+			}
+		}
+		systemPrompt, fp = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch, standaloneMode)
 		if fp != "" {
 			promptFP = fp
 		}
@@ -2596,7 +2695,7 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 //
 // Best-effort: any DB read failure degrades to the subset that succeeded
 // (the caller falls back to a bare worker prompt if the result is empty).
-func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) (string, string) {
+func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch, executionMode string) (string, string) {
 	var sb strings.Builder
 	// Context-file fingerprint (ADR-0009 D5): same sha256 over the
 	// project + work-item context-file stamps the workflow path
@@ -2606,8 +2705,8 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	// Stable prefix first: shared identity + safety + efficiency + runtime
 	// environment. Same byte-identical block the workflow path prepends, so a
 	// standalone dispatch and a workflow step share the llama.cpp KV-cache
-	// prefix.
-	sb.WriteString(db.StablePromptPrefix(task.RuntimeImage))
+	// prefix (within the same execution mode).
+	sb.WriteString(db.StablePromptPrefix(task.RuntimeImage, executionMode))
 	if worker := composeSystemPrompt(version); worker != "" {
 		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
 	}
