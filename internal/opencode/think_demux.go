@@ -28,12 +28,17 @@ import "strings"
 // Scope guard: completed parts only. Deltas stay dropped, native reasoning
 // parts stay untouched.
 
-// The tag literals are built by concatenation (never one verbatim literal
-// in source) so tooling that rewrites raw markup cannot corrupt them.
-var (
-	completedThinkOpen  = "<" + "think" + ">"
-	completedThinkClose = "</" + "think" + ">"
-)
+// indexAnyTag returns the earliest occurrence of any tag literal in s and
+// the matched literal's length, or idx=-1 when none occurs.
+func indexAnyTag(s string, tags []string) (idx, ln int) {
+	idx = -1
+	for _, t := range tags {
+		if i := strings.Index(s, t); i >= 0 && (idx < 0 || i < idx) {
+			idx, ln = i, len(t)
+		}
+	}
+	return idx, ln
+}
 
 // completedThinkDemux carries the cross-part think state for one session run.
 type completedThinkDemux struct {
@@ -53,13 +58,12 @@ func (d *completedThinkDemux) segment(text string) (clean string, bodies []strin
 	rest := text
 	for rest != "" {
 		if d.inThink {
-			idx := strings.Index(rest, completedThinkClose)
-			if idx >= 0 {
+			if idx, ln := indexAnyTag(rest, ThinkCloseTags); idx >= 0 {
 				if body := rest[:idx]; body != "" {
 					bodies = append(bodies, body)
 				}
 				d.inThink = false
-				rest = rest[idx+len(completedThinkClose):]
+				rest = rest[idx+ln:]
 				continue
 			}
 			// No close in this part: the whole remainder is thinking.
@@ -69,11 +73,10 @@ func (d *completedThinkDemux) segment(text string) (clean string, bodies []strin
 			rest = ""
 			return out.String(), bodies
 		}
-		idx := strings.Index(rest, completedThinkOpen)
-		if idx >= 0 {
+		if idx, ln := indexAnyTag(rest, ThinkOpenTags); idx >= 0 {
 			out.WriteString(rest[:idx])
 			d.inThink = true
-			rest = rest[idx+len(completedThinkOpen):]
+			rest = rest[idx+ln:]
 			continue
 		}
 		out.WriteString(rest)

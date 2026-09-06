@@ -1,26 +1,18 @@
 package askorchicon
 
-import "strings"
+import (
+	"strings"
 
-// Folded-think boundary markers used by the opencode/GLM transport to embed
-// additional thinking segments inline in the content stream. The segmenter
-// recognizes these with carry-over state so a tag split across multiple token
-// deltas is still demuxed. Exact literals are exported constants so a
-// provider-profile correction only needs one line.
-const (
-	// thinkOpenLiteral is the primary pipe-delimited open tag.
-	thinkOpenLiteral = "|<thinking>"
-	// thinkOpenAlt is the bare-form open tag.
-	thinkOpenAlt = "<thinking>"
-	// thinkOpenPipe is the pipe-form open tag.
-	thinkOpenPipe = "|think"
-	// thinkCloseLiteral is the primary pipe-delimited close tag.
-	thinkCloseLiteral = "|</thinking>"
-	// thinkCloseAlt is the bare-form close tag.
-	thinkCloseAlt = "</thinking>"
-	// thinkClosePipe is the pipe-form close tag.
-	thinkClosePipe = "|/think"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 )
+
+// Folded-think boundary markers are the SHARED opencode tag table
+// (opencode.ThinkOpenTags / ThinkCloseTags): pipe-delimited GLM markers
+// ("|<thinking>", "|think") AND plain model spellings ("<think>",
+// "<thought>", "<reasoning>"). The segmenter recognizes these with
+// carry-over state so a tag split across multiple token deltas is still
+// demuxed. A newly observed spelling is added once in the shared table —
+// the two paths can never drift again.
 
 // thinkSegState is the segmenter's carry-over state across deltas.
 type thinkSegState int
@@ -175,17 +167,30 @@ func (seg *thinkSegmenter) flushBody(commitThink func(string)) {
 	seg.reset()
 }
 
-// --- prefix helpers ----------------------------------------------
+// inThink reports whether the segmenter currently has a think run open
+// (a fully recognized open tag with no close yet). Callers gate text
+// emission on it: while a think run is open, suspect-kind deltas must stay
+// on the segmenter road and never be raw-appended to text.
+func (seg *thinkSegmenter) inThink() bool {
+	return seg.state == thinkSegInBody || seg.state == thinkSegInCloseTag || seg.bodyStarted
+}
+
+// --- prefix helpers (against the shared opencode tag table) ---
 
 // isCompleteOpen reports whether the buffered string is a complete open tag.
 func (seg *thinkSegmenter) isCompleteOpen(s string) bool {
-	return s == thinkOpenLiteral || s == thinkOpenAlt || s == thinkOpenPipe
+	for _, m := range opencode.ThinkOpenTags {
+		if s == m {
+			return true
+		}
+	}
+	return false
 }
 
 // couldBeOpenPrefix reports whether the buffered string is still a prefix of
 // a recognized open marker (i.e. it may yet grow into a complete open tag).
 func (seg *thinkSegmenter) couldBeOpenPrefix(s string) bool {
-	for _, m := range []string{thinkOpenLiteral, thinkOpenAlt, thinkOpenPipe} {
+	for _, m := range opencode.ThinkOpenTags {
 		if strings.HasPrefix(m, s) {
 			return true
 		}
@@ -195,13 +200,18 @@ func (seg *thinkSegmenter) couldBeOpenPrefix(s string) bool {
 
 // isCompleteClose reports whether the buffered string is a complete close tag.
 func (seg *thinkSegmenter) isCompleteClose(s string) bool {
-	return s == thinkCloseLiteral || s == thinkCloseAlt || s == thinkClosePipe
+	for _, m := range opencode.ThinkCloseTags {
+		if s == m {
+			return true
+		}
+	}
+	return false
 }
 
 // couldBeClosePrefix reports whether the buffered string is still a prefix of
 // a recognized close marker.
 func (seg *thinkSegmenter) couldBeClosePrefix(s string) bool {
-	for _, m := range []string{thinkCloseLiteral, thinkCloseAlt, thinkClosePipe} {
+	for _, m := range opencode.ThinkCloseTags {
 		if strings.HasPrefix(m, s) {
 			return true
 		}

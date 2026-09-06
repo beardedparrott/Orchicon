@@ -929,6 +929,54 @@ export class ReasoningChunk extends Message<ReasoningChunk> {
 }
 
 /**
+ * Heartbeat is a lightweight server keepalive emitted on an in-flight turn's
+ * stream at ≤20s cadence while the turn runs but produces no TextChunk /
+ * ReasoningChunk (reasoning-heavy silent phases). It carries no content and
+ * the frontend ignores it for rendering — its sole purpose is wire traffic
+ * so proxy/browser idle timeouts do not kill a healthy-but-quiet stream.
+ * It also resets the client's reconnecting banner (proof the socket is
+ * live). No new idle network churn: heartbeats emit only while a turn is
+ * in flight, never when nothing streams.
+ *
+ * @generated from message orchicon.api.v1.Heartbeat
+ */
+export class Heartbeat extends Message<Heartbeat> {
+  /**
+   * server_time_unix_ms lets the client measure socket age/skew.
+   *
+   * @generated from field: int64 server_time_unix_ms = 1;
+   */
+  serverTimeUnixMs = protoInt64.zero;
+
+  constructor(data?: PartialMessage<Heartbeat>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.Heartbeat";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "server_time_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Heartbeat {
+    return new Heartbeat().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): Heartbeat {
+    return new Heartbeat().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): Heartbeat {
+    return new Heartbeat().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: Heartbeat | PlainMessage<Heartbeat> | undefined, b: Heartbeat | PlainMessage<Heartbeat> | undefined): boolean {
+    return proto3.util.equals(Heartbeat, a, b);
+  }
+}
+
+/**
  * AttachmentInput is a file attachment sent with a chat message.
  *
  * @generated from message orchicon.api.v1.AttachmentInput

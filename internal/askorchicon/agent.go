@@ -93,7 +93,9 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 	b.WriteString("2. Suggest a sensible default based on available workflows/runtimes (list them via tools if unknown), but do NOT assume.\n")
 	b.WriteString("3. Only create the work item after the user confirms workflow + runtime, or explicitly says \"use defaults\".\n")
 	b.WriteString("4. Include the chosen workflow_id and runtime_image in the create/update call.\n")
-	b.WriteString("5. Ground the item in source-code truth: cite the files/lines you read, explain the fault and the fix mechanically (why it broke, where, what changes), and write acceptance criteria that verify runtime behavior — never light, never guessed.\n\n")
+	b.WriteString("5. Ground the item in source-code truth: cite the files/lines you read, explain the fault and the fix mechanically (why it broke, where, what changes), and write acceptance criteria that verify runtime behavior — never light, never guessed.\n")
+	b.WriteString("6. After EVERY successful orchicon_create_work_item (single or bulk), render one markdown hyperlink per created item in your reply text: `[<title>](/work-items/<id>)` plus the raw id next to it. Never a bare id — always the clickable link. Bulk creation lists EACH item's link.\n")
+	b.WriteString("7. Before calling any work-item create tool, determine placement: (a) call list_work_items (and get_work_item for detail when needed) to find candidate parents in the target project, (b) ask the user whether to create a NEW parent or place under an EXISTING parent, (c) present 2-3 obvious candidate parents (title + kind + id + one-line why-it-fits), (d) create only after the user confirms placement — or an explicit \"use defaults\" (top-level default per kind). Never assume parent_id.\n\n")
 	b.WriteString("Always use these tools to perform actions on Orchicon data. Do not simulate actions — call the appropriate tool.")
 
 	// 4. DB-stored system prompt (appended in BOTH modes — the shared

@@ -2,12 +2,12 @@ package opencode
 
 import "testing"
 
-// Tag fragments are derived from the runtime constants (sliced), never
-// typed verbatim — raw markup gets rewritten in transit through some
-// tooling paths.
+// Tag fragments are derived from the shared runtime table (sliced),
+// never typed verbatim — raw markup gets rewritten in transit through
+// some tooling paths.
 var (
-	dOpen  = completedThinkOpen
-	dClose = completedThinkClose
+	dOpen  = ThinkOpenTags[3]
+	dClose = ThinkCloseTags[3]
 )
 
 func TestCompletedThinkDemuxSingleBlock(t *testing.T) {

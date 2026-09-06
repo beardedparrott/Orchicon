@@ -32,6 +32,12 @@ func TestBuildSystemPromptBrainstorm(t *testing.T) {
 		"Context is our friend",
 		"Workflow & runtime prompt",
 		"workflow they want to bind",
+		"[<title>](/work-items/<id>)",
+		"Never a bare id",
+		"NEW parent or place under an EXISTING parent",
+		"2-3 obvious candidate parents",
+		"Never assume parent_id",
+		"use defaults",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("brainstorm prompt missing %q", want)

@@ -40,6 +40,11 @@ import {
 import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
+import {
+  groupStreamItems,
+  nextChunkKey,
+  type StreamItem,
+} from "@/lib/ask-stream-group";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type {
   ChatMessage,
@@ -83,77 +88,9 @@ function copyTextToClipboard(text: string): void {
   navigator.clipboard?.writeText(text).catch(() => {});
 }
 
-// --- streaming item types (mirrors execution ChatItem for Ask Orchicon) ---
-
-type StreamItem =
-  | { kind: "user"; text: string; at: number; key: string }
-  | { kind: "text"; text: string; at: number; key: string; phase?: string }
-  | { kind: "reasoning"; text: string; at: number; key: string; phase?: string }
-  | { kind: "error"; text: string; at: number; key: string };
-
-// Phase-group streaming items so interleaved reasoning/text chunks
-// coalesce into one growing reasoning bubble and one growing text bubble.
-function groupStreamItems(items: StreamItem[]): StreamItem[] {
-  const out: StreamItem[] = [];
-  let textBuf = "";
-  let textAt = 0;
-  let textKey = "";
-  let textPhase = "";
-  let reasoningBuf = "";
-  let reasoningAt = 0;
-  let reasoningKey = "";
-  let reasoningPhase = "";
-
-  const flushText = () => {
-    if (!textBuf) return;
-    out.push({
-      kind: "text",
-      text: textBuf,
-      at: textAt,
-      key: textKey,
-      phase: textPhase,
-    });
-    textBuf = "";
-  };
-  const flushReasoning = () => {
-    if (!reasoningBuf) return;
-    out.push({
-      kind: "reasoning",
-      text: reasoningBuf,
-      at: reasoningAt,
-      key: reasoningKey,
-      phase: reasoningPhase,
-    });
-    reasoningBuf = "";
-  };
-
-  for (const item of items) {
-    if (item.kind === "text") {
-      if (textPhase && item.phase !== textPhase) flushText();
-      if (!textBuf) {
-        textKey = item.key;
-        textPhase = item.phase ?? "";
-      }
-      textBuf += item.text;
-      textAt = item.at;
-    } else if (item.kind === "reasoning") {
-      if (reasoningPhase && item.phase !== reasoningPhase) flushReasoning();
-      if (!reasoningBuf) {
-        reasoningKey = item.key;
-        reasoningPhase = item.phase ?? "";
-      }
-      reasoningBuf += item.text;
-      reasoningAt = item.at;
-    } else {
-      flushText();
-      flushReasoning();
-      out.push(item);
-    }
-  }
-  flushText();
-  flushReasoning();
-  return out;
-}
+// --- streaming item type (extracted: @/lib/ask-stream-group) ---
+// groupStreamItems coalesces only CONSECUTIVE same-kind chunks so
+// interleaved text/reasoning arrivals render in arrival order.
 
 // Per-conversation streaming state. Each conversation keeps its own
 // in-flight turn so navigating away and back never drops the Stop button
@@ -250,6 +187,11 @@ function AskOrchiconPage() {
   // interject turn that replaced it — the classic stale-closure hazard once
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
+
+  // Per-conversation monotonic chunk sequence. Live TextChunk/Reasoning
+  // chunks are keyed `st-<seq>` / `sr-<seq>` (never Math.random()) so
+  // React reconciliation never reshuffles bubbles on re-render.
+  const chunkSeqRef = useRef<Record<string, number>>({});
 
   // Per-conversation "a local runStream is actively iterating" flag. The
   // completion effect must NOT finalize (clear) a stream slot while the local
@@ -686,6 +628,76 @@ function AskOrchiconPage() {
     return handleStopConversation(activeConvId);
   }, [activeConvId, handleStopConversation]);
 
+  // Re-dial a dropped socket on an ACKED turn: opens WatchTurnStream
+  // against the in-flight turn's broadcast hub WITHOUT dispatching, so
+  // live TextChunk/Reasoning chunks resume appending to the SAME bubbles.
+  // Guarded by the dispatch generation: a stale generation (a newer
+  // interject owns the slot) never touches the state, and completion
+  // still resolves via the ListMessages + turnInFlight poll as today.
+  // No duplicate turns (watch dispatches nothing), no dispatchGen race.
+  const runWatch = useCallback(
+    async (convId: string, replyId: string, gen: number): Promise<void> => {
+      let watch;
+      try {
+        watch = askOrchiconClient.watchTurnStream({
+          conversationId: convId,
+          assistantMessageId: replyId,
+        });
+      } catch {
+        return; // poll resolves completion; a failed watch is not fatal
+      }
+      liveStreamRef.current[convId] = true;
+      try {
+        for await (const chunk of watch) {
+          if (dispatchGenRef.current[convId] !== gen) return;
+          if (chunk.event.case === "textChunk") {
+            const content = chunk.event.value.content;
+            if (content) {
+              const seq = (chunkSeqRef.current[convId] ?? 0) + 1;
+              chunkSeqRef.current[convId] = seq;
+              const key = nextChunkKey("st", seq);
+              setStream(convId, (prev) => ({
+                ...prev,
+                reconnecting: false,
+                items: [
+                  ...prev.items,
+                  { kind: "text", text: content, at: Date.now(), key, phase: "p-0" },
+                ],
+              }));
+            }
+          } else if (chunk.event.case === "reasoning") {
+            const content = chunk.event.value.content;
+            if (content) {
+              const seq = (chunkSeqRef.current[convId] ?? 0) + 1;
+              chunkSeqRef.current[convId] = seq;
+              const key = nextChunkKey("sr", seq);
+              setStream(convId, (prev) => ({
+                ...prev,
+                reconnecting: false,
+                items: [
+                  ...prev.items,
+                  { kind: "reasoning", text: content, at: Date.now(), key, phase: "p-0" },
+                ],
+              }));
+            }
+          } else if ((chunk.event.case as string) === "heartbeat") {
+            setStream(convId, (prev) =>
+              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
+            );
+          } else if (chunk.event.case === "error") {
+            return; // poll resolves the failure rendering
+          }
+        }
+      } catch {
+        // Watch socket dropped again (or the hub closed on finalize) —
+        // the slot stays reconnecting and the poll resolves completion.
+      } finally {
+        liveStreamRef.current[convId] = false;
+      }
+    },
+    [setStream],
+  );
+
   // Streaming helper — takes convId as a parameter so it is never stale.
   // Mutates the given conversation's OWN stream slot via functional
   // updaters, so a turn keeps running (and the UI keeps updating) even
@@ -723,13 +735,17 @@ function AskOrchiconPage() {
       // stays streaming so the Stop button and the interject input remain,
       // and the existing ListMessages poll resolves completion when the
       // persisted reply/error appears. A stale generation (a newer interject
-      // owns the slot) never touches the state.
+      // owns the slot) never touches the state. On an ACKED turn the live
+      // stream is re-dialled via WatchTurnStream (same gen guard) so chunks
+      // resume appending instead of freezing until the poll resolves.
       const fail = (err?: unknown) => {
+        let watchReplyId: string | null = null;
         setStream(convId, (prev) => {
           if (dispatchGenRef.current[convId] !== gen) {
             return prev;
           }
           if (prev.pendingReplyId) {
+            watchReplyId = prev.pendingReplyId;
             return { ...prev, isThinking: false, reconnecting: true };
           }
           return {
@@ -741,6 +757,9 @@ function AskOrchiconPage() {
             items: [],
           };
         });
+        if (watchReplyId) {
+          void runWatch(convId, watchReplyId, gen);
+        }
         if (err) {
           toast.error(String(err instanceof Error ? err.message : err), { title: "Chat error" });
         }
@@ -761,6 +780,9 @@ function AskOrchiconPage() {
           } else if (chunk.event.case === "textChunk") {
             const content = chunk.event.value.content;
             if (content) {
+              const seq = (chunkSeqRef.current[convId] ?? 0) + 1;
+              chunkSeqRef.current[convId] = seq;
+              const key = nextChunkKey("st", seq);
               setStream(convId, (prev) => ({
                 ...prev,
                 items: [
@@ -769,7 +791,7 @@ function AskOrchiconPage() {
                     kind: "text",
                     text: content,
                     at: Date.now(),
-                    key: `st-${Date.now()}-${Math.random()}`,
+                    key,
                     phase: "p-0",
                   },
                 ],
@@ -778,6 +800,9 @@ function AskOrchiconPage() {
           } else if (chunk.event.case === "reasoning") {
             const content = chunk.event.value.content;
             if (content) {
+              const seq = (chunkSeqRef.current[convId] ?? 0) + 1;
+              chunkSeqRef.current[convId] = seq;
+              const key = nextChunkKey("sr", seq);
               setStream(convId, (prev) => ({
                 ...prev,
                 items: [
@@ -786,12 +811,18 @@ function AskOrchiconPage() {
                     kind: "reasoning",
                     text: content,
                     at: Date.now(),
-                    key: `sr-${Date.now()}-${Math.random()}`,
+                    key,
                     phase: "p-0",
                   },
                 ],
               }));
             }
+          } else if ((chunk.event.case as string) === "heartbeat") {
+            // Server keepalive: no rendering, but the socket is live —
+            // clear any reconnecting banner so liveness is visible.
+            setStream(convId, (prev) =>
+              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
+            );
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
@@ -808,7 +839,7 @@ function AskOrchiconPage() {
       }
       return acked;
     },
-    [toast, setStream],
+    [toast, setStream, runWatch],
   );
 
   // A normal send: starts a fresh turn on the conversation.

@@ -185,6 +185,19 @@ message ReasoningChunk {
   string content = 1;
 }
 
+// Heartbeat is a lightweight server keepalive emitted on an in-flight turn's
+// stream at ≤20s cadence while the turn runs but produces no TextChunk /
+// ReasoningChunk (reasoning-heavy silent phases). It carries no content and
+// the frontend ignores it for rendering — its sole purpose is wire traffic
+// so proxy/browser idle timeouts do not kill a healthy-but-quiet stream.
+// It also resets the client's reconnecting banner (proof the socket is
+// live). No new idle network churn: heartbeats emit only while a turn is
+// in flight, never when nothing streams.
+message Heartbeat {
+  // server_time_unix_ms lets the client measure socket age/skew.
+  int64 server_time_unix_ms = 1;
+}
+
 // AttachmentInput is a file attachment sent with a chat message.
 message AttachmentInput {
   string name = 1;

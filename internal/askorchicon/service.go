@@ -48,6 +48,11 @@ type Service struct {
 	// turns is the in-flight turn registry (one turn per conversation):
 	// the one-turn gate + the Stop path's deterministic collector cancel.
 	turns *turnRegistry
+	// hubs is the live-turn broadcast registry (one hub per conversation
+	// with a running turn): every response drained to the dispatch stream
+	// is also published here so WatchTurnStream can re-attach a dropped
+	// socket to the SAME turn without dispatching.
+	hubs *turnHubRegistry
 	// testServeClient is a test-only injection point that bypasses the real
 	// host serve so handler tests can drive ChatStream/Abort with a fake
 	// session client. Never set outside tests.
@@ -65,6 +70,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		modelDisc:    modelDisc,
 		toolRegistry: NewToolRegistry(pool, log, secretsKEK),
 		turns:        newTurnRegistry(),
+		hubs:         newTurnHubRegistry(),
 	}
 	s.registerSessionTools()
 	s.startSweeper()
