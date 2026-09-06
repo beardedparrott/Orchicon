@@ -8,22 +8,31 @@
 // expanded tile's grid stream is suspended so this modal owns the one
 // live subscription while open).
 import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Minimize2, Pause, Play, Square, X } from "lucide-react";
 
 import {
+  executionKeys,
   useApproveToolCall,
   useCancelExecution,
   useGetExecution,
+  useGetExecutionTodos,
   useListPendingApprovals,
   usePauseExecution,
   useResumeExecution,
   useStreamExecutionEvents,
 } from "@/api/executions";
+import { usageKeys } from "@/api/aigateway";
+import { TodoListCard } from "@/components/executions/ExecutionContextSidebar";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
 import { cn } from "@/lib/utils";
 import type { HeadsUpTileData } from "./headsUp";
+import {
+  formatCompactTokens,
+  useExecutionUsageSummary,
+} from "./executionUsage";
 import { ExecStatusBadge, StepStatusPill } from "./status";
 
 interface HeadsUpExpandedModalProps {
@@ -32,6 +41,7 @@ interface HeadsUpExpandedModalProps {
 }
 
 export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProps) {
+  const qc = useQueryClient();
   const execId = tile.execution?.id ?? "";
 
   // ESC closes; lock body scroll while open.
@@ -51,9 +61,18 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
   const { data: exec } = useGetExecution(execId);
   // The modal owns the live subscription while open (the grid suspended
   // this tile's stream via suspendedStepId — still exactly one stream).
+  // Stream events invalidate the detail/session/todos/usage queries so the
+  // Context rail and todo list go live while running (mirrors
+  // executions_.$id.tsx).
   const { events, status } = useStreamExecutionEvents({
     executionId: execId,
     enabled: Boolean(execId),
+    onEvent: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.detail(execId) });
+      qc.invalidateQueries({ queryKey: executionKeys.session(execId) });
+      qc.invalidateQueries({ queryKey: executionKeys.todos(execId) });
+      qc.invalidateQueries({ queryKey: usageKeys.records(undefined, execId) });
+    },
   });
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
@@ -66,6 +85,12 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
   const isPaused = execStatus === 6;
   const isTerminal =
     execStatus === 7 || execStatus === 8 || execStatus === 9 || execStatus === 10;
+  // Same cost + context counts as /executions/$id's sidebar (shared hook).
+  const { workingSet, cost, contextWindow, contextPct, hasRecords } =
+    useExecutionUsageSummary(execId);
+  // Worker's todo list: live-polling while non-terminal, static once
+  // terminal — hidden when the worker recorded no todos.
+  const { data: todos } = useGetExecutionTodos(execId, isTerminal ? 0 : 2000);
 
   return (
     <div
@@ -157,6 +182,23 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
                   <dt className="text-muted-foreground">Execution</dt>
                   <dd className="truncate font-mono">{execId ? `${execId.slice(0, 12)}…` : "—"}</dd>
                 </div>
+                {hasRecords && (
+                  <>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-muted-foreground">Cost</dt>
+                      <dd className="font-mono">${cost.toFixed(4)}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-muted-foreground">Context</dt>
+                      <dd className="font-mono">
+                        {formatCompactTokens(workingSet)} tokens
+                        {contextWindow > 0
+                          ? ` · ${contextPct}%`
+                          : " · window unknown"}
+                      </dd>
+                    </div>
+                  </>
+                )}
               </dl>
               {execId && (
                 <Button
@@ -169,6 +211,8 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
                 </Button>
               )}
             </div>
+
+            {todos && todos.length > 0 && <TodoListCard todos={todos} />}
 
             {execId && !isTerminal && (
               <div className="flex flex-wrap gap-1.5">

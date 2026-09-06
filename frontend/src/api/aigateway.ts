@@ -79,7 +79,7 @@ export function useGetUsage(opts?: {
   executionId?: string;
   provider?: string;
   model?: string;
-}) {
+}, enabled = true) {
   return useQuery({
     queryKey: usageKeys.records(opts?.projectId, opts?.executionId, opts?.taskId),
     queryFn: async () => {
@@ -93,6 +93,7 @@ export function useGetUsage(opts?: {
       });
       return (res.records ?? []) as UsageRecord[];
     },
+    enabled,
   });
 }
 

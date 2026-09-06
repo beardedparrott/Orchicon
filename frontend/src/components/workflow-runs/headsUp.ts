@@ -336,7 +336,7 @@ export function buildHeadsUpTiles(
     if (!latestByStep.has(srun.stepId)) latestByStep.set(srun.stepId, srun);
   }
   const execById = new Map((execs ?? []).map((e) => [e.id, e]));
-  return steps.map((s) => {
+  const tiles = steps.map((s) => {
     const kind = stepKindNum(s.kind);
     const srun = latestByStep.get(s.id) ?? null;
     const execId = srun?.workerExecutionId || "";
@@ -355,4 +355,8 @@ export function buildHeadsUpTiles(
       loopOutcome: loopOutcomeTag(srun),
     } satisfies HeadsUpTileData;
   });
+  // Output in DAG (queue) order, not raw steps-JSON canvas order —
+  // queueIndex is unique 1..n so this sort is deterministic.
+  tiles.sort((a, b) => a.queueIndex - b.queueIndex);
+  return tiles;
 }
