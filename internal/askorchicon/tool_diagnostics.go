@@ -154,6 +154,17 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
+	// Validate the default model refs against the shared adapter/provider/model
+	// grammar BEFORE touching the DB (parity with the SettingsService RPC): a
+	// malformed or unknown-adapter ref must never persist through this
+	// agent-controlled second write path into tenant_settings. Empty/unset is
+	// valid (toolValidateModelRef treats it as such).
+	if err := toolValidateModelRef(params.DefaultAskOrchiconModel); err != nil {
+		return nil, fmt.Errorf("default_ask_orchicon_model: %w", err)
+	}
+	if err := toolValidateModelRef(params.DefaultWorkerModel); err != nil {
+		return nil, fmt.Errorf("default_worker_model: %w", err)
+	}
 	var budget []byte
 	if params.DefaultBudgetOverrides != nil {
 		budget = []byte(*params.DefaultBudgetOverrides)
