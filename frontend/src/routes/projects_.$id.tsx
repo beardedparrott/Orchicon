@@ -11,9 +11,11 @@ import {
   useDeleteProject,
   useGetProject,
   useUpdateProject,
+  protoToExecutionMode,
   projectKeys,
 } from "@/api/projects";
 import { useGetSettings } from "@/api/settings";
+import { useAvailableRuntimeImages } from "@/api/runtimeImages";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
@@ -68,6 +70,10 @@ function ProjectDetailPage() {
   const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy>("local");
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
+  const [draftDefaultImage, setDraftDefaultImage] = useState("");
+  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
+  const [savingRuntime, setSavingRuntime] = useState(false);
+  const { data: availableImages } = useAvailableRuntimeImages();
   // MCP server selection (references into Settings → Adapters → MCP).
   // Auto-refreshes on save via react-query invalidation (mcpKeys.project).
   const { data: projectMCPServers } = useGetProjectMCPServers(id);
@@ -85,10 +91,16 @@ function ProjectDetailPage() {
   const activeExecutions = (executions ?? []).filter((e) =>
     e.status === 1 || e.status === 2 || e.status === 3 || e.status === 4 || e.status === 5 || e.status === 6,
   ).length;
+  const runtimeOptions = [
+    ...((availableImages as { stockImages?: string[] } | undefined)?.stockImages ?? []),
+    ...((availableImages as { customImages?: string[] } | undefined)?.customImages ?? []),
+  ].filter((img, i, arr) => img && arr.indexOf(img) === i);
+  const defaultImageHint =
+    (availableImages as { defaultImage?: string } | undefined)?.defaultImage || runtimeOptions[0] || "base image";
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
-    const proj = project as (typeof project & { git_strategy?: unknown; goals?: unknown }) | undefined;
+    const proj = project as (typeof project & { git_strategy?: unknown; goals?: unknown; defaultRuntimeImage?: unknown; default_runtime_image?: unknown; executionMode?: unknown; execution_mode?: unknown }) | undefined;
     const raw = proj?.gitStrategy ?? proj?.git_strategy ?? (() => {
       try {
         const g = JSON.parse(typeof proj?.goals === "string" ? proj.goals : "{}") as { __git_strategy?: unknown };
@@ -99,6 +111,10 @@ function ProjectDetailPage() {
     const mapped = protoToGitStrategy(typeof raw === "number" || typeof raw === "string" ? raw : undefined);
     if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("local");
+    const imgRaw = proj?.defaultRuntimeImage ?? proj?.default_runtime_image;
+    setDraftDefaultImage(typeof imgRaw === "string" ? imgRaw : "");
+    const execRaw = proj?.executionMode ?? proj?.execution_mode;
+    setDraftExecutionMode(protoToExecutionMode(typeof execRaw === "number" || typeof execRaw === "string" ? execRaw : undefined));
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -266,6 +282,12 @@ function ProjectDetailPage() {
             ...(project.projectDir ? { project_dir: project.projectDir } : {}),
             ...(project.contextFiles?.length
               ? { context_files: project.contextFiles }
+              : {}),
+            ...((project as { defaultRuntimeImage?: string }).defaultRuntimeImage
+              ? { default_runtime_image: (project as { defaultRuntimeImage?: string }).defaultRuntimeImage }
+              : {}),
+            ...((project as { executionMode?: number }).executionMode
+              ? { execution_mode: executionModeLabel((project as { executionMode?: number }).executionMode) }
               : {}),
             created_at: project.createdAt
               ? new Date(
@@ -493,6 +515,77 @@ function ProjectDetailPage() {
         </Card>
       )}
 
+      {/* Runtime defaults — project-level container image + execution mode */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime defaults</CardTitle>
+            <CardDescription>
+              Default container image copied onto work items at create time
+              when they pass no runtime_image. Empty = inherit base
+              ({defaultImageHint}). Mode runtime runs inside the container;
+              local allows in-process with an honest prompt + DSN fence.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="default-runtime-image">Default runtime image</Label>
+                <select
+                  id="default-runtime-image"
+                  disabled={!editing}
+                  value={draftDefaultImage}
+                  onChange={(e) => setDraftDefaultImage(e.target.value)}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="">Inherit base ({defaultImageHint})</option>
+                  {runtimeOptions.map((img) => (
+                    <option key={img} value={img}>
+                      {img}
+                    </option>
+                  ))}
+                  {draftDefaultImage && !runtimeOptions.includes(draftDefaultImage) && (
+                    <option value={draftDefaultImage}>{draftDefaultImage} (current)</option>
+                  )}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="execution-mode">Execution mode</Label>
+                <select
+                  id="execution-mode"
+                  disabled={!editing}
+                  value={draftExecutionMode}
+                  onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="runtime">runtime — always-container (default)</option>
+                  <option value="local">local — in-process (fenced)</option>
+                </select>
+              </div>
+            </div>
+            {editing ? (
+              <Button
+                variant="outline"
+                disabled={savingRuntime}
+                onClick={() => {
+                  setSavingRuntime(true);
+                  updateProject.mutate(
+                    { id: project.id, defaultRuntimeImage: draftDefaultImage, executionMode: draftExecutionMode },
+                    { onSettled: () => setSavingRuntime(false) },
+                  );
+                }}
+              >
+                {savingRuntime ? "Saving…" : "Save runtime defaults"}
+              </Button>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Concurrency guard: per-project max-concurrent-runs + current vs limit */}
       {project && (
         <Card>
@@ -662,6 +755,11 @@ function statusLabel(status: number): string {
     5: "deleted",
   };
   return labels[status] ?? "unknown";
+}
+
+function executionModeLabel(mode: number | undefined): string {
+  if (mode === 2) return "local";
+  return "runtime";
 }
 
 // effectiveLimit mirrors the server's min(tenant, project) formula where 0
