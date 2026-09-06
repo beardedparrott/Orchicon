@@ -665,6 +665,38 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		run = updated
 		resolvedImage = run.RuntimeImage
 		armed = true
+		// Always-container: EVERY runtime-mode run gets its container
+		// synchronously at arm (idempotent — EnsureForRun is a no-op when
+		// the run already holds a lease), NOT only runs that enter the
+		// gate below. Native-only (serve-less) runs arm with
+		// RuntimeReady=true and would otherwise skip the gate entirely
+		// and dispatch with no container. A daemon/create failure fails
+		// the run LOUD at start (retry resolved tag once -> base -> fail);
+		// never silent host exec. The container ensure runs in autocommit
+		// (outside the pass tx) while the arm update + run_started event
+		// stay in the pass tx: on ensure failure the event write rolls
+		// back with the tx and failRunAtStart commits the terminal state
+		// in its own tx.
+		if !runLocalMode && r.runtimeEnabled() {
+			try := run
+			try.RuntimeImage = resolvedImage
+			if cerr := r.runtime.EnsureForRun(ctx, try); cerr != nil {
+				// Arm-site ensure failed: roll back the arm (the run stays
+				// pending, the run_started event is unwritten) and run the
+				// failover in its own tx — failRunAtStart re-reads the
+				// current row version itself, so the rolled-back arm
+				// version never conflicts.
+				_ = ttx.Rollback(ctx)
+				if err := r.ensureRunContainerFailover(ctx, tenantID, runID, resolvedImage); err != nil {
+					return err
+				}
+				// Failover either retried into success (run still pending
+				// — next pass re-arms) or failed the run LOUD at start
+				// and committed: stop the pass and reap post-commit.
+				reapRuntime = true
+				return nil
+			}
+		}
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
@@ -708,20 +740,13 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// no probe — flip ready and progress in-process. The
 			// reconciler pass below clears the gate for local runs.
 			if !runLocalMode {
-				// Ensure the container FIRST (synchronously — the run cannot
-				// dispatch without it), then start the async serve probe.
-				// A daemon/create failure fails the run LOUD at start (retry
-				// resolved tag once -> base -> fail); never silent host exec.
-				if err := r.ensureRunContainer(ctx, ttx.Tx, tenantID, run, resolvedImage); err != nil {
-					if err == errRunFailedAtStart {
-						// ensureRunContainer already failed the run at start
-						// and committed: stop the pass (deferred rollback is
-						// a no-op on a committed tx) and reap post-commit.
-						reapRuntime = true
-						return nil
-					}
-					return err
-				}
+				// The container was ensured synchronously at arm above
+				// (every runtime-mode run, regardless of kind). Here only
+				// the async serve probe starts — for serve-needing runs.
+				// (Legacy pre-always-container rows may arrive gated with
+				// no container: re-ensure idempotently — a held lease is
+				// a no-op, a missing daemon fails LOUD via failRunServeGate
+				// semantics below, never silent host exec.)
 				r.startEnsureServing(run, needsServeGate)
 			}
 			// Commit the transition (the deferred rollback would undo it on
@@ -1652,17 +1677,16 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	return nil
 }
 
-// ensureRunContainer creates the run's container synchronously at run
-// start (always-container: every runtime-mode run gets one, regardless of
-// kind). Failover: on create failure the resolved tag is retried once,
-// then the base image is tried once; if the base is also unavailable the
-// run fails LOUD at start via failRunAtStart (commit included — the caller
-// returns the error without committing). Never silently falls back to host
-// exec in runtime mode.
-//
-// Local-mode runs never reach here: the arm site routes them to the
-// in-process path with the honest prompt + DSN fence.
-func (r *WorkflowReconciler) ensureRunContainer(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, resolvedImage string) error {
+// ensureRunContainerFailover runs the arm-site failover in its own tx:
+// retry the resolved tag once (transient daemon/pool miss), then the base
+// image once; if every attempt fails, fail the run LOUD at start. The arm
+// pass already rolled back on entry, so the run is still pending here —
+// the fail path re-reads the current row (fresh version) and commits the
+// terminal state; the retry-success path leaves the run pending for the
+// next pass to re-arm. Returns nil in both terminal cases (the caller
+// stops the pass and reaps post-commit); a non-nil error is an
+// infrastructure failure the caller returns.
+func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, tenantID, runID, resolvedImage string) error {
 	if !r.runtimeEnabled() {
 		return nil
 	}
@@ -1670,42 +1694,40 @@ func (r *WorkflowReconciler) ensureRunContainer(ctx context.Context, tx pgx.Tx, 
 	if img == "" || img == runtime.NoServeImage {
 		img = db.BaseRuntimeImage
 	}
-	try := run
+	ftx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("failover begin tx: %w", err)
+	}
+	defer ftx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ftx.Tx, tenantID, runID)
+	if err != nil {
+		return fmt.Errorf("failover get run: %w", err)
+	}
+	try := cur
 	try.RuntimeImage = img
-	if err := r.runtime.EnsureForRun(ctx, try); err == nil {
+	// The arm site already attempted EnsureForRun once (in autocommit);
+	// entry here means that attempt failed. Retry the resolved tag once
+	// (transient daemon/pool miss), then fall back to the base image.
+	firstErr := fmt.Errorf("arm-site container ensure failed")
+	if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
 		return nil
-	} else {
-		firstErr := err
-		// Retry the resolved tag once (transient daemon/pool miss), then
-		// fall back to the base image once.
-		if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
+	}
+	if img != db.BaseRuntimeImage {
+		try.RuntimeImage = db.BaseRuntimeImage
+		if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
+			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", firstErr)
 			return nil
 		}
-		if img != db.BaseRuntimeImage {
-			try.RuntimeImage = db.BaseRuntimeImage
-			if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
-				r.log.Warn("workflow runtime fell back to base image", "run", run.ID, "resolved", img, "error", firstErr)
-				return nil
-			}
-		}
-		reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
-		if ferr := r.failRunAtStart(ctx, tx, tenantID, run, reason); ferr != nil {
-			return ferr
-		}
-		if cerr := tx.Commit(ctx); cerr != nil {
-			return fmt.Errorf("commit fail-at-start: %w", cerr)
-		}
-		// Signal the caller to stop: the run is now terminal. The sentinel
-		// error is swallowed by reconcileRun's post-commit return path —
-		// return nil after committing so the pass ends cleanly.
-		return errRunFailedAtStart
 	}
+	reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
+	if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
+		return ferr
+	}
+	if cerr := ftx.Commit(ctx); cerr != nil {
+		return fmt.Errorf("commit fail-at-start: %w", cerr)
+	}
+	return nil
 }
-
-// errRunFailedAtStart signals that ensureRunContainer already failed the
-// run at start AND committed: the reconcile pass must stop without further
-// writes (the deferred rollback is a no-op on a committed tx).
-var errRunFailedAtStart = fmt.Errorf("run failed at start (already committed)")
 
 // startEnsureServing kicks off the ASYNC runtime-serve readiness probe for
 // a run (idempotent — one goroutine per run; the in-flight map clears when
