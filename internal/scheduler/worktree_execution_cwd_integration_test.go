@@ -101,23 +101,57 @@ func TestWorktreeExecutionCwdReady(t *testing.T) {
 	}
 }
 
-// TestWorktreeExecutionCwdFallback verifies a run without a provisioned
-// worktree keeps an empty WorktreePath (execution cwd = project_dir).
+// TestWorktreeExecutionCwdFallback verifies the hold-then-fallback dispatch
+// contract for runs without a provisioned worktree: a run whose worktree is
+// still pending is HELD (0 manifests — the re-provision path owns it, never
+// a silent project-dir fallback), while a run admitted in-place (skipped,
+// the non-repo decision) dispatches with an empty WorktreePath (execution
+// cwd = project_dir).
 func TestWorktreeExecutionCwdFallback(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
 
 	// The run stays 'pending' — no worktree provisioned (the reconciler was
-	// never run for it).
+	// never run for it). Dispatch must HOLD: 0 manifests, never a silent
+	// project-dir fallback for a pending run.
 	task, version, exec := newCwdTestTask(env.proj.ID, env.run.ID, env.itemID)
 	bridge := &manifestCaptureBridge{}
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
 	rec.startExecution(ctx, exec, task, version, db.AdapterRow{})
 
-	if len(bridge.manifests) != 1 {
-		t.Fatalf("startExecution produced %d manifests, want 1", len(bridge.manifests))
+	if len(bridge.manifests) != 0 {
+		t.Fatalf("startExecution dispatched %d manifests for a pending run, want 0 (held for re-provision)", len(bridge.manifests))
 	}
-	man := bridge.manifests[0]
+
+	// Admit the run in-place (skipped — the non-repo decision): now the
+	// fallback applies — exactly 1 manifest, empty WorktreePath, and
+	// ProjectDir unchanged as the mount/guard root.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		WorktreeStatus: strPtr(domain.WorktreeSkipped),
+	}); err != nil {
+		t.Fatalf("mark skipped: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit skipped: %v", err)
+	}
+
+	task2, version2, exec2 := newCwdTestTask(env.proj.ID, env.run.ID, env.itemID)
+	bridge2 := &manifestCaptureBridge{}
+	rec2 := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge2))
+	rec2.startExecution(ctx, exec2, task2, version2, db.AdapterRow{})
+
+	if len(bridge2.manifests) != 1 {
+		t.Fatalf("startExecution produced %d manifests, want 1", len(bridge2.manifests))
+	}
+	man := bridge2.manifests[0]
 	if man.WorktreePath != "" {
 		t.Errorf("manifest.WorktreePath = %q, want empty (no provisioned worktree)", man.WorktreePath)
 	}

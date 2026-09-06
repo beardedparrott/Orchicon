@@ -91,6 +91,28 @@ const maxWorktreeCandidatePages = 4
 // a git repo is picked up within a TTL even without a project_dir change).
 const gitDetectionTTL = 24 * time.Hour
 
+// slowPassInterval gates the orphan-sweep slow pass of scan(): the fast
+// pass (pending run + branch-candidate provisioning AND terminal
+// run/step-run prunes — all page-bounded) runs every tick, but the sweep
+// pass (orphan-branch, orphan-dir, skipped-terminal restore — the unbounded
+// git proof-chain fan-out) runs at most once per interval. A pending run
+// armed mid-sweep previously waited behind the whole serial slow pass
+// (minutes under terminal-run backlog); time-gating keeps dispatch latency
+// bounded while orphan cleanup still converges on a slower cadence.
+const slowPassInterval = 60 * time.Second
+
+// slowPassBudget bounds the wall-clock git-subprocess cost of one slow
+// pass. Checked between per-item iterations of the sweep loops; on expiry
+// the sweep returns early and resumes on the next slow tick (cleared-branch
+// paging preserves forward progress).
+const slowPassBudget = 15 * time.Second
+
+// orphanBranchSweepLimit bounds how many orphaned branch refs the sweep
+// reclaims per scan pass, mirroring the other batch-capped scan surfaces.
+// Branch deletion is idempotent, so an over-budget scan simply continues on
+// the next tick.
+const orphanBranchSweepLimit = 32
+
 // WorktreeReconciler implements reconciler.Reconciler for the "worktree"
 // kind, keyed by workflow-run ID.
 type WorktreeReconciler struct {
@@ -100,6 +122,12 @@ type WorktreeReconciler struct {
 	// for the atomic admission gate (concurrency guards D3). Set via
 	// SetDispatchLimiter.
 	limiter DispatchLimiter
+	// lastSlowPass records when the sweep slow pass (orphan sweeps) last
+	// ran. Zero-value means the slow pass runs on the first tick (cleanup
+	// resumes after restart; provisioning and terminal prunes are
+	// unaffected). The reconciler manager drives Reconcile on a single
+	// goroutine, so no mutex guards this field.
+	lastSlowPass time.Time
 }
 
 // NewWorktreeReconciler creates a WorktreeReconciler.
@@ -161,17 +189,62 @@ func splitWorktreeKey(key string) (runID, stepRunID, composite string) {
 // dispatches terminal step runs to pruneStepRunOne). Batch-capped so one
 // pass can't monopolize the reconciler goroutine (mirrors
 // TaskReconciler's scan).
+//
+// The scan is split into a fast pass and a time-gated slow pass. The fast
+// pass (run + branch-candidate provisioning AND terminal-run/step-run
+// prunes — all bounded to 16-row DB pages plus one git worktree add per
+// row) runs on EVERY tick so a newly armed pending run never waits behind
+// cleanup work and terminal worktrees are always reaped promptly. The slow
+// pass (orphan-branch sweep, orphan-dir sweep, skipped-terminal restore —
+// the unbounded git proof-chain fan-out that caused the 3-minute stall)
+// runs at most once per slowPassInterval and is additionally bounded by a
+// per-tick wall-clock budget. Cleanup still converges — just on a slower
+// cadence — while dispatch latency stays bounded.
 func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconciler.Result {
+	scanStart := time.Now()
+	provisions, res := r.scanFast(ctx, tenantID)
+	if res.Error != nil {
+		return res
+	}
+	fastElapsed := time.Since(scanStart)
+	if !r.slowPassDue() {
+		r.log.Info("worktree: scan",
+			"fast_ms", fastElapsed.Milliseconds(),
+			"slow_ms", int64(0),
+			"slow_skipped", true,
+			"provisions", provisions)
+		return reconciler.Result{}
+	}
+	slowStart := time.Now()
+	res = r.scanSlow(ctx, tenantID)
+	r.lastSlowPass = time.Now()
+	r.log.Info("worktree: scan",
+		"fast_ms", fastElapsed.Milliseconds(),
+		"slow_ms", time.Since(slowStart).Milliseconds(),
+		"slow_skipped", false,
+		"provisions", provisions)
+	return res
+}
+
+// scanFast provisions pending runs and pending parallel-branch child step
+// runs, then prunes terminal runs and terminal step runs. It ALWAYS runs —
+// this is the dispatch-latency fast path (provisioning) plus the prompt
+// lifecycle reap (prunes are page-bounded like provisions, not the
+// unbounded sweep fan-out). Returns the number of reconcile attempts
+// (provision + branch + prune) for the scan summary log.
+func (r *WorktreeReconciler) scanFast(ctx context.Context, tenantID string) (int, reconciler.Result) {
+	provisions := 0
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return reconciler.Result{Error: err}
+		return 0, reconciler.Result{Error: err}
 	}
 	runs, err := db.ListWorktreeCandidates(ctx, ttx.Tx, tenantID, 16)
 	ttx.Rollback(ctx)
 	if err != nil {
-		return reconciler.Result{Error: fmt.Errorf("scan worktree candidates: %w", err)}
+		return 0, reconciler.Result{Error: fmt.Errorf("scan worktree candidates: %w", err)}
 	}
 	for _, run := range runs {
+		provisions++
 		if err := r.reconcileOne(ctx, tenantID, run.ID); err != nil {
 			r.log.Warn("worktree: provision run failed", "run", run.ID, "error", err)
 		}
@@ -187,12 +260,12 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 	for page := 0; page < maxWorktreeCandidatePages; page++ {
 		ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
 		if err != nil {
-			return reconciler.Result{Error: err}
+			return provisions, reconciler.Result{Error: err}
 		}
 		candidates, err := db.ListWorktreeStepRunCandidates(ctx, ttx.Tx, tenantID, 16, afterCreated, afterID)
 		ttx.Rollback(ctx)
 		if err != nil {
-			return reconciler.Result{Error: fmt.Errorf("scan branch worktree candidates: %w", err)}
+			return provisions, reconciler.Result{Error: fmt.Errorf("scan branch worktree candidates: %w", err)}
 		}
 		if len(candidates) == 0 {
 			break
@@ -202,6 +275,7 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 			if !r.isParallelBranchChildStepRun(ctx, tenantID, sr.WorkflowRunID, sr.StepID) {
 				continue
 			}
+			provisions++
 			if err := r.reconcileStepRunOne(ctx, tenantID, sr.WorkflowRunID, sr.ID); err != nil {
 				r.log.Warn("worktree: provision branch worktree failed",
 					"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
@@ -211,37 +285,67 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 			break
 		}
 	}
-	// Prune terminal runs' worktrees.
+	// Prune terminal runs' worktrees (page-bounded lifecycle reap — stays in
+	// the fast pass so consecutive scans always converge terminal rows).
 	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return reconciler.Result{Error: err}
+		return provisions, reconciler.Result{Error: err}
 	}
 	terminal, err := db.ListTerminalRunsWithWorktrees(ctx, ttx.Tx, tenantID, 16)
 	ttx.Rollback(ctx)
 	if err != nil {
-		return reconciler.Result{Error: fmt.Errorf("scan terminal worktrees: %w", err)}
+		return provisions, reconciler.Result{Error: fmt.Errorf("scan terminal worktrees: %w", err)}
 	}
 	for _, run := range terminal {
+		provisions++
 		if err := r.reconcileOne(ctx, tenantID, run.ID); err != nil {
 			r.log.Warn("worktree: prune run failed", "run", run.ID, "error", err)
 		}
 	}
-	// Prune terminal step runs' branch worktrees.
+	// Prune terminal step runs' branch worktrees (same: bounded reap).
 	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return reconciler.Result{Error: err}
+		return provisions, reconciler.Result{Error: err}
 	}
 	terminalStepRuns, err := db.ListTerminalStepRunsWithWorktrees(ctx, ttx.Tx, tenantID, 16)
 	ttx.Rollback(ctx)
 	if err != nil {
-		return reconciler.Result{Error: fmt.Errorf("scan terminal step-run worktrees: %w", err)}
+		return provisions, reconciler.Result{Error: fmt.Errorf("scan terminal step-run worktrees: %w", err)}
 	}
 	for _, sr := range terminalStepRuns {
+		provisions++
 		if err := r.reconcileStepRunOne(ctx, tenantID, sr.WorkflowRunID, sr.ID); err != nil {
 			r.log.Warn("worktree: prune branch worktree failed",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
 		}
 	}
+	return provisions, reconciler.Result{}
+}
+
+// slowPassDue reports whether the orphan-sweep slow pass may run: at most
+// once per slowPassInterval. Factored as a method so the dispatch-stall
+// regression guard tests the real gate instead of re-implementing it.
+func (r *WorktreeReconciler) slowPassDue() bool {
+	return time.Since(r.lastSlowPass) >= slowPassInterval
+}
+
+// sweepBudgetExpired reports whether a slow-pass wall-clock deadline has
+// passed. Sweep loops check it between per-item iterations so one tick
+// cannot stall dispatch; expiry resumes on the next slow tick via the
+// cleared-branch page-advance invariant.
+func sweepBudgetExpired(deadline time.Time) bool {
+	return time.Now().After(deadline)
+}
+
+// scanSlow runs the orphan sweeps: orphan-branch, orphan-dir, and
+// skipped-terminal restore. These fan out into unbounded git proof chains
+// per row (listWorktrees/branchExists/branchProvablyMerged, each a
+// subprocess) — the serial cost that pinned the only worktree goroutine
+// for minutes under terminal-run backlog. It runs at most once per
+// slowPassInterval (gated by scan) and each sweep loop observes a shared
+// wall-clock budget so one tick cannot stall dispatch.
+func (r *WorktreeReconciler) scanSlow(ctx context.Context, tenantID string) reconciler.Result {
+	deadline := time.Now().Add(slowPassBudget)
 	// Sweep orphaned branch refs: a COMPLETED run (or a step run of one)
 	// whose worktree was already pruned still records worktree_branch, but the
 	// prune pass only ran (and deleted the branch) for 'ready' worktrees at
@@ -251,12 +355,12 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 	// never revisited and leaks as a dead local ref. Reclaim any such branch
 	// that is provably merged into the base (success-only: never on a failed /
 	// aborted run's branch, which a retry re-attaches to).
-	r.sweepOrphanBranches(ctx, tenantID)
+	r.sweepOrphanBranches(ctx, tenantID, deadline)
 	// ADR 2.3: reclaim stale .orchicon-worktrees/<id> dirs that are no longer
 	// valid git worktrees and have no DB row referencing them, then restore
 	// any terminal skipped run's shared checkout (ADR 2.2).
-	r.sweepOrphanDirs(ctx, tenantID)
-	r.sweepSkippedTerminalRuns(ctx, tenantID)
+	r.sweepOrphanDirs(ctx, tenantID, deadline)
+	r.sweepSkippedTerminalRuns(ctx, tenantID, deadline)
 	return reconciler.Result{}
 }
 
@@ -287,12 +391,6 @@ func (r *WorktreeReconciler) isParallelBranchChildStepRun(ctx context.Context, t
 	return parallelBranchChildIDs(steps)[stepID]
 }
 
-// orphanBranchSweepLimit bounds how many orphaned branch refs the sweep
-// reclaims per scan pass, mirroring the other batch-capped scan surfaces.
-// Branch deletion is idempotent, so an over-budget scan simply continues on
-// the next tick.
-const orphanBranchSweepLimit = 32
-
 // sweepOrphanBranches reclaims dead local branch refs left behind by the
 // prune path. It runs at the end of every scan, after the terminal-run and
 // terminal-step-run prune passes:
@@ -309,7 +407,7 @@ const orphanBranchSweepLimit = 32
 // never touches protected/current branches, and only reaps branches whose run
 // actually completed. A branch still attached to a live worktree is left to
 // the prune pass (never swept while in use).
-func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string) {
+func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string, deadline time.Time) {
 	// Runs whose worktree was pruned but branch still recorded — inclusive
 	// window (completed always reclaimable; failed/aborted reclaimable only
 	// when the bound work item is terminal non-replayable or absent). The
@@ -327,6 +425,10 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 		return
 	}
 	for _, run := range runs {
+		if sweepBudgetExpired(deadline) {
+			r.log.Info("worktree: orphan sweep budget expired, resuming next slow pass", "phase", "runs")
+			return
+		}
 		if err := r.sweepOrphanRun(ctx, tenantID, run); err != nil {
 			r.log.Warn("worktree: orphan sweep run branch failed",
 				"run", run.ID, "branch", run.WorktreeBranch, "error", err)
@@ -346,6 +448,10 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 		return
 	}
 	for _, sr := range steps {
+		if sweepBudgetExpired(deadline) {
+			r.log.Info("worktree: orphan sweep budget expired, resuming next slow pass", "phase", "step_runs")
+			return
+		}
 		if err := r.sweepOrphanStepBranch(ctx, tenantID, sr); err != nil {
 			r.log.Warn("worktree: orphan sweep step branch failed",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
@@ -534,6 +640,12 @@ func (r *WorktreeReconciler) branchAttachedToWorktree(ctx context.Context, proje
 // and the final row update uses optimistic concurrency, so concurrent
 // passes for the same run converge rather than duplicate.
 func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID string) error {
+	// Dispatch-latency observability: one structured line per provision
+	// attempt with the durable outcome, so a future slow-dispatch report
+	// maps to exactly one slow provision vs scan-queued. The status is
+	// re-read AFTER the row commit, so it is durable truth.
+	start := time.Now()
+	defer func() { r.logProvisionOutcome(ctx, tenantID, runID, start) }()
 	// Phase 1 — read the run (short transaction, released before git work).
 	run, err := r.loadRun(ctx, tenantID, runID)
 	if err != nil {
@@ -561,10 +673,16 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			return nil
 		}
 	case domain.WorktreePruned:
-		if isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
+		// A pruned row is a recorded terminal worktree decision: the
+		// worktree was reaped and the branch either deleted (completed +
+		// merged) or retained for retry. Re-provisioning happens ONLY
+		// through an explicit retry, which resets worktree_status to
+		// pending (RetryFailedWorkflowRun flips pruned → pending while
+		// preserving the branch for re-attach) — never by flipping the
+		// run status alone, because the deterministic branch already
+		// exists and re-provisioning could never succeed. Hold here and
+		// let the retry path own the reset.
+		return nil
 	case domain.WorktreeSkipped, domain.WorktreeFailed:
 		// Recorded decisions are respected: a skipped or failed run
 		// is never re-provisioned by the loop. (A human may reset the row.)
@@ -744,10 +862,12 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 			return nil
 		}
 	case domain.WorktreePruned:
-		if isTerminalStepRun(sr) || isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
+		// A pruned step-run row is a recorded terminal worktree decision.
+		// Re-provisioning happens ONLY through an explicit retry, which
+		// resets worktree_status to pending while preserving the branch
+		// for re-attach — never by flipping statuses alone. Hold here and
+		// let the retry path own the reset.
+		return nil
 	case domain.WorktreeSkipped, domain.WorktreeFailed:
 		// Recorded decisions are respected: a skipped or failed
 		// step run is never re-provisioned by the loop.
@@ -1132,6 +1252,23 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 	}
 
 	return r.markPruned(ctx, tenantID, run.ID, "")
+}
+
+// logProvisionOutcome emits one structured log line per reconcileOne
+// attempt with the run's post-commit worktree_status, so a future
+// slow-dispatch report attributes to exactly one slow provision (long
+// duration_ms + terminal outcome) vs scan-queued (no line / pending).
+func (r *WorktreeReconciler) logProvisionOutcome(ctx context.Context, tenantID, runID string, start time.Time) {
+	status := "unknown"
+	if cur, err := r.loadRun(ctx, tenantID, runID); err == nil {
+		status = cur.WorktreeStatus
+		if status == "" {
+			status = "missing"
+		}
+	}
+	r.log.Info("worktree: provision", "run", runID,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"worktree_status", status)
 }
 
 // loadRun reads a run outside a transaction (released before git work).
@@ -2555,8 +2692,13 @@ func (r *WorktreeReconciler) isDirtyWorkTree(ctx context.Context, projectDir str
 // restoreWorkTree restores a git checkout to a clean state: `git reset --hard HEAD`
 // plus `git clean -fd` (not -fdx — preserve ignored build artifacts; the
 // observed stray file _batch_test2.go is untracked non-ignored and is removed
-// by -fd, while .gotmp etc. remain). Returns an error if verification after
-// restore still shows dirty.
+// by -fd, while .gotmp etc. remain). `git clean -fd` deliberately refuses to
+// delete nested git worktrees (it reports `Skipping repository ...`), so any
+// live Orchicon worktree dir under `.orchicon-worktrees/` still shows as
+// `?? .orchicon-worktrees/` afterwards — that residue is a live worktree, not
+// dirt, and the caller (prune-then-restore ordering) must reap it first.
+// Returns an error if verification after restore still shows dirt outside
+// the live-worktree residue.
 func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir string) error {
 	if _, err := runGit(ctx, projectDir, "reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("git reset --hard HEAD: %w", err)
@@ -2564,16 +2706,57 @@ func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir str
 	if _, err := runGit(ctx, projectDir, "clean", "-fd"); err != nil {
 		return fmt.Errorf("git clean -fd: %w", err)
 	}
-	if r.isDirtyWorkTree(ctx, projectDir) {
+	out, err := runGit(ctx, projectDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("checkout still dirty after restore")
+	}
+	if rest := strings.TrimSpace(stripLiveWorktreeResidue(ctx, projectDir, out)); rest != "" {
 		return fmt.Errorf("checkout still dirty after restore")
 	}
 	return nil
 }
 
+// stripLiveWorktreeResidue removes the `?? .orchicon-worktrees/` status line
+// when (and only when) the directory still holds at least one live git
+// worktree: `git clean -fd` can never remove those, so they are not dirt the
+// restore owns. A stale non-worktree dir (or an empty container) is NOT
+// stripped — that residue the restore must report.
+func stripLiveWorktreeResidue(ctx context.Context, projectDir, porcelain string) string {
+	var keep []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		f := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "??"))
+		if f == worktreeDirName+"/" || f == worktreeDirName {
+			if hasLiveWorktreeUnder(ctx, projectDir) {
+				continue
+			}
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// hasLiveWorktreeUnder reports whether <projectDir>/.orchicon-worktrees/
+// contains at least one directory that is still a registered git worktree.
+func hasLiveWorktreeUnder(ctx context.Context, projectDir string) bool {
+	out, err := runGit(ctx, projectDir, "worktree", "list", "--porcelain")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return false
+	}
+	prefix := filepath.Join(projectDir, worktreeDirName) + string(os.PathSeparator)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			if p := strings.TrimSpace(strings.TrimPrefix(line, "worktree ")); strings.HasPrefix(p, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // sweepOrphanDirs removes stale .orchicon-worktrees/<id> directories that
 // are not valid git worktrees and have no DB row referencing them. This
 // reclaims the observed stale dirs that prune left behind (no .git pointer).
-func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID string) {
+func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID string, deadline time.Time) {
 	// Collect all projects with a project_dir so we sweep each repo once.
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -2597,6 +2780,10 @@ func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID strin
 	ttx.Rollback(ctx)
 	seen := make(map[string]bool)
 	for _, dir := range dirs {
+		if sweepBudgetExpired(deadline) {
+			r.log.Info("worktree: orphan dir sweep budget expired, resuming next slow pass")
+			return
+		}
 		if seen[dir] {
 			continue
 		}
@@ -2715,7 +2902,7 @@ func (r *WorktreeReconciler) listReadyRunPaths(ctx context.Context, tx pgx.Tx, t
 // skipped run (in-place fallback). For git-backed projects the checkout must
 // be clean after a skipped run; run `reset --hard HEAD && clean -fd` and
 // verify clean. Best-effort — failures are logged but don't block the scan.
-func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenantID string) {
+func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenantID string, deadline time.Time) {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return
@@ -2736,6 +2923,10 @@ func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenan
 	rows.Close()
 	ttx.Rollback(ctx)
 	for _, rec := range recs {
+		if sweepBudgetExpired(deadline) {
+			r.log.Info("worktree: skipped-terminal restore budget expired, resuming next slow pass")
+			return
+		}
 		dir := r.lookupProjectDir(ctx, tenantID, rec.projectID)
 		if dir == "" || !r.isInsideWorkTree(ctx, dir) {
 			continue
