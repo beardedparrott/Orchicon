@@ -1245,11 +1245,15 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	// follow-up's per-message system prompt is applied to the turn, so
 	// without this every follow-up turn would lose the safety block.
 	runtimeImage := ""
+	executionMode := db.ExecutionModeRuntime
 	if wi, werr := db.GetWorkItem(ctx, ttx.Tx, tenantID, exec.TaskID); werr == nil {
 		runtimeImage = wi.RuntimeImage
+		if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, wi.ProjectID); perr == nil && proj.ExecutionMode == db.ExecutionModeLocal {
+			executionMode = db.ExecutionModeLocal
+		}
 	}
 	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
-	systemPrompt := composeFollowUpPrompt(version, runtimeImage)
+	systemPrompt := composeFollowUpPrompt(version, runtimeImage, executionMode)
 	startSeq := int64(0)
 	for _, p := range parts {
 		if p.Seq > startSeq {
@@ -1320,9 +1324,9 @@ func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[ap
 // per-message system prompt would silently drop the HARD-limit safety rules.
 // runtimeImage is the run's runtime container image tag ("" falls back to the
 // default in the prefix text).
-func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
+func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage, executionMode string) string {
 	var sb strings.Builder
-	sb.WriteString(db.StablePromptPrefix(runtimeImage))
+	sb.WriteString(db.StablePromptPrefix(runtimeImage, executionMode))
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
 		if v.SystemPrompt != "" {
 			sb.WriteString("\n\n")

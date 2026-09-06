@@ -194,6 +194,17 @@ table "projects" {
     default = "local"
     comment = "How worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral"
   }
+  column "default_runtime_image" {
+    type = text
+    null = true
+    comment = "Project-level default runtime image tag; NULL = inherit tenant/base. Copied onto work items at create."
+  }
+  column "execution_mode" {
+    type = text
+    null = false
+    default = "runtime"
+    comment = "runtime = always-container; local = in-process allowed with honest prompt + DSN fence"
+  }
   column "version" {
     type = integer
     null = false

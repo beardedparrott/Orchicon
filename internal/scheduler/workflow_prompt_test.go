@@ -143,12 +143,12 @@ func TestRuntimeEnvironmentBlockEmptyImage(t *testing.T) {
 // runtime env): two prefixes for the same runtime image must be byte-identical,
 // and a different image only changes the image label.
 func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
-	a := db.StablePromptPrefix("orchicon-dev:latest")
-	b := db.StablePromptPrefix("orchicon-dev:latest")
+	a := db.StablePromptPrefix("orchicon-dev:latest", "")
+	b := db.StablePromptPrefix("orchicon-dev:latest", "")
 	if a != b {
 		t.Errorf("stable prefix must be byte-identical for the same image")
 	}
-	if a == db.StablePromptPrefix("orchicon-base:latest") {
+	if a == db.StablePromptPrefix("orchicon-base:latest", "") {
 		t.Errorf("stable prefix must vary with the runtime image")
 	}
 }
@@ -250,7 +250,7 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 
 	// The standalone (non-workflow) dispatch path must carry the same block
 	// via the shared stable prefix.
-	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "")
+	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "", "")
 	if !strings.Contains(standalone, "## Todo list") {
 		t.Errorf("standalone composite missing the Todo list block")
 	}
@@ -380,7 +380,7 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	}
 
 	// Standalone (non-workflow) dispatch path must carry the same in-place floor.
-	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "")
+	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "", "")
 	for _, want := range []string{
 		"no git branch or worktree",
 		"Do not create branches, commit, push, or open pull requests",

@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/agentmemory"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -54,6 +55,10 @@ type NativeBridge struct {
 	cacheSink func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
+	// rtClient routes native bash into the run's container when the run
+	// is container-backed (always-container runtime mode). Nil =
+	// in-process (local mode / standalone / headless).
+	rtClient scheduler.RuntimeClient
 	// mcpConfig resolves the session's MCP server selection (ADR-0008:
 	// worker → project → tenant-default → none over the tenant server list).
 	// Nil/absent → no MCP tools (sessions unaffected). Defaults to the no-op
@@ -167,7 +172,37 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if manifest.WorktreePath != "" {
 		workingDir = manifest.WorktreePath
 	}
+	// Always-container routing: a run-bound execution (RuntimeWorkflowID
+	// set) with a daemon client dispatches bash INTO the run's container
+	// at the same absolute worktree path (bind-mounted, so host and
+	// container paths agree) with the sandbox DSN env. Standalone tasks
+	// (no run) and local/headless (no client) stay in-process. The
+	// container lease is ensured at run start (EnsureForRun); a missing
+	// lease here fails LOUD via the transport error, never silent host.
 	var tools ToolRegistry = NewHostTools(workingDir, manifest.ProjectDir)
+	b.mu.Lock()
+	rtClient := b.rtClient
+	b.mu.Unlock()
+	// Always-container routing gate: only a RUNTIME-mode run dispatches
+	// bash into its container. A LOCAL-mode run has NO container lease
+	// (the reconciler skipped EnsureForRun), so routing bash to
+	// rtClient.Exec would 404 on every call; it must stay in-process.
+	if nativeContainerRouteEnabled(rtClient != nil, manifest) {
+		runID := manifest.RuntimeWorkflowID
+		tools = NewContainerHostTools(workingDir, manifest.ProjectDir,
+			func(cctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
+				res, err := rtClient.Exec(cctx, runID, runtime.ExecRequest{
+					Command:    command,
+					Env:        env,
+					Cwd:        cwd,
+					ProjectDir: manifest.ProjectDir,
+				})
+				if err != nil {
+					return "", "", 0, err
+				}
+				return res.Stdout, res.Stderr, res.ExitCode, nil
+			})
+	}
 	if mt != nil {
 		tools = &combinedRegistry{primary: tools, secondary: mt}
 		defer func() { _ = mt.Close() }()
@@ -505,9 +540,24 @@ func (b *NativeBridge) SetSessionStore(fn scheduler.SessionStoreFunc) {
 	b.sessionStore = fn
 }
 
-// SetRuntimeClient implements scheduler.ConfigurableBridge (no-op for
-// the native engine — it runs in-process).
-func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {}
+// SetRuntimeClient implements scheduler.ConfigurableBridge: the runtime
+// daemon client routes native `bash` tool calls INTO the run's container
+// (always-container). Nil = headless/local, sessions stay in-process.
+// Stored per-bridge (shared across executions); the per-execution lease
+// (run container) is resolved at Start from manifest.RuntimeWorkflowID.
+func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rtClient = rt
+}
+
+// nativeContainerRouteEnabled is the always-container routing gate: native
+// `bash` dispatches into the run's container only when a daemon client is
+// wired, the execution belongs to a workflow run (has a lease), AND the run
+// is NOT in local execution mode. A local run has no container to exec into.
+func nativeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
+	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
+}
 
 // --- internal ------------------------------------------------------------
 

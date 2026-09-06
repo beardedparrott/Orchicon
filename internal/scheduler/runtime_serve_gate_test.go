@@ -36,24 +36,28 @@ func (stubLifecycle) ServeDependent(kind string) bool {
 	return kind == "opencode"
 }
 func (stubLifecycle) EnsureForRun(context.Context, db.WorkflowRunRow) error { return nil }
-func (stubLifecycle) EnsureServing(context.Context, db.WorkflowRunRow) error {
+func (stubLifecycle) EnsureServing(context.Context, db.WorkflowRunRow, bool) error {
 	return nil
 }
 func (stubLifecycle) ReapForRun(context.Context, string) error { return nil }
 
-// TestImageForRun pins the sentinel stamping: serve-needing runs carry
-// the resolved image; serve-less runs carry runtime.NoServeImage (which
-// the lifecycle no-ops on). The sentinel must NEVER equal a real image
-// tag an operator could configure.
+// TestImageForRun pins always-container stamping: imageForRun ALWAYS
+// returns the resolved image (serve or not); empty resolves to base. The
+// no-serve sentinel is never a freshly persisted image — it survives only
+// as the legacy-row serve-skip marker. The sentinel must NEVER equal a
+// real image tag an operator could configure.
 func TestImageForRun(t *testing.T) {
 	if got := imageForRun("orchicon-runtime:orchicon-dev", true); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("imageForRun(needsServe) = %q, want the resolved image", got)
 	}
-	if got := imageForRun("orchicon-runtime:orchicon-dev", false); got != runtime.NoServeImage {
-		t.Errorf("imageForRun(serveless) = %q, want %q", got, runtime.NoServeImage)
+	if got := imageForRun("orchicon-runtime:orchicon-dev", false); got != "orchicon-runtime:orchicon-dev" {
+		t.Errorf("imageForRun(serveless) = %q, want the resolved image (always-container)", got)
 	}
-	if got := imageForRun("", false); got != runtime.NoServeImage {
-		t.Errorf("imageForRun(empty, serveless) = %q, want %q", got, runtime.NoServeImage)
+	if got := imageForRun("", false); got != db.BaseRuntimeImage {
+		t.Errorf("imageForRun(empty, serveless) = %q, want base %q", got, db.BaseRuntimeImage)
+	}
+	if got := imageForRun("", true); got != db.BaseRuntimeImage {
+		t.Errorf("imageForRun(empty, needsServe) = %q, want base %q", got, db.BaseRuntimeImage)
 	}
 	// The sentinel must not collide with any plausible real tag.
 	if strings.Contains(runtime.NoServeImage, "runtime:") || strings.Contains(runtime.NoServeImage, ":") {

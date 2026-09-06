@@ -250,6 +250,10 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 // handleRuntime implements the per-runtime routes:
 //
 //	DELETE /v1/runtimes/{id}      -> release the run's lease (reset to the pool)
+//	POST   /v1/runtimes/{id}/exec  -> run one shell command in the run's
+//	                                 leased container (always-container
+//	                                 native transport; streams JSON-lines
+//	                                 AgentEvents)
 func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/runtimes/")
 	action := ""
@@ -268,9 +272,91 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		// run with no lease (already released / never leased) is a no-op.
 		d.pool.release(id)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
+	case action == "exec" && r.Method == http.MethodPost:
+		d.handleRuntimeExec(w, r, id)
 	default:
 		httpError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// ExecRequest is the body of POST /v1/runtimes/{id}/exec: one shell
+// command to run inside the run's leased container (always-container
+// native transport). Command/Env/Cwd ride the supervisor's AgentRequest
+// "exec" shape; ProjectDir scopes the execution-guard shim.
+type ExecRequest struct {
+	Command    string   `json:"command"`
+	Env        []string `json:"env,omitempty"`
+	Cwd        string   `json:"cwd,omitempty"`
+	ProjectDir string   `json:"project_dir,omitempty"`
+}
+
+// ExecResult is the terminal result of an exec: collected stdout/stderr
+// plus the exit code (a non-zero exit is a worker-visible RESULT, not a
+// transport error).
+type ExecResult struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// handleRuntimeExec runs one shell command in the run's leased container
+// and streams the supervisor's JSON-lines AgentEvents back to the plane.
+// The container name resolves from the warm pool's lease table (the run
+// MUST hold a lease — ensured at run start by EnsureForRun), never from
+// a caller-supplied name, so the control plane cannot exec into an
+// arbitrary container.
+func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID string) {
+	var req ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		httpError(w, http.StatusBadRequest, "command required")
+		return
+	}
+	name := d.pool.containerForRun(runID)
+	if name == "" {
+		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
+		return
+	}
+	reqJSON, err := json.Marshal(AgentRequest{
+		Cmd:        "exec",
+		Argv:       []string{"bash", "-c", req.Command},
+		Env:        req.Env,
+		Cwd:        req.Cwd,
+		ProjectDir: req.ProjectDir,
+	})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		httpError(w, http.StatusInternalServerError, "docker exec: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	fl, _ := w.(http.Flusher)
+	// Relay the supervisor's JSON-lines AgentEvents verbatim: the plane
+	// client reassembles {stream,data} chunks and the terminal
+	// {event:exit}/{event:error}. Flush per line so output streams live.
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		_, _ = w.Write(append(sc.Bytes(), '\n'))
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	_ = cmd.Wait()
 }
 
 // validateCreate enforces the daemon's security policy: image allowlist,

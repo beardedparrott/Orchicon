@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -90,6 +91,22 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 				}
 			}
 			return "local"
+		}(),
+		// Project-level runtime default (auto-fills work items on create).
+		// Empty = inherit tenant/base.
+		DefaultRuntimeImage: func() *string {
+			if v := strings.TrimSpace(msg.GetDefaultRuntimeImage()); v != "" {
+				return &v
+			}
+			return nil
+		}(),
+		ExecutionMode: func() string {
+			switch msg.GetExecutionMode() {
+			case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+				return db.ExecutionModeLocal
+			default:
+				return db.ExecutionModeRuntime
+			}
 		}(),
 	}
 
@@ -237,6 +254,22 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.MaxConcurrentRuns = &limit
 	}
+	if msg.DefaultRuntimeImage != nil {
+		v := strings.TrimSpace(*msg.DefaultRuntimeImage)
+		fields.DefaultRuntimeImage = &v
+	}
+	if msg.ExecutionMode != nil {
+		switch *msg.ExecutionMode {
+		case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+			m := db.ExecutionModeRuntime
+			fields.ExecutionMode = &m
+		case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+			m := db.ExecutionModeLocal
+			fields.ExecutionMode = &m
+		default:
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_mode must be runtime or local"))
+		}
+	}
 	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
 		enumVal := msg.ProtoReflect().Get(fd).Enum()
 		var s string
@@ -270,7 +303,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 			}
 		}
 	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil {
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil && fields.DefaultRuntimeImage == nil && fields.ExecutionMode == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 
@@ -698,12 +731,22 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // excluded here (keep the trail compact and credential-free).
 func projectAuditSnapshot(p db.ProjectRow) map[string]any {
 	return map[string]any{
-		"id":      p.ID,
-		"name":    p.Name,
-		"slug":    p.Slug,
-		"status":  p.Status,
-		"version": p.Version,
+		"id":                    p.ID,
+		"name":                  p.Name,
+		"slug":                  p.Slug,
+		"status":                p.Status,
+		"version":               p.Version,
+		"default_runtime_image": stringOrEmptyAudit(p.DefaultRuntimeImage),
+		"execution_mode":        p.ExecutionMode,
 	}
+}
+
+// stringOrEmptyAudit dereferences a nullable string for audit snapshots.
+func stringOrEmptyAudit(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // mapDBError translates a data-access error into a Connect error code.

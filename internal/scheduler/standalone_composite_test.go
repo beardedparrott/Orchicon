@@ -36,7 +36,7 @@ func TestBuildStandaloneComposite(t *testing.T) {
 		Role:     "Senior Engineer",
 		Skills:   "Go, React",
 		Behavior: "Write tests.",
-	}, "", "")
+	}, "", "", "")
 
 	for _, want := range []string{
 		"You are an autonomous worker running inside the Orchicon orchestration platform.",
@@ -79,7 +79,7 @@ func TestBuildStandaloneCompositeWorkItemContextDB(t *testing.T) {
 		TenantID:     "tnt_dev",
 		Title:        "Standalone with context",
 		ContextFiles: []byte(`["` + dir + `", "` + root + `/note.md"]`),
-	}, db.WorkerVersionRow{Role: "Engineer"}, "", "")
+	}, db.WorkerVersionRow{Role: "Engineer"}, "", "", "")
 
 	for _, want := range []string{
 		"# Worker",

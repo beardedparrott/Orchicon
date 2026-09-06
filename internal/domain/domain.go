@@ -49,6 +49,13 @@ type Project struct {
 	UpdatedAt    time.Time
 	ProjectDir   string
 	ContextFiles []byte // jsonb: absolute file paths
+	// DefaultRuntimeImage is the project-level default runtime container
+	// image tag (nil = inherit tenant/base). Copied onto work items at
+	// create time when the caller passes no runtime_image.
+	DefaultRuntimeImage *string
+	// ExecutionMode is "runtime" (always-container, default) or "local"
+	// (in-process allowed with honest prompt + DSN fence).
+	ExecutionMode string
 }
 
 // Project lifecycle states. See docs/02_Domain_Model.md §2.1.

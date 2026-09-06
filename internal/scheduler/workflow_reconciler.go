@@ -108,23 +108,23 @@ type WorkflowReconciler struct {
 // RuntimeLifecycle creates/reaps the per-workflow runtime container and
 // proves its opencode serve usable before a run dispatches. Implemented by
 // runtime.Lifecycle; declared here to keep the reconciler decoupled. A nil
-// implementation disables runtime containers (headless `orchicon serve`).
+// implementation means headless `orchicon serve` (no daemon socket).
 type RuntimeLifecycle interface {
 	// ServeDependent reports whether the adapter kind named by a worker
 	// model_ref needs an in-container serve to run (the opencode bridge
-	// does; the native in-process "orchicon" kind does not). The
-	// reconciler consults it when arming a run: a run whose steps carry no
-	// serve-dependent kind skips the runtime-serve readiness gate and
-	// container creation entirely (ADR-0003: model_ref is the single
-	// source of truth for adapter kind).
+	// does; the native "orchicon" kind does not — but native still gets a
+	// container via EnsureForRun; this only selects the serve PROBE).
+	// (ADR-0003: model_ref is the single source of truth for adapter kind).
 	ServeDependent(kind string) bool
+	// EnsureForRun creates the run's container (ALL runs in runtime mode,
+	// regardless of kind). LOUD error when no daemon is reachable.
 	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
-	// EnsureServing ensures the run's runtime container exists with its
-	// opencode serve brought up, then blocks until the serve is PROVEN
-	// usable (L1: health + a real session-create round-trip). The
-	// reconciler must not dispatch an execution for the run until it
-	// returns nil.
-	EnsureServing(ctx context.Context, run db.WorkflowRunRow) error
+	// EnsureServing blocks until the run's opencode serve is PROVEN usable
+	// (L1: health + a real session-create round-trip) when needsServe is
+	// true; returns nil immediately when false (native-only: the container
+	// from EnsureForRun is enough). The reconciler must not dispatch an
+	// execution for a serve-needing run until this returns nil.
+	EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error
 	ReapForRun(ctx context.Context, runID string) error
 }
 
@@ -614,6 +614,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// notifier fires post-commit (mirrors the sequence/workflow notifiers).
 	var armed bool
 	needsServe := r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
+	// runLocalMode is the project execution_mode gate: local-mode runs
+	// skip ALL container paths (no EnsureForRun, no gate, no probe) and
+	// dispatch in-process with the honest prompt + DSN fence. Runtime is
+	// the default (preserves current opencode behavior); any read failure
+	// degrades to runtime (fail-open toward the container, never toward
+	// silent host exec).
+	runLocalMode := runExecutionMode(ctx, ttx.Tx, tenantID, run) == db.ExecutionModeLocal
+	// resolvedImage is the run's effective image for this pass (the armed
+	// value, or "" for runs armed before always-container — re-resolved
+	// from the run row below when needed).
+	resolvedImage := run.RuntimeImage
 	if run.Status == domain.WorkflowRunPending {
 		resolved, rerr := r.resolveRuntimeImage(ctx, ttx.Tx, tenantID, run, steps)
 		if rerr != nil {
@@ -636,24 +647,56 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			Status: strPtr(domain.WorkflowRunRunning),
 			// The runtime-serve readiness gate: false when a runtime daemon
 			// is wired AND the run actually needs a serve (any step
-			// resolves to a serve-dependent adapter kind); true for
-			// headless serve (no container — the host serve is always-on)
-			// and for serve-less runs (no opencode demand — a native-only
-			// run never touches the container's opencode serve, so it must
-			// not gate on one: the gate would hold dispatch and then fail
-			// the run when the unneeded serve fails to boot).
-			RuntimeReady: boolPtr(!needsServe || !r.runtimeEnabled()),
-			// Serve-less runs get the no-serve sentinel instead of a real
-			// image: every container-creation path (EnsureForRun,
-			// EnsureServing, boot-time Adopt) no-ops on it, so a native-only
-			// run never creates a container/serve it would never use.
+			// resolves to a serve-dependent adapter kind). Serve-less
+			// (native-only) runs flip the gate immediately below — they
+			// still get a container (always-container), they just don't
+			// wait for the opencode serve probe they never use. Local-mode
+			// runs are ready immediately (no container, no serve).
+			RuntimeReady: boolPtr(runLocalMode || !needsServe || !r.runtimeEnabled()),
+			// Always-container: the run carries the resolved image
+			// (explicit -> project default -> base), never the no-serve
+			// sentinel. needsServe selects only the gate above, not the
+			// image.
 			RuntimeImage: strPtr(imageForRun(resolved, needsServe)),
 		})
 		if err != nil {
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
+		resolvedImage = run.RuntimeImage
 		armed = true
+		// Always-container: EVERY runtime-mode run gets its container
+		// synchronously at arm (idempotent — EnsureForRun is a no-op when
+		// the run already holds a lease), NOT only runs that enter the
+		// gate below. Native-only (serve-less) runs arm with
+		// RuntimeReady=true and would otherwise skip the gate entirely
+		// and dispatch with no container. A daemon/create failure fails
+		// the run LOUD at start (retry resolved tag once -> base -> fail);
+		// never silent host exec. The container ensure runs in autocommit
+		// (outside the pass tx) while the arm update + run_started event
+		// stay in the pass tx: on ensure failure the event write rolls
+		// back with the tx and failRunAtStart commits the terminal state
+		// in its own tx.
+		if !runLocalMode && r.runtimeEnabled() {
+			try := run
+			try.RuntimeImage = resolvedImage
+			if cerr := r.runtime.EnsureForRun(ctx, try); cerr != nil {
+				// Arm-site ensure failed: roll back the arm (the run stays
+				// pending, the run_started event is unwritten) and run the
+				// failover in its own tx — failRunAtStart re-reads the
+				// current row version itself, so the rolled-back arm
+				// version never conflicts.
+				_ = ttx.Rollback(ctx)
+				if err := r.ensureRunContainerFailover(ctx, tenantID, runID, resolvedImage); err != nil {
+					return err
+				}
+				// Failover either retried into success (run still pending
+				// — next pass re-arms) or failed the run LOUD at start
+				// and committed: stop the pass and reap post-commit.
+				reapRuntime = true
+				return nil
+			}
+		}
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
@@ -668,12 +711,23 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// failing the first execution's 30s window) into a deterministic
 	// run-start check.
 	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
-		// Serve-less runs (no opencode demand among the run's steps —
-		// native-only) must never enter the warming gate: flip the gate
-		// and progress. Covers runs armed before the adapter-aware gate
+		// Always-container: EVERY runtime-mode run gets a container.
+		// needsServe selects only the opencode serve PROBE, never the
+		// container. Serve-less (native-only) runs flip the gate here —
+		// their container is ensured below without waiting on a serve
+		// they never use. Covers runs armed before always-container
 		// landed (mid-upgrade) and any future path that leaves a
 		// serve-less run gated.
-		if r.runtimeEnabled() && !r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps) {
+		needsServeGate := needsServe
+		if r.runtimeEnabled() {
+			needsServeGate = r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
+		}
+		// Local-mode runs clear the gate here unconditionally (no
+		// container, no probe — in-process by explicit opt-out).
+		if runLocalMode {
+			needsServeGate = false
+		}
+		if !needsServeGate {
 			if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 				RuntimeReady: boolPtr(true),
 			}); err != nil {
@@ -682,7 +736,19 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			run.RuntimeReady = true
 		}
 		if r.runtimeEnabled() && !run.RuntimeReady {
-			r.startEnsureServing(run, false)
+			// Local mode never enters the container path: no EnsureForRun,
+			// no probe — flip ready and progress in-process. The
+			// reconciler pass below clears the gate for local runs.
+			if !runLocalMode {
+				// The container was ensured synchronously at arm above
+				// (every runtime-mode run, regardless of kind). Here only
+				// the async serve probe starts — for serve-needing runs.
+				// (Legacy pre-always-container rows may arrive gated with
+				// no container: re-ensure idempotently — a held lease is
+				// a no-op, a missing daemon fails LOUD via failRunServeGate
+				// semantics below, never silent host exec.)
+				r.startEnsureServing(run, needsServeGate)
+			}
 			// Commit the transition (the deferred rollback would undo it on
 			// the early return) and hold progression until the probe flips
 			// the gate.
@@ -1611,18 +1677,70 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	return nil
 }
 
+// ensureRunContainerFailover runs the arm-site failover in its own tx:
+// retry the resolved tag once (transient daemon/pool miss), then the base
+// image once; if every attempt fails, fail the run LOUD at start. The arm
+// pass already rolled back on entry, so the run is still pending here —
+// the fail path re-reads the current row (fresh version) and commits the
+// terminal state; the retry-success path leaves the run pending for the
+// next pass to re-arm. Returns nil in both terminal cases (the caller
+// stops the pass and reaps post-commit); a non-nil error is an
+// infrastructure failure the caller returns.
+func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, tenantID, runID, resolvedImage string) error {
+	if !r.runtimeEnabled() {
+		return nil
+	}
+	img := strings.TrimSpace(resolvedImage)
+	if img == "" || img == runtime.NoServeImage {
+		img = db.BaseRuntimeImage
+	}
+	ftx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("failover begin tx: %w", err)
+	}
+	defer ftx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ftx.Tx, tenantID, runID)
+	if err != nil {
+		return fmt.Errorf("failover get run: %w", err)
+	}
+	try := cur
+	try.RuntimeImage = img
+	// The arm site already attempted EnsureForRun once (in autocommit);
+	// entry here means that attempt failed. Retry the resolved tag once
+	// (transient daemon/pool miss), then fall back to the base image.
+	firstErr := fmt.Errorf("arm-site container ensure failed")
+	if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
+		return nil
+	}
+	if img != db.BaseRuntimeImage {
+		try.RuntimeImage = db.BaseRuntimeImage
+		if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
+			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", firstErr)
+			return nil
+		}
+	}
+	reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
+	if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
+		return ferr
+	}
+	if cerr := ftx.Commit(ctx); cerr != nil {
+		return fmt.Errorf("commit fail-at-start: %w", cerr)
+	}
+	return nil
+}
+
 // startEnsureServing kicks off the ASYNC runtime-serve readiness probe for
 // a run (idempotent — one goroutine per run; the in-flight map clears when
 // it finishes). On success it flips the run's runtime_ready gate so the
 // next reconcile pass progresses the DAG; on failure it fails the run at
 // start with the serve error. A plane restart clears the map and the next
 // reconcile pass re-triggers the (idempotent) probe.
-func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow, serveless bool) {
-	// Defense in depth: a serve-less run must never enter the warming
-	// probe. The reconciler pass flips the gate itself for serve-less runs;
-	// this guard covers races (a run re-armed between pass and probe) so
-	// an opencode serve is never warmed for a run with no opencode demand.
-	if serveless {
+//
+// needsServe=false (native-only) returns immediately: the container from
+// ensureRunContainer is enough, there is no serve to probe. The reconciler
+// pass flips the gate itself for those runs; this guard covers races.
+func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow, needsServe bool) {
+	if !needsServe {
 		return
 	}
 	r.warmingMu.Lock()
@@ -1640,7 +1758,10 @@ func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow, serveless
 			r.warmingMu.Unlock()
 		}()
 		bg := context.Background()
-		if err := r.runtime.EnsureServing(bg, run); err != nil {
+		// startEnsureServing only launches this goroutine when needsServe
+		// is true (early return above), so the probe always runs with
+		// needsServe=true here.
+		if err := r.runtime.EnsureServing(bg, run, true); err != nil {
 			r.log.Error("workflow runtime serve failed to become usable — failing run", "run", run.ID, "error", err)
 			r.failRunServeGate(bg, run, err)
 			return
@@ -2829,7 +2950,9 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// and reused across every step (and role) of the run. Everything
 	// role/step-specific — worker identity, the task, project context,
 	// instructions, execution history — follows AFTER the prefix.
-	sb.WriteString(db.StablePromptPrefix(wi.RuntimeImage))
+	// Prompt truth: the RUN-effective image (run row, not the wi request)
+	// and the project execution mode (runtime vs local honest block).
+	sb.WriteString(db.StablePromptPrefix(runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
 
 	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
 	if r := strings.TrimSpace(worker.Role); r != "" {
@@ -3314,8 +3437,59 @@ func anyDirectCompleted(history []histEntryType) bool {
 	return false
 }
 
+// runExecutionMode returns the run's project execution_mode
+// (runtime|local) for arm routing. Best-effort: empty project or read
+// failure degrades to runtime (fail-open toward the container).
+func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) string {
+	if strings.TrimSpace(run.ProjectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
+// runEffectiveImage returns the run row's RuntimeImage for workflow-bound
+// items (the armed value — the prompt must describe the container the run
+// actually got, not the work-item request), falling back to the item's
+// image for standalone items. Best-effort: read failures degrade to the
+// item image.
+func runEffectiveImage(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) string {
+	if wi.WorkflowRunID != "" {
+		if run, err := db.GetWorkflowRun(ctx, tx, tenantID, wi.WorkflowRunID); err == nil && strings.TrimSpace(run.RuntimeImage) != "" {
+			return strings.TrimSpace(run.RuntimeImage)
+		}
+	}
+	if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
+		return img
+	}
+	return db.BaseRuntimeImage
+}
+
+// projectExecutionModeForPrompt returns the work item's project
+// execution_mode for prompt branching (runtime vs local honest block).
+// Best-effort: read failures degrade to runtime.
+func projectExecutionModeForPrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) string {
+	if strings.TrimSpace(wi.ProjectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, wi.ProjectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
 func runtimeEnvironmentBlock(image string) string {
-	return db.RuntimeEnvironmentBlock(image)
+	return db.RuntimeEnvironmentBlock(image, "")
 }
 
 // walkAncestors walks the parent_id chain from a work item up to the
@@ -3747,13 +3921,17 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 }
 
 // resolveRuntimeImage determines the runtime container image for a run
-// at start:
+// at start (always-container resolution chain):
 //   - template runs (run.WorkItemID set): the bound work item's stored
-//     runtime_image (backend-stamped; empty = base image);
+//     runtime_image when explicit;
 //   - one-shot runs: the WORK_ITEM canvas markers' work items' stored
-//     runtime_image values. All empty → base image; one distinct non-empty
-//     → that image; two different non-empty values → error (a single
-//     container cannot serve two images).
+//     runtime_image values, which must all agree;
+//   - project default: when the item/marker lookup yields "", the
+//     run's (or marker item's) project default_runtime_image;
+//   - base: empty everywhere resolves to orchicon-runtime:base.
+//
+// Never returns "" and never the no-serve sentinel (the sentinel survives
+// only as an in-memory serve-skip signal, never as a persisted image).
 //
 // The resolved value is stored on the run row so the adapter's self-heal
 // recreates the container with the identical image.
@@ -3763,7 +3941,10 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 		if err != nil {
 			return "", fmt.Errorf("get bound work item: %w", err)
 		}
-		return strings.TrimSpace(wi.RuntimeImage), nil
+		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
+			return img, nil
+		}
+		return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
 	}
 	// One-shot: collect WORK_ITEM markers' images; all must agree.
 	values := []string{}
@@ -3786,7 +3967,34 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			values = append(values, img)
 		}
 	}
-	return resolveImageFromValues(values)
+	chosen, err := resolveImageFromValues(values)
+	if err != nil {
+		return "", err
+	}
+	if chosen != "" {
+		return chosen, nil
+	}
+	// One-shot with no explicit image: fall back to the run's project
+	// default, else the base image.
+	return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+}
+
+// resolveProjectDefaultImage returns the project's default_runtime_image
+// when set, else the base image. Best-effort: a project-read failure
+// resolves to base (the arm site fails LOUD later only on a real daemon
+// error, never on a missing default).
+func resolveProjectDefaultImage(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
+	if strings.TrimSpace(projectID) == "" {
+		return db.BaseRuntimeImage
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return db.BaseRuntimeImage
+	}
+	if p.DefaultRuntimeImage != nil && strings.TrimSpace(*p.DefaultRuntimeImage) != "" {
+		return strings.TrimSpace(*p.DefaultRuntimeImage)
+	}
+	return db.BaseRuntimeImage
 }
 
 // resolveImageFromValues applies the one-shot image agreement rule: all
@@ -4586,6 +4794,14 @@ func (r *WorkflowReconciler) enqueueRunEvent(ctx context.Context, tx pgx.Tx, eve
 	if stepID != "" {
 		evt["step_id"] = stepID
 	}
+	// Audit: run_started carries the resolved image + execution mode
+	// (acceptance C) so operators can verify what the run dispatched
+	// with. Best-effort — a project-read failure records the unknown
+	// mode rather than failing the event.
+	if eventType == domain.WorkflowEventRunStarted {
+		evt["runtime_image"] = run.RuntimeImage
+		evt["execution_mode"] = runExecutionMode(ctx, tx, run.TenantID, run)
+	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal run event: %w", err)
@@ -5209,14 +5425,17 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 	return decision
 }
 
-// imageForRun stamps the runtime image a run carries: the resolved image
-// for serve-needing runs, the runtime.NoServeImage sentinel for serve-less
-// runs (no opencode demand — every container-creation path no-ops on the
-// sentinel, so a native-only run never creates a container it would never
-// use).
+// imageForRun stamps the runtime image a run carries: ALWAYS the resolved
+// image (explicit work-item -> project default -> base). The needsServe
+// flag is retained at call sites only as the in-memory serve-gate signal
+// (whether the run-start gate must wait for the opencode serve); it no
+// longer selects a sentinel image. runtime.NoServeImage survives only as
+// the internal serve-skip marker for legacy rows, never as a freshly
+// persisted run.RuntimeImage when a container exists.
 func imageForRun(resolved string, needsServe bool) string {
-	if needsServe {
-		return resolved
+	_ = needsServe
+	if strings.TrimSpace(resolved) == "" {
+		return db.BaseRuntimeImage
 	}
-	return runtime.NoServeImage
+	return strings.TrimSpace(resolved)
 }

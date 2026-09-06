@@ -30,17 +30,18 @@ const devTenantID = "tnt_dev"
 // adapter namespace lands on explicit).
 const opencodeAdapterKind = "opencode"
 
-// runtimeNoServeImage is the sentinel RuntimeImage value the
-// WorkflowReconciler stamps on runs with no serve-dependent adapter
-// demand (adapter-aware arm gate). A run carrying it creates no runtime
-// container: EnsureForRun/EnsureServing/Adopt all no-op on it. The value
-// is syntactically a plain tag so any legacy path that treats it as a
-// string still round-trips; the daemon never sees it (all three callers
-// return before Create).
+// runtimeNoServeImage is the legacy sentinel RuntimeImage value the
+// WorkflowReconciler used to stamp on runs with no serve-dependent adapter
+// demand (pre-always-container arm gate). It is NEVER written on new runs:
+// imageForRun always persists the resolved image. The constant survives
+// only so EnsureServing/Adopt can recognize legacy rows (which have no
+// container to probe/adopt) without failing them. The daemon never sees it.
 const runtimeNoServeImage = "no-serve"
 
-// NoServeImage is the exported sentinel the WorkflowReconciler stamps on
-// serve-less runs; see runtimeNoServeImage.
+// NoServeImage is the exported legacy sentinel; see runtimeNoServeImage.
+// New code must not stamp it — imageForRun always returns the resolved
+// image. It remains exported for the serve-skip comparisons on legacy rows
+// and for tests asserting it never collides with a real image tag.
 const NoServeImage = runtimeNoServeImage
 
 // worktreeDirName mirrors the WorktreeReconciler's namespace under
@@ -92,8 +93,10 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 // reaped based on workflow run state, and gates execution dispatch on the
 // container's opencode serve being proven usable. It talks to the
 // host-side daemon through runtime.Client. A nil client (no daemon socket
-// — headless `orchicon serve`) makes every operation a no-op so the
-// control plane degrades to in-process execution.
+// — headless `orchicon serve`) makes EnsureServing/ReapForRun/Adopt no-ops
+// and makes EnsureForRun return a LOUD error: silent in-process degrade in
+// runtime mode is gone (local execution_mode is the explicit opt-out, and
+// the reconciler never calls EnsureForRun for it).
 type Lifecycle struct {
 	client *Client
 	pool   *db.Pool
@@ -484,8 +487,9 @@ func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, ru
 
 // ServeDependent implements the scheduler.RuntimeLifecycle capability
 // probe: the only serve-dependent adapter kind today is "opencode" (the
-// in-container opencode serve). The native "orchicon" kind runs the
-// in-process session engine on the control plane and needs no serve. The
+// in-container opencode serve). The native "orchicon" kind needs no serve
+// — but it DOES need the container (always-container): native sessions
+// exec inside the run's container, never in-process on the host. The
 // empty/legacy kinds resolve through the adapter package's default kind so
 // the predicate and the dispatcher cannot disagree.
 func (l *Lifecycle) ServeDependent(kind string) bool {
@@ -499,17 +503,16 @@ func (l *Lifecycle) ServeDependent(kind string) bool {
 // (idempotent) with its opencode serve warmed at create time. Executions
 // dispatch into this container for the whole lifetime of the run.
 //
-// noServeSentinel: runs with no serve-dependent adapter demand must never
-// create a container (a container implies a warmed opencode serve — and
-// its 30s boot window — that a native-only run would never use, and a
-// failed serve boot would fail the run). The sentinel round-trips from
-// the WorkflowReconciler's adapter-aware arm gate.
+// Always-container: a container is created for EVERY run regardless of
+// adapter kind — native sessions exec inside it (same mount/toolchain
+// path as opencode). The needsServe split lives in EnsureServing (the
+// readiness PROBE), not here. A nil client (headless `orchicon serve`
+// without Docker) is a LOUD error — the reconciler calls this only in
+// runtime mode; local mode is the explicit opt-out and never reaches here,
+// so silent host-exec degrade is impossible.
 func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error {
-	if run.RuntimeImage == runtimeNoServeImage {
-		return nil
-	}
 	if l.client == nil {
-		return nil
+		return fmt.Errorf("runtime daemon not reachable — project is in runtime mode and no container can be created: switch the project to local execution_mode or start the runtime daemon")
 	}
 	if !l.client.Ready(ctx) {
 		return fmt.Errorf("runtime daemon not reachable")
@@ -538,11 +541,16 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 // would previously fail the first dispatch's 30s window now gets the full
 // window at run start, off the dispatch hot path.
 //
-// Serve-less runs (RuntimeImage == runtimeNoServeImage) return nil
-// immediately: there is nothing to prove, and the reconciler must not
-// gate or fail them on a serve they never use.
-func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) error {
+// Serve-less runs (needsServe=false — native-only, no opencode demand)
+// return nil immediately: EnsureForRun already created their container,
+// there is no serve to prove, and the reconciler must not gate or fail
+// them on one. Legacy no-serve rows (RuntimeImage == runtimeNoServeImage,
+// armed before always-container — no container exists) also return nil.
+func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error {
 	if run.RuntimeImage == runtimeNoServeImage {
+		return nil
+	}
+	if !needsServe {
 		return nil
 	}
 	if l.client == nil {
@@ -682,7 +690,7 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 	}
 	for _, run := range runs {
 		if run.RuntimeImage == runtimeNoServeImage {
-			continue // native-only run: no container to adopt
+			continue // legacy no-serve row: no container to adopt
 		}
 		if err := l.EnsureForRun(ctx, run); err != nil {
 			l.log.Warn("adopt: ensure runtime failed", "run", run.ID, "error", err)

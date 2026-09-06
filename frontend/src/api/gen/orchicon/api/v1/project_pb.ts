@@ -101,6 +101,38 @@ proto3.util.setEnumType(GitStrategy, "orchicon.api.v1.GitStrategy", [
 ]);
 
 /**
+ * ExecutionMode controls where native executions run
+ * (always-container runtime):
+ *   - runtime: executions run inside the run's container (default).
+ *   - local: in-process execution allowed, with an honest prompt block
+ *     and a hard DSN fence refusing live-plane writes.
+ *
+ * @generated from enum orchicon.api.v1.ExecutionMode
+ */
+export enum ExecutionMode {
+  /**
+   * @generated from enum value: EXECUTION_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EXECUTION_MODE_RUNTIME = 1;
+   */
+  RUNTIME = 1,
+
+  /**
+   * @generated from enum value: EXECUTION_MODE_LOCAL = 2;
+   */
+  LOCAL = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(ExecutionMode)
+proto3.util.setEnumType(ExecutionMode, "orchicon.api.v1.ExecutionMode", [
+  { no: 0, name: "EXECUTION_MODE_UNSPECIFIED" },
+  { no: 1, name: "EXECUTION_MODE_RUNTIME" },
+  { no: 2, name: "EXECUTION_MODE_LOCAL" },
+]);
+
+/**
  * GoalField is a single key-value pair describing a project goal.
  *
  * @generated from message orchicon.api.v1.GoalField
@@ -286,6 +318,23 @@ export class Project extends Message<Project> {
    */
   gitStrategy = GitStrategy.UNSPECIFIED;
 
+  /**
+   * default_runtime_image is the project-level default runtime container
+   * image tag. Empty = inherit tenant/base; copied onto work items at
+   * create time when the caller passes no runtime_image.
+   *
+   * @generated from field: string default_runtime_image = 15;
+   */
+  defaultRuntimeImage = "";
+
+  /**
+   * execution_mode selects always-container (runtime, default) vs
+   * in-process (local, with honest prompt + DSN fence).
+   *
+   * @generated from field: orchicon.api.v1.ExecutionMode execution_mode = 16;
+   */
+  executionMode = ExecutionMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -308,6 +357,8 @@ export class Project extends Message<Project> {
     { no: 12, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 13, name: "repo_slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
+    { no: 15, name: "default_runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {
@@ -466,6 +517,19 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
    */
   gitStrategy = GitStrategy.UNSPECIFIED;
 
+  /**
+   * default_runtime_image seeds projects.default_runtime_image (empty =
+   * inherit tenant/base). execution_mode defaults to runtime.
+   *
+   * @generated from field: string default_runtime_image = 7;
+   */
+  defaultRuntimeImage = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.ExecutionMode execution_mode = 8;
+   */
+  executionMode = ExecutionMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<CreateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -480,6 +544,8 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
     { no: 4, name: "goals", kind: "message", T: GoalField, repeated: true },
     { no: 5, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
+    { no: 7, name: "default_runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateProjectRequest {
@@ -720,6 +786,19 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
    */
   gitStrategy?: GitStrategy;
 
+  /**
+   * default_runtime_image: set the project default (empty string clears it
+   * back to inherit); nil = unchanged (field-mask semantics).
+   *
+   * @generated from field: optional string default_runtime_image = 10;
+   */
+  defaultRuntimeImage?: string;
+
+  /**
+   * @generated from field: optional orchicon.api.v1.ExecutionMode execution_mode = 11;
+   */
+  executionMode?: ExecutionMode;
+
   constructor(data?: PartialMessage<UpdateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -737,6 +816,8 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
     { no: 7, name: "context_files", kind: "message", T: ContextFiles, opt: true },
     { no: 8, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
     { no: 9, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy), opt: true },
+    { no: 10, name: "default_runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 11, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode), opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateProjectRequest {
