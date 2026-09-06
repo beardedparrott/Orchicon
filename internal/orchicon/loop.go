@@ -786,8 +786,12 @@ func hasToolNamed(defs []ToolDef, name string) bool {
 
 // nativeToolName reports whether a call targets a loop-registered
 // session-scoped tool (handled here, never routed to the registry).
+// todowrite is native: the loop stashes its payload into the todo digest
+// (stashMutableToolCall) and answers success itself, so the call never
+// reaches HostTools.Execute as an `unknown tool` — the composite prompt
+// orders a todowrite call every turn, and the native engine must honor it.
 func nativeToolName(name string) bool {
-	return name == memoryNoteToolDef().Name || isMemoryTool(name)
+	return name == "todowrite" || name == memoryNoteToolDef().Name || isMemoryTool(name)
 }
 
 // stashMutableToolCall folds a turn's tool calls into the session's

@@ -115,6 +115,11 @@ var hostToolDefs = []ToolDef{
 		Description: "Read back the worker's LATEST todo list (the same list the execution UI renders from your todowrite calls). One cheap call to re-sync your plan mid-run — never re-derive it from memory. Returns each item with its status and priority.",
 		ParamsJSON:  `{"type":"object","properties":{}}`,
 	},
+	{
+		Name:        "todowrite",
+		Description: "Maintain the worker's live todo list (full replacement array on every call). Each item is {content, status, priority}; status is pending|in_progress|completed|cancelled. The execution UI renders this list live and the session folds it into the todo digest — emit it at every turn boundary.",
+		ParamsJSON:  `{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"}},"required":["content","status"]},"description":"Full replacement todo list."}},"required":["todos"]}`,
+	},
 }
 
 // Defs implements ToolRegistry: the host suite (a fresh slice — callers
@@ -169,6 +174,13 @@ func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string,
 		// — defensive parity with the sidecar's registry: an empty list,
 		// never an error.
 		return `{"todos":[]}`, nil
+	case "todowrite":
+		// Session todo state is folded into the digest by the loop's
+		// stashMutableToolCall before execution; reaching the registry here
+		// means the loop did not intercept — acknowledge success so the call
+		// never surfaces as `unknown tool "todowrite"` (the composite prompt
+		// orders a todowrite call every turn, so an error here burns a turn).
+		return `{"ok":true}`, nil
 	default:
 		return "", fmt.Errorf("hosttools: unknown tool %q", name)
 	}

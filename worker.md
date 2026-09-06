@@ -76,12 +76,10 @@ Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and
 
 ## Orchicon tool channels
 
-You may see two Orchicon MCP tool families — they are deliberately separate:
+Plane access is **deny-by-default**. The plane credential is minted only for published workers with a role binding — if your worker has no research/Idea role, you have **no plane channel**: do NOT call `orchicon_plane_*`, and treat the tools' absence as expected (not an error, and never a reason to invent a real-instance write). Real-instance writes are explicitly out of scope unless your task names them.
 
-- **`orchicon_plane_*` (real instance)** — available on **every** runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your worker's **role** grants plane access. The image is irrelevant — the gate is your role's entitlements, never the runtime image. Operates on the REAL instance your work item was created on, through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud — check BOTH `state="active"` (pending triage) and `state="rejected"` (previously dismissed spawns; a hit means a human rejected the idea: never re-propose it) before spawning — and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
-- **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
-
-If your worker has a role but you see **no** `orchicon_plane_*` tools, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do **NOT** conclude that real-instance access is dev-runtime-only.
+- **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). This is the ONLY channel for DB/migration testing and throwaway records.
+- **`orchicon_plane_*` (real instance)** — only for role-bound research workers, operating on the REAL instance your work item was created on through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud — check BOTH `state="active"` (pending triage) and `state="rejected"` (previously dismissed spawns; a hit means a human rejected the idea: never re-propose it) before spawning — and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
 
 Hard rules: **never** use sandbox tools to inspect real work items; **never** use plane tools for throwaway records or migration tests.
 
