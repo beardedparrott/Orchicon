@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -2191,5 +2192,144 @@ func TestWorktreeDeleteBranchRemovesRemoteOnMerge(t *testing.T) {
 	// Remote ref deleted (L3 remote half of the prune).
 	if out := gitRun(t, env.repo, "ls-remote", "--heads", "origin", env.expectedBranch()); out != "" {
 		t.Fatalf("provably-merged branch %q was NOT deleted on origin (L3 remote prune); still present: %s", env.expectedBranch(), out)
+	}
+}
+
+// TestWorktreeFastPassProvisionsWhileSlowGated is the 3-minute dispatch
+// stall regression test: with the slow pass freshly run (gated), a full
+// scan must still provision a pending run to ready — provisioning never
+// waits behind prune/sweep. Requires ORCHICON_TEST_DSN (same contract as
+// the other integration tests in this file).
+func TestWorktreeFastPassProvisionsWhileSlowGated(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Pretend a slow pass just ran: scan("") must skip the slow pass and
+	// still provision through the fast pass.
+	env.rec.lastSlowPass = time.Now()
+
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan (slow-gated): %v", res.Error)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("slow-gated scan left worktree_status = %q, want ready (provisioning must not wait behind the slow pass)", run.WorktreeStatus)
+	}
+	if run.WorktreePath == "" {
+		t.Fatalf("slow-gated scan recorded no worktree_path")
+	}
+	// The slow gate must still be holding (scan must not have run/retamped
+	// the slow pass while gated).
+	if time.Since(env.rec.lastSlowPass) >= slowPassInterval {
+		t.Fatalf("slow-gated scan unexpectedly ran the slow pass")
+	}
+}
+
+// TestWorktreeScanRunsSlowPassAfterInterval verifies the sweep slow pass
+// is not disabled, only deprioritized: once the interval has elapsed, a
+// scan runs the orphan sweep (here: a merged orphan branch reclaimed +
+// row cleared) and restamps lastSlowPass. Terminal prunes live in the fast
+// pass and run on every tick regardless of the gate.
+func TestWorktreeScanRunsSlowPassAfterInterval(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+	if branch == "" {
+		t.Fatal("run recorded no worktree_branch")
+	}
+
+	// Build the orphan class: completed + pruned + branch retained, branch
+	// tip on develop (merged), worktree detached.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunCompleted),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run completed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	gitRun(t, env.repo, "branch", "-f", branch, "develop")
+
+	// Force the slow pass due: the sweep must reclaim the orphan branch and
+	// restamp lastSlowPass.
+	env.rec.lastSlowPass = time.Now().Add(-2 * slowPassInterval)
+	before := env.rec.lastSlowPass
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile scan (slow-due): %v", res.Error)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("slow-due scan did not sweep merged orphan branch %q (slow pass must still run cleanup)", branch)
+	}
+	if !env.rec.lastSlowPass.After(before) {
+		t.Fatalf("slow-due scan did not restamp lastSlowPass")
+	}
+}
+
+// TestWorktreeSlowPassBudgetExpiryResumesNextTick verifies the page-advance
+// invariant under budget expiry: sweep funcs with an already-expired
+// deadline return early without clearing anything, and the rows still match
+// the sweep queries so the next slow tick resumes them.
+func TestWorktreeSlowPassBudgetExpiryResumesNextTick(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	branch := run.WorktreeBranch
+	if branch == "" {
+		t.Fatal("run recorded no worktree_branch")
+	}
+
+	// Build the orphan class: completed + pruned + branch retained, branch
+	// tip on develop (merged), worktree detached.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunCompleted),
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("mark run completed+pruned: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	gitRun(t, env.repo, "branch", "-f", branch, "develop")
+
+	// Expired-budget sweep must return early: branch retained AND row still
+	// recorded (nothing cleared, resumable next tick).
+	expired := time.Now().Add(-time.Second)
+	env.rec.sweepOrphanBranches(ctx, approvalTestTenant, expired)
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out == "" {
+		t.Fatalf("expired-budget sweep deleted the branch — it must return early and resume next tick")
+	}
+	run = env.getRun(t)
+	if run.WorktreeBranch == "" {
+		t.Fatalf("expired-budget sweep cleared the recorded branch — forward progress requires the row to still match next tick")
+	}
+
+	// Fresh-budget sweep reclaims it (same assertions as the orphan test).
+	env.rec.sweepOrphanBranches(ctx, approvalTestTenant, time.Now().Add(30*time.Second))
+	if out := gitRun(t, env.repo, "branch", "--list", branch); out != "" {
+		t.Fatalf("fresh-budget sweep did not reclaim merged orphan branch %q", branch)
 	}
 }

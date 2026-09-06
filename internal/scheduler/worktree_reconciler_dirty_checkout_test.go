@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -195,7 +196,7 @@ func TestOrphanDirSweep(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(artOrphan, ".git"), []byte("gitdir: "+env.repo+"/.git/worktrees/123\n"), 0o644); err != nil {
 		t.Fatalf("write artifact: %v", err)
 	}
-	env.rec.sweepOrphanDirs(ctx, approvalTestTenant)
+	env.rec.sweepOrphanDirs(ctx, approvalTestTenant, time.Now().Add(15*time.Second))
 	// Artifact orphan should be removed, empty orphan also removed (or left if non-empty non-artifact? Our sweep removes empty dirs)
 	// At least the artifact should be gone.
 	if _, err := os.Stat(artOrphan); !os.IsNotExist(err) {
