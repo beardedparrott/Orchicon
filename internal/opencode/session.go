@@ -250,8 +250,16 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
 }
 
-// SendMessageWithAttachments appends a user message with optional image/file parts.
-// Text is always first; image parts are added as base64 data URLs for vision models.
+// SendMessageWithAttachments appends a user message with optional file
+// parts. The wire shape follows the serve's prompt_async schema (vendored
+// SDK ground truth:
+// @opencode-ai/sdk v2 types.gen.d.ts — TextPartInput {type:"text",
+// text} | FilePartInput {type:"file", mime, url, filename?}). There is
+// NO "image" part type and NO mimeType/data keys: images AND text files
+// alike go out as {type:"file", mime, url: dataURL, filename?} — a
+// single url carrying the data: URL (never data+url together). Text files
+// (.md/.txt) inline as data: URLs so the send is one POST with no
+// upload-path dependency (UploadAttachment untouched).
 func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -263,16 +271,18 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 		if a.MimeType == "" {
 			a.MimeType = "application/octet-stream"
 		}
-		// Opencode serve accepts file/image parts as data URLs; use image type for images.
-		if len(a.Data) > 0 {
-			b64 := base64.StdEncoding.EncodeToString(a.Data)
-			dataURL := "data:" + a.MimeType + ";base64," + b64
-			if isImageMime(a.MimeType) {
-				parts = append(parts, map[string]any{"type": "image", "mimeType": a.MimeType, "data": b64, "url": dataURL})
-			} else {
-				parts = append(parts, map[string]any{"type": "file", "mimeType": a.MimeType, "url": dataURL, "filename": a.Name})
-			}
+		if len(a.Data) == 0 {
+			continue
 		}
+		// FilePartInput: {type:"file", mime, url, filename?}. The url
+			// carries the data: URL (images for vision, text files
+			// inline); filename is set when known.
+		dataURL := "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
+		part := map[string]any{"type": "file", "mime": a.MimeType, "url": dataURL}
+		if a.Name != "" {
+			part["filename"] = a.Name
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{"type": "text", "text": text})
@@ -302,10 +312,6 @@ type AttachmentPart struct {
 	Name     string
 	MimeType string
 	Data     []byte
-}
-
-func isImageMime(m string) bool {
-	return len(m) >= 6 && m[:6] == "image/"
 }
 
 // Abort cancels the session's running turn. The session (and its history)
@@ -699,7 +705,10 @@ func (c *SessionClient) do(ctx context.Context, method, path string, body any) e
 		if resp.StatusCode == http.StatusNotFound {
 			return ErrSessionNotFound
 		}
-		return fmt.Errorf("opencode serve %s %s: http %d", method, path, resp.StatusCode)
+		// Surface the serve's validation message (truncated): a bare
+			// "http 400" hides which part key the serve rejected.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }

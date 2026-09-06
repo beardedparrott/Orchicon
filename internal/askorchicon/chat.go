@@ -361,7 +361,7 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh)
 }
 
 // InterjectConversationTurn is the chat equivalent of a worker-execution
@@ -393,26 +393,123 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh)
+}
+
+// WatchTurnStream re-attaches a dropped socket to an ACKED turn's live
+// event stream WITHOUT dispatching a new turn. It validates the
+// conversation's registry entry AND the assistant message id (a supersede
+// replaces both — a stale watcher gets NotFound, never another turn's
+// chunks), subscribes to the conversation's broadcast hub, and drains until
+// the hub closes (turn finalized/superseded) or the watcher disconnects.
+func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv1.WatchTurnStreamRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ConversationId == "" || req.Msg.AssistantMessageId == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id and assistant_message_id must not be empty"))
+	}
+	entry, running := s.turns.get(req.Msg.ConversationId)
+	if !running || entry.assistantMsgID != req.Msg.AssistantMessageId || entry.tenant != tenantID {
+		return connect.NewError(connect.CodeNotFound, errors.New("no running turn for this message — the turn finished or was superseded"))
+	}
+	h, found := s.hubs.get(req.Msg.ConversationId)
+	if !found {
+		return connect.NewError(connect.CodeNotFound, errors.New("no live stream for this turn — the turn finished or was superseded"))
+	}
+	s.log.Info("ask orchicon watch re-attached to running turn", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId)
+	subID, ch := h.subscribe()
+	defer h.unsubscribe(subID)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case resp, ok := <-ch:
+			if !ok {
+				return nil // hub closed: turn finalized or superseded
+			}
+			if err := stream.Send(resp); err != nil {
+				s.log.Warn("ask orchicon watch stream send failed", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId, "cause", "watcher-gone-send-fail")
+				return nil
+			}
+		}
+	}
 }
 
 // drainTurnStream acks a freshly-started turn with TurnStarted and then
 // drains streaming events to the client until the channel closes (turn
 // complete or error), which lets the RPC return and close the HTTP stream.
-func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse) error {
+//
+// A ≤20s heartbeat ticker emits Heartbeat keepalives while the turn runs
+// but produces no TextChunk/ReasoningChunk (reasoning-heavy silent phases
+// trip proxy/browser idle timeouts otherwise — the provider-agnostic drop).
+// Heartbeats carry no content; the frontend ignores them for rendering but
+// treats them as socket-liveness proof. Every drained response (chunks AND
+// heartbeats) is also published to the conversation's broadcast hub so a
+// dropped socket can re-dial via WatchTurnStream.
+func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], convID, assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse) error {
 	if err := stream.Send(&apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_TurnStarted{
 			TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID},
 		},
 	}); err != nil {
+		s.log.Warn("ask orchicon chatstream send failed", "conversation", convID, "assistant_message", assistantID, "cause", "client-gone-send-fail")
 		return err
 	}
-	for resp := range streamEventCh {
+	heartbeat := time.NewTicker(askHeartbeatInterval())
+	defer heartbeat.Stop()
+	send := func(resp *apiv1.ChatStreamResponse) error {
 		if err := stream.Send(resp); err != nil {
-			break // client gone — stop draining
+			s.log.Warn("ask orchicon chatstream send failed", "conversation", convID, "assistant_message", assistantID, "cause", "client-gone-send-fail")
+			return err
+		}
+		return nil
+	}
+	for {
+		select {
+		case resp, ok := <-streamEventCh:
+			if !ok {
+				return nil
+			}
+			if h, found := s.hubs.get(convID); found {
+				h.publish(resp)
+			}
+			if err := send(resp); err != nil {
+				return nil // client gone — stop draining, turn runs on
+			}
+		case <-heartbeat.C:
+			hb := &apiv1.ChatStreamResponse{
+				Event: &apiv1.ChatStreamResponse_Heartbeat{
+					Heartbeat: &apiv1.Heartbeat{ServerTimeUnixMs: time.Now().UnixMilli()},
+				},
+			}
+			if h, found := s.hubs.get(convID); found {
+				h.publish(hb)
+			}
+			// A heartbeat that fails to send IS the drop signal
+				// (idle/proxy timeout or gone client): log it distinctly
+				// and stop draining — the turn continues server-side
+				// and the client re-dials via WatchTurnStream.
+				if err := send(hb); err != nil {
+					s.log.Warn("ask orchicon chatstream heartbeat send failed", "conversation", convID, "assistant_message", assistantID, "cause", "idle-timeout-or-client-gone")
+				return nil
+			}
 		}
 	}
-	return nil
+}
+
+// askHeartbeatInterval is the ChatStream keepalive cadence (≤20s): wire
+// traffic during silent generation so idle timeouts never mistake a
+// healthy-but-quiet turn for a dead socket. Env override
+// ORCHICON_ASK_HEARTBEAT_INTERVAL is a dev/test knob.
+func askHeartbeatInterval() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_HEARTBEAT_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 15 * time.Second
 }
 
 // turnDispatchOpts carries the dispatch-mode switches for
@@ -647,7 +744,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
 	// When the channel closes (turn complete or error), the drain goroutine
-	// exits, which lets ChatStream return, closing the HTTP stream. ---
+	// exits, which lets ChatStream return, closing the HTTP stream.
+	// A broadcast hub is (re)created for the conversation alongside the
+	// turn: every drained response is published there too, so a dropped
+	// socket re-dials the SAME turn via WatchTurnStream. Supersede replaces
+	// the hub so stale watchers drain and fall back to the poll. ---
+	s.hubs.create(convID)
 	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
 	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
 		select {
@@ -762,6 +864,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		// No session transport (serve disabled / not started): fail the
 		// turn fast with a clean, visible, retryable error message.
 		releaseTurn()
+		s.hubs.remove(convID)
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
 			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{})
 		close(streamEventCh)
@@ -1064,6 +1167,7 @@ func activeToolName(evt opencode.BusEvent) (string, bool) {
 // the registry cancel).
 func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (text string, reasoning []string, sid string, err error) {
 	defer s.turns.remove(c.convID, c.token)
+	defer s.hubs.remove(c.convID)
 
 	sid = c.sessionID
 	system := c.reuseSystem
@@ -1432,6 +1536,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
 				// by the reply window in the collector loop).
+				s.log.Warn("ask orchicon serve bus closed mid-turn", "conversation", c.convID, "session", sid, "cause", "sse-bus-close")
 				flushThinkDrain()
 				return turnAttemptResult{kind: turnReattach, reasoning: reasoning}
 			}
@@ -1498,7 +1603,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// thinking tail; text (or unknown-kind) deltas stream as
 					// text. The finalize overwrites the row with the
 					// authoritative reply, so deltas never corrupt it.
-					if kind == "reasoning" {
+					//
+					// Suspect-kind gate: while the folded-think segmenter
+					// has a think run open, even a native `reasoning`
+					// delta is suspect (the serve streams text AND
+					// reasoning through the same field:"text", so the
+					// kind is best-effort) — it stays on the segmenter
+					// road instead of raw-appending to the tail, so a
+					// folded tag smuggled in a reasoning-kind delta is
+					// still demuxed. Native reasoning parts (completed)
+					// stay untouched — this gate covers deltas only.
+					if kind == "reasoning" && !segThink.inThink() {
 						liveReasoning.WriteString(delta)
 					} else {
 						// Demux folded think segments out of the text delta

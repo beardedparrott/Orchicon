@@ -13,7 +13,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
-import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
+import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, Heartbeat, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
 import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
@@ -695,6 +695,12 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: ReasoningChunk;
     case: "reasoning";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.Heartbeat heartbeat = 8;
+     */
+    value: Heartbeat;
+    case: "heartbeat";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -712,6 +718,7 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 5, name: "done", kind: "message", T: DoneSignal, oneof: "event" },
     { no: 6, name: "turn_started", kind: "message", T: TurnStarted, oneof: "event" },
     { no: 7, name: "reasoning", kind: "message", T: ReasoningChunk, oneof: "event" },
+    { no: 8, name: "heartbeat", kind: "message", T: Heartbeat, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {
@@ -840,6 +847,54 @@ export class AbortConversationTurnResponse extends Message<AbortConversationTurn
 
   static equals(a: AbortConversationTurnResponse | PlainMessage<AbortConversationTurnResponse> | undefined, b: AbortConversationTurnResponse | PlainMessage<AbortConversationTurnResponse> | undefined): boolean {
     return proto3.util.equals(AbortConversationTurnResponse, a, b);
+  }
+}
+
+/**
+ * WatchTurnStreamRequest identifies the running turn to re-attach to: the
+ * conversation plus the assistant message id ACKED by the original
+ * ChatStream TurnStarted. Both must match the registry entry or the RPC
+ * fails with NotFound (no clobber across supersedes).
+ *
+ * @generated from message orchicon.api.v1.WatchTurnStreamRequest
+ */
+export class WatchTurnStreamRequest extends Message<WatchTurnStreamRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string assistant_message_id = 2;
+   */
+  assistantMessageId = "";
+
+  constructor(data?: PartialMessage<WatchTurnStreamRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WatchTurnStreamRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WatchTurnStreamRequest | PlainMessage<WatchTurnStreamRequest> | undefined, b: WatchTurnStreamRequest | PlainMessage<WatchTurnStreamRequest> | undefined): boolean {
+    return proto3.util.equals(WatchTurnStreamRequest, a, b);
   }
 }
 

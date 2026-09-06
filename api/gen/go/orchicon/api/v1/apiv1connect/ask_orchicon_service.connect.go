@@ -71,6 +71,9 @@ const (
 	// AskOrchiconServiceInterjectConversationTurnProcedure is the fully-qualified name of the
 	// AskOrchiconService's InterjectConversationTurn RPC.
 	AskOrchiconServiceInterjectConversationTurnProcedure = "/orchicon.api.v1.AskOrchiconService/InterjectConversationTurn"
+	// AskOrchiconServiceWatchTurnStreamProcedure is the fully-qualified name of the
+	// AskOrchiconService's WatchTurnStream RPC.
+	AskOrchiconServiceWatchTurnStreamProcedure = "/orchicon.api.v1.AskOrchiconService/WatchTurnStream"
 	// AskOrchiconServiceUploadAttachmentProcedure is the fully-qualified name of the
 	// AskOrchiconService's UploadAttachment RPC.
 	AskOrchiconServiceUploadAttachmentProcedure = "/orchicon.api.v1.AskOrchiconService/UploadAttachment"
@@ -140,6 +143,20 @@ type AskOrchiconServiceClient interface {
 	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
 	// TurnStarted); reusing the type is deliberate.
 	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// WatchTurnStream re-attaches to an ACKED turn's live event stream after
+	// the ChatStream socket dropped (network blip, server restart,
+	// backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+	// the conversation's in-flight turn in the turn registry and replays
+	// subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+	// stream; if no turn is running (or the assistant message id does not
+	// match the running turn), it returns NotFound and the client falls back
+	// to the ListMessages completion poll. Stale generations never clobber:
+	// the client opens this under its dispatch-gen guards and ignores chunks
+	// once the poll resolves the turn.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+	// same ChatStreamResponse oneof as ChatStream; reusing the type is
+	// deliberate.
+	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -224,6 +241,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
 			connect.WithClientOptions(opts...),
 		),
+		watchTurnStream: connect.NewClient[v1.WatchTurnStreamRequest, v1.ChatStreamResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceWatchTurnStreamProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+			connect.WithClientOptions(opts...),
+		),
 		uploadAttachment: connect.NewClient[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceUploadAttachmentProcedure,
@@ -263,6 +286,7 @@ type askOrchiconServiceClient struct {
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
+	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
 	updateAgentConfig         *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
@@ -317,6 +341,11 @@ func (c *askOrchiconServiceClient) AbortConversationTurn(ctx context.Context, re
 // InterjectConversationTurn calls orchicon.api.v1.AskOrchiconService.InterjectConversationTurn.
 func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context, req *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
 	return c.interjectConversationTurn.CallServerStream(ctx, req)
+}
+
+// WatchTurnStream calls orchicon.api.v1.AskOrchiconService.WatchTurnStream.
+func (c *askOrchiconServiceClient) WatchTurnStream(ctx context.Context, req *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
+	return c.watchTurnStream.CallServerStream(ctx, req)
 }
 
 // UploadAttachment calls orchicon.api.v1.AskOrchiconService.UploadAttachment.
@@ -394,6 +423,20 @@ type AskOrchiconServiceHandler interface {
 	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
 	// TurnStarted); reusing the type is deliberate.
 	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// WatchTurnStream re-attaches to an ACKED turn's live event stream after
+	// the ChatStream socket dropped (network blip, server restart,
+	// backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+	// the conversation's in-flight turn in the turn registry and replays
+	// subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+	// stream; if no turn is running (or the assistant message id does not
+	// match the running turn), it returns NotFound and the client falls back
+	// to the ListMessages completion poll. Stale generations never clobber:
+	// the client opens this under its dispatch-gen guards and ignores chunks
+	// once the poll resolves the turn.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+	// same ChatStreamResponse oneof as ChatStream; reusing the type is
+	// deliberate.
+	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -474,6 +517,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceWatchTurnStreamHandler := connect.NewServerStreamHandler(
+		AskOrchiconServiceWatchTurnStreamProcedure,
+		svc.WatchTurnStream,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceUploadAttachmentHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceUploadAttachmentProcedure,
 		svc.UploadAttachment,
@@ -520,6 +569,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceAbortConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceInterjectConversationTurnProcedure:
 			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceWatchTurnStreamProcedure:
+			askOrchiconServiceWatchTurnStreamHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
 			askOrchiconServiceUploadAttachmentHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceGetAgentConfigProcedure:
@@ -575,6 +626,10 @@ func (UnimplementedAskOrchiconServiceHandler) AbortConversationTurn(context.Cont
 
 func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.InterjectConversationTurn is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.WatchTurnStream is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {

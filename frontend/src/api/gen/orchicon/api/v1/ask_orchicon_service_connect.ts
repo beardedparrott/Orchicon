@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -162,6 +162,29 @@ export const AskOrchiconService = {
     interjectConversationTurn: {
       name: "InterjectConversationTurn",
       I: InterjectConversationTurnRequest,
+      O: ChatStreamResponse,
+      kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * WatchTurnStream re-attaches to an ACKED turn's live event stream after
+     * the ChatStream socket dropped (network blip, server restart,
+     * backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+     * the conversation's in-flight turn in the turn registry and replays
+     * subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+     * stream; if no turn is running (or the assistant message id does not
+     * match the running turn), it returns NotFound and the client falls back
+     * to the ListMessages completion poll. Stale generations never clobber:
+     * the client opens this under its dispatch-gen guards and ignores chunks
+     * once the poll resolves the turn.
+     * buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+     * same ChatStreamResponse oneof as ChatStream; reusing the type is
+     * deliberate.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.WatchTurnStream
+     */
+    watchTurnStream: {
+      name: "WatchTurnStream",
+      I: WatchTurnStreamRequest,
       O: ChatStreamResponse,
       kind: MethodKind.ServerStreaming,
     },

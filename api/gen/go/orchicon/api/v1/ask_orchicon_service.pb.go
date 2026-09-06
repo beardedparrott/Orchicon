@@ -797,6 +797,7 @@ type ChatStreamResponse struct {
 	//	*ChatStreamResponse_Done
 	//	*ChatStreamResponse_TurnStarted
 	//	*ChatStreamResponse_Reasoning
+	//	*ChatStreamResponse_Heartbeat
 	Event         isChatStreamResponse_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -902,6 +903,15 @@ func (x *ChatStreamResponse) GetReasoning() *ReasoningChunk {
 	return nil
 }
 
+func (x *ChatStreamResponse) GetHeartbeat() *Heartbeat {
+	if x != nil {
+		if x, ok := x.Event.(*ChatStreamResponse_Heartbeat); ok {
+			return x.Heartbeat
+		}
+	}
+	return nil
+}
+
 type isChatStreamResponse_Event interface {
 	isChatStreamResponse_Event()
 }
@@ -934,6 +944,10 @@ type ChatStreamResponse_Reasoning struct {
 	Reasoning *ReasoningChunk `protobuf:"bytes,7,opt,name=reasoning,proto3,oneof"`
 }
 
+type ChatStreamResponse_Heartbeat struct {
+	Heartbeat *Heartbeat `protobuf:"bytes,8,opt,name=heartbeat,proto3,oneof"`
+}
+
 func (*ChatStreamResponse_TextChunk) isChatStreamResponse_Event() {}
 
 func (*ChatStreamResponse_ToolCallStart) isChatStreamResponse_Event() {}
@@ -947,6 +961,8 @@ func (*ChatStreamResponse_Done) isChatStreamResponse_Event() {}
 func (*ChatStreamResponse_TurnStarted) isChatStreamResponse_Event() {}
 
 func (*ChatStreamResponse_Reasoning) isChatStreamResponse_Event() {}
+
+func (*ChatStreamResponse_Heartbeat) isChatStreamResponse_Event() {}
 
 // TurnStarted is the immediate ack for a ChatStream send: the message was
 // persisted and the turn is in flight. The reply is persisted under
@@ -1077,6 +1093,62 @@ func (*AbortConversationTurnResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{18}
 }
 
+// WatchTurnStreamRequest identifies the running turn to re-attach to: the
+// conversation plus the assistant message id ACKED by the original
+// ChatStream TurnStarted. Both must match the registry entry or the RPC
+// fails with NotFound (no clobber across supersedes).
+type WatchTurnStreamRequest struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ConversationId     string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	AssistantMessageId string                 `protobuf:"bytes,2,opt,name=assistant_message_id,json=assistantMessageId,proto3" json:"assistant_message_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *WatchTurnStreamRequest) Reset() {
+	*x = WatchTurnStreamRequest{}
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchTurnStreamRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchTurnStreamRequest) ProtoMessage() {}
+
+func (x *WatchTurnStreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchTurnStreamRequest.ProtoReflect.Descriptor instead.
+func (*WatchTurnStreamRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *WatchTurnStreamRequest) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *WatchTurnStreamRequest) GetAssistantMessageId() string {
+	if x != nil {
+		return x.AssistantMessageId
+	}
+	return ""
+}
+
 // InterjectConversationTurnRequest identifies the conversation to interject
 // and carries the steering message. The message replaces (supersedes) the
 // in-flight turn and is answered on a fresh turn; attachments are optional.
@@ -1091,7 +1163,7 @@ type InterjectConversationTurnRequest struct {
 
 func (x *InterjectConversationTurnRequest) Reset() {
 	*x = InterjectConversationTurnRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1103,7 +1175,7 @@ func (x *InterjectConversationTurnRequest) String() string {
 func (*InterjectConversationTurnRequest) ProtoMessage() {}
 
 func (x *InterjectConversationTurnRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1116,7 +1188,7 @@ func (x *InterjectConversationTurnRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterjectConversationTurnRequest.ProtoReflect.Descriptor instead.
 func (*InterjectConversationTurnRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *InterjectConversationTurnRequest) GetConversationId() string {
@@ -1152,7 +1224,7 @@ type UploadAttachmentRequest struct {
 
 func (x *UploadAttachmentRequest) Reset() {
 	*x = UploadAttachmentRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1236,7 @@ func (x *UploadAttachmentRequest) String() string {
 func (*UploadAttachmentRequest) ProtoMessage() {}
 
 func (x *UploadAttachmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1249,7 @@ func (x *UploadAttachmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAttachmentRequest.ProtoReflect.Descriptor instead.
 func (*UploadAttachmentRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{20}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UploadAttachmentRequest) GetConversationId() string {
@@ -1218,7 +1290,7 @@ type UploadAttachmentResponse struct {
 
 func (x *UploadAttachmentResponse) Reset() {
 	*x = UploadAttachmentResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1230,7 +1302,7 @@ func (x *UploadAttachmentResponse) String() string {
 func (*UploadAttachmentResponse) ProtoMessage() {}
 
 func (x *UploadAttachmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1243,7 +1315,7 @@ func (x *UploadAttachmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAttachmentResponse.ProtoReflect.Descriptor instead.
 func (*UploadAttachmentResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{21}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *UploadAttachmentResponse) GetAttachmentId() string {
@@ -1268,7 +1340,7 @@ type GetAgentConfigRequest struct {
 
 func (x *GetAgentConfigRequest) Reset() {
 	*x = GetAgentConfigRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1280,7 +1352,7 @@ func (x *GetAgentConfigRequest) String() string {
 func (*GetAgentConfigRequest) ProtoMessage() {}
 
 func (x *GetAgentConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1293,7 +1365,7 @@ func (x *GetAgentConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentConfigRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{22}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{23}
 }
 
 type GetAgentConfigResponse struct {
@@ -1305,7 +1377,7 @@ type GetAgentConfigResponse struct {
 
 func (x *GetAgentConfigResponse) Reset() {
 	*x = GetAgentConfigResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1317,7 +1389,7 @@ func (x *GetAgentConfigResponse) String() string {
 func (*GetAgentConfigResponse) ProtoMessage() {}
 
 func (x *GetAgentConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1330,7 +1402,7 @@ func (x *GetAgentConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentConfigResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{23}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetAgentConfigResponse) GetConfig() *AgentConfig {
@@ -1349,7 +1421,7 @@ type UpdateAgentConfigRequest struct {
 
 func (x *UpdateAgentConfigRequest) Reset() {
 	*x = UpdateAgentConfigRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1361,7 +1433,7 @@ func (x *UpdateAgentConfigRequest) String() string {
 func (*UpdateAgentConfigRequest) ProtoMessage() {}
 
 func (x *UpdateAgentConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1374,7 +1446,7 @@ func (x *UpdateAgentConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateAgentConfigRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{24}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UpdateAgentConfigRequest) GetConfig() *AgentConfig {
@@ -1393,7 +1465,7 @@ type UpdateAgentConfigResponse struct {
 
 func (x *UpdateAgentConfigResponse) Reset() {
 	*x = UpdateAgentConfigResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1405,7 +1477,7 @@ func (x *UpdateAgentConfigResponse) String() string {
 func (*UpdateAgentConfigResponse) ProtoMessage() {}
 
 func (x *UpdateAgentConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1418,7 +1490,7 @@ func (x *UpdateAgentConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentConfigResponse.ProtoReflect.Descriptor instead.
 func (*UpdateAgentConfigResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{25}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UpdateAgentConfigResponse) GetConfig() *AgentConfig {
@@ -1437,7 +1509,7 @@ type GetModelCapabilitiesRequest struct {
 
 func (x *GetModelCapabilitiesRequest) Reset() {
 	*x = GetModelCapabilitiesRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1449,7 +1521,7 @@ func (x *GetModelCapabilitiesRequest) String() string {
 func (*GetModelCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetModelCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1462,7 +1534,7 @@ func (x *GetModelCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetModelCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{26}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetModelCapabilitiesRequest) GetModelRef() string {
@@ -1481,7 +1553,7 @@ type GetModelCapabilitiesResponse struct {
 
 func (x *GetModelCapabilitiesResponse) Reset() {
 	*x = GetModelCapabilitiesResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1493,7 +1565,7 @@ func (x *GetModelCapabilitiesResponse) String() string {
 func (*GetModelCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetModelCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1506,7 +1578,7 @@ func (x *GetModelCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetModelCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{27}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetModelCapabilitiesResponse) GetCapabilities() *ModelCapabilities {
@@ -1566,7 +1638,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x11ChatStreamRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12B\n" +
-	"\vattachments\x18\x03 \x03(\v2 .orchicon.api.v1.AttachmentInputR\vattachments\"\xdd\x03\n" +
+	"\vattachments\x18\x03 \x03(\v2 .orchicon.api.v1.AttachmentInputR\vattachments\"\x99\x04\n" +
 	"\x12ChatStreamResponse\x12;\n" +
 	"\n" +
 	"text_chunk\x18\x01 \x01(\v2\x1a.orchicon.api.v1.TextChunkH\x00R\ttextChunk\x12H\n" +
@@ -1575,13 +1647,17 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x05error\x18\x04 \x01(\v2\x1b.orchicon.api.v1.ErrorChunkH\x00R\x05error\x121\n" +
 	"\x04done\x18\x05 \x01(\v2\x1b.orchicon.api.v1.DoneSignalH\x00R\x04done\x12A\n" +
 	"\fturn_started\x18\x06 \x01(\v2\x1c.orchicon.api.v1.TurnStartedH\x00R\vturnStarted\x12?\n" +
-	"\treasoning\x18\a \x01(\v2\x1f.orchicon.api.v1.ReasoningChunkH\x00R\treasoningB\a\n" +
+	"\treasoning\x18\a \x01(\v2\x1f.orchicon.api.v1.ReasoningChunkH\x00R\treasoning\x12:\n" +
+	"\theartbeat\x18\b \x01(\v2\x1a.orchicon.api.v1.HeartbeatH\x00R\theartbeatB\a\n" +
 	"\x05event\"?\n" +
 	"\vTurnStarted\x120\n" +
 	"\x14assistant_message_id\x18\x01 \x01(\tR\x12assistantMessageId\"G\n" +
 	"\x1cAbortConversationTurnRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\"\x1f\n" +
-	"\x1dAbortConversationTurnResponse\"\xa9\x01\n" +
+	"\x1dAbortConversationTurnResponse\"s\n" +
+	"\x16WatchTurnStreamRequest\x12'\n" +
+	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x120\n" +
+	"\x14assistant_message_id\x18\x02 \x01(\tR\x12assistantMessageId\"\xa9\x01\n" +
 	" InterjectConversationTurnRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12B\n" +
@@ -1604,7 +1680,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x1bGetModelCapabilitiesRequest\x12\x1b\n" +
 	"\tmodel_ref\x18\x01 \x01(\tR\bmodelRef\"f\n" +
 	"\x1cGetModelCapabilitiesResponse\x12F\n" +
-	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities2\x86\f\n" +
+	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities2\xe9\f\n" +
 	"\x12AskOrchiconService\x12j\n" +
 	"\x11ListConversations\x12).orchicon.api.v1.ListConversationsRequest\x1a*.orchicon.api.v1.ListConversationsResponse\x12d\n" +
 	"\x0fGetConversation\x12'.orchicon.api.v1.GetConversationRequest\x1a(.orchicon.api.v1.GetConversationResponse\x12m\n" +
@@ -1616,7 +1692,8 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\n" +
 	"ChatStream\x12\".orchicon.api.v1.ChatStreamRequest\x1a#.orchicon.api.v1.ChatStreamResponse0\x01\x12v\n" +
 	"\x15AbortConversationTurn\x12-.orchicon.api.v1.AbortConversationTurnRequest\x1a..orchicon.api.v1.AbortConversationTurnResponse\x12u\n" +
-	"\x19InterjectConversationTurn\x121.orchicon.api.v1.InterjectConversationTurnRequest\x1a#.orchicon.api.v1.ChatStreamResponse0\x01\x12g\n" +
+	"\x19InterjectConversationTurn\x121.orchicon.api.v1.InterjectConversationTurnRequest\x1a#.orchicon.api.v1.ChatStreamResponse0\x01\x12a\n" +
+	"\x0fWatchTurnStream\x12'.orchicon.api.v1.WatchTurnStreamRequest\x1a#.orchicon.api.v1.ChatStreamResponse0\x01\x12g\n" +
 	"\x10UploadAttachment\x12(.orchicon.api.v1.UploadAttachmentRequest\x1a).orchicon.api.v1.UploadAttachmentResponse\x12a\n" +
 	"\x0eGetAgentConfig\x12&.orchicon.api.v1.GetAgentConfigRequest\x1a'.orchicon.api.v1.GetAgentConfigResponse\x12j\n" +
 	"\x11UpdateAgentConfig\x12).orchicon.api.v1.UpdateAgentConfigRequest\x1a*.orchicon.api.v1.UpdateAgentConfigResponse\x12s\n" +
@@ -1635,7 +1712,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_orchicon_api_v1_ask_orchicon_service_proto_goTypes = []any{
 	(*ListConversationsRequest)(nil),         // 0: orchicon.api.v1.ListConversationsRequest
 	(*ListConversationsResponse)(nil),        // 1: orchicon.api.v1.ListConversationsResponse
@@ -1656,87 +1733,92 @@ var file_orchicon_api_v1_ask_orchicon_service_proto_goTypes = []any{
 	(*TurnStarted)(nil),                      // 16: orchicon.api.v1.TurnStarted
 	(*AbortConversationTurnRequest)(nil),     // 17: orchicon.api.v1.AbortConversationTurnRequest
 	(*AbortConversationTurnResponse)(nil),    // 18: orchicon.api.v1.AbortConversationTurnResponse
-	(*InterjectConversationTurnRequest)(nil), // 19: orchicon.api.v1.InterjectConversationTurnRequest
-	(*UploadAttachmentRequest)(nil),          // 20: orchicon.api.v1.UploadAttachmentRequest
-	(*UploadAttachmentResponse)(nil),         // 21: orchicon.api.v1.UploadAttachmentResponse
-	(*GetAgentConfigRequest)(nil),            // 22: orchicon.api.v1.GetAgentConfigRequest
-	(*GetAgentConfigResponse)(nil),           // 23: orchicon.api.v1.GetAgentConfigResponse
-	(*UpdateAgentConfigRequest)(nil),         // 24: orchicon.api.v1.UpdateAgentConfigRequest
-	(*UpdateAgentConfigResponse)(nil),        // 25: orchicon.api.v1.UpdateAgentConfigResponse
-	(*GetModelCapabilitiesRequest)(nil),      // 26: orchicon.api.v1.GetModelCapabilitiesRequest
-	(*GetModelCapabilitiesResponse)(nil),     // 27: orchicon.api.v1.GetModelCapabilitiesResponse
-	(*Conversation)(nil),                     // 28: orchicon.api.v1.Conversation
-	(*Category)(nil),                         // 29: orchicon.api.v1.Category
-	(*CategoryAssignment)(nil),               // 30: orchicon.api.v1.CategoryAssignment
-	(ConversationMode)(0),                    // 31: orchicon.api.v1.ConversationMode
-	(*ChatMessage)(nil),                      // 32: orchicon.api.v1.ChatMessage
-	(*AttachmentInput)(nil),                  // 33: orchicon.api.v1.AttachmentInput
-	(*TextChunk)(nil),                        // 34: orchicon.api.v1.TextChunk
-	(*ToolCallChunk)(nil),                    // 35: orchicon.api.v1.ToolCallChunk
-	(*ToolCallResult)(nil),                   // 36: orchicon.api.v1.ToolCallResult
-	(*ErrorChunk)(nil),                       // 37: orchicon.api.v1.ErrorChunk
-	(*DoneSignal)(nil),                       // 38: orchicon.api.v1.DoneSignal
-	(*ReasoningChunk)(nil),                   // 39: orchicon.api.v1.ReasoningChunk
-	(*AgentConfig)(nil),                      // 40: orchicon.api.v1.AgentConfig
-	(*ModelCapabilities)(nil),                // 41: orchicon.api.v1.ModelCapabilities
+	(*WatchTurnStreamRequest)(nil),           // 19: orchicon.api.v1.WatchTurnStreamRequest
+	(*InterjectConversationTurnRequest)(nil), // 20: orchicon.api.v1.InterjectConversationTurnRequest
+	(*UploadAttachmentRequest)(nil),          // 21: orchicon.api.v1.UploadAttachmentRequest
+	(*UploadAttachmentResponse)(nil),         // 22: orchicon.api.v1.UploadAttachmentResponse
+	(*GetAgentConfigRequest)(nil),            // 23: orchicon.api.v1.GetAgentConfigRequest
+	(*GetAgentConfigResponse)(nil),           // 24: orchicon.api.v1.GetAgentConfigResponse
+	(*UpdateAgentConfigRequest)(nil),         // 25: orchicon.api.v1.UpdateAgentConfigRequest
+	(*UpdateAgentConfigResponse)(nil),        // 26: orchicon.api.v1.UpdateAgentConfigResponse
+	(*GetModelCapabilitiesRequest)(nil),      // 27: orchicon.api.v1.GetModelCapabilitiesRequest
+	(*GetModelCapabilitiesResponse)(nil),     // 28: orchicon.api.v1.GetModelCapabilitiesResponse
+	(*Conversation)(nil),                     // 29: orchicon.api.v1.Conversation
+	(*Category)(nil),                         // 30: orchicon.api.v1.Category
+	(*CategoryAssignment)(nil),               // 31: orchicon.api.v1.CategoryAssignment
+	(ConversationMode)(0),                    // 32: orchicon.api.v1.ConversationMode
+	(*ChatMessage)(nil),                      // 33: orchicon.api.v1.ChatMessage
+	(*AttachmentInput)(nil),                  // 34: orchicon.api.v1.AttachmentInput
+	(*TextChunk)(nil),                        // 35: orchicon.api.v1.TextChunk
+	(*ToolCallChunk)(nil),                    // 36: orchicon.api.v1.ToolCallChunk
+	(*ToolCallResult)(nil),                   // 37: orchicon.api.v1.ToolCallResult
+	(*ErrorChunk)(nil),                       // 38: orchicon.api.v1.ErrorChunk
+	(*DoneSignal)(nil),                       // 39: orchicon.api.v1.DoneSignal
+	(*ReasoningChunk)(nil),                   // 40: orchicon.api.v1.ReasoningChunk
+	(*Heartbeat)(nil),                        // 41: orchicon.api.v1.Heartbeat
+	(*AgentConfig)(nil),                      // 42: orchicon.api.v1.AgentConfig
+	(*ModelCapabilities)(nil),                // 43: orchicon.api.v1.ModelCapabilities
 }
 var file_orchicon_api_v1_ask_orchicon_service_proto_depIdxs = []int32{
-	28, // 0: orchicon.api.v1.ListConversationsResponse.conversations:type_name -> orchicon.api.v1.Conversation
-	29, // 1: orchicon.api.v1.ListConversationsResponse.categories:type_name -> orchicon.api.v1.Category
-	30, // 2: orchicon.api.v1.ListConversationsResponse.assignments:type_name -> orchicon.api.v1.CategoryAssignment
-	28, // 3: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	31, // 4: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	28, // 5: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	31, // 6: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	28, // 7: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	28, // 8: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	32, // 9: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
-	33, // 10: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	34, // 11: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
-	35, // 12: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
-	36, // 13: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
-	37, // 14: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
-	38, // 15: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
+	29, // 0: orchicon.api.v1.ListConversationsResponse.conversations:type_name -> orchicon.api.v1.Conversation
+	30, // 1: orchicon.api.v1.ListConversationsResponse.categories:type_name -> orchicon.api.v1.Category
+	31, // 2: orchicon.api.v1.ListConversationsResponse.assignments:type_name -> orchicon.api.v1.CategoryAssignment
+	29, // 3: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	32, // 4: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	29, // 5: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	32, // 6: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	29, // 7: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	29, // 8: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	33, // 9: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
+	34, // 10: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	35, // 11: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
+	36, // 12: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
+	37, // 13: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
+	38, // 14: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
+	39, // 15: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
 	16, // 16: orchicon.api.v1.ChatStreamResponse.turn_started:type_name -> orchicon.api.v1.TurnStarted
-	39, // 17: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
-	33, // 18: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	40, // 19: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	40, // 20: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
-	40, // 21: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	41, // 22: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	0,  // 23: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
-	2,  // 24: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
-	4,  // 25: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
-	8,  // 26: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
-	10, // 27: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
-	6,  // 28: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
-	12, // 29: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
-	14, // 30: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
-	17, // 31: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
-	19, // 32: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
-	20, // 33: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
-	22, // 34: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
-	24, // 35: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
-	26, // 36: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
-	1,  // 37: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
-	3,  // 38: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
-	5,  // 39: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
-	9,  // 40: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
-	11, // 41: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
-	7,  // 42: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
-	13, // 43: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
-	15, // 44: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
-	18, // 45: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
-	15, // 46: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
-	21, // 47: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
-	23, // 48: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
-	25, // 49: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
-	27, // 50: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
-	37, // [37:51] is the sub-list for method output_type
-	23, // [23:37] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	40, // 17: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
+	41, // 18: orchicon.api.v1.ChatStreamResponse.heartbeat:type_name -> orchicon.api.v1.Heartbeat
+	34, // 19: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	42, // 20: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	42, // 21: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
+	42, // 22: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	43, // 23: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	0,  // 24: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
+	2,  // 25: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
+	4,  // 26: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
+	8,  // 27: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
+	10, // 28: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
+	6,  // 29: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
+	12, // 30: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
+	14, // 31: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
+	17, // 32: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
+	20, // 33: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
+	19, // 34: orchicon.api.v1.AskOrchiconService.WatchTurnStream:input_type -> orchicon.api.v1.WatchTurnStreamRequest
+	21, // 35: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
+	23, // 36: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
+	25, // 37: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
+	27, // 38: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
+	1,  // 39: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
+	3,  // 40: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
+	5,  // 41: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
+	9,  // 42: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
+	11, // 43: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
+	7,  // 44: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
+	13, // 45: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
+	15, // 46: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
+	18, // 47: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
+	15, // 48: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
+	15, // 49: orchicon.api.v1.AskOrchiconService.WatchTurnStream:output_type -> orchicon.api.v1.ChatStreamResponse
+	22, // 50: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
+	24, // 51: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
+	26, // 52: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
+	28, // 53: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
+	39, // [39:54] is the sub-list for method output_type
+	24, // [24:39] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ask_orchicon_service_proto_init() }
@@ -1755,6 +1837,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 		(*ChatStreamResponse_Done)(nil),
 		(*ChatStreamResponse_TurnStarted)(nil),
 		(*ChatStreamResponse_Reasoning)(nil),
+		(*ChatStreamResponse_Heartbeat)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1762,7 +1845,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc), len(file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

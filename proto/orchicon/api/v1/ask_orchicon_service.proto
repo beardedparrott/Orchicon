@@ -82,6 +82,21 @@ service AskOrchiconService {
   rpc InterjectConversationTurn(InterjectConversationTurnRequest)
       returns (stream ChatStreamResponse);
 
+  // WatchTurnStream re-attaches to an ACKED turn's live event stream after
+  // the ChatStream socket dropped (network blip, server restart,
+  // backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+  // the conversation's in-flight turn in the turn registry and replays
+  // subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+  // stream; if no turn is running (or the assistant message id does not
+  // match the running turn), it returns NotFound and the client falls back
+  // to the ListMessages completion poll. Stale generations never clobber:
+  // the client opens this under its dispatch-gen guards and ignores chunks
+  // once the poll resolves the turn.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+  // same ChatStreamResponse oneof as ChatStream; reusing the type is
+  // deliberate.
+  rpc WatchTurnStream(WatchTurnStreamRequest) returns (stream ChatStreamResponse);
+
   // Attachments.
 
   // UploadAttachment uploads a file attachment for use in a message.
@@ -191,6 +206,7 @@ message ChatStreamResponse {
     DoneSignal done = 5;
     TurnStarted turn_started = 6;
     ReasoningChunk reasoning = 7;
+    Heartbeat heartbeat = 8;
   }
 }
 
@@ -208,6 +224,15 @@ message AbortConversationTurnRequest {
 }
 
 message AbortConversationTurnResponse {}
+
+// WatchTurnStreamRequest identifies the running turn to re-attach to: the
+// conversation plus the assistant message id ACKED by the original
+// ChatStream TurnStarted. Both must match the registry entry or the RPC
+// fails with NotFound (no clobber across supersedes).
+message WatchTurnStreamRequest {
+  string conversation_id = 1;
+  string assistant_message_id = 2;
+}
 
 // InterjectConversationTurnRequest identifies the conversation to interject
 // and carries the steering message. The message replaces (supersedes) the
