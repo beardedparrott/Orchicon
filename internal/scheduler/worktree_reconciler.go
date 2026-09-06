@@ -558,6 +558,8 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		// through and re-provision.
 		if r.worktreeMatches(ctx, run.ProjectID, run.WorktreePath, run.WorktreeBranch) {
 			r.ensureRunWorktreeStepIgnore(ctx, run.WorktreePath)
+			// run ready: fan out to its branch children inline (starvation-free).
+			r.provisionRunBranches(ctx, tenantID, runID)
 			return nil
 		}
 	case domain.WorktreePruned:
@@ -652,7 +654,11 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base, strategy == "none"); aerr != nil {
 					return fmt.Errorf("worktree: adopt run container at %s: %w", path, aerr)
 				}
-				return r.recordReady(ctx, tenantID, runID, path, branch)
+				if err := r.recordReady(ctx, tenantID, runID, path, branch); err != nil {
+					return err
+				}
+				r.provisionRunBranches(ctx, tenantID, runID)
+				return nil
 			}
 			return r.markFailed(ctx, tenantID, runID,
 				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
@@ -678,7 +684,11 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			// A concurrent pass won the create race — converge on the
 			// worktree git now has at our path.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
-				return r.recordReady(ctx, tenantID, runID, path, branch)
+				if err := r.recordReady(ctx, tenantID, runID, path, branch); err != nil {
+					return err
+				}
+				r.provisionRunBranches(ctx, tenantID, runID)
+				return nil
 			}
 		}
 		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", perr))
@@ -688,7 +698,58 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		return err
 	}
 	r.ensureRunWorktreeStepIgnore(ctx, path)
+	// run ready: fan out to its branch children inline (starvation-free).
+	r.provisionRunBranches(ctx, tenantID, runID)
 	return nil
+}
+
+// provisionRunBranches provisions the parallel-branch child step runs of a
+// single run whose worktree is ready. Per-run scope: lists the run's OWN
+// step runs (never the batch-capped global candidate scan), filters to
+// parallel-branch children with a still-pending branch worktree, and
+// provisions each via reconcileStepRunOne. Idempotent; errors are logged,
+// never returned.
+func (r *WorktreeReconciler) provisionRunBranches(ctx context.Context, tenantID, runID string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: inline branch provision begin tx failed", "run", runID, "error", err)
+		return
+	}
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return
+	}
+	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return
+	}
+	steps, err := workflow.ParseSteps(version.Steps)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return
+	}
+	branchChild := parallelBranchChildIDs(steps)
+	srs, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		return
+	}
+	for _, sr := range srs {
+		if !branchChild[sr.StepID] {
+			continue
+		}
+		if sr.WorktreeStatus != domain.WorktreePending {
+			continue
+		}
+		if isTerminalStepRun(sr) {
+			continue
+		}
+		if err := r.reconcileStepRunOne(ctx, tenantID, runID, sr.ID); err != nil {
+			r.log.Warn("worktree: inline branch provision failed", "run", runID, "step_run", sr.ID, "error", err)
+		}
+	}
 }
 
 // reconcileStepRunOne provisions a single parallel-branch step run's
