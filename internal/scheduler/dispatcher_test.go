@@ -33,6 +33,62 @@ func (f *fullBridge) ContinueSession(_ context.Context, opts ContinueSessionOpts
 func (f *fullBridge) AbortExecution(_ context.Context, _, _ string) error { return nil }
 func (f *fullBridge) IsExecutionActive(_ string) bool                     { return true }
 
+// chatBridge implements fakeBridge PLUS the Ask chat-session capability, so a
+// test can prove the Dispatcher routes Ask conversations to the chat-capable
+// bridge and yields an actionable error for a bridge that only implements
+// AdapterBridge.Start (the AC routing contract). It embeds fakeBridge so the
+// AdapterBridge.Start surface is still satisfied.
+type chatBridge struct {
+	fakeBridge
+	subscribed []string
+}
+
+func (c *chatBridge) Subscribe(_ context.Context, conversationID string) (SessionBus, error) {
+	return nil, nil
+}
+func (c *chatBridge) CreateConversationSession(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+func (c *chatBridge) SendTurnMessage(_ context.Context, _, _, _, _, _ string) error { return nil }
+func (c *chatBridge) AbortConversationSession(_ context.Context, _ string) error    { return nil }
+func (c *chatBridge) ReplyPermission(_ context.Context, _, _ string) error          { return nil }
+
+func TestDispatcherResolveChatCapability(t *testing.T) {
+	d := NewDispatcher()
+	plain := &fakeBridge{}
+	chat := &chatBridge{}
+	d.Register("plain", plain)
+	d.Register("chatty", chat)
+
+	t.Run("chat-capable bridge resolves via type-assert", func(t *testing.T) {
+		got, err := d.Resolve("chatty")
+		if err != nil {
+			t.Fatalf("Resolve(chatty): %v", err)
+		}
+		if _, ok := got.(ChatTurnClient); !ok {
+			t.Fatal("chatty bridge did not type-assert to ChatTurnClient")
+		}
+		if _, ok := got.(SendTurnMessageWithAttachments); ok {
+			t.Fatal("chatBridge should NOT implement the attachment capability")
+		}
+	})
+	t.Run("registered-but-not-chat bridge is an error, never a panic", func(t *testing.T) {
+		got, err := d.Resolve("plain")
+		if err != nil {
+			t.Fatalf("Resolve(plain): %v", err)
+		}
+		if _, ok := got.(ChatTurnClient); ok {
+			t.Fatal("plain bridge unexpectedly implements ChatTurnClient")
+		}
+	})
+	t.Run("unknown kind yields actionable no-chat routing error", func(t *testing.T) {
+		_, err := d.Resolve("claude")
+		if err == nil {
+			t.Fatal("Resolve(claude) succeeded; want actionable error (no claude adapter)")
+		}
+	})
+}
+
 func TestDispatcherRegisterResolve(t *testing.T) {
 	d := NewDispatcher()
 	opencode := &fakeBridge{name: "opencode"}

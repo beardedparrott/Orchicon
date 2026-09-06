@@ -69,25 +69,26 @@ func TestToolWedgeClearedByActivity(t *testing.T) {
 	}
 }
 
-// TestActiveToolNameNonTerminal verifies the raw-bus helper that feeds the
-// wedge monitor: a non-terminal tool part is detected, a completed/errored one
-// is not (that is LegacyEventFromBus's job), and a non-tool part is ignored.
+// TestActiveToolNameNonTerminal verifies the raw-bus tool-start classification
+// (opencode.ToolStartFromBus — the wedge monitor's signal): a non-terminal tool
+// part is detected, a completed/errored one is not (that is LegacyEventFromBus's
+// job), and a non-tool part is ignored.
 func TestActiveToolName(t *testing.T) {
-	if name, ok := activeToolName(busToolRunning("s", "read_file")); !ok || name != "read_file" {
-		t.Fatalf("activeToolName(running) = (%q,%v), want (read_file,true)", name, ok)
+	if name, ok := opencode.ToolStartFromBus(busToolRunning("s", "read_file")); !ok || name != "read_file" {
+		t.Fatalf("ToolStartFromBus(running) = (%q,%v), want (read_file,true)", name, ok)
 	}
-	if _, ok := activeToolName(opencode.BusEvent{Type: "message.part.updated", Properties: map[string]any{
+	if _, ok := opencode.ToolStartFromBus(opencode.BusEvent{Type: "message.part.updated", Properties: map[string]any{
 		"part": map[string]any{"type": "tool", "tool": "read_file", "state": map[string]any{"status": "completed"}},
 	}}); ok {
-		t.Fatal("activeToolName(completed) = true; want false (LegacyEventFromBus handles it)")
+		t.Fatal("ToolStartFromBus(completed) = true; want false (LegacyEventFromBus handles it)")
 	}
-	if _, ok := activeToolName(opencode.BusEvent{Type: "message.part.updated", Properties: map[string]any{
+	if _, ok := opencode.ToolStartFromBus(opencode.BusEvent{Type: "message.part.updated", Properties: map[string]any{
 		"part": map[string]any{"type": "text", "text": "hi"},
 	}}); ok {
-		t.Fatal("activeToolName(text part) = true; want false")
+		t.Fatal("ToolStartFromBus(text part) = true; want false")
 	}
-	if _, ok := activeToolName(opencode.BusEvent{Type: "session.idle", Properties: map[string]any{}}); ok {
-		t.Fatal("activeToolName(idle) = true; want false")
+	if _, ok := opencode.ToolStartFromBus(opencode.BusEvent{Type: "session.idle", Properties: map[string]any{}}); ok {
+		t.Fatal("ToolStartFromBus(idle) = true; want false")
 	}
 }
 
