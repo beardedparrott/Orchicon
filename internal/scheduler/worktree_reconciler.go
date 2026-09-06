@@ -207,7 +207,7 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 		return res
 	}
 	fastElapsed := time.Since(scanStart)
-	if time.Since(r.lastSlowPass) < slowPassInterval {
+	if !r.slowPassDue() {
 		r.log.Info("worktree: scan",
 			"fast_ms", fastElapsed.Milliseconds(),
 			"slow_ms", int64(0),
@@ -322,6 +322,21 @@ func (r *WorktreeReconciler) scanFast(ctx context.Context, tenantID string) (int
 	return provisions, reconciler.Result{}
 }
 
+// slowPassDue reports whether the orphan-sweep slow pass may run: at most
+// once per slowPassInterval. Factored as a method so the dispatch-stall
+// regression guard tests the real gate instead of re-implementing it.
+func (r *WorktreeReconciler) slowPassDue() bool {
+	return time.Since(r.lastSlowPass) >= slowPassInterval
+}
+
+// sweepBudgetExpired reports whether a slow-pass wall-clock deadline has
+// passed. Sweep loops check it between per-item iterations so one tick
+// cannot stall dispatch; expiry resumes on the next slow tick via the
+// cleared-branch page-advance invariant.
+func sweepBudgetExpired(deadline time.Time) bool {
+	return time.Now().After(deadline)
+}
+
 // scanSlow runs the orphan sweeps: orphan-branch, orphan-dir, and
 // skipped-terminal restore. These fan out into unbounded git proof chains
 // per row (listWorktrees/branchExists/branchProvablyMerged, each a
@@ -410,7 +425,7 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 		return
 	}
 	for _, run := range runs {
-		if time.Now().After(deadline) {
+		if sweepBudgetExpired(deadline) {
 			r.log.Info("worktree: orphan sweep budget expired, resuming next slow pass", "phase", "runs")
 			return
 		}
@@ -433,7 +448,7 @@ func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID s
 		return
 	}
 	for _, sr := range steps {
-		if time.Now().After(deadline) {
+		if sweepBudgetExpired(deadline) {
 			r.log.Info("worktree: orphan sweep budget expired, resuming next slow pass", "phase", "step_runs")
 			return
 		}
@@ -1231,7 +1246,6 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 	return r.markPruned(ctx, tenantID, run.ID, "")
 }
 
-// loadRun reads a run outside a transaction (released before git work).
 // logProvisionOutcome emits one structured log line per reconcileOne
 // attempt with the run's post-commit worktree_status, so a future
 // slow-dispatch report attributes to exactly one slow provision (long
@@ -1249,6 +1263,7 @@ func (r *WorktreeReconciler) logProvisionOutcome(ctx context.Context, tenantID, 
 		"worktree_status", status)
 }
 
+// loadRun reads a run outside a transaction (released before git work).
 func (r *WorktreeReconciler) loadRun(ctx context.Context, tenantID, runID string) (db.WorkflowRunRow, error) {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -2711,7 +2726,7 @@ func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID strin
 	ttx.Rollback(ctx)
 	seen := make(map[string]bool)
 	for _, dir := range dirs {
-		if time.Now().After(deadline) {
+		if sweepBudgetExpired(deadline) {
 			r.log.Info("worktree: orphan dir sweep budget expired, resuming next slow pass")
 			return
 		}
@@ -2854,7 +2869,7 @@ func (r *WorktreeReconciler) sweepSkippedTerminalRuns(ctx context.Context, tenan
 	rows.Close()
 	ttx.Rollback(ctx)
 	for _, rec := range recs {
-		if time.Now().After(deadline) {
+		if sweepBudgetExpired(deadline) {
 			r.log.Info("worktree: skipped-terminal restore budget expired, resuming next slow pass")
 			return
 		}

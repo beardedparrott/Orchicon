@@ -113,34 +113,37 @@ func TestParseRepoSlug(t *testing.T) {
 }
 
 // TestSlowPassGateSkipsWithinInterval is the dispatch-stall regression
-// guard: after a slow pass has run, the next scan must skip the slow pass
-// (slow_skipped path) so a newly armed pending run never waits behind
-// cleanup. No DB needed — the gate is pure wall-clock state on the struct.
+// guard: after a slow pass has run, the gate must hold (scan takes the
+// slow_skipped path) so a newly armed pending run never waits behind
+// cleanup; once the interval elapses the gate must release. No DB needed —
+// it exercises the real slowPassDue gate scan() calls.
 func TestSlowPassGateSkipsWithinInterval(t *testing.T) {
 	r := &WorktreeReconciler{}
 	r.lastSlowPass = time.Now()
-	if time.Since(r.lastSlowPass) < slowPassInterval {
-		// Gate holds: scan() would take the slow_skipped path. This is the
-		// assertion — consecutive scans within the interval skip cleanup.
-	} else {
-		t.Fatalf("slow gate did not hold immediately after a slow pass")
+	if r.slowPassDue() {
+		t.Fatalf("slow gate did not hold immediately after a slow pass (scan would run cleanup instead of skipping it)")
 	}
 	r.lastSlowPass = time.Now().Add(-2 * slowPassInterval)
-	if !(time.Since(r.lastSlowPass) >= slowPassInterval) {
-		t.Fatalf("slow gate did not release after the interval elapsed")
+	if !r.slowPassDue() {
+		t.Fatalf("slow gate did not release after the interval elapsed (cleanup would starve)")
+	}
+	// Zero value (fresh restart): first tick runs the slow pass so
+	// post-restart cleanup resumes.
+	r = &WorktreeReconciler{}
+	if !r.slowPassDue() {
+		t.Fatalf("zero-value lastSlowPass must read as due (cleanup must resume after restart)")
 	}
 }
 
-// TestSlowPassBudgetExpiry is the per-tick cost-cap guard: a deadline
-// already in the past must read as expired, so sweep loops return early on
-// the first item check and resume on the next slow tick.
+// TestSlowPassBudgetExpiry is the per-tick cost-cap guard: an already-past
+// deadline must read as expired (sweep loops return early on the first
+// item check and resume next tick) while a fresh slowPassBudget deadline
+// must not. Exercises the real sweepBudgetExpired helper the sweeps call.
 func TestSlowPassBudgetExpiry(t *testing.T) {
-	expired := time.Now().Add(-time.Second)
-	if !time.Now().After(expired) {
+	if !sweepBudgetExpired(time.Now().Add(-time.Second)) {
 		t.Fatalf("expired budget deadline did not read as expired")
 	}
-	fresh := time.Now().Add(slowPassBudget)
-	if time.Now().After(fresh) {
+	if sweepBudgetExpired(time.Now().Add(slowPassBudget)) {
 		t.Fatalf("fresh slow-pass budget read as expired")
 	}
 }
