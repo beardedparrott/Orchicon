@@ -85,6 +85,21 @@ const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
 	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n" +
 	"- `todoread` reads back your LATEST todo list in one cheap call — re-sync mid-run instead of re-deriving it from memory; a stale list reads as no progress.\n\n"
 
+// memoryPlaybookBlock is the shared durable-memory playbook injected into
+// the stable prompt prefix of every worker (StablePromptPrefix). It names
+// the four durable memory tools (memory_write / memory_search / memory_read
+// / memory_list) the model otherwise knows only from one-line schema
+// Descriptions, and separates them from the in-session orchicon_memory_note
+// (mutable-zone digest for the CURRENT run) — the memory_* tools are the
+// project-scoped store that survives per-execution isolation, so cross-step
+// context is inherited, never re-derived.
+const memoryPlaybookBlock = "\n## Memory playbook — project memory survives per-execution isolation\n" +
+	"- On an unfamiliar task, start with `memory_search` for existing project memory before re-deriving context from scratch.\n" +
+	"- `memory_write` persists facts, root causes, and decisions later sessions must inherit — one fact per entry (title + body), tagged by subsystem so it is findable.\n" +
+	"- `memory_read` pulls one full entry by id; `memory_list` browses recent entries (newest first).\n" +
+	"- `orchicon_memory_note` is the in-session digest for the CURRENT run (rendered after the cache breakpoint, replayed on resume) — use it for turn-level notes; use `memory_*` for anything that must outlive this execution.\n" +
+	"- These tools are project-scoped and survive per-execution isolation: cross-step context lives here, not in re-derived reads.\n\n"
+
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
 // section of the stable prompt prefix. It tells the worker the ground truth
 // about its execution sandbox so it does not waste cycles empirically probing
@@ -132,6 +147,7 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(efficiencyBlock)
 	sb.WriteString(stepOutputBlock)
 	sb.WriteString(todoListBlock)
+	sb.WriteString(memoryPlaybookBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
 	return sb.String()
 }

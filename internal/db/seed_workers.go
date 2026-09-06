@@ -75,15 +75,15 @@ func seedAgentsMD(w cannedWorker) string {
 // DB-testing the Orchicon repo; it dies with the container and never touches
 // the real instance's database. The real instance (the plane the work item
 // was created on) holds the actual work items, runs, and data; a worker's
-// access to it is role-scoped through the worker's identity.
+// access to it is deny-by-default through the worker's identity — no role
+// binding means no plane channel, and that absence is expected, never a
+// reason to invent a real-instance write.
 const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated workflow runtime container. " +
 	"The `:orchicon-dev` runtime image boots a **disposable in-container sandbox plane** (Postgres → NATS → `orchicon serve` on container-local ports) for building and DB-testing the Orchicon repo — it dies with the container and never touches the real instance's database. " +
 	"The **real instance** (the plane your work item was created on) holds the actual work items, workers, workflows, runs, and data. " +
-	"Your access to the real instance is **role-scoped through your worker identity**: use only the `orchicon_plane_*` tools for it, and only within the entitlements your role grants. " +
-	"The plane channel is **not image-gated**: `orchicon_plane_*` tools are registered on every runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your role grants access — only the sandbox `orchicon_*` tools require the `:orchicon-dev` image. " +
-	"Plane tool responses are labeled envelopes, not raw protos: verify a write's reported landing state (e.g. a create reporting `idea_state: true`) matches what you intended before reporting success — a bare numeric status or a mismatch is a platform bug, record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI rather than claiming completion. " +
-	"Idea spawning is explicit and dedicated: `orchicon_plane_list_idea_items` reads the Idea Cloud (state=\"active\" = pending triage; state=\"rejected\" = previously dismissed spawns — the rejection memory checked before spawning) and `orchicon_plane_create_idea_item` spawns an idea item (IDEA landing is forced by the tool — the run's trusted context supplies provenance, never call arguments); a refused spawn or a non-idea landed state is a LOUD platform error to record, never a success. " +
-	"If your worker has a role but no `orchicon_plane_*` tools appear, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do not conclude that real-instance access is dev-runtime-only. " +
+	"Plane access is **deny-by-default**: the plane credential is minted only for published workers with a role binding — workers without a research/Idea role have **no plane channel and must not call `orchicon_plane_*`**; the tools' absence is expected, not an error, and never a reason to invent a real-instance write. " +
+	"Real-instance writes are explicitly out of scope unless your task names them: DB/migration/API testing and throwaway records land in the container sandbox plane (`orchicon_*` tools, `:orchicon-dev` only), never the production instance. " +
+	"Only role-bound research workers use idea-item tools: `orchicon_plane_list_idea_items` reads the Idea Cloud (state=\"active\" = pending triage; state=\"rejected\" = previously dismissed spawns — the rejection memory checked before spawning) and `orchicon_plane_create_idea_item` spawns an idea item (IDEA landing is forced by the tool — the run's trusted context supplies provenance, never call arguments); a refused spawn or a non-idea landed state is a LOUD platform error to record, never a success. " +
 	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
 // playwrightBlock instructs UI-focused workers how to drive headless
@@ -162,15 +162,13 @@ type cannedWorker struct {
 // fragment must exist in sandboxPlaneBlock (the seed content pushed to
 // EVERY canned worker) and NOT in the content already out there — then
 // exactly the stale workers re-roll, and once present everywhere the
-// seeder is idempotent again. The current generation pins the DEDICATED
-// idea tools (orchicon_plane_list_idea_items + orchicon_plane_create_idea_item)
-// that force IDEA landing server-side — the prior generation's generic
-// create with a run-context parameter could silently land plain pending
-// when a stale pool container served an old binary (labeled-envelope
-// wording era, after the plane-channel spawn bug landed idea spawns as
-// plain pending items). Future content changes must bump it to a new
-// present-in-seed/absent-in-old fragment.
-const sandboxPlaneMarker = "orchicon_plane_create_idea_item"
+// seeder is idempotent again. The current generation pins the
+// deny-by-default plane stance (no routine `orchicon_plane_*` writes for
+// implementer/approver/QA roles; sandbox-only for throwaway/DB-test data)
+// — the prior generation's "platform bug / ship manifests for the UI"
+// fallback rationalized real-instance writes and is gone. Future content
+// changes must bump it to a new present-in-seed/absent-in-old fragment.
+const sandboxPlaneMarker = "deny-by-default"
 
 // researchMarketMarker is the Automation Research trio's per-worker roll
 // marker (cannedWorker.RollMarker): it pins the MARKET-FIRST research
@@ -279,6 +277,13 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 	"- This run is **ephemeral** (`git_strategy=none`): the run worktree is a **detached HEAD** — no branch is created, nothing is pushed to origin, and no remote branch is retained.\n" +
 	"- Write research deliverables (`research/plan.md`, `research/evidence/*`, `research/findings.md`, `research/brief-<date>.md`) **only inside the run worktree** — never to the main checkout.\n" +
 	"- Do **not** create a branch, commit a branch, or push to origin. Leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
+
+// quickWorkerMarker is the Quick Software Engineer seed's per-worker roll
+// marker (cannedWorker.RollMarker): it pins the single-step fast-path
+// contract — implement, verify green, push, and report the PR into develop
+// with PR_URL + PR_STATE lines, all in one step. Fragment chosen from the
+// new worker's Behavior so a wording change re-rolls only the Quick worker.
+const quickWorkerMarker = "single-step implementer"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -600,6 +605,46 @@ var cannedWorkers = []cannedWorker{
 		// market-map/rejected-idea content still ships (it re-syncs along
 		// with the refreshed definition).
 		RollMarker: researchEphemeralMarker,
+	},
+	// ---- Quick Software Engineer (single-step fast path). The Quick Work
+	// workflow's only task step points at this canned ID; the seeder adopts
+	// the live dev record in place (same ID) and rolls it forward to the
+	// corrected deny-by-default prompt — no manual version publish required.
+	// Fresh installs get it from scratch. RoleRef is empty (deny-by-default:
+	// no plane channel), and model selection stays user-owned (blank seed
+	// model_ref inherits the tenant default).
+	{
+		ID:          "01M1ERH9921YS9S1QWGZV8D1VM",
+		Name:        "Quick Software Engineer",
+		Slug:        "quick-software-engineer",
+		Description: "A fast single-step software engineer: implements the work item, verifies the build and tests are green, pushes the branch, and reports the PR.",
+		Purpose:     "Implements the work item end to end in a single step — code, build, test, push, and PR reporting — for the Quick Work fast path.",
+		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
+		Skills:      "Full-stack implementation (Go, TypeScript, React, SQL) • Build & test verification • Git • GitHub • PR management • GitHub CLI",
+		Behavior:    "Own the task end to end as a single-step implementer — no handoffs, no re-planning. Implement, verify green, push, report the PR.",
+		AgentsMD: sandboxPlaneBlock + safetyBlock +
+			"## Hard time-box: 30 minutes\n" +
+			"You have 30 minutes of wall clock to finish. Work in scope order; skip anything the acceptance criteria don't require. When the box nears its end, land what you have — a green build with partial scope beats an unshipped complete change.\n\n" +
+			"## Verify, don't assume\n" +
+			"Every claim you make about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. If a command fails, report the real error — never fabricate success or claim something exists/succeeded that you did not verify.\n\n" +
+			"## Workflow\n" +
+			"1. **Read the task + acceptance criteria first** (`.orchicon/<run_id>/facts_learned`, `summary`, `issues`) — established facts are not re-derived; start writing code within the first few minutes.\n" +
+			"2. **Implement incrementally**: scaffold first, then extend section by section — never one giant generation. Handle errors and edge cases; write tests alongside implementation.\n" +
+			"3. **Build + run the focused tests after each meaningful chunk** — fix failures immediately. A test that already fails without your change is still a red suite you are shipping: fix the cause by default, or remove/correct the test only when your investigation proves it no longer protects anything needed. Record the decision as a `FACTS LEARNED:` line.\n" +
+			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). You are a single-step implementer — later steps see only committed + pushed work.\n\n" +
+			"## Notes cleanup (before PR)\n" +
+			"Before creating the pull request, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). They are gitignored working notes and must not land in the PR.\n\n" +
+			"## Branch discipline\n" +
+			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
+			"## PR reporting (required)\n" +
+			"Create the pull request explicitly targeting `develop` (`gh pr create --base develop`) — `main` is the default branch and an unspecified base silently lands on the release branch. After opening (or verifying an existing) PR, emit both lines in your final output, **immediately before** the `ORCHICON WORKER SUMMARY:` line:\n" +
+			"- `PR_URL:` the PR's real HTML URL as printed by `gh pr create` / `gh pr view` (`https://github.com/OWNER/REPO/pull/N`) — never a `pull/new/...` link.\n" +
+			"- `PR_STATE:` the verified state — `merged` after a successful merge, `open` when the PR is open and the workflow waits.\n" +
+			"Emit neither line when no PR exists.\n\n" +
+			"## Completion\n" +
+			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, and pushed (PR opened per the Quick Work harness); `failure` only if the task proved unimplementable (say exactly where it broke down).",
+		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
+		RollMarker:      quickWorkerMarker,
 	},
 }
 

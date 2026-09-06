@@ -17,6 +17,10 @@ type cannedWorkflow struct {
 	Name        string
 	VersionNote string
 	StepsJSON   string // JSON array of step objects
+	// GitStrategy pins the workflows row's git_strategy (local|pr|none).
+	// Empty = NULL (inherit the effective strategy). The Quick Work template
+	// pins "pr" so the single-step harness pushes + PRs into develop.
+	GitStrategy string
 }
 
 var cannedWorkflows = []cannedWorkflow{
@@ -66,6 +70,17 @@ var cannedWorkflows = []cannedWorkflow{
   {"id":"step-8wdctc1f","ref":"01M13DYJWHCYHWQ1X85J1BWWZ1","kind":"task","name":"Automation — Research Analyst","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","depends_on":["step-5mxcx4yk"],"position_x":74.70288563736119,"position_y":136.46383242810788,"worker_version":0,"gate_policy_ref":""},
   {"id":"step-mt87ezlw","ref":"01M13DYM3A7CTY8ECP4R7M33SR","kind":"task","name":"Automation — Research Synthesizer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":3}}","depends_on":["step-8wdctc1f"],"position_x":74.91912768189644,"position_y":249.66389623805503,"worker_version":0,"gate_policy_ref":""},
   {"id":"step-1tzgaakr","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-mt87ezlw"],"position_x":366.4761407515862,"position_y":259.8566843019803,"worker_version":0,"gate_policy_ref":""}
+]`,
+	},
+	{
+		ID:          "01M1ERHNCNF38MP3SEV1GTH26G",
+		VersionID:   "wfv_quick_work_v1",
+		Name:        "Quick Work",
+		VersionNote: "Single-step fast path (git_strategy=pr): Quick Software Engineer implements, verifies green, pushes, and reports the PR into develop, then End.",
+		GitStrategy: "pr",
+		StepsJSON: `[
+  {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-quick"],"position_x":366.4761407515862,"position_y":38.75,"worker_version":0,"gate_policy_ref":""}
 ]`,
 	},
 }
@@ -265,16 +280,34 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 			if err != nil {
 				return fmt.Errorf("update seed workflow name: %w", err)
 			}
+			// Propagate a pinned git_strategy so the harness keeps its
+			// strategy on seed-managed tenants (NULL = inherit; only set
+			// when the seed pins one).
+			if w.GitStrategy != "" {
+				_, err = ttx.Exec(ctx,
+					`UPDATE workflows SET git_strategy = $1, updated_at = now()
+					 WHERE id = $2 AND tenant_id = 'tnt_dev' AND git_strategy IS DISTINCT FROM $1`,
+					w.GitStrategy, w.ID,
+				)
+				if err != nil {
+					return fmt.Errorf("update seed workflow git_strategy: %w", err)
+				}
+			}
 		}
 		return nil
 	}
 
-	// Create workflow.
+	// Create workflow. git_strategy NULL inherits the effective strategy;
+	// a pinned seed value (Quick Work: pr) rides the row from creation.
+	var gitStrategy any
+	if w.GitStrategy != "" {
+		gitStrategy = w.GitStrategy
+	}
 	_, err = ttx.Exec(ctx,
-		`INSERT INTO workflows (id, tenant_id, project_id, name, current_version, status, type)
-		 VALUES ($1, 'tnt_dev', '', $2, 1, 'published', 'template')
+		`INSERT INTO workflows (id, tenant_id, project_id, name, current_version, status, type, git_strategy)
+		 VALUES ($1, 'tnt_dev', '', $2, 1, 'published', 'template', $3)
 		 ON CONFLICT (id) DO NOTHING`,
-		w.ID, w.Name,
+		w.ID, w.Name, gitStrategy,
 	)
 	if err != nil {
 		return fmt.Errorf("insert workflow: %w", err)

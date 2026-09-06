@@ -18,7 +18,7 @@ import (
 func TestHostToolsDefsShape(t *testing.T) {
 	h := NewHostTools(t.TempDir(), "")
 	defs := h.Defs()
-	want := []string{"batch_read", "batch_grep", "batch_write", "read", "grep", "write", "edit", "list", "glob", "bash", "todoread"}
+	want := []string{"batch_read", "batch_grep", "batch_write", "read", "grep", "write", "edit", "list", "glob", "bash", "todoread", "todowrite"}
 	if len(defs) != len(want) {
 		t.Fatalf("Defs = %d tools, want %d", len(defs), len(want))
 	}
@@ -42,10 +42,11 @@ func TestHostToolsDefsShape(t *testing.T) {
 			t.Errorf("loop treats %q as a file-writing tool; not advertised", n)
 		}
 	}
-	// The engine's static capabilities promise this suite — the registry
-	// must actually carry it (the "tool registry not configured" bug).
-	for _, n := range []string{"read", "write", "edit", "glob", "grep", "bash", "todowrite-adjacent-todoread"} {
-		_ = n
+	// The native engine must advertise todowrite: the composite prompt
+	// orders a todowrite call every turn, so a missing def fails every turn
+	// with `unknown tool "todowrite"` (native-adapter runs only).
+	if !seen["todowrite"] {
+		t.Error("todowrite must be advertised (composite prompt orders it every turn)")
 	}
 	for _, n := range []string{"read", "write", "edit", "glob", "grep", "bash"} {
 		if !seen[n] {

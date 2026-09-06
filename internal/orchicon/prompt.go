@@ -58,7 +58,10 @@ Maintain the live todo list with todowrite (full replacement array) at
 every turn boundary; todoread re-syncs it cheaply. Persist durable
 facts, root causes, and decisions with the memory note tool
 (orchicon_memory_note) so later steps inherit them; keep transient
-scratch in-session only.`
+scratch in-session only. The durable project memory tools are
+memory_search (search first on unfamiliar work), memory_write (one
+inheritable fact per entry), memory_read and memory_list (pull entries
+back) — they survive per-execution isolation.`
 
 // maxMemoryNotes bounds the session memory-note store (the mutable zone
 // stays bounded; oldest notes are dropped past the cap).
