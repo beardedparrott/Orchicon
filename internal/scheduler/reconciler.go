@@ -974,6 +974,14 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	worktreePath := ""
 	worktreeStatus := ""
 	worktreeBranch := ""
+	// executionMode is the run's project execution_mode (runtime|local)
+	// threaded to the adapters so a LOCAL-mode run never routes bash into
+	// (or creates) a container — the reconciler skipped EnsureForRun for
+	// it, so the lease does not exist and a container would be silently
+	// recreated on the opencode path. Best-effort: read failures default
+	// to runtime (fail-open toward the container, matching the mode
+	// helper).
+	executionMode := db.ExecutionModeRuntime
 	if task.WorkflowRunID != "" {
 		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
@@ -988,6 +996,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				// buildCompositePrompt at dispatch. This runtimeImage is
 				// only the adapter's container self-heal tag.
 			}
+			executionMode = projectExecutionMode(context.Background(), rtx.Tx, exec.TenantID, exec.ProjectID)
 			// D2: a parallel-branch child execution runs in the STEP RUN's
 			// OWN branch worktree — its cwd must be the branch worktree,
 			// not the run worktree. Resolve via the step run LINKED to this
@@ -1175,6 +1184,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorktreePath:                 worktreePath,
 		RuntimeWorkflowID:            task.WorkflowRunID,
 		RuntimeImage:                 runtimeImage,
+		ExecutionMode:                executionMode,
 		StallNoProgressWindowSeconds: stallNoProgress,
 		StallNoFileDiffWindowSeconds: stallNoFileDiff,
 		StallTextLoopWindowSeconds:   stallTextLoop,

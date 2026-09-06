@@ -183,7 +183,11 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	b.mu.Lock()
 	rtClient := b.rtClient
 	b.mu.Unlock()
-	if rtClient != nil && manifest.RuntimeWorkflowID != "" {
+	// Always-container routing gate: only a RUNTIME-mode run dispatches
+	// bash into its container. A LOCAL-mode run has NO container lease
+	// (the reconciler skipped EnsureForRun), so routing bash to
+	// rtClient.Exec would 404 on every call; it must stay in-process.
+	if nativeContainerRouteEnabled(rtClient != nil, manifest) {
 		runID := manifest.RuntimeWorkflowID
 		tools = NewContainerHostTools(workingDir, manifest.ProjectDir,
 			func(cctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
@@ -545,6 +549,14 @@ func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rtClient = rt
+}
+
+// nativeContainerRouteEnabled is the always-container routing gate: native
+// `bash` dispatches into the run's container only when a daemon client is
+// wired, the execution belongs to a workflow run (has a lease), AND the run
+// is NOT in local execution mode. A local run has no container to exec into.
+func nativeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
+	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
 // --- internal ------------------------------------------------------------

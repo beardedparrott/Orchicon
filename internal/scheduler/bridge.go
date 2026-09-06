@@ -54,6 +54,13 @@ type ExecutionManifest struct {
 	// workflow run (captured at run start). Empty = the daemon's default
 	// base image.
 	RuntimeImage string
+	// ExecutionMode is the run's project execution_mode
+	// ("runtime" | "local"). It is the adapter-side routing gate: the
+	// reconciler skips EnsureForRun in "local" mode, so a local run has
+	// NO container lease — an adapter must stay in-process (never exec or
+	// Create a container) when this is "local", even with a reachable
+	// daemon. Defaults to "runtime" when empty (legacy/standalone rows).
+	ExecutionMode string
 	// Stall detection thresholds from tenant settings. Zero means "use
 	// env-var or built-in default".
 	StallNoProgressWindowSeconds int64

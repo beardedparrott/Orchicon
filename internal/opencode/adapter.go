@@ -199,7 +199,12 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // Returns nil when no serve is available — the caller fails the execution
 // (the legacy one-shot fallback was removed).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
-	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+	// Local execution mode: run in-process via the host serve, never
+	// create/exec a container. The reconciler skipped EnsureForRun for a
+	// local run, so RuntimeWorkflowID has no lease — routing it to
+	// a.rt.Create would silently create a container the run was
+	// explicitly configured NOT to use.
+	if runtimeContainerRouteEnabled(a.rt != nil, manifest) {
 		// The composite worktree MCP tools resolve relative paths against
 		// ORCHICON_MCP_WORKTREE_DIR, which must be the execution's working
 		// directory — the run worktree when provisioned, else the project
@@ -237,6 +242,15 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		return a.host.Client()
 	}
 	return nil
+}
+
+// runtimeContainerRouteEnabled is the always-container routing gate: an
+// opencode session dispatches into the run's container only when a daemon
+// client is wired, the execution belongs to a workflow run, AND the run is
+// NOT in local execution mode. A local run has no container (EnsureForRun
+// skipped) — it uses the host serve (in-process), never a fresh container.
+func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
+	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
 // RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
