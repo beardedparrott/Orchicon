@@ -19,11 +19,11 @@ import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/ex
 
 import { useApproveStep } from "@/api/approvals";
 import { useRetryStepRun } from "@/api/workflows";
+import { useGetExecutionSession, useStreamExecutionEvents } from "@/api/executions";
 import {
-  useGetExecutionSession,
-  useStreamExecutionEvents,
-} from "@/api/executions";
-import { useGetUsage } from "@/api/aigateway";
+  formatCompactTokens,
+  useExecutionUsageSummary,
+} from "./executionUsage";
 import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
 import { cn } from "@/lib/utils";
@@ -70,23 +70,18 @@ function liveTailText(events: StreamExecutionEventsResponse[], maxChars = 600): 
   return out.length > maxChars ? "…" + out.slice(-maxChars) : out;
 }
 
-/** One-shot usage line; mounted only when an execution exists so upcoming
- *  tiles never fire an unfiltered usage query. */
+/** Compact cost + context line; mounted only when an execution exists so
+ *  upcoming tiles never fire an unfiltered usage query. Aggregation mirrors
+ *  ExecutionContextSidebar (peak fresh working set + summed cost) so the
+ *  tile reads identically to the execution detail page. */
 function TileUsage({ executionId }: { executionId: string }) {
-  const { data: usage } = useGetUsage({ executionId });
-  const { tokens, cost } = useMemo(() => {
-    let tokens = 0;
-    let cost = 0;
-    for (const r of usage ?? []) {
-      tokens += Number(r.totalTokens) || 0;
-      cost += Number(r.costUsd) || 0;
-    }
-    return { tokens, cost };
-  }, [usage]);
-  if (!usage?.length) return null;
+  const { workingSet, cost, contextWindow, contextPct, hasRecords } =
+    useExecutionUsageSummary(executionId);
+  if (!hasRecords) return null;
   return (
     <span className="font-mono text-[11px] text-muted-foreground">
-      {tokens.toLocaleString()} tok · ${cost.toFixed(4)}
+      ${cost.toFixed(4)} · {formatCompactTokens(workingSet)} tokens
+      {contextWindow > 0 ? ` · ${contextPct}%` : ""}
     </span>
   );
 }

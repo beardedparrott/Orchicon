@@ -199,4 +199,23 @@ describe("buildHeadsUpTiles", () => {
     expect(tiles[0].stepRun?.id).toBe("new");
     expect(tiles[0].isActive).toBe(true);
   });
+  it("returns tiles in DAG queue order when the steps array is in non-DAG (canvas) order", () => {
+    // SDLC-template shape: the steps JSON is serialized in editor-canvas
+    // order, not pipeline order. Tiles must still come out Principal →
+    // Senior → Review → QA with queueIndex matching grid position.
+    const canvasOrder = JSON.stringify([
+      { id: "senior", name: "Senior", kind: "task", depends_on: ["principal"] },
+      { id: "review", name: "Review", kind: "task", depends_on: ["senior"] },
+      { id: "qa", name: "QA", kind: "task", depends_on: ["review"] },
+      { id: "principal", name: "Principal", kind: "task", depends_on: [] },
+    ]);
+    const tiles = buildHeadsUpTiles(canvasOrder, [], []);
+    expect(tiles.map((t) => t.stepId)).toEqual([
+      "principal",
+      "senior",
+      "review",
+      "qa",
+    ]);
+    expect(tiles.map((t) => t.queueIndex)).toEqual([1, 2, 3, 4]);
+  });
 });

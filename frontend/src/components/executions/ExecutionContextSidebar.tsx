@@ -721,8 +721,9 @@ export function ExecutionContextSidebar({
 // TodoListCard — the worker's live task list from the latest todowrite
 // tool call. Renders an X/Y completed counter, a thin progress bar (mirroring
 // the Context card), and per-status item rows. Called only when the worker
-// actually recorded a todo list (non-empty).
-function TodoListCard({ todos }: { todos: TodoItem[] }) {
+// actually recorded a todo list (non-empty). Exported for reuse by the
+// run Heads-Up expanded modal.
+export function TodoListCard({ todos }: { todos: TodoItem[] }) {
   const completed = todos.filter(
     (t) => t.status === TodoStatus.COMPLETED,
   ).length;
