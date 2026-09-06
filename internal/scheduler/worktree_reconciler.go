@@ -673,10 +673,16 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			return nil
 		}
 	case domain.WorktreePruned:
-		if isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
+		// A pruned row is a recorded terminal worktree decision: the
+		// worktree was reaped and the branch either deleted (completed +
+		// merged) or retained for retry. Re-provisioning happens ONLY
+		// through an explicit retry, which resets worktree_status to
+		// pending (RetryFailedWorkflowRun flips pruned → pending while
+		// preserving the branch for re-attach) — never by flipping the
+		// run status alone, because the deterministic branch already
+		// exists and re-provisioning could never succeed. Hold here and
+		// let the retry path own the reset.
+		return nil
 	case domain.WorktreeSkipped, domain.WorktreeFailed:
 		// Recorded decisions are respected: a skipped or failed run
 		// is never re-provisioned by the loop. (A human may reset the row.)
@@ -856,10 +862,12 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 			return nil
 		}
 	case domain.WorktreePruned:
-		if isTerminalStepRun(sr) || isTerminalRun(run) {
-			return nil
-		}
-		// non-terminal pruned → re-provision (retry after prune)
+		// A pruned step-run row is a recorded terminal worktree decision.
+		// Re-provisioning happens ONLY through an explicit retry, which
+		// resets worktree_status to pending while preserving the branch
+		// for re-attach — never by flipping statuses alone. Hold here and
+		// let the retry path own the reset.
+		return nil
 	case domain.WorktreeSkipped, domain.WorktreeFailed:
 		// Recorded decisions are respected: a skipped or failed
 		// step run is never re-provisioned by the loop.
@@ -2684,8 +2692,13 @@ func (r *WorktreeReconciler) isDirtyWorkTree(ctx context.Context, projectDir str
 // restoreWorkTree restores a git checkout to a clean state: `git reset --hard HEAD`
 // plus `git clean -fd` (not -fdx — preserve ignored build artifacts; the
 // observed stray file _batch_test2.go is untracked non-ignored and is removed
-// by -fd, while .gotmp etc. remain). Returns an error if verification after
-// restore still shows dirty.
+// by -fd, while .gotmp etc. remain). `git clean -fd` deliberately refuses to
+// delete nested git worktrees (it reports `Skipping repository ...`), so any
+// live Orchicon worktree dir under `.orchicon-worktrees/` still shows as
+// `?? .orchicon-worktrees/` afterwards — that residue is a live worktree, not
+// dirt, and the caller (prune-then-restore ordering) must reap it first.
+// Returns an error if verification after restore still shows dirt outside
+// the live-worktree residue.
 func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir string) error {
 	if _, err := runGit(ctx, projectDir, "reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("git reset --hard HEAD: %w", err)
@@ -2693,10 +2706,51 @@ func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir str
 	if _, err := runGit(ctx, projectDir, "clean", "-fd"); err != nil {
 		return fmt.Errorf("git clean -fd: %w", err)
 	}
-	if r.isDirtyWorkTree(ctx, projectDir) {
+	out, err := runGit(ctx, projectDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("checkout still dirty after restore")
+	}
+	if rest := strings.TrimSpace(stripLiveWorktreeResidue(ctx, projectDir, out)); rest != "" {
 		return fmt.Errorf("checkout still dirty after restore")
 	}
 	return nil
+}
+
+// stripLiveWorktreeResidue removes the `?? .orchicon-worktrees/` status line
+// when (and only when) the directory still holds at least one live git
+// worktree: `git clean -fd` can never remove those, so they are not dirt the
+// restore owns. A stale non-worktree dir (or an empty container) is NOT
+// stripped — that residue the restore must report.
+func stripLiveWorktreeResidue(ctx context.Context, projectDir, porcelain string) string {
+	var keep []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		f := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "??"))
+		if f == worktreeDirName+"/" || f == worktreeDirName {
+			if hasLiveWorktreeUnder(ctx, projectDir) {
+				continue
+			}
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// hasLiveWorktreeUnder reports whether <projectDir>/.orchicon-worktrees/
+// contains at least one directory that is still a registered git worktree.
+func hasLiveWorktreeUnder(ctx context.Context, projectDir string) bool {
+	out, err := runGit(ctx, projectDir, "worktree", "list", "--porcelain")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return false
+	}
+	prefix := filepath.Join(projectDir, worktreeDirName) + string(os.PathSeparator)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			if p := strings.TrimSpace(strings.TrimPrefix(line, "worktree ")); strings.HasPrefix(p, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sweepOrphanDirs removes stale .orchicon-worktrees/<id> directories that

@@ -41,6 +41,30 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	if !env.rec.isDirtyWorkTree(ctx, env.repo) {
 		t.Fatalf("expected main checkout to be dirty after stray+modify")
 	}
+	// Prune the run FIRST: the provisioned nested worktree makes
+	// `git clean -fd` skip `.orchicon-worktrees/` (git never deletes nested
+	// worktrees without -ff), so restoreWorkTree can only converge once the
+	// worktree is reaped. Mark completed + prune, then restore the stray.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{Status: strPtr(domain.WorkflowRunCompleted)}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("prune reconcile: %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still exists after prune")
+	}
 	// Clean it via restoreWorkTree and verify
 	if err := env.rec.restoreWorkTree(ctx, env.repo); err != nil {
 		t.Fatalf("restoreWorkTree: %v", err)
@@ -54,28 +78,8 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	// Restore original README already done by reset --hard
 	_ = orig
 
-	// Now prune the run and verify the worktree dir is gone and checkout still clean
-	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
-	if err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-	// Mark run completed so prune is allowed to run
-	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{Status: strPtr(domain.WorkflowRunCompleted)}); err != nil {
-		t.Fatalf("mark completed: %v", err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
-		t.Fatalf("prune reconcile: %v", res.Error)
-	}
-	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
-		t.Fatalf("worktree dir still exists after prune")
-	}
+	// The full provision+prune cycle leaves the main checkout clean: the
+	// worktree dir is gone and git status is empty.
 	if env.rec.isDirtyWorkTree(ctx, env.repo) {
 		t.Fatalf("checkout dirty after prune")
 	}

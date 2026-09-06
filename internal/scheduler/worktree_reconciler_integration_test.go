@@ -1395,7 +1395,24 @@ func TestWorktreePruneScanDiscovery(t *testing.T) {
 	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
 		t.Fatalf("worktree dir still exists after scan-discovered prune: %v", err)
 	}
-	assertPruned(t, env)
+	// The full scan also runs the orphan sweep, which reclaims the
+	// provably-merged branch and clears the swept row's recorded branch
+	// (the page-advance invariant) — unlike the direct-prune path, the
+	// scan-converged row carries pruned + cleared path with the branch
+	// already reclaimed.
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("worktree_status = %q, want pruned", run.WorktreeStatus)
+	}
+	if run.WorktreePath != "" {
+		t.Errorf("worktree_path = %q, want empty after prune", run.WorktreePath)
+	}
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("branch %q was NOT deleted after a successful run", env.expectedBranch())
+	}
+	if run.WorktreeBranch != "" {
+		t.Errorf("worktree_branch = %q, want empty (orphan sweep reclaims the merged branch on the scan path)", run.WorktreeBranch)
+	}
 }
 
 // TestWorktreePruneAbortedRun verifies the aborted terminal path is pruned
@@ -1441,10 +1458,13 @@ func TestWorktreePruneNonReadyTerminalUntouched(t *testing.T) {
 }
 
 // TestWorktreePrunedNotReprovisioned locks in the recovery-adjacent guard:
-// a run whose worktree was pruned is a recorded terminal decision — even if
-// the run is later re-armed (status flipped back to running), the loop never
-// re-provisions it (the deterministic branch already exists, so
-// re-provisioning could never succeed).
+// a run whose worktree was pruned is a recorded terminal decision — the
+// loop never re-provisions it on its own. Re-provisioning after a prune
+// happens ONLY through an explicit retry, which resets worktree_status to
+// pending (see TestRetryAfterPruneProvisionsWorktree): flipping the run
+// status back to running while the row still says pruned must not recreate
+// a worktree (the deterministic branch already exists, so re-provisioning
+// could never succeed).
 func TestWorktreePrunedNotReprovisioned(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
