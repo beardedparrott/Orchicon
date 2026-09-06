@@ -57,6 +57,11 @@ type Service struct {
 	// host serve so handler tests can drive ChatStream/Abort with a fake
 	// session client. Never set outside tests.
 	testServeClient sessionTurnClient
+	// validationRegistry is the model-ref validation catalog (ADR-0003)
+	// threaded into the update_settings tool write path (the Ask-own second
+	// write into tenant_settings.default_ask_orchicon_model). nil = the
+	// static builtin catalog.
+	validationRegistry adapter.ProviderRegistry
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -138,6 +143,54 @@ func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 // adapter kind.
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	s.adapterKinds = fn
+}
+
+// SetValidationRegistry injects the model-ref validation catalog into the
+// Ask-own update_settings write path (a second write path into
+// tenant_settings.default_ask_orchicon_model besides the SettingsService
+// RPC). The tool validator shares the same injected registry (builtin ∪
+// CLI-discovered ∪ tenant-custom providers) so a ref the picker offers is
+// accepted at save and a malformed/unknown-adapter ref is rejected before
+// it persists. nil restores the static builtin catalog.
+func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
+	s.validationRegistry = reg
+	toolValidateModelRef = func(ref string) error { return s.validateModelRef(ref) }
+}
+
+// registry returns the injected validation registry or the static builtin
+// fallback.
+func (s *Service) registry() adapter.ProviderRegistry {
+	if s.validationRegistry != nil {
+		return s.validationRegistry
+	}
+	return adapter.NewBuiltinProviderCatalog()
+}
+
+// validateModelRef checks a model ref against the adapter/provider/model
+// grammar (ADR-0003) via the injected registry. Empty means unset — valid.
+func (s *Service) validateModelRef(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// toolValidateModelRef is the package-global validation hook used by the
+// update_settings tool (tool_diagnostics.go). It defaults to the builtin
+// catalog; Service.SetValidationRegistry reassigns it to a closure over the
+// service so the tool's write path shares the SAME injected registry as the
+// settings RPC (never a forked splitter — the shared adapter.ParseModelRef).
+var toolValidateModelRef = func(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, adapter.NewBuiltinProviderCatalog()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // registerSessionTools adds tools that depend on service-injected
