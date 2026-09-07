@@ -345,3 +345,68 @@ func TestResponsesStreamDoneArgsReplaceFragments(t *testing.T) {
 		t.Fatalf("args = %q, want the done frame's complete args", calls[0].ArgsJSON)
 	}
 }
+
+// The done frame echoes the COMPLETE output text after the deltas already
+// streamed it. Feeding both duplicates the whole reply (and re-splits
+// inline reasoning into text) — the done frame must be skipped when deltas
+// were seen for the output.
+func TestResponsesStreamDoneDoesNotDuplicateDeltas(t *testing.T) {
+	body := sse(
+		`{"type":"response.output_text.delta","output_index":0,"delta":"Got it"}`,
+		`{"type":"response.output_text.delta","output_index":0,"delta":" done."}`,
+		`{"type":"response.output_text.done","output_index":0,"text":"Got it done."}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var text string
+	for _, e := range evs {
+		if td, ok := e.(TextDelta); ok {
+			text += td.Text
+		}
+	}
+	if text != "Got it done." {
+		t.Fatalf("text = %q, want the deltas only (done must not duplicate)", text)
+	}
+}
+
+// Inline reasoning deltas that the done frame echoes must not double the
+// reasoning body: deltas win, done is skipped.
+func TestResponsesStreamDoneDoesNotDuplicateReasoning(t *testing.T) {
+	body := sse(
+		`{"type":"response.reasoning_text.delta","output_index":0,"delta":"think"}`,
+		`{"type":"response.reasoning_text.delta","output_index":0,"delta":"ing"}`,
+		`{"type":"response.reasoning_text.done","output_index":0,"text":"thinking"}`,
+		`{"type":"response.output_text.delta","output_index":0,"delta":"answer"}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var reason string
+	for _, e := range evs {
+		if rd, ok := e.(ReasoningDelta); ok {
+			reason += rd.Text
+		}
+	}
+	if reason != "thinking" {
+		t.Fatalf("reasoning = %q, want the deltas only", reason)
+	}
+}

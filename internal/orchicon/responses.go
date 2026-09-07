@@ -337,6 +337,15 @@ type responsesStream struct {
 	toolOrd []string
 	queue   []Event
 
+	// sawTextDelta / sawReasoningDelta record, per output index, whether
+	// the streaming deltas already delivered that output. The Responses
+	// wire emits the COMPLETE text again on the output_text.done /
+	// reasoning_text.done frame — feeding it too duplicates the whole
+	// reply (and re-splits inline reasoning into text). Done frames are
+	// only used for gateways that emit done WITHOUT deltas.
+	sawTextDelta     map[int]bool
+	sawReasoningDelta map[int]bool
+
 	// think splits INLINE reasoning (the "think" tag pair inside a
 	// output_text delta) into ReasoningDelta events (thinksplit.go), the
 	// same global routing every provider wire applies.
@@ -344,7 +353,13 @@ type responsesStream struct {
 }
 
 func newResponsesStream(body io.ReadCloser) *responsesStream {
-	return &responsesStream{r: newSSEReader(body), body: body, tools: map[string]*respToolAcc{}, think: newThinkSplitter()}
+	return &responsesStream{
+		r: newSSEReader(body), body: body,
+		tools:             map[string]*respToolAcc{},
+		think:             newThinkSplitter(),
+		sawTextDelta:      map[int]bool{},
+		sawReasoningDelta: map[int]bool{},
+	}
 }
 
 func (s *responsesStream) Close() error {
@@ -385,22 +400,34 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 		switch ev.Type {
 		case "response.output_text.delta":
 			if t := ev.Delta.String(); t != "" {
+				s.sawTextDelta[ev.OutputIndex] = true
 				s.think.feed(t, &s.queue)
 			} else if ev.Text != "" {
+				s.sawTextDelta[ev.OutputIndex] = true
 				s.think.feed(ev.Text, &s.queue)
 			}
 		case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
 			if t := ev.Delta.String(); t != "" {
+				s.sawReasoningDelta[ev.OutputIndex] = true
 				s.queue = append(s.queue, ReasoningDelta{Text: t})
 			} else if ev.Text != "" {
+				s.sawReasoningDelta[ev.OutputIndex] = true
 				s.queue = append(s.queue, ReasoningDelta{Text: ev.Text})
 			}
 		case "response.output_text.done", "response.reasoning_text.done":
-			// Some gateways emit the full text only on the done frame
-			// (no deltas). Never drop it: a turn that only carries done
-			// frames must still produce a reply, or the Ask history commit
-			// is skipped (empty reply) and the follow-up looks like a
-			// first message.
+			// The done frame carries the COMPLETE output text. It is
+			// authoritative ONLY when the deltas did not already deliver
+			// it — some gateways stream deltas then echo the full text on
+			// done, and feeding it too duplicates the reply (and re-splits
+			// inline reasoning into text). Skip when deltas were seen for
+			// this output index.
+			if ev.Type == "response.reasoning_text.done" {
+				if s.sawReasoningDelta[ev.OutputIndex] {
+					break
+				}
+			} else if s.sawTextDelta[ev.OutputIndex] {
+				break
+			}
 			if ev.Text != "" {
 				if ev.Type == "response.reasoning_text.done" {
 					s.queue = append(s.queue, ReasoningDelta{Text: ev.Text})
