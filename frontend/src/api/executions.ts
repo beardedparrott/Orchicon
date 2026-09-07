@@ -290,8 +290,18 @@ export function useGetExecutionSession(executionId: string, enabled = true) {
   return useQuery({
     queryKey: executionKeys.session(executionId),
     queryFn: async () => {
-      const res = await executionClient.getExecutionSession({ executionId });
-      return res.parts;
+      // Fetch the LATEST parts: the RPC returns the tail (ordered by seq
+      // DESC) when before_seq is set. The session chat renders the whole
+      // transcript chronologically, so reverse the tail back to ASC. This
+      // ensures the NEWEST parts (a follow-up reply, which has the highest
+      // seqs) are always returned — the default 1000-part ASC query dropped
+      // them for a long execution, leaving the pane stuck on "responding".
+      const res = await executionClient.getExecutionSession({
+        executionId,
+        beforeSeq: 9223372036854775807n,
+        limit: 10000,
+      });
+      return [...res.parts].reverse();
     },
     enabled: Boolean(executionId) && enabled,
   });
