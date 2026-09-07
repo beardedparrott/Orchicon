@@ -45,6 +45,11 @@ type Service struct {
 	// serve could not start — ChatStream fails the turn fast with a clean
 	// message (the one-shot `opencode run` path was removed).
 	hostServe *opencode.HostServe
+	// usageRecorder captures Ask session LLM usage via the canonical
+	// aigateway dual-write (Postgres + OTel), mirroring worker executions.
+	// Wired by the server via SetUsageRecorder; nil means Ask records no
+	// usage. Interface so tests inject a spy.
+	usageRecorder usageRecorder
 	// turns is the in-flight turn registry (one turn per conversation):
 	// the one-turn gate + the Stop path's deterministic collector cancel.
 	turns *turnRegistry
@@ -125,6 +130,25 @@ func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, m
 // treats a nil serve as "fail the turn fast" (no one-shot fallback).
 func (s *Service) SetHostServe(hs *opencode.HostServe) {
 	s.hostServe = hs
+}
+
+// usageRecorder records an LLM usage sample from an Ask step_finish. The
+// concrete *aigateway.UsageRecorder satisfies this in production; tests inject
+// a spy to assert the captured sample (adapter kind, provider/model attribution,
+// token/cost buckets, session id).
+type usageRecorder interface {
+	Record(ctx context.Context, in aigateway.UsageInput) (db.UsageRecordRow, error)
+}
+
+// SetUsageRecorder wires the shared worker usage recorder into the chat so
+// Ask sessions capture live token/cost usage per adapter — the same canonical
+// aigateway dual-write (Postgres + OTel) worker executions use, tagged with
+// the adapter kind and attributed to the Ask session (conversation id).
+// Live-usage-only: only real step_finish tokens/cost are recorded; a nil
+// recorder means Ask records no usage (matching the current no-recorder
+// state).
+func (s *Service) SetUsageRecorder(rec *aigateway.UsageRecorder) {
+	s.usageRecorder = rec
 }
 
 // SetRuntimeClient wires the runtime daemon client for image builds.

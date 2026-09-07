@@ -63,6 +63,14 @@ type UsageInput struct {
 	TaskID           string
 	ExecutionID      string
 	WorkerID         string
+	// AdapterKind tags the OTel/adapter parity attribute and is persisted to
+	// usage_records so Ask/worker usage is attributable to the adapter that
+	// drove the model call. Empty for legacy paths that predate the column.
+	AdapterKind      string
+	// SessionID carries the Ask Orchicon conversation id for Ask session
+	// attribution (there is no execution/task/project for a chat turn).
+	// Empty for worker executions, which attribute via ExecutionID/TaskID.
+	SessionID        string
 	Provider         string
 	Model            string
 	PromptTokens     int64
@@ -88,6 +96,8 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 		TaskID:           in.TaskID,
 		ExecutionID:      in.ExecutionID,
 		WorkerID:         in.WorkerID,
+		AdapterKind:      in.AdapterKind,
+		SessionID:        in.SessionID,
 		Provider:         in.Provider,
 		Model:            in.Model,
 		PromptTokens:     in.PromptTokens,

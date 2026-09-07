@@ -14,6 +14,8 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
@@ -1762,11 +1764,92 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 								})
 							}
 						}
+					case "step_finish":
+						// Step completion carries token usage + cost
+						// (docs/04 §6.1). Ask sessions capture LIVE usage via
+						// the SAME canonical aigateway dual-write worker
+						// executions use — the adapter's previously-dropped
+						// step_finish is now recorded. Live-usage-only: no
+						// estimated/synthesized usage.
+						s.recordTurnUsage(ctx, c, part)
 					}
 				}
 			}
 		}
 	}
+}
+
+// recordTurnUsage captures a live usage sample from an Ask step_finish event
+// (docs/04 §6.1: the opencode tokens/cost shape) through the canonical
+// aigateway dual-write worker executions use — Postgres usage_records + OTel
+// metrics (docs/08 §5.2). This is how Ask sessions finally record usage across
+// adapters: the adapter kind is derived from the turn's model_ref, and the
+// usage is attributed to the Ask session (conversation id) via SessionID
+// since a chat turn has no execution/task/project. Live-usage-only: only real
+// step_finish tokens/cost are recorded; no estimated/synthesized usage.
+//
+// A genuinely empty sample (no tokens, no cost) is dropped, mirroring the
+// worker adapter's recordUsage so telemetry stays clean. Best-effort: the
+// recorder's internal errors never block the chat turn (docs/08 §8).
+func (s *Service) recordTurnUsage(ctx context.Context, c turnCollectOpts, part map[string]any) {
+	if s.usageRecorder == nil {
+		return
+	}
+	tokens, _ := part["tokens"].(map[string]any)
+	cost, _ := part["cost"].(float64)
+	promptTokens := toTurnInt64(tokens["input"])
+	cacheReadTokens := toTurnInt64(turnCacheToken(tokens, "read"))
+	cacheWriteTokens := toTurnInt64(turnCacheToken(tokens, "write"))
+	completionTokens := toTurnInt64(tokens["output"])
+	reasoningTokens := toTurnInt64(tokens["reasoning"])
+	if promptTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0 &&
+		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
+		return
+	}
+	// Derive the provider/model via the adapter-agnostic split and the adapter
+	// kind from segment 1 of the model ref. A malformed ref attributes to
+	// "unknown" so the record is never dropped on the parse.
+	provider, model, ok := adapter.SplitForServe(c.modelRef)
+	if !ok {
+		provider, model = "unknown", "unknown"
+	}
+	_, _ = s.usageRecorder.Record(context.WithoutCancel(ctx), aigateway.UsageInput{
+		TenantID:         c.tenantID,
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     promptTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		CompletionTokens: completionTokens,
+		ReasoningTokens:  reasoningTokens,
+		CostUSD:          cost,
+		AdapterKind:      adapter.AdapterKind(c.modelRef),
+		SessionID:        c.convID,
+	})
+}
+
+// turnCacheToken reads a sub-count from the opencode tokens.cache sub-object
+// (e.g. {"cache":{"read":N,"write":M}} → read/write). opencode emits cache
+// counts as a nested object, so a plain lookup of tokens["cache"] would be 0.
+func turnCacheToken(tokens map[string]any, key string) any {
+	if cache, ok := tokens["cache"].(map[string]any); ok {
+		return cache[key]
+	}
+	return nil
+}
+
+// toTurnInt64 normalizes a token count from the JSON-wire opencode shape
+// (float64 / int64 / int) to an int64, defaulting to 0.
+func toTurnInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
 }
 
 // persistConversationReply persists the collected assistant message for a
