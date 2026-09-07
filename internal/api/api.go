@@ -363,6 +363,10 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
 	askSvc.SetAdapterKinds(deps.AdapterKinds)
 	askSvc.SetDispatcher(deps.Dispatcher)
+	// The Ask update_settings tool write path shares the same CLI-aware model
+	// ref registry as the settings validator/picker: a CLI-namespace ref the
+	// picker offered validates at save through this agent-controlled path too.
+	askSvc.SetValidationRegistry(cliRegistry)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}
