@@ -428,6 +428,9 @@ func (b *NativeBridge) SendExecutionMessage(ctx context.Context, execID, message
 // likewise falls back to the context one-shot instead of refusing — old
 // runs without a session_info part stay answerable.
 func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
+	b.log.Info("orchicon: follow-up requested",
+		"execution", opts.ExecutionID, "session", opts.SessionID,
+		"model", opts.ModelRef, "project", opts.ProjectDir, "message", opts.Message)
 	// Best-effort identity verification against the prior transcript file.
 	// Missing/unreadable file or missing identity block → context-only
 	// fallback (warn, proceed). Conflicting worker/tenant → refuse. This
@@ -490,10 +493,12 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	}
 	sess, cleanup, err := b.buildSession(ctx, exec, manifest)
 	if err != nil {
+		b.log.Warn("orchicon: follow-up session build failed", "execution", opts.ExecutionID, "error", err)
 		return "", fmt.Errorf("orchicon bridge: build follow-up session: %w", err)
 	}
 	defer cleanup()
 	sess.SetFollowUp(opts.Message)
+	b.log.Info("orchicon: follow-up session built", "execution", opts.ExecutionID, "transcript", sess.TranscriptPath())
 
 	// Fire-and-forget the session run. The model turn runs on a context
 	// deliberately DETACHED from the HTTP request (WithoutCancel strips the
@@ -517,7 +522,11 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		recorder.start()
 		defer recorder.Close()
 		cb := &followUpCallbacks{}
+		b.log.Info("orchicon: follow-up session running", "execution", opts.ExecutionID)
 		_ = sess.Run(ctxT, cb)
+		b.log.Info("orchicon: follow-up session done",
+			"execution", opts.ExecutionID, "succeeded", cb.succeeded(),
+			"text_chars", len(cb.textString()))
 		// A session that SUCCEEDED but produced no text (a provider that
 		// ended without output) is written back as an error so the UI never
 		// hangs. A FAILED session already wrote its TransError part via the
