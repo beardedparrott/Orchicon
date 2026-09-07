@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // OpenCode routing (D2): OpenCode Zen and Go do NOT accept every model on
@@ -94,10 +95,12 @@ func zenGoDocSlug(provider string) string {
 }
 
 // opencodeClient is the model-aware OpenCode client (D2). It wraps the
-// OpenAI-compat client for chat-route models and fails LOUDLY (naming the
-// model + required route) for responses/messages models the native client
-// does not yet speak — Zen's opaque 500/400 never reaches the user
-// unsupplemented.
+// OpenAI-compat client for chat-route models, the Responses client for
+// responses-route models, and fails LOUDLY (naming the model + required
+// route) for messages-route models the native client does not yet speak.
+// Route auto-detect (D2): the static table is the fast path; on a
+// routing-class failure (400/404/415/422) the same turn is retried once on
+// the next wire, and the winner is cached in a sticky per-model bit.
 type opencodeClient struct {
 	provider string // "opencode" | "opencode-go"
 	baseURL  string
@@ -105,26 +108,111 @@ type opencodeClient struct {
 	http     *http.Client
 	retry    RetryPolicy
 	modelsFn func(ctx context.Context) ([]ModelInfo, error)
+
+	// routeCache is the sticky per-model route cache (keyed provider|model).
+	// Client-level: the registry caches one opencodeClient per (tenant,
+	// provider), and Invalidate drops the whole client, clearing the cache
+	// with it. The cached route is reused verbatim until it returns a
+	// routing-class error, at which point it is evicted, re-probed in order,
+	// and the new winner cached.
+	routeCache sync.Map
 }
 
 // StreamTurn routes per model id: chat-route models stream via the
-// OpenAI-compat client (with the session header + first-party user-agent);
-// responses/messages models fail loudly naming the model + required route.
+// OpenAI-compat client, responses-route models via the Responses client,
+// messages-route models fail loudly. On a routing-class error the same turn
+// is retried once on the next wire and the winner cached (sticky).
 func (c *opencodeClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
-	route := opencodeRouteFor(c.provider, req.Model)
-	if route != opencodeRouteChat {
+	route := c.cachedRoute(req.Model)
+	if route == opencodeRouteMessages {
 		return nil, opencodeRouteError(c.provider, req.Model, route)
 	}
-	oc := &OpenAICompatClient{
-		BaseURL:    strings.TrimRight(c.baseURL, "/"),
-		APIKey:     c.apiKey,
-		Quirks:     builtinQuirks()[c.provider],
-		HTTP:       c.http,
-		Retry:      c.retry,
-		ProviderID: c.provider,
-		ModelsFn:   c.modelsFn,
+	ts, err := c.streamOnRoute(ctx, req, route)
+	if err == nil {
+		return ts, nil
 	}
-	return oc.StreamTurn(ctx, req)
+	if !isRoutingClassError(err) {
+		return nil, err
+	}
+	// Routing-class failure: evict the failing route and retry the SAME turn
+	// once on the next wire. Never fail over on auth/rate/transient — those
+	// belong to the retry policy, not the router.
+	c.evictRoute(req.Model)
+	next := nextRoute(route)
+	if next == opencodeRouteMessages {
+		return nil, opencodeRouteError(c.provider, req.Model, next)
+	}
+	ts2, err2 := c.streamOnRoute(ctx, req, next)
+	if err2 != nil {
+		return nil, err2
+	}
+	c.cacheRoute(req.Model, next)
+	return ts2, nil
+}
+
+// cachedRoute returns the sticky cached route for a model, or the static
+// table route when none is cached (the fast path — zero extra latency).
+func (c *opencodeClient) cachedRoute(model string) opencodeRoute {
+	if v, ok := c.routeCache.Load(c.provider + "|" + model); ok {
+		return v.(opencodeRoute)
+	}
+	return opencodeRouteFor(c.provider, model)
+}
+
+func (c *opencodeClient) cacheRoute(model string, r opencodeRoute) {
+	c.routeCache.Store(c.provider+"|"+model, r)
+}
+
+func (c *opencodeClient) evictRoute(model string) {
+	c.routeCache.Delete(c.provider + "|" + model)
+}
+
+// streamOnRoute streams a turn on the given wire.
+func (c *opencodeClient) streamOnRoute(ctx context.Context, req TurnRequest, route opencodeRoute) (TurnStream, error) {
+	switch route {
+	case opencodeRouteResponses:
+		rc := &ResponsesClient{
+			BaseURL: strings.TrimRight(c.baseURL, "/"), APIKey: c.apiKey,
+			HTTP: c.http, Retry: c.retry, ProviderID: c.provider, ModelsFn: c.modelsFn,
+		}
+		return rc.StreamTurn(ctx, req)
+	case opencodeRouteMessages:
+		return nil, opencodeRouteError(c.provider, req.Model, route)
+	default: // chat
+		oc := &OpenAICompatClient{
+			BaseURL: strings.TrimRight(c.baseURL, "/"), APIKey: c.apiKey,
+			Quirks: builtinQuirks()[c.provider], HTTP: c.http, Retry: c.retry,
+			ProviderID: c.provider, ModelsFn: c.modelsFn,
+		}
+		return oc.StreamTurn(ctx, req)
+	}
+}
+
+// nextRoute returns the wire to try after a routing-class failure on r.
+// chat ↔ responses; messages stays loud-fail in this task.
+func nextRoute(r opencodeRoute) opencodeRoute {
+	switch r {
+	case opencodeRouteResponses:
+		return opencodeRouteChat
+	default:
+		return opencodeRouteResponses
+	}
+}
+
+// isRoutingClassError reports whether err is a routing-class failure — the
+// shapes Zen returns for wrong-wire posts (400/404/415/422 with a body).
+// Auth (401/403), rate (429) and transient (5xx/connection) failures are
+// NOT routing-class: they belong to the retry policy, never the router.
+func isRoutingClassError(err error) bool {
+	se, ok := err.(*StatusError)
+	if !ok {
+		return false
+	}
+	switch se.StatusCode {
+	case 400, 404, 415, 422:
+		return true
+	}
+	return false
 }
 
 // ListModels resolves through the sourcing service.
@@ -135,8 +223,7 @@ func (c *opencodeClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	return nil, fmt.Errorf("%s: model sourcing not wired for this client", c.provider)
 }
 
-// Capabilities reports the chat-route surface (tools + streaming).
+// Capabilities reports the chat/responses surface (tools + streaming).
 func (c *opencodeClient) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true}
 }
-
