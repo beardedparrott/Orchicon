@@ -521,7 +521,7 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 				b.log.Warn("orchicon: follow-up transcript write failed", "execution", opts.ExecutionID, "error", err)
 			}
 		}
-		reply, err := collectFollowUp(ctxT, prov, model, opts)
+		reply, err := b.collectFollowUp(ctxT, prov, model, opts)
 		if err != nil {
 			b.log.Warn("orchicon: follow-up reply collection failed", "execution", opts.ExecutionID, "error", err)
 			writeParts([]db.SessionPart{
@@ -1165,16 +1165,19 @@ func followUpReplyWindow() time.Duration {
 	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
 }
 
-// collectFollowUp runs ONE text-only provider turn for a follow-up
-// question and returns the accumulated assistant text. It is a pure text
-// accumulator: it never touches the session's callbacks, output, or
-// JSONL transcript (a follow-up is a fire-and-forget one-shot against a
-// TERMINAL execution, mirrored purely to the DB session parts). The
-// system prompt is opts.SystemPrompt (the composed follow-up prompt the
-// execution service built); the question is the user message, seeded with
-// opts.Context (the bounded durable-transcript render) as context. No
-// MCP/host tools are wired — a follow-up is deliberately text-only.
-func collectFollowUp(ctx context.Context, prov Provider, model string, opts scheduler.ContinueSessionOpts) (string, error) {
+// collectFollowUp runs a follow-up question against a worker's model and
+// returns the accumulated assistant text. It mirrors the Ask tool loop
+// (bounded by askMaxToolRounds): the question is seeded with opts.Context
+// (the bounded durable-transcript render), the system prompt is
+// opts.SystemPrompt, and the injected Ask tools ride the turn so a follow-up
+// can query/read/act like the original run (parity — a text-only follow-up
+// hangs when the model emits a tool call the collector can't execute). It
+// never touches the session's callbacks or JSONL transcript; a follow-up is
+// a fire-and-forget one-shot against a TERMINAL execution, mirrored purely
+// to the DB session parts. The drain is ctx-aware: a provider stream that
+// never emits a terminal event is torn down when ctx is done instead of
+// blocking forever.
+func (b *NativeBridge) collectFollowUp(ctx context.Context, prov Provider, model string, opts scheduler.ContinueSessionOpts) (string, error) {
 	if prov == nil {
 		return "", errors.New("orchicon: follow-up has no provider")
 	}
@@ -1186,24 +1189,104 @@ func collectFollowUp(ctx context.Context, prov Provider, model string, opts sche
 	if opts.Context != "" {
 		userMsg = opts.Context + "\n\n# Follow-up question\n\n" + opts.Message
 	}
-	stream, err := prov.StreamTurn(ctx, TurnRequest{
+
+	b.mu.Lock()
+	tools := b.askToolsLocked()
+	b.mu.Unlock()
+
+	// working is the follow-up's replayable history: it starts with the
+	// user message and grows with every assistant turn + tool result.
+	working := []Message{{Role: RoleUser, Content: []Content{{Text: &userMsg}}}}
+	var reply strings.Builder
+	req := TurnRequest{
 		Model: model,
 		System: []SystemBlock{
 			{Text: sys, Cache: true},
 		},
-		Messages: []Message{
-			{Role: RoleUser, Content: []Content{{Text: &userMsg}}},
-		},
-		MaxTokens:    maxOutputTokens(),
+		Messages:    append([]Message(nil), working...),
+		Tools:       tools,
+		MaxTokens:   maxOutputTokens(),
 		CacheControl: CacheControlSystemAndTools,
 		// Stable per-execution session id for OpenCode Zen/Go (D1).
 		SessionID: opts.ExecutionID,
-	})
-	if err != nil {
-		return "", err
 	}
-	defer stream.Close()
-	return drainText(ctx, stream)
+
+	for round := 0; ; round++ {
+		stream, err := prov.StreamTurn(ctx, req)
+		if err != nil {
+			return reply.String(), err
+		}
+		// Torn down on ctx.Done so a provider stream that never emits a
+		// terminal event cannot hang the collection indefinitely.
+		closeOnDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = stream.Close()
+			case <-closeOnDone:
+			}
+		}()
+		var roundReply strings.Builder
+		roundDone, calls, aborted := b.drainFollowUpRound(ctx, stream, &roundReply)
+		close(closeOnDone)
+		_ = stream.Close()
+		if aborted {
+			return reply.String(), ctx.Err()
+		}
+		roundText := roundReply.String()
+		if roundText != "" {
+			if reply.Len() > 0 {
+				reply.WriteString("\n\n")
+			}
+			reply.WriteString(roundText)
+		}
+		if !roundDone || len(calls) == 0 {
+			// Final answer (or a stream that ended without a terminal
+			// signal) — the collected text is the follow-up reply.
+			return reply.String(), nil
+		}
+		// Tool round: record the assistant text + tool uses, execute the
+		// calls, and continue with the results.
+		b.appendAssistantTurn(&working, roundText, calls)
+		if round+1 >= askMaxToolRounds {
+			working = append(working, Message{Role: RoleTool, Content: []Content{{
+				ToolResult: &ContentToolResult{ToolCallID: calls[0].ToolCallID, Content: "Tool round budget exhausted — answer from the results so far.", IsError: true},
+			}}})
+			req.Tools = nil
+		} else {
+			b.executeToolCalls(ctx, &working, calls)
+		}
+		req.Messages = append([]Message(nil), working...)
+	}
+}
+
+// drainFollowUpRound consumes one provider stream until its Finish event
+// (or an error/early end), accumulating the round's text. It returns
+// roundDone (a Finish event arrived), the complete tool calls issued this
+// round, and aborted (the turn context was cancelled).
+func (b *NativeBridge) drainFollowUpRound(ctx context.Context, stream TurnStream, roundReply *strings.Builder) (roundDone bool, calls []ToolCall, aborted bool) {
+	for {
+		evt, ok, err := stream.Next(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return false, nil, true
+			}
+			return false, nil, false
+		}
+		if !ok {
+			return false, nil, false
+		}
+		switch e := evt.(type) {
+		case TextDelta:
+			roundReply.WriteString(e.Text)
+		case ToolCall:
+			calls = append(calls, e)
+		case StreamError:
+			return false, nil, false
+		case Finish:
+			return true, calls, false
+		}
+	}
 }
 
 // followerDefaultPrompt is the belt-and-suspenders fallback when a
@@ -1213,31 +1296,3 @@ func collectFollowUp(ctx context.Context, prov Provider, model string, opts sche
 func followUpDefaultPrompt() string {
 	return "You are answering a follow-up question from the user about the work you just completed. Be concise and directly address the question. If the requested change is substantial, describe the concrete plan before making it."
 }
-
-// drainText accumulates TextDelta text from a turn stream until the
-// Finish event / stream end / error. It is a pure text accumulator — it
-// never injects a decision marker or synthesizes output.
-func drainText(ctx context.Context, stream TurnStream) (string, error) {
-	if stream == nil {
-		return "", errors.New("orchicon: nil turn stream")
-	}
-	var sb strings.Builder
-	for {
-		evt, ok, err := stream.Next(ctx)
-		if err != nil {
-			return sb.String(), err
-		}
-		if !ok {
-			return sb.String(), nil
-		}
-		if td, isText := evt.(TextDelta); isText {
-			sb.WriteString(td.Text)
-			continue
-		}
-		if _, isFinish := evt.(Finish); isFinish {
-			return sb.String(), nil
-		}
-	}
-}
-
-var _ = time.Second // keep import if unused in some build tag

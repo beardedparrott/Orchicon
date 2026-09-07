@@ -359,3 +359,156 @@ func TestContinueSessionMissingTranscriptFallsBack(t *testing.T) {
 		t.Fatalf("follow-up messages = %+v, want the context seed", req.Messages)
 	}
 }
+
+// TestContinueSessionToolLoop pins the follow-up agentic loop: a follow-up
+// whose model emits a tool call is executed via the injected Ask tools and
+// the turn continues to a final answer — a text-only follow-up would hang
+// on the un-executed tool call.
+func TestContinueSessionToolLoop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
+	writeIdentityTranscript(t, path, Identity{
+		ExecutionID: "exec_prior",
+		WorkerID:    "worker_test",
+		WorkerName:  "qa-worker",
+		TenantID:    "tnt_test",
+	})
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{
+			TextDelta{Text: "Let me look."},
+			ToolCall{Index: 0, ToolCallID: "fu_1", Name: "list_projects", ArgsJSON: `{}`},
+		}, finish: StopToolUse, bare: true},
+		{events: []Event{TextDelta{Text: "Three projects found."}}, finish: StopStop, bare: true},
+	}}
+	store := &storesSessionParts{}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return prov, nil
+	}), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.SetSessionStore(store.record)
+	b.SetAskTools(&fakeAskTools{
+		defs:    []ToolDef{{Name: "list_projects", ParamsJSON: `{"type":"object"}`}},
+		results: map[string]string{"list_projects": `["a","b","c"]`},
+	})
+
+	_, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+		ExecutionID: "exec_now",
+		TenantID:    "tnt_test",
+		WorkerID:    "worker_test",
+		SessionID:   "exec_prior",
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		Message:     "Which projects?",
+		Context:     "Prior work summary.",
+		StartSeq:    5,
+		ProjectDir:  dir,
+	})
+	if err != nil {
+		t.Fatalf("ContinueSession: %v", err)
+	}
+	// The reply lands as a text part (tool round + final consolidated). Wait
+	// for it so the async goroutine has completed before asserting the
+	// provider was driven twice.
+	deadline := time.Now().Add(3 * time.Second)
+	var text string
+	for {
+		var parts []string
+		for _, p := range store.snapshot() {
+			if p.Kind == db.SessionPartText {
+				parts = append(parts, string(p.Payload))
+			}
+		}
+		if len(parts) > 0 {
+			text = strings.Join(parts, "\n")
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reply never landed; parts = %+v", store.snapshot())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(text, "Let me look.") || !strings.Contains(text, "Three projects found.") {
+		t.Fatalf("reply = %q, want both rounds' text", text)
+	}
+	if prov.requestCount() != 2 {
+		t.Fatalf("provider turns = %d, want 2 (tool round + final)", prov.requestCount())
+	}
+	// The follow-up request carried the tool defs.
+	first := prov.requests[0]
+	if len(first.Tools) != 1 || first.Tools[0].Name != "list_projects" {
+		t.Fatalf("follow-up tools = %+v, want list_projects", first.Tools)
+	}
+}
+
+// blockingTurnStream blocks on Next until ctx is done, then returns the ctx
+// error — the shape of a provider stream that never emits a terminal event.
+type blockingTurnStream struct{}
+
+func (s *blockingTurnStream) Next(ctx context.Context) (Event, bool, error) {
+	<-ctx.Done()
+	return nil, false, ctx.Err()
+}
+func (s *blockingTurnStream) Close() error { return nil }
+
+// TestContinueSessionHangingStreamIsTornDown pins the ctx-aware teardown: a
+// provider stream that never emits a terminal event must not hang the
+// collection — when ctx is done the stream is closed and the turn surfaces
+// an error part instead of waiting forever.
+func TestContinueSessionHangingStreamIsTornDown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
+	writeIdentityTranscript(t, path, Identity{
+		ExecutionID: "exec_prior",
+		WorkerID:    "worker_test",
+		WorkerName:  "qa-worker",
+		TenantID:    "tnt_test",
+	})
+	store := &storesSessionParts{}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return &blockingProvider{}, nil
+	}), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.SetSessionStore(store.record)
+
+	// Shrink the reply window so the test is fast.
+	t.Setenv("ORCHICON_FOLLOWUP_REPLY_WINDOW", "200ms")
+	_, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+		ExecutionID: "exec_now",
+		TenantID:    "tnt_test",
+		WorkerID:    "worker_test",
+		SessionID:   "exec_prior",
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		Message:     "Status?",
+		Context:     "Prior work.",
+		StartSeq:    1,
+		ProjectDir:  dir,
+	})
+	if err != nil {
+		t.Fatalf("ContinueSession: %v", err)
+	}
+	// The hanging stream must be torn down on the reply-window timeout and
+	// an error part written (the UI never hangs forever).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var sawErr bool
+		for _, p := range store.snapshot() {
+			if p.Kind == db.SessionPartError {
+				sawErr = true
+			}
+		}
+		if sawErr {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("error part never written for a hanging stream; parts = %+v", store.snapshot())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// blockingProvider is a Provider whose StreamTurn returns a stream that
+// never emits a terminal event (blocks until ctx is done).
+type blockingProvider struct{}
+
+func (b *blockingProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
+	return &blockingTurnStream{}, nil
+}
+func (b *blockingProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
+func (b *blockingProvider) Capabilities() Capabilities                          { return Capabilities{Streaming: true} }
