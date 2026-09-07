@@ -60,6 +60,11 @@ type Dependencies struct {
 	// (ORCHICON_SECRETS_KEK override, or the per-instance data-dir key).
 	// nil/len != 32 disables the store (fail-closed at the service layer).
 	SecretsKEK []byte
+	// UsageRecorder is the shared AI Gateway usage recorder (Postgres +
+	// OTel dual-write) worker executions use. Wired into Ask Orchicon so
+	// Ask sessions capture live usage per adapter. Nil disables Ask usage
+	// recording.
+	UsageRecorder *aigateway.UsageRecorder
 	// GrafanaURL is the base URL of the Grafana UI (default
 	// http://localhost:3000). Used by the /grafana reverse proxy so the
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
@@ -373,6 +378,9 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	askSvc.SetHostServe(deps.HostServe)
 	if deps.RuntimeClient != nil {
 		askSvc.SetRuntimeClient(deps.RuntimeClient)
+	}
+	if deps.UsageRecorder != nil {
+		askSvc.SetUsageRecorder(deps.UsageRecorder)
 	}
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 

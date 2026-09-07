@@ -530,6 +530,16 @@ func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost
 		attribute.String("provider", r.Provider),
 		attribute.String("model", r.Model),
 	}
+	// Adapter parity attributes: identify the adapter kind that drove the
+	// model call and (for Ask sessions) the conversation. Both are emitted
+	// only when populated so worker records / legacy rows without them never
+	// produce a blank attribute.
+	if r.AdapterKind != "" {
+		attrs = append(attrs, attribute.String("adapter_kind", r.AdapterKind))
+	}
+	if r.SessionID != "" {
+		attrs = append(attrs, attribute.String("session", r.SessionID))
+	}
 	tokens := bucketTokens(r)
 	if m.tokens != nil {
 		for i, class := range usageBucketClasses {
