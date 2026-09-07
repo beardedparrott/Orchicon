@@ -2,11 +2,15 @@ package orchicon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -14,11 +18,20 @@ import (
 )
 
 // Compile-time proof that the native bridge implements the Ask chat-session
-// capability. It deliberately does NOT implement
-// scheduler.SendTurnMessageWithAttachments: the askorchicon collector fails
-// loudly when an adapter lacks the attachment capability (never silently
-// degrading to text-only).
+// capability, including the attachment-aware sender (parity with the
+// opencode adapter — attachments ride the turn inline, never silently
+// dropped).
 var _ scheduler.ChatTurnClient = (*NativeBridge)(nil)
+var _ scheduler.SendTurnMessageWithAttachments = (*NativeBridge)(nil)
+
+// Attachment caps mirror the server-side turn validation
+// (startConversationTurnOpts): the bridge enforces them too so direct
+// interface callers get the same bounds.
+const (
+	askMaxAttachments           = 5
+	askMaxAttachmentBytes       = 10 * 1024 * 1024
+	askMaxAttachmentsTotalBytes = 20 * 1024 * 1024
+)
 
 // AskToolProvider supplies the Ask-time tool surface for native turns.
 // It is implemented outside this package (the askorchicon tool registry
@@ -76,6 +89,97 @@ func (b *NativeBridge) SetAskTools(p AskToolProvider) {
 	b.askTools = p
 }
 
+// SetAskHistoryDir enables disk persistence for Ask session histories
+// (one JSON file per session under dir). Empty disables persistence
+// (memory-only). Wired from the server instance data dir.
+func (b *NativeBridge) SetAskHistoryDir(dir string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.askHistoryDir = dir
+}
+
+// askHistoryVersion versions the on-disk Ask history envelope.
+const askHistoryVersion = 1
+
+// askHistoryMaxBytes caps one persisted session file (image attachments
+// are base64 data URLs — a long image-heavy conversation could otherwise
+// grow the file without bound). Oversize histories stay memory-only.
+const askHistoryMaxBytes = 16 * 1024 * 1024
+
+// askHistoryFilename sanitizes a session id into a safe file stem.
+func askHistoryFilename(sessionID string) string {
+	var sb strings.Builder
+	for _, r := range sessionID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteByte('_')
+		}
+	}
+	if sb.Len() == 0 {
+		return "session"
+	}
+	return sb.String()
+}
+
+// persistAskHistoryLocked writes the session's history to disk (atomic
+// tmp + rename). Callers must hold b.mu. Best-effort: every failure is a
+// warn + return, never a turn failure.
+func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
+	dir := b.askHistoryDir
+	if dir == "" {
+		return
+	}
+	history := b.chatHistory[sessionID]
+	env := map[string]any{"version": askHistoryVersion, "messages": history}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		b.log.Warn("orchicon: ask history marshal failed", "session", sessionID, "error", err)
+		return
+	}
+	if len(raw) > askHistoryMaxBytes {
+		b.log.Warn("orchicon: ask history oversize — staying memory-only", "session", sessionID, "bytes", len(raw))
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		b.log.Warn("orchicon: ask history dir create failed", "dir", dir, "error", err)
+		return
+	}
+	path := filepath.Join(dir, askHistoryFilename(sessionID)+".json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		b.log.Warn("orchicon: ask history write failed", "session", sessionID, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		b.log.Warn("orchicon: ask history rename failed", "session", sessionID, "error", err)
+	}
+}
+
+// loadAskHistoryLocked reads a persisted session history from disk (nil on
+// a miss or any failure — a new conversation looks exactly like a lost
+// file, and both correctly start empty). Callers must hold b.mu.
+func (b *NativeBridge) loadAskHistoryLocked(sessionID string) []Message {
+	dir := b.askHistoryDir
+	if dir == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, askHistoryFilename(sessionID)+".json"))
+	if err != nil {
+		return nil
+	}
+	var env struct {
+		Version  int       `json:"version"`
+		Messages []Message `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.Version != askHistoryVersion {
+		b.log.Warn("orchicon: ask history unreadable — starting empty", "session", sessionID, "error", err)
+		return nil
+	}
+	return env.Messages
+}
+
 // askToolsLocked returns the injected tool definitions (nil when no
 // provider is set). Callers must hold b.mu.
 func (b *NativeBridge) askToolsLocked() []ToolDef {
@@ -129,6 +233,72 @@ func (b *NativeBridge) Subscribe(ctx context.Context, conversationID string) (sc
 // bus and returns nil (accepted). This ordering guarantees the collector's
 // `sent` guard never drops the first delta (D4).
 func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
+	return b.dispatchTurnMessage(ctx, conversationID, sessionID, system, modelRef, text, nil)
+}
+
+// SendTurnMessageWithAttachments implements
+// scheduler.SendTurnMessageWithAttachments (parity with the opencode
+// adapter): images ride as image data-URL parts (every native wire
+// consumes data URLs) and UTF-8 text files inline as fenced text parts —
+// one POST, no upload-path dependency. Non-image, non-UTF8 binaries have
+// no native wire shape and fail loudly naming the file (never silently
+// dropped); those need the opencode adapter's document handling.
+func (b *NativeBridge) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
+	return b.dispatchTurnMessage(ctx, conversationID, sessionID, system, modelRef, text, attachments)
+}
+
+// askUserContent builds the user message content for a turn: the text plus
+// one content element per attachment (image → Image data URL, UTF-8 text →
+// fenced Text). Caps mirror the server-side validation.
+func askUserContent(text string, attachments []scheduler.ChatAttachment) ([]Content, error) {
+	var content []Content
+	if text != "" {
+		t := text
+		content = append(content, Content{Text: &t})
+	}
+	if len(attachments) > askMaxAttachments {
+		return nil, fmt.Errorf("orchicon bridge: too many attachments (%d, max %d)", len(attachments), askMaxAttachments)
+	}
+	total := 0
+	for _, a := range attachments {
+		if len(a.Data) == 0 {
+			continue
+		}
+		if len(a.Data) > askMaxAttachmentBytes {
+			return nil, fmt.Errorf("orchicon bridge: attachment %q too large (max 10MB)", a.Name)
+		}
+		total += len(a.Data)
+		if total > askMaxAttachmentsTotalBytes {
+			return nil, fmt.Errorf("orchicon bridge: attachments too large (max 20MB total)")
+		}
+		mime := a.MimeType
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		if strings.HasPrefix(mime, "image/") {
+			u := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
+			content = append(content, Content{Image: &u})
+			continue
+		}
+		if utf8.Valid(a.Data) {
+			name := a.Name
+			if name == "" {
+				name = "attachment"
+			}
+			fenced := "--- attachment: " + name + " (" + mime + ") ---\n" + string(a.Data)
+			content = append(content, Content{Text: &fenced})
+			continue
+		}
+		return nil, fmt.Errorf("orchicon bridge: attachment %q (%s) is a binary document the native wires cannot carry — use an opencode-adapter model for binary documents", a.Name, mime)
+	}
+	if len(content) == 0 {
+		t := text
+		content = append(content, Content{Text: &t})
+	}
+	return content, nil
+}
+
+func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
 	if sessionID == "" {
 		return errors.New("orchicon bridge: send turn requires a session id (create the conversation session first)")
 	}
@@ -149,12 +319,24 @@ func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sess
 	}
 
 	// Append the user message to the session's replayable history (committed
-	// under the lock so a concurrent turn never double-appends).
-	userMsg := text
+	// under the lock so a concurrent turn never double-appends). The
+	// content carries the text plus any attachments (images as data URLs,
+	// text files fenced) so follow-ups and tool rounds replay them.
+	userContent, err := askUserContent(text, attachments)
+	if err != nil {
+		return err
+	}
 	b.mu.Lock()
 	history := append([]Message(nil), b.chatHistory[sessionID]...)
-	history = append(history, Message{Role: RoleUser, Content: []Content{{Text: &userMsg}}})
+	if len(history) == 0 {
+		// Memory has nothing (fresh session or a server restart wiped
+		// it) — reseed from the persisted file when present so the turn
+		// re-sends the full context instead of starting over.
+		history = append([]Message(nil), b.loadAskHistoryLocked(sessionID)...)
+	}
+	history = append(history, Message{Role: RoleUser, Content: userContent})
 	b.chatHistory[sessionID] = history
+	b.persistAskHistoryLocked(sessionID)
 	b.mu.Unlock()
 
 	// Build the turn request: the accumulated history re-sent as full context
@@ -436,6 +618,7 @@ func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Me
 		cur = append([]Message(nil), working...)
 	}
 	b.chatHistory[sessionID] = cur
+	b.persistAskHistoryLocked(sessionID)
 }
 
 // AbortConversationSession implements scheduler.ChatTurnClient: it cancels

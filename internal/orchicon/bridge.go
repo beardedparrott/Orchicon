@@ -90,6 +90,12 @@ type NativeBridge struct {
 	// from the system prompt's project context with no tool calls (the
 	// pre-tools behavior). Guarded by mu.
 	askTools AskToolProvider
+	// askHistoryDir is the directory Ask session histories persist to as
+	// one JSON file per session (SetAskHistoryDir, wired from the server
+	// instance data dir). Empty → memory-only (pre-persistence behavior:
+	// history is lost on a server restart while the DB transcript stays
+	// the durable record). Guarded by mu.
+	askHistoryDir string
 }
 
 // liveSession is the bridge's handle on one running session.

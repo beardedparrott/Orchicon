@@ -281,13 +281,108 @@ func TestChatTurnClientReplyPermissionErrors(t *testing.T) {
 	}
 }
 
-func TestChatTurnClientNoAttachmentsCapability(t *testing.T) {
-	// The native bridge must NOT implement SendTurnMessageWithAttachments so
-	// the askorchicon collector fails loudly on attachment turns (never
-	// silently degrading to text-only).
-	var _ scheduler.ChatTurnClient = (*NativeBridge)(nil)
-	if _, ok := any((*NativeBridge)(nil)).(scheduler.SendTurnMessageWithAttachments); ok {
-		t.Fatal("NativeBridge unexpectedly implements SendTurnMessageWithAttachments")
+func TestChatTurnClientAttachmentsParity(t *testing.T) {
+	// The native bridge implements the attachment-aware sender (parity
+	// with the opencode adapter): images ride as data-URL Image parts,
+	// UTF-8 text inlines fenced — never silently dropped.
+	var _ scheduler.SendTurnMessageWithAttachments = (*NativeBridge)(nil)
+	prov := &chatTestProvider{events: []Event{
+		TextDelta{Text: "seen"},
+		Finish{StopReason: StopStop},
+	}}
+	b := newChatBridge(t, prov)
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-att", "ask-orchicon:conv-att")
+
+	bus, _ := b.Subscribe(ctx, "conv-att")
+	err := b.SendTurnMessageWithAttachments(ctx, "conv-att", sid, "system", "orchicon/ollama/deepseek-v4-flash", "look", []scheduler.ChatAttachment{
+		{Name: "chart.png", MimeType: "image/png", Data: []byte{1, 2, 3}},
+		{Name: "notes.md", MimeType: "text/markdown", Data: []byte("# hi")},
+	})
+	if err != nil {
+		t.Fatalf("SendTurnMessageWithAttachments: %v", err)
+	}
+	drainBus(t, bus)
+	req := prov.lastRequest()
+	if len(req.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1 user message", len(req.Messages))
+	}
+	var sawText, sawImage, sawFenced bool
+	for _, c := range req.Messages[0].Content {
+		if c.Text != nil {
+			sawText = true
+			if strings.Contains(*c.Text, "notes.md") {
+				sawFenced = true
+			}
+		}
+		if c.Image != nil && strings.HasPrefix(*c.Image, "data:image/png;base64,") {
+			sawImage = true
+		}
+	}
+	if !sawText || !sawImage || !sawFenced {
+		t.Fatalf("content = %+v, want text + image data URL + fenced file", req.Messages[0].Content)
+	}
+}
+
+func TestChatTurnClientBinaryAttachmentFailsLoudly(t *testing.T) {
+	// Non-image, non-UTF8 binaries have no native wire shape: loud,
+	// actionable failure naming the file (never a silent drop).
+	b := newChatBridge(t, &chatTestProvider{})
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-bin", "ask-orchicon:conv-bin")
+	err := b.SendTurnMessageWithAttachments(ctx, "conv-bin", sid, "system", "orchicon/ollama/deepseek-v4-flash", "read", []scheduler.ChatAttachment{
+		{Name: "doc.pdf", MimeType: "application/pdf", Data: []byte{0x25, 0x50, 0x44, 0x46, 0xff, 0xfe}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "doc.pdf") {
+		t.Fatalf("err = %v, want a loud failure naming the file", err)
+	}
+}
+
+func TestChatTurnClientHistorySurvivesRestart(t *testing.T) {
+	// A "restart" (fresh bridge over the same history dir) reseeds the
+	// session from disk instead of starting over.
+	dir := t.TempDir()
+	mkBridge := func() *NativeBridge {
+		prov := &chatTestProvider{events: []Event{
+			TextDelta{Text: "reply"},
+			Finish{StopReason: StopStop},
+		}}
+		resolver := ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+			return prov, nil
+		})
+		bb := NewBridge(resolver, "", slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+		bb.SetAskHistoryDir(dir)
+		return bb
+	}
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	b1 := mkBridge()
+	sid, _ := b1.CreateConversationSession(ctx, "conv-restart", "ask-orchicon:conv-restart")
+	bus, _ := b1.Subscribe(ctx, "conv-restart")
+	if err := b1.SendTurnMessage(ctx, "conv-restart", sid, "system", "orchicon/ollama/deepseek-v4-flash", "q1"); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	drainBus(t, bus)
+
+	// Fresh bridge (restart), same dir: the follow-up must re-send the
+	// prior user + assistant context.
+	b2 := mkBridge()
+	bus2, _ := b2.Subscribe(ctx, "conv-restart")
+	// CreateConversationSession must not wipe the persisted file.
+	if _, err := b2.CreateConversationSession(ctx, "conv-restart", "ask-orchicon:conv-restart"); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	if err := b2.SendTurnMessage(ctx, "conv-restart", sid, "system", "orchicon/ollama/deepseek-v4-flash", "q2"); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	drainBus(t, bus2)
+	b2.mu.Lock()
+	hist := append([]Message(nil), b2.chatHistory[sid]...)
+	b2.mu.Unlock()
+	if len(hist) != 4 {
+		t.Fatalf("reseeded history has %d messages, want 4 (user, assistant, user, assistant)", len(hist))
+	}
+	if hist[0].Content[0].Text == nil || *hist[0].Content[0].Text != "q1" {
+		t.Fatalf("history[0] = %+v, want the pre-restart question", hist[0])
 	}
 }
 

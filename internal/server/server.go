@@ -578,6 +578,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	} else {
 		log.Warn("native Ask turns have no tool provider (Ask service unavailable) — orchicon-adapter conversations are text-only")
 	}
+	// Ask session history persistence: per-session JSON under the instance
+	// data dir so orchicon-adapter conversations survive a server restart
+	// (in-memory history alone used to reset every follow-up to a blank
+	// context while the persisted session id took the no-history path).
+	if cfg.DataDir != "" {
+		nativeBridge.SetAskHistoryDir(filepath.Join(cfg.DataDir, "ask-history"))
+	} else {
+		log.Warn("native Ask history persistence disabled (no data dir) — orchicon-adapter conversations lose context on restart")
+	}
 	dispatcher.Register("orchicon", nativeBridge)
 
 	// Wrap with OTel tracing interceptor (spans on every API call).
