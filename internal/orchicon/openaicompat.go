@@ -252,6 +252,16 @@ func toolNameForID(req TurnRequest, id string) string {
 // StreamTurn streams one turn. Pre-stream failures retry (408/409/429/5xx,
 // connection); the trailing usage-only chunk is drained before Finish.
 func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
+	// The Responses wire has a different request/response shape — delegate
+	// to the dedicated client when Route selects it (OpenCode Zen/Go
+	// responses-route models).
+	if c.Route == "responses" {
+		rc := &ResponsesClient{
+			BaseURL: c.BaseURL, APIKey: c.APIKey, HTTP: c.HTTP, Retry: c.Retry,
+			ProviderID: c.ProviderID, ModelsFn: c.ModelsFn,
+		}
+		return rc.StreamTurn(ctx, req)
+	}
 	body, err := json.Marshal(buildOpenAIRequest(req, c.Quirks))
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal request: %w", c.label(), err)
@@ -260,7 +270,7 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 	if httpc == nil {
 		httpc = http.DefaultClient
 	}
-	url := strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimRight(c.BaseURL, "/") + "/" + c.wirePath()
 
 	var resp *http.Response
 	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {

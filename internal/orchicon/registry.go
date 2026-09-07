@@ -188,6 +188,7 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 			return &opencodeClient{
 				provider: p.ID, baseURL: p.BaseURL, apiKey: key,
 				http: r.httpc, retry: RetryPolicy{}, modelsFn: modelsFn,
+				routeCache: sync.Map{},
 			}, nil
 		}
 		auth := "bearer"
