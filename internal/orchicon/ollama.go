@@ -22,6 +22,12 @@ type OllamaClient struct {
 	HTTP  *http.Client
 	Retry RetryPolicy
 
+	// APIKey is the optional Ollama Cloud credential (OLLAMA_API_KEY). The
+	// local server needs none; Ollama Cloud requires Bearer on every
+	// transport (https://docs.ollama.com/cloud). Empty = no Authorization
+	// header (local no-token path unchanged).
+	APIKey string
+
 	// NumCtxDefault is the configured context window (options.num_ctx value
 	// used when req.OllamaNumCtx == 0); 0 = server default (~4096 — the
 	// silent truncation hazard this provider warns about).
@@ -133,6 +139,7 @@ func (c *OllamaClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStr
 		BaseURL: strings.TrimRight(c.host(), "/") + "/v1",
 		Quirks:  builtinQuirks()["ollama"],
 		HTTP:    c.HTTP, Retry: c.Retry, ProviderID: "ollama",
+		APIKey: c.APIKey,
 	}
 	return oc.StreamTurn(ctx, req)
 }
@@ -225,7 +232,7 @@ func (c *OllamaClient) streamNative(ctx context.Context, req TurnRequest, numCtx
 	url := strings.TrimRight(c.host(), "/") + "/api/chat"
 	var resp *http.Response
 	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, map[string]string{"content-type": "application/json"}, body)
+		r, err2 := postJSON(ctx, httpc, url, c.nativeHeaders(), body)
 		if err2 != nil {
 			return isConnectionErr(err2), err2, 0
 		}
@@ -453,12 +460,39 @@ func (c *OllamaClient) httpc() *http.Client {
 	return http.DefaultClient
 }
 
+// nativeHeaders builds the header set for native /api/* transports: the
+// content-type plus the optional Bearer credential (Ollama Cloud requires
+// Bearer on every transport — https://docs.ollama.com/cloud). The local
+// no-token path sends no Authorization header (unchanged).
+func (c *OllamaClient) nativeHeaders() map[string]string {
+	h := map[string]string{
+		"content-type": "application/json",
+		"user-agent":   userAgent(),
+	}
+	if c.APIKey != "" {
+		h["authorization"] = "Bearer " + c.APIKey
+	}
+	return h
+}
+
+// applyAuth stamps the optional Bearer credential + first-party user-agent
+// onto a native /api/* request (Ollama Cloud requires Bearer on every
+// transport — https://docs.ollama.com/cloud). Local no-token path sends
+// neither Authorization nor a custom UA (unchanged behavior).
+func (c *OllamaClient) applyAuth(req *http.Request) {
+	if c.APIKey != "" {
+		req.Header.Set("authorization", "Bearer "+c.APIKey)
+	}
+	req.Header.Set("user-agent", userAgent())
+}
+
 func (c *OllamaClient) tags(ctx context.Context) (ollamaTags, error) {
 	var out ollamaTags
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.host(), "/")+"/api/tags", nil)
 	if err != nil {
 		return out, err
 	}
+	c.applyAuth(req)
 	resp, err := c.httpc().Do(req)
 	if err != nil {
 		return out, err
@@ -489,6 +523,7 @@ func (c *OllamaClient) show(ctx context.Context, model string) (ollamaShow, erro
 		return ollamaShow{}, err
 	}
 	req.Header.Set("content-type", "application/json")
+	c.applyAuth(req)
 	resp, err := c.httpc().Do(req)
 	if err != nil {
 		return ollamaShow{}, err
@@ -526,6 +561,7 @@ func (c *OllamaClient) EffectiveContext(ctx context.Context, model string) int64
 	if err != nil {
 		return 0
 	}
+	c.applyAuth(req)
 	resp, err := c.httpc().Do(req)
 	if err != nil {
 		return 0

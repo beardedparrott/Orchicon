@@ -89,6 +89,14 @@ type Profile struct {
 	// (options.num_ctx sent per request); 0 = server default (~4096, which
 	// this provider warns against — silent truncation breaks compaction).
 	NumCtxDefault int64
+
+	// AuthOptional marks a provider whose credential is OPTIONAL: a missing
+	// credential resolves to "" (no error) instead of ErrAuthMissing. Used
+	// by Ollama — the local server needs no token, but Ollama Cloud does
+	// (https://docs.ollama.com/cloud — Bearer on every transport). The
+	// credential resolver treats AuthOptional like no-auth when nothing is
+	// stored, but the client still sends Bearer when a token IS resolved.
+	AuthOptional bool
 }
 
 // baseURL env overrides (documented per profile).
@@ -120,7 +128,7 @@ func builtinAuthEnvs() map[string]string {
 		"opencode":    "OPENCODE_API_KEY",
 		"opencode-go": "OPENCODE_API_KEY",
 		"commandcode": "COMMANDCODE_API_KEY",
-		"ollama":      "",
+		"ollama":      "OLLAMA_API_KEY",
 	}
 }
 
@@ -191,6 +199,11 @@ func BuiltinProfile(id string) (Profile, bool) {
 		}
 	case "ollama":
 		p.Kind = ProfileKindOllama
+		// Local Ollama needs no token, but Ollama Cloud does — the profile
+		// is AuthOptional so a missing token still resolves for local, while
+		// a stored/env OLLAMA_API_KEY is sent as Bearer on every transport
+		// (https://docs.ollama.com/cloud).
+		p.AuthOptional = true
 		if v := os.Getenv(envOllamaHost); v != "" {
 			p.BaseURL = v
 		}

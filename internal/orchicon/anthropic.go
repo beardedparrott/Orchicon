@@ -375,6 +375,9 @@ func (c *AnthropicClient) requestHeaders() map[string]string {
 		"content-type":      "application/json",
 		"accept":            "text/event-stream",
 		"anthropic-version": anthropicVersion,
+		// First-party user-agent (OpenCode Zen/Go reject generic SDK/HTTP
+		// library names — https://opencode.ai/docs/go/#where-can-i-use-it).
+		"user-agent": userAgent(),
 	}
 	if c.AuthStyle == "bearer" {
 		h["authorization"] = "Bearer " + c.APIKey

@@ -201,6 +201,15 @@ type TurnRequest struct {
 	// CacheControl is the Anthropic breakpoint policy (default: system+tools
 	// for anthropic-format routes; ignored elsewhere).
 	CacheControl CacheControlTTL
+
+	// SessionID is the stable per-conversation/per-execution identifier
+	// sent as the `x-opencode-session` header on OpenCode Zen/Go requests
+	// (D1 — https://opencode.ai/docs/go/#where-can-i-use-it requires a
+	// stable session id per conversation; without it the provider returns
+	// a deterministic 400 MissingSessionID). Ask turns set the conversation
+	// id; worker executions set the execution id. Empty = no header (local
+	// servers / non-OpenCode providers).
+	SessionID string
 }
 
 // Capabilities reports what a provider instance supports.

@@ -276,6 +276,10 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			System:    s.AssembleSystem(),
 			Messages:  s.history,
 			MaxTokens: s.turnMaxTokens(ctx),
+			// Stable per-execution session id for OpenCode Zen/Go (D1): the
+			// provider requires x-opencode-session per conversation; the
+			// session id == execution id.
+			SessionID: s.id,
 		}
 		// Context-window realization (D5, ollama parity): when the live
 		// hint resolved (or the work item declared a window), ride it as

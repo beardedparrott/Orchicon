@@ -253,6 +253,16 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	if err != nil {
 		return nil, false
 	}
+	// First-party user-agent on every probe (OpenCode Zen/Go reject generic
+	// SDK/HTTP library names — https://opencode.ai/docs/go/#where-can-i-use-it).
+	req.Header.Set("user-agent", userAgent())
+	// OpenCode Zen/Go require a stable x-opencode-session on requests
+	// (https://opencode.ai/docs/go/#where-can-i-use-it). The /models probe
+	// is a metadata call with no conversation, so it carries a stable
+	// probe-scoped session id.
+	if p.ID == "opencode" || p.ID == "opencode-go" {
+		req.Header.Set("x-opencode-session", "orchicon-probe-"+p.ID)
+	}
 	// Credential: the resolver-resolved bearer first (tenant secret or env
 	// — the value the real client calls will use), then the env fallback.
 	// A missing credential never fails the probe — it stays non-fatal.

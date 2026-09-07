@@ -181,6 +181,15 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		if err != nil {
 			return nil, err
 		}
+		// OpenCode Zen/Go are model-aware (D2): chat-route models stream via
+		// the compat client; responses/messages models fail loudly naming the
+		// model + required route. The opencodeClient owns that routing.
+		if p.ID == "opencode" || p.ID == "opencode-go" {
+			return &opencodeClient{
+				provider: p.ID, baseURL: p.BaseURL, apiKey: key,
+				http: r.httpc, retry: RetryPolicy{}, modelsFn: modelsFn,
+			}, nil
+		}
 		auth := "bearer"
 		if key == "" {
 			auth = "none"
@@ -191,8 +200,16 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		}, nil
 
 	case ProfileKindOllama:
+		// Ollama Cloud needs a Bearer token on every transport; local needs
+		// none. The profile is AuthOptional, so Resolve returns "" (no
+		// error) when nothing is stored — the client sends Bearer only when
+		// a token resolves (https://docs.ollama.com/cloud).
+		key, err := r.creds.Resolve(ctx, tenantID, p)
+		if err != nil {
+			return nil, err
+		}
 		return &OllamaClient{
-			Host: p.BaseURL, HTTP: r.httpc, ModelsFn: modelsFn, Warnf: warn,
+			Host: p.BaseURL, APIKey: key, HTTP: r.httpc, ModelsFn: modelsFn, Warnf: warn,
 			NumCtxDefault: p.NumCtxDefault,
 		}, nil
 

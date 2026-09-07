@@ -236,9 +236,15 @@ func TestProvidersTokenAutoWriteAndResolve(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	// Ollama rejects token saves (no auth needed).
-	if _, err := svc.SetProviderToken(ctx, testTenant, "ollama", "x"); err == nil {
-		t.Fatal("ollama token save accepted")
+	// Ollama now accepts token saves under OLLAMA_API_KEY (Ollama Cloud
+	// needs a Bearer token — https://docs.ollama.com/cloud; the local
+	// server needs none, so the profile is AuthOptional).
+	oname, err := svc.SetProviderToken(ctx, testTenant, "ollama", "ollama-cloud-token")
+	if err != nil {
+		t.Fatalf("ollama token save: %v", err)
+	}
+	if oname != "OLLAMA_API_KEY" {
+		t.Fatalf("ollama secret name: %q, want OLLAMA_API_KEY", oname)
 	}
 
 	// End-to-end: the provider layer resolves the tab-written secret.

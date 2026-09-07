@@ -66,8 +66,9 @@ func invalidf(format string, a ...any) error {
 
 // builtinSecretNames is the standard-name auto-write map (ADR-0006 D5) —
 // the single source of truth, matching the credential resolver's canonical
-// naming (secret names coincide with the env var names). Ollama is
-// deliberately absent: the local server needs no authentication.
+// naming (secret names coincide with the env var names). Ollama carries
+// OLLAMA_API_KEY: the local server needs no token, but Ollama Cloud does
+// (https://docs.ollama.com/cloud — Bearer on every transport).
 var builtinSecretNames = map[string]string{
 	"anthropic":   "ANTHROPIC_API_KEY",
 	"openai":      "OPENAI_API_KEY",
@@ -75,6 +76,7 @@ var builtinSecretNames = map[string]string{
 	"opencode":    "OPENCODE_API_KEY",
 	"opencode-go": "OPENCODE_API_KEY",
 	"commandcode": "COMMANDCODE_API_KEY",
+	"ollama":      "OLLAMA_API_KEY",
 }
 
 // CustomSecretName derives the standard tenant-secret name for a custom

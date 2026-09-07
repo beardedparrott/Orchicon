@@ -17,7 +17,7 @@ func TestBuiltinProfiles(t *testing.T) {
 		"opencode":    {"https://opencode.ai/zen/v1", "OPENCODE_API_KEY"},
 		"opencode-go": {"https://opencode.ai/zen/go/v1", "OPENCODE_API_KEY"}, // distinct base, same auth env as Zen
 		"commandcode": {"https://api.commandcode.ai", "COMMANDCODE_API_KEY"},
-		"ollama":      {"http://localhost:11434", ""},
+		"ollama":      {"http://localhost:11434", "OLLAMA_API_KEY"},
 	}
 	for id, w := range want {
 		p, ok := BuiltinProfile(id)
@@ -175,7 +175,7 @@ func TestCatalogPerProvider(t *testing.T) {
 			t.Fatalf("provider %s has no catalog models", p)
 		}
 	}
-	// Hidden entries are excluded.
+	// Hidden ent	// Hidden entries are excluded.
 	if m, ok := GetModel("ollama/llama3.2"); !ok || !m.Visible {
 		t.Fatalf("llama3.2 = %#v ok=%v", m, ok)
 	}
