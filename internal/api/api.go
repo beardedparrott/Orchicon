@@ -84,6 +84,12 @@ type Dependencies struct {
 	// Injected as a func to avoid an api → scheduler import cycle; nil falls
 	// back to the default adapter kind.
 	AdapterKinds func() []string
+	// Dispatcher is the shared adapter routing substrate (ADR-0003). Ask
+	// Orchicon conversations resolve their adapter kind from the model_ref
+	// through it and drive the resolved ChatTurnClient capability; worker
+	// executions resolve their bridge the same way. It is injected directly
+	// (api.go imports internal/scheduler, so no import cycle).
+	Dispatcher *scheduler.Dispatcher
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
 	// ProvidersService is the providers settings core (ADR-0006). Mount
@@ -356,6 +362,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
 	askSvc.SetAdapterKinds(deps.AdapterKinds)
+	askSvc.SetDispatcher(deps.Dispatcher)
 	// The Ask update_settings tool write path shares the same CLI-aware model
 	// ref registry as the settings validator/picker: a CLI-namespace ref the
 	// picker offered validates at save through this agent-controlled path too.
