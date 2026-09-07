@@ -1,6 +1,7 @@
 package askorchicon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -72,7 +73,8 @@ type fakeSessionClient struct {
 	createTitles []string
 	createErr    error
 	sendCalls    []sentMessage
-	sendErrs     []error // consumed in order; nil when exhausted
+	sendParts    [][]scheduler.ChatAttachment // one entry per SendTurnMessageWithAttachments call
+	sendErrs     []error                      // consumed in order; nil when exhausted
 	sendCall     int
 	// sendGate, when non-nil, makes SendMessage block until the channel is
 	// closed. Lets a test hold the send in flight so it can replay events
@@ -183,6 +185,9 @@ func (f *fakeSessionClient) SendTurnMessage(ctx context.Context, conversationID,
 // test fake implements it so attachment turns test the capability-gated path
 // (recorded just like a plain send — the adapter's classification differs).
 func (f *fakeSessionClient) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
+	f.mu.Lock()
+	f.sendParts = append(f.sendParts, append([]scheduler.ChatAttachment(nil), attachments...))
+	f.mu.Unlock()
 	return f.SendTurnMessage(ctx, conversationID, sessionID, system, modelRef, text)
 }
 
@@ -415,6 +420,50 @@ func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 	}
 	if got := client.sendCalls[0]; got.sessionID != "ses_live" || got.system != "REUSE_SYSTEM" {
 		t.Errorf("send = %+v, want session ses_live with REUSE_SYSTEM", got)
+	}
+}
+
+// TestChatTurnSendsAttachments proves an attachment attached to a message
+// reaches the send path via the attachment-aware capability
+// (SendTurnMessageWithAttachments on the scheduler.ChatTurnClient) rather
+// than being dropped by a concrete-type assertion and falling back to a plain
+// SendTurnMessage.
+func TestChatTurnSendsAttachments(t *testing.T) {
+	client := &fakeSessionClient{}
+	imgData := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "what is this?",
+		attachments: []*apiv1.AttachmentInput{
+			{Name: "a.png", MimeType: "image/png", Data: imgData},
+		},
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "it's a png"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, _, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "it's a png" {
+		t.Errorf("reply = %q, want %q", reply, "it's a png")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.sendParts) != 1 {
+		t.Fatalf("SendTurnMessageWithAttachments calls = %d, want 1 (attachment must go through the attachment-aware capability sender)", len(client.sendParts))
+	}
+	got := client.sendParts[0]
+	if len(got) != 1 {
+		t.Fatalf("parts = %d, want 1", len(got))
+	}
+	if got[0].Name != "a.png" || got[0].MimeType != "image/png" {
+		t.Errorf("part = %+v, want name a.png mime image/png", got[0])
+	}
+	if !bytes.Equal(got[0].Data, imgData) {
+		t.Errorf("part data = %v, want %v", got[0].Data, imgData)
 	}
 }
 
