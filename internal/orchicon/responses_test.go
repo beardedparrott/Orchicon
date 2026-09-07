@@ -155,8 +155,7 @@ func TestResponsesStreamHoldsFinishUntilDrained(t *testing.T) {
 	}
 }
 
-func TestResponsesRequestShaping(t *testing.T) {
-	req := TurnRequest{
+func TestResponsesRequestShaping(t *testing.T) {	req := TurnRequest{
 		Model: "m", MaxTokens: 99, Temperature: fltPtr(0.5),
 		System: []SystemBlock{{Text: "be brief"}},
 		Tools:  []ToolDef{{Name: "fn", ParamsJSON: `{"type":"object"}`}},
@@ -188,5 +187,63 @@ func TestResponsesRequestShaping(t *testing.T) {
 	}
 	if rr.Input[3].Role != "user" {
 		t.Fatalf("input[3] = %#v", rr.Input[3])
+	}
+}
+
+// Object-shaped deltas ({"delta":{"text":"Hi"}}) must decode like the
+// compact string form — otherwise a gateway that emits the object shape
+// fails every turn as "bad sse payload".
+func TestResponsesStreamObjectDelta(t *testing.T) {
+	body := sse(
+		`{"type":"response.output_text.delta","delta":{"text":"Hello"}}`,
+		`{"type":"response.output_text.delta","delta":{"content":" world"}}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("events = %#v, want 2 TextDelta + Finish", evs)
+	}
+	if td, ok := evs[0].(TextDelta); !ok || td.Text != "Hello" {
+		t.Fatalf("event 0 = %#v", evs[0])
+	}
+	if td, ok := evs[1].(TextDelta); !ok || td.Text != " world" {
+		t.Fatalf("event 1 = %#v", evs[1])
+	}
+}
+
+// Done-only text (no deltas, text on output_text.done) must still produce
+// a reply — otherwise the Ask history commit is skipped (empty reply) and
+// the follow-up looks like a first message.
+func TestResponsesStreamDoneOnlyText(t *testing.T) {
+	body := sse(
+		`{"type":"response.output_text.done","text":"full answer"}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("events = %#v, want TextDelta + Finish", evs)
+	}
+	if td, ok := evs[0].(TextDelta); !ok || td.Text != "full answer" {
+		t.Fatalf("event 0 = %#v, want TextDelta full answer", evs[0])
 	}
 }
