@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -518,6 +519,16 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		// in execution_session_parts so the pane renders them exactly like
 		// a live worker turn.
 		recorder := newSessionPartsRecorder(b.sessionStore, opts.ExecutionID, opts.TenantID)
+		recorder.logf = b.log.Info
+		// A follow-up whose prior JSONL transcript is missing/empty starts
+		// fresh at event seq 1, which would collide with the original run's
+		// stored DB parts (unique key ON CONFLICT DO NOTHING drops them).
+		// Offset the recorder so the follow-up parts land after the
+		// original run (baseSeq = the original run's max event seq ≈
+		// opts.StartSeq >> 8).
+		if fi, serr := os.Stat(sess.TranscriptPath()); serr != nil || fi.Size() == 0 {
+			recorder.baseSeq = opts.StartSeq >> 8
+		}
 		sess.SetTranscriptObserver(recorder.observe)
 		recorder.start()
 		defer recorder.Close()
@@ -776,6 +787,14 @@ type sessionPartsRecorder struct {
 	execID  string
 	tenant  string
 	pending []db.SessionPart
+	// baseSeq offsets the DB part seq so a follow-up session (whose
+	// transcript may start fresh at seq 1) does not collide with the
+	// original run's already-stored parts (unique key (tenant,exec,seq)
+	// ON CONFLICT DO NOTHING would drop them). Set to the original run's
+	// max transcript event seq for follow-ups; 0 = no offset (fresh run).
+	baseSeq int64
+	// logf reports flush batches (diagnostics; nil-safe).
+	logf func(string, ...any)
 	// open holds in-flight tool_use parts by callID: the invocation part
 	// is stashed at TransToolCall and flushed only when the matching
 	// TransToolResult arrives (with state.output merged in). This is the
@@ -1051,9 +1070,14 @@ func (r *sessionPartsRecorder) part(seq int64, kind string, payload map[string]a
 	return db.SessionPart{
 		ExecutionID: r.execID,
 		TenantID:    r.tenant,
-		Seq:         seq,
-		Kind:        kind,
-		Payload:     db.MarshalPartPayload(payload),
+		// Offset by baseSeq<<8 so a follow-up session whose transcript
+		// starts fresh does not collide with the original run's stored
+		// parts (unique key (tenant,exec,seq) ON CONFLICT DO NOTHING
+		// would drop them). baseSeq = the original run's max event seq;
+		// 0 = no offset (fresh run).
+		Seq:     seq + r.baseSeq<<8,
+		Kind:    kind,
+		Payload: db.MarshalPartPayload(payload),
 	}
 }
 
@@ -1090,7 +1114,13 @@ func (r *sessionPartsRecorder) flush() {
 	r.pending = nil
 	r.mu.Unlock()
 	if r.store != nil {
-		_ = r.store(context.Background(), r.execID, r.tenant, batch)
+		if err := r.store(context.Background(), r.execID, r.tenant, batch); err != nil {
+			if r.logf != nil {
+				r.logf("orchicon: session-parts flush failed", "execution", r.execID, "parts", len(batch), "error", err)
+			}
+		} else if r.logf != nil {
+			r.logf("orchicon: session-parts flushed", "execution", r.execID, "parts", len(batch))
+		}
 	}
 }
 
