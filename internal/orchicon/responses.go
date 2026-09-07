@@ -63,10 +63,19 @@ type respContentPart struct {
 	ImageURL  string `json:"image_url,omitempty"`
 }
 
-// respInputItem is one Responses input item (system/user/assistant/tool).
+// respInputItem is one Responses input item: a message item (role +
+// content) or a function item (function_call / function_call_output as
+// top-level items — the wire rejects function payloads nested inside a
+// message's content array).
 type respInputItem struct {
-	Role    string `json:"role"`
-	Content any    `json:"content,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   any    `json:"content,omitempty"`
+	ID        string `json:"id,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Output    string `json:"output,omitempty"`
 }
 
 type respToolDef struct {
@@ -99,33 +108,45 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleTool:
+			// Tool results are top-level function_call_output items —
+			// never nested in a message content array.
 			for _, c := range m.Content {
 				if c.ToolResult != nil {
-					rr.Input = append(rr.Input, respInputItem{Role: "user", Content: []respContentPart{{
+					rr.Input = append(rr.Input, respInputItem{
 						Type: "function_call_output", CallID: c.ToolResult.ToolCallID, Output: c.ToolResult.Content,
-					}}})
-				}
-			}
-		case RoleAssistant:
-			item := respInputItem{Role: "assistant"}
-			var parts []respContentPart
-			for _, c := range m.Content {
-				switch {
-				case c.Text != nil:
-					parts = append(parts, respContentPart{Type: "output_text", Text: *c.Text})
-				case c.ToolUse != nil:
-					parts = append(parts, respContentPart{
-						Type: "function_call", ID: c.ToolUse.ToolCallID, CallID: c.ToolUse.ToolCallID,
-						Name: c.ToolUse.Name, Arguments: c.ToolUse.ArgsJSON,
 					})
 				}
 			}
-			if len(parts) == 1 && parts[0].Type == "output_text" {
-				item.Content = parts[0].Text
-			} else {
-				item.Content = parts
+		case RoleAssistant:
+			// Assistant text rides a message item; each tool use rides
+			// its own top-level function_call item (in order). Plain
+			// single-text messages stay the compact string form.
+			var text strings.Builder
+			flushText := func() {
+				if text.Len() == 0 {
+					return
+				}
+				t := text.String()
+				text.Reset()
+				rr.Input = append(rr.Input, respInputItem{Role: "assistant", Content: t})
 			}
-			rr.Input = append(rr.Input, item)
+			for _, c := range m.Content {
+				switch {
+				case c.Text != nil:
+					text.WriteString(*c.Text)
+				case c.ToolUse != nil:
+					flushText()
+					args := c.ToolUse.ArgsJSON
+					if args == "" || !json.Valid([]byte(args)) {
+						args = "{}"
+					}
+					rr.Input = append(rr.Input, respInputItem{
+						Type: "function_call", ID: c.ToolUse.ToolCallID, CallID: c.ToolUse.ToolCallID,
+						Name: c.ToolUse.Name, Arguments: args,
+					})
+				}
+			}
+			flushText()
 		default: // user
 			hasImage := false
 			for _, c := range m.Content {

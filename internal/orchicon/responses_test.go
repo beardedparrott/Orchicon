@@ -175,18 +175,47 @@ func TestResponsesRequestShaping(t *testing.T) {	req := TurnRequest{
 	if len(rr.Tools) != 1 || rr.Tools[0].Name != "fn" {
 		t.Fatalf("tools = %#v", rr.Tools)
 	}
-	// input: system, user, assistant(function_call), user(function_call_output).
+	// input: system, user, function_call, function_call_output — function
+	// payloads are top-level items (the wire rejects them nested inside a
+	// message content array).
 	if len(rr.Input) != 4 {
 		t.Fatalf("input = %#v, want 4 items", rr.Input)
 	}
 	if rr.Input[0].Role != "system" {
 		t.Fatalf("input[0] = %#v", rr.Input[0])
 	}
-	if rr.Input[2].Role != "assistant" {
-		t.Fatalf("input[2] = %#v", rr.Input[2])
+	if rr.Input[2].Type != "function_call" || rr.Input[2].CallID != "c1" || rr.Input[2].Name != "fn" {
+		t.Fatalf("input[2] = %#v, want top-level function_call c1/fn", rr.Input[2])
 	}
-	if rr.Input[3].Role != "user" {
-		t.Fatalf("input[3] = %#v", rr.Input[3])
+	if rr.Input[2].Role != "" {
+		t.Fatalf("input[2] = %#v, function_call must not carry a role", rr.Input[2])
+	}
+	if rr.Input[3].Type != "function_call_output" || rr.Input[3].CallID != "c1" {
+		t.Fatalf("input[3] = %#v, want top-level function_call_output c1", rr.Input[3])
+	}
+}
+
+// Assistant text + tool use in one message serialize in order: the text
+// as a message item, then the function_call item.
+func TestResponsesRequestShapingMixedAssistant(t *testing.T) {
+	req := TurnRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: RoleAssistant, Content: []Content{
+				{Text: strPtr("checking")},
+				{ToolUse: &ContentToolUse{ToolCallID: "c9", Name: "fn", ArgsJSON: `{"a":1}`}},
+			}},
+		},
+	}
+	rr := buildResponsesRequest(req)
+	if len(rr.Input) != 2 {
+		t.Fatalf("input = %#v, want 2 items", rr.Input)
+	}
+	if rr.Input[0].Role != "assistant" || rr.Input[0].Content != "checking" {
+		t.Fatalf("input[0] = %#v, want assistant text", rr.Input[0])
+	}
+	if rr.Input[1].Type != "function_call" || rr.Input[1].Arguments != `{"a":1}` {
+		t.Fatalf("input[1] = %#v, want function_call with args", rr.Input[1])
 	}
 }
 
