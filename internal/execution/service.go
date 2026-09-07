@@ -1246,8 +1246,13 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	// without this every follow-up turn would lose the safety block.
 	runtimeImage := ""
 	executionMode := db.ExecutionModeRuntime
+	var wiTitle, wiContext string
+	wiContextWindow := 0
 	if wi, werr := db.GetWorkItem(ctx, ttx.Tx, tenantID, exec.TaskID); werr == nil {
 		runtimeImage = wi.RuntimeImage
+		wiTitle = wi.Title
+		wiContext = wi.Description
+		wiContextWindow = wi.ContextWindow
 		if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, wi.ProjectID); perr == nil && proj.ExecutionMode == db.ExecutionModeLocal {
 			executionMode = db.ExecutionModeLocal
 		}
@@ -1262,19 +1267,34 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	}
 	startSeq++ // next seq after the original run
 
+	worktreePath := ""
+	if exec.WorktreePath != nil {
+		worktreePath = *exec.WorktreePath
+	}
+
 	reply, err := s.continueSession(ctx, scheduler.ContinueSessionOpts{
-		ExecutionID:   msg.ExecutionId,
-		TenantID:      tenantID,
-		SystemPrompt:  systemPrompt,
-		ModelRef:      version.ModelRef,
-		ProjectDir:    projectDir,
-		Message:       msg.Message,
-		Context:       context,
-		SessionID:     sessionID,
-		ServeURL:      serveURL,
-		ServePassword: servePassword,
-		WorkerID:      exec.WorkerID,
-		StartSeq:      startSeq,
+		ExecutionID:        msg.ExecutionId,
+		TenantID:           tenantID,
+		SystemPrompt:       systemPrompt,
+		ModelRef:           version.ModelRef,
+		ProjectDir:         projectDir,
+		Message:            msg.Message,
+		Context:            context,
+		SessionID:          sessionID,
+		ServeURL:           serveURL,
+		ServePassword:      servePassword,
+		WorkerID:           exec.WorkerID,
+		StartSeq:           startSeq,
+		WorktreePath:       worktreePath,
+		RuntimeImage:       runtimeImage,
+		RuntimeWorkflowID:  exec.WorkflowRunID,
+		ExecutionMode:      executionMode,
+		WorkerName:         exec.WorkerName,
+		ProjectID:          exec.ProjectID,
+		TaskID:             exec.TaskID,
+		Goal:               wiTitle,
+		AcceptanceCriteria: wiContext,
+		ContextWindow:      int64(wiContextWindow),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
