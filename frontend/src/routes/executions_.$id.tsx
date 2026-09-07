@@ -30,6 +30,7 @@ import { usageKeys } from "@/api/aigateway";
 import { useGetWorkItem } from "@/api/workItems";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
+import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
@@ -205,6 +206,14 @@ function ExecutionDetailPage() {
           {pendingApprovals && pendingApprovals.length > 0 && (
             <ApprovalDialog approvals={pendingApprovals} />
           )}
+
+          {/* Worker summary — first-class at-a-glance verification that the
+              worker passed its ORCHICON WORKER SUMMARY. Rendered ABOVE the
+              session panes so it shows regardless of whether the event
+              stream or session transcript is present (a native-bridge run
+              has Conversation == [] and sparse events, so the summary would
+              otherwise sit unseen in Output). */}
+          <WorkerSummaryCard output={exec.output} />
 
           {/* Live chat — the primary surface (Ask-Orchicon-grade session
               view; user messages right, assistant left, composer that
