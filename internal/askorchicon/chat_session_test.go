@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // --- Fakes for the Task 1 session transport turn loop ---------------------
@@ -72,8 +73,8 @@ type fakeSessionClient struct {
 	createTitles []string
 	createErr    error
 	sendCalls    []sentMessage
-	sendParts    [][]opencode.AttachmentPart // one entry per SendMessageWithAttachments call
-	sendErrs     []error                     // consumed in order; nil when exhausted
+	sendParts    [][]scheduler.ChatAttachment // one entry per SendTurnMessageWithAttachments call
+	sendErrs     []error                      // consumed in order; nil when exhausted
 	sendCall     int
 	// sendGate, when non-nil, makes SendMessage block until the channel is
 	// closed. Lets a test hold the send in flight so it can replay events
@@ -86,6 +87,7 @@ type fakeSessionClient struct {
 	aborted      []string
 	replies      []string
 	sub          *fakeBusSub
+	sbus         scheduler.SessionBus
 	subscribeErr error
 	// serveDownFails is the number of Subscribe calls to fail before the
 	// serve "recovers" (a serve that dropped and is restarting). Each failed
@@ -93,7 +95,7 @@ type fakeSessionClient struct {
 	serveDownFails int
 }
 
-func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, error) {
+func (f *fakeSessionClient) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
 	// serveDownFails lets a test make the serve "go down": fail the next N
 	// Subscribe calls (a serve that never accepts a connection), then
 	// recover. Each failure decrements the counter, so a test can drop the
@@ -110,11 +112,15 @@ func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, err
 	}
 	// Reuse the live subscription (existing turn tests feed the stream the
 	// turn is draining). A CLOSED subscription means the serve "restarted" —
-	// the collector's re-attach gets a fresh event stream.
+	// the collector's re-attach gets a fresh event stream. A single cached
+	// SessionBus wrapper is returned so the turn's internal Subscribe and any
+	// test-side Subscribe observe the SAME translated channel (two independent
+	// wrappers would each start a translating goroutine and steal events).
 	if f.sub == nil || isClosed(f.sub.done) {
 		f.sub = newFakeBusSub()
+		f.sbus = opencode.NewSessionBusFromSub(f.sub)
 	}
-	return f.sub, nil
+	return f.sbus, nil
 }
 
 // failNextSubscribes makes the next n Subscribe calls fail (serve down), then
@@ -135,7 +141,7 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
-func (f *fakeSessionClient) CreateSession(ctx context.Context, title string) (string, error) {
+func (f *fakeSessionClient) CreateConversationSession(ctx context.Context, conversationID, title string) (string, error) {
 	if f.createErr != nil {
 		return "", f.createErr
 	}
@@ -148,7 +154,7 @@ func (f *fakeSessionClient) CreateSession(ctx context.Context, title string) (st
 	return id, nil
 }
 
-func (f *fakeSessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
+func (f *fakeSessionClient) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	f.mu.Lock()
 	f.sendCalls = append(f.sendCalls, sentMessage{sessionID, system, modelRef, text})
 	if f.sendCall < len(f.sendErrs) {
@@ -175,36 +181,17 @@ func (f *fakeSessionClient) SendMessage(ctx context.Context, sessionID, system, 
 	return nil
 }
 
-// SendMessageWithAttachments records the attachments and reuses the same
-// gating/error mechanics as SendMessage so turn tests keep their
-// deterministic event ordering.
-func (f *fakeSessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []opencode.AttachmentPart) error {
+// SendTurnMessageWithAttachments is the attachment-aware capability; the
+// test fake implements it so attachment turns test the capability-gated path
+// (recorded just like a plain send — the adapter's classification differs).
+func (f *fakeSessionClient) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
 	f.mu.Lock()
-	f.sendCalls = append(f.sendCalls, sentMessage{sessionID, system, modelRef, text})
-	f.sendParts = append(f.sendParts, append([]opencode.AttachmentPart(nil), attachments...))
-	if f.sendCall < len(f.sendErrs) {
-		err := f.sendErrs[f.sendCall]
-		f.sendCall++
-		f.mu.Unlock()
-		return err
-	}
+	f.sendParts = append(f.sendParts, append([]scheduler.ChatAttachment(nil), attachments...))
 	f.mu.Unlock()
-	if f.sendGate != nil {
-		select {
-		case <-f.sendGate:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	f.sentOnce.Do(func() {
-		if f.sentCh != nil {
-			close(f.sentCh)
-		}
-	})
-	return nil
+	return f.SendTurnMessage(ctx, conversationID, sessionID, system, modelRef, text)
 }
 
-func (f *fakeSessionClient) Abort(ctx context.Context, sessionID string) error {
+func (f *fakeSessionClient) AbortConversationSession(ctx context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborted = append(f.aborted, sessionID)
@@ -337,7 +324,7 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, serr := client.Subscribe(context.Background())
+		sub, serr := client.Subscribe(context.Background(), "conv_1")
 		if serr != nil {
 			resErr = serr
 			return
@@ -350,7 +337,7 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 			// under -race / load).
 			go func() {
 				waitForSend(t, client, 1)
-				feed(sub.(*fakeBusSub))
+				feed(client.sub)
 			}()
 		}
 		resMsgID, resSid, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
@@ -437,9 +424,10 @@ func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 }
 
 // TestChatTurnSendsAttachments proves an attachment attached to a message
-// reaches the send path via SendMessageWithAttachments (through the widened
-// sessionTurnClient interface) rather than being dropped by a concrete-type
-// assertion and falling back to a plain SendMessage.
+// reaches the send path via the attachment-aware capability
+// (SendTurnMessageWithAttachments on the scheduler.ChatTurnClient) rather
+// than being dropped by a concrete-type assertion and falling back to a plain
+// SendTurnMessage.
 func TestChatTurnSendsAttachments(t *testing.T) {
 	client := &fakeSessionClient{}
 	imgData := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
@@ -465,7 +453,7 @@ func TestChatTurnSendsAttachments(t *testing.T) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if len(client.sendParts) != 1 {
-		t.Fatalf("SendMessageWithAttachments calls = %d, want 1 (attachment must go through the interface sender)", len(client.sendParts))
+		t.Fatalf("SendTurnMessageWithAttachments calls = %d, want 1 (attachment must go through the attachment-aware capability sender)", len(client.sendParts))
 	}
 	got := client.sendParts[0]
 	if len(got) != 1 {
@@ -496,7 +484,7 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, serr := client.Subscribe(context.Background())
+		sub, serr := client.Subscribe(context.Background(), "conv_1")
 		if serr != nil {
 			resErr = serr
 			return
@@ -591,7 +579,7 @@ func TestRunOpenCodeTurnTimeoutAborts(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, _ := client.Subscribe(context.Background())
+		sub, _ := client.Subscribe(context.Background(), "conv_1")
 		defer sub.Close()
 		_, _, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
 			"conv_1", "ses_live", "opencode/deepseek-v4-flash-free",
@@ -640,7 +628,7 @@ func TestRunOpenCodeTurnSessionErrorEndsTurn(t *testing.T) {
 // on the fresh session.
 func TestRunOpenCodeTurnRecreatesLostSession(t *testing.T) {
 	client := &fakeSessionClient{
-		sendErrs: []error{opencode.ErrSessionNotFound},
+		sendErrs: []error{scheduler.ErrSessionNotFound},
 	}
 	// Wait until the retry send has been accepted before feeding text +
 	// idle, otherwise the idle can arrive while sent == false and be
@@ -719,11 +707,11 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, _ := client.Subscribe(context.Background())
+		sub, _ := client.Subscribe(context.Background(), "conv_1")
 		defer sub.Close()
 		go func() {
 			waitForSend(t, client, 1)
-			feed(sub.(*fakeBusSub))
+			feed(client.sub)
 		}()
 		_, _, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
 			"conv_1", "ses_live", "opencode/deepseek-v4-flash-free",
@@ -804,7 +792,7 @@ func TestRunOpenCodeTurnSubscribeFailureReturnsError(t *testing.T) {
 
 // collectTurn runs collectConversationReply against a fake client and returns
 // when the collector finalizes (success or error).
-func collectTurn(t *testing.T, client sessionTurnClient, opts turnCollectOpts) (string, []string, string, error) {
+func collectTurn(t *testing.T, client scheduler.ChatTurnClient, opts turnCollectOpts) (string, []string, string, error) {
 	t.Helper()
 	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
@@ -1095,7 +1083,7 @@ func TestCollectConversationReplyReattachesOnBusLoss(t *testing.T) {
 // session (serve data dir wiped) creates a FRESH session seeded from the DB
 // transcript (seedSystem) and re-dispatches once.
 func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
-	client := &fakeSessionClient{sendErrs: []error{opencode.ErrSessionNotFound}}
+	client := &fakeSessionClient{sendErrs: []error{scheduler.ErrSessionNotFound}}
 	opts := turnCollectOpts{
 		client: client, sessionID: "ses_lost", seedSystem: "SEED_SYSTEM", reuseSystem: "REUSE_SYSTEM",
 		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
@@ -1635,6 +1623,12 @@ func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testin
 	}()
 	waitForSend(t, client, 1)
 	client.sub.feed(busDelta("ses_live", "|<thinking>partial"))
+	// Give the translate→drain pipeline a beat to deliver the delta before
+	// superseding, so the mid-think flush has a body to persist.
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case <-done:
+	}
 	cancel(errTurnSuperseded)
 	select {
 	case <-done:

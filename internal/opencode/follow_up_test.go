@@ -37,15 +37,25 @@ func fakeServe(t *testing.T, sessionID string) *httptest.Server {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			fl.Flush()
-			go func() {
-				time.Sleep(30 * time.Millisecond)
-				// A completed text part (time.end set — the mapping requires
-				// it) so collectReply accumulates the reply.
-				fmt.Fprintf(w, "data: {\"id\":\"1\",\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":%q,\"part\":{\"type\":\"text\",\"text\":\"All good — summary follows.\",\"time\":{\"start\":1,\"end\":2}}}}\n\n", sessionID)
-				fl.Flush()
-				fmt.Fprintf(w, "data: {\"id\":\"2\",\"type\":\"session.idle\",\"properties\":{\"sessionID\":%q}}\n\n", sessionID)
-				fl.Flush()
-			}()
+			// Emit the SSE events synchronously (guarded by the request
+			// context) rather than from a detached goroutine. Writing to the
+			// ResponseWriter from a goroutine after the handler returns races
+			// with the http.Server's connection teardown, which the race
+			// detector flags. The handler stays open until the client
+			// disconnects, mirroring a long SSE stream.
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(30 * time.Millisecond):
+			}
+			// A completed text part (time.end set — the mapping requires
+			// it) so collectReply accumulates the reply.
+			fmt.Fprintf(w, "data: {\"id\":\"1\",\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":%q,\"part\":{\"type\":\"text\",\"text\":\"All good — summary follows.\",\"time\":{\"start\":1,\"end\":2}}}}\n\n", sessionID)
+			fl.Flush()
+			fmt.Fprintf(w, "data: {\"id\":\"2\",\"type\":\"session.idle\",\"properties\":{\"sessionID\":%q}}\n\n", sessionID)
+			fl.Flush()
+			// Block until the client cancels so the handler never returns
+			// while the writes above are still being flushed.
 			<-r.Context().Done()
 		default:
 			http.NotFound(w, r)

@@ -1,9 +1,11 @@
 package settings
 
 import (
+	"strings"
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -90,5 +92,171 @@ func TestValidateSessionTTLs(t *testing.T) {
 					c.accessTTL, c.refreshTTL, err, c.wantErr)
 			}
 		})
+	}
+}
+
+// TEST-MERGE-OURS-BEGIN
+// TestValidateModelRef_CLIRegistry pins that tenant-default model refs are
+// validated against the CLI-aware registry injected via SetValidationRegistry
+// (builtin catalog ∪ CLI-discovered provider ids), never the bare builtin
+// catalog. This is the settings-service half of the "CLI-aware validation"
+// acceptance: a CLI-namespace provider (e.g. "deepseek") that the picker
+// happily offers must not be rejected at save-time. Both tenant defaults
+// (DefaultAskOrchiconModel, DefaultWorkerModel) flow through the same
+// validateModelRef, so this exercises the shared contract.
+//
+// The observable CLI-aware distinction lives on the LEGACY 2-SEGMENT form
+// (provider/model), where the head is validated as a provider: the builtin
+// catalog does not know "deepseek", so a 2-seg "deepseek/..." ref is
+// rejected; the CLI-aware registry accepts it. A fully-qualified 3-segment
+// "opencode/deepseek/model" ref validates its ADAPTER segment only, so it
+// passes under either registry (and confirms the left-greedy grammar keeps
+// a slashed model id like "deepseek/deepseek-v4-flash" as one model segment).
+func TestValidateModelRef_CLIRegistry(t *testing.T) {
+	cliRegistry := adapter.NewBuiltinProviderCatalog().Clone()
+	cliRegistry.AddAdapterKind(adapter.DefaultAdapterKind, "deepseek")
+
+	builtin := New(nil, nil, "")          // no registry injected → static catalog
+	cliAware := New(nil, nil, "")
+	cliAware.SetValidationRegistry(cliRegistry)
+
+	cases := []struct {
+		name    string
+		svc     *Service
+		ref     string
+		wantErr bool
+	}{
+		// Empty = unset → valid under every registry.
+		{"empty builtin", builtin, "", false},
+		{"empty cli-aware", cliAware, "", false},
+
+		// 3-seg with a known adapter passes under both (adapter-only check).
+		{"3-seg opencode/openai builtin", builtin, "opencode/openai/gpt-4o", false},
+		{"3-seg opencode/deepseek slashed cli-aware", cliAware, "opencode/deepseek/deepseek-v4-flash", false},
+
+		// Legacy 2-seg CLI-namespace provider: rejected by builtin, accepted
+		// by the CLI-aware registry.
+		{"2-seg deepseek builtin rejected", builtin, "deepseek/deepseek-v4-flash", true},
+		{"2-seg deepseek cli-aware accepted", cliAware, "deepseek/deepseek-v4-flash", false},
+
+		// Unknown provider (2-seg) always rejected.
+		{"2-seg mystery cli-aware rejected", cliAware, "mystery-provider/some-model", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.svc.validateModelRef(c.ref)
+			gotErr := err != nil
+			if gotErr != c.wantErr {
+				t.Errorf("validateModelRef(%q) error = %v, wantErr = %v", c.ref, err, c.wantErr)
+			}
+		})
+	}
+}
+// TEST-MERGE-OURS-END
+
+// --- validateModelRef (ADR-0003) ---
+
+// settingsTestCLI mirrors the server's merged validation catalog: the builtin
+// provider profiles, a tenant-custom provider (local-models), and a
+// CLI-discovered provider id (deepseek) — the way the aigateway CLI registry
+// composes over the static catalog.
+func settingsTestCLI() adapter.ProviderRegistry {
+	c := adapter.NewBuiltinProviderCatalog()
+	c.AddAdapterKind(adapter.DefaultAdapterKind, "local-models", "deepseek")
+	return c
+}
+
+// TestValidateModelRefThreeSegment pins AC1: 3-segment adapter/provider/model
+// refs validate via the shared parser + CLI-aware registry at the Service seam
+// (the gatekeeper of DefaultAskOrchiconModel). Empty = unset = valid.
+func TestValidateModelRefThreeSegment(t *testing.T) {
+	s := &Service{validationRegistry: settingsTestCLI()}
+	for _, ref := range []string{"", "   ", "claude/anthropic/claude-sonnet-5", "opencode/opencode-go/deepseek-v4-flash", "orchicon/local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL", "orchicon/commandcode/deepseek/deepseek-v4-flash"} {
+		if err := s.validateModelRef(ref); err != nil {
+			t.Errorf("validateModelRef(%q) error = %v, want nil", ref, err)
+		}
+	}
+}
+
+// TestValidateModelRefLegacyTwoSegment pins AC2: legacy 2-segment provider/model
+// refs still load/resolve via IsKnownProvider against the MERGED registry
+// (built-in and tenant-custom first segments). A 2-seg first segment that is a
+// KNOWN ADAPTER KIND is rejected as malformed.
+func TestValidateModelRefLegacyTwoSegment(t *testing.T) {
+	s := &Service{validationRegistry: settingsTestCLI()}
+	for _, ref := range []string{"opencode-go/deepseek-v4-flash", "local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL"} {
+		if err := s.validateModelRef(ref); err != nil {
+			t.Errorf("validateModelRef(legacy 2-seg %q) error = %v, want nil", ref, err)
+		}
+	}
+	err := s.validateModelRef("claude/anthropic")
+	if err == nil {
+		t.Fatal("validateModelRef(claude/anthropic) = nil error, want rejection")
+	}
+	if !strings.Contains(err.Error(), "adapter kind") {
+		t.Errorf("error %q does not explain the adapter-kind confusion", err.Error())
+	}
+}
+
+// TestValidateModelRefSlashedModel pins AC3: slashed model ids stay a SINGLE
+// model via the shared left-greedy parser — the Service seam reuses
+// adapter.ParseModelRef (no forked splitter), so the slashed remainder is
+// preserved intact.
+func TestValidateModelRefSlashedModel(t *testing.T) {
+	s := &Service{validationRegistry: settingsTestCLI()}
+	ref := "orchicon/commandcode/deepseek/deepseek-v4-flash"
+	if err := s.validateModelRef(ref); err != nil {
+		t.Fatalf("validateModelRef(%q) error = %v, want nil", ref, err)
+	}
+	parsed, err := adapter.ParseModelRef(ref, settingsTestCLI())
+	if err != nil {
+		t.Fatalf("ParseModelRef(%q) error = %v", ref, err)
+	}
+	if parsed.Model != "deepseek/deepseek-v4-flash" {
+		t.Errorf("ParseModelRef(%q).Model = %q, want deepseek/deepseek-v4-flash", ref, parsed.Model)
+	}
+}
+
+// TestValidateModelRefUnknownAdapter pins AC4: an unknown adapter segment is
+// rejected with a clear actionable error (register an adapter / use a known
+// adapter/provider/model).
+func TestValidateModelRefUnknownAdapter(t *testing.T) {
+	s := &Service{validationRegistry: settingsTestCLI()}
+	err := s.validateModelRef("foo/anthropic/claude-sonnet-5")
+	if err == nil {
+		t.Fatal("validateModelRef(unknown adapter) = nil error, want rejection")
+	}
+	for _, want := range []string{"foo", "register an adapter", "adapter/provider/model"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestValidateModelRefUnknownProviderTwoSeg pins AC4's tenant-custom-first rule:
+// an unknown 2-seg first segment errors and points at Settings → Adapters.
+func TestValidateModelRefUnknownProviderTwoSeg(t *testing.T) {
+	s := &Service{validationRegistry: settingsTestCLI()}
+	err := s.validateModelRef("mystery-provider/claude-sonnet-5")
+	if err == nil {
+		t.Fatal("validateModelRef(unknown 2-seg provider) = nil error, want rejection")
+	}
+	for _, want := range []string{"mystery-provider", "Settings → Adapters"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestValidateModelRefNilRegistryFallsBack pins the registry() nil fallback: a
+// Service with no injected registry validates against the static builtin catalog
+// (3-seg claude kind is built-in, so it still validates).
+func TestValidateModelRefNilRegistryFallsBack(t *testing.T) {
+	s := &Service{}
+	if s.registry() == nil {
+		t.Fatal("registry() returned nil for nil validationRegistry")
+	}
+	if err := s.validateModelRef("claude/anthropic/claude-sonnet-5"); err != nil {
+		t.Errorf("validateModelRef(builtin claude kind) with nil registry = %v, want nil", err)
 	}
 }

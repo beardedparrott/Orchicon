@@ -25,6 +25,13 @@ type UsageRecordRow struct {
 	TaskID           string
 	ExecutionID      string
 	WorkerID         string
+	// AdapterKind is the adapter kind the usage came from (e.g. "opencode",
+	// or a custom adapter's kind for non-opencode Ask sessions). Empty for
+	// legacy rows written before the column existed.
+	AdapterKind      string
+	// SessionID is the Ask Orchicon conversation/session the usage belongs
+	// to (empty for worker executions, which attribute via ExecutionID).
+	SessionID        string
 	Provider         string
 	Model            string
 	PromptTokens     int64
@@ -61,14 +68,14 @@ func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (Usag
 	}
 	const q = `INSERT INTO usage_records
 		(id, tenant_id, project_id, task_id, execution_id, worker_id,
-		 provider, model, prompt_tokens, completion_tokens, total_tokens,
-		 cost_usd, correlation_id, trace_id, occurred_at, created_at,
+		 adapter_kind, session_id, provider, model, prompt_tokens, completion_tokens,
+		 total_tokens, cost_usd, correlation_id, trace_id, occurred_at, created_at,
 		 workflow_run_id, cache_read_tokens, cache_write_tokens, reasoning_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
 	if _, err := tx.Exec(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.ExecutionID, row.WorkerID,
-		row.Provider, row.Model, row.PromptTokens, row.CompletionTokens, row.TotalTokens,
-		row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
+		row.AdapterKind, row.SessionID, row.Provider, row.Model, row.PromptTokens, row.CompletionTokens,
+		row.TotalTokens, row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
 		row.WorkflowRunID, row.CacheReadTokens, row.CacheWriteTokens, row.ReasoningTokens,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: create usage record: %w", err)

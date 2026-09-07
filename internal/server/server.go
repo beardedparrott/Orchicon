@@ -333,9 +333,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			CorrelationID:    in.CorrelationID,
-			TraceID:          in.TraceID,
-			WorkflowRunID:    in.WorkflowRunID,
+			// Adapter parity: the opencode runtime is the adapter kind here.
+			AdapterKind:   "opencode",
+			CorrelationID: in.CorrelationID,
+			TraceID:       in.TraceID,
+			WorkflowRunID: in.WorkflowRunID,
 		})
 		return err
 	})
@@ -427,6 +429,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
 		AdapterKinds:      dispatcher.Kinds,
+		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,
@@ -479,6 +482,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		},
 		HostServe:  hostServe,
 		SecretsKEK: secretsKEK,
+		// UsageRecorder wires the shared AI Gateway recorder into Ask
+		// Orchicon so Ask sessions capture live usage per adapter.
+		UsageRecorder: usageRecorder,
 	}
 	handler := api.Mount(mux, &deps)
 
@@ -518,9 +524,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			CorrelationID:    in.CorrelationID,
-			TraceID:          in.TraceID,
-			WorkflowRunID:    in.WorkflowRunID,
+			// Adapter parity: the native in-process engine is the "orchicon"
+			// adapter kind.
+			AdapterKind:   "orchicon",
+			CorrelationID: in.CorrelationID,
+			TraceID:       in.TraceID,
+			WorkflowRunID: in.WorkflowRunID,
 		})
 		return err
 	})

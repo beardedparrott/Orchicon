@@ -1492,6 +1492,16 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 // interface.
 var _ scheduler.AdapterBridge = (*Adapter)(nil)
 
+// Compile-time assertions that Adapter satisfies the Ask chat-session
+// capability interfaces it implements as an OPTIONAL surface (the same
+// capability pattern as MessageInjector/Aborter): a bridge that registers
+// under its kind and implements ChatTurnClient can drive Ask conversation
+// turns; a bridge that does not surfaces an actionable "does not support
+// Ask chat" error at the Dispatch boundary (never a panic). SendTurnMessageWithAttachments
+// is the attachment-aware variant mirroring MessageInjector.
+var _ scheduler.ChatTurnClient = (*Adapter)(nil)
+var _ scheduler.SendTurnMessageWithAttachments = (*Adapter)(nil)
+
 // artifactTypeFromPath returns a type label for an artifact based on its
 // file extension. Used by the `write` tool handler to tag artifact events
 // so the frontend can display them appropriately (docs/10 §11).

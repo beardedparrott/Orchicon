@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -206,6 +207,106 @@ type Aborter interface {
 // fail-closed (not alive) by the reaper.
 type LivenessReporter interface {
 	IsExecutionActive(execID string) bool
+}
+
+// ErrSessionNotFound marks that a conversation's persisted session id is
+// no longer known to the adapter's session transport (a serve/backend
+// restart wiped its store, or the session expired). The Ask collector
+// treats it as a recreate + re-seed trigger for the turn. It is the
+// adapter-neutral sentinel the opencode adapter maps its transport-specific
+// 404 onto, so the askorchicon service never depends on adapter types.
+var ErrSessionNotFound = errors.New("adapter session not found")
+
+// ChatTurnClient is the adapter-neutral persistent-session surface an Ask
+// Orchicon conversation turn drives. It is the generalization of the
+// historical askorchicon sessionTurnClient: an adapter that supports Ask
+// chat implements it as an OPTIONAL capability, resolved through the shared
+// Dispatcher by the conversation's model_ref adapter kind. The askorchicon
+// service type-asserts it off the Dispatcher-resolved bridge and surfaces
+// an actionable error when an adapter registers but does not implement it.
+// Semantically identical to sessionTurnClient (Subscribe / CreateSession /
+// SendMessage / Abort / ReplyPermission), scoped to a conversation.
+type ChatTurnClient interface {
+	// Subscribe opens an adapter-event subscription for a conversation,
+	// yielding session-visible SessionEvents for the conversation's turns.
+	Subscribe(ctx context.Context, conversationID string) (SessionBus, error)
+	// CreateConversationSession creates a fresh session for a conversation
+	// (first message, or a lost session recreated). Returns the session id.
+	CreateConversationSession(ctx context.Context, conversationID, title string) (string, error)
+	// SendTurnMessage appends a user message to a conversation session.
+	SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error
+	// AbortConversationSession stops a live turn on a conversation session so
+	// the model stops generating now (Stop / supersede / TTL expiry). Safe
+	// no-op for unknown sessions.
+	AbortConversationSession(ctx context.Context, sessionID string) error
+	// ReplyPermission auto-approves a permission.asked signal.
+	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+}
+
+// SendTurnMessageWithAttachments is the OPTIONAL mid-run capability for
+// conversation turns that carry file/image attachments. It mirrors the
+// MessageInjector capability pattern: an adapter that supports attachments
+// on Ask turns implements it; an Ask turn with attachments routed to an
+// adapter that lacks it FAILS LOUDLY (never silently degrading to
+// text-only). The turn attaches are server-authoritative (count/size caps).
+type SendTurnMessageWithAttachments interface {
+	SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []ChatAttachment) error
+}
+
+// ChatAttachment is one inline attachment on an Ask turn (name, mime type,
+// raw bytes) — the adapter-neutral shape of the chat attachment input
+// (count/size caps are validated server-side at dispatch).
+type ChatAttachment struct {
+	Name     string
+	MimeType string
+	Data     []byte
+}
+
+// SessionEvent is one turn-visible signal an Ask drain loop consumes,
+// adapter-neutral. Adapters map their own event/protocol vocabulary onto
+// these turn-visible kinds; the askorchicon service and scheduler see only
+// this shape, never the adapter's raw event type.
+type SessionEvent struct {
+	// Kind classifies the signal:
+	//   "idle"       — turn complete; drain ends the turn as collected
+	//   "error"      — turn failed (model/API level); Text is the message
+	//   "permission" — permission.asked; PermissionID drives auto-approve
+	//   "tool_part"  — a tool call issued but not yet resolved (Text = tool
+	//                  name); feeds the stall monitor's wedge signal
+	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
+	//   "part"       — a completed text/reasoning/tool_use/step_finish part
+	Kind string
+	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
+	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
+	// session-event vocabulary.
+	Type string
+	// Text is the delta text ("delta"), the completed part text ("part"
+	// text/reasoning), the error message ("error"), or the active tool name
+	// ("tool_part"). It carries the COMMITTED folded-think body for a
+	// reasoning delta produced by the adapter's think demux (see SessionBus).
+	Text         string
+	IsReasoning  bool
+	PermissionID string
+	// Part is the legacy part map for a completed "part" (a "tool_use" part
+	// carries tool + args for the stall monitor's repetition signature; the
+	// monitor path consumes it). Nil for other kinds.
+	Part map[string]any
+	// SessionID is the session the event belongs to. Adapters whose
+	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
+	// drain loop can filter by the turn's current session id (which can
+	// change across a recreation). Empty = the adapter already scoped the
+	// subscription to a single session.
+	SessionID string
+}
+
+// SessionBus is the adapter-neutral per-turn event surface an Ask drain loop
+// consumes. It closes when the underlying transport ends or Close is called.
+// The adapter owns the per-session filter and folded-think demux; the
+// scheduler/askorchicon packages consume only SessionEvents.
+type SessionBus interface {
+	Events() <-chan SessionEvent
+	Done() <-chan struct{}
+	Close()
 }
 
 // ConfigurableBridge is the optional construction-time capability
