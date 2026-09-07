@@ -89,6 +89,14 @@ type Dependencies struct {
 	// Injected as a func to avoid an api → scheduler import cycle; nil falls
 	// back to the default adapter kind.
 	AdapterKinds func() []string
+	// AdapterChatKinds returns the adapter kinds whose bridge implements the
+	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). It is the
+	// Kinds()-adjacent surface the Ask model picker + conversation-creation
+	// guard consume: a kind that registers but does not implement Ask chat is
+	// still dispatchable for worker executions (AdapterKinds) but is NOT
+	// offered for Ask. Injected as a func to avoid an api → scheduler import
+	// cycle; nil falls back to the default adapter kind.
+	AdapterChatKinds func() []string
 	// Dispatcher is the shared adapter routing substrate (ADR-0003). Ask
 	// Orchicon conversations resolve their adapter kind from the model_ref
 	// through it and drive the resolved ChatTurnClient capability; worker
@@ -315,7 +323,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	// this, a plugin-served provider like commandcode is picker-valid but
 	// worker-save-invalid.
 	worker.SetModelRefRegistry(cliRegistry)
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds, deps.AdapterChatKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC
@@ -367,6 +375,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
 	askSvc.SetAdapterKinds(deps.AdapterKinds)
+	askSvc.SetChatKinds(deps.AdapterChatKinds)
 	askSvc.SetDispatcher(deps.Dispatcher)
 	// The Ask update_settings tool write path shares the same CLI-aware model
 	// ref registry as the settings validator/picker: a CLI-namespace ref the

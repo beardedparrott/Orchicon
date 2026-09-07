@@ -608,6 +608,7 @@ function DefaultsTab() {
               <ModelPicker
                 value={draftAskOrchiconModel}
                 onChange={setDraftAskOrchiconModel}
+                askMode
               />
             </div>
           </CardContent>

@@ -60,6 +60,16 @@ export class ListAdapterKindsResponse extends Message<ListAdapterKindsResponse> 
    */
   adapterKinds: string[] = [];
 
+  /**
+   * Ask-capable adapter kinds: the subset of adapter_kinds whose bridge
+   * implements the Ask chat (ChatTurnClient) capability (ADR-0004 D1). A
+   * kind that registers but does not implement Ask chat is still
+   * dispatchable for worker executions but is NOT offered for Ask.
+   *
+   * @generated from field: repeated string ask_capable_kinds = 2;
+   */
+  askCapableKinds: string[] = [];
+
   constructor(data?: PartialMessage<ListAdapterKindsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -69,6 +79,7 @@ export class ListAdapterKindsResponse extends Message<ListAdapterKindsResponse> 
   static readonly typeName = "orchicon.api.v1.ListAdapterKindsResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "adapter_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 2, name: "ask_capable_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAdapterKindsResponse {

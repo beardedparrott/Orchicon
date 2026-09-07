@@ -69,6 +69,22 @@ type NativeBridge struct {
 	// env/headers with stored tenant-secret plaintext at session time.
 	// Nil → pass-through (no secret resolution).
 	mcpSecretResolver MCPSecretResolver
+
+	// chatHistory holds the in-memory Ask conversation history per session
+	// (sessionID → replayable conversation). The native transports are
+	// sessionless, so Ask turns emulate a persistent session server-side by
+	// re-sending the accumulated history as full context per turn. Guarded
+	// by mu. Lost on a server restart (the DB transcript remains the
+	// durable record).
+	chatHistory map[string][]Message
+	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel),
+	// so AbortConversationSession can context-cancel the running HTTP turn.
+	// Guarded by mu.
+	chatTurns map[string]context.CancelFunc
+	// chatBuses maps a conversation id to the SessionBus its current turn
+	// drains into (set by Subscribe, fed by SendTurnMessage's drain
+	// goroutine). Guarded by mu.
+	chatBuses map[string]*chatBus
 }
 
 // liveSession is the bridge's handle on one running session.
@@ -88,10 +104,13 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 		log = slog.Default()
 	}
 	return &NativeBridge{
-		resolver:   resolver,
-		projectDir: projectDir,
-		log:        log,
-		live:       map[string]*liveSession{},
+		resolver:    resolver,
+		projectDir:  projectDir,
+		log:         log,
+		live:        map[string]*liveSession{},
+		chatHistory: map[string][]Message{},
+		chatTurns:   map[string]context.CancelFunc{},
+		chatBuses:   map[string]*chatBus{},
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 // the built-in provider catalog, plus an optional adapter-kinds func.
 func testSvc(t *testing.T, kinds func() []string) *Service {
 	t.Helper()
-	return NewService(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, nil, kinds)
+	return NewService(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, nil, kinds, nil)
 }
 
 func TestListAdapterKinds(t *testing.T) {
