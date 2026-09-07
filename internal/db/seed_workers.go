@@ -642,12 +642,12 @@ var cannedWorkers = []cannedWorker{
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
 			"## PR reporting (required)\n" +
-			"Create the pull request explicitly targeting `develop` (`gh pr create --base develop`) — `main` is the default branch and an unspecified base silently lands on the release branch. After opening (or verifying an existing) PR, emit both lines in your final output, **immediately before** the `ORCHICON WORKER SUMMARY:` line:\n" +
+			"Create the pull request explicitly targeting `develop` (`gh pr create --base develop`) — `main` is the default branch and an unspecified base silently lands on the release branch. Quick Work has exactly one task step — you — plus End. There is no DevOps Engineer step, no later step, and no handoff: if you do not run `gh pr create`, no PR will exist, period. Statements like 'the DevOps step creates the PR' are always false in this workflow. If `gh` is missing or unauthorized, that is a failure of YOUR step — report `failure` with the real command output, never success with a promise that someone else opens it. After opening (or verifying an existing) PR, emit both lines in your final output, **immediately before** the `ORCHICON WORKER SUMMARY:` line:\n" +
 			"- `PR_URL:` the PR's real HTML URL as printed by `gh pr create` / `gh pr view` (`https://github.com/OWNER/REPO/pull/N`) — never a `pull/new/...` link.\n" +
 			"- `PR_STATE:` the verified state — `merged` after a successful merge, `open` when the PR is open and the workflow waits.\n" +
 			"Emit neither line when no PR exists.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, and pushed (PR opened per the Quick Work harness); `failure` only if the task proved unimplementable (say exactly where it broke down).",
+			"**Never report success with failing build, failing tests, unpushed work, or a pushed branch with no PR** — an unreviewable branch is unshipped work, not success. End with `ORCHICON WORKER SUMMARY: success` only when the change is implemented, green, pushed, AND the PR is opened with `PR_URL:`/`PR_STATE:` emitted; `failure` only if the task proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:      quickWorkerMarker,
 	},
