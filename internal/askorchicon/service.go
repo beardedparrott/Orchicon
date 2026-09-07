@@ -20,6 +20,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/runtime"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -36,6 +37,11 @@ type Service struct {
 	// adapterKinds returns the adapter kinds registered with the
 	// Dispatcher (ADR-0004 D1) — powers the list_adapter_kinds tool.
 	adapterKinds func() []string
+	// dispatcher is the shared adapter routing substrate the Ask path uses
+	// to resolve a conversation's adapter kind to its ChatTurnClient
+	// capability (ADR-0003). When nil (tests / pre-wiring) the Ask path
+	// falls back to the host opencode serve client. Wired by SetDispatcher.
+	dispatcher *scheduler.Dispatcher
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
@@ -61,7 +67,13 @@ type Service struct {
 	// testServeClient is a test-only injection point that bypasses the real
 	// host serve so handler tests can drive ChatStream/Abort with a fake
 	// session client. Never set outside tests.
-	testServeClient sessionTurnClient
+	testServeClient scheduler.ChatTurnClient
+	// validationRegistry is the model-ref validation catalog (ADR-0003)
+	// threaded into the update_settings tool write path (the Ask-own second
+	// write into tenant_settings.default_ask_orchicon_model). nil = the
+	// static builtin catalog.
+	validationRegistry adapter.ProviderRegistry
+
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -109,8 +121,8 @@ func (s *Service) startSweeper() {
 				if err != nil || conv.SessionID == "" {
 					continue
 				}
-				if client := s.hostServeClient(); client != nil {
-					_ = client.Abort(ctx, conv.SessionID)
+				if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+					_ = client.AbortConversationSession(ctx, conv.SessionID)
 				}
 			}
 		}
@@ -162,6 +174,63 @@ func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 // adapter kind.
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	s.adapterKinds = fn
+}
+
+// SetDispatcher wires the shared Dispatcher into the Ask path. The Ask
+// conversation resolves its adapter kind from the model_ref and routes
+// through the resulting ChatTurnClient capability (ADR-0003 §3/§5). A nil
+// dispatcher (tests / pre-wiring) keeps the legacy host-serve-client fallback
+// so behavior is unchanged when no adapter namespace is configured.
+func (s *Service) SetDispatcher(d *scheduler.Dispatcher) {
+	s.dispatcher = d
+}
+
+// SetValidationRegistry injects the model-ref validation catalog into the
+// Ask-own update_settings write path (a second write path into
+// tenant_settings.default_ask_orchicon_model besides the SettingsService
+// RPC). The tool validator shares the same injected registry (builtin ∪
+// CLI-discovered ∪ tenant-custom providers) so a ref the picker offers is
+// accepted at save and a malformed/unknown-adapter ref is rejected before
+// it persists. nil restores the static builtin catalog.
+func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
+	s.validationRegistry = reg
+	toolValidateModelRef = func(ref string) error { return s.validateModelRef(ref) }
+}
+
+// registry returns the injected validation registry or the static builtin
+// fallback.
+func (s *Service) registry() adapter.ProviderRegistry {
+	if s.validationRegistry != nil {
+		return s.validationRegistry
+	}
+	return adapter.NewBuiltinProviderCatalog()
+}
+
+// validateModelRef checks a model ref against the adapter/provider/model
+// grammar (ADR-0003) via the injected registry. Empty means unset — valid.
+func (s *Service) validateModelRef(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// toolValidateModelRef is the package-global validation hook used by the
+// update_settings tool (tool_diagnostics.go). It defaults to the builtin
+// catalog; Service.SetValidationRegistry reassigns it to a closure over the
+// service so the tool's write path shares the SAME injected registry as the
+// settings RPC (never a forked splitter — the shared adapter.ParseModelRef).
+var toolValidateModelRef = func(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, adapter.NewBuiltinProviderCatalog()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // registerSessionTools adds tools that depend on service-injected
@@ -389,10 +458,8 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	// keeping the session, and is safe to ignore on error (the durable
 	// record is already gone; the serve will reclaim the session eventually).
 	if conv.SessionID != "" {
-		if hs := s.hostServe; hs != nil {
-			if client := hs.Client(); client != nil {
-				_ = client.Abort(ctx, conv.SessionID)
-			}
+		if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+			_ = client.AbortConversationSession(ctx, conv.SessionID)
 		}
 	}
 	// Cancel any in-flight collector for this conversation so it finalizes

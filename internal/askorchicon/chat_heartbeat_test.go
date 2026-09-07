@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"sync/atomic"
+
 	"connectrpc.com/connect"
-	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -53,13 +55,13 @@ func TestChatStreamHeartbeatKeepsIdleTurnAlive(t *testing.T) {
 	// The turn is now idle-but-running (no reply fed). A heartbeat must
 	// arrive within a generous multiple of the 50ms interval.
 	deadline := time.Now().Add(5 * time.Second)
-	sawHeartbeat := false
+	var sawHeartbeat atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for stream.Receive() {
 			if _, ok := stream.Msg().Event.(*apiv1.ChatStreamResponse_Heartbeat); ok {
-				sawHeartbeat = true
+				sawHeartbeat.Store(true)
 				return
 			}
 		}
@@ -70,10 +72,10 @@ func TestChatStreamHeartbeatKeepsIdleTurnAlive(t *testing.T) {
 	ses := client.sendCalls[0].sessionID
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
-	for !sawHeartbeat && time.Now().Before(deadline) {
+	for !sawHeartbeat.Load() && time.Now().Before(deadline) {
 		<-tick.C
 	}
-	if !sawHeartbeat {
+	if !sawHeartbeat.Load() {
 		t.Fatal("no heartbeat on idle-but-running turn within 5s (50ms cadence)")
 	}
 	// Complete the turn so the RPC returns and the test cleans up.

@@ -429,6 +429,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
 		AdapterKinds:      dispatcher.Kinds,
+		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,

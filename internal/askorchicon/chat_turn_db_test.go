@@ -26,6 +26,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -820,7 +821,7 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
-	client := &fakeSessionClient{sendErrs: []error{nil, opencode.ErrSessionNotFound}}
+	client := &fakeSessionClient{sendErrs: []error{nil, scheduler.ErrSessionNotFound}}
 	s := newChatService(t, pool, client)
 
 	convID := createConversation(t, pool, "")
@@ -938,6 +939,9 @@ func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 	// cancels the collector's context mid-think). The partial folded body must
 	// be flushed to the reasoning channel and the content left clean.
 	client.sub.feed(busDelta("ses_1", "|<thinking>partial body"))
+	// Give the translate→drain pipeline a beat to deliver the delta before
+	// superseding, so the mid-think flush has a body to persist.
+	time.Sleep(100 * time.Millisecond)
 	s.turns.cancel(convID, errTurnSuperseded)
 
 	// The superseded turn persists its partial as a PLAIN assistant message
