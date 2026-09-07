@@ -518,9 +518,15 @@ func TestChatTurnClientToolRoundTrip(t *testing.T) {
 	if !sawIdle {
 		t.Fatal("no idle at turn end")
 	}
-	joined := strings.Join(partTexts, "\n")
+	// The reply is ONE consolidated part (both rounds' text) — never a
+	// separate part per round, which would render as overlapping bubbles
+	// and duplicate a repeated preamble.
+	if len(partTexts) != 1 {
+		t.Fatalf("parts = %q, want exactly ONE consolidated text part", partTexts)
+	}
+	joined := partTexts[0]
 	if !strings.Contains(joined, "Checking") || !strings.Contains(joined, "Done: 3 projects.") {
-		t.Fatalf("part texts = %q, want both rounds' text", joined)
+		t.Fatalf("part text = %q, want both rounds' text", joined)
 	}
 	if prov.requestCount() != 2 {
 		t.Fatalf("provider turns = %d, want 2 (tool round + final)", prov.requestCount())

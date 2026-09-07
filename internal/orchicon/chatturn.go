@@ -414,13 +414,21 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	// committed in SendTurnMessage (prior turns + this user message) and
 	// grows with every assistant message and tool result until commit.
 	working := append([]Message(nil), history...)
+	// reply accumulates EVERY round's assistant text into one consolidated
+	// reply (the final part). Round text is never emitted as its own part:
+	// a committed intermediate part would show up as a separate bubble that
+	// overlaps the live delta stream (and, if the model re-states its
+	// preamble, duplicates it).
 	var reply strings.Builder
+	// roundReply holds only the CURRENT round's text (for history replay,
+	// which needs one assistant message per round).
+	var roundReply strings.Builder
 	var reasoning strings.Builder
 
-	// finishTurn emits the accumulated reply as ONE completed text part,
+	// finishTurn emits the consolidated reply as ONE completed text part,
 	// then idle, and commits the working history. The collector builds the
-	// persisted reply ONLY from part/text events, so this part is what
-	// lands in the DB.
+	// persisted reply ONLY from part/text events, so this single part is
+	// what lands in the DB.
 	finishTurn := func() {
 		if t := strings.TrimSpace(reply.String()); t != "" {
 			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
@@ -430,7 +438,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	}
 
 	for round := 0; ; round++ {
-		roundDone, calls, aborted := b.drainOneRound(ctx, bus, stream, &reply, &reasoning)
+		roundDone, calls, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
 		_ = stream.Close()
 		if aborted {
 			// Abort (D7): the turn was cancelled — finalize without
@@ -438,30 +446,32 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 			// own context, so the turn finalizes cleanly.
 			return
 		}
+		roundText := roundReply.String()
+		roundReply.Reset()
+		if roundText != "" {
+			if reply.Len() > 0 {
+				reply.WriteString("\n\n")
+			}
+			reply.WriteString(roundText)
+		}
 		if !roundDone {
 			// Stream ended without a Finish event — close out the turn so
 			// the collector persists what arrived (pre-existing behavior
 			// for a provider that ends without a terminal signal).
-			b.appendAssistantText(&working, reply.String())
+			b.appendAssistantText(&working, roundText)
 			finishTurn()
 			return
 		}
 		if len(calls) == 0 {
-			b.appendAssistantText(&working, reply.String())
+			b.appendAssistantText(&working, roundText)
 			finishTurn()
 			return
 		}
 		// Tool round: record the assistant's text (if any) plus the tool
-		// uses, emit the round's text as its own part (the collector
-		// appends every part, so multi-round replies persist in full),
-		// execute every call, and continue the turn with the results.
+		// uses, execute every call, and continue the turn with the results.
 		// Tool results are part of the replayable history (unlike the
 		// pre-tools turn, which committed text only).
-		b.appendAssistantTurn(&working, reply.String(), calls)
-		if t := strings.TrimSpace(reply.String()); t != "" {
-			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
-		}
-		reply.Reset()
+		b.appendAssistantTurn(&working, roundText, calls)
 		if round+1 >= askMaxToolRounds {
 			// Budget exhausted: append the notice as a tool result and
 			// take ONE final text-only turn (tools stripped so the model
