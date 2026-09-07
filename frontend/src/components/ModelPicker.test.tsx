@@ -102,8 +102,9 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("preserves the {value, onChange} props contract", () => {
     expect(src).toMatch(
-      /interface ModelPickerProps \{\s*value: string;\s*onChange: \(value: string\) => void;\s*\}/,
+      /interface ModelPickerProps \{\s*value: string;\s*onChange: \(value: string\) => void;\s*\/\/ askMode flags this picker as the Ask Orchicon model picker/,
     );
+    expect(src).toContain("askMode?: boolean");
     expect(src).not.toContain("adapter?: string");
   });
 
