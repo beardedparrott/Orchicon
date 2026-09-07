@@ -192,14 +192,19 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 	}
 	callbacks.OnStarted(ctx, s.id)
 
-	// First user message = manifest Goal (parity: opencode sends the goal
-	// as the first user message; the engine does NOT re-render — the goal
-	// text IS the manifest field). Only on a FRESH session: a resumed or
-	// sequence-continued session already carries its goal in the replayed
-	// transcript — appending again would duplicate the goal. A CONTINUED
-	// session gets its own new goal as the FIRST message after the seeded
-	// history (the chain's next step).
-	if s.transcript.Seq() == 1 || s.continued {
+	// Follow-up mode (ContinueSession): the prior transcript was replayed
+	// into history above; append the follow-up question as the user message
+	// and run. The goal-append below is skipped — the follow-up question IS
+	// the user message, and the original goal is already in the replayed
+	// history.
+	if s.followUp {
+		if s.followUpQuestion != "" {
+			s.appendUser(TransUserMessage, s.followUpQuestion, "follow_up")
+			if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.followUpQuestion, "source": "follow_up"}); err != nil {
+				return err
+			}
+		}
+	} else if s.transcript.Seq() == 1 || s.continued {
 		s.appendUser(TransUserMessage, s.identity.Goal, "goal")
 		if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.identity.Goal, "source": "goal"}); err != nil {
 			return err
@@ -445,6 +450,17 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			continue
 
 		case StopStop:
+			// Follow-up mode: a follow-up answers a question; it does NOT
+			// complete a worker run, so the decision-signal gate is
+			// bypassed — the model's StopStop settles the turn directly.
+			if s.followUp {
+				_ = s.markState(ctx, "done")
+				_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
+				s.fireTerminalOnce(callbacks, s.id, true, "")
+				s.markNudgeFinished()
+				s.closeDoneCh()
+				return nil
+			}
 			// Success gate (opencode parity — decision-signal guard): a
 			// session that ends WITHOUT a real ORCHICON WORKER SUMMARY is
 			// not a completed worker. The marker is the worker's contract

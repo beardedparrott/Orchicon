@@ -63,10 +63,19 @@ type respContentPart struct {
 	ImageURL  string `json:"image_url,omitempty"`
 }
 
-// respInputItem is one Responses input item (system/user/assistant/tool).
+// respInputItem is one Responses input item: a message item (role +
+// content) or a function item (function_call / function_call_output as
+// top-level items — the wire rejects function payloads nested inside a
+// message's content array).
 type respInputItem struct {
-	Role    string `json:"role"`
-	Content any    `json:"content,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   any    `json:"content,omitempty"`
+	ID        string `json:"id,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Output    string `json:"output,omitempty"`
 }
 
 type respToolDef struct {
@@ -99,33 +108,45 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleTool:
+			// Tool results are top-level function_call_output items —
+			// never nested in a message content array.
 			for _, c := range m.Content {
 				if c.ToolResult != nil {
-					rr.Input = append(rr.Input, respInputItem{Role: "user", Content: []respContentPart{{
+					rr.Input = append(rr.Input, respInputItem{
 						Type: "function_call_output", CallID: c.ToolResult.ToolCallID, Output: c.ToolResult.Content,
-					}}})
-				}
-			}
-		case RoleAssistant:
-			item := respInputItem{Role: "assistant"}
-			var parts []respContentPart
-			for _, c := range m.Content {
-				switch {
-				case c.Text != nil:
-					parts = append(parts, respContentPart{Type: "output_text", Text: *c.Text})
-				case c.ToolUse != nil:
-					parts = append(parts, respContentPart{
-						Type: "function_call", ID: c.ToolUse.ToolCallID, CallID: c.ToolUse.ToolCallID,
-						Name: c.ToolUse.Name, Arguments: c.ToolUse.ArgsJSON,
 					})
 				}
 			}
-			if len(parts) == 1 && parts[0].Type == "output_text" {
-				item.Content = parts[0].Text
-			} else {
-				item.Content = parts
+		case RoleAssistant:
+			// Assistant text rides a message item; each tool use rides
+			// its own top-level function_call item (in order). Plain
+			// single-text messages stay the compact string form.
+			var text strings.Builder
+			flushText := func() {
+				if text.Len() == 0 {
+					return
+				}
+				t := text.String()
+				text.Reset()
+				rr.Input = append(rr.Input, respInputItem{Role: "assistant", Content: t})
 			}
-			rr.Input = append(rr.Input, item)
+			for _, c := range m.Content {
+				switch {
+				case c.Text != nil:
+					text.WriteString(*c.Text)
+				case c.ToolUse != nil:
+					flushText()
+					args := c.ToolUse.ArgsJSON
+					if args == "" || !json.Valid([]byte(args)) {
+						args = "{}"
+					}
+					rr.Input = append(rr.Input, respInputItem{
+						Type: "function_call", ID: c.ToolUse.ToolCallID, CallID: c.ToolUse.ToolCallID,
+						Name: c.ToolUse.Name, Arguments: args,
+					})
+				}
+			}
+			flushText()
 		default: // user
 			hasImage := false
 			for _, c := range m.Content {
@@ -236,16 +257,18 @@ type respUsage struct {
 }
 
 type respEvent struct {
-	Type        string `json:"type"`
-	Delta       string `json:"delta"`
-	ItemID      string `json:"item_id"`
-	OutputIndex int    `json:"output_index"`
+	Type        string         `json:"type"`
+	Delta       respDelta      `json:"delta"`
+	Text        string         `json:"text"`
+	ItemID      string         `json:"item_id"`
+	OutputIndex int            `json:"output_index"`
 	Item        *struct {
 		Type      string `json:"type"`
 		ID        string `json:"id"`
 		CallID    string `json:"call_id"`
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
+		Text      string `json:"text"`
 	} `json:"item"`
 	Response *struct {
 		ID     string `json:"id"`
@@ -261,6 +284,38 @@ type respEvent struct {
 	} `json:"response"`
 	Usage *respUsage `json:"usage"`
 }
+
+// respDelta tolerates both delta wire shapes: the compact string form
+// ({"type":"response.output_text.delta","delta":"Hi"}) and the object form
+// some gateways emit ({"delta":{"text":"Hi"}} or {"delta":{"content":"Hi"}}.
+// Without this, an object-shaped delta fails to unmarshal into a string,
+// the whole frame errors as "bad sse payload", and the turn fails while
+// the first turn (deltas only) may have looked fine.
+type respDelta string
+
+func (d *respDelta) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*d = ""
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*d = respDelta(s)
+		return nil
+	}
+	var obj struct {
+		Text    string `json:"text"`
+		Content string `json:"content"`
+		Value   string `json:"value"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	*d = respDelta(obj.Text + obj.Content + obj.Value)
+	return nil
+}
+
+func (d respDelta) String() string { return string(d) }
 
 type respToolAcc struct {
 	ID    string
@@ -282,6 +337,15 @@ type responsesStream struct {
 	toolOrd []string
 	queue   []Event
 
+	// sawTextDelta / sawReasoningDelta record, per output index, whether
+	// the streaming deltas already delivered that output. The Responses
+	// wire emits the COMPLETE text again on the output_text.done /
+	// reasoning_text.done frame — feeding it too duplicates the whole
+	// reply (and re-splits inline reasoning into text). Done frames are
+	// only used for gateways that emit done WITHOUT deltas.
+	sawTextDelta     map[int]bool
+	sawReasoningDelta map[int]bool
+
 	// think splits INLINE reasoning (the "think" tag pair inside a
 	// output_text delta) into ReasoningDelta events (thinksplit.go), the
 	// same global routing every provider wire applies.
@@ -289,7 +353,13 @@ type responsesStream struct {
 }
 
 func newResponsesStream(body io.ReadCloser) *responsesStream {
-	return &responsesStream{r: newSSEReader(body), body: body, tools: map[string]*respToolAcc{}, think: newThinkSplitter()}
+	return &responsesStream{
+		r: newSSEReader(body), body: body,
+		tools:             map[string]*respToolAcc{},
+		think:             newThinkSplitter(),
+		sawTextDelta:      map[int]bool{},
+		sawReasoningDelta: map[int]bool{},
+	}
 }
 
 func (s *responsesStream) Close() error {
@@ -329,11 +399,57 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
-			s.think.feed(ev.Delta, &s.queue)
+			if t := ev.Delta.String(); t != "" {
+				s.sawTextDelta[ev.OutputIndex] = true
+				s.think.feed(t, &s.queue)
+			} else if ev.Text != "" {
+				s.sawTextDelta[ev.OutputIndex] = true
+				s.think.feed(ev.Text, &s.queue)
+			}
 		case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
-			s.queue = append(s.queue, ReasoningDelta{Text: ev.Delta})
+			if t := ev.Delta.String(); t != "" {
+				s.sawReasoningDelta[ev.OutputIndex] = true
+				s.queue = append(s.queue, ReasoningDelta{Text: t})
+			} else if ev.Text != "" {
+				s.sawReasoningDelta[ev.OutputIndex] = true
+				s.queue = append(s.queue, ReasoningDelta{Text: ev.Text})
+			}
+		case "response.output_text.done", "response.reasoning_text.done":
+			// The done frame carries the COMPLETE output text. It is
+			// authoritative ONLY when the deltas did not already deliver
+			// it — some gateways stream deltas then echo the full text on
+			// done, and feeding it too duplicates the reply (and re-splits
+			// inline reasoning into text). Skip when deltas were seen for
+			// this output index.
+			if ev.Type == "response.reasoning_text.done" {
+				if s.sawReasoningDelta[ev.OutputIndex] {
+					break
+				}
+			} else if s.sawTextDelta[ev.OutputIndex] {
+				break
+			}
+			if ev.Text != "" {
+				if ev.Type == "response.reasoning_text.done" {
+					s.queue = append(s.queue, ReasoningDelta{Text: ev.Text})
+				} else {
+					s.think.feed(ev.Text, &s.queue)
+				}
+			} else if t := ev.Delta.String(); t != "" {
+				if ev.Type == "response.reasoning_text.done" {
+					s.queue = append(s.queue, ReasoningDelta{Text: t})
+				} else {
+					s.think.feed(t, &s.queue)
+				}
+			}
 		case "response.output_item.added":
 			if ev.Item != nil && ev.Item.Type == "function_call" {
+				if _, dup := s.tools[ev.ItemID]; dup {
+					// Replayed added frame (SSE replays happen) — the
+					// call is already tracked; re-appending the order
+					// would emit a second ToolCall for one call and the
+					// wire rejects the duplicate outputs.
+					break
+				}
 				callID := ev.Item.CallID
 				if callID == "" {
 					callID = ev.Item.ID
@@ -342,12 +458,44 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 				s.toolOrd = append(s.toolOrd, ev.ItemID)
 				s.queue = append(s.queue, ToolCallStart{Index: ev.OutputIndex, ToolCallID: callID, Name: ev.Item.Name})
 			}
+		case "response.output_item.done":
+			// A completed function-call item carried on the done frame
+			// (some gateways never emit added/arguments-delta pairs).
+			if ev.Item != nil && ev.Item.Type == "function_call" {
+				callID := ev.Item.CallID
+				if callID == "" {
+					callID = ev.Item.ID
+				}
+				if acc := s.tools[ev.ItemID]; acc != nil {
+					// The done item carries the COMPLETE arguments —
+					// authoritative over any streamed fragments (which
+					// some gateways also send). Replace, never append:
+					// appending yields "{...}{...}", which fails JSON
+					// validation and silently blanks the call's args.
+					if ev.Item.Arguments != "" {
+						acc.Args.Reset()
+						acc.Args.WriteString(ev.Item.Arguments)
+					}
+				} else {
+					s.tools[ev.ItemID] = &respToolAcc{ID: callID, Name: ev.Item.Name, Index: ev.OutputIndex}
+					s.toolOrd = append(s.toolOrd, ev.ItemID)
+					s.queue = append(s.queue, ToolCallStart{Index: ev.OutputIndex, ToolCallID: callID, Name: ev.Item.Name})
+					if ev.Item.Arguments != "" {
+						s.tools[ev.ItemID].Args.WriteString(ev.Item.Arguments)
+						s.queue = append(s.queue, ToolCallDelta{Index: ev.OutputIndex, ArgsJSONDelta: ev.Item.Arguments})
+					}
+				}
+			} else if ev.Item != nil && ev.Item.Text != "" {
+				s.think.feed(ev.Item.Text, &s.queue)
+			}
 		case "response.function_call_arguments.delta":
 			if acc := s.tools[ev.ItemID]; acc != nil {
-				acc.Args.WriteString(ev.Delta)
-				s.queue = append(s.queue, ToolCallDelta{Index: ev.OutputIndex, ArgsJSONDelta: ev.Delta})
+				if t := ev.Delta.String(); t != "" {
+					acc.Args.WriteString(t)
+					s.queue = append(s.queue, ToolCallDelta{Index: ev.OutputIndex, ArgsJSONDelta: t})
+				}
 			}
-		case "response.completed":
+		case "response.completed", "response.complete", "response.done", "completed", "done":
 			s.haveStop = true
 			s.stop = StopStop
 			s.recordUsage(ev)

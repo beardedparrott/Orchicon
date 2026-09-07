@@ -200,17 +200,41 @@ func nextRoute(r opencodeRoute) opencodeRoute {
 }
 
 // isRoutingClassError reports whether err is a routing-class failure — the
-// shapes Zen returns for wrong-wire posts (400/404/415/422 with a body).
-// Auth (401/403), rate (429) and transient (5xx/connection) failures are
-// NOT routing-class: they belong to the retry policy, never the router.
+// shapes Zen returns for wrong-wire posts (404/415/422 with a body, or a
+// 400 whose body names the route/wire mismatch). Auth (401/403), rate
+// (429) and transient (5xx/connection) failures are NOT routing-class:
+// they belong to the retry policy, never the router. A bare 400 is also
+// NOT routing-class: it is the generic bad-request signal (malformed
+// history, context length, invalid params) and retrying it on the other
+// wire would mask the real error and pollute the sticky route cache.
 func isRoutingClassError(err error) bool {
 	se, ok := err.(*StatusError)
 	if !ok {
 		return false
 	}
 	switch se.StatusCode {
-	case 400, 404, 415, 422:
+	case 404, 415, 422:
 		return true
+	case 400:
+		return isWrongWireBody(se.Body)
+	}
+	return false
+}
+
+// isWrongWireBody reports whether a 400 body names a wire/route mismatch
+// (as opposed to a generic bad request). Matched case-insensitively so a
+// real validation error (bad history, context length, invalid params)
+// surfaces loudly instead of being retried on the wrong wire.
+func isWrongWireBody(body string) bool {
+	for _, hint := range []string{
+		"wrong wire", "wrong endpoint", "wrong route",
+		"/responses", "/chat/completions", "/messages",
+		"not found", "no such", "unknown endpoint", "unsupported",
+		"does not support", "not supported on",
+	} {
+		if len(hint) > 0 && len(body) >= len(hint) && containsFold([]byte(body), []byte(hint)) {
+			return true
+		}
 	}
 	return false
 }

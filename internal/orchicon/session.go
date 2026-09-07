@@ -86,6 +86,15 @@ type Session struct {
 	// session (goal-append gate: a continued session carries its own new
 	// goal as a user message after the seeded history).
 	continued bool
+	// followUp marks a session running a follow-up question against a
+	// TERMINAL execution (ContinueSession). It continues the SAME session
+	// in place: the prior transcript is replayed into history, the follow-up
+	// question is appended as the user message, and the loop runs with the
+	// worker's tools. The decision-signal gate (ORCHICON WORKER SUMMARY) is
+	// disabled — a follow-up answers a question, it does not complete a
+	// worker run.
+	followUp       bool
+	followUpQuestion string
 	// completionProbesSent counts the completion-probe interjections this
 	// session has sent (decision-signal guard, completion.go). Bounded by
 	// completionProbeMaxTurns — a session that cannot deliver its
@@ -397,6 +406,16 @@ func (s *Session) SetHistory(h []Message) { s.history = h }
 // session starts fresh. path is the prior session's JSONL path.
 func (s *Session) SetContinuation(path string) {
 	s.continuationPath = path
+}
+
+// SetFollowUp marks this session as a follow-up against a terminal
+// execution (ContinueSession). question is the user's follow-up message:
+// it is appended as the user message after the prior transcript is
+// replayed, and the decision-signal gate is disabled so the session
+// answers the question instead of demanding a worker summary sign-off.
+func (s *Session) SetFollowUp(question string) {
+	s.followUp = true
+	s.followUpQuestion = question
 }
 
 // SetUsageSink registers a per-turn usage drain (D2, opencode step_finish

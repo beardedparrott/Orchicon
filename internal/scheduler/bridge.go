@@ -362,6 +362,22 @@ type ContinueSessionOpts struct {
 	// StartSeq is the next transcript seq to use (the last existing part's
 	// seq + 1), so the follow-up entries append after the original run.
 	StartSeq int64
+
+	// The following reconstruct the worker session so a follow-up runs as a
+	// FULL live session (same MCP + host tools, same context, same agent
+	// loop) rather than a bare one-shot. The execution service populates
+	// them from the execution row + work item; the opencode adapter ignores
+	// them (its follow-up re-attaches to the serve).
+	WorktreePath     string
+	RuntimeImage     string
+	RuntimeWorkflowID string
+	ExecutionMode    string
+	WorkerName       string
+	ProjectID        string
+	TaskID           string
+	Goal             string // the ORIGINAL execution goal (context, not the follow-up question)
+	AcceptanceCriteria string
+	ContextWindow    int64
 }
 
 // UsageRecord is the usage sample a bridge emits on step_finish (docs/04

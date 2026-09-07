@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +86,17 @@ type NativeBridge struct {
 	// drains into (set by Subscribe, fed by SendTurnMessage's drain
 	// goroutine). Guarded by mu.
 	chatBuses map[string]*chatBus
+	// askTools is the injected Ask-time tool surface (askorchicon product
+	// tools, wired by the server via SetAskTools). Nil → the model answers
+	// from the system prompt's project context with no tool calls (the
+	// pre-tools behavior). Guarded by mu.
+	askTools AskToolProvider
+	// askHistoryDir is the directory Ask session histories persist to as
+	// one JSON file per session (SetAskHistoryDir, wired from the server
+	// instance data dir). Empty → memory-only (pre-persistence behavior:
+	// history is lost on a server restart while the DB transcript stays
+	// the durable record). Guarded by mu.
+	askHistoryDir string
 }
 
 // liveSession is the bridge's handle on one running session.
@@ -139,74 +151,64 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 	return f(ctx, tenantID, providerID)
 }
 
-// Start implements scheduler.AdapterBridge. It blocks until the session
-// loop reaches its terminal OnResult (parity with the opencode bridge:
-// the reconciler's `go r.startExecution` expects Start to be
-// synchronous). A panic inside the loop is contained by Session.Run's
-// boundary recover and surfaced as OnResult(false, panic message).
-func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
-	if exec.ID == "" {
-		return fmt.Errorf("orchicon bridge: empty execution id")
-	}
+// buildSession constructs a native worker Session for an execution: MCP
+// tools (worker → project → tenant-default), host tools (worktree-scoped
+// bash/file), memory store, and the provider-bound session. It is the
+// shared construction path for a fresh run (Start) and a follow-up
+// (ContinueSession) so a follow-up is a FULL live session with the same
+// tools. The returned cleanup closes the MCP manager + memory store; call
+// it when the session ends.
+func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, forFollowUp bool) (*Session, func(), error) {
 	// The transcript lives under the execution's true project dir:
 	// manifest.ProjectDir is authoritative (set from the project row at
 	// dispatch, ADR-0007); the construction-time projectDir is a fallback
-	// for bridge-level lookups. Resolve once here so NewSession and the
-	// continuation seed lookup agree on the transcript location — and the
-	// shared bridge's projectDir is never mutated per execution.
+	// for bridge-level lookups.
 	pd := b.projectDir
 	if manifest.ProjectDir != "" {
 		pd = manifest.ProjectDir
 	}
 	if pd == "" {
-		return fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
+		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
 	// MCP tool resolution (ADR-0008): worker selection → project selection
 	// → tenant-default → none, over the tenant-configured server list.
 	// Connections are established NOW — per session, never at
-	// control-plane boot — and tool discovery runs at Start so the
-	// discovered signatures are present in the model's first request. A
-	// selected-but-unconfigured or unreachable server fails the session
-	// actionably (never silent); the no-op default source degrades to no
-	// MCP tools.
+	// control-plane boot — and tool discovery runs at construction so the
+	// discovered signatures are present in the model's first request.
 	mt, terr := b.mcpResolveAndStart(ctx, exec)
 	if terr != nil {
-		return terr
+		return nil, nil, terr
 	}
 	// HOST tool suite: the core file/shell tools every native session
 	// needs (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped
 	// to the execution's working dir (worktree when provisioned, else the
-	// project dir) with the project root READ-only. Before this, the
-	// session carried only MCP + memory tools and every core tool call
-	// returned "tool registry not configured" — native workers could
-	// neither survey nor write anything.
-	//
-	// The working dir MUST be manifest.WorktreePath when a run worktree is
-	// provisioned (mirroring the opencode adapter's executionDir()): tools
-	// scoped to the project dir ran bash/read/write in the MAIN checkout —
-	// wrong branch (worktree-hygiene violation, git rev-parse in a
-	// scratch/out-of-repo cwd learns "not a git repository" facts) and
-	// writes never landed on the run branch.
+	// project dir) with the project root READ-only.
 	workingDir := pd
 	if manifest.WorktreePath != "" {
 		workingDir = manifest.WorktreePath
 	}
-	// Always-container routing: a run-bound execution (RuntimeWorkflowID
-	// set) with a daemon client dispatches bash INTO the run's container
-	// at the same absolute worktree path (bind-mounted, so host and
-	// container paths agree) with the sandbox DSN env. Standalone tasks
-	// (no run) and local/headless (no client) stay in-process. The
-	// container lease is ensured at run start (EnsureForRun); a missing
-	// lease here fails LOUD via the transport error, never silent host.
+	// A follow-up runs against a TERMINAL execution: its runtime container
+	// lease is gone and its worktree may have been pruned. Route bash
+	// IN-PROCESS on the project dir (or the surviving worktree) instead of
+	// dispatching into a container that no longer exists — otherwise every
+	// bash call returns "no runtime container leased" and silently empties.
+	if forFollowUp {
+		if fi, serr := os.Stat(workingDir); serr != nil || !fi.IsDir() {
+			// Pruned worktree: fall back to the project dir so bash/file
+			// tools still resolve.
+			workingDir = pd
+			b.log.Info("orchicon: follow-up worktree gone — using project dir", "execution", exec.ID, "worktree", manifest.WorktreePath)
+		}
+	}
 	var tools ToolRegistry = NewHostTools(workingDir, manifest.ProjectDir)
 	b.mu.Lock()
 	rtClient := b.rtClient
 	b.mu.Unlock()
-	// Always-container routing gate: only a RUNTIME-mode run dispatches
-	// bash into its container. A LOCAL-mode run has NO container lease
-	// (the reconciler skipped EnsureForRun), so routing bash to
-	// rtClient.Exec would 404 on every call; it must stay in-process.
-	if nativeContainerRouteEnabled(rtClient != nil, manifest) {
+	// Always-container routing: a run-bound execution with a daemon client
+	// dispatches bash INTO the run's container at the same absolute
+	// worktree path. Standalone tasks and local/headless stay in-process.
+	// A follow-up NEVER routes to the container (the run is terminal).
+	if !forFollowUp && nativeContainerRouteEnabled(rtClient != nil, manifest) {
 		runID := manifest.RuntimeWorkflowID
 		tools = NewContainerHostTools(workingDir, manifest.ProjectDir,
 			func(cctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
@@ -222,20 +224,20 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 				return res.Stdout, res.Stderr, res.ExitCode, nil
 			})
 	}
+	var cleanups []func()
 	if mt != nil {
 		tools = &combinedRegistry{primary: tools, secondary: mt}
-		defer func() { _ = mt.Close() }()
+		cleanups = append(cleanups, func() { _ = mt.Close() })
 	}
-	// Durable agent-memory store (D2): opened at the TRUE project dir
-	// (<projectDir>/.orchicon/memory.db) so memory survives per-step
-	// worktree pruning and is cross-session by construction. An open
-	// failure degrades to no memory tools (never fails the execution).
+	// Durable agent-memory store (D2): opened at the TRUE project dir so
+	// memory survives per-step worktree pruning. Open failure degrades to
+	// no memory tools (never fails the execution).
 	var memStore *agentmemory.Store
 	if ms, merr := agentmemory.Open(pd); merr != nil {
 		b.log.Warn("orchicon: memory store unavailable — memory tools disabled", "execution", exec.ID, "error", merr)
 	} else {
 		memStore = ms
-		defer func() { _ = ms.Close() }()
+		cleanups = append(cleanups, func() { _ = ms.Close() })
 	}
 	sess, err := NewSession(SessionConfig{
 		ExecRow:     exec,
@@ -247,8 +249,33 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		MemoryStore: memStore,
 	})
 	if err != nil {
-		return fmt.Errorf("orchicon bridge: %w", err)
+		for _, c := range cleanups {
+			c()
+		}
+		return nil, nil, fmt.Errorf("orchicon bridge: %w", err)
 	}
+	cleanup := func() {
+		for _, c := range cleanups {
+			c()
+		}
+	}
+	return sess, cleanup, nil
+}
+
+// Start implements scheduler.AdapterBridge. It blocks until the session
+// loop reaches its terminal OnResult (parity with the opencode bridge:
+// the reconciler's `go r.startExecution` expects Start to be
+// synchronous). A panic inside the loop is contained by Session.Run's
+// boundary recover and surfaced as OnResult(false, panic message).
+func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
+	if exec.ID == "" {
+		return fmt.Errorf("orchicon bridge: empty execution id")
+	}
+	sess, cleanup, err := b.buildSession(ctx, exec, manifest, false)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
 	// Sequence continuation (opt-in, DEFAULT OFF): when the manifest
 	// names a prior session to continue from, seed that session's
@@ -257,7 +284,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	// back to a fresh session (never leaks another worker's transcript,
 	// never fails the execution over an unavailable continuation).
 	if manifest.SequenceContinue && manifest.ContinueFromSessionID != "" {
-		priorPath := transcriptPath(pd, manifest.ContinueFromSessionID)
+		priorPath := transcriptPath(manifest.ProjectDir, manifest.ContinueFromSessionID)
 		if err := verifyContinuationIdentity(priorPath, exec); err != nil {
 			b.log.Warn("orchicon: continuation refused, starting fresh",
 				"execution", exec.ID, "prior", manifest.ContinueFromSessionID, "error", err)
@@ -401,119 +428,183 @@ func (b *NativeBridge) SendExecutionMessage(ctx context.Context, execID, message
 // ASYNCHRONOUSLY on a request-independent context and appended to the
 // transcript when it lands. The RPC returns immediately — a long model
 // turn can never block the browser connection nor discard the reply on
-// client disconnect. The identity block must match (same worker) — a
-// mismatched worker/tenant is refused (identity isolation).
+// client disconnect. Collection failures are written back as `error`
+// transcript parts (never left hanging on "responding").
+//
+// Session record handling (opencode parity): the prior transcript file is
+// the fast path for identity verification, but it is NOT required. When
+// the file is missing/unreadable (container-backed runs never leave the
+// JSONL on the host project dir) or carries no identity block, the
+// follow-up still proceeds as a context one-shot seeded from
+// opts.Context (the execution service's bounded durable-transcript
+// render — already scoped to this execution's own tenant-isolated parts).
+// Identity isolation is still enforced whenever a prior identity IS
+// available: a conflicting worker/tenant is refused. A missing session id
+// likewise falls back to the context one-shot instead of refusing — old
+// runs without a session_info part stay answerable.
 func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
-	if opts.SessionID == "" {
-		return "", fmt.Errorf("orchicon bridge: continue requires a prior session id")
+	b.log.Info("orchicon: follow-up requested",
+		"execution", opts.ExecutionID, "session", opts.SessionID,
+		"model", opts.ModelRef, "project", opts.ProjectDir, "message", opts.Message)
+	// Best-effort identity verification against the prior transcript file.
+	// Missing/unreadable file or missing identity block → context-only
+	// fallback (warn, proceed). Conflicting worker/tenant → refuse. This
+	// stays FIRST so isolation refusals surface even when no provider is
+	// configured.
+	if opts.SessionID != "" {
+		pd := b.projectDir
+		if opts.ProjectDir != "" {
+			pd = opts.ProjectDir
+		}
+		if evs, lerr := Load(transcriptPath(pd, opts.SessionID)); lerr != nil {
+			b.log.Warn("orchicon: prior transcript unreachable — continuing from durable context",
+				"execution", opts.ExecutionID, "session", opts.SessionID, "error", lerr)
+		} else if prior := identityFromReplay(evs); prior.WorkerID == "" {
+			b.log.Warn("orchicon: prior session has no identity block — continuing from durable context",
+				"execution", opts.ExecutionID, "session", opts.SessionID)
+		} else {
+			if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
+				return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
+			}
+			if prior.WorkerID != "" && opts.WorkerID != "" && prior.WorkerID != opts.WorkerID {
+				return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to worker %q, this follow-up is worker %q (identity isolation)", prior.WorkerID, opts.WorkerID)
+			}
+		}
+	} else {
+		b.log.Warn("orchicon: follow-up has no prior session id — continuing from durable context",
+			"execution", opts.ExecutionID)
 	}
-	// The prior transcript lives under the session's project dir. Prefer
-	// the caller-supplied dir (the execution service sets it from the
-	// manifest/project row) over the bridge's construction-time fallback
-	// so a shared bridge resolves transcripts per execution.
-	pd := b.projectDir
-	if opts.ProjectDir != "" {
-		pd = opts.ProjectDir
+
+	// Build the FULL worker session for this execution — the same MCP +
+	// host tools, memory store, provider, and context the original run
+	// used — so the follow-up is a true live session, not a bare one-shot.
+	// The session id == execution id, so the loop replays the prior
+	// transcript into history and the follow-up question is appended after
+	// it (with the worker's tools available). Contained within the same
+	// execution: no new execution or work item is created.
+	exec := db.ExecutionRow{
+		ID:         opts.ExecutionID,
+		TenantID:   opts.TenantID,
+		ProjectID:  opts.ProjectID,
+		TaskID:     opts.TaskID,
+		WorkerID:   opts.WorkerID,
+		WorkerName: opts.WorkerName,
 	}
-	// Load the prior transcript for identity verification.
-	path := transcriptPath(pd, opts.SessionID)
-	evs, err := Load(path)
+	manifest := scheduler.ExecutionManifest{
+		ExecutionID:        opts.ExecutionID,
+		TaskID:             opts.TaskID,
+		ProjectID:          opts.ProjectID,
+		WorkerID:           opts.WorkerID,
+		SystemPrompt:       opts.SystemPrompt,
+		ModelRef:           opts.ModelRef,
+		ProjectDir:         opts.ProjectDir,
+		WorktreePath:       opts.WorktreePath,
+		RuntimeImage:       opts.RuntimeImage,
+		RuntimeWorkflowID:  opts.RuntimeWorkflowID,
+		ExecutionMode:      opts.ExecutionMode,
+		Goal:               opts.Goal,
+		AcceptanceCriteria: opts.AcceptanceCriteria,
+		ContextWindow:      int(opts.ContextWindow),
+	}
+	sess, cleanup, err := b.buildSession(ctx, exec, manifest, true)
 	if err != nil {
-		return "", fmt.Errorf("orchicon bridge: load prior transcript: %w", err)
+		b.log.Warn("orchicon: follow-up session build failed", "execution", opts.ExecutionID, "error", err)
+		return "", fmt.Errorf("orchicon bridge: build follow-up session: %w", err)
 	}
-	prior := identityFromReplay(evs)
-	// Identity isolation by construction: a follow-up must belong to the
-	// same worker+tenant as the original session. Cross-worker /
-	// cross-tenant resumption is refused — no worker ever sees another
-	// worker's transcript. When the caller does not carry a tenant
-	// (bridge-level tests), the tenant check is skipped rather than
-	// refused.
-	if prior.WorkerID != "" && opts.ExecutionID != "" {
-		if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
-			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
-		}
-		if prior.WorkerID != "" && opts.WorkerID != "" && prior.WorkerID != opts.WorkerID {
-			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to worker %q, this follow-up is worker %q (identity isolation)", prior.WorkerID, opts.WorkerID)
-		}
-	}
-	if prior.WorkerID == "" {
-		return "", fmt.Errorf("orchicon bridge: prior session %q has no identity block — cannot verify continuation", opts.SessionID)
-	}
+	defer cleanup()
+	sess.SetFollowUp(opts.Message)
+	b.log.Info("orchicon: follow-up session built", "execution", opts.ExecutionID, "transcript", sess.TranscriptPath())
 
-	// Resolve the provider + model for the one-shot follow-up turn. The
-	// model ref shape is orchicon/<provider>/<model> (ADR-0003); the
-	// provider segment 2 is the registry key (same split as emitTurnUsage).
-	providerID, model, ok := adapter.SplitForServe(opts.ModelRef)
-	if !ok || providerID == "" || model == "" {
-		return "", fmt.Errorf("orchicon bridge: follow-up model ref %q has no provider/model", opts.ModelRef)
-	}
-	if b.resolver == nil {
-		// Test seam: a pre-resolved provider is injected via the resolver;
-		// a nil resolver means no provider can be resolved for a turn.
-		return "", fmt.Errorf("orchicon bridge: no provider resolver for the follow-up (model ref %q)", opts.ModelRef)
-	}
-	prov, err := b.resolver.Get(ctx, opts.TenantID, providerID)
-	if err != nil {
-		return "", fmt.Errorf("orchicon bridge: resolve follow-up provider: %w", err)
-	}
-
-	// Record the user's question into the durable transcript UP FRONT so
-	// the session chat shows the bubble immediately while the model works
-	// — the reply is written separately once it lands (opencode parity).
-	// seq = opts.StartSeq (the caller passes the next seq after the
-	// original run); a fresh/legacy caller with seq<=0 defaults to 1.
-	seq := opts.StartSeq
-	if seq <= 0 {
-		seq = 1
-	}
-	nextSeq := seq + 1
-	if b.sessionStore != nil {
-		parts := []db.SessionPart{
-			{
-				ExecutionID: opts.ExecutionID,
-				TenantID:    opts.TenantID,
-				Seq:         seq,
-				Kind:        db.SessionPartUserMessage,
-				Payload:     db.MarshalPartPayload(map[string]any{"text": opts.Message, "source": "follow_up"}),
-			},
-		}
-		if err := b.sessionStore(ctx, opts.ExecutionID, opts.TenantID, parts); err != nil {
-			b.log.Warn("orchicon: follow-up question write failed", "execution", opts.ExecutionID, "error", err)
-		}
-	}
-
-	// Fire-and-forget the reply collection. The model turn runs on a
-	// context deliberately DETACHED from the HTTP request (WithoutCancel
-	// strips the request's cancellation/deadline while preserving values),
-	// so a browser disconnect or the RPC returning can neither cancel the
-	// turn nor lose the reply. Bounded by the follow-up reply window. The
-	// collected text is written to the durable transcript in the same
-	// goroutine. A failed collection logs a warning and leaves the
-	// question part — the RPC NEVER fails after the question is recorded.
+	// Fire-and-forget the session run. The model turn runs on a context
+	// deliberately DETACHED from the HTTP request (WithoutCancel strips the
+	// request's cancellation/deadline while preserving values), so a browser
+	// disconnect or the RPC returning can neither cancel the turn nor lose
+	// the reply. Bounded by the follow-up reply window. The session's
+	// transcript recorder mirrors the follow-up question, reply, and tool
+	// calls into the DB session parts; a failed/empty run is written back as
+	// an `error` part so the UI never hangs on "responding". The RPC NEVER
+	// fails after the session is built.
 	go func() {
 		detached := context.WithoutCancel(ctx)
 		ctxT, cancel := context.WithTimeout(detached, followUpReplyWindow())
 		defer cancel()
-		reply, err := collectFollowUp(ctxT, prov, model, opts)
-		if err != nil {
-			b.log.Warn("orchicon: follow-up reply collection failed", "execution", opts.ExecutionID, "error", err)
-			return
+		// Durable transcript mirroring (opencode part-shape parity): the
+		// follow-up question (source follow_up), reply, and tool calls land
+		// in execution_session_parts so the pane renders them exactly like
+		// a live worker turn.
+		recorder := newSessionPartsRecorder(b.sessionStore, opts.ExecutionID, opts.TenantID)
+		recorder.logf = b.log.Info
+		// A follow-up whose prior JSONL transcript is missing/empty starts
+		// fresh at event seq 1, which would collide with the original run's
+		// stored DB parts (unique key ON CONFLICT DO NOTHING drops them).
+		// Offset the recorder so the follow-up parts land after the
+		// original run (baseSeq = the original run's max event seq ≈
+		// opts.StartSeq >> 8).
+		if fi, serr := os.Stat(sess.TranscriptPath()); serr != nil || fi.Size() == 0 {
+			recorder.baseSeq = opts.StartSeq >> 8
 		}
-		if b.sessionStore == nil || reply == "" {
-			return
+		sess.SetTranscriptObserver(recorder.observe)
+		recorder.start()
+		defer recorder.Close()
+		cb := &followUpCallbacks{}
+		b.log.Info("orchicon: follow-up session running", "execution", opts.ExecutionID)
+		_ = sess.Run(ctxT, cb)
+		b.log.Info("orchicon: follow-up session done",
+			"execution", opts.ExecutionID, "succeeded", cb.succeeded(),
+			"text_chars", len(cb.textString()))
+		// A session that SUCCEEDED but produced no text (a provider that
+		// ended without output) is written back as an error so the UI never
+		// hangs. A FAILED session already wrote its TransError part via the
+		// recorder (the loop appends it on pre-stream/stream failure).
+		if cb.succeeded() && cb.textString() == "" {
+			b.log.Warn("orchicon: follow-up reply was empty", "execution", opts.ExecutionID)
+			recorder.observe(0, TransError, []byte(mustJSON(map[string]any{"error": "Follow-up returned no text — please retry"})))
 		}
-		_ = b.sessionStore(detached, opts.ExecutionID, opts.TenantID, []db.SessionPart{
-			{
-				ExecutionID: opts.ExecutionID,
-				TenantID:    opts.TenantID,
-				Seq:         nextSeq,
-				Kind:        db.SessionPartText,
-				Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"type": "text", "text": reply}}),
-			},
-		})
 	}()
 
 	return "", nil
+}
+
+// followUpCallbacks is the minimal ExecutionCallbacks for a follow-up
+// session: it captures the live text (OnText) and the terminal verdict
+// (OnResult). The recorder handles DB mirroring, so the remaining
+// callbacks are no-ops.
+type followUpCallbacks struct {
+	mu     sync.Mutex
+	text   strings.Builder
+	ok     bool
+	errMsg string
+}
+
+func (c *followUpCallbacks) OnStarted(context.Context, string) {}
+func (c *followUpCallbacks) OnText(_ context.Context, _ string, text string) {
+	c.mu.Lock()
+	c.text.WriteString(text)
+	c.mu.Unlock()
+}
+func (c *followUpCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {}
+func (c *followUpCallbacks) OnWrittenFiles(context.Context, string, []string)           {}
+func (c *followUpCallbacks) OnArtifact(context.Context, string, string, string, string) {}
+func (c *followUpCallbacks) OnHealth(context.Context, string, string)                   {}
+func (c *followUpCallbacks) OnStall(context.Context, string, string, bool)              {}
+func (c *followUpCallbacks) OnRecovered(context.Context, string, string)                {}
+func (c *followUpCallbacks) OnResult(_ context.Context, _ string, succeeded bool, _ string, errorMessage string) {
+	c.mu.Lock()
+	c.ok = succeeded
+	c.errMsg = errorMessage
+	c.mu.Unlock()
+}
+
+func (c *followUpCallbacks) textString() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.text.String()
+}
+
+func (c *followUpCallbacks) succeeded() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ok
 }
 
 // AbortExecution implements scheduler.Aborter: cancel the session's run
@@ -710,6 +801,14 @@ type sessionPartsRecorder struct {
 	execID  string
 	tenant  string
 	pending []db.SessionPart
+	// baseSeq offsets the DB part seq so a follow-up session (whose
+	// transcript may start fresh at seq 1) does not collide with the
+	// original run's already-stored parts (unique key (tenant,exec,seq)
+	// ON CONFLICT DO NOTHING would drop them). Set to the original run's
+	// max transcript event seq for follow-ups; 0 = no offset (fresh run).
+	baseSeq int64
+	// logf reports flush batches (diagnostics; nil-safe).
+	logf func(string, ...any)
 	// open holds in-flight tool_use parts by callID: the invocation part
 	// is stashed at TransToolCall and flushed only when the matching
 	// TransToolResult arrives (with state.output merged in). This is the
@@ -985,9 +1084,14 @@ func (r *sessionPartsRecorder) part(seq int64, kind string, payload map[string]a
 	return db.SessionPart{
 		ExecutionID: r.execID,
 		TenantID:    r.tenant,
-		Seq:         seq,
-		Kind:        kind,
-		Payload:     db.MarshalPartPayload(payload),
+		// Offset by baseSeq<<8 so a follow-up session whose transcript
+		// starts fresh does not collide with the original run's stored
+		// parts (unique key (tenant,exec,seq) ON CONFLICT DO NOTHING
+		// would drop them). baseSeq = the original run's max event seq;
+		// 0 = no offset (fresh run).
+		Seq:     seq + r.baseSeq<<8,
+		Kind:    kind,
+		Payload: db.MarshalPartPayload(payload),
 	}
 }
 
@@ -1024,7 +1128,13 @@ func (r *sessionPartsRecorder) flush() {
 	r.pending = nil
 	r.mu.Unlock()
 	if r.store != nil {
-		_ = r.store(context.Background(), r.execID, r.tenant, batch)
+		if err := r.store(context.Background(), r.execID, r.tenant, batch); err != nil {
+			if r.logf != nil {
+				r.logf("orchicon: session-parts flush failed", "execution", r.execID, "parts", len(batch), "error", err)
+			}
+		} else if r.logf != nil {
+			r.logf("orchicon: session-parts flushed", "execution", r.execID, "parts", len(batch))
+		}
 	}
 }
 
@@ -1119,47 +1229,6 @@ func followUpReplyWindow() time.Duration {
 	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
 }
 
-// collectFollowUp runs ONE text-only provider turn for a follow-up
-// question and returns the accumulated assistant text. It is a pure text
-// accumulator: it never touches the session's callbacks, output, or
-// JSONL transcript (a follow-up is a fire-and-forget one-shot against a
-// TERMINAL execution, mirrored purely to the DB session parts). The
-// system prompt is opts.SystemPrompt (the composed follow-up prompt the
-// execution service built); the question is the user message, seeded with
-// opts.Context (the bounded durable-transcript render) as context. No
-// MCP/host tools are wired — a follow-up is deliberately text-only.
-func collectFollowUp(ctx context.Context, prov Provider, model string, opts scheduler.ContinueSessionOpts) (string, error) {
-	if prov == nil {
-		return "", errors.New("orchicon: follow-up has no provider")
-	}
-	sys := opts.SystemPrompt
-	if sys == "" {
-		sys = followUpDefaultPrompt()
-	}
-	userMsg := opts.Message
-	if opts.Context != "" {
-		userMsg = opts.Context + "\n\n# Follow-up question\n\n" + opts.Message
-	}
-	stream, err := prov.StreamTurn(ctx, TurnRequest{
-		Model: model,
-		System: []SystemBlock{
-			{Text: sys, Cache: true},
-		},
-		Messages: []Message{
-			{Role: RoleUser, Content: []Content{{Text: &userMsg}}},
-		},
-		MaxTokens:    maxOutputTokens(),
-		CacheControl: CacheControlSystemAndTools,
-		// Stable per-execution session id for OpenCode Zen/Go (D1).
-		SessionID: opts.ExecutionID,
-	})
-	if err != nil {
-		return "", err
-	}
-	defer stream.Close()
-	return drainText(ctx, stream)
-}
-
 // followerDefaultPrompt is the belt-and-suspenders fallback when a
 // caller does not supply a per-turn system prompt. The execution service
 // ALWAYS composes one (composeFollowUpPrompt), so this is never used in
@@ -1167,31 +1236,3 @@ func collectFollowUp(ctx context.Context, prov Provider, model string, opts sche
 func followUpDefaultPrompt() string {
 	return "You are answering a follow-up question from the user about the work you just completed. Be concise and directly address the question. If the requested change is substantial, describe the concrete plan before making it."
 }
-
-// drainText accumulates TextDelta text from a turn stream until the
-// Finish event / stream end / error. It is a pure text accumulator — it
-// never injects a decision marker or synthesizes output.
-func drainText(ctx context.Context, stream TurnStream) (string, error) {
-	if stream == nil {
-		return "", errors.New("orchicon: nil turn stream")
-	}
-	var sb strings.Builder
-	for {
-		evt, ok, err := stream.Next(ctx)
-		if err != nil {
-			return sb.String(), err
-		}
-		if !ok {
-			return sb.String(), nil
-		}
-		if td, isText := evt.(TextDelta); isText {
-			sb.WriteString(td.Text)
-			continue
-		}
-		if _, isFinish := evt.(Finish); isFinish {
-			return sb.String(), nil
-		}
-	}
-}
-
-var _ = time.Second // keep import if unused in some build tag

@@ -273,6 +273,68 @@ func TestOpenCodeClientNoFailoverOnAuthRateTransient(t *testing.T) {
 	}
 }
 
+// A bare 400 (generic bad request — malformed history, context length,
+// invalid params) must NOT trigger a route retry: retrying it on the other
+// wire masks the real error and pollutes the sticky cache. Only a 400 whose
+// body names the wire mismatch fails over.
+func TestOpenCodeClientNoFailoverOnBare400(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid params: max_tokens out of range"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &opencodeClient{provider: "opencode", baseURL: srv.URL, apiKey: "k", http: srv.Client(), retry: RetryPolicy{MaxAttempts: 1}}
+	_, err := c.StreamTurn(context.Background(), TurnRequest{Model: "deepseek-v4-flash"})
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if se, ok := err.(*StatusError); !ok || se.StatusCode != 400 {
+		t.Fatalf("err = %v, want StatusError 400", err)
+	}
+	if hits != 1 {
+		t.Fatalf("hits = %d, want 1 (no route retry on bare 400)", hits)
+	}
+	if _, ok := c.routeCache.Load(c.provider + "|deepseek-v4-flash"); ok {
+		t.Fatal("cache flipped on bare 400")
+	}
+}
+
+// A 400 that names the wire mismatch DOES fail over (wrong-wire 400s are
+// real routing signals).
+func TestOpenCodeClientFailoverOnHinted400(t *testing.T) {
+	var chatHits, respHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/chat/completions":
+			chatHits++
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"message":"model lives on /responses"}}`))
+		case "/responses":
+			respHits++
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(sse(
+				`{"type":"response.output_text.delta","delta":"ok"}`,
+				`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+				`[DONE]`,
+			)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := &opencodeClient{provider: "opencode", baseURL: srv.URL, apiKey: "k", http: srv.Client(), retry: RetryPolicy{MaxAttempts: 1}}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "unlisted-model"})
+	if err != nil {
+		t.Fatalf("hinted 400 should fail over: %v", err)
+	}
+	drainStream(t, ts)
+	if chatHits != 1 || respHits != 1 {
+		t.Fatalf("hits chat=%d responses=%d, want 1/1", chatHits, respHits)
+	}
+}
+
 // Messages-route models still fail loudly (Claude/Qwen follow-up).
 func TestOpenCodeClientMessagesRouteFailsLoudly(t *testing.T) {
 	c := &opencodeClient{provider: "opencode", baseURL: "https://opencode.ai/zen/v1"}
