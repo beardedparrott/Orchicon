@@ -488,11 +488,11 @@ func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamR
 				h.publish(hb)
 			}
 			// A heartbeat that fails to send IS the drop signal
-				// (idle/proxy timeout or gone client): log it distinctly
-				// and stop draining — the turn continues server-side
-				// and the client re-dials via WatchTurnStream.
-				if err := send(hb); err != nil {
-					s.log.Warn("ask orchicon chatstream heartbeat send failed", "conversation", convID, "assistant_message", assistantID, "cause", "idle-timeout-or-client-gone")
+			// (idle/proxy timeout or gone client): log it distinctly
+			// and stop draining — the turn continues server-side
+			// and the client re-dials via WatchTurnStream.
+			if err := send(hb); err != nil {
+				s.log.Warn("ask orchicon chatstream heartbeat send failed", "conversation", convID, "assistant_message", assistantID, "cause", "idle-timeout-or-client-gone")
 				return nil
 			}
 		}
@@ -1021,6 +1021,7 @@ type sessionTurnClient interface {
 	Subscribe(ctx context.Context) (opencode.BusSub, error)
 	CreateSession(ctx context.Context, title string) (string, error)
 	SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error
+	SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []opencode.AttachmentPart) error
 	Abort(ctx context.Context, sessionID string) error
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
 }
@@ -1320,17 +1321,16 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	sendCh := make(chan error, 1)
 	go func() {
 		var sendErr error
-		// If attachments contain images/files, use the extended sender when available.
+		// If attachments contain images/files, use the extended sender. All
+		// sessionTurnClient implementations must carry SendMessageWithAttachments,
+		// so the send reaches the model's vision/multipart input for ANY client
+		// (no type-assertion fallback that silently drops attachments).
 		if len(c.attachments) > 0 {
-			if sc, ok := c.client.(*opencode.SessionClient); ok {
-				parts := make([]opencode.AttachmentPart, 0, len(c.attachments))
-				for _, a := range c.attachments {
-					parts = append(parts, opencode.AttachmentPart{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
-				}
-				sendErr = sc.SendMessageWithAttachments(subCtx, sid, system, c.modelRef, c.userMsg, parts)
-			} else {
-				sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
+			parts := make([]opencode.AttachmentPart, 0, len(c.attachments))
+			for _, a := range c.attachments {
+				parts = append(parts, opencode.AttachmentPart{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
 			}
+			sendErr = c.client.SendMessageWithAttachments(subCtx, sid, system, c.modelRef, c.userMsg, parts)
 		} else {
 			sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
 		}

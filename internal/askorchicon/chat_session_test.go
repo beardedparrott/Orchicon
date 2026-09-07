@@ -1,6 +1,7 @@
 package askorchicon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -71,7 +72,8 @@ type fakeSessionClient struct {
 	createTitles []string
 	createErr    error
 	sendCalls    []sentMessage
-	sendErrs     []error // consumed in order; nil when exhausted
+	sendParts    [][]opencode.AttachmentPart // one entry per SendMessageWithAttachments call
+	sendErrs     []error                     // consumed in order; nil when exhausted
 	sendCall     int
 	// sendGate, when non-nil, makes SendMessage block until the channel is
 	// closed. Lets a test hold the send in flight so it can replay events
@@ -158,6 +160,35 @@ func (f *fakeSessionClient) SendMessage(ctx context.Context, sessionID, system, 
 	f.mu.Unlock()
 	// Block on the gate AFTER recording the call so a test can observe the
 	// in-flight send and replay events while sent == false.
+	if f.sendGate != nil {
+		select {
+		case <-f.sendGate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.sentOnce.Do(func() {
+		if f.sentCh != nil {
+			close(f.sentCh)
+		}
+	})
+	return nil
+}
+
+// SendMessageWithAttachments records the attachments and reuses the same
+// gating/error mechanics as SendMessage so turn tests keep their
+// deterministic event ordering.
+func (f *fakeSessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []opencode.AttachmentPart) error {
+	f.mu.Lock()
+	f.sendCalls = append(f.sendCalls, sentMessage{sessionID, system, modelRef, text})
+	f.sendParts = append(f.sendParts, append([]opencode.AttachmentPart(nil), attachments...))
+	if f.sendCall < len(f.sendErrs) {
+		err := f.sendErrs[f.sendCall]
+		f.sendCall++
+		f.mu.Unlock()
+		return err
+	}
+	f.mu.Unlock()
 	if f.sendGate != nil {
 		select {
 		case <-f.sendGate:
@@ -402,6 +433,49 @@ func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 	}
 	if got := client.sendCalls[0]; got.sessionID != "ses_live" || got.system != "REUSE_SYSTEM" {
 		t.Errorf("send = %+v, want session ses_live with REUSE_SYSTEM", got)
+	}
+}
+
+// TestChatTurnSendsAttachments proves an attachment attached to a message
+// reaches the send path via SendMessageWithAttachments (through the widened
+// sessionTurnClient interface) rather than being dropped by a concrete-type
+// assertion and falling back to a plain SendMessage.
+func TestChatTurnSendsAttachments(t *testing.T) {
+	client := &fakeSessionClient{}
+	imgData := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "what is this?",
+		attachments: []*apiv1.AttachmentInput{
+			{Name: "a.png", MimeType: "image/png", Data: imgData},
+		},
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "it's a png"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, _, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "it's a png" {
+		t.Errorf("reply = %q, want %q", reply, "it's a png")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.sendParts) != 1 {
+		t.Fatalf("SendMessageWithAttachments calls = %d, want 1 (attachment must go through the interface sender)", len(client.sendParts))
+	}
+	got := client.sendParts[0]
+	if len(got) != 1 {
+		t.Fatalf("parts = %d, want 1", len(got))
+	}
+	if got[0].Name != "a.png" || got[0].MimeType != "image/png" {
+		t.Errorf("part = %+v, want name a.png mime image/png", got[0])
+	}
+	if !bytes.Equal(got[0].Data, imgData) {
+		t.Errorf("part data = %v, want %v", got[0].Data, imgData)
 	}
 }
 
