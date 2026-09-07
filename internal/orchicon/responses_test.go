@@ -253,8 +253,7 @@ func TestResponsesStreamObjectDelta(t *testing.T) {
 // Done-only text (no deltas, text on output_text.done) must still produce
 // a reply — otherwise the Ask history commit is skipped (empty reply) and
 // the follow-up looks like a first message.
-func TestResponsesStreamDoneOnlyText(t *testing.T) {
-	body := sse(
+func TestResponsesStreamDoneOnlyText(t *testing.T) {	body := sse(
 		`{"type":"response.output_text.done","text":"full answer"}`,
 		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		`[DONE]`,
@@ -274,5 +273,75 @@ func TestResponsesStreamDoneOnlyText(t *testing.T) {
 	}
 	if td, ok := evs[0].(TextDelta); !ok || td.Text != "full answer" {
 		t.Fatalf("event 0 = %#v, want TextDelta full answer", evs[0])
+	}
+}
+
+// A replayed output_item.added frame for the same item must not produce a
+// second ToolCall: two results for one call_id make the wire reject the
+// turn as a duplicate function_call_output.
+func TestResponsesStreamReplayedAddedIsDeduped(t *testing.T) {
+	body := sse(
+		`{"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"a\":1}"}`,
+		`{"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn"}}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var calls []ToolCall
+	for _, e := range evs {
+		if tc, ok := e.(ToolCall); ok {
+			calls = append(calls, tc)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %#v, want exactly one", calls)
+	}
+	if calls[0].ArgsJSON != `{"a":1}` {
+		t.Fatalf("args = %q, want streamed args intact", calls[0].ArgsJSON)
+	}
+}
+
+// The done item carries the COMPLETE arguments: they replace streamed
+// fragments (authoritative), never append — appending yields "{...}{...}",
+// which fails JSON validation and silently blanks the call's args.
+func TestResponsesStreamDoneArgsReplaceFragments(t *testing.T) {
+	body := sse(
+		`{"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"a\":"}`,
+		`{"type":"response.output_item.done","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn","arguments":"{\"a\":1,\"b\":2}"}}`,
+		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		`[DONE]`,
+	)
+	srv, _, _ := captureServer(t, 200, "text/event-stream", body)
+	c := &ResponsesClient{BaseURL: srv.URL, APIKey: "k"}
+	ts, err := c.StreamTurn(context.Background(), TurnRequest{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := drainStream(t, ts)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var calls []ToolCall
+	for _, e := range evs {
+		if tc, ok := e.(ToolCall); ok {
+			calls = append(calls, tc)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %#v, want exactly one", calls)
+	}
+	if calls[0].ArgsJSON != `{"a":1,"b":2}` {
+		t.Fatalf("args = %q, want the done frame's complete args", calls[0].ArgsJSON)
 	}
 }

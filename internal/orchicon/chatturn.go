@@ -536,7 +536,18 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message,
 	b.mu.Lock()
 	tools := b.askTools
 	b.mu.Unlock()
+	// seen guards against a provider/decoder echo issuing the same call
+	// twice in one round: a second result for one call_id makes the wire
+	// reject the turn as a duplicate function_call_output. First
+	// occurrence wins.
+	seen := map[string]bool{}
 	for _, c := range calls {
+		if c.ToolCallID != "" {
+			if seen[c.ToolCallID] {
+				continue
+			}
+			seen[c.ToolCallID] = true
+		}
 		args := c.ArgsJSON
 		if args == "" || !json.Valid([]byte(args)) {
 			args = "{}"
@@ -579,7 +590,14 @@ func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, call
 		t := text
 		content = append(content, Content{Text: &t})
 	}
+	seenUse := map[string]bool{}
 	for _, c := range calls {
+		if c.ToolCallID != "" {
+			if seenUse[c.ToolCallID] {
+				continue
+			}
+			seenUse[c.ToolCallID] = true
+		}
 		args := c.ArgsJSON
 		if args == "" || !json.Valid([]byte(args)) {
 			args = "{}"

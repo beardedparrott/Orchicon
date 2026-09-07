@@ -416,6 +416,13 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 			}
 		case "response.output_item.added":
 			if ev.Item != nil && ev.Item.Type == "function_call" {
+				if _, dup := s.tools[ev.ItemID]; dup {
+					// Replayed added frame (SSE replays happen) — the
+					// call is already tracked; re-appending the order
+					// would emit a second ToolCall for one call and the
+					// wire rejects the duplicate outputs.
+					break
+				}
 				callID := ev.Item.CallID
 				if callID == "" {
 					callID = ev.Item.ID
@@ -433,9 +440,14 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 					callID = ev.Item.ID
 				}
 				if acc := s.tools[ev.ItemID]; acc != nil {
+					// The done item carries the COMPLETE arguments —
+					// authoritative over any streamed fragments (which
+					// some gateways also send). Replace, never append:
+					// appending yields "{...}{...}", which fails JSON
+					// validation and silently blanks the call's args.
 					if ev.Item.Arguments != "" {
+						acc.Args.Reset()
 						acc.Args.WriteString(ev.Item.Arguments)
-						s.queue = append(s.queue, ToolCallDelta{Index: ev.OutputIndex, ArgsJSONDelta: ev.Item.Arguments})
 					}
 				} else {
 					s.tools[ev.ItemID] = &respToolAcc{ID: callID, Name: ev.Item.Name, Index: ev.OutputIndex}

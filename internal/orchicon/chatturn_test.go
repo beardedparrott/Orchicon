@@ -600,3 +600,52 @@ func TestChatTurnClientToolFailureIsAResult(t *testing.T) {
 		t.Fatalf("tool result = %+v, want the error recorded", hist[2])
 	}
 }
+
+// TestChatTurnClientDuplicateCallIDsExecuteOnce pins the wire contract:
+// two ToolCall events sharing one call_id in a round (provider/decoder
+// echo) execute once and record one result — a second
+// function_call_output for the id makes the wire reject the turn.
+func TestChatTurnClientDuplicateCallIDsExecuteOnce(t *testing.T) {
+	prov := &chatTestProvider{rounds: [][]Event{
+		{
+			ToolCall{Index: 0, ToolCallID: "call_dup", Name: "fn", ArgsJSON: `{}`},
+			ToolCall{Index: 1, ToolCallID: "call_dup", Name: "fn", ArgsJSON: `{}`},
+			Finish{StopReason: StopToolUse},
+		},
+		{
+			TextDelta{Text: "done"},
+			Finish{StopReason: StopStop},
+		},
+	}}
+	tools := &fakeAskTools{
+		defs:    []ToolDef{{Name: "fn", ParamsJSON: `{"type":"object"}`}},
+		results: map[string]string{"fn": "ok"},
+	}
+	b := newChatBridge(t, prov)
+	b.SetAskTools(tools)
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-dupe", "ask-orchicon:conv-dupe")
+
+	bus, _ := b.Subscribe(ctx, "conv-dupe")
+	if err := b.SendTurnMessage(ctx, "conv-dupe", sid, "system", "orchicon/ollama/deepseek-v4-flash", "go"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	drainBus(t, bus)
+	if len(tools.calls) != 1 {
+		t.Fatalf("tool executions = %d, want 1", len(tools.calls))
+	}
+	b.mu.Lock()
+	hist := append([]Message(nil), b.chatHistory[sid]...)
+	b.mu.Unlock()
+	outs := 0
+	for _, m := range hist {
+		for _, c := range m.Content {
+			if c.ToolResult != nil && c.ToolResult.ToolCallID == "call_dup" {
+				outs++
+			}
+		}
+	}
+	if outs != 1 {
+		t.Fatalf("results for call_dup = %d, want exactly one", outs)
+	}
+}
