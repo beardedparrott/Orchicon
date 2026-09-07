@@ -574,7 +574,9 @@ export function SessionChatPane({
     }
     const replied =
       boundary > 0n &&
-      parts.some((p) => p.kind === "text" && p.seq > boundary);
+      parts.some(
+        (p) => (p.kind === "text" || p.kind === "error") && p.seq > boundary,
+      );
     if (replied) {
       setFollowUpReplyPending(false);
       return;
