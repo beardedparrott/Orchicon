@@ -79,6 +79,25 @@ func (d *Dispatcher) Kinds() []string {
 	return kinds
 }
 
+// ChatKinds returns the registered adapter kinds whose bridge implements the
+// ChatTurnClient (Ask chat) capability. It is the Kinds()-adjacent surface the
+// Ask model picker + conversation-creation guard consume (ADR-0004 D1): a kind
+// that registers but does not implement ChatTurnClient is still dispatchable
+// for worker executions (Kinds) but is NOT offered for Ask chat. An empty
+// Dispatcher yields an empty (non-nil) slice.
+func (d *Dispatcher) ChatKinds() []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var out []string
+	for k, b := range d.bridges {
+		if _, ok := b.(ChatTurnClient); ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // kindsLocked returns a comma-separated list of registered kinds. Caller
 // holds at least RLock.
 func (d *Dispatcher) kindsLocked() string {

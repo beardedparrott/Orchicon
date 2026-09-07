@@ -184,6 +184,36 @@ func TestDispatcherKinds(t *testing.T) {
 	}
 }
 
+func TestDispatcherChatKinds(t *testing.T) {
+	d := NewDispatcher()
+	if k := d.ChatKinds(); len(k) != 0 {
+		t.Fatalf("ChatKinds() on empty dispatcher = %v, want empty", k)
+	}
+	// A plain bridge (AdapterBridge.Start only) is dispatchable for worker
+	// executions but NOT Ask-capable.
+	d.Register("plain", &fakeBridge{})
+	// A chat-capable bridge IS Ask-capable.
+	d.Register("chatty", &chatBridge{})
+	// A full bridge (execution capabilities) but no ChatTurnClient is NOT
+	// Ask-capable.
+	d.Register("full", &fullBridge{})
+	got := d.ChatKinds()
+	want := []string{"chatty"}
+	if len(got) != len(want) {
+		t.Fatalf("ChatKinds() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ChatKinds() = %v, want %v (only ChatTurnClient-capable kinds)", got, want)
+		}
+	}
+	// Kinds() still returns ALL registered kinds (worker executions must keep
+	// dispatching on non-chat kinds like plain/full).
+	if k := d.Kinds(); len(k) != 3 {
+		t.Fatalf("Kinds() = %v, want all 3 registered kinds (plain, chatty, full)", k)
+	}
+}
+
 // TestDispatcherCapabilityNegotiation proves the server-side pattern: the
 // caller type-asserts a capability interface and degrades with an
 // actionable error when the bridge does not support it — never a panic.

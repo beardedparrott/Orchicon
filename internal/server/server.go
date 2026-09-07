@@ -46,6 +46,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -305,6 +306,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// on error rather than failing, so the recording path never blocks on a
 	// subprocess and falls back to adapter cost on any miss/error.
 	usageRecorder.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
+		// G5: the opencode binary may be absent (modelDiscoverer == nil —
+		// "model discovery disabled"). ListModels has no nil-receiver guard,
+		// so an orchicon-only Ask turn that records usage would nil-panic
+		// here. Fail closed (no pricing) instead.
+		if modelDiscoverer == nil {
+			return nil, false
+		}
 		models, err := modelDiscoverer.ListModels(ctx, provider)
 		if err != nil {
 			return nil, false
@@ -392,16 +400,26 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// model_ref (the single source of truth, ADR-0003). The dispatcher then
 	// routes the bridge lookup by kind.
 	adapterKind := func(ctx context.Context, execID string) (string, error) {
-		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+		// G3: resolve the REQUEST tenant (the middleware stores it in the
+		// context) rather than hardcoding the deployment tenant — otherwise
+		// multi-tenant planes resolve the wrong tenant's execution on exactly
+		// the mid-run RPC paths this feature extends. Fall back to the
+		// deployment tenant when the request carries none (bridge-level /
+		// system paths).
+		tid := tenant.FromContext(ctx)
+		if tid == "" {
+			tid = cfg.DeploymentTenantID
+		}
+		tx, err := pool.BeginTenantTx(ctx, tid)
 		if err != nil {
 			return "", err
 		}
 		defer tx.Rollback(ctx)
-		exec, err := db.GetExecution(ctx, tx.Tx, "tnt_dev", execID)
+		exec, err := db.GetExecution(ctx, tx.Tx, tid, execID)
 		if err != nil {
 			return "", err
 		}
-		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, tid, exec.WorkerID, true)
 		if err != nil {
 			return "", err
 		}
@@ -429,6 +447,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
 		AdapterKinds:      dispatcher.Kinds,
+		AdapterChatKinds:  dispatcher.ChatKinds,
 		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,

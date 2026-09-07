@@ -37,6 +37,11 @@ type Service struct {
 	// adapterKinds returns the adapter kinds registered with the
 	// Dispatcher (ADR-0004 D1) — powers the list_adapter_kinds tool.
 	adapterKinds func() []string
+	// chatKinds returns the adapter kinds whose bridge implements the
+	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). The conversation
+	// creation + tenant-default save guards use it to reject a registered
+	// but not-Ask-capable kind before the first message send.
+	chatKinds func() []string
 	// dispatcher is the shared adapter routing substrate the Ask path uses
 	// to resolve a conversation's adapter kind to its ChatTurnClient
 	// capability (ADR-0003). When nil (tests / pre-wiring) the Ask path
@@ -176,6 +181,15 @@ func (s *Service) SetAdapterKinds(fn func() []string) {
 	s.adapterKinds = fn
 }
 
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
+// D1) into the conversation-creation + tenant-default-save guards. A kind
+// that registers but does not implement Ask chat (ChatTurnClient) is
+// rejected before the first message send. Nil disables the guard (no
+// capability knowledge — don't block).
+func (s *Service) SetChatKinds(fn func() []string) {
+	s.chatKinds = fn
+}
+
 // SetDispatcher wires the shared Dispatcher into the Ask path. The Ask
 // conversation resolves its adapter kind from the model_ref and routes
 // through the resulting ChatTurnClient capability (ADR-0003 §3/§5). A nil
@@ -215,7 +229,44 @@ func (s *Service) validateModelRef(ref string) error {
 	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
 		return err
 	}
+	// Ask-capability guard (ADR-0004 D1): a ref whose adapter kind is
+	// registered but does NOT implement Ask chat (ChatTurnClient) is
+	// rejected here so the tenant-default save path never persists a ref
+	// that would fail at first message. Unknown kinds are left to
+	// dispatch-time resolveChatClient for the actionable "register an
+	// adapter" error.
+	if s.dispatcher != nil && s.chatKinds != nil {
+		kind := adapter.AdapterKind(ref)
+		if kind != "" && s.kindRegistered(kind) && !s.kindAskCapable(kind) {
+			return fmt.Errorf("adapter kind %q does not support Ask chat — pick an Ask-capable adapter", kind)
+		}
+	}
 	return nil
+}
+
+// kindRegistered reports whether the adapter kind is registered with the
+// Dispatcher. Unknown kinds are NOT guarded here (dispatch-time resolution
+// surfaces the actionable "register an adapter" error).
+func (s *Service) kindRegistered(kind string) bool {
+	if s.dispatcher == nil {
+		return false
+	}
+	_, err := s.dispatcher.Resolve(kind)
+	return err == nil
+}
+
+// kindAskCapable reports whether the adapter kind is in the Ask-capable set
+// (its bridge implements ChatTurnClient).
+func (s *Service) kindAskCapable(kind string) bool {
+	if s.chatKinds == nil {
+		return true // no capability knowledge — don't block
+	}
+	for _, k := range s.chatKinds() {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // toolValidateModelRef is the package-global validation hook used by the
@@ -362,6 +413,18 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Ask-capability guard (ADR-0004 D1): reject a conversation whose
+	// model_ref adapter kind is registered but does NOT implement Ask chat
+	// (ChatTurnClient) BEFORE the first message send. Unknown kinds are left
+	// to dispatch-time resolveChatClient for the actionable "register an
+	// adapter" error.
+	if req.Msg.ModelRef != "" && s.dispatcher != nil && s.chatKinds != nil {
+		kind := adapter.AdapterKind(req.Msg.ModelRef)
+		if kind != "" && s.kindRegistered(kind) && !s.kindAskCapable(kind) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("adapter kind %q does not support Ask chat — pick an Ask-capable adapter", kind))
+		}
 	}
 	mode, err := conversationModeFromProto(req.Msg.Mode)
 	if err != nil {

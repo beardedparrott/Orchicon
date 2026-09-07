@@ -68,10 +68,15 @@ func (*ListAdapterKindsRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListAdapterKindsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AdapterKinds  []string               `protobuf:"bytes,1,rep,name=adapter_kinds,json=adapterKinds,proto3" json:"adapter_kinds,omitempty"` // registered adapter kinds, ordered + deduped
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	AdapterKinds []string               `protobuf:"bytes,1,rep,name=adapter_kinds,json=adapterKinds,proto3" json:"adapter_kinds,omitempty"` // registered adapter kinds, ordered + deduped
+	// Ask-capable adapter kinds: the subset of adapter_kinds whose bridge
+	// implements the Ask chat (ChatTurnClient) capability (ADR-0004 D1). A
+	// kind that registers but does not implement Ask chat is still
+	// dispatchable for worker executions but is NOT offered for Ask.
+	AskCapableKinds []string `protobuf:"bytes,2,rep,name=ask_capable_kinds,json=askCapableKinds,proto3" json:"ask_capable_kinds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ListAdapterKindsResponse) Reset() {
@@ -107,6 +112,13 @@ func (*ListAdapterKindsResponse) Descriptor() ([]byte, []int) {
 func (x *ListAdapterKindsResponse) GetAdapterKinds() []string {
 	if x != nil {
 		return x.AdapterKinds
+	}
+	return nil
+}
+
+func (x *ListAdapterKindsResponse) GetAskCapableKinds() []string {
+	if x != nil {
+		return x.AskCapableKinds
 	}
 	return nil
 }
@@ -1331,9 +1343,10 @@ var File_orchicon_api_v1_ai_gateway_service_proto protoreflect.FileDescriptor
 const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
 	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"\x19\n" +
-	"\x17ListAdapterKindsRequest\"?\n" +
+	"\x17ListAdapterKindsRequest\"k\n" +
 	"\x18ListAdapterKindsResponse\x12#\n" +
-	"\radapter_kinds\x18\x01 \x03(\tR\fadapterKinds\"t\n" +
+	"\radapter_kinds\x18\x01 \x03(\tR\fadapterKinds\x12*\n" +
+	"\x11ask_capable_kinds\x18\x02 \x03(\tR\x0faskCapableKinds\"t\n" +
 	"\x19ListOpenCodeModelsRequest\x12\x1f\n" +
 	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01\x12\x1d\n" +
 	"\aadapter\x18\x02 \x01(\tH\x01R\aadapter\x88\x01\x01B\v\n" +

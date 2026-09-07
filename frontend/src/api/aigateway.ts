@@ -57,7 +57,10 @@ export function useListAdapterKinds() {
     queryKey: ["adapter-kinds"],
     queryFn: async () => {
       const res = await aiGatewayClient.listAdapterKinds({});
-      return (res.adapterKinds ?? []) as string[];
+      return {
+        kinds: (res.adapterKinds ?? []) as string[],
+        askCapableKinds: (res.askCapableKinds ?? []) as string[],
+      };
     },
     staleTime: 5 * 60 * 1000,
   });

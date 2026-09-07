@@ -22,6 +22,11 @@ import {
 interface ModelPickerProps {
   value: string;
   onChange: (value: string) => void;
+  // askMode flags this picker as the Ask Orchicon model picker: when true,
+  // a selected adapter kind that is registered but does NOT implement Ask
+  // chat (ChatTurnClient) is flagged for review with an amber banner
+  // (ADR-0004 D1) — the Ask-capability guard surfaces at selection time.
+  askMode?: boolean;
 }
 
 // Three-tier control (ADR-0004): adapter bubble list (registered kinds) →
@@ -29,10 +34,12 @@ interface ModelPickerProps {
 // list (provider-scoped). The stored model_ref seeds the selection
 // (legacy 2-segment refs infer adapter `opencode`); saving writes a
 // normalized 3-segment `adapter/provider/model` ref.
-export function ModelPicker({ value, onChange }: ModelPickerProps) {
+export function ModelPicker({ value, onChange, askMode = false }: ModelPickerProps) {
   const parsed = useMemo(() => parseModelRef(value), [value]);
 
-  const { data: adapterKinds, error: kindsError } = useListAdapterKinds();
+  const { data: adapterKindsData, error: kindsError } = useListAdapterKinds();
+  const adapterKinds = adapterKindsData?.kinds;
+  const askCapableKinds = adapterKindsData?.askCapableKinds;
 
   // Seeded adapter/provider from the stored ref; DEFAULT_ADAPTER_KIND when the
   // ref is empty or unknown (never blank, never hidden).
@@ -250,7 +257,12 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
         parsed !== null &&
         parsed.provider === provider &&
         models !== undefined &&
-        !modelKnown));
+        !modelKnown) ||
+      (askMode &&
+        adapterKinds !== undefined &&
+        askCapableKinds !== undefined &&
+        storedAdapterKnown &&
+        !askCapableKinds.includes(parsed?.adapter ?? "")));
 
   const reviewReasons: string[] = [];
   if (value.trim() !== "") {
@@ -259,6 +271,19 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     } else {
       if (adapterKinds !== undefined && !storedAdapterKnown) {
         reviewReasons.push("adapter not registered");
+      }
+      // Ask-capability guard (ADR-0004 D1): in Ask mode, a stored adapter
+      // that is registered but does NOT implement Ask chat (ChatTurnClient)
+      // is flagged at selection time — the picker surfaces the guard before
+      // the conversation is created / the first message is sent.
+      if (
+        askMode &&
+        adapterKinds !== undefined &&
+        askCapableKinds !== undefined &&
+        storedAdapterKnown &&
+        !askCapableKinds.includes(parsed.adapter)
+      ) {
+        reviewReasons.push("adapter does not support Ask chat");
       }
       if (!adapterDiverged && providers !== undefined && !storedProviderKnown) {
         reviewReasons.push("provider not found (deleted or unknown)");

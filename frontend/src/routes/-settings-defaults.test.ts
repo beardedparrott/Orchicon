@@ -21,9 +21,10 @@ describe("settings-defaults (Ask default uses the shared ModelPicker)", () => {
 
   it("binds the Ask default to the shared picker against draftAskOrchiconModel", () => {
     // The Ask block renders <ModelPicker value={draftAskOrchiconModel}
-    // onChange={setDraftAskOrchiconModel} /> — the shared three-tier picker.
+    // onChange={setDraftAskOrchiconModel} askMode /> — the shared three-tier
+    // picker in Ask mode (the Ask-capability guard surfaces at selection).
     expect(src).toMatch(
-      /<ModelPicker\s+value=\{draftAskOrchiconModel\}\s+onChange=\{setDraftAskOrchiconModel\}\s*\/>/,
+      /<ModelPicker\s+value=\{draftAskOrchiconModel\}\s+onChange=\{setDraftAskOrchiconModel\}\s+askMode\s*\/>/,
     );
   });
 

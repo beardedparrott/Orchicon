@@ -46,6 +46,10 @@ type Service struct {
 	// Dispatcher (ADR-0004 D1). nil falls back to the default adapter
 	// kind so the picker never blanks.
 	adapterKinds func() []string
+	// chatKinds returns the adapter kinds whose bridge implements the
+	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). nil falls back
+	// to the default adapter kind so the Ask picker never blanks.
+	chatKinds func() []string
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
@@ -60,7 +64,7 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // registry supplies the per-adapter provider catalog (built-in profiles ∪
 // tenant custom providers) for adapter-scoped filtering; nil falls back to
 // the built-in catalog.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry, adapterKinds func() []string) *Service {
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry, adapterKinds func() []string, chatKinds func() []string) *Service {
 	if registry == nil {
 		registry = adapter.NewBuiltinProviderCatalog()
 	}
@@ -74,7 +78,14 @@ func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discov
 		discoverer:    discoverer,
 		mcpDiscoverer: mcpDiscoverer,
 		adapterKinds:  adapterKinds,
+		chatKinds:     chatKinds,
 	}
+}
+
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
+// D1) into ListAdapterKinds. Nil falls back to the default adapter kind.
+func (s *Service) SetChatKinds(fn func() []string) {
+	s.chatKinds = fn
 }
 
 // ListAdapterKinds returns the adapter kinds currently registered with
@@ -89,7 +100,13 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 			kinds = k
 		}
 	}
-	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{AdapterKinds: kinds}), nil
+	chatKinds := []string{adapter.DefaultAdapterKind}
+	if s.chatKinds != nil {
+		if k := s.chatKinds(); len(k) > 0 {
+			chatKinds = k
+		}
+	}
+	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{AdapterKinds: kinds, AskCapableKinds: chatKinds}), nil
 }
 
 // ListProviders returns the LLM providers known to the gateway
