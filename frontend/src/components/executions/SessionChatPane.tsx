@@ -572,12 +572,19 @@ export function SessionChatPane({
         boundary = latestFollowUp;
       }
     }
-    const replied =
-      boundary > 0n &&
-      parts.some(
-        (p) => (p.kind === "text" || p.kind === "error") && p.seq > boundary,
-      );
-    if (replied) {
+    // The reply is DONE only when the session ended: the highest-seq part
+    // after the boundary is the final step_finish (session end marker) or an
+    // error. Clearing on the FIRST text part left the pane on a partial
+    // reply while the model was still generating — only a manual refresh
+    // showed the full answer.
+    const afterBoundary = boundary > 0n ? parts.filter((p) => p.seq > boundary) : [];
+    const latest = afterBoundary.reduce<typeof parts[number] | null>(
+      (max, p) => (max === null || p.seq > max.seq ? p : max),
+      null,
+    );
+    const done =
+      latest !== null && (latest.kind === "step_finish" || latest.kind === "error");
+    if (done) {
       setFollowUpReplyPending(false);
       return;
     }

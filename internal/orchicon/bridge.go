@@ -158,7 +158,7 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 // (ContinueSession) so a follow-up is a FULL live session with the same
 // tools. The returned cleanup closes the MCP manager + memory store; call
 // it when the session ends.
-func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) (*Session, func(), error) {
+func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, forFollowUp bool) (*Session, func(), error) {
 	// The transcript lives under the execution's true project dir:
 	// manifest.ProjectDir is authoritative (set from the project row at
 	// dispatch, ADR-0007); the construction-time projectDir is a fallback
@@ -187,6 +187,19 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if manifest.WorktreePath != "" {
 		workingDir = manifest.WorktreePath
 	}
+	// A follow-up runs against a TERMINAL execution: its runtime container
+	// lease is gone and its worktree may have been pruned. Route bash
+	// IN-PROCESS on the project dir (or the surviving worktree) instead of
+	// dispatching into a container that no longer exists — otherwise every
+	// bash call returns "no runtime container leased" and silently empties.
+	if forFollowUp {
+		if fi, serr := os.Stat(workingDir); serr != nil || !fi.IsDir() {
+			// Pruned worktree: fall back to the project dir so bash/file
+			// tools still resolve.
+			workingDir = pd
+			b.log.Info("orchicon: follow-up worktree gone — using project dir", "execution", exec.ID, "worktree", manifest.WorktreePath)
+		}
+	}
 	var tools ToolRegistry = NewHostTools(workingDir, manifest.ProjectDir)
 	b.mu.Lock()
 	rtClient := b.rtClient
@@ -194,7 +207,8 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	// Always-container routing: a run-bound execution with a daemon client
 	// dispatches bash INTO the run's container at the same absolute
 	// worktree path. Standalone tasks and local/headless stay in-process.
-	if nativeContainerRouteEnabled(rtClient != nil, manifest) {
+	// A follow-up NEVER routes to the container (the run is terminal).
+	if !forFollowUp && nativeContainerRouteEnabled(rtClient != nil, manifest) {
 		runID := manifest.RuntimeWorkflowID
 		tools = NewContainerHostTools(workingDir, manifest.ProjectDir,
 			func(cctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
@@ -257,7 +271,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	if exec.ID == "" {
 		return fmt.Errorf("orchicon bridge: empty execution id")
 	}
-	sess, cleanup, err := b.buildSession(ctx, exec, manifest)
+	sess, cleanup, err := b.buildSession(ctx, exec, manifest, false)
 	if err != nil {
 		return err
 	}
@@ -492,7 +506,7 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		AcceptanceCriteria: opts.AcceptanceCriteria,
 		ContextWindow:      int(opts.ContextWindow),
 	}
-	sess, cleanup, err := b.buildSession(ctx, exec, manifest)
+	sess, cleanup, err := b.buildSession(ctx, exec, manifest, true)
 	if err != nil {
 		b.log.Warn("orchicon: follow-up session build failed", "execution", opts.ExecutionID, "error", err)
 		return "", fmt.Errorf("orchicon bridge: build follow-up session: %w", err)
