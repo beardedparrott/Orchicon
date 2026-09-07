@@ -2,6 +2,7 @@ package orchicon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,10 +15,25 @@ import (
 
 // Compile-time proof that the native bridge implements the Ask chat-session
 // capability. It deliberately does NOT implement
-// scheduler.SendTurnMessageWithAttachments: native Ask turns are text-only,
-// and the askorchicon collector fails loudly when an adapter lacks the
-// attachment capability (never silently degrading to text-only).
+// scheduler.SendTurnMessageWithAttachments: the askorchicon collector fails
+// loudly when an adapter lacks the attachment capability (never silently
+// degrading to text-only).
 var _ scheduler.ChatTurnClient = (*NativeBridge)(nil)
+
+// AskToolProvider supplies the Ask-time tool surface for native turns.
+// It is implemented outside this package (the askorchicon tool registry
+// owns the product tools; the server injects it via SetAskTools) so the
+// provider substrate never imports the product layer.
+type AskToolProvider interface {
+	// AskToolDefs returns the tool definitions offered to the model.
+	AskToolDefs() []ToolDef
+	// ExecuteAskTool runs one tool call and returns its result text.
+	ExecuteAskTool(ctx context.Context, name, argsJSON string) (string, error)
+}
+
+// askMaxToolRounds bounds the per-turn tool loop so a model that keeps
+// calling tools cannot spin forever inside one user message.
+const askMaxToolRounds = 8
 
 // chatBus is the per-turn SessionBus the native bridge feeds from its drain
 // goroutine. It is the adapter-neutral surface the askorchicon collector
@@ -49,6 +65,24 @@ func (b *chatBus) emit(evt scheduler.SessionEvent) {
 	case b.events <- evt:
 	default:
 	}
+}
+
+// SetAskTools injects the Ask-time tool surface for native turns (the
+// askorchicon product tools). Nil (default) keeps the pre-tools behavior:
+// the model answers from the system prompt with no tool calls.
+func (b *NativeBridge) SetAskTools(p AskToolProvider) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.askTools = p
+}
+
+// askToolsLocked returns the injected tool definitions (nil when no
+// provider is set). Callers must hold b.mu.
+func (b *NativeBridge) askToolsLocked() []ToolDef {
+	if b.askTools == nil {
+		return nil
+	}
+	return b.askTools.AskToolDefs()
 }
 
 // CreateConversationSession implements scheduler.ChatTurnClient. The native
@@ -124,31 +158,41 @@ func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sess
 	b.mu.Unlock()
 
 	// Build the turn request: the accumulated history re-sent as full context
-	// (the sessionless emulation), the system prompt as a cacheable block.
+	// (the sessionless emulation), the system prompt as a cacheable block,
+	// and the Ask tool surface when one is injected (SetAskTools). Without
+	// tools the model can only answer from the system prompt's project
+	// context — with them it can query, read, and act like the host-serve
+	// path.
+	b.mu.Lock()
+	tools := b.askToolsLocked()
+	b.mu.Unlock()
 	req := TurnRequest{
 		Model: model,
 		System: []SystemBlock{
 			{Text: system, Cache: true},
 		},
 		Messages:    history,
+		Tools:       tools,
 		MaxTokens:   maxOutputTokens(),
 		CacheControl: CacheControlSystemAndTools,
 		// Stable per-conversation session id for OpenCode Zen/Go (D1): the
 		// provider requires x-opencode-session per conversation.
 		SessionID: conversationID,
 	}
+	// The turn context is derived from the request ctx so
+	// AbortConversationSession can cancel it mid-flight (D7) — including
+	// the provider HTTP calls on every tool round.
+	turnCtx, cancel := context.WithCancel(ctx)
 	// Start the stream SYNCHRONOUSLY so a pre-stream failure surfaces as a
 	// send-accept failure (the collector fails the turn) rather than a
 	// dropped first delta (D4).
-	stream, err := prov.StreamTurn(ctx, req)
+	stream, err := prov.StreamTurn(turnCtx, req)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("orchicon bridge: start Ask turn: %w", err)
 	}
 
-	// Drain the stream on a goroutine, mapping events onto the bus. The turn
-	// context is derived from the request ctx so AbortConversationSession can
-	// cancel it mid-flight (D7).
-	turnCtx, cancel := context.WithCancel(ctx)
+	// Drain the stream on a goroutine, mapping events onto the bus.
 	b.mu.Lock()
 	if b.chatTurns == nil {
 		b.chatTurns = map[string]context.CancelFunc{}
@@ -160,21 +204,23 @@ func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sess
 	}
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, bus, stream, sessionID, history)
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history)
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
 	return nil
 }
 
-// drainChatTurn reads the provider's TurnStream and maps events onto the
+// drainChatTurn reads the provider's TurnStream(s) and maps events onto the
 // SessionBus vocabulary (D3): TextDelta → delta(text) + accumulate into the
-// part buffer; ReasoningDelta → delta(reasoning) + accumulate; ToolCall →
-// tool_part; StreamError → error; Finish → emit one part(text) with the
-// accumulated reply, then idle. On completion the assistant reply is appended
-// to the session's history so a follow-up re-sends it as context.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, bus *chatBus, stream TurnStream, sessionID string, history []Message) {
-	defer stream.Close()
+// part buffer; ReasoningDelta → delta(reasoning); ToolCall → tool_part +
+// execute against the injected Ask tools and continue the turn with the
+// results (agentic loop, bounded by askMaxToolRounds); StreamError → error;
+// Finish → emit one part(text) with the accumulated reply, then idle. On
+// completion the full working history (assistant texts, tool uses and tool
+// results — not just the final text) replaces the session's history so a
+// follow-up re-sends the complete context.
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message) {
 	defer bus.Close()
 	defer func() {
 		b.mu.Lock()
@@ -182,29 +228,102 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, bus *chatBus, stream T
 		b.mu.Unlock()
 	}()
 
+	// working is the turn's replayable history: it starts as the snapshot
+	// committed in SendTurnMessage (prior turns + this user message) and
+	// grows with every assistant message and tool result until commit.
+	working := append([]Message(nil), history...)
 	var reply strings.Builder
 	var reasoning strings.Builder
-	for {
-		evt, ok, err := stream.Next(ctx)
+
+	// finishTurn emits the accumulated reply as ONE completed text part,
+	// then idle, and commits the working history. The collector builds the
+	// persisted reply ONLY from part/text events, so this part is what
+	// lands in the DB.
+	finishTurn := func() {
+		if t := strings.TrimSpace(reply.String()); t != "" {
+			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
+		}
+		bus.emit(scheduler.SessionEvent{Kind: "idle"})
+		b.commitChatHistory(sessionID, history, working)
+	}
+
+	for round := 0; ; round++ {
+		roundDone, calls, aborted := b.drainOneRound(ctx, bus, stream, &reply, &reasoning)
+		_ = stream.Close()
+		if aborted {
+			// Abort (D7): the turn was cancelled — finalize without
+			// committing. The collector's Stop path already cancelled its
+			// own context, so the turn finalizes cleanly.
+			return
+		}
+		if !roundDone {
+			// Stream ended without a Finish event — close out the turn so
+			// the collector persists what arrived (pre-existing behavior
+			// for a provider that ends without a terminal signal).
+			b.appendAssistantText(&working, reply.String())
+			finishTurn()
+			return
+		}
+		if len(calls) == 0 {
+			b.appendAssistantText(&working, reply.String())
+			finishTurn()
+			return
+		}
+		// Tool round: record the assistant's text (if any) plus the tool
+		// uses, emit the round's text as its own part (the collector
+		// appends every part, so multi-round replies persist in full),
+		// execute every call, and continue the turn with the results.
+		// Tool results are part of the replayable history (unlike the
+		// pre-tools turn, which committed text only).
+		b.appendAssistantTurn(&working, reply.String(), calls)
+		if t := strings.TrimSpace(reply.String()); t != "" {
+			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
+		}
+		reply.Reset()
+		if round+1 >= askMaxToolRounds {
+			// Budget exhausted: append the notice as a tool result and
+			// take ONE final text-only turn (tools stripped so the model
+			// must answer from the results so far instead of calling
+			// again). The final turn below is drained by the next loop
+			// iteration like any other round.
+			working = append(working, Message{Role: RoleTool, Content: []Content{{
+				ToolResult: &ContentToolResult{ToolCallID: calls[0].ToolCallID, Content: "Tool round budget exhausted — answer from the results so far.", IsError: true},
+			}}})
+			req.Messages = append([]Message(nil), working...)
+			req.Tools = nil
+		} else {
+			b.executeToolCalls(ctx, &working, calls)
+			req.Messages = append([]Message(nil), working...)
+		}
+		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				// Abort (D7): the turn was cancelled — finalize without a
-				// reply. The collector's Stop path already cancelled its own
-				// context, so the turn finalizes cleanly.
 				return
 			}
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
 			return
 		}
-		if !ok {
-			// Stream ended without a Finish event — emit the accumulated
-			// reply as a part then idle so the collector persists it.
-			if t := strings.TrimSpace(reply.String()); t != "" {
-				bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
+		stream = next
+	}
+}
+
+// drainOneRound consumes one provider stream until its Finish event (or an
+// error/early end), live-emitting deltas onto the bus and accumulating the
+// reply text. It returns roundDone (a Finish event arrived), the complete
+// tool calls issued this round, and aborted (the turn context was
+// cancelled).
+func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, aborted bool) {
+	for {
+		evt, ok, err := stream.Next(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return false, nil, true
 			}
-			bus.emit(scheduler.SessionEvent{Kind: "idle"})
-			b.commitChatHistory(sessionID, history, reply.String())
-			return
+			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
+			return false, nil, false
+		}
+		if !ok {
+			return false, nil, false
 		}
 		switch e := evt.(type) {
 		case TextDelta:
@@ -215,42 +334,107 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, bus *chatBus, stream T
 			bus.emit(scheduler.SessionEvent{Kind: "delta", Type: "reasoning", Text: e.Text, IsReasoning: true})
 		case ToolCall:
 			bus.emit(scheduler.SessionEvent{Kind: "tool_part", Type: "tool", Text: e.Name})
+			calls = append(calls, e)
 		case StreamError:
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: e.Err.Error()})
-			return
+			return false, nil, false
 		case Finish:
-			// Emit the accumulated reply as ONE completed text part, then
-			// idle. The collector builds the persisted reply ONLY from
-			// part/text events, so this part is what lands in the DB.
-			if t := strings.TrimSpace(reply.String()); t != "" {
-				bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
-			}
-			bus.emit(scheduler.SessionEvent{Kind: "idle"})
-			b.commitChatHistory(sessionID, history, reply.String())
-			return
+			return true, calls, false
 		}
 	}
 }
 
-// commitChatHistory appends the assistant reply to the session's in-memory
-// history so a follow-up re-sends it as context. Best-effort: a missing
-// history entry (session recreated / server restart) is a no-op.
-func (b *NativeBridge) commitChatHistory(sessionID string, history []Message, reply string) {
-	if strings.TrimSpace(reply) == "" {
+// executeToolCalls runs one round's tool calls against the injected Ask
+// tools and appends one tool-result message per call to working. Calls are
+// never dropped: with no tool provider injected the result records the
+// misconfiguration as an error so the model can explain instead of
+// hanging. A tool execution failure is recorded as an error result (the
+// model sees it and can recover), never as a turn failure.
+func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message, calls []ToolCall) {
+	b.mu.Lock()
+	tools := b.askTools
+	b.mu.Unlock()
+	for _, c := range calls {
+		args := c.ArgsJSON
+		if args == "" || !json.Valid([]byte(args)) {
+			args = "{}"
+		}
+		var out string
+		var toolErr error
+		if tools == nil {
+			toolErr = errors.New("orchicon bridge: no Ask tool provider injected — cannot execute tool " + c.Name)
+		} else {
+			out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
+		}
+		content := out
+		isErr := false
+		if toolErr != nil {
+			content = toolErr.Error()
+			isErr = true
+		}
+		*working = append(*working, Message{Role: RoleTool, Content: []Content{{
+			ToolResult: &ContentToolResult{ToolCallID: c.ToolCallID, Content: content, IsError: isErr},
+		}}})
+	}
+}
+
+// appendAssistantText appends one assistant text message to working when
+// text is non-blank.
+func (b *NativeBridge) appendAssistantText(working *[]Message, text string) {
+	if strings.TrimSpace(text) == "" {
 		return
 	}
-	assistant := reply
+	t := text
+	*working = append(*working, Message{Role: RoleAssistant, Content: []Content{{Text: &t}}})
+}
+
+// appendAssistantTurn appends one assistant message carrying the round's
+// text (when non-blank) plus its tool uses, then clears the consumed text
+// from reply via the caller's Reset.
+func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, calls []ToolCall) {
+	var content []Content
+	if strings.TrimSpace(text) != "" {
+		t := text
+		content = append(content, Content{Text: &t})
+	}
+	for _, c := range calls {
+		args := c.ArgsJSON
+		if args == "" || !json.Valid([]byte(args)) {
+			args = "{}"
+		}
+		content = append(content, Content{ToolUse: &ContentToolUse{ToolCallID: c.ToolCallID, Name: c.Name, ArgsJSON: args}})
+	}
+	if len(content) == 0 {
+		return
+	}
+	*working = append(*working, Message{Role: RoleAssistant, Content: content})
+}
+
+// commitChatHistory replaces the session's in-memory history with the
+// turn's full working history (user message, assistant texts, tool uses
+// and tool results) so a follow-up re-sends the complete context.
+// Best-effort: when the turn produced no new messages the stored history
+// is left untouched; when the stored entry was reset mid-turn (session
+// recreated) the turn's own snapshot seeds it.
+func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// The user message was already committed to the session's history in
-	// SendTurnMessage; append the assistant reply to it. If the history was
-	// reset (session recreated) in the meantime, seed from the turn's own
-	// history so the reply still lands.
-	cur := b.chatHistory[sessionID]
-	if len(cur) == 0 {
-		cur = append([]Message(nil), history...)
+	if len(working) == 0 {
+		return
 	}
-	cur = append(cur, Message{Role: RoleAssistant, Content: []Content{{Text: &assistant}}})
+	cur := b.chatHistory[sessionID]
+	if len(cur) == 0 && len(history) > 0 {
+		// The entry was reset mid-turn — seed from the turn snapshot so
+		// the user message is not lost, then prefer the working tail.
+		if len(working) >= len(history) {
+			cur = append([]Message(nil), working...)
+		} else {
+			cur = append([]Message(nil), history...)
+			cur = append(cur, working...)
+		}
+	} else {
+		cur = append([]Message(nil), working...)
+	}
 	b.chatHistory[sessionID] = cur
 }
 

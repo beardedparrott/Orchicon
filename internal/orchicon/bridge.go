@@ -85,6 +85,11 @@ type NativeBridge struct {
 	// drains into (set by Subscribe, fed by SendTurnMessage's drain
 	// goroutine). Guarded by mu.
 	chatBuses map[string]*chatBus
+	// askTools is the injected Ask-time tool surface (askorchicon product
+	// tools, wired by the server via SetAskTools). Nil → the model answers
+	// from the system prompt's project context with no tool calls (the
+	// pre-tools behavior). Guarded by mu.
+	askTools AskToolProvider
 }
 
 // liveSession is the bridge's handle on one running session.
@@ -401,48 +406,55 @@ func (b *NativeBridge) SendExecutionMessage(ctx context.Context, execID, message
 // ASYNCHRONOUSLY on a request-independent context and appended to the
 // transcript when it lands. The RPC returns immediately — a long model
 // turn can never block the browser connection nor discard the reply on
-// client disconnect. The identity block must match (same worker) — a
-// mismatched worker/tenant is refused (identity isolation).
+// client disconnect. Collection failures are written back as `error`
+// transcript parts (never left hanging on "responding").
+//
+// Session record handling (opencode parity): the prior transcript file is
+// the fast path for identity verification, but it is NOT required. When
+// the file is missing/unreadable (container-backed runs never leave the
+// JSONL on the host project dir) or carries no identity block, the
+// follow-up still proceeds as a context one-shot seeded from
+// opts.Context (the execution service's bounded durable-transcript
+// render — already scoped to this execution's own tenant-isolated parts).
+// Identity isolation is still enforced whenever a prior identity IS
+// available: a conflicting worker/tenant is refused. A missing session id
+// likewise falls back to the context one-shot instead of refusing — old
+// runs without a session_info part stay answerable.
 func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
-	if opts.SessionID == "" {
-		return "", fmt.Errorf("orchicon bridge: continue requires a prior session id")
-	}
-	// The prior transcript lives under the session's project dir. Prefer
-	// the caller-supplied dir (the execution service sets it from the
-	// manifest/project row) over the bridge's construction-time fallback
-	// so a shared bridge resolves transcripts per execution.
-	pd := b.projectDir
-	if opts.ProjectDir != "" {
-		pd = opts.ProjectDir
-	}
-	// Load the prior transcript for identity verification.
-	path := transcriptPath(pd, opts.SessionID)
-	evs, err := Load(path)
-	if err != nil {
-		return "", fmt.Errorf("orchicon bridge: load prior transcript: %w", err)
-	}
-	prior := identityFromReplay(evs)
-	// Identity isolation by construction: a follow-up must belong to the
-	// same worker+tenant as the original session. Cross-worker /
-	// cross-tenant resumption is refused — no worker ever sees another
-	// worker's transcript. When the caller does not carry a tenant
-	// (bridge-level tests), the tenant check is skipped rather than
-	// refused.
-	if prior.WorkerID != "" && opts.ExecutionID != "" {
-		if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
-			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
+	// Best-effort identity verification against the prior transcript file.
+	// Missing/unreadable file or missing identity block → context-only
+	// fallback (warn, proceed). Conflicting worker/tenant → refuse. This
+	// stays FIRST so isolation refusals surface even when no provider is
+	// configured.
+	if opts.SessionID != "" {
+		pd := b.projectDir
+		if opts.ProjectDir != "" {
+			pd = opts.ProjectDir
 		}
-		if prior.WorkerID != "" && opts.WorkerID != "" && prior.WorkerID != opts.WorkerID {
-			return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to worker %q, this follow-up is worker %q (identity isolation)", prior.WorkerID, opts.WorkerID)
+		if evs, lerr := Load(transcriptPath(pd, opts.SessionID)); lerr != nil {
+			b.log.Warn("orchicon: prior transcript unreachable — continuing from durable context",
+				"execution", opts.ExecutionID, "session", opts.SessionID, "error", lerr)
+		} else if prior := identityFromReplay(evs); prior.WorkerID == "" {
+			b.log.Warn("orchicon: prior session has no identity block — continuing from durable context",
+				"execution", opts.ExecutionID, "session", opts.SessionID)
+		} else {
+			if prior.TenantID != "" && opts.TenantID != "" && prior.TenantID != opts.TenantID {
+				return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to a different tenant")
+			}
+			if prior.WorkerID != "" && opts.WorkerID != "" && prior.WorkerID != opts.WorkerID {
+				return "", fmt.Errorf("orchicon bridge: continuation refused — prior session belongs to worker %q, this follow-up is worker %q (identity isolation)", prior.WorkerID, opts.WorkerID)
+			}
 		}
-	}
-	if prior.WorkerID == "" {
-		return "", fmt.Errorf("orchicon bridge: prior session %q has no identity block — cannot verify continuation", opts.SessionID)
+	} else {
+		b.log.Warn("orchicon: follow-up has no prior session id — continuing from durable context",
+			"execution", opts.ExecutionID)
 	}
 
 	// Resolve the provider + model for the one-shot follow-up turn. The
 	// model ref shape is orchicon/<provider>/<model> (ADR-0003); the
 	// provider segment 2 is the registry key (same split as emitTurnUsage).
+	// This stays BEFORE the question write so an unresolvable provider
+	// fails the RPC instead of orphaning a question with no reply path.
 	providerID, model, ok := adapter.SplitForServe(opts.ModelRef)
 	if !ok || providerID == "" || model == "" {
 		return "", fmt.Errorf("orchicon bridge: follow-up model ref %q has no provider/model", opts.ModelRef)
@@ -488,21 +500,49 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	// so a browser disconnect or the RPC returning can neither cancel the
 	// turn nor lose the reply. Bounded by the follow-up reply window. The
 	// collected text is written to the durable transcript in the same
-	// goroutine. A failed collection logs a warning and leaves the
-	// question part — the RPC NEVER fails after the question is recorded.
+	// goroutine; a failed or empty collection is written back as an
+	// `error` part (same shape the recorder uses) so the UI never hangs
+	// on "responding". The RPC NEVER fails after the question is recorded.
 	go func() {
 		detached := context.WithoutCancel(ctx)
 		ctxT, cancel := context.WithTimeout(detached, followUpReplyWindow())
 		defer cancel()
+		writeParts := func(parts []db.SessionPart) {
+			if b.sessionStore == nil {
+				return
+			}
+			if err := b.sessionStore(detached, opts.ExecutionID, opts.TenantID, parts); err != nil {
+				b.log.Warn("orchicon: follow-up transcript write failed", "execution", opts.ExecutionID, "error", err)
+			}
+		}
 		reply, err := collectFollowUp(ctxT, prov, model, opts)
 		if err != nil {
 			b.log.Warn("orchicon: follow-up reply collection failed", "execution", opts.ExecutionID, "error", err)
+			writeParts([]db.SessionPart{
+				{
+					ExecutionID: opts.ExecutionID,
+					TenantID:    opts.TenantID,
+					Seq:         nextSeq,
+					Kind:        db.SessionPartError,
+					Payload:     db.MarshalPartPayload(map[string]any{"error": map[string]any{"message": "Follow-up failed: " + err.Error()}}),
+				},
+			})
 			return
 		}
-		if b.sessionStore == nil || reply == "" {
+		if reply == "" {
+			b.log.Warn("orchicon: follow-up reply was empty", "execution", opts.ExecutionID)
+			writeParts([]db.SessionPart{
+				{
+					ExecutionID: opts.ExecutionID,
+					TenantID:    opts.TenantID,
+					Seq:         nextSeq,
+					Kind:        db.SessionPartError,
+					Payload:     db.MarshalPartPayload(map[string]any{"error": map[string]any{"message": "Follow-up returned no text — please retry"}}),
+				},
+			})
 			return
 		}
-		_ = b.sessionStore(detached, opts.ExecutionID, opts.TenantID, []db.SessionPart{
+		writeParts([]db.SessionPart{
 			{
 				ExecutionID: opts.ExecutionID,
 				TenantID:    opts.TenantID,

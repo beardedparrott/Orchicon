@@ -19,7 +19,8 @@ import (
 type chatTestProvider struct {
 	mu       sync.Mutex
 	events   []Event
-	preErr   error // pre-stream failure returned from StreamTurn
+	rounds   [][]Event // per-StreamTurn sequences; call i gets rounds[min(i,len-1)]
+	preErr   error     // pre-stream failure returned from StreamTurn
 	stream   TurnStream
 	requests []TurnRequest
 }
@@ -30,6 +31,13 @@ func (p *chatTestProvider) StreamTurn(ctx context.Context, req TurnRequest) (Tur
 	p.requests = append(p.requests, req)
 	if p.preErr != nil {
 		return nil, p.preErr
+	}
+	if len(p.rounds) > 0 {
+		i := len(p.requests) - 1
+		if i >= len(p.rounds) {
+			i = len(p.rounds) - 1
+		}
+		return &chatTestStream{events: p.rounds[i]}, nil
 	}
 	if p.stream != nil {
 		return p.stream, nil
@@ -207,8 +215,7 @@ func TestChatTurnClientFollowUpReusesHistory(t *testing.T) {
 	}
 }
 
-func TestChatTurnClientPreStreamFailure(t *testing.T) {
-	prov := &chatTestProvider{preErr: errors.New("auth failed")}
+func TestChatTurnClientPreStreamFailure(t *testing.T) {	prov := &chatTestProvider{preErr: errors.New("auth failed")}
 	b := newChatBridge(t, prov)
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	sid, _ := b.CreateConversationSession(ctx, "conv-3", "ask-orchicon:conv-3")
@@ -340,5 +347,161 @@ func TestChatTurnClientMissingTenant(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tenant") {
 		t.Fatalf("error %q does not name the missing tenant", err)
+	}
+}
+
+// fakeAskTools is a scripted AskToolProvider for the tool-loop tests.
+type fakeAskTools struct {
+	mu      sync.Mutex
+	defs    []ToolDef
+	results map[string]string
+	errs    map[string]error
+	calls   []string
+}
+
+func (f *fakeAskTools) AskToolDefs() []ToolDef { return f.defs }
+
+func (f *fakeAskTools) ExecuteAskTool(_ context.Context, name, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, name)
+	if err, ok := f.errs[name]; ok {
+		return "", err
+	}
+	return f.results[name], nil
+}
+
+// TestChatTurnClientToolRoundTrip pins the agentic loop: round 1 streams
+// text + a tool call, the call executes against the injected tools, round
+// 2 streams the final answer. The bus must carry a tool_part plus both
+// text parts, and the committed history must replay the full tool flow.
+func TestChatTurnClientToolRoundTrip(t *testing.T) {
+	prov := &chatTestProvider{rounds: [][]Event{
+		{
+			TextDelta{Text: "Checking "},
+			ToolCall{Index: 0, ToolCallID: "call_1", Name: "list_projects", ArgsJSON: `{}`},
+			Finish{StopReason: StopToolUse},
+		},
+		{
+			TextDelta{Text: "Done: 3 projects."},
+			Finish{StopReason: StopStop},
+		},
+	}}
+	b := newChatBridge(t, prov)
+	b.SetAskTools(&fakeAskTools{
+		defs:    []ToolDef{{Name: "list_projects", Description: "List projects", ParamsJSON: `{"type":"object"}`}},
+		results: map[string]string{"list_projects": `["a","b","c"]`},
+	})
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-tools", "ask-orchicon:conv-tools")
+
+	// The tool defs must ride the provider request.
+	bus, _ := b.Subscribe(ctx, "conv-tools")
+	if err := b.SendTurnMessage(ctx, "conv-tools", sid, "system", "orchicon/ollama/deepseek-v4-flash", "list my projects"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	evts := drainBus(t, bus)
+
+	var sawToolPart bool
+	var partTexts []string
+	var sawIdle bool
+	for _, e := range evts {
+		switch e.Kind {
+		case "tool_part":
+			sawToolPart = true
+		case "part":
+			if e.Type == "text" {
+				partTexts = append(partTexts, e.Text)
+			}
+		case "idle":
+			sawIdle = true
+		}
+	}
+	if !sawToolPart {
+		t.Fatal("no tool_part on the bus for the tool round")
+	}
+	if !sawIdle {
+		t.Fatal("no idle at turn end")
+	}
+	joined := strings.Join(partTexts, "\n")
+	if !strings.Contains(joined, "Checking") || !strings.Contains(joined, "Done: 3 projects.") {
+		t.Fatalf("part texts = %q, want both rounds' text", joined)
+	}
+	if prov.requestCount() != 2 {
+		t.Fatalf("provider turns = %d, want 2 (tool round + final)", prov.requestCount())
+	}
+	// The committed history replays the full flow: user, assistant
+	// (text + tool use), tool result, assistant (final text).
+	b.mu.Lock()
+	hist := append([]Message(nil), b.chatHistory[sid]...)
+	b.mu.Unlock()
+	if len(hist) != 4 {
+		t.Fatalf("history has %d messages, want 4 (user, assistant+tooluse, toolresult, assistant)", len(hist))
+	}
+	if hist[1].Role != RoleAssistant {
+		t.Fatalf("history[1].Role = %q, want assistant", hist[1].Role)
+	}
+	hasToolUse := false
+	for _, c := range hist[1].Content {
+		if c.ToolUse != nil && c.ToolUse.Name == "list_projects" {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Fatalf("history[1] = %+v, want the tool use", hist[1])
+	}
+	if hist[2].Role != RoleTool {
+		t.Fatalf("history[2].Role = %q, want tool", hist[2].Role)
+	}
+}
+
+// TestChatTurnClientToolFailureIsAResult pins the recovery contract: a
+// failing tool call is recorded as an error tool result and the turn
+// continues (the model sees it) — never a turn failure.
+func TestChatTurnClientToolFailureIsAResult(t *testing.T) {
+	prov := &chatTestProvider{rounds: [][]Event{
+		{
+			ToolCall{Index: 0, ToolCallID: "call_9", Name: "boom", ArgsJSON: `{}`},
+			Finish{StopReason: StopToolUse},
+		},
+		{
+			TextDelta{Text: "It failed, sorry."},
+			Finish{StopReason: StopStop},
+		},
+	}}
+	b := newChatBridge(t, prov)
+	b.SetAskTools(&fakeAskTools{
+		defs: []ToolDef{{Name: "boom", ParamsJSON: `{"type":"object"}`}},
+		errs: map[string]error{"boom": errors.New("kaboom")},
+	})
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-toolerr", "ask-orchicon:conv-toolerr")
+
+	bus, _ := b.Subscribe(ctx, "conv-toolerr")
+	if err := b.SendTurnMessage(ctx, "conv-toolerr", sid, "system", "orchicon/ollama/deepseek-v4-flash", "go"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	evts := drainBus(t, bus)
+	var sawIdle, sawError bool
+	for _, e := range evts {
+		if e.Kind == "idle" {
+			sawIdle = true
+		}
+		if e.Kind == "error" {
+			sawError = true
+		}
+	}
+	if !sawIdle || sawError {
+		t.Fatalf("idle=%v error=%v, want a completed turn with no error event", sawIdle, sawError)
+	}
+	b.mu.Lock()
+	hist := append([]Message(nil), b.chatHistory[sid]...)
+	b.mu.Unlock()
+	if len(hist) != 4 || hist[2].Role != RoleTool {
+		t.Fatalf("history = %+v, want user/assistant/tool/assistant", hist)
+	}
+	tr := hist[2].Content[0].ToolResult
+	if tr == nil || !tr.IsError || !strings.Contains(tr.Content, "kaboom") {
+		t.Fatalf("tool result = %+v, want the error recorded", hist[2])
 	}
 }

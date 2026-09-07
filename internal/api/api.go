@@ -136,6 +136,11 @@ type Dependencies struct {
 	// the transport is disabled or the serve could not start — the chat
 	// degrades to the legacy per-message subprocess path.
 	HostServe *opencode.HostServe
+	// AskService is the AskOrchiconService handler Mount constructs. It is
+	// stored back here (like ProvidersService) so the server can wire the
+	// product tool registry into the native bridge's Ask turns — nil until
+	// Mount runs.
+	AskService *askorchicon.Service
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -391,6 +396,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps.UsageRecorder != nil {
 		askSvc.SetUsageRecorder(deps.UsageRecorder)
 	}
+	deps.AskService = askSvc
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin

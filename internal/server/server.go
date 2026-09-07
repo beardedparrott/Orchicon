@@ -569,6 +569,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 		return ttx.Commit(ctx)
 	})
+	// Ask-time product tools (askorchicon registry) for native Ask turns:
+	// without this the model answers from the system prompt with no tool
+	// calls while the host-serve path acts. Mount constructed the Ask
+	// service above and stored it back on deps.
+	if deps.AskService != nil {
+		nativeBridge.SetAskTools(deps.AskService.NativeAskTools())
+	} else {
+		log.Warn("native Ask turns have no tool provider (Ask service unavailable) — orchicon-adapter conversations are text-only")
+	}
 	dispatcher.Register("orchicon", nativeBridge)
 
 	// Wrap with OTel tracing interceptor (spans on every API call).
