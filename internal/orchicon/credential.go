@@ -37,7 +37,9 @@ func NewCredentialResolver(pool *db.Pool, kek []byte) *CredentialResolver {
 
 // Resolve returns the credential for the profile. A profile with no auth
 // requirement (AuthEnv == "" and AuthSecretRef == "") resolves to "" with
-// no error (e.g. local Ollama).
+// no error (e.g. local Ollama). An AuthOptional profile (Ollama) also
+// resolves to "" with no error when nothing is stored — the client still
+// sends Bearer when a token IS resolved (Ollama Cloud).
 func (r *CredentialResolver) Resolve(ctx context.Context, tenantID string, p Profile) (string, error) {
 	if p.AuthSecretRef == "" && p.AuthEnv == "" {
 		return "", nil
@@ -54,6 +56,11 @@ func (r *CredentialResolver) Resolve(ctx context.Context, tenantID string, p Pro
 		if v := r.getenv(p.AuthEnv); v != "" {
 			return v, nil
 		}
+	}
+	if p.AuthOptional {
+		// Optional credential (Ollama): a missing token is fine — the local
+		// server needs none; the client sends Bearer only when one resolves.
+		return "", nil
 	}
 	return "", fmt.Errorf("%w: no credential resolved for provider %q: set tenant secret %q or environment variable %q",
 		ErrAuthMissing, p.ID, expectedSecretName(p), expectedEnvName(p))

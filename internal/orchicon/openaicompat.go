@@ -23,6 +23,18 @@ type OpenAICompatClient struct {
 	AuthStyle    string
 	ExtraHeaders map[string]string
 
+	// SessionID is the stable per-conversation/per-execution id sent as
+	// `x-opencode-session` (OpenCode Zen/Go D1). Empty = no header.
+	SessionID string
+
+	// Route selects the wire endpoint. "" = default /chat/completions.
+	// "responses" = POST /responses (OpenAI Responses wire — OpenCode Zen
+	// GPT/muse-spark models, https://opencode.ai/docs/zen/). "messages" =
+	// POST /messages (Anthropic wire — OpenCode Go MiniMax/Qwen models,
+	// https://opencode.ai/docs/go/). The opencode clients set this from the
+	// live /v1/models catalog (model-aware routing, D2).
+	Route string
+
 	HTTP  *http.Client
 	Retry RetryPolicy
 
@@ -252,7 +264,7 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 
 	var resp *http.Response
 	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, c.requestHeaders(), body)
+		r, err2 := postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), body)
 		if err2 != nil {
 			return isConnectionErr(err2), err2, 0
 		}
@@ -282,10 +294,28 @@ func (c *OpenAICompatClient) label() string {
 	return "openai-compat"
 }
 
-func (c *OpenAICompatClient) requestHeaders() map[string]string {
+// wirePath returns the endpoint path for the selected Route. The default
+// is /chat/completions; "responses" and "messages" select the OpenAI
+// Responses / Anthropic Messages wires (OpenCode Zen/Go model-aware
+// routing, D2).
+func (c *OpenAICompatClient) wirePath() string {
+	switch c.Route {
+	case "responses":
+		return "responses"
+	case "messages":
+		return "messages"
+	default:
+		return "chat/completions"
+	}
+}
+
+func (c *OpenAICompatClient) requestHeaders(sessionID string) map[string]string {
 	h := map[string]string{
 		"content-type": "application/json",
 		"accept":       "text/event-stream",
+		// First-party user-agent: OpenCode Zen/Go reject generic SDK/HTTP
+		// library names (https://opencode.ai/docs/go/#where-can-i-use-it).
+		"user-agent": userAgent(),
 	}
 	switch c.AuthStyle {
 	case "none":
@@ -295,6 +325,10 @@ func (c *OpenAICompatClient) requestHeaders() map[string]string {
 		if c.APIKey != "" {
 			h["authorization"] = "Bearer " + c.APIKey
 		}
+	}
+	// Stable per-conversation/per-execution session id (OpenCode D1).
+	if sessionID != "" {
+		h["x-opencode-session"] = sessionID
 	}
 	for k, v := range c.ExtraHeaders {
 		h[strings.ToLower(k)] = v

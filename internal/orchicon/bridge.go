@@ -1150,6 +1150,8 @@ func collectFollowUp(ctx context.Context, prov Provider, model string, opts sche
 		},
 		MaxTokens:    maxOutputTokens(),
 		CacheControl: CacheControlSystemAndTools,
+		// Stable per-execution session id for OpenCode Zen/Go (D1).
+		SessionID: opts.ExecutionID,
 	})
 	if err != nil {
 		return "", err

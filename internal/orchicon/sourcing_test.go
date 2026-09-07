@@ -228,3 +228,27 @@ var _ = sync.Mutex{}
 var _ = time.Now
 
 var _ = fmt.Sprintf
+
+func TestSourcingProbeOpenCodeSessionHeader(t *testing.T) {
+	var gotSession, gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		gotUA = r.Header.Get("user-agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"deepseek-v4-flash"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	p, _ := BuiltinProfile("opencode")
+	p.BaseURL = srv.URL
+	s := NewSourcingService(nil, nil)
+	res := s.ListModels(context.Background(), p)
+	if res.Degraded {
+		t.Fatal("live probe must not degrade")
+	}
+	if !strings.HasPrefix(gotSession, "orchicon-probe-") {
+		t.Fatalf("x-opencode-session = %q, want orchicon-probe-…", gotSession)
+	}
+	if !strings.HasPrefix(gotUA, "orchicon/") {
+		t.Fatalf("user-agent = %q, want orchicon/…", gotUA)
+	}
+}

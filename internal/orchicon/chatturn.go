@@ -133,6 +133,9 @@ func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sess
 		Messages:    history,
 		MaxTokens:   maxOutputTokens(),
 		CacheControl: CacheControlSystemAndTools,
+		// Stable per-conversation session id for OpenCode Zen/Go (D1): the
+		// provider requires x-opencode-session per conversation.
+		SessionID: conversationID,
 	}
 	// Start the stream SYNCHRONOUSLY so a pre-stream failure surfaces as a
 	// send-accept failure (the collector fails the turn) rather than a

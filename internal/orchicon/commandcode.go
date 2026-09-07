@@ -108,6 +108,7 @@ func (c *CommandCodeClient) fetchWhoamiPlan(ctx context.Context) (string, error)
 		return "", err
 	}
 	req.Header.Set("authorization", "Bearer "+c.APIKey)
+	req.Header.Set("user-agent", userAgent())
 	resp, err := httpc.Do(req)
 	if err != nil {
 		return "", err
@@ -254,6 +255,7 @@ func (c *CommandCodeClient) legacyHeaders() map[string]string {
 		"x-project-slug":         "orchicon",
 		"x-taste-learning":       "true",
 		"x-co-flag":              "false",
+		"user-agent":             userAgent(),
 	}
 	if c.zdr() {
 		h["x-cmd-zdr"] = "1"

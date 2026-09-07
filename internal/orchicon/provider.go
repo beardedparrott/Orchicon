@@ -11,7 +11,18 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+
+	"github.com/beardedparrott/orchicon/internal/version"
 )
+
+// userAgent is the first-party user-agent every native provider request
+// sends. OpenCode Zen/Go explicitly reject generic SDK/HTTP-library names
+// (e.g. Go-http-client) — see https://opencode.ai/docs/go/#where-can-i-use-it
+// — so every native client (turns, probes, metadata) identifies as
+// orchicon/<version>.
+func userAgent() string {
+	return "orchicon/" + version.Current().Tag
+}
 
 // Sentinel errors surfaced by providers. Callers test with errors.Is.
 var (
