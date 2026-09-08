@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -70,12 +71,45 @@ func (b *bearerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFu
 	return next // client-side only; server half is a passthrough
 }
 
+// unaryDeadlineInterceptor bounds unary RPCs to d when the caller's
+// context carries no deadline of its own (call-site deadlines win).
+// Streaming RPCs pass through untouched — a whole-request deadline is
+// what killed every TUI live stream at exactly 30s (http.Client.Timeout
+// also caps response-body reads, which is a stream's entire lifetime).
+type unaryDeadlineInterceptor struct{ d time.Duration }
+
+func (u *unaryDeadlineInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, u.d)
+			defer cancel()
+		}
+		return next(ctx, req)
+	}
+}
+
+func (u *unaryDeadlineInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next // streams are never capped
+}
+
+func (u *unaryDeadlineInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next // client-side only
+}
+
 // Options carries the resolved connection parameters.
+//
+// Timeout is the UNARY RPC deadline (0 → 30s). It must never cap
+// server-streams: a live stream (StreamExecutionEvents, ChatStream,
+// WatchTurnStream) outlives any sane whole-request deadline — heartbeats
+// keep it alive and contexts/Close bound its lifetime. The deadline is
+// enforced by unaryDeadlineInterceptor so call-site context deadlines
+// win; http.Client.Timeout is left at zero (it kills streaming bodies).
 type Options struct {
 	BaseURL            string
 	Token              string
 	InsecureSkipVerify bool
-	Timeout            time.Duration // unary HTTP client timeout (0 → 30s)
+	Timeout            time.Duration // unary RPC deadline (0 → 30s); streams never capped
 }
 
 // Clients is the v1 client set orch consumes (read-only v1 surface; §6 of
@@ -101,16 +135,21 @@ type Clients struct {
 }
 
 // New builds the client set for the given options. baseURL is normalized
-// (trailing slash trimmed).
+// (trailing slash trimmed). The HTTP client deliberately carries NO
+// whole-request Timeout — it would kill server-streams mid-flight at the
+// deadline (http.Client.Timeout caps body reads too). Unary RPCs are
+// bounded by the unary deadline interceptor; dial/handshake attempts are
+// bounded by the transport so a black-holed server cannot hang a dial
+// forever.
 func New(opts Options) *Clients {
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	httpClient := &http.Client{
-		Timeout: timeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify},
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify},
+			TLSHandshakeTimeout: 10 * time.Second,
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
 		},
 	}
 	return NewWithHTTPClient(opts, httpClient)
@@ -120,10 +159,15 @@ func New(opts Options) *Clients {
 // client (tests inject one backed by httptest).
 func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	base := opts.BaseURL
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	interceptors := []connect.Interceptor{}
 	if opts.Token != "" {
 		interceptors = append(interceptors, &bearerInterceptor{cred: opts.Token})
 	}
+	interceptors = append(interceptors, &unaryDeadlineInterceptor{d: timeout})
 	opts2 := []connect.ClientOption{connect.WithInterceptors(interceptors...)}
 	c := &Clients{HTTP: httpClient}
 	c.Ask = newClient(apiv1connect.NewAskOrchiconServiceClient, httpClient, base, opts2)
