@@ -10,6 +10,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -31,6 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/mcpsettings"
@@ -365,6 +368,118 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return ttx.Commit(ctx)
 	})
 
+	// Diff pipeline (file-edit ledger): ground-truth, server-computed diffs
+	// for every file the session touches. The hook parses the worktree
+	// engine's structured file_edits output (batch_write/write/edit) and
+	// takes server-side after-snapshots for the opencode built-in
+	// write/edit; entries persist to file_edit_ledger and stream on the
+	// execution event channel. Best-effort like the transcript writer: a
+	// ledger gap never fails the session.
+	feStore := fileedit.NewPGStore(pool)
+	feSvc := fileedit.NewService(feStore, log)
+	if pub != nil {
+		feSvc.Publisher = func(ownerKind, ownerID string, row *db.FileEditLedgerRow) {
+			if ownerKind != db.FileEditOwnerExecution || pub == nil {
+				return
+			}
+			payload, err := json.Marshal(map[string]any{
+				"event_type":   "execution.file_edit",
+				"tenant_id":    row.TenantID,
+				"execution_id": row.OwnerID,
+				"owner_kind":   ownerKind,
+				"owner_id":     ownerID,
+				"edit":         fileedit.RowToProto(row),
+				"occurred_at":  time.Now().UTC().Format(time.RFC3339Nano),
+			})
+			if err != nil {
+				return
+			}
+			_ = pub.Publish(context.Background(),
+				eventbus.SubjectFor("execution", "file_edit"),
+				row.ID, payload)
+		}
+	}
+	// Per-execution built-in tool observers: on the first opencode built-in
+	// write/edit for a run, an Observer is created rooted at the run's exec
+	// dir (worktree or project dir); it caches last-seen content per path
+	// (git-HEAD-seeded) so each ObserveAfter diffs real file state on both
+	// sides. Guarded by feObsMu; entries live for the process lifetime —
+	// bounded by one entry per execution that used built-in write tools.
+	var (
+		feObsMu sync.Mutex
+		feObs   = map[string]*fileedit.Observer{}
+	)
+	feObserver := func(execID, execDir string) *fileedit.Observer {
+		if execDir == "" {
+			return nil
+		}
+		feObsMu.Lock()
+		defer feObsMu.Unlock()
+		o, ok := feObs[execID]
+		if !ok {
+			o = fileedit.NewObserver(execDir)
+			feObs[execID] = o
+		}
+		return o
+	}
+	// inputStr reads a string field off the tool_use input map.
+	inputStr := func(m map[string]any, key string) string {
+		if s, ok := m[key].(string); ok {
+			return s
+		}
+		return ""
+	}
+	adapterBridge.SetFileEditHook(func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string) {
+		// opencode built-in write/edit (the runtime's native file tools — the
+		// input shapes from the spike doc): take a plane-side after-snapshot.
+		// The engine tools never reach this branch (batch_write/write/edit are
+		// matched above), so a built-in `write` with a `filePath` input cannot
+		// double-record with the engine path. "before" is the observer's
+		// last-seen content (git-HEAD-seeded on first sight), "after" is the
+		// fresh read — real file state on both sides.
+		switch toolName {
+		case "write":
+			if o := feObserver(execID, execDir); o != nil {
+				p := inputStr(input, "filePath")
+				if p == "" {
+					p = inputStr(input, "path")
+				}
+				if e := o.ObserveAfter(p, fileedit.ToolOpenCodeWrite); e.Path != "" {
+					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
+				}
+			}
+		case "edit":
+			if o := feObserver(execID, execDir); o != nil {
+				p := inputStr(input, "filePath")
+				if p == "" {
+					p = inputStr(input, "path")
+				}
+				if e := o.ObserveAfter(p, fileedit.ToolOpenCodeEdit); e.Path != "" {
+					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
+				}
+			}
+		case "batch_write":
+			// Worktree engine tool: the engine already computed the
+			// ground-truth diffs in its structured output.
+			feSvc.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerExecution, execID, toolName, output)
+		case "file_diff":
+			// Adapter fallback for paths no known mutating tool covered:
+			// the input carries the file_diff event's path. Real file
+			// state both sides (observer cache vs fresh read); no-op reads
+			// drop out inside ObserveAfter.
+			if o := feObserver(execID, execDir); o != nil {
+				p := inputStr(input, "path")
+				if e := o.ObserveAfter(p, "file_diff"); e.Path != "" {
+					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
+				}
+			}
+		case "write_artifact", "todowrite", "todowrite_more":
+			// Virtual tools: no file touched.
+		default:
+			return
+		}
+	})
+
 	// Register the opencode bridge under its adapter kind. This is the
 	// ONLY place the concrete adapter appears in a dispatch-capable
 	// position — every downstream path resolves it from the Dispatcher by
@@ -372,6 +487,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	dispatcher.Register("opencode", adapterBridge)
 
 	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
+	// Diff pipeline (AC 4): at every terminal transition the file-edit
+	// ledger reconciles against the run worktree's git state (best-effort).
+	taskRec.SetFileEditReconciler(newFileEditReconciler(pool, log))
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
@@ -504,6 +622,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		// UsageRecorder wires the shared AI Gateway recorder into Ask
 		// Orchicon so Ask sessions capture live usage per adapter.
 		UsageRecorder: usageRecorder,
+		// FileEditService wires the diff-pipeline ledger into Ask Orchicon:
+		// Ask conversations ledger file edits from real file-state
+		// snapshots (owner_kind ask_conversation) — the same ground truth
+		// executions record.
+		FileEditService: feSvc,
 	}
 	handler := api.Mount(mux, &deps)
 

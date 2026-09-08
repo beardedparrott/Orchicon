@@ -27,6 +27,8 @@ package worktree
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,6 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 )
 
 // Default caps keep a single tool call well-bounded so it cannot blow up the
@@ -680,7 +684,94 @@ func BatchWrite(b Base, args WriteArgs) (string, error) {
 		applied = append(applied, op)
 	}
 
-	return fmt.Sprintf("batch_write: applied %d write(s): %s", len(applied), strings.Join(paths(applied), ", ")), nil
+	summary := fmt.Sprintf("batch_write: applied %d write(s): %s", len(applied), strings.Join(paths(applied), ", "))
+	if edits := fileEditsJSON(applied); len(edits) > 0 {
+		// Structured diff payload: keep the human summary line first, then
+		// the machine-readable record on its own line (the MCP layer returns
+		// this string verbatim; the ledger parses the JSON object).
+		payload, err := json.Marshal(map[string]any{
+			"summary":    summary,
+			"file_edits": edits,
+		})
+		if err == nil {
+			return summary + "\n" + string(payload), nil
+		}
+	}
+	return summary, nil
+}
+
+// fileEditsJSON builds the per-path ground-truth diff records for the paths
+// a BatchWrite applied. The ORIGINAL on-disk content is already in hand
+// (op.orig/op.exist — captured before any write); the AFTER side is the
+// final virtual state (op.next). Nothing is re-read from disk: the snapshot
+// pair is race-free by construction. A path whose content did not actually
+// change (identical before/after) produces no record — the ledger skips
+// no-op entries by construction too.
+func fileEditsJSON(applied []writeOp) []map[string]any {
+	out := make([]map[string]any, 0, len(applied))
+	seen := map[string]bool{}
+	for _, op := range applied {
+		if seen[op.abs] {
+			// Later ops on the same path supersede earlier ones; the final
+			// applied op holds the true next content.
+			out[len(out)-1] = fileEditRecord(op)
+			continue
+		}
+		seen[op.abs] = true
+		out = append(out, fileEditRecord(op))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// fileEditRecord renders one path's diff record via the fileedit engine.
+// fileedit is a stdlib-only leaf; worktree does not import it — the diff
+// engine lives in fileedit and is duplicated here ONLY at the type level is
+// false: see diff.go — worktree imports fileedit directly (no cycle:
+// fileedit imports nothing from worktree).
+func fileEditRecord(op writeOp) map[string]any {
+	var before, after []byte
+	if op.exist {
+		before = []byte(op.orig)
+	}
+	after = []byte(op.next)
+	res := fileedit.ComputeUnifiedDiff(before, after, op.w.Path)
+	rec := map[string]any{
+		"path":           op.w.Path,
+		"kind":           res.Kind,
+		"existed_before": op.exist,
+		"existed_after":  true,
+		"size_before":    len(before),
+		"size_after":     len(after),
+	}
+	if res.UnifiedDiff != "" {
+		rec["unified_diff"] = res.UnifiedDiff
+	}
+	if res.Binary {
+		rec["is_binary"] = true
+	}
+	if res.Truncated {
+		rec["truncated"] = true
+	}
+	if b := fileeditSHA(before); b != "" {
+		rec["sha256_before"] = b
+	}
+	if a := fileeditSHA(after); a != "" {
+		rec["sha256_after"] = a
+	}
+	return rec
+}
+
+// fileeditSHA is fileedit.SHA256Hex inline (nil → "" so absent sides carry
+// no hash, mirroring the ledger's zero-value convention).
+func fileeditSHA(b []byte) string {
+	if b == nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func paths(ops []writeOp) []string {

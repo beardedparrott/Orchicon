@@ -1,0 +1,10 @@
+{
+  "name": "create-new-file",
+  "path": "cmd/new.go",
+  "before": null,
+  "after": "package main\n\nfunc main() {}\n",
+  "expected_kind": "create",
+  "expected_unified_diff": "--- /dev/null\n+++ b/cmd/new.go\n@@ -0,0 +1,3 @@\n+package main\n+\n+func main() {}\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

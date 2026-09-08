@@ -1,0 +1,22 @@
+// Orchicon FileEditService: durable file-edit ledger fetch + live stream.
+//
+// API-key auth rides the shared interceptor chain like every other service;
+// the read policy mirrors ExecutionService's (a caller that can read an
+// execution can read its file-edit ledger).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/file_edit.proto";
+
+service FileEditService {
+  // GetSessionFileEdits returns the file-edit ledger for one owner
+  // (execution or Ask conversation), optionally resuming from a sequence —
+  // the initial load + catch-up read for the GUI sidebar / TUI pane.
+  rpc GetSessionFileEdits(GetSessionFileEditsRequest) returns (GetSessionFileEditsResponse);
+
+  // StreamFileEdits is the server-stream RPC that fans out new ledger
+  // entries for one owner as they are persisted. event_id dedups across
+  // reconnects; from_sequence resumes after a sequence.
+  rpc StreamFileEdits(StreamFileEditsRequest) returns (stream StreamFileEditsResponse);
+}

@@ -79,6 +79,18 @@ type Service struct {
 	// static builtin catalog.
 	validationRegistry adapter.ProviderRegistry
 
+	// fileEditHook is the diff-pipeline ledger hook for Ask turns (optional,
+	// wired by the server over the shared fileedit.Service): invoked for
+	// every completed mutating tool_use part so Ask conversations ledger
+	// file edits from real file-state snapshots (owner_kind
+	// ask_conversation). Nil = no ledger (tests / DB-less planes).
+	fileEditHook func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string)
+	// fileEditReconciler is the terminal-turn git reconciliation hook
+	// (optional, same diff pipeline): invoked once when a turn finalizes so
+	// the conversation's ledger reconciles against the project dir's git
+	// state. Nil = skipped.
+	fileEditReconciler func(ctx context.Context, tenantID, convID string)
+
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -209,6 +221,22 @@ func (s *Service) SetDispatcher(d *scheduler.Dispatcher) {
 func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
 	s.validationRegistry = reg
 	toolValidateModelRef = func(ref string) error { return s.validateModelRef(ref) }
+}
+
+// SetFileEditHook wires the diff-pipeline ledger hook into Ask turns. When
+// set, every completed mutating tool_use part on a conversation turn is
+// ledgered (owner_kind ask_conversation) from real file-state snapshots —
+// the same ground truth executions ledger. Nil (tests / DB-less planes) =
+// Ask records no ledger entries.
+func (s *Service) SetFileEditHook(hook func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string)) {
+	s.fileEditHook = hook
+}
+
+// SetFileEditReconciler wires the terminal-turn git reconciliation hook
+// (diff pipeline AC 4): once a turn finalizes, the conversation's ledger
+// reconciles against the conversation project dir's git state. Nil = skipped.
+func (s *Service) SetFileEditReconciler(rec func(ctx context.Context, tenantID, convID string)) {
+	s.fileEditReconciler = rec
 }
 
 // registry returns the injected validation registry or the static builtin
