@@ -128,6 +128,26 @@ describe("sideBySide parseUnifiedDiff over shared fixtures", () => {
     expect(rows.filter((r) => r.kind === "del").length).toBe(2);
     expect(rows.filter((r) => r.kind === "add").length).toBe(0);
   });
+
+  it("does not emit spurious rows for no-newline markers", () => {
+    const v = parsed.find((p) => p.name === "no-trailing-newline")!;
+    const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
+    // The diff: ctx(line1) del(line2,no-eol-marker) add(line2,no-eol-marker).
+    // The "\ No newline at end of file" markers are NOT content lines; they
+    // annotate the preceding add/del row. No ctx row may be produced for them.
+    expect(rows.filter((r) => r.kind === "ctx").length).toBe(1);
+    expect(rows.filter((r) => r.kind === "del").length).toBe(1);
+    expect(rows.filter((r) => r.kind === "add").length).toBe(1);
+    // The marker is annotated onto the preceding (= only) del/add rows.
+    const del = rows.find((r) => r.kind === "del")!;
+    const add = rows.find((r) => r.kind === "add")!;
+    expect(del.oldText).toContain("\u27EA");
+    expect(add.newText).toContain("\u27EA");
+    // Paired line numbers: the add/del share new/old line 2, not a phantom
+    // ctx row consuming line 3.
+    expect(del.lineNoOld).toBe(2);
+    expect(add.lineNoNew).toBe(2);
+  });
 });
 
 describe("sideBySide emphasizeTokens", () => {

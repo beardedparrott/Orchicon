@@ -103,7 +103,10 @@ export function parseUnifiedDiff(unifiedDiff: string): SideBySideRow[] {
 
     const marker = line[0];
     const body = line.slice(1);
-    if (body.endsWith("\\") && body.startsWith("\\ No newline at end of file")) {
+    // A "\ No newline at end of file" marker — the leading backslash IS the
+    // line's first char (marker === "\\"), so after slicing it off `body`
+    // starts with " No newline at end of file". Annotate the preceding row.
+    if (marker === "\\" && body.startsWith(" No newline at end of file")) {
       // "\\ No newline at end of file" marker — annotate the preceding row.
       const prev = rows[rows.length - 1];
       if (prev) {
