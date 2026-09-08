@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -99,8 +100,81 @@ func runInstall(args []string, log *slog.Logger) error {
 		time.Sleep(2 * time.Second)
 	}
 
-	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage)
+	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
+	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
+	// guard only warns.
+	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
+	installOrchLauncher(installDir)
+
+	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir)
 	return nil
+}
+
+// defaultInstallDir returns the default launcher install directory
+// (~/.local/bin), mirroring scripts/install.sh.
+func defaultInstallDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".local/bin"
+	}
+	return filepath.Join(home, ".local", "bin")
+}
+
+// installOrchLauncher symlinks the sibling `orch` binary (next to the
+// running executable) into installDir. Idempotent: an existing symlink we
+// own is refreshed in place; a pre-existing regular file is warned + skipped
+// unless ORCHICON_FORCE_LAUNCHER=1 replaces it; a missing sibling binary is
+// a non-fatal warning.
+func installOrchLauncher(installDir string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("warning: could not locate the running executable to find the sibling orch binary: %v\n", err)
+		return
+	}
+	installOrchLauncherFrom(exe, installDir)
+}
+
+// installOrchLauncherFrom symlinks the sibling `orch` binary next to the
+// given executable path into installDir. Split out so tests can pass a
+// controlled executable path (os.Executable() is not redirectable).
+func installOrchLauncherFrom(exe, installDir string) {
+	sibling := filepath.Join(filepath.Dir(exe), "orch")
+	if runtime.GOOS == "windows" {
+		sibling += ".exe"
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
+		return
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		fmt.Printf("warning: could not create install dir %s: %v\n", installDir, err)
+		return
+	}
+	link := filepath.Join(installDir, "orch")
+	if runtime.GOOS == "windows" {
+		link += ".exe"
+	}
+	// Refresh an owned symlink in place.
+	if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		if target, err := os.Readlink(link); err == nil && target == sibling {
+			fmt.Printf("orch launcher already installed: %s\n", link)
+			return
+		}
+		_ = os.Remove(link)
+	} else if err == nil {
+		// A regular file (or other non-symlink) occupies the path.
+		if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+			fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
+			return
+		}
+		fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+		_ = os.Remove(link)
+	}
+	if err := os.Symlink(sibling, link); err != nil {
+		fmt.Printf("warning: could not symlink orch launcher: %v\n", err)
+		return
+	}
+	fmt.Printf("orch launcher installed: %s → %s\n", link, sibling)
 }
 
 // requireAdapterCLI verifies an adapter CLI is installed on the host
@@ -247,6 +321,17 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 	return nil
 }
 
+// dirOnPath reports whether dir is on the current PATH (mirrors the
+// install.sh PATH hint check).
+func dirOnPath(dir string) bool {
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p == dir {
+			return true
+		}
+	}
+	return false
+}
+
 // imagePresent reports whether a Docker image tag exists locally.
 func imagePresent(img string) bool {
 	out, err := exec.Command("docker", "image", "inspect", img).CombinedOutput()
@@ -269,7 +354,7 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage string) {
+func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string) {
 	controlPort := "8080"
 	grafanaPort := "3002"
 	if instance == "prod" {
@@ -292,6 +377,12 @@ func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeI
 	fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
 	fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
 	fmt.Printf("  Data: volume %s (preserved across restarts)\n", dataVolume)
+	fmt.Println()
+	fmt.Printf("  orch launcher: %s/orch (remote TUI client)\n", installDir)
+	if !dirOnPath(installDir) {
+		fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", installDir)
+		fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
+	}
 	fmt.Println()
 	fmt.Println("  Per-workflow runtime containers are used automatically when a")
 	fmt.Println("  workflow runs. Open the UI, log in with the dev IdP, and create")
