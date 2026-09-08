@@ -11,7 +11,7 @@
 // metadata — the new layout makes the live chat the primary surface
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Pause, Play, Square, Trash2, ArrowLeft } from "lucide-react";
 
 import {
@@ -28,6 +28,9 @@ import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
 import { usageKeys } from "@/api/aigateway";
 import { useGetWorkItem } from "@/api/workItems";
+import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
+import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
+import type { StreamStatus } from "@/api/useStream";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
@@ -47,9 +50,14 @@ export const Route = createRoute({
 
 function ExecutionDetailPage() {
   const { id } = Route.useParams();
-  const qc = useQueryClient();
 
-  const { data: exec, isLoading, error } = useGetExecution(id);
+  const { data: exec, isLoading, error } = useGetExecution(id, {
+    // Pause the 1s detail poll while the event stream is healthy in this
+    // tab — the stream is the liveness source then, and the poll's HTTP
+    // slot is freed for the heavy transcript fetch. Resumes automatically
+    // when the stream drops (closed/error/reconnecting).
+    pollMs: streamStatus === "open" ? 0 : 1_000,
+  });
   const { data: usage } = useGetUsage({ executionId: id });
   // The bound work item's declared context window (adapter parity): a
   // native-engine execution's model may not appear in opencode model
@@ -76,15 +84,36 @@ function ExecutionDetailPage() {
   // the usage records so the Context card + token bars go live too (their
   // query has no refetch interval of its own — it would otherwise sit
   // stale until a manual refresh).
+  //
+  // Invalidations are coalesced behind a trailing debounce so a
+  // token-frequency burst collapses to one batch (not N synchronous
+  // refetches that saturate the per-origin HTTP/1.1 connection budget),
+  // and the stream is gated by liveness so terminal executions never hold
+  // a connection.
+  const scheduleInvalidation = useDebouncedInvalidation([
+    executionKeys.detail(id),
+    executionKeys.session(id),
+    executionKeys.todos(id),
+    usageKeys.records(undefined, id),
+  ]);
+  // Stream status is mirrored into state so useGetExecution's pollMs can
+  // depend on it (the stream hook itself needs isTerminal from exec, which
+  // comes from useGetExecution — a cross-hook cycle broken by this state).
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
+  // Liveness gate: terminal executions (7/8/9/10) never hold a stream
+  // connection. Computed from the fetched exec (may be undefined while
+  // loading — the gate then stays closed until data arrives).
+  const isTerminal =
+    exec?.status === 7 ||
+    exec?.status === 8 ||
+    exec?.status === 9 ||
+    exec?.status === 10;
   const { events, status } = useStreamExecutionEvents({
     executionId: id,
-    onEvent: () => {
-      qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
-      qc.invalidateQueries({ queryKey: executionKeys.session(id) });
-      qc.invalidateQueries({ queryKey: executionKeys.todos(id) });
-      qc.invalidateQueries({ queryKey: usageKeys.records(undefined, id) });
-    },
+    enabled: executionStreamEnabled(id, isTerminal),
+    onEvent: scheduleInvalidation,
   });
+  useEffect(() => setStreamStatus(status), [status]);
 
   // Tier 2 pending approvals (docs/05 §7.1).
   const { data: pendingApprovals } = useListPendingApprovals(id);
@@ -107,9 +136,7 @@ function ExecutionDetailPage() {
 
   const isRunning = exec.status === 2 || exec.status === 3;
   const isPaused = exec.status === 6;
-  const isTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
   const isFailed = exec.status === 10 || exec.status === 8;
-
   return (
     <div className="space-y-4">
       {/* Compact top action bar — back to list, ID, status pill,
