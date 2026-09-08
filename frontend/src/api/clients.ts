@@ -30,6 +30,7 @@ import { SecretsService } from "@/api/gen/orchicon/api/v1/secret_service_connect
 import { CategoryService } from "@/api/gen/orchicon/api/v1/category_service_connect";
 import { ProviderService } from "@/api/gen/orchicon/api/v1/provider_service_connect";
 import { MCPService } from "@/api/gen/orchicon/api/v1/mcp_server_service_connect";
+import { FileEditService } from "@/api/gen/orchicon/api/v1/file_edit_service_connect";
 import { getAccessToken, refreshAccessToken, clearAccessToken, useSessionStore } from "@/auth/session";
 import type { RefreshResult } from "@/auth/session";
 
@@ -139,5 +140,9 @@ export const providerClient = createClient(ProviderService, connectTransport);
 
 // MCP server settings service (ADR-0008) — Settings → Adapters → MCP.
 export const mcpClient = createClient(MCPService, connectTransport);
+
+// File-edit ledger (diff pipeline, feature 3) — consumed by the GUI diff
+// sidebar and the TUI pane. Read policy mirrors ExecutionService.
+export const fileEditClient = createClient(FileEditService, connectTransport);
 
 
