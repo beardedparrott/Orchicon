@@ -131,6 +131,75 @@ func TestPaletteOpensOnSlash(t *testing.T) {
 	}
 }
 
+// TestPaletteNeverOverflowsPins the palette render bounding: the floating
+// overlay must never exceed the terminal height (regression: unbounded
+// command list overflows at 80x24).
+func TestPaletteNeverOverflows(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		w, h := size[0], size[1]
+		m := newTestApp()
+		m.setFocus(focusComposer)
+		m.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
+		m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		// empty query -> all commands matched; unbounded would overflow.
+		m.palette.query = ""
+		m.refreshPalette()
+		v := m.View()
+		if n := strings.Count(v, "\n") + 1; n > h {
+			t.Fatalf("%dx%d palette overflow: %d lines > %d", w, h, n, h)
+		}
+		// The selected row must be visible (viewport windowed).
+		if m.palette.sel < m.palette.scroll || m.palette.sel >= m.palette.scroll+m.paletteVisibleRows() {
+			t.Fatalf("%dx%d selected row %d outside window [%d,%d)", w, h, m.palette.sel, m.palette.scroll, m.palette.scroll+m.paletteVisibleRows())
+		}
+	}
+}
+
+// TestConnectCancelClearsReconnectPins esc-cancel of the /connect overlay:
+// it must clear reconnectRequested so a LATER normal quit does not re-open
+// the connection screen (the reconnect loop is first-run fallback only).
+func TestConnectCancelClearsReconnect(t *testing.T) {
+	m := newTestApp()
+	m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m.closePalette()
+	m.slash.byName["/connect"].Run(m, nil)
+	if !m.ConnectOverlayOpen() {
+		t.Fatal("connect overlay must be open")
+	}
+	if !m.reconnectRequested {
+		t.Fatal("reconnectRequested must be set on /connect")
+	}
+	// esc cancels the overlay.
+	m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.ConnectOverlayOpen() {
+		t.Fatal("esc must close the overlay")
+	}
+	if m.reconnectRequested {
+		t.Fatal("esc-cancel must clear reconnectRequested (later quit must not re-connect)")
+	}
+	if m.quitting {
+		t.Fatal("esc-cancel must not quit")
+	}
+}
+
+// TestTabClickUsesColumnsPins the tab-bar mouse hit-test against terminal
+// COLUMNS (not byte offsets into the ANSI render). Regression: the previous
+// code compared a byte offset to the mouse column and drifted by 1 cell per
+// preceding "·" glyph, so clicks at / right of a mid-tab missed it.
+func TestTabClickUsesColumns(t *testing.T) {
+	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
+	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
+	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app.SwitchTo(TabAsk)
+	for _, tab := range Tabs {
+		// Click at the exact visible column where this tab's label starts.
+		id, ok := app.TabClick(app.tabStartCol(tab))
+		if !ok || id != tab.ID {
+			t.Errorf("col %d: TabClick = %q,%v want %q", app.tabStartCol(tab), id, ok, tab.ID)
+		}
+	}
+}
+
 // TestAskTwoRailsPins the Ask 3-zone layout: left diff rail + center + right
 // conversations rail render together without overflow.
 func TestAskTwoRailsPins(t *testing.T) {

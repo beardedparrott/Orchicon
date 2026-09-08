@@ -18,7 +18,8 @@ import (
 type palette struct {
 	open  bool
 	query string // the slash prefix typed so far ("" for first '/')
-	sel   int    // selected index into the filtered candidate list
+	sel    int // selected index into the filtered candidate list
+	scroll int // viewport offset so the palette never overflows a short terminal
 	// connect state: /connect opens an in-place re-auth overlay that never
 	// tears down alt-screen or exits the process.
 	connectOpen bool
@@ -43,6 +44,7 @@ func (m *App) openPalette() {
 func (m *App) closePalette() {
 	m.palette.open = false
 	m.palette.sel = 0
+	m.palette.scroll = 0
 	m.palette.filter = nil
 }
 
@@ -71,6 +73,7 @@ func (m *App) refreshPalette() {
 	if m.palette.sel < 0 {
 		m.palette.sel = 0
 	}
+	m.clampPaletteScroll()
 }
 
 // paletteSelect moves the selection by delta (arrow keys).
@@ -85,6 +88,7 @@ func (m *App) paletteSelect(delta int) {
 	if m.palette.sel >= len(m.palette.filter) {
 		m.palette.sel = len(m.palette.filter) - 1
 	}
+	m.ensurePaletteSelVisible()
 }
 
 // paletteSelected returns the currently-selected command (or nil).
@@ -95,26 +99,102 @@ func (m *App) paletteSelected() *SlashCommand {
 	return nil
 }
 
+// paletteVisibleRows is how many candidate rows the floating palette can
+// render given the terminal height (header + border + padding consume ~6
+// rows). Bounding here keeps the overlay from overflowing a short terminal
+// (e.g. 80×24, where an unbounded list of ~20 commands would scroll off).
+func (m *App) paletteVisibleRows() int {
+	if m.height < 10 {
+		return 3
+	}
+	return m.height - 6
+}
+
+// paletteContentWidth returns the max content width (cells) for one palette
+// line. The HelpOverlay style adds a rounded border (1 each side) and
+// horizontal padding (2 each side) = 6 cells, so the content must stop short
+// of the terminal width to avoid horizontal overflow (regression: an
+// unbounded description rendered 98 cells at 80 cols, clipping off-edge).
+func (m *App) paletteContentWidth() int {
+	max := m.width - 6
+	if max < 24 {
+		return 24
+	}
+	if max > 70 {
+		return 70
+	}
+	return max
+}
+
+// clampPaletteScroll keeps the viewport within the candidate list.
+func (m *App) clampPaletteScroll() {
+	vis := m.paletteVisibleRows()
+	max := len(m.palette.filter) - vis
+	if max < 0 {
+		max = 0
+	}
+	if m.palette.scroll > max {
+		m.palette.scroll = max
+	}
+	if m.palette.scroll < 0 {
+		m.palette.scroll = 0
+	}
+}
+
+// ensurePaletteSelVisible scrolls so the selected row is in the window
+// (keeps arrow navigation useful at the top/bottom of a long list).
+func (m *App) ensurePaletteSelVisible() {
+	vis := m.paletteVisibleRows()
+	if m.palette.sel < m.palette.scroll {
+		m.palette.scroll = m.palette.sel
+	}
+	if m.palette.sel >= m.palette.scroll+vis {
+		m.palette.scroll = m.palette.sel - vis + 1
+	}
+	m.clampPaletteScroll()
+}
+
 // paletteView renders the overlay box centered over the content area,
-// listing matching commands with name + description.
+// listing matching commands with name + description. The candidate list is
+// windowed (via palette.scroll) so it never overflows the terminal height.
 func (m *App) paletteView() string {
 	if !m.palette.open {
 		return ""
 	}
+	m.ensurePaletteSelVisible()
+	vis := m.paletteVisibleRows()
+	max := m.paletteContentWidth()
 	var b strings.Builder
-	b.WriteString(theme.DetailKey.Render("  / command palette  "))
-	b.WriteString(theme.HintText.Render("(type to filter · ↑/↓/click · enter select · esc close)"))
+	// Header: bound the plain hint text so title+hint fit max cells, then
+	// style each part separately (truncate BEFORE styling, since truncateRight
+	// is byte/rune-based and would split ANSI escape sequences if styled first).
+	title := "  / command palette  "
+	hint := "(type to filter · ↑/↓/click · enter select · esc close)"
+	if len([]rune(title))+len([]rune(hint)) > max {
+		hint = truncateRight(hint, max-len([]rune(title)))
+	}
+	b.WriteString(theme.DetailKey.Render(title))
+	b.WriteString(theme.HintText.Render(hint))
 	b.WriteString("\n")
 	if len(m.palette.filter) == 0 {
-		b.WriteString(theme.HintText.Render("  no matching commands") + "\n")
+		b.WriteString(theme.HintText.Render(truncateRight("  no matching commands", max)) + "\n")
 	} else {
-		for i, c := range m.palette.filter {
+		lo := m.palette.scroll
+		hi := lo + vis
+		if hi > len(m.palette.filter) {
+			hi = len(m.palette.filter)
+		}
+		for i := lo; i < hi; i++ {
+			c := m.palette.filter[i]
 			line := "  " + c.Name
 			pad := 30 - len(c.Name)
 			if pad < 1 {
 				pad = 1
 			}
 			line += strings.Repeat(" ", pad) + c.Desc
+			// Bound the PLAIN content to max cells before styling (styling
+			// adds ANSI that truncateRight can't safely split).
+			line = truncateRight(line, max)
 			if i == m.palette.sel {
 				b.WriteString(theme.ListItemSelected.Render(line))
 			} else {
@@ -183,15 +263,44 @@ func (m *App) openConnectOverlay() {
 // closeConnectOverlay closes it (esc).
 func (m *App) closeConnectOverlay() { m.palette.connectOpen = false }
 
-// connectOverlayView renders the overlay box.
+// connectOverlayView renders the overlay box. The message is wrapped to
+// the overlay's content width so a long re-auth hint never overflows the
+// terminal horizontally.
 func (m *App) connectOverlayView() string {
+	max := m.paletteContentWidth()
 	var b strings.Builder
 	b.WriteString(theme.ListTitle.Render("  / connect (in place)  "))
 	b.WriteString("\n\n")
-	b.WriteString(theme.DetailValue.Render(m.palette.connectMsg))
+	b.WriteString(theme.DetailValue.Render(wordWrap(m.palette.connectMsg, max)))
 	b.WriteString("\n\n")
-	b.WriteString(theme.HintText.Render("  esc: close · q: quit orch · the shell is still running (alt-screen intact)"))
+	b.WriteString(theme.HintText.Render(wordWrap("  esc: close · q: quit orch · the shell is still running (alt-screen intact)", max)))
 	return theme.HelpOverlay.Render(b.String())
+}
+
+// wordWrap wraps s to width w cells at spaces (plain text only — no ANSI).
+// Used to bound long overlay copy horizontally.
+func wordWrap(s string, w int) string {
+	if w < 1 || s == "" {
+		return s
+	}
+	var out []string
+	cur := ""
+	for _, word := range strings.Fields(s) {
+		if cur == "" {
+			cur = word
+			continue
+		}
+		if len([]rune(cur))+1+len([]rune(word)) <= w {
+			cur += " " + word
+		} else {
+			out = append(out, cur)
+			cur = word
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return strings.Join(out, "\n")
 }
 
 // connectHandleKey processes keys while the connect overlay is open.
@@ -199,9 +308,15 @@ func (m *App) connectOverlayView() string {
 func (m *App) connectHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	switch k.String() {
 	case "esc":
+		// Cancel the re-auth: the shell stays put (in-place overlay). Clear
+		// reconnectRequested so a later normal quit does NOT re-open the
+		// connection screen — the loop is first-run fallback only, and the
+		// in-place /connect never exits the process.
+		m.reconnectRequested = false
 		m.closeConnectOverlay()
 		return true, nil
 	case "q", "ctrl+c":
+		m.reconnectRequested = false // quitting for real, not re-auth
 		m.quitting = true
 		return true, tea.Quit
 	default:

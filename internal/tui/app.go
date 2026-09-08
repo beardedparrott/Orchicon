@@ -874,10 +874,17 @@ func (m App) TabClick(x int) (TabID, bool) {
 	bar := m.tabBarView()
 	for _, t := range Tabs {
 		label := t.Ordinal + "·" + t.Title
-		start := strings.Index(bar, label)
-		if start < 0 {
+		idx := strings.Index(bar, label)
+		if idx < 0 {
 			continue
 		}
+		// Mouse X is a terminal COLUMN (0-based) but strings.Index returns a
+		// BYTE offset into the ANSI-styled render. The two diverge by the
+		// width of every preceding colored/multibyte glyph, so the byte
+		// offset cannot be compared to x. Measure the visible width of the
+		// styled prefix with lipgloss.Width (ANSI-aware) to get the label's
+		// true starting column.
+		start := lipgloss.Width(bar[:idx])
 		// The tab span extends from the label's start to just before the
 		// following child block start (background padding + inter-tab gap).
 		end := start + lipgloss.Width(label) + 3
@@ -886,6 +893,19 @@ func (m App) TabClick(x int) (TabID, bool) {
 		}
 	}
 	return "", false
+}
+
+// tabStartCol returns the visible terminal column where tab's label begins
+// in the rendered tab bar (ANSI-aware). Used by the tab mouse hit-test and
+// its tests, so the click math never has to reconstruct lipgloss internals.
+func (m App) tabStartCol(t Tab) int {
+	bar := m.tabBarView()
+	label := t.Ordinal + "·" + t.Title
+	idx := strings.Index(bar, label)
+	if idx < 0 {
+		return 0
+	}
+	return lipgloss.Width(bar[:idx])
 }
 
 // ReconnectRequested reports whether the shell exited for /connect
