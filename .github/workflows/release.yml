@@ -119,6 +119,7 @@ jobs:
           EXT=""
           [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
           go build -ldflags "$LDFLAGS" -o "orchicon${EXT}" ./cmd/orchicon
+          go build -ldflags "$LDFLAGS" -o "orch${EXT}" ./cmd/orch
 
       - name: Package
         env:
@@ -131,6 +132,7 @@ jobs:
           ASSET="orchicon_${VERSION_NUM}_${{ matrix.os }}_${{ matrix.arch }}"
           mkdir -p "$ASSET"
           cp "orchicon${EXT}" "$ASSET/"
+          cp "orch${EXT}" "$ASSET/"
           cp README.md "$ASSET/" 2>/dev/null || true
           cp LICENSE "$ASSET/" 2>/dev/null || true
           if [ "${{ matrix.archive }}" = "tar.gz" ]; then
@@ -175,12 +177,14 @@ jobs:
                    -X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION} \
                    -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           go build -ldflags "$LDFLAGS" -o ./orchicon ./cmd/orchicon
+          go build -ldflags "$LDFLAGS" -o ./orch ./cmd/orch
 
       - name: Build container image
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           cp ./orchicon deploy/container/orchicon
+          cp ./orch deploy/container/orch
           docker build -f deploy/container/Dockerfile -t "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" deploy/container
           docker tag "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon:latest
 

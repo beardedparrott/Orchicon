@@ -92,9 +92,10 @@ fetch-tags:
 # UI — exactly how the Ask Orchicon full-viewport fix stayed invisible after
 # a "rebuild". fe-build is stamp-checked, so an unchanged frontend adds no
 # cost to the Go-only iteration loop.
-build: fetch-tags fe-build ## Build the control-plane binary into bin/
+build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
 
 run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
@@ -118,6 +119,7 @@ clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
+	@rm -f $(BIN_DIR)/orch
 	# Stale copies of the binary dropped into the container/runtime build
 	# contexts by older scripts. The runtime image no longer bakes the
 	# binary (the daemon bind-mounts its own executable), so a leftover

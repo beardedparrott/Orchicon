@@ -395,6 +395,14 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 mkdir -p "$INSTALL_DIR"
 mv "$BIN" "$INSTALL_DIR/orchicon"
 chmod +x "$INSTALL_DIR/orchicon"
+ORCH="$(find "$TMP" -type f -name orch -perm -u+x 2>/dev/null | head -1)"
+if [ -n "$ORCH" ]; then
+  mv "$ORCH" "$INSTALL_DIR/orch"
+  chmod +x "$INSTALL_DIR/orch"
+  echo "orch (remote TUI client) installed: $INSTALL_DIR/orch"
+else
+  echo "orch companion binary not found in archive (older release?) — skipping"
+fi
 "$INSTALL_DIR/orchicon" version
 rm -rf "$TMP"
 '@
