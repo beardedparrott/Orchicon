@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,10 +36,10 @@ import (
 
 // flags carries CLI overrides (env still wins — see resolveProfile).
 type flags struct {
-	url       string
-	token     string
-	insecure  bool
-	showVer   bool
+	url      string
+	token    string
+	insecure bool
+	showVer  bool
 }
 
 func main() {
@@ -124,7 +125,7 @@ func run(fl *flags) error {
 	if profile == nil || profile.Token == "" {
 		return runConnection(path, profile)
 	}
-	return runShell(profile, path)
+	return runShell(profile)
 }
 
 // applyFlags layers CLI flags under env (config.Resolve already applied
@@ -170,34 +171,35 @@ func runConnection(path string, existing *config.Profile) error {
 			}
 		}
 	}
-	return runShell(res.Profile, path)
+	return runShell(res.Profile)
 }
 
 // runShell probes /versionz, builds the client set, and runs the app
 // shell until the user quits.
-func runShell(profile *config.Profile, path string) error {
-	ctx := context.Background()
-	vr, err := client.Ping(ctx, profile.URL, profile.InsecureSkipVerify)
+func runShell(profile *config.Profile) error {
+	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
 		// Non-blocking per the plan: stale config still opens the shell;
-		// the footer shows the degraded state.
+		// the footer shows the degraded state (empty server version).
 		vr = &client.VersionzResponse{}
 	}
 	serverVersion := ""
 	if vr != nil {
 		serverVersion = vr.Version
 	}
-	probes := connection.DefaultProbes()
 	cl := client.New(client.Options{
 		BaseURL:            profile.URL,
 		Token:              profile.Token,
 		InsecureSkipVerify: profile.InsecureSkipVerify,
+		Timeout:            30 * time.Second,
 	})
 	app := tui.NewApp(cl, profile, serverVersion)
 	if identity := probeIdentity(cl); identity != "" {
 		app.SetIdentity(identity)
 	}
-	_ = probes // probes used by the connection screen path
+	// Open on Ask (the GUI nav's first entry) instead of an empty shell;
+	// its streams start on the first WindowSizeMsg.
+	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err

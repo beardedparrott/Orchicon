@@ -81,6 +81,13 @@ func (r *Registry) ReconnectAll() {
 	}
 }
 
+// Count returns the number of live subscriptions (diagnostics/tests).
+func (r *Registry) Count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.subs)
+}
+
 // StatusChan returns the receive side of the named sub's status channel
 // (buffered; overflow drops — the UI only needs the latest).
 func (r *Registry) StatusChan(name string) <-chan string {
@@ -245,7 +252,6 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 	r.add(sub)
 	return sub
 }
-
 
 // WaitStatus is the re-armable tea.Cmd that consumes the next status from
 // the named channel and converts it to StatusMsg. Screens call it in Init

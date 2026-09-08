@@ -20,7 +20,7 @@ import (
 // Model is the Ask screen.
 type Model struct {
 	screenkit.Base
-	cl *client.Clients
+	cl  *client.Clients
 	reg *subs.Registry
 }
 

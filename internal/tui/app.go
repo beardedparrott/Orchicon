@@ -11,12 +11,12 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
-	"github.com/beardedparrott/orchicon/internal/tui/screens/automation"
-	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/automation"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/control"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/enforcement"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/execution"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -59,18 +59,18 @@ type Screen = screenkit.Screen
 
 // App is the root model.
 type App struct {
-	clients  *client.Clients
-	profile  *config.Profile
-	reg      *subs.Registry
-	screens  map[TabID]Screen
+	clients   *client.Clients
+	profile   *config.Profile
+	reg       *subs.Registry
+	screens   map[TabID]Screen
 	factories map[TabID]func() Screen
-	active   TabID
-	width    int
-	height   int
-	footer   footerModel
-	help     helpModel
-	routes   []KeyRoute
-	quitting bool
+	active    TabID
+	width     int
+	height    int
+	footer    footerModel
+	help      helpModel
+	routes    []KeyRoute
+	quitting  bool
 }
 
 // NewApp builds the shell over an established client set.
@@ -89,12 +89,15 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	m.routes = GlobalKeyRoutes(Tabs)
 	// One factory per tab — screens construct lazily on first visit so
 	// stream subscriptions only exist while their tab is active.
+	// Screens take tenantID="" for their streams: the plane resolves the
+	// tenant from the bearer credential (internal/project/service.go —
+	// StreamProjectEvents ignores req.TenantId), so orch never guesses one.
 	m.factories = map[TabID]func() Screen{
 		TabAsk:         func() Screen { return ask.New(cl, m.reg) },
-		TabWork:        func() Screen { return work.New(cl, m.reg) },
-		TabExecution:   func() Screen { return execution.New(cl, m.reg) },
-		TabAutomation:  func() Screen { return automation.New(cl, m.reg) },
-		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg) },
+		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
+		TabExecution:   func() Screen { return execution.New(cl, m.reg, "") },
+		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
+		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg, "") },
 		TabControl:     func() Screen { return control.New(cl, m.reg) },
 	}
 	return m
@@ -132,6 +135,18 @@ func (m *App) SwitchTo(id TabID) {
 		}
 	}
 	m.updateContextChip()
+}
+
+// EnsureSubscriptions starts the screen's live event streams if it has
+// any and they are not already running (idempotent). Called on every tab
+// chord (re-press = re-arm) and on the first layout, so the opening tab
+// starts live without extra keys.
+func (m *App) EnsureSubscriptions(id TabID) {
+	if s := m.screens[id]; s != nil {
+		if es, ok := s.(interface{ EnsureSubscriptions() }); ok {
+			es.EnsureSubscriptions()
+		}
+	}
 }
 
 // ActiveTab returns the active tab ID.

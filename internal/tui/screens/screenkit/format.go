@@ -9,7 +9,10 @@ import (
 // timestamps and numbers render identically).
 
 // FmtTime renders a protobuf timestamp (nil → "—").
-func FmtTime(ts interface{ AsTime() time.Time; IsValid() bool }) string {
+func FmtTime(ts interface {
+	AsTime() time.Time
+	IsValid() bool
+}) string {
 	if ts == nil || !ts.IsValid() {
 		return "—"
 	}

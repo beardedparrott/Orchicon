@@ -16,26 +16,26 @@ import "github.com/charmbracelet/lipgloss"
 // variants keep the TUI legible for users on light terminal themes.
 var (
 	// Surface colors: layered panes over a deep slate base.
-	Bg         = lipgloss.AdaptiveColor{Dark: "#0f1420", Light: "#f4f6fb"}
-	Surface    = lipgloss.AdaptiveColor{Dark: "#171e2e", Light: "#e9edf6"}
-	SurfaceAlt = lipgloss.AdaptiveColor{Dark: "#1f2940", Light: "#dde4f0"}
-	Border     = lipgloss.AdaptiveColor{Dark: "#2c3a57", Light: "#c3cde0"}
+	Bg          = lipgloss.AdaptiveColor{Dark: "#0f1420", Light: "#f4f6fb"}
+	Surface     = lipgloss.AdaptiveColor{Dark: "#171e2e", Light: "#e9edf6"}
+	SurfaceAlt  = lipgloss.AdaptiveColor{Dark: "#1f2940", Light: "#dde4f0"}
+	Border      = lipgloss.AdaptiveColor{Dark: "#2c3a57", Light: "#c3cde0"}
 	BorderFaint = lipgloss.AdaptiveColor{Dark: "#222c44", Light: "#d3dbea"}
 
 	// Text.
-	Text       = lipgloss.AdaptiveColor{Dark: "#dbe4f5", Light: "#1c2434"}
-	TextDim    = lipgloss.AdaptiveColor{Dark: "#8391ad", Light: "#5a6478"}
-	TextFaint  = lipgloss.AdaptiveColor{Dark: "#5b6880", Light: "#8792a6"}
+	Text      = lipgloss.AdaptiveColor{Dark: "#dbe4f5", Light: "#1c2434"}
+	TextDim   = lipgloss.AdaptiveColor{Dark: "#8391ad", Light: "#5a6478"}
+	TextFaint = lipgloss.AdaptiveColor{Dark: "#5b6880", Light: "#8792a6"}
 
 	// Accents: cyan→indigo is the GUI's active-item gradient.
 	AccentCyan   = lipgloss.AdaptiveColor{Dark: "#06b6d4", Light: "#0891b2"}
 	AccentIndigo = lipgloss.AdaptiveColor{Dark: "#6366f1", Light: "#4f46e5"}
 
 	// Status.
-	OK    = lipgloss.AdaptiveColor{Dark: "#34d399", Light: "#059669"}  // emerald
-	Warn  = lipgloss.AdaptiveColor{Dark: "#fbbf24", Light: "#d97706"}  // amber
-	Err   = lipgloss.AdaptiveColor{Dark: "#fb7185", Light: "#e11d48"}  // rose
-	Busy  = lipgloss.AdaptiveColor{Dark: "#22d3ee", Light: "#0e7490"}  // cyan for in-progress
+	OK   = lipgloss.AdaptiveColor{Dark: "#34d399", Light: "#059669"} // emerald
+	Warn = lipgloss.AdaptiveColor{Dark: "#fbbf24", Light: "#d97706"} // amber
+	Err  = lipgloss.AdaptiveColor{Dark: "#fb7185", Light: "#e11d48"} // rose
+	Busy = lipgloss.AdaptiveColor{Dark: "#22d3ee", Light: "#0e7490"} // cyan for in-progress
 )
 
 // Named styles. All later TUI features consume these instead of building
@@ -48,17 +48,17 @@ var (
 	TabBar      = lipgloss.NewStyle().Background(Bg).Padding(0, 1).Border(lipgloss.NormalBorder(), false, false, true, false).BorderForeground(BorderFaint)
 
 	// Footer: single dim glass strip.
-	Footer = lipgloss.NewStyle().Foreground(TextDim).Background(Surface).Padding(0, 1)
+	Footer             = lipgloss.NewStyle().Foreground(TextDim).Background(Surface).Padding(0, 1)
 	FooterVersionDrift = lipgloss.NewStyle().Foreground(Warn).Bold(true)
 
 	// Lists / detail panes.
-	ListTitle   = lipgloss.NewStyle().Foreground(Text).Bold(true)
-	ListItem    = lipgloss.NewStyle().Foreground(Text)
+	ListTitle        = lipgloss.NewStyle().Foreground(Text).Bold(true)
+	ListItem         = lipgloss.NewStyle().Foreground(Text)
 	ListItemSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Background(AccentCyan)
-	ListMeta    = lipgloss.NewStyle().Foreground(TextDim)
-	DetailKey   = lipgloss.NewStyle().Foreground(TextDim)
-	DetailValue = lipgloss.NewStyle().Foreground(Text)
-	PaneBorder  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Border)
+	ListMeta         = lipgloss.NewStyle().Foreground(TextDim)
+	DetailKey        = lipgloss.NewStyle().Foreground(TextDim)
+	DetailValue      = lipgloss.NewStyle().Foreground(Text)
+	PaneBorder       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Border)
 
 	// Status badges.
 	StatusOK   = lipgloss.NewStyle().Foreground(OK)
@@ -73,7 +73,7 @@ var (
 			Background(Surface).
 			Foreground(Text).
 			Padding(1, 2)
-	ErrorText = lipgloss.NewStyle().Foreground(Err)
-	HintText  = lipgloss.NewStyle().Foreground(TextDim)
+	ErrorText    = lipgloss.NewStyle().Foreground(Err)
+	HintText     = lipgloss.NewStyle().Foreground(TextDim)
 	SpinnerStyle = lipgloss.NewStyle().Foreground(AccentCyan)
 )

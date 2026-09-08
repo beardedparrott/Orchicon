@@ -177,3 +177,59 @@ func TestSaveProfilePersists0600AndActivates(t *testing.T) {
 		t.Fatalf("config mismatch: %+v", cfg)
 	}
 }
+
+// TestConnectedMsgCompletesFlow drives the full message cycle: submit →
+// probeStartMsg → probeDoneMsg → connectedMsg → tea.Quit with a non-nil
+// Result(). Guards the regression where connectedMsg had no handler and
+// the first-run flow could never complete (cmd/orch always exited with
+// "no connection established").
+func TestConnectedMsgCompletesFlow(t *testing.T) {
+	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
+	m.inputs[fieldURL].SetValue("https://orch.example.com")
+	m.inputs[fieldCredential].SetValue("oc_k")
+
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // submit
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("submit must return a cmd")
+	}
+	if _, ok := cmd().(probeStartMsg); !ok {
+		t.Fatal("submit cmd must produce probeStartMsg")
+	}
+	nm, cmd = m.Update(probeStartMsg{}) // runs the probe
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("probeStartMsg must start the probe")
+	}
+	done := cmd()
+	pd, ok := done.(probeDoneMsg)
+	if !ok {
+		t.Fatalf("probe cmd produced %T, want probeDoneMsg", done)
+	}
+	if pd.err != nil {
+		t.Fatalf("probe err: %v", pd.err)
+	}
+	nm, cmd = m.Update(pd) // success → connectedMsg cmd
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("successful probeDoneMsg must emit connectedMsg")
+	}
+	cm, ok := cmd().(connectedMsg)
+	if !ok {
+		t.Fatalf("expected connectedMsg, got %T", cm)
+	}
+	nm, cmd = m.Update(cm) // the handler under test
+	final := nm.(Model)
+	if cmd == nil {
+		t.Fatal("connectedMsg must quit the program")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("connectedMsg must produce tea.Quit, got %T", cmd())
+	}
+	if final.Result() == nil {
+		t.Fatal("connectedMsg must record the result for cmd/orch")
+	}
+	if final.Result().Profile.Token != "oc_k" || final.Result().ServerVersion != "v9.0.1" {
+		t.Fatalf("result mismatch: %+v", final.Result())
+	}
+}

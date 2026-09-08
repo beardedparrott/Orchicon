@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
+	"github.com/beardedparrott/orchicon/internal/tui/stream"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -22,13 +23,15 @@ type Model struct {
 	screenkit.Base
 	cl          *client.Clients
 	reg         *subs.Registry
+	tenantID    string // "" lets the plane resolve it from the credential
+	sub         *stream.Sub[*apiv1.StreamExecutionEventsResponse]
 	reconnected bool
 }
 
 // New builds the screen. Execution events stream live; workflow events
 // are fetched on demand only (v1 keeps one live stream per screen).
-func New(cl *client.Clients, reg *subs.Registry) *Model {
-	m := &Model{cl: cl, reg: reg}
+func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
+	m := &Model{cl: cl, reg: reg, tenantID: tenantID}
 	m.NameStr = "execution"
 	m.AddSource("executions", "Executions", m.fetchExecutions)
 	m.AddSource("runs", "Workflow Runs", m.fetchRuns)
@@ -40,6 +43,14 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 }
 
 func (m *Model) Name() string { return "execution" }
+
+// EnsureSubscriptions starts the execution-events live stream once
+// (idempotent; the shell calls it on every switch to this tab).
+func (m *Model) EnsureSubscriptions() {
+	if m.sub == nil {
+		m.sub = m.reg.ExecutionEvents(m.cl, m.tenantID)
+	}
+}
 
 // Close unsubscribes (tab switch = unsubscribe).
 func (m *Model) Close() { m.reg.CloseAll() }

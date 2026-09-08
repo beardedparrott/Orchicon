@@ -25,14 +25,16 @@ type stubScreen struct {
 	height  int
 	chip    string
 	lastKey string
+	ensure  int
 }
 
-func (s *stubScreen) Init() tea.Cmd                       { return nil }
-func (s *stubScreen) View() string                        { return "view:" + s.id }
-func (s *stubScreen) Name() string                        { return s.id }
-func (s *stubScreen) SetSize(w, h int)                    { s.width, s.height = w, h }
-func (s *stubScreen) Close()                              { s.closed = true }
-func (s *stubScreen) ContextChip() string                 { return s.chip }
+func (s *stubScreen) Init() tea.Cmd        { return nil }
+func (s *stubScreen) View() string         { return "view:" + s.id }
+func (s *stubScreen) Name() string         { return s.id }
+func (s *stubScreen) SetSize(w, h int)     { s.width, s.height = w, h }
+func (s *stubScreen) Close()               { s.closed = true }
+func (s *stubScreen) ContextChip() string  { return s.chip }
+func (s *stubScreen) EnsureSubscriptions() { s.ensure++ }
 func (s *stubScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		s.lastKey = k.String()
@@ -225,6 +227,24 @@ func TestFooterDisconnectedRetrying(t *testing.T) {
 	v := f.View()
 	if !strings.Contains(v, "disconnected, retrying") {
 		t.Fatalf("graceful degradation label missing: %q", v)
+	}
+}
+
+// Tab chords must drive the active screen's live streams: the chord
+// doubles as the stream re-arm, and the opening tab starts live on the
+// first WindowSizeMsg (the shell's EnsureSubscriptions contract).
+func TestChordEnsuresSubscriptions(t *testing.T) {
+	m := newTestApp()
+	s := &stubScreen{id: "work"}
+	m.RegisterScreen(TabWork, s)
+	m.Update(keyFor("ctrl+w"))
+	if s.ensure == 0 {
+		t.Fatal("tab chord must ensure the screen's subscriptions")
+	}
+	first := s.ensure
+	m.Update(keyFor("ctrl+w"))
+	if s.ensure != first+1 {
+		t.Fatalf("chord re-press must re-arm EnsureSubscriptions: ensure=%d", s.ensure)
 	}
 }
 

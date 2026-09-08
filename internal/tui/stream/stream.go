@@ -205,7 +205,11 @@ func (s *Sub[Resp]) loop(ctx context.Context) {
 		attempt := s.attempt
 		max := s.MaxBackoff
 		s.mu.Unlock()
-		delay := s.BackoffBase * time.Duration(1<<(attempt-1))
+		shift := attempt - 1
+		if shift > 32 {
+			shift = 32 // guard: 1<<63 overflows int64 on pathological attempt counts
+		}
+		delay := s.BackoffBase * time.Duration(1<<shift)
 		delay += time.Duration(rand.Int63n(int64(BackoffJitter)))
 		if delay > max {
 			delay = max

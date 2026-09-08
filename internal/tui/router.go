@@ -81,6 +81,7 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Match: keyMatcher(tab.Chord),
 			Handle: func(m *App, _ tea.Msg) bool {
 				m.SwitchTo(tab.ID)
+				m.EnsureSubscriptions(tab.ID) // chord press re-arms streams
 				return true
 			},
 		})
@@ -105,6 +106,8 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			s.SetSize(wm.Width, m.contentHeight())
 		}
 		m.footer.Width = wm.Width
+		// First layout: start the active screen's live streams.
+		m.EnsureSubscriptions(m.active)
 		return m, nil
 	}
 	for _, r := range m.routes {

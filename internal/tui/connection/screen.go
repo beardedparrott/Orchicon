@@ -114,9 +114,11 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 	return m
 }
 
-func (m *Model) currentURL() string   { return strings.TrimRight(strings.TrimSpace(m.inputs[fieldURL].Value()), "/") }
-func (m *Model) credential() string   { return strings.TrimSpace(m.inputs[fieldCredential].Value()) }
-func (m *Model) username() string     { return strings.TrimSpace(m.inputs[fieldUsername].Value()) }
+func (m *Model) currentURL() string {
+	return strings.TrimRight(strings.TrimSpace(m.inputs[fieldURL].Value()), "/")
+}
+func (m *Model) credential() string { return strings.TrimSpace(m.inputs[fieldCredential].Value()) }
+func (m *Model) username() string   { return strings.TrimSpace(m.inputs[fieldUsername].Value()) }
 
 func (m *Model) password() string { return m.credential() }
 
@@ -189,11 +191,11 @@ func (m *Model) buildProfile(token string) *config.Profile {
 		name = m.profile.Name
 	}
 	return &config.Profile{
-		Name:       name,
-		URL:        url_,
-		AuthMethod: method,
-		Token:      cred,
-		Username:   user,
+		Name:               name,
+		URL:                url_,
+		AuthMethod:         method,
+		Token:              cred,
+		Username:           user,
 		InsecureSkipVerify: m.insecure,
 	}
 }
@@ -203,7 +205,10 @@ func (m Model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-type probeDoneMsg struct{ result *Result; err error }
+type probeDoneMsg struct {
+	result *Result
+	err    error
+}
 type probeStartMsg struct{}
 
 // Update handles keys: tab/shift-tab between fields, ctrl+u clear, enter
@@ -259,6 +264,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.saveErr = ""
 		return m, func() tea.Msg { return connectedMsg{result: msg.result} }
+
+	case connectedMsg:
+		// The only handler: record the result so cmd/orch can read it via
+		// Result() after prog.Run returns, then exit the screen program.
+		m.connected = msg.result
+		return m, tea.Quit
 	}
 
 	// Route typing to the focused input.
