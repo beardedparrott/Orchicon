@@ -753,6 +753,14 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		// ignores them anyway. Clicks right of the rail pass to the screen.
 		if msg.X < DiffPaneWidth {
 			cmd := m.diffPane.Update(msg)
+			// A click may have hit the pane's ✕ close button (the mouse
+			// toggle area). If so, close the pane (restore the layout) and
+			// consume the event — mirroring the GUI's PanelLeftClose.
+			if m.diffPane.TakeCloseRequest() {
+				m.closeDiffPane()
+				m.syncDiffPaneState()
+				return true, cmd
+			}
 			// A click may switch the pane's tab or select a file; copy the
 			// new tab/selection back to the shell-owned state so it persists
 			// across navigation.

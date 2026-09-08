@@ -96,6 +96,7 @@ var (
 	DiffTabActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Background(AccentIndigo).Padding(0, 1)
 	DiffTabInactive = lipgloss.NewStyle().Foreground(TextDim).Background(Surface).Padding(0, 1)
 	DiffFileSel     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Background(AccentCyan)
+	DiffClose       = lipgloss.NewStyle().Foreground(TextFaint).Bold(true)
 	DiffBadgeAdd    = lipgloss.NewStyle().Foreground(OK)
 	DiffBadgeDel    = lipgloss.NewStyle().Foreground(Err)
 )

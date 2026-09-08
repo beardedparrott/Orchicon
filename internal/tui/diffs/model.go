@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -57,6 +58,11 @@ type Model struct {
 	Err     string
 
 	scroll int
+
+	// closeReq is set when the user clicks the pane's "✕" close button
+	// (the mouse toggle area). The shell polls it after forwarding a mouse
+	// event and, when set, closes the pane and consumes the request.
+	closeReq bool
 
 	// OSC 52 copy pending (emitted once on the next View()).
 	copyBuf    string
@@ -386,6 +392,12 @@ func (m *Model) click(x, y int) {
 	// Tab bar is the pane's first content row — terminal row 2 (shell tab bar
 	// row 0 + its bottom border row 1).
 	if y == 2 {
+		// The far-right "✕" close button is the last hit region before the
+		// padding to the pane's content width (it sits right of the last tab).
+		if m.closeAt(contentX) {
+			m.closeReq = true
+			return
+		}
 		m.clickTab(contentX)
 		return
 	}
@@ -426,6 +438,58 @@ func (m *Model) clickTab(contentX int) {
 		// separator (tabSep) + next label's left padding (tabPadding).
 		textStart = end + tabPadding + tabSep + tabPadding
 	}
+}
+
+// closeAt reports whether a content-relative X click lands on the docked
+// "✕" close button. The glyph sits after the three tab labels + their
+// separators, at the content-relative column glyphX() (measured from the
+// RENDERED tab-bar prefix so it tracks the actual layout and any theme padding
+// change). A click on the glyph (or its 1-cell padding) is the mouse-toggle
+// close; the trailing padding to the pane's content width stays inert.
+func (m *Model) closeAt(contentX int) bool {
+	if m.Width <= 0 {
+		return false
+	}
+	g := m.glyphX()
+	const tabPadding = 1
+	return contentX >= g && contentX < g+ansi.StringWidth("✕")+tabPadding
+}
+
+// GlyphX is the content-relative column of the docked "✕" close button in
+// the tab bar. Exported so the shell (and its tests) can hit the mouse
+// toggle area at the same coordinate the pane draws it.
+func (m *Model) GlyphX() int { return m.glyphX() }
+
+// glyphX is the content-relative column of the first "✕" glyph cell in the
+// tab bar. It reproduces tabBar()'s label/separator/leading-space layout so
+// the click hit-region matches what is drawn, without depending on the pane
+// width or the active tab (both tab styles pad identically).
+func (m *Model) glyphX() int {
+	var b strings.Builder
+	b.WriteString(" ")
+	for i, t := range []Tab{TabDiff, TabTree, TabTimeline} {
+		if t == m.Tab {
+			b.WriteString(theme.DiffTabActive.Render(string(t)))
+		} else {
+			b.WriteString(theme.DiffTabInactive.Render(string(t)))
+		}
+		if i < len([]Tab{TabDiff, TabTree, TabTimeline})-1 {
+			b.WriteString(" ")
+		}
+	}
+	b.WriteString(" ") // the separating space before the glyph
+	return ansi.StringWidth(b.String())
+}
+
+// TakeCloseRequest reports and clears a pending mouse-toggle close request
+// (set when the user clicks the pane's ✕). The shell calls it after
+// forwarding a mouse event; when true it closes the pane.
+func (m *Model) TakeCloseRequest() bool {
+	if m.closeReq {
+		m.closeReq = false
+		return true
+	}
+	return false
 }
 
 // mergeLive folds the buffered live stream events into the groups and
@@ -512,6 +576,16 @@ func (m *Model) tabBar() string {
 		if i < len(tabs)-1 {
 			b.WriteString(" ")
 		}
+	}
+	// Docked close button on the FAR RIGHT of the tab bar (the GUI's
+	// PanelLeftClose mirror). Right-padded to the pane's content width so the
+	// pane never renders wider than its rail.
+	b.WriteString(" ")
+	b.WriteString(theme.DiffClose.Render("✕"))
+	// The tab bar must not exceed the pane's content width (no horizontal
+	// overflow / tearing); pad the remainder so the underline stays flush.
+	if cur := ansi.StringWidth(b.String()); cur < m.Width {
+		b.WriteString(strings.Repeat(" ", m.Width-cur))
 	}
 	return b.String()
 }

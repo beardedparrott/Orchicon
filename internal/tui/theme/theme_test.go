@@ -28,7 +28,8 @@ func TestStylesConstruct(t *testing.T) {
 		DiffLineNoOld.Render("1") + DiffLineNoNew.Render("1") +
 		DiffGutter.Render("│") + DiffPanel.Render("P") +
 		DiffTabActive.Render("t") + DiffTabInactive.Render("t") +
-		DiffFileSel.Render("f") + DiffBadgeAdd.Render("+") + DiffBadgeDel.Render("-")
+		DiffFileSel.Render("f") + DiffClose.Render("✕") +
+		DiffBadgeAdd.Render("+") + DiffBadgeDel.Render("-")
 	if styled == "" {
 		t.Fatal("styles rendered empty")
 	}
