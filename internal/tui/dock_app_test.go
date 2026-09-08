@@ -192,18 +192,23 @@ type stubAuthErr struct{}
 func (e *stubAuthErr) Error() string { return "unauthenticated: bad token" }
 
 // /connect requests reconnection (main.go re-enters the connection
-// screen) and quits the current program cleanly.
+// screen) — never exits the process: /connect opens an in-place overlay.
 func TestConnectCommandRequestsReconnect(t *testing.T) {
 	m := newDockTestApp()
-	handled, cmd := m.dispatchSlash("/connect")
+	handled, _ := m.dispatchSlash("/connect")
 	if !handled {
 		t.Fatal("/connect must dispatch")
 	}
 	if !m.reconnectRequested {
 		t.Fatal("/connect must set reconnectRequested")
 	}
-	if cmd == nil {
-		t.Fatal("/connect must emit tea.Quit (program exits; main re-enters connection)")
+	// In-place overlay contract: never quits, never tears down alt-screen.
+	// The overlay opens synchronously (flag), so no cmd is required.
+	if m.quitting {
+		t.Fatal("/connect must NOT set quitting")
+	}
+	if !m.ConnectOverlayOpen() {
+		t.Fatal("/connect must open the in-place overlay")
 	}
 }
 
@@ -227,18 +232,39 @@ func TestContextCommand(t *testing.T) {
 	}
 }
 
-// Chat msgs flow through dispatch: transcript + conversations + errors.
+// Chat msgs flow through dispatch: transcript + conversations. Fresh-launch
+// contract: loading conversations must NOT auto-open one (the shell lands
+// on a fresh chat like the GUI); the list populates the rail instead.
 func TestChatMsgsDispatch(t *testing.T) {
 	m := newDockTestApp()
 	nm, _ := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1", Title: "one"}}})
 	m2 := nm.(*App)
-	if m2.chatConvID != "c1" {
-		t.Fatalf("chatConvID = %q, want c1 (first conversation becomes active)", m2.chatConvID)
+	if m2.chatConvID != "" {
+		t.Fatalf("chatConvID = %q, want empty (fresh-launch must not auto-open)", m2.chatConvID)
+	}
+	if len(m2.conversations) != 1 {
+		t.Fatalf("conversations = %d, want 1 (loaded into the rail)", len(m2.conversations))
 	}
 	nm, _ = m2.Update(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{{Kind: chat.KindUser, Text: "hi", Key: "m-1"}}})
 	m2 = nm.(*App)
 	if items := m2.chatStore.snapshot("c1"); len(items) != 1 {
 		t.Fatalf("items = %d", len(items))
+	}
+}
+
+// Deliberate navigation: clicking/opening a rail conversation sets the
+// active conversation (always an explicit action, never the launch default).
+func TestRailOpenSetsActive(t *testing.T) {
+	m := newDockTestApp()
+	nm, _ := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1", Title: "one"}}})
+	m2 := nm.(*App)
+	cmd := m2.openRailConversation(0)
+	if cmd == nil {
+		t.Fatal("openRailConversation must return a cmd")
+	}
+	m2.chatConvID = "c1" // OpenAskConversation sets it synchronously
+	if m2.chatConvID != "c1" {
+		t.Fatalf("chatConvID = %q, want c1 (deliberate open)", m2.chatConvID)
 	}
 }
 

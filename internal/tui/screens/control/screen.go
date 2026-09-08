@@ -33,6 +33,9 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("images", "Runtime Images", m.fetchImages)
 	m.AddSource("secrets", "Secrets (names only)", m.fetchSecrets)
 	m.AddSource("mcp", "MCP Servers", m.fetchMCP)
+	m.AddSource("providers", "Providers", m.fetchProviders)
+	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
+	m.AddSource("settings", "Settings", m.fetchSettings)
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses(nil) // no live stream on control (v1)
 	return m
@@ -126,6 +129,68 @@ func (m *Model) fetchMCP(ctx context.Context, pageToken string) ([]screenkit.Ite
 	return items, "", nil
 }
 
+func (m *Model) fetchProviders(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+	resp, err := m.cl.Providers.ListProviders(ctx, connect.NewRequest(&apiv1.ProviderListRequest{}))
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]screenkit.Item, 0, len(resp.Msg.GetProviders()))
+	for _, p := range resp.Msg.GetProviders() {
+		meta := "disabled"
+		if p.GetEnabled() {
+			meta = "enabled"
+		}
+		if p.GetIsCustom() {
+			meta += " · custom"
+		}
+		items = append(items, screenkit.Item{
+			ID:    p.GetId(),
+			Title: p.GetDisplayName(),
+			Meta:  strings.ToLower(p.GetKind()) + " " + meta,
+		})
+	}
+	return items, "", nil
+}
+
+func (m *Model) fetchWebhooks(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+	resp, err := m.cl.Webhooks.ListSubscriptions(ctx, connect.NewRequest(&apiv1.ListSubscriptionsRequest{
+		TenantId:  "",
+		PageSize:  100,
+		PageToken: pageToken,
+	}))
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]screenkit.Item, 0, len(resp.Msg.GetSubscriptions()))
+	for _, s := range resp.Msg.GetSubscriptions() {
+		meta := strings.ToLower(s.GetStatus())
+		if s.GetEventFilter() != "" {
+			meta += " · " + s.GetEventFilter()
+		}
+		items = append(items, screenkit.Item{
+			ID:    s.GetId(),
+			Title: s.GetName(),
+			Meta:  meta,
+		})
+	}
+	return items, resp.Msg.GetNextPageToken(), nil
+}
+
+func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+	resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+	if err != nil {
+		return nil, "", err
+	}
+	s := resp.Msg.GetSettings()
+	if s == nil {
+		return nil, "", nil
+	}
+	items := []screenkit.Item{
+		{ID: "tenant-settings", Title: "Tenant Settings", Meta: "admin-gated"},
+	}
+	return items, "", nil
+}
+
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
 	case "workers":
@@ -192,6 +257,87 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "required secrets", Value: strings.Join(s.GetRequiredSecrets(), ", ")},
 		}
 		return "MCP Server: " + s.GetName(), fields, "", nil
+
+	case "providers":
+		resp, err := m.cl.Providers.ListProviders(ctx, connect.NewRequest(&apiv1.ProviderListRequest{}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		for _, p := range resp.Msg.GetProviders() {
+			if p.GetId() != id {
+				continue
+			}
+			fields := []screenkit.Field{
+				{Key: "id", Value: p.GetId()},
+				{Key: "name", Value: p.GetDisplayName()},
+				{Key: "kind", Value: p.GetKind()},
+				{Key: "base url", Value: p.GetBaseUrl()},
+				{Key: "base url override", Value: p.GetBaseUrlOverride()},
+				{Key: "enabled", Value: screenkit.FmtBool(p.GetEnabled())},
+				{Key: "auth mode", Value: p.GetAuthMode()},
+				{Key: "is custom", Value: screenkit.FmtBool(p.GetIsCustom())},
+				{Key: "read only", Value: screenkit.FmtBool(p.GetReadOnly())},
+				{Key: "token stored", Value: screenkit.FmtBool(p.GetHasTokenStored())},
+				{Key: "ctx default", Value: screenkit.FmtInt64(p.GetNumCtxDefault())},
+			}
+			return "Provider: " + p.GetDisplayName(), fields, "", nil
+		}
+		return "Provider", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+
+	case "webhooks":
+		resp, err := m.cl.Webhooks.ListSubscriptions(ctx, connect.NewRequest(&apiv1.ListSubscriptionsRequest{TenantId: ""}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		for _, s := range resp.Msg.GetSubscriptions() {
+			if s.GetId() != id {
+				continue
+			}
+			fields := []screenkit.Field{
+				{Key: "id", Value: s.GetId()},
+				{Key: "name", Value: s.GetName()},
+				{Key: "target url", Value: s.GetTargetUrl()},
+				{Key: "event filter", Value: s.GetEventFilter()},
+				{Key: "scope", Value: s.GetScope()},
+				{Key: "status", Value: s.GetStatus()},
+				{Key: "max retries", Value: screenkit.FmtInt(int(s.GetMaxRetries()))},
+				{Key: "secret hint", Value: s.GetSecretHint()},
+			}
+			return "Webhook: " + s.GetName(), fields, "", nil
+		}
+		return "Webhook", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+
+	case "settings":
+		resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		s := resp.Msg.GetSettings()
+		if s == nil {
+			return "Settings", []screenkit.Field{{Key: "note", Value: "no settings returned"}}, "", nil
+		}
+		fields := []screenkit.Field{
+			{Key: "default worker model", Value: s.GetDefaultWorkerModel()},
+			{Key: "default ask model", Value: s.GetDefaultAskOrchiconModel()},
+			{Key: "max concurrent runs", Value: screenkit.FmtInt(int(s.GetMaxConcurrentRuns()))},
+			{Key: "stall no-progress window", Value: screenkit.FmtInt64(s.GetStallNoProgressWindowSeconds()) + "s"},
+			{Key: "stall no-diff window", Value: screenkit.FmtInt64(s.GetStallNoFileDiffWindowSeconds()) + "s"},
+			{Key: "stall text-loop window", Value: screenkit.FmtInt64(s.GetStallTextLoopWindowSeconds()) + "s"},
+			{Key: "stall repetition count", Value: screenkit.FmtInt(int(s.GetStallRepetitionCount()))},
+			{Key: "stall repetition window", Value: screenkit.FmtInt64(s.GetStallRepetitionWindowSeconds()) + "s"},
+			{Key: "stall nudge max", Value: screenkit.FmtInt(int(s.GetStallNudgeMax()))},
+			{Key: "stall tool-hang", Value: screenkit.FmtInt64(s.GetStallToolHangSeconds()) + "s"},
+			{Key: "exec reap grace", Value: screenkit.FmtInt64(s.GetExecutionReapGraceSeconds()) + "s"},
+			{Key: "exec reap failures", Value: screenkit.FmtInt(int(s.GetExecutionReapConsecutiveFailures()))},
+			{Key: "backup schedule", Value: s.GetBackupSchedule()},
+			{Key: "backup retention", Value: screenkit.FmtInt(int(s.GetBackupRetentionDays())) + "d"},
+			{Key: "backup dir", Value: s.GetBackupDirectory()},
+			{Key: "log dir", Value: s.GetLogDirectory()},
+			{Key: "log max size", Value: screenkit.FmtInt64(s.GetLogMaxSizeMb()) + "MB"},
+			{Key: "log retention", Value: screenkit.FmtInt(int(s.GetLogRetentionDays())) + "d"},
+			{Key: "session token ttl", Value: screenkit.FmtInt64(s.GetSessionAccessTokenTtlSeconds()) + "s"},
+		}
+		return "Tenant Settings", fields, "", nil
 	}
 	return "", nil, "", nil
 }

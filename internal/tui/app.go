@@ -48,19 +48,22 @@ const (
 
 // Tab is one shell tab (GUI nav domain).
 type Tab struct {
-	ID    TabID
-	Title string // GUI nav label
-	Chord string // ctrl+<key>
+	ID      TabID
+	Title   string // GUI nav label
+	Chord   string // ctrl+<key>
+	Ordinal string // "1"…"6" — numbered tab chrome (mockup parity)
 }
 
-// Tabs is the top tab bar, in GUI nav order.
+// Tabs is the top tab bar, in GUI nav order. Ordinals number the tabs so
+// the tab bar matches the mockup's "1 · 2 · 3…" chrome; clicking a tab
+// (mouse) is wired in the shell dispatcher.
 var Tabs = []Tab{
-	{TabAsk, "Ask Orchicon", "ctrl+o"},
-	{TabWork, "Work", "ctrl+w"},
-	{TabExecution, "Execution", "ctrl+e"},
-	{TabAutomation, "Automation", "ctrl+a"},
-	{TabEnforcement, "Enforcement", "ctrl+f"},
-	{TabControl, "Control", "ctrl+t"},
+	{TabAsk, "Ask Orchicon", "ctrl+o", "1"},
+	{TabWork, "Work", "ctrl+w", "2"},
+	{TabExecution, "Execution", "ctrl+e", "3"},
+	{TabAutomation, "Automation", "ctrl+a", "4"},
+	{TabEnforcement, "Enforcement", "ctrl+f", "5"},
+	{TabControl, "Control", "ctrl+t", "6"},
 }
 
 // Screen is the contract every area screen implements (alias of the
@@ -99,6 +102,8 @@ type App struct {
 	chatWake           chan struct{} // live-chunk repaint poke (cap 1)
 	chatCmds           chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
 	chatFocus          focusMode
+	mouseEnabled       bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+	palette            palette
 	slash              *slashRegistry
 	contextOverride    string // /context pin <desc>
 	reconnectRequested bool
@@ -116,6 +121,18 @@ type App struct {
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
 	diffPath string
+
+	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
+	// via ctrl+r toggle and a mouse click on the rail header. State persists
+	// for the session. The diff pane is the LEFT rail; this is the RIGHT rail.
+	conversations []chat.Conversation
+	convRailOpen  bool
+	convSel       int
+	convScroll    int
+
+	// rightRailOpen records the Ask screen's right-rail visibility; kept so
+	// the renderer knows whether to draw the rail without re-deriving it.
+	rightRailOpen bool
 
 	// pendingDiffCmd carries the diff-pane owner-setup cmd out of a route
 	// Handle (routes can't return a tea.Cmd; dispatch re-emits it).
@@ -171,6 +188,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	// no-drift source of truth), so factories must exist before it builds.
 	m.slash = buildSlashRegistry(m)
 	m.routes = GlobalKeyRoutes(Tabs)
+	m.mouseEnabled = true // cmd/orch runs tea.WithMouseCellMotion()
+	m.convRailOpen = true // Ask conversations rail OPEN on default (GUI parity)
+	m.rightRailOpen = true
 	return m
 }
 
@@ -246,21 +266,28 @@ func (m *App) cycle(delta int) {
 }
 
 func (m *App) contentHeight() int {
-	// tab bar (1) + blank (1) + dock (N) + footer (1)
-	h := m.height - 3 - m.dock.Lines()
+	// Fixed shell overhead is 5 rows, not 3: the tab bar renders 2 rows
+	// (text + theme.TabBar's bottom border), then one blank line after the
+	// tab bar, one blank line before the footer, and the 1-row footer.
+	// Subtracting only 3 let screens + dock overflow by 2 rows at 80×24,
+	// which scrolled the tab bar off the terminal.
+	h := m.height - 5 - m.dock.Lines()
 	if h < 1 {
 		h = 1
 	}
 	return h
 }
 
-// contentWidth is the main content area width. When the diff pane is open
-// the pane consumes DiffPaneWidth columns, so the screen and the dock must
-// reflow (shrink) by that amount.
+// contentWidth is the main content area width. The left diff pane and the
+// Ask right conversations rail both consume columns; the screen and dock
+// reflow into the remainder.
 func (m *App) contentWidth() int {
 	w := m.width
 	if m.diffOpen {
 		w -= DiffPaneWidth
+	}
+	if m.railVisible() {
+		w -= ConversationsRailWidth
 	}
 	if w < 1 {
 		w = 1
@@ -784,40 +811,81 @@ func (m App) View() string {
 	var b strings.Builder
 	b.WriteString(m.tabBarView())
 	b.WriteString("\n")
+	// Main column: the active screen, the chat dock beneath it, and the
+	// left diff rail when open (the diff pane is the LEFT rail; the screen
+	// + dock reflow into the remaining width after both rails).
+	var main strings.Builder
 	if s := m.screens[m.active]; s != nil {
 		if m.diffOpen && m.diffPane != nil && m.diffPane.HasOwner() {
-			// The diff pane is a left rail; the screen AND the chat dock
-			// reflow into the remaining width (they were SetSize'd/Width'd
-			// narrower). Join the pane rail beside the main column.
 			paneView := m.diffPane.View()
 			mainView := s.View() + "\n" + m.dock.View()
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, paneView, mainView))
+			main.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, paneView, mainView))
 		} else {
-			b.WriteString(s.View())
-			b.WriteString("\n")
-			b.WriteString(m.dock.View())
+			main.WriteString(s.View())
+			main.WriteString("\n")
+			main.WriteString(m.dock.View())
 		}
 	} else {
-		b.WriteString(theme.HintText.Render("select an area"))
+		main.WriteString(theme.HintText.Render("select an area"))
+	}
+	// Ask right rail (CONVERSATIONS sidebar): the rightmost column, joined
+	// to the main content so the center reflows between the left diff rail
+	// and the right conversations rail.
+	if m.railVisible() {
+		rail := m.rightRailView()
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, main.String(), rail))
+	} else {
+		b.WriteString(main.String())
 	}
 	b.WriteString("\n")
 	// The chat dock is always present: every screen composes above it.
 	b.WriteString(m.footer.View())
+	// Composer '/' palette + /connect overlay: drawn on top when open
+	// (centered, floating). The /connect overlay never exits the process.
+	if m.palette.connectOpen {
+		return lipglossPlace(m.width, m.height, m.connectOverlayView())
+	}
+	if m.palette.PaletteOpen() {
+		return lipglossPlace(m.width, m.height, m.paletteView())
+	}
 	return b.String()
 }
 
-// tabBarView renders the top tab bar with active highlight.
+// tabBarView renders the top tab bar with numbered ordinal + active
+// highlight, matching the mockup's numbered tab chrome.
 func (m App) tabBarView() string {
 	parts := make([]string, len(Tabs))
 	for i, t := range Tabs {
 		label := t.Title
 		if t.ID == m.active {
-			parts[i] = theme.TabActive.Render(label)
+			parts[i] = theme.TabActive.Render(t.Ordinal + "·" + label)
 		} else {
-			parts[i] = theme.TabInactive.Render(label)
+			parts[i] = theme.TabInactive.Render(t.Ordinal + "·" + label)
 		}
 	}
 	return theme.TabBar.Render(strings.Join(parts, " "))
+}
+
+// TabClick maps a mouse click on the tab bar (row 0) to the tab whose
+// rendered span contains column x. It locates each tab label in the
+// actually-rendered tab bar string, so it never drifts from the layout
+// math (padding/gap). Returns (tabID, true) when a tab was hit.
+func (m App) TabClick(x int) (TabID, bool) {
+	bar := m.tabBarView()
+	for _, t := range Tabs {
+		label := t.Ordinal + "·" + t.Title
+		start := strings.Index(bar, label)
+		if start < 0 {
+			continue
+		}
+		// The tab span extends from the label's start to just before the
+		// following child block start (background padding + inter-tab gap).
+		end := start + lipgloss.Width(label) + 3
+		if x >= start && x < end {
+			return t.ID, true
+		}
+	}
+	return "", false
 }
 
 // ReconnectRequested reports whether the shell exited for /connect
@@ -883,22 +951,17 @@ func (s appEventStore) SetReconnecting(convID string, on bool) {
 	}
 }
 
-// onConversations ingests the loaded conversation list (first row
-// becomes the active conversation for dock sends, GUI nav default).
+// onConversations ingests the loaded conversation list for the Ask
+// screen's CONVERSATIONS rail. The rail is OPEN by default (GUI parity),
+// but NO conversation is auto-opened on launch — the shell lands on a
+// fresh chat context (GUI default behavior); existing conversations are
+// reached only deliberately (rail click, slash command, /context, chat).
 func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	if msg.Err != "" {
 		m.setChatErrorPlain(msg.Err)
 		return nil
 	}
-	if m.chatConvID == "" && len(msg.Convs) > 0 {
-		m.chatConvID = msg.Convs[0].ID
-		cmd := m.chat.OpenConversation(m.chatConvID)
-		// The diff pane shows the ask-conversation owner; re-point it.
-		if m.diffOpen {
-			return tea.Batch(cmd, m.refreshDiffOwner())
-		}
-		return cmd
-	}
+	m.conversations = msg.Convs
 	return nil
 }
 

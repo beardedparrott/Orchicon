@@ -90,22 +90,11 @@ func slug(name string) string {
 	return name
 }
 
-// guiMirrorEntries lists nav-config.ts panes with no TUI surface: the
-// command switches to the owning tab and surfaces a "use the GUI"
-// notice (plan fact 7). /settings maps to Control (its sources are the
-// settings-adjacent surfaces).
-func guiMirrorEntries() []NavEntry {
-	return []NavEntry{
-		{Cmd: "settings", Label: "Settings", Tab: TabControl},
-		{Cmd: "providers", Label: "Providers", Tab: TabControl},
-		{Cmd: "webhooks", Label: "Webhooks", Tab: TabControl},
-		{Cmd: "adapters", Label: "Adapters", Tab: TabControl},
-		{Cmd: "admin", Label: "Admin", Tab: TabControl},
-		{Cmd: "telemetry", Label: "Telemetry", Tab: TabControl},
-		{Cmd: "cost-explorer", Label: "Cost Explorer", Tab: TabControl},
-		{Cmd: "dashboard", Label: "Dashboard", Tab: TabControl},
-		{Cmd: "recurring-items", Label: "Recurring Items", Tab: TabAutomation},
-		{Cmd: "idea-cloud", Label: "Idea Cloud", Tab: TabAutomation},
-		{Cmd: "recovery", Label: "Recovery", Tab: TabEnforcement},
-	}
-}
+// guiMirrorEntries was removed: notice-only "use the web GUI" commands are
+// fake doors (QA finding 4). Every GUI-mirror pane is now either a real
+// TUI source (providers, webhooks, settings, telemetry…) or documented in
+// docs/tui-parity.md as a child work item.
+//
+// The slash registry builds commands ONLY from the screens' real Sources()
+// (buildNavEntries) plus explicit system commands — there is no hand-listed
+// GUI-mirror list anymore.
