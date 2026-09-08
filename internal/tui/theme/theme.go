@@ -76,4 +76,27 @@ var (
 	ErrorText    = lipgloss.NewStyle().Foreground(Err)
 	HintText     = lipgloss.NewStyle().Foreground(TextDim)
 	SpinnerStyle = lipgloss.NewStyle().Foreground(AccentCyan)
+
+	// Diff pane (the TUI sibling of the GUI DiffSidebar). Line-level
+	// red/green with dim paired line-number gutters and a reverse-attribute
+	// emphasis span. All AdaptiveColor so lipgloss/termenv degrade
+	// automatically (truecolor → 256 → 16) with no unreadable output.
+	DiffAdd       = lipgloss.NewStyle().Foreground(OK).Background(SurfaceAlt)
+	DiffDel       = lipgloss.NewStyle().Foreground(Err).Background(SurfaceAlt)
+	DiffCtx       = lipgloss.NewStyle().Foreground(TextDim)
+	DiffEmphasis  = lipgloss.NewStyle().Reverse(true)
+	DiffHeader    = lipgloss.NewStyle().Foreground(AccentIndigo).Bold(true)
+	DiffLineNoOld = lipgloss.NewStyle().Foreground(TextFaint)
+	DiffLineNoNew = lipgloss.NewStyle().Foreground(TextFaint)
+	DiffGutter    = lipgloss.NewStyle().Foreground(TextFaint)
+	DiffPanel     = lipgloss.NewStyle().
+			Background(Bg).
+			Border(lipgloss.RoundedBorder(), false, false, false, true).
+			BorderForeground(Border)
+	DiffTabActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Background(AccentIndigo).Padding(0, 1)
+	DiffTabInactive = lipgloss.NewStyle().Foreground(TextDim).Background(Surface).Padding(0, 1)
+	DiffFileSel     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true).Background(AccentCyan)
+	DiffClose       = lipgloss.NewStyle().Foreground(TextFaint).Bold(true)
+	DiffBadgeAdd    = lipgloss.NewStyle().Foreground(OK)
+	DiffBadgeDel    = lipgloss.NewStyle().Foreground(Err)
 )
