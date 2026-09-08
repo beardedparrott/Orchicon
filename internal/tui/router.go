@@ -116,6 +116,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		if r.Handle(m, msg) {
 			m.footer.StreamStatus = m.streamStatus()
+			if m.quitting {
+				// The quit route only flips the flag (KeyRoute.Handle
+				// cannot carry a Cmd); emit tea.Quit here so the program
+				// actually exits — regression-tested by
+				// TestQuitRouteIssuesQuitCmd (QA pass on the TUI
+				// foundation found q/ctrl+c hanging the TUI).
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 	}
