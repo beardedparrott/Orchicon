@@ -13,6 +13,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { fileEditClient } from "@/api/clients";
+import { useSessionStore } from "@/auth/session";
 import { useStream } from "@/api/useStream";
 import type {
   FileEdit,
@@ -29,6 +30,15 @@ export const fileEditKeys = {
     [...fileEditKeys.all, "session", ownerKind, ownerId] as const,
 };
 
+// The FileEditService RPCs carry tenant_id on the request message (they do
+// not resolve it from context like ExecutionService). Populate it from the
+// resolved session so the query never 400s with "tenant_id must not be
+// empty". Sessions are always authenticated on pages that render the
+// sidebar, so the tenant is present.
+function sessionTenantId(): string {
+  return useSessionStore.getState().session.tenant_id ?? "";
+}
+
 export function useGetSessionFileEdits(
   ownerKind: string,
   ownerId: string,
@@ -37,7 +47,11 @@ export function useGetSessionFileEdits(
   return useQuery({
     queryKey: fileEditKeys.session(ownerKind, ownerId),
     queryFn: async () => {
-      const res = await fileEditClient.getSessionFileEdits({ ownerKind, ownerId });
+      const res = await fileEditClient.getSessionFileEdits({
+        tenantId: sessionTenantId(),
+        ownerKind,
+        ownerId,
+      });
       return { edits: res.edits as FileEdit[], maxSeq: res.maxSeq };
     },
     enabled: Boolean(ownerId) && enabled,
@@ -51,7 +65,11 @@ export function useStreamFileEdits(opts: {
   onEvent?: (edit: FileEdit) => void;
 }) {
   const { ownerKind, ownerId, enabled = true, onEvent } = opts;
-  const request: PartialMessage<StreamFileEditsRequest> = { ownerKind, ownerId };
+  const request: PartialMessage<StreamFileEditsRequest> = {
+    tenantId: sessionTenantId(),
+    ownerKind,
+    ownerId,
+  };
   return useStream({
     name: "file-edits",
     stream: (req) => fileEditClient.streamFileEdits(req),
