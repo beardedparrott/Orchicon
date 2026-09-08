@@ -3,6 +3,7 @@ package diffs
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -92,5 +93,55 @@ func TestRenderPaneSideBySideVsUnified(t *testing.T) {
 	}
 	if strings.Contains(narrow, "old") || strings.Contains(narrow, "new") {
 		t.Errorf("narrow render should collapse to unified but kept column headers:\n%s", narrow)
+	}
+}
+
+// TestRenderPaneTruncatesUtf8Cleanly guards the truncation fix: a narrow pane
+// must clip a wide multi-byte line (CJK / emoji from the unicode fixture) to
+// the column budget WITHOUT splitting a rune in half. The previous byte-slicing
+// truncate emitted invalid UTF-8 (a truncation artifact the acceptance
+// criteria forbid). Every rendered line must remain valid UTF-8 and never
+// exceed the pane width.
+func TestRenderPaneTruncatesUtf8Cleanly(t *testing.T) {
+	vecs, err := testfixtures.LoadFileEditVectors()
+	if err != nil {
+		t.Fatalf("load fixtures: %v", err)
+	}
+	var diff string
+	for _, v := range vecs {
+		if v.Name == "unicode-line-level" {
+			diff = deref(v.ExpectedUnifiedDiff)
+		}
+	}
+	if diff == "" {
+		t.Fatal("unicode-line-level fixture not found")
+	}
+	rows := ParseUnifiedDiff(diff)
+	if len(rows) == 0 {
+		t.Fatal("unicode fixture produced no rows")
+	}
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	// Probe a range of narrow widths that force truncation in each cell.
+	for _, width := range []int{48, 34, 24, 20, 16, 12} {
+		width := width
+		out := RenderPane(rows, width, termenv.Ascii)
+		if out == "" {
+			t.Fatalf("width %d: empty render", width)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if line == "" {
+				continue
+			}
+			if !utf8.ValidString(line) {
+				t.Fatalf("width %d: render emitted invalid UTF-8 in line %q (bytes %v)",
+					width, line, []byte(line))
+			}
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("width %d: line %q exceeds pane width (ansi width %d)",
+					width, line, ansi.StringWidth(line))
+			}
+		}
 	}
 }

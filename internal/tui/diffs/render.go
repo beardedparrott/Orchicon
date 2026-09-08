@@ -211,17 +211,18 @@ func pad(s string, w int) string {
 	return s + strings.Repeat(" ", w-len(s))
 }
 
+// truncate clips `s` to `w` printable columns, appending an ellipsis when it
+// does not fit. It delegates to ansi.Truncate so wide/multi-byte runes (CJK,
+// emoji) are never split mid-character — the previous byte-length slicing
+// emitted invalid UTF-8 on narrow panes (a truncation artifact the acceptance
+// criteria forbid). ansi.Truncate also measures column width (not bytes), so
+// a wide CJK/emoji line truncates to the actual cell budget instead of
+// overflowing the pane.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if len(s) <= w {
-		return s
-	}
-	if w <= 1 {
-		return s[:1]
-	}
-	return s[:w-1] + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 func max(a, b int) int {

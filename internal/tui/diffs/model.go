@@ -103,10 +103,11 @@ func (m *Model) Close() {
 // Returns the tea.Cmd(s) to run.
 func (m *Model) SetOwner(kind, id string, isLive bool) tea.Cmd {
 	if kind == "" || id == "" {
-		return func() tea.Msg {
-			m.clear()
-			return OwnerSetMsg{}
-		}
+		// No diff-relevant owner — clear the pane. SetOwner always runs on
+		// the tea loop (route/appMsg), so mutate directly (no background
+		// goroutine like the fetch closure below).
+		m.clear()
+		return nil
 	}
 	if m.ownerID == id && m.ownerKind == kind && m.streamArmed {
 		return nil // same owner, already set up
@@ -118,30 +119,17 @@ func (m *Model) SetOwner(kind, id string, isLive bool) tea.Cmd {
 	}
 	m.ownerKind, m.ownerID, m.isLive = kind, id, isLive
 	m.streamArmed = false
+	// Bubbletea runs the returned Cmd in a background goroutine, so the fetch
+	// closure must NOT mutate the model — it only fetches and hands the data
+	// back in the message; Update applies it on the tea loop below. Setting
+	// Loading here (on the tea loop) is safe.
+	m.Loading = true
 
 	fetch := func() tea.Msg {
-		m.Loading = true
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		snap, err := m.Store.Fetch(ctx, kind, id)
-		if err != nil {
-			m.Loading = false
-			m.Err = err.Error()
-			m.Status = "error"
-			return FetchDoneMsg{Err: err}
-		}
-		m.maxSeq = snap.MaxDurableSeq
-		m.groups = GroupByFile(snap.Edits)
-		m.rows = m.rowsForSelected()
-		m.Loading = false
-		m.Err = ""
-		m.Status = "ready"
-		// Default the tree selection to the first changed file (if any).
-		if m.SelectedPath == "" && len(m.groups) > 0 {
-			m.SelectedPath = m.groups[0].Path
-			m.rows = m.rowsForSelected()
-		}
-		return FetchDoneMsg{}
+		return FetchDoneMsg{Snapshot: snap, Err: err}
 	}
 	// If the tenant is already resolved (a prior fetch cached it), arm the
 	// live stream immediately on the tea loop. Otherwise arm it in the
@@ -268,8 +256,24 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetSize(msg.Width, msg.Height)
 		return nil
 	case FetchDoneMsg:
-		if m.Loading {
-			m.Loading = false
+		m.Loading = false
+		if msg.Err != nil {
+			m.Err = msg.Err.Error()
+			m.Status = "error"
+			return nil
+		}
+		snap := msg.Snapshot
+		if snap != nil {
+			m.maxSeq = snap.MaxDurableSeq
+			m.groups = GroupByFile(snap.Edits)
+			m.rows = m.rowsForSelected()
+			m.Err = ""
+			m.Status = "ready"
+			// Default the tree selection to the first changed file (if any).
+			if m.SelectedPath == "" && len(m.groups) > 0 {
+				m.SelectedPath = m.groups[0].Path
+				m.rows = m.rowsForSelected()
+			}
 		}
 		// The durable fetch caches the tenant; if this owner is live, arm the
 		// live stream now (on the tea loop) and park a re-armable event poke.
@@ -574,5 +578,11 @@ func (m *Model) timelineBody() string {
 
 // FetchDoneMsg / OwnerSetMsg are the pane's internal async completions
 // (exported so the shell can forward them to the pane's Update).
-type FetchDoneMsg struct{ Err error }
+// FetchDoneMsg carries the fetched snapshot (and any error) rather than
+// mutating the model inside a background goroutine — bubbletea runs each
+// Cmd off the tea loop, so Update applies the data on the loop instead.
+type FetchDoneMsg struct {
+	Snapshot *Snapshot
+	Err      error
+}
 type OwnerSetMsg struct{}
