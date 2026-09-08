@@ -44,10 +44,6 @@ type AskToolProvider interface {
 	ExecuteAskTool(ctx context.Context, name, argsJSON string) (string, error)
 }
 
-// askMaxToolRounds bounds the per-turn tool loop so a model that keeps
-// calling tools cannot spin forever inside one user message.
-const askMaxToolRounds = 8
-
 // chatBus is the per-turn SessionBus the native bridge feeds from its drain
 // goroutine. It is the adapter-neutral surface the askorchicon collector
 // consumes; the bridge maps the provider's normalized TurnStream events onto
@@ -397,7 +393,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // SessionBus vocabulary (D3): TextDelta → delta(text) + accumulate into the
 // part buffer; ReasoningDelta → delta(reasoning); ToolCall → tool_part +
 // execute against the injected Ask tools and continue the turn with the
-// results (agentic loop, bounded by askMaxToolRounds); StreamError → error;
+// results (agentic loop, unbounded by round count); StreamError → error;
 // Finish → emit one part(text) with the accumulated reply, then idle. On
 // completion the full working history (assistant texts, tool uses and tool
 // results — not just the final text) replaces the session's history so a
@@ -472,21 +468,17 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// Tool results are part of the replayable history (unlike the
 		// pre-tools turn, which committed text only).
 		b.appendAssistantTurn(&working, roundText, calls)
-		if round+1 >= askMaxToolRounds {
-			// Budget exhausted: append the notice as a tool result and
-			// take ONE final text-only turn (tools stripped so the model
-			// must answer from the results so far instead of calling
-			// again). The final turn below is drained by the next loop
-			// iteration like any other round.
-			working = append(working, Message{Role: RoleTool, Content: []Content{{
-				ToolResult: &ContentToolResult{ToolCallID: calls[0].ToolCallID, Content: "Tool round budget exhausted — answer from the results so far.", IsError: true},
-			}}})
-			req.Messages = append([]Message(nil), working...)
-			req.Tools = nil
-		} else {
-			b.executeToolCalls(ctx, &working, calls)
-			req.Messages = append([]Message(nil), working...)
-		}
+		// The tool loop is unbounded by round count: it continues while the
+		// model keeps issuing tool calls and terminates naturally when a
+		// round returns none (the len(calls) == 0 → finishTurn() path above).
+		// A pathological model that loops tool calls forever is bounded by
+		// the time gates, not a round count: the reply window
+		// (askReplyWindow(), default 30m, ORCHICON_ASK_REPLY_WINDOW), the
+		// turn TTL sweeper (askTurnMaxAge(), default 31m,
+		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
+		// stall monitor (tenant stall settings).
+		b.executeToolCalls(ctx, &working, calls)
+		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
