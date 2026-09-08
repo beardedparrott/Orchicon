@@ -123,9 +123,25 @@ func run(fl *flags) error {
 	}
 
 	if profile == nil || profile.Token == "" {
-		return runConnection(path, profile)
+		p, err := runConnection(path, profile)
+		if err != nil {
+			return err
+		}
+		profile = p
 	}
-	return runShell(profile)
+	for {
+		reconnect, err := runShell(profile)
+		if !reconnect {
+			return err
+		}
+		// /connect: the shell exited for re-auth — reopen the connection
+		// screen (pre-filled with the current profile), then loop.
+		p, cerr := runConnection(path, profile)
+		if cerr != nil {
+			return cerr
+		}
+		profile = p
+	}
 }
 
 // applyFlags layers CLI flags under env (config.Resolve already applied
@@ -146,37 +162,39 @@ func applyFlags(p *config.Profile, fl *flags) {
 }
 
 // runConnection shows the first-run screen; on success it persists the
-// profile (unless env-driven) and hands off to the shell.
-func runConnection(path string, existing *config.Profile) error {
+// profile (unless env-driven) and returns it.
+func runConnection(path string, existing *config.Profile) (*config.Profile, error) {
 	m := connection.New(existing, connection.DefaultProbes())
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := prog.Run()
 	if err != nil {
-		return fmt.Errorf("connection screen: %w", err)
+		return nil, fmt.Errorf("connection screen: %w", err)
 	}
 	cm, ok := final.(connection.Model)
 	if !ok {
-		return fmt.Errorf("connection screen returned unexpected state")
+		return nil, fmt.Errorf("connection screen returned unexpected state")
 	}
 	res := cm.Result()
 	if res == nil {
-		return fmt.Errorf("no connection established")
+		return nil, fmt.Errorf("no connection established")
 	}
 	if os.Getenv(config.EnvURL) == "" || os.Getenv(config.EnvToken) == "" {
 		// Env-driven profiles are never persisted (plan §3); file-driven
 		// ones save so the second launch connects automatically.
 		if os.Getenv(config.EnvURL) == "" {
 			if err := connection.SaveProfile(path, res); err != nil {
-				return fmt.Errorf("save config: %w", err)
+				return nil, fmt.Errorf("save config: %w", err)
 			}
 		}
 	}
-	return runShell(res.Profile)
+	return res.Profile, nil
 }
 
 // runShell probes /versionz, builds the client set, and runs the app
-// shell until the user quits.
-func runShell(profile *config.Profile) error {
+// shell until the user quits. Returns (reconnect=true, nil) when the
+// shell exited for re-auth (/connect) — main's loop then re-runs the
+// connection screen with the updated profile.
+func runShell(profile *config.Profile) (bool, error) {
 	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
 		// Non-blocking per the plan: stale config still opens the shell;
@@ -202,7 +220,14 @@ func runShell(profile *config.Profile) error {
 	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
-	return err
+	if err != nil {
+		return false, err
+	}
+	if app.ReconnectRequested() {
+		profile = app.Profile()
+		return true, nil
+	}
+	return false, nil
 }
 
 // probeIdentity resolves the footer identity display name (best effort:

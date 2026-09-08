@@ -9,7 +9,11 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
+
+// chatWakeMsg is declared in app.go (package-level message type).
 
 // KeyRoute is one dispatch entry.
 type KeyRoute struct {
@@ -106,9 +110,51 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			s.SetSize(wm.Width, m.contentHeight())
 		}
 		m.footer.Width = wm.Width
+		m.dock.Width = wm.Width
 		// First layout: start the active screen's live streams.
 		m.EnsureSubscriptions(m.active)
 		return m, nil
+	}
+	if m.help.open {
+		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "?") {
+			m.help.open = false
+		}
+		return m, nil // overlay swallows keys
+	}
+	// Composer focus: composer keys first; tab chords fall through to
+	// the input (Ctrl+W/A/E/F/T remain delete-word / line-start / …).
+	if m.chatFocus == focusComposer {
+		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
+			// hard escape: quit always works, even mid-composition
+			m.quitting = true
+			return m, tea.Quit
+		}
+		consumed, cmd := m.dock.Update(msg)
+		if k, ok := msg.(tea.KeyMsg); ok && consumed {
+			switch k.String() {
+			case "ctrl+g", "esc":
+				m.setFocus(focusContent)
+				m.footer.StreamStatus = m.streamStatus()
+				return m, nil
+			}
+		}
+		if consumed {
+			if text := m.dock.SendRequest(); text != "" {
+				cmd = m.sendFromComposer(text)
+			}
+			m.footer.StreamStatus = m.streamStatus()
+			return m, cmd
+		}
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			// a key the dock did not take while focused: keep it out of
+			// the router's tab chords (focus stays in the composer).
+			m.footer.StreamStatus = m.streamStatus()
+			return m, nil
+		}
+	}
+	if cmd := m.appMsg(msg); cmd != nil {
+		m.footer.StreamStatus = m.streamStatus()
+		return m, cmd
 	}
 	for _, r := range m.routes {
 		if r.Match == nil || !r.Match(msg) {
@@ -130,4 +176,55 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// Defer to the active screen (its input routes are inside its own
 	// Update — chords already consumed above).
 	return m.passToScreen(msg)
+}
+
+// appMsg handles App-level messages: chat controller results, pending
+// detail loads, and the ctrl+g focus chord (content → composer).
+func (m *App) appMsg(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case chatWakeMsg:
+		return tea.Batch(m.onChatWake(), m.waitChat())
+	case chatCmdMsg:
+		return tea.Batch(msg.cmd, m.waitChat())
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+g" && m.chatFocus == focusContent {
+			m.setFocus(focusComposer)
+			return nil
+		}
+		return nil
+	case chat.ConversationsMsg:
+		return tea.Batch(m.onConversations(msg), m.waitChat())
+	case chat.TranscriptMsg:
+		return tea.Batch(m.onTranscript(msg), m.waitChat())
+	case chat.ErrMsg:
+		m.setChatError(msg.Where, msg.Err)
+		return m.waitChat()
+	case chat.TurnResolvedMsg:
+		return m.waitChat()
+	case chat.StreamDoneMsg:
+		return tea.Batch(m.onStreamDone(msg), m.waitChat())
+	case chatConvCreatedMsg:
+		m.chatConvID = msg.convID
+		m.chat.SetActive(msg.convID)
+		return tea.Batch(m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations())
+	case execSessionMsg:
+		return m.onExecutionSessionLoaded(msg.execID, msg.parts, msg.err)
+	case interjectOKMsg:
+		m.dock.SetNotice("interjection delivered to " + msg.execID + " — reply streams below")
+		return nil
+	default:
+		if m.pendingDetail != nil {
+			cmd := m.pendingDetail
+			m.pendingDetail = nil
+			// re-dispatch into the screen after the detail cmd lands
+			return tea.Batch(cmd, m.passToScreenLater())
+		}
+		return nil
+	}
+}
+
+// passToScreenLater keeps the pending-detail cmd's msg flowing to the
+// screen (detailMsg / detailErrMsg are consumed by Base.Update).
+func (m *App) passToScreenLater() tea.Cmd {
+	return nil
 }
