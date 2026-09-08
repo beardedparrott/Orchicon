@@ -13,11 +13,13 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
+	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 	"github.com/beardedparrott/orchicon/internal/tui/dock"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/automation"
@@ -104,7 +106,25 @@ type App struct {
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items
 	pendingDetail      tea.Cmd
 	lastScreenKeys     string
+
+	// Diff sidebar (TUI sibling of the GUI DiffSidebar). The shell owns the
+	// open/tab/selected state so it persists across SwitchTo (the GUI
+	// persists it at the host). The pane is a left rail that slides out over
+	// the content; when open, the main screen + chat dock reflow by
+	// DiffPaneWidth.
+	diffOpen bool
+	diffPane *diffs.Model
+	diffTab  diffs.Tab
+	diffPath string
+
+	// pendingDiffCmd carries the diff-pane owner-setup cmd out of a route
+	// Handle (routes can't return a tea.Cmd; dispatch re-emits it).
+	pendingDiffCmd tea.Cmd
 }
+
+// DiffPaneWidth is the left rail width (cells). Mirrors the GUI's ~480px
+// rail proportionally at a typical 96-col terminal.
+const DiffPaneWidth = 48
 
 // NewApp builds the shell over an established client set.
 func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
@@ -125,6 +145,11 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	if profile != nil && profile.Newline != "" {
 		m.dock.Newlines = dock.ParseNewlineMode(profile.Newline)
 	}
+	// The diff pane shares the shell's client set + registry so its live
+	// StreamFileEdits subscription follows the same reconnect/resume/dedup
+	// semantics and is closed by CloseAll on screen close.
+	m.diffPane = diffs.NewModel(cl, m.reg)
+	m.diffTab = diffs.TabDiff
 	m.chat = chat.NewController(cl)
 	m.chatWake = make(chan struct{}, 1)
 	m.chatCmds = make(chan tea.Cmd, 16)
@@ -175,12 +200,18 @@ func (m *App) SwitchTo(id TabID) {
 		if f, ok := m.factories[id]; ok {
 			s := f()
 			if m.width > 0 {
-				s.SetSize(m.width, m.contentHeight())
+				s.SetSize(m.contentWidth(), m.contentHeight())
 			}
 			m.screens[id] = s
 		}
 	}
 	m.updateContextChip()
+	// The diff pane's open state persists across SwitchTo (the GUI persists
+	// it at the host). Re-point it at the new tab's owner (if any) so it
+	// shows the active session without resetting open/tab/selected.
+	if m.diffOpen {
+		m.refreshDiffOwner()
+	}
 }
 
 // EnsureSubscriptions starts the screen's live event streams if it has
@@ -223,8 +254,143 @@ func (m *App) contentHeight() int {
 	return h
 }
 
+// contentWidth is the main content area width. When the diff pane is open
+// the pane consumes DiffPaneWidth columns, so the screen and the dock must
+// reflow (shrink) by that amount.
+func (m *App) contentWidth() int {
+	w := m.width
+	if m.diffOpen {
+		w -= DiffPaneWidth
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
 // dockHeight is the rows the dock renders.
 func (m *App) dockHeight() int { return m.dock.Lines() }
+
+// diffOwner derives the pane's owner from the active context: the execution
+// screen's selected detail (owner_kind "execution", owner_id = DetailID) or
+// the ask screen's active conversation (owner_kind "ask_conversation",
+// owner_id = chatConvID). Empty (kind, id) → the pane has no diff-relevant
+// session and the toggle is a no-op.
+func (m *App) diffOwner() (kind, id string) {
+	switch m.active {
+	case TabExecution:
+		if s := m.screens[TabExecution]; s != nil {
+			if d, ok := s.(interface{ DetailID() string }); ok && d.DetailID() != "" {
+				return "execution", d.DetailID()
+			}
+		}
+	case TabAsk:
+		if m.chatConvID != "" {
+			return "ask_conversation", m.chatConvID
+		}
+	}
+	return diffs.NoneOwner, diffs.NoneOwner
+}
+
+// diffOwnerLive reports whether the owner's session is live (a running
+// execution or an open ask conversation). A completed owner is not live —
+// its diff is the durable, git-reconciled ledger only.
+func (m *App) diffOwnerLive(kind, id string) bool {
+	if kind == "execution" {
+		running, _ := m.runningExecutionID()
+		return running == id && running != ""
+	}
+	// ask_conversation: live while the conversation is active with a running
+	// turn (chat.IsStreaming). Otherwise treat as durable-only.
+	return m.chat != nil && m.chat.IsStreaming(id)
+}
+
+// openDiffPane opens the pane and points it at the active owner. If the
+// owner changed, it refetches the durable ledger + (re)arms the live stream.
+func (m *App) openDiffPane() tea.Cmd {
+	if m.diffPane == nil || m.chatFocus != focusContent {
+		return nil
+	}
+	kind, id := m.diffOwner()
+	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
+		// No diff-relevant session on this screen — the toggle is a no-op.
+		return nil
+	}
+	m.diffOpen = true
+	m.diffPane.SetTab(m.diffTab)
+	m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
+	m.reflowForDiff()
+	// The pane keeps its previously selected path if it matches this owner's
+	// files; otherwise the SetOwner fetch defaults it (see diffs.Model).
+	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
+}
+
+// closeDiffPane closes the pane, tears down its live stream, and restores
+// the previous layout (the content + dock widths are re-derived on the next
+// render by contentWidth). The shell-owned open/tab/selected state is kept
+// so re-opening restores the last view.
+func (m *App) closeDiffPane() {
+	if m.diffOpen {
+		m.diffOpen = false
+	}
+	if m.diffPane != nil {
+		// Persist the pane's current tab/selection back to the shell before
+		// tearing down the live stream.
+		m.syncDiffPaneState()
+		m.diffPane.Close()
+	}
+	// Restore the full-width layout (the screen + dock reflow back).
+	m.reflowForDiff()
+}
+
+// reflowForDiff re-applies the current layout to the screen and dock given
+// whether the diff pane is open (the pane consumes DiffPaneWidth columns).
+// Called after toggling the pane, so the content reflows without waiting for
+// the next terminal resize.
+func (m *App) reflowForDiff() {
+	if s := m.screens[m.active]; s != nil && m.width > 0 {
+		s.SetSize(m.contentWidth(), m.contentHeight())
+	}
+	if m.width > 0 {
+		m.dock.Width = m.contentWidth()
+	}
+	if m.diffPane != nil {
+		m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
+	}
+}
+
+// refreshDiffOwner re-points an already-open pane at the (possibly
+// changed) active owner. Called when the active detail/conversation changes.
+func (m *App) refreshDiffOwner() tea.Cmd {
+	if !m.diffOpen || m.diffPane == nil || m.chatFocus != focusContent {
+		return nil
+	}
+	kind, id := m.diffOwner()
+	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
+		return nil
+	}
+	m.diffPane.SetTab(m.diffTab)
+	if m.diffPath != "" {
+		m.diffPane.SelectPath(m.diffPath)
+	}
+	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
+}
+
+// syncDiffPaneState copies the shell-owned open/tab/selected state into the
+// pane and back, so the pane persists across SwitchTo.
+func (m *App) syncDiffPaneState() {
+	if m.diffPane == nil {
+		return
+	}
+	m.diffPane.SetTab(m.diffTab)
+	if m.diffPath != "" {
+		m.diffPane.SelectPath(m.diffPath)
+	}
+	m.diffTab = m.diffPane.Tab
+	if m.diffPane.SelectedPath != "" {
+		m.diffPath = m.diffPane.SelectedPath
+	}
+}
 
 // reconnectStreams forces every live subscription to redial now.
 func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
@@ -498,7 +664,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.dispatch(msg)
 }
 
-// passToScreen forwards to the active screen.
+// passToScreen forwards to the active screen. When the diff pane is open it
+// first lets the pane consume pane-scoped messages (its own async results,
+// the file-edits live-stream status/pokes, and key/mouse events that land
+// in the pane rail) before the screen sees them.
 func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	if m.help.open {
 		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "?") {
@@ -511,6 +680,11 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 		// handled in dispatch (App-level sizing)
 		return m, nil
 	}
+	if m.diffOpen && m.diffPane != nil {
+		if consumed, cmd := m.diffMsg(msg); consumed {
+			return m, cmd
+		}
+	}
 	s := m.screens[m.active]
 	if s == nil {
 		return m, nil
@@ -521,6 +695,49 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
 	return m, cmd
+}
+
+// diffMsg forwards a pane-scoped message to the diff pane's Update and
+// reports whether the pane consumed it. Pane-scoped (consumed=true): the
+// pane's own async results (FetchDoneMsg/OwnerSetMsg), the file-edits
+// live-stream status/pokes, and key/mouse events that land in the left pane
+// rail. Anything else returns (false, nil) so it falls through to the screen.
+func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
+	switch msg := msg.(type) {
+	case diffs.FetchDoneMsg, diffs.OwnerSetMsg:
+		return true, m.diffPane.Update(msg)
+	case subs.EventPokeMsg:
+		// Only the file-edits live stream is the pane's own; other pokes
+		// belong to the screen and must fall through.
+		if msg.Name == "file-edits" {
+			return true, m.diffPane.Update(msg)
+		}
+		return false, nil
+	case subs.StatusMsg:
+		if msg.Name == "file-edits" {
+			return true, m.diffPane.Update(msg)
+		}
+		return false, nil
+	case tea.KeyMsg:
+		// Global routes already consumed d/esc/y (and ctrl chords). Only
+		// forward navigation keys to the pane when it is open (the pane is
+		// the focus then); the screen's own list/detail navigation is
+		// intentionally left to the pane while it is open.
+		switch msg.String() {
+		case "j", "k", "up", "down", "pgup", "pgdown", "g", "G", "l":
+			return true, m.diffPane.Update(msg)
+		}
+		return false, nil
+	case tea.MouseMsg:
+		// Forward clicks/wheel that land in the left pane rail (x <
+		// DiffPaneWidth). Motion/Release stay native (Shift+drag); the pane
+		// ignores them anyway. Clicks right of the rail pass to the screen.
+		if msg.X < DiffPaneWidth {
+			return true, m.diffPane.Update(msg)
+		}
+		return false, nil
+	}
+	return false, nil
 }
 
 // View implements tea.Model.
@@ -536,13 +753,23 @@ func (m App) View() string {
 	b.WriteString(m.tabBarView())
 	b.WriteString("\n")
 	if s := m.screens[m.active]; s != nil {
-		b.WriteString(s.View())
+		if m.diffOpen && m.diffPane != nil && m.diffPane.HasOwner() {
+			// The diff pane is a left rail; the screen AND the chat dock
+			// reflow into the remaining width (they were SetSize'd/Width'd
+			// narrower). Join the pane rail beside the main column.
+			paneView := m.diffPane.View()
+			mainView := s.View() + "\n" + m.dock.View()
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, paneView, mainView))
+		} else {
+			b.WriteString(s.View())
+			b.WriteString("\n")
+			b.WriteString(m.dock.View())
+		}
 	} else {
 		b.WriteString(theme.HintText.Render("select an area"))
 	}
 	b.WriteString("\n")
 	// The chat dock is always present: every screen composes above it.
-	b.WriteString(m.dock.View())
 	b.WriteString(m.footer.View())
 	return b.String()
 }
@@ -633,7 +860,12 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	}
 	if m.chatConvID == "" && len(msg.Convs) > 0 {
 		m.chatConvID = msg.Convs[0].ID
-		return m.chat.OpenConversation(m.chatConvID)
+		cmd := m.chat.OpenConversation(m.chatConvID)
+		// The diff pane shows the ask-conversation owner; re-point it.
+		if m.diffOpen {
+			return tea.Batch(cmd, m.refreshDiffOwner())
+		}
+		return cmd
 	}
 	return nil
 }

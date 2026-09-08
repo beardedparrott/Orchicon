@@ -130,6 +130,7 @@ type Clients struct {
 	Settings   apiv1connect.SettingsServiceClient
 	Auth       apiv1connect.AuthServiceClient
 	Telemetry  apiv1connect.TelemetryServiceClient
+	FileEdits  apiv1connect.FileEditServiceClient
 
 	HTTP *http.Client // underlying client (tests can stub transports)
 }
@@ -185,6 +186,7 @@ func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	c.Settings = newClient(apiv1connect.NewSettingsServiceClient, httpClient, base, opts2)
 	c.Auth = newClient(apiv1connect.NewAuthServiceClient, httpClient, base, opts2)
 	c.Telemetry = newClient(apiv1connect.NewTelemetryServiceClient, httpClient, base, opts2)
+	c.FileEdits = newClient(apiv1connect.NewFileEditServiceClient, httpClient, base, opts2)
 	return c
 }
 

@@ -304,6 +304,39 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 	return sub
 }
 
+// FileEdits subscribes to StreamFileEdits for one owner (an execution or
+// an Ask conversation). Unlike the project/execution streams, the
+// FileEditService RPCs REQUIRE a non-empty tenant_id (internal/fileedit/
+// rpc.go → "tenant_id must not be empty"), so the caller must pass the
+// resolved tenant (the shell resolves it once via Auth.ListIdentities).
+// event_id == the ledger row id, so dedup survives reconnect exactly like
+// the GUI's useStream. OnEvent pokes the named channel so the pane repaints
+// as live entries land.
+func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID string) *stream.Sub[*apiv1.StreamFileEditsResponse] {
+	name := "file-edits"
+	cfg := stream.Config[*apiv1.StreamFileEditsResponse]{
+		Name: name,
+		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamFileEditsResponse, error), error) {
+			req := &apiv1.StreamFileEditsRequest{TenantId: tenantID, OwnerKind: ownerKind, OwnerId: ownerID}
+			if fromSequence > 0 {
+				req.FromSequence = &fromSequence
+			}
+			s, err := cl.FileEdits.StreamFileEdits(ctx, connect.NewRequest(req))
+			if err != nil {
+				return nil, err
+			}
+			return client.ConnectRecv(s), nil
+		},
+		GetEventID:  func(m *apiv1.StreamFileEditsResponse) string { return m.GetEventId() },
+		GetSequence: func(m *apiv1.StreamFileEditsResponse) int64 { return m.GetSequence() },
+		OnStatus:    r.notify(name),
+		OnEvent:     func(*apiv1.StreamFileEditsResponse) { r.pokeEvent(name)(nil) },
+	}
+	sub := stream.New(cfg)
+	r.add(sub)
+	return sub
+}
+
 // WaitStatus is the re-armable tea.Cmd that consumes the next status from
 // the named channel and converts it to StatusMsg. Screens call it in Init
 // and re-arm after each delivered StatusMsg (the tea.Msg loop pattern).

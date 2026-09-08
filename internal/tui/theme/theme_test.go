@@ -22,7 +22,13 @@ func TestStylesConstruct(t *testing.T) {
 		ListMeta.Render("m") + DetailKey.Render("k") + DetailValue.Render("v") +
 		PaneBorder.Render("pane") + StatusOK.Render("ok") + StatusWarn.Render("w") +
 		StatusErr.Render("e") + StatusBusy.Render("b") + HelpOverlay.Render("help") +
-		ErrorText.Render("err") + HintText.Render("hint") + SpinnerStyle.Render("*")
+		ErrorText.Render("err") + HintText.Render("hint") + SpinnerStyle.Render("*") +
+		DiffAdd.Render("+a") + DiffDel.Render("-d") + DiffCtx.Render(" c") +
+		DiffEmphasis.Render("!") + DiffHeader.Render("h") +
+		DiffLineNoOld.Render("1") + DiffLineNoNew.Render("1") +
+		DiffGutter.Render("│") + DiffPanel.Render("P") +
+		DiffTabActive.Render("t") + DiffTabInactive.Render("t") +
+		DiffFileSel.Render("f") + DiffBadgeAdd.Render("+") + DiffBadgeDel.Render("-")
 	if styled == "" {
 		t.Fatal("styles rendered empty")
 	}

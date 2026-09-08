@@ -74,6 +74,57 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 			Handle: func(m *App, _ tea.Msg) bool { m.quitting = true; return true },
 		},
+		{
+			// Diff sidebar toggle: D / Shift+D OUTSIDE text input. Ctrl+D is
+			// never used (EOF muscle memory). Both keys toggle the pane; when
+			// the pane is already open, re-toggling closes it.
+			Name: "toggle diff sidebar", Keys: "d / shift+d", Scope: "global",
+			Match: func(msg tea.Msg) bool {
+				k, ok := msg.(tea.KeyMsg)
+				return ok && (k.String() == "d" || k.String() == "D")
+			},
+			Handle: func(m *App, _ tea.Msg) bool {
+				if m.chatFocus != focusContent {
+					// While composing, `d` inserts a literal 'd' into the
+					// composer — the router never consumes it here.
+					return false
+				}
+				if m.diffOpen {
+					m.closeDiffPane()
+				} else {
+					m.pendingDiffCmd = m.openDiffPane()
+				}
+				return true
+			},
+		},
+		{
+			Name: "close diff sidebar", Keys: "esc", Scope: "global",
+			Match: func(msg tea.Msg) bool {
+				k, ok := msg.(tea.KeyMsg)
+				return ok && k.String() == "esc"
+			},
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.diffOpen {
+					return false // let the screen handle its own esc
+				}
+				m.closeDiffPane()
+				return true // consume esc so the screen's base esc is skipped
+			},
+		},
+		{
+			Name: "copy diff (OSC 52)", Keys: "y", Scope: "global",
+			Match: func(msg tea.Msg) bool {
+				k, ok := msg.(tea.KeyMsg)
+				return ok && k.String() == "y"
+			},
+			Handle: func(m *App, _ tea.Msg) bool {
+				if m.diffOpen && m.diffPane != nil {
+					m.diffPane.CopySelectedDiff()
+					return true
+				}
+				return false
+			},
+		},
 	}
 	// One chord route per tab, in tab order: ctrl+o/w/e/a/f/t.
 	for i := range tabs {
@@ -106,11 +157,10 @@ func keyMatcher(s string) func(tea.Msg) bool {
 func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
-		if s := m.screens[m.active]; s != nil {
-			s.SetSize(wm.Width, m.contentHeight())
-		}
 		m.footer.Width = wm.Width
-		m.dock.Width = wm.Width
+		// Reflow the screen + dock (and the diff pane rail) to the new size,
+		// accounting for the pane when it is open.
+		m.reflowForDiff()
 		// First layout: start the active screen's live streams.
 		m.EnsureSubscriptions(m.active)
 		return m, nil
@@ -170,6 +220,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				// foundation found q/ctrl+c hanging the TUI).
 				return m, tea.Quit
 			}
+			// A route may have staged a diff-pane setup cmd (e.g. the D
+			// toggle's openDiffPane); re-emit it. The route already consumed
+			// the message, so there is no screen fall-through here.
+			if m.pendingDiffCmd != nil {
+				cmd := m.pendingDiffCmd
+				m.pendingDiffCmd = nil
+				return m, cmd
+			}
 			return m, nil
 		}
 	}
@@ -206,7 +264,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatConvCreatedMsg:
 		m.chatConvID = msg.convID
 		m.chat.SetActive(msg.convID)
-		return tea.Batch(m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations())
+		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
+		if m.diffOpen {
+			cmds = append(cmds, m.refreshDiffOwner())
+		}
+		return tea.Batch(cmds...)
 	case execSessionMsg:
 		return m.onExecutionSessionLoaded(msg.execID, msg.parts, msg.err)
 	case interjectOKMsg:
