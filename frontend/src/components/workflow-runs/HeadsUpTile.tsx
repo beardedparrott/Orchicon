@@ -20,6 +20,7 @@ import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/ex
 import { useApproveStep } from "@/api/approvals";
 import { useRetryStepRun } from "@/api/workflows";
 import { useGetExecutionSession, useStreamExecutionEvents } from "@/api/executions";
+import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
 import {
   formatCompactTokens,
   useExecutionUsageSummary,
@@ -92,9 +93,14 @@ export function HeadsUpTile({ tile, runId, liveStream, onExpand }: HeadsUpTilePr
     execId,
     Boolean(execId),
   );
+  // Liveness gate: a terminal execution (7/8/9/10) never holds a stream
+  // connection, even when it is the grid's designated live tile.
+  const execStatus = tile.execution?.status ?? 0;
+  const isTerminal =
+    execStatus === 7 || execStatus === 8 || execStatus === 9 || execStatus === 10;
   const { events } = useStreamExecutionEvents({
     executionId: execId,
-    enabled: liveStream && Boolean(execId),
+    enabled: liveStream && executionStreamEnabled(execId, isTerminal),
   });
 
   // Running tile: re-pull the durable transcript every 2s (the runner

@@ -3,6 +3,8 @@ package orchicon
 import (
 	"context"
 	"errors"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"strings"
 	"sync"
@@ -653,5 +655,116 @@ func TestChatTurnClientDuplicateCallIDsExecuteOnce(t *testing.T) {
 	}
 	if outs != 1 {
 		t.Fatalf("results for call_dup = %d, want exactly one", outs)
+	}
+}
+
+// TestChatTurnClientManyToolRoundsUnbounded pins the removal of the
+// 8-round cap: a turn whose fake provider issues >8 tool rounds then
+// finishes must complete normally (no injected budget notice, no tools
+// stripped) and commit the FULL working history — every round's tool use
+// and tool result — so a follow-up re-sends complete context.
+func TestChatTurnClientManyToolRoundsUnbounded(t *testing.T) {
+	const nRounds = 12 // > the former 8-round cap
+	rounds := make([][]Event, 0, nRounds+1)
+	for i := 0; i < nRounds; i++ {
+		rounds = append(rounds, []Event{
+			TextDelta{Text: "step "},
+			ToolCall{Index: 0, ToolCallID: "call_r" + string(rune('a'+i)), Name: "probe", ArgsJSON: `{}`},
+			Finish{StopReason: StopToolUse},
+		})
+	}
+	rounds = append(rounds, []Event{
+		TextDelta{Text: "all done"},
+		Finish{StopReason: StopStop},
+	})
+	prov := &chatTestProvider{rounds: rounds}
+	b := newChatBridge(t, prov)
+	b.SetAskTools(&fakeAskTools{
+		defs:    []ToolDef{{Name: "probe", ParamsJSON: `{"type":"object"}`}},
+		results: map[string]string{"probe": "ok"},
+	})
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-many", "ask-orchicon:conv-many")
+
+	bus, _ := b.Subscribe(ctx, "conv-many")
+	if err := b.SendTurnMessage(ctx, "conv-many", sid, "system", "orchicon/ollama/deepseek-v4-flash", "go"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	evts := drainBus(t, bus)
+
+	// The turn completes normally: one consolidated text part, one idle,
+	// and NO budget-exhaustion notice anywhere.
+	var partText string
+	var sawIdle bool
+	for _, e := range evts {
+		switch e.Kind {
+		case "part":
+			if e.Type == "text" {
+				partText = e.Text
+			}
+		case "idle":
+			sawIdle = true
+		}
+	}
+	if !sawIdle {
+		t.Fatal("no idle at turn end")
+	}
+	if strings.Contains(partText, "budget exhausted") {
+		t.Fatalf("reply %q contains the removed budget notice", partText)
+	}
+	if !strings.Contains(partText, "all done") {
+		t.Fatalf("reply %q missing the final answer", partText)
+	}
+	// The loop ran all rounds: nRounds tool rounds + 1 final text round.
+	if prov.requestCount() != nRounds+1 {
+		t.Fatalf("provider turns = %d, want %d (all tool rounds + final)", prov.requestCount(), nRounds+1)
+	}
+	// The committed history replays the full flow: user, then per round an
+	// assistant (text + tool use) and a tool result, then the final
+	// assistant text.
+	b.mu.Lock()
+	hist := append([]Message(nil), b.chatHistory[sid]...)
+	b.mu.Unlock()
+	want := 1 + 2*nRounds + 1 // user + (assistant+toolresult)*nRounds + final assistant
+	if len(hist) != want {
+		t.Fatalf("history has %d messages, want %d (full N-round replay)", len(hist), want)
+	}
+	// Every round's tool use and tool result must be present.
+	for i := 0; i < nRounds; i++ {
+		assistant := hist[1+2*i]
+		if assistant.Role != RoleAssistant {
+			t.Fatalf("history[%d].Role = %q, want assistant", 1+2*i, assistant.Role)
+		}
+		hasUse := false
+		for _, c := range assistant.Content {
+			if c.ToolUse != nil && c.ToolUse.Name == "probe" {
+				hasUse = true
+			}
+		}
+		if !hasUse {
+			t.Fatalf("history[%d] = %+v, want the tool use", 1+2*i, assistant)
+		}
+		result := hist[2+2*i]
+		if result.Role != RoleTool || result.Content[0].ToolResult == nil {
+			t.Fatalf("history[%d] = %+v, want the tool result", 2+2*i, result)
+		}
+	}
+}
+
+// TestChatTurnClientNoWorkerBudgetImport guards the budgets-are-workers-only
+// invariant by construction: the native Ask turn path must never import the
+// worker-budget facade package (internal/opencode). It parses chatturn.go
+// with go/parser and fails if internal/opencode appears in its imports.
+func TestChatTurnClientNoWorkerBudgetImport(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "chatturn.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse chatturn.go: %v", err)
+	}
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if path == "github.com/beardedparrott/orchicon/internal/opencode" {
+			t.Fatalf("chatturn.go imports %q — the worker-budget facade must gate workers only, never native Ask turns", path)
+		}
 	}
 }

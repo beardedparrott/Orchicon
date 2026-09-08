@@ -284,11 +284,14 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 	"- Do **not** create a branch, commit a branch, or push to origin. Leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
 
 // quickWorkerMarker is the Quick Software Engineer seed's per-worker roll
-// marker (cannedWorker.RollMarker): it pins the single-step fast-path
-// contract — implement, verify green, push, and report the PR into develop
-// with PR_URL + PR_STATE lines, all in one step. Fragment chosen from the
-// new worker's Behavior so a wording change re-rolls only the Quick worker.
-const quickWorkerMarker = "single-step implementer"
+// marker (cannedWorker.RollMarker): it pins the push-only implementer
+// contract — implement, verify green, commit to the run branch, push to
+// origin, and hand off PR creation + merge to the DevOps Engineer step. The
+// previous generation marker ("single-step implementer") is present in the
+// live published v1 Behavior, so this value is changed to re-roll exactly
+// the Quick worker on next boot; once the new fragment is present the seeder
+// is idempotent again.
+const quickWorkerMarker = "push-only implementer"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -622,11 +625,11 @@ var cannedWorkers = []cannedWorker{
 		ID:          "01M1ERH9921YS9S1QWGZV8D1VM",
 		Name:        "Quick Software Engineer",
 		Slug:        "quick-software-engineer",
-		Description: "A fast single-step software engineer: implements the work item, verifies the build and tests are green, pushes the branch, and reports the PR.",
-		Purpose:     "Implements the work item end to end in a single step — code, build, test, push, and PR reporting — for the Quick Work fast path.",
+		Description: "A fast push-only software engineer: implements the work item, verifies the build and tests are green, commits to the run branch and pushes to origin — then hands off to the DevOps Engineer step, which opens the PR into develop and merges it.",
+		Purpose:     "Implements the work item end to end in a single step — code, build, test, and push to origin — leaving PR creation and merge to the DevOps Engineer step for the Quick Work merge-autonomy path.",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
 		Skills:      "Full-stack implementation (Go, TypeScript, React, SQL) • Build & test verification • Git • GitHub • PR management • GitHub CLI",
-		Behavior:    "Own the task end to end as a single-step implementer — no handoffs, no re-planning. Implement, verify green, push, report the PR.",
+		Behavior:    "Own the task end to end as a push-only implementer — no PRs, no merging: implement, verify green, commit to the run branch, push to origin, and hand off to the DevOps PR step.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Hard time-box: 30 minutes\n" +
 			"You have 30 minutes of wall clock to finish. Work in scope order; skip anything the acceptance criteria don't require. When the box nears its end, land what you have — a green build with partial scope beats an unshipped complete change.\n\n" +
@@ -636,18 +639,15 @@ var cannedWorkers = []cannedWorker{
 			"1. **Read the task + acceptance criteria first** (`.orchicon/<run_id>/facts_learned`, `summary`, `issues`) — established facts are not re-derived; start writing code within the first few minutes.\n" +
 			"2. **Implement incrementally**: scaffold first, then extend section by section — never one giant generation. Handle errors and edge cases; write tests alongside implementation.\n" +
 			"3. **Build + run the focused tests after each meaningful chunk** — fix failures immediately. A test that already fails without your change is still a red suite you are shipping: fix the cause by default, or remove/correct the test only when your investigation proves it no longer protects anything needed. Record the decision as a `FACTS LEARNED:` line.\n" +
-			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). You are a single-step implementer — later steps see only committed + pushed work.\n\n" +
-			"## Notes cleanup (before PR)\n" +
-			"Before creating the pull request, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). They are gitignored working notes and must not land in the PR.\n\n" +
+			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). You are a push-only implementer — later steps see only committed + pushed work.\n\n" +
+			"## Notes cleanup (before push)\n" +
+			"Before pushing, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). They are gitignored working notes and must not land in the PR.\n\n" +
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
-			"## PR reporting (required)\n" +
-			"Create the pull request explicitly targeting `develop` (`gh pr create --base develop`) — `main` is the default branch and an unspecified base silently lands on the release branch. Quick Work has exactly one task step — you — plus End. There is no DevOps Engineer step, no later step, and no handoff: if you do not run `gh pr create`, no PR will exist, period. Statements like 'the DevOps step creates the PR' are always false in this workflow. If `gh` is missing or unauthorized, that is a failure of YOUR step — report `failure` with the real command output, never success with a promise that someone else opens it. After opening (or verifying an existing) PR, emit both lines in your final output, **immediately before** the `ORCHICON WORKER SUMMARY:` line:\n" +
-			"- `PR_URL:` the PR's real HTML URL as printed by `gh pr create` / `gh pr view` (`https://github.com/OWNER/REPO/pull/N`) — never a `pull/new/...` link.\n" +
-			"- `PR_STATE:` the verified state — `merged` after a successful merge, `open` when the PR is open and the workflow waits.\n" +
-			"Emit neither line when no PR exists.\n\n" +
+			"## PR handoff (owned by the DevOps Engineer step)\n" +
+			"You do NOT open a pull request and you do not merge — the DevOps Engineer step that follows creates the PR into `develop` and merges it. Push your committed work to origin and stop; the PR/merge is that step's contract, not yours.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, unpushed work, or a pushed branch with no PR** — an unreviewable branch is unshipped work, not success. End with `ORCHICON WORKER SUMMARY: success` only when the change is implemented, green, pushed, AND the PR is opened with `PR_URL:`/`PR_STATE:` emitted; `failure` only if the task proved unimplementable (say exactly where it broke down).",
+			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, and pushed (the DevOps Engineer step opens the PR into `develop` and merges); `failure` only if the task proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:      quickWorkerMarker,
 	},
