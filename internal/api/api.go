@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"sync"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -26,6 +28,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/execution"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/opencode"
@@ -65,6 +68,12 @@ type Dependencies struct {
 	// Ask sessions capture live usage per adapter. Nil disables Ask usage
 	// recording.
 	UsageRecorder *aigateway.UsageRecorder
+	// FileEditService is the shared diff-pipeline ledger service (server
+	// constructed over the PG store). Wired into Ask Orchicon so Ask
+	// conversations ledger file edits from real file-state snapshots
+	// (owner_kind ask_conversation) — the same ground truth executions
+	// record. Nil disables the Ask-side ledger.
+	FileEditService *fileedit.Service
 	// GrafanaURL is the base URL of the Grafana UI (default
 	// http://localhost:3000). Used by the /grafana reverse proxy so the
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
@@ -296,7 +305,22 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps.AbortExecution != nil {
 		execSvc.SetAbortExecution(deps.AbortExecution)
 	}
+	// File-edit ledger (diff pipeline): fetch + live stream over the shared
+	// pool/tx store. The lister is injected (over fileedit.PGStore) so this
+	// package keeps no direct pool→ledger SQL coupling. API-key auth rides
+	// the same interceptor chain as ExecutionService (same read policy).
+	if deps.Pool != nil {
+		feStore := fileedit.NewPGStore(deps.Pool)
+		execSvc.SetFileEditLister(feStore.List)
+	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
+	// FileEditService (docs/07 §3.8 diff pipeline): the standalone fetch +
+	// stream RPCs for the GUI sidebar / TUI pane. Shares the pool-backed
+	// store with the ExecutionService lister wiring above.
+	if deps.Pool != nil {
+		feSvc := fileedit.NewRPCService(fileedit.NewPGStore(deps.Pool), deps.Log, deps.Subscriber)
+		mux.Handle(apiv1connect.NewFileEditServiceHandler(feSvc, interceptorOpt))
+	}
 
 	// PolicyService (docs/07 §3.5).
 	policySvc := policy.NewService(deps.Pool, deps.Log, deps.PolicyEngine, deps.Subscriber)
@@ -396,6 +420,74 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps.UsageRecorder != nil {
 		askSvc.SetUsageRecorder(deps.UsageRecorder)
 	}
+	// Diff pipeline (plan step 8): the Ask-side ledger hook + terminal-turn
+	// git reconciliation. Ask conversations ledger file edits with
+	// owner_kind ask_conversation from real file-state snapshots — the
+	// built-in write/edit tools take a plane-side after-read (observer
+	// cache vs fresh read under the conversation's project dir), the
+	// worktree engine tools parse their structured file_edits output. The
+	// terminal hook reconciles the ledger against the project dir's git
+	// state once per turn. Both best-effort; nil service = no ledger.
+	if deps.FileEditService != nil && deps.Pool != nil {
+		feAsk := deps.FileEditService
+		// Per-conversation observers: cache last-seen content per path
+		// (git-HEAD-seeded) for the built-in write/edit after-reads.
+		feAskObs := map[string]*fileedit.Observer{}
+		var feAskMu sync.Mutex
+		feObserver := func(convID, baseDir string) *fileedit.Observer {
+			if baseDir == "" {
+				return nil
+			}
+			feAskMu.Lock()
+			defer feAskMu.Unlock()
+			o, ok := feAskObs[convID]
+			if !ok {
+				o = fileedit.NewObserver(baseDir)
+				feAskObs[convID] = o
+			}
+			return o
+		}
+		askSvc.SetFileEditHook(func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string) {
+			switch toolName {
+			case "write", "edit":
+				// opencode built-in write/edit (input shapes per the spike
+				// doc): plane-side after-snapshot under the conversation's
+				// project dir.
+				dir := askBaseDir()
+				o := feObserver(convID, dir)
+				if o == nil {
+					return
+				}
+				p, _ := input["filePath"].(string)
+				if p == "" {
+					p, _ = input["path"].(string)
+				}
+				if p == "" {
+					return
+				}
+				tool := fileedit.ToolOpenCodeWrite
+				if toolName == "edit" {
+					tool = fileedit.ToolOpenCodeEdit
+				}
+				if e := o.ObserveAfter(p, tool); e.Path != "" {
+					feAsk.Record(ctx, tenantID, db.FileEditOwnerAskConversation, convID, []fileedit.Entry{e})
+				}
+			case "batch_write":
+				// Worktree engine tool: the engine already computed the
+				// ground-truth diffs in its structured output.
+				feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output)
+			}
+		})
+		askSvc.SetFileEditReconciler(func(ctx context.Context, tenantID, convID string) {
+			dir := askBaseDir()
+			if dir == "" {
+				return
+			}
+			if err := fileedit.ReconcileGit(ctx, fileedit.NewPGStore(deps.Pool), dir, tenantID, db.FileEditOwnerAskConversation, convID, deps.Log); err != nil {
+				deps.Log.Warn("ask file edit ledger git reconciliation failed", "conversation", convID, "dir", dir, "error", err)
+			}
+		})
+	}
 	deps.AskService = askSvc
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
@@ -427,4 +519,19 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	h := middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	_ = blobstore.ErrNotFound
 	return h
+}
+
+// askBaseDir resolves the directory an Ask conversation's file edits
+// resolve against. Ask sessions run on the host opencode serve as
+// directory-less sessions (NewSessionClient directory ""), so relative
+// paths resolve against the server process's working directory — the same
+// base the serve itself uses. Real file state on both sides of the
+// snapshot. Returns "" when the cwd cannot be read — callers then skip
+// ledger observation/reconciliation (never fail the turn).
+func askBaseDir() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ""
+	}
+	return wd
 }

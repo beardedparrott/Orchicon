@@ -145,6 +145,12 @@ type TaskReconciler struct {
 	blockedMu     sync.Mutex
 	blockedCursor int
 
+	// fileEditReconciler is the diff-pipeline completion hook (optional):
+	// OnResult runs it after the terminal status writeback so the ledger
+	// reconciles against the worktree's git state. Nil = skipped (tests,
+	// DB-less planes). See FileEditReconciler.
+	fileEditReconciler FileEditReconciler
+
 	// dispatchConcurrency bounds how many reconcileOne calls the scan pass
 	// runs concurrently (in flight at once) when fanning out its candidate
 	// batch. Zero means defaultDispatchConcurrency. Set via
@@ -172,6 +178,19 @@ type TaskReconciler struct {
 func NewTaskReconciler(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher) *TaskReconciler {
 	return &TaskReconciler{pool: pool, log: log, dispatcher: dispatcher}
 }
+
+// FileEditReconciler is the diff-pipeline completion hook (optional): when
+// set, OnResult reconciles the execution's file-edit ledger against the run
+// worktree's git state on every terminal transition. Best-effort — a nil
+// hook (tests, DB-less planes) simply skips reconciliation. The server wires
+// this to a closure over fileedit.ReconcileGit + the PGStore (avoids a
+// scheduler → fileedit dependency; the ledger store needs a *db.Pool).
+type FileEditReconciler interface {
+	ReconcileExecutionGit(ctx context.Context, tenantID, execID string)
+}
+
+// SetFileEditReconciler injects the completion-time ledger reconciler.
+func (r *TaskReconciler) SetFileEditReconciler(fe FileEditReconciler) { r.fileEditReconciler = fe }
 
 // SetDispatchConcurrency sets the per-pass concurrency bound for the scan
 // pass (ORCHICON_DISPATCH_CONCURRENCY). Values are clamped to
@@ -1527,6 +1546,14 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	// failure reason on a failed execution is never touched.
 	if succeeded {
 		r.clearStallNotice(ctx, execID)
+	}
+	// Diff pipeline (AC 4): reconcile the file-edit ledger against the run
+	// worktree's git state once, at the terminal transition. Best-effort —
+	// the hook owns its error posture and never blocks/fails the transition
+	// (same posture as clearStallNotice). Runs for succeeded AND failed
+	// runs: a failed worker still wrote files worth reconciling.
+	if r.fileEditReconciler != nil {
+		r.fileEditReconciler.ReconcileExecutionGit(ctx, "tnt_dev", execID)
 	}
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }

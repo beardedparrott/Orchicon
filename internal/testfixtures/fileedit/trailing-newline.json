@@ -1,0 +1,10 @@
+{
+  "name": "trailing-newline-toggle",
+  "path": "notes/edge.md",
+  "before": "foo\n",
+  "after": "foo",
+  "expected_kind": "modify",
+  "expected_unified_diff": "--- a/notes/edge.md\n+++ b/notes/edge.md\n@@ -1 +1 @@\n-foo\n+foo\n\\ No newline at end of file\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

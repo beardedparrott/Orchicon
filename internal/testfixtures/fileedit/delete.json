@@ -1,0 +1,10 @@
+{
+  "name": "delete-file",
+  "path": "old/obsolete.txt",
+  "before": "gone soon\nsecond line\n",
+  "after": null,
+  "expected_kind": "delete",
+  "expected_unified_diff": "--- a/old/obsolete.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-gone soon\n-second line\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

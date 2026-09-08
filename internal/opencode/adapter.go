@@ -33,6 +33,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -78,6 +79,15 @@ type Adapter struct {
 	// (execution_session_parts). Injected by the server; nil = the
 	// transcript is not recorded (e.g. tests).
 	sessionStore SessionStoreFunc
+
+	// fileEdits is the diff-pipeline hook: on every mutating tool_use event
+	// it parses the tool's structured file_edits output (worktree engine
+	// tools) or takes a server-side after-snapshot (opencode built-in
+	// write/edit) and persists ground-truth ledger entries. Injected by the
+	// server; nil = no ledger (tests, adapters without DB access). The
+	// contract mirrors SessionStoreFunc: best-effort, never blocks the
+	// event loop, all errors are the implementation's concern.
+	fileEdits FileEditHookFunc
 
 	// resolveBinary is the adapter-CLI resolution seam. Default
 	// (resolveOpenCodeBinary) probes PATH then $HOME/.opencode/bin —
@@ -186,6 +196,21 @@ func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 // worktree path when set, else the project dir. The worktree lives under the
 // project dir (.orchicon-worktrees/<runID>), so it is covered by the
 // project-dir mount and passes the project-dir containment checks.
+// engineEditedFromOutput extracts the paths a worktree-engine tool output
+// recorded in its structured file_edits array (empty for every other tool /
+// plain text output). Tolerant: any parse problem yields nil.
+func engineEditedFromOutput(out string) []string {
+	entries, err := fileedit.ParseEngineOutput(out)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+	return paths
+}
+
 func executionDir(m scheduler.ExecutionManifest) string {
 	if m.WorktreePath != "" {
 		return m.WorktreePath
@@ -447,6 +472,16 @@ func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn 
 // session transcript is not persisted. It is the opencode implementation
 // of scheduler.ConfigurableBridge.
 func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
+
+// FileEditHookFunc is the diff-pipeline ledger callback. tool is the tool
+// name (batch_write/write/edit for the worktree engine, opencode built-ins
+// pass their input map for the snapshot path), input/out carry the tool_use
+// event's state. The server implements it over fileedit.Service.
+type FileEditHookFunc func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string)
+
+// SetFileEditHook injects the file-edit ledger hook. Nil = no ledger.
+// It is the opencode implementation of the diff-pipeline wiring point.
+func (a *Adapter) SetFileEditHook(fn FileEditHookFunc) { a.fileEdits = fn }
 
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
@@ -775,6 +810,13 @@ type execStreamState struct {
 	// it can read what the previous step actually produced.
 	writtenFiles []string
 
+	// engineEditedPaths holds the paths already ledgered by the worktree
+	// engine's structured file_edits output during this run (batch_write
+	// family) — the file_diff fallback skips them so a path never gets two
+	// entries for one edit. Guarded by the same event-loop serialization
+	// as writtenFiles (parseEvent runs on one goroutine per execution).
+	engineEditedPaths map[string]bool
+
 	// truncatedFinish marks a FINAL step_finish that indicates the model
 	// turn was interrupted rather than completed: reason "unknown" with
 	// zero tokens (the signature of a truncated/aborted response — the
@@ -1014,6 +1056,31 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		a.log.Info("opencode tool use",
 			"execution", execID, "tool", toolName,
 			"status", state["status"], "output_len", len(outStr))
+		// Diff pipeline: record the file edits this tool made BEFORE the
+		// tool-call telemetry fan-out (order irrelevant to both, but the
+		// ledger write must see the PRE-capped output — capToolOutput may
+		// have spliced the tail out of outStr, which would hide the
+		// file_edits payload of a huge batch_write). Best-effort: the hook
+		// owns its error posture; a ledger gap never fails the session.
+		if a.fileEdits != nil {
+			inputMap, _ := inRaw.(map[string]any)
+			if inputMap == nil {
+				inputMap = map[string]any{}
+			}
+			// Remember engine-covered paths so the file_diff fallback never
+			// double-records one edit (the engine entry is the exact one).
+			if toolName == "batch_write" || toolName == "write" || toolName == "edit" {
+				if stats != nil {
+					if stats.engineEditedPaths == nil {
+						stats.engineEditedPaths = map[string]bool{}
+					}
+					for _, e := range engineEditedFromOutput(outStr) {
+						stats.engineEditedPaths[e] = true
+					}
+				}
+			}
+			a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), toolName, inputMap, outStr)
+		}
 		callbacks.OnToolCall(ctx, execID, toolName, inp, []byte(outStr))
 	case evtReasoning:
 		// v1.x reasoning content (only when --thinking is enabled
@@ -1075,6 +1142,19 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 				if ok {
 					stats.writtenFiles = append(stats.writtenFiles, p)
 					a.log.Debug("opencode file modified", "execution", execID, "path", p)
+				}
+				// Diff-pipeline fallback (plan step 7): a file_diff for a
+				// path the mutating-tool hook did not cover (an unusual
+				// tool, or a tool whose input shape we don't special-case)
+				// still gets a ledger entry — a plane-side after-read of
+				// real file state under the run's exec dir. Engine-covered
+				// paths (batch_write family) skip this: their entry already
+				// exists with an exact in-engine diff. No-ops (unchanged
+				// files) yield empty entries inside ObserveAfter and are
+				// dropped there.
+				if a.fileEdits != nil && !stats.engineEditedPaths[p] {
+					input := map[string]any{"path": p}
+					a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), "file_diff", input, "")
 				}
 			}
 		}
@@ -1723,3 +1803,4 @@ func projectMount(projectDir string) []runtime.MountSpec {
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
 }
+

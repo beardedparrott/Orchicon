@@ -1242,6 +1242,16 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 		// whatever arrived before a re-attach is carried forward, matching
 		// the "partial reasoning is preserved" spirit for error paths.
 		reasoning = append(reasoning, res.reasoning...)
+		// Diff pipeline (AC 4): a turn's terminal transition reconciles the
+		// conversation's file-edit ledger against the project dir's git
+		// state (best-effort — the hook owns its error posture and never
+		// affects the turn result). Both collected and failed turns
+		// reconcile: a failed turn still wrote files worth accounting for.
+		if res.kind == turnCollected || res.kind == turnFailed {
+			if s.fileEditReconciler != nil {
+				s.fileEditReconciler(ctx, c.tenantID, c.convID)
+			}
+		}
 		switch res.kind {
 		case turnCollected:
 			return res.text, reasoning, sid, nil
@@ -1663,6 +1673,24 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				}
 				monitor.observe(evt.Type, evt.Part)
 				s.turns.markActivity(c.convID, c.token)
+				// Diff pipeline (AC 1): completed mutating tool_use parts on
+				// an Ask turn ledger file edits from real file-state
+				// snapshots — owner_kind ask_conversation, same ground truth
+				// executions record. The hook (server-wired fileedit.Service)
+				// owns the error posture; a ledger gap never fails the turn.
+				// Fired BEFORE the stream callback so the ledger write sees
+				// the full output (the callback may have already forwarded a
+				// capped view).
+				if evt.Type == "tool_use" && s.fileEditHook != nil {
+					toolName, _ := evt.Part["tool"].(string)
+					state, _ := evt.Part["state"].(map[string]any)
+					input, _ := state["input"].(map[string]any)
+					if input == nil {
+						input = map[string]any{}
+					}
+					output, _ := state["output"].(string)
+					s.fileEditHook(ctx, c.tenantID, c.convID, toolName, input, output)
+				}
 				switch evt.Type {
 				case "text":
 					text := evt.Text
