@@ -90,8 +90,6 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 	}
 	m.inputs[fieldURL].Placeholder = "https://orch.example.com"
 	m.inputs[fieldURL].Prompt = "Server URL > "
-	m.inputs[fieldCredential].Placeholder = "oc_… (create one in the GUI: Settings → API keys)"
-	m.inputs[fieldCredential].Prompt = "API key > "
 	m.inputs[fieldCredential].EchoMode = textinput.EchoPassword
 	m.inputs[fieldCredential].EchoCharacter = '•'
 	m.inputs[fieldUsername].Placeholder = "local username"
@@ -110,8 +108,23 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 			m.authAPI = false
 		}
 	}
+	m.applyCredentialMode()
 	m.inputs[fieldURL].Focus()
 	return m
+}
+
+// applyCredentialMode derives the credential field's prompt + placeholder
+// from the active auth mode. API-key mode shows "API key >" with the oc_…
+// placeholder; username+password mode shows "Password >" with a password
+// placeholder — never "API key" in password mode.
+func (m *Model) applyCredentialMode() {
+	if m.authAPI {
+		m.inputs[fieldCredential].Prompt = "API key > "
+		m.inputs[fieldCredential].Placeholder = "oc_… (create one in the GUI: Settings → API keys)"
+	} else {
+		m.inputs[fieldCredential].Prompt = "Password > "
+		m.inputs[fieldCredential].Placeholder = "password"
+	}
 }
 
 func (m *Model) currentURL() string {
@@ -158,7 +171,7 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 	}
 	if m.authAPI {
 		if err := m.probes.ListProjects(ctx, m.currentURL(), m.credential(), m.insecure); err != nil {
-			return nil, fmt.Errorf("API key rejected: %w\n\nRe-create the key in the GUI with read scopes for every area (project, workitem, execution, workflow, worker, policy, approval, recovery, runtimeimage, secret, settings, mcp).", err)
+			return nil, fmt.Errorf("API key rejected: %w\n\nRe-create the key in the GUI (Settings → API keys). Read scopes cover browsing; sending chat messages and interjecting into live executions needs the corresponding write scopes (conversations, execution messaging).", err)
 		}
 		return &Result{Profile: m.buildProfile(""), ServerVersion: vr.Version}, nil
 	}
@@ -243,9 +256,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.submit()
 		case tea.KeyCtrlA:
 			m.authAPI = !m.authAPI
+			m.applyCredentialMode()
+			m.errMsg = ""
+			m.info = ""
 			return m, nil
 		case tea.KeyCtrlS:
 			m.insecure = !m.insecure
+			m.errMsg = ""
+			m.info = ""
 			return m, nil
 		}
 
@@ -322,13 +340,16 @@ func (m Model) View() string {
 	if !m.authAPI {
 		authLabel = "username + password"
 	}
-	b.WriteString(theme.DetailKey.Render("Auth method (ctrl+a to toggle): ") + theme.DetailValue.Render(authLabel) + "\n\n")
+	b.WriteString(theme.DetailKey.Render("Auth method (ctrl+a to toggle): ") + theme.DetailValue.Render(authLabel) + "\n")
+	b.WriteString(theme.HintText.Render("  ctrl+a: switch between API key and username + password login") + "\n\n")
 
 	b.WriteString(m.inputs[fieldURL].View() + "\n\n")
 	if m.authAPI {
 		b.WriteString(m.inputs[fieldCredential].View() + "\n\n")
 		b.WriteString(theme.HintText.Render("  Create an API key in the Orchicon web GUI (Settings → API keys).") + "\n")
-		b.WriteString(theme.HintText.Render("  Give it read scopes for every area orch displays.") + "\n\n")
+		b.WriteString(theme.HintText.Render("  Read scopes cover browsing; sending chat messages and interjecting into") + "\n")
+		b.WriteString(theme.HintText.Render("  live executions needs the corresponding write scopes (conversations,") + "\n")
+		b.WriteString(theme.HintText.Render("  execution messaging).") + "\n\n")
 	} else {
 		b.WriteString(m.inputs[fieldUsername].View() + "\n")
 		b.WriteString(m.inputs[fieldCredential].View() + "\n\n")
