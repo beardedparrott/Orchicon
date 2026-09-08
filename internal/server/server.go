@@ -514,42 +514,17 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if err := runtimeimage.SeedCannedImages(context.Background(), pool, log, rtClient); err != nil {
 		log.Warn("seed canned runtime images failed (continuing)", "error", err)
 	}
-	// adapterKind resolves the execution's adapter kind from the worker's
-	// model_ref (the single source of truth, ADR-0003). The dispatcher then
-	// routes the bridge lookup by kind.
+	// adapterKind resolves the execution's adapter kind for mid-run RPCs.
+	// It PREFERS the execution's recorded adapter_id (→ the adapters row's
+	// kind), which names the adapter the execution actually DISPATCHED
+	// under; it falls back to the worker's latest published version's
+	// model_ref only when the execution carries no adapter_id (legacy
+	// rows). This fixes the case where the worker's latest version changed
+	// adapter kind between dispatch and the mid-run call — the RPC must
+	// route to the bridge that actually ran the execution, not the latest
+	// one. The dispatcher then routes the bridge lookup by kind.
 	adapterKind := func(ctx context.Context, execID string) (string, error) {
-		// G3: resolve the REQUEST tenant (the middleware stores it in the
-		// context) rather than hardcoding the deployment tenant — otherwise
-		// multi-tenant planes resolve the wrong tenant's execution on exactly
-		// the mid-run RPC paths this feature extends. Fall back to the
-		// deployment tenant when the request carries none (bridge-level /
-		// system paths).
-		tid := tenant.FromContext(ctx)
-		if tid == "" {
-			tid = cfg.DeploymentTenantID
-		}
-		tx, err := pool.BeginTenantTx(ctx, tid)
-		if err != nil {
-			return "", err
-		}
-		defer tx.Rollback(ctx)
-		exec, err := db.GetExecution(ctx, tx.Tx, tid, execID)
-		if err != nil {
-			return "", err
-		}
-		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, tid, exec.WorkerID, true)
-		if err != nil {
-			return "", err
-		}
-		kind := adapter.AdapterKind(ver.ModelRef)
-		if kind == "" {
-			// Same fallback the reconciler applies at dispatch time: an
-			// empty/malformed model_ref dispatches under the legacy default
-			// kind, so mid-run RPCs must resolve the SAME kind or they would
-			// fail executions that dispatched fine.
-			kind = adapter.DefaultAdapterKind
-		}
-		return kind, nil
+		return resolveAdapterKind(ctx, pool, cfg.DeploymentTenantID, execID)
 	}
 	deps := api.Dependencies{
 		Pool:              pool,
@@ -570,8 +545,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,
-		// adapterKind resolves the execution's adapter kind from the worker's
-		// model_ref (the single source of truth, ADR-0003) via the dispatcher.
+		// adapterKind resolves the execution's adapter kind for mid-run RPCs
+		// (dispatching adapter_id preferred, worker model_ref fallback) via
+		// the shared resolver and dispatcher.
 		SendExecutionMessage: func(ctx context.Context, execID, message string) error {
 			kind, err := adapterKind(ctx, execID)
 			if err != nil {
@@ -1213,6 +1189,56 @@ func (s *Server) indexHealthLoop(ctx context.Context) {
 			runOnce()
 		}
 	}
+}
+
+// resolveAdapterKind resolves the adapter kind of an execution for
+// mid-run RPC routing. It PREFERS the execution's recorded adapter_id
+// (→ the adapters row's kind), which names the adapter the execution
+// actually DISPATCHED under; it falls back to the worker's latest
+// published version's model_ref only when the execution carries no
+// adapter_id (legacy rows). This keeps the RPC routed to the bridge that
+// actually ran the execution even when the worker's latest version changed
+// adapter kind since dispatch. G3: the tenant is resolved from the request
+// context when present, else the deployment tenant (bridge-level / system
+// paths).
+func resolveAdapterKind(ctx context.Context, pool *db.Pool, deploymentTenant, execID string) (string, error) {
+	tid := tenant.FromContext(ctx)
+	if tid == "" {
+		tid = deploymentTenant
+	}
+	tx, err := pool.BeginTenantTx(ctx, tid)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	exec, err := db.GetExecution(ctx, tx.Tx, tid, execID)
+	if err != nil {
+		return "", err
+	}
+	// Prefer the dispatching adapter row. A non-empty adapter_id whose row
+	// resolves is authoritative for THIS execution regardless of what the
+	// latest worker version now points at.
+	if exec.AdapterID != nil && *exec.AdapterID != "" {
+		adp, aerr := db.GetAdapter(ctx, tx.Tx, tid, *exec.AdapterID)
+		if aerr == nil && adp.Kind != "" {
+			return adp.Kind, nil
+		}
+		// Adapter row missing/invalid — fall through to the worker-path
+		// resolution below (never leave a mid-run RPC unresolved).
+	}
+	ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, tid, exec.WorkerID, true)
+	if err != nil {
+		return "", err
+	}
+	kind := adapter.AdapterKind(ver.ModelRef)
+	if kind == "" {
+		// Same fallback the reconciler applies at dispatch time: an
+		// empty/malformed model_ref dispatches under the legacy default
+		// kind, so mid-run RPCs must resolve the SAME kind or they would
+		// fail executions that dispatched fine.
+		kind = adapter.DefaultAdapterKind
+	}
+	return kind, nil
 }
 
 // seedDevAdapter registers an in-process OpenCode adapter so the
