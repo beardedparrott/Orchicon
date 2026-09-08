@@ -157,6 +157,14 @@ type op struct {
 	bIdx int
 }
 
+// dlineEqual reports whether two lines are byte-identical for the purpose of
+// the edit script. It compares BOTH the text AND the trailing-newline flag:
+// a change that only toggles a trailing newline is a real, diff-visible
+// change (git emits a hunk with the "\ No newline at end of file" marker),
+// so the two lines must NOT be treated as a common keep. Comparing text alone
+// would swallow those edits and produce a header-only (empty) diff.
+func dlineEqual(a, b dline) bool { return a.text == b.text && a.hasEOL == b.hasEOL }
+
 // diffOps computes a minimal edit script via Myers' O((N+M)D) greedy
 // algorithm (the same algorithm git diff uses). Both sides may be empty.
 func diffOps(a, b []dline) []op {
@@ -164,11 +172,11 @@ func diffOps(a, b []dline) []op {
 	// Trim the common prefix/suffix first — the common case (a small edit in
 	// a big file) then costs almost nothing.
 	p := 0
-	for p < n && p < m && a[p].text == b[p].text {
+	for p < n && p < m && dlineEqual(a[p], b[p]) {
 		p++
 	}
 	s := 0
-	for s < n-p && s < m-p && a[n-1-s].text == b[m-1-s].text {
+	for s < n-p && s < m-p && dlineEqual(a[n-1-s], b[m-1-s]) {
 		s++
 	}
 	var ops []op
@@ -239,7 +247,7 @@ find:
 				x = v[offset+k-1] + 1
 			}
 			y := x - k
-			for x < n && y < m && a[x].text == b[y].text {
+			for x < n && y < m && dlineEqual(a[x], b[y]) {
 				x++
 				y++
 			}

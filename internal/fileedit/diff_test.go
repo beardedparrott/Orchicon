@@ -126,6 +126,30 @@ func TestUnicodeSafety(t *testing.T) {
 	}
 }
 
+// TestTrailingNewlineToggle pins the AC that a change which ONLY toggles a
+// trailing newline is a real, diff-visible edit (size/sha differ; git emits a
+// hunk with the "\ No newline at end of file" marker). Comparing the dline
+// text alone would digest both sides as a common keep and emit a header-only
+// (empty) diff — this test guards the dlineEqual (text AND hasEOL) fix.
+func TestTrailingNewlineToggle(t *testing.T) {
+	// remove the trailing newline.
+	rm := ComputeUnifiedDiff([]byte("foo\n"), []byte("foo"), "f.txt")
+	wantRm := "--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-foo\n+foo\n\\ No newline at end of file\n"
+	if rm.UnifiedDiff != wantRm {
+		t.Errorf("remove-NL diff:\n got %q\nwant %q", rm.UnifiedDiff, wantRm)
+	}
+	// add the trailing newline.
+	add := ComputeUnifiedDiff([]byte("foo"), []byte("foo\n"), "f.txt")
+	wantAdd := "--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-foo\n\\ No newline at end of file\n+foo\n"
+	if add.UnifiedDiff != wantAdd {
+		t.Errorf("add-NL diff:\n got %q\nwant %q", add.UnifiedDiff, wantAdd)
+	}
+	// The two edits (and their inverses) must be byte-deterministic.
+	if r := ComputeUnifiedDiff([]byte("foo\n"), []byte("foo"), "f.txt"); r.UnifiedDiff != wantRm {
+		t.Errorf("remove-NL not deterministic")
+	}
+}
+
 // TestBinaryEitherSide: NUL detection applies to both the before and the
 // after side.
 func TestBinaryEitherSide(t *testing.T) {

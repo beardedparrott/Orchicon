@@ -56,10 +56,31 @@ func NewService(store Store, log *slog.Logger) *Service {
 // Record persists entries for an owner and publishes each row. Best-effort
 // by contract: an error is logged, never returned to the event loop (a
 // ledger gap must never fail a live session).
+//
+// No-op entries — path set but an EMPTY unified diff (an identical-content
+// rewrite, a create of "", or a binary file flagged as such) — are dropped
+// here at the sole record funnel: they carry no diff a renderer can show,
+// and persisting them would flood the ledger with empty rows and desync the
+// per-owner seq from real edits. Callers (observer / engine-parser / git
+// reconciler) may hand them to Record liberally; the funnel is the single
+// authority on what becomes a row.
 func (s *Service) Record(ctx context.Context, tenantID, ownerKind, ownerID string, entries []Entry) {
 	if len(entries) == 0 || s.store == nil {
 		return
 	}
+	filtered := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Path == "" || (e.UnifiedDiff == "" && !e.IsBinary) {
+			// No path (nothing to diff) or no diff and not a binary marker:
+			// skip — it is a no-op or an outside-base observation.
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	entries = filtered
 	rows, err := s.store.Append(ctx, tenantID, ownerKind, ownerID, entries)
 	if err != nil {
 		s.log.Warn("file edit ledger append failed", "owner", ownerID, "error", err)
@@ -159,7 +180,15 @@ func (o *Observer) ObserveAfter(rawPath, tool string) Entry {
 	if len(before) > maxObservedContent {
 		before = nil // sizes still recorded; diff bounded by git reconciliation
 	}
-	return EntryFromSnapshots(before, after, rel, tool)
+	e := EntryFromSnapshots(before, after, rel, tool)
+	// No-op edit (identical before/after, not a binary marker): the cached
+	// "before" equaled the fresh "after" — nothing changed, so no ledger
+	// entry. Return the zero Entry so callers' `Path != ""` guard skips it
+	// (the Record funnel drops such entries as the second line of defense).
+	if e.UnifiedDiff == "" && !e.IsBinary && e.Kind == "" {
+		return Entry{}
+	}
+	return e
 }
 
 // gitShowHEAD returns the committed content of rel under dir, or nil.

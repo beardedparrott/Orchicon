@@ -81,6 +81,16 @@ function kindFor(beforeExisted: boolean, afterExisted: boolean): DiffKind {
   return "modify";
 }
 
+// dlineEqual reports whether two lines are byte-identical for the edit
+// script: the text AND the trailing-newline flag. A change that only toggles
+// a trailing newline is a real, diff-visible change (git emits the "\ No
+// newline at end of file" hunk), so the lines must NOT be treated as a keep.
+// Comparing text alone would swallow those edits into a header-only diff —
+// the Go engine fixes this identically (internal/fileedit/diff.go dlineEqual).
+function dlineEqual(a: DLine, b: DLine): boolean {
+  return a.text === b.text && a.hasEOL === b.hasEOL;
+}
+
 // diffOps computes a minimal edit script via Myers' O((N+M)D) greedy
 // algorithm with common prefix/suffix trimming — the Go engine's exact
 // approach, so both sides emit the same (minimal) edit script.
@@ -88,9 +98,9 @@ function diffOps(a: DLine[], b: DLine[]): DOp[] {
   const n = a.length;
   const m = b.length;
   let p = 0;
-  while (p < n && p < m && a[p].text === b[p].text) p++;
+  while (p < n && p < m && dlineEqual(a[p], b[p])) p++;
   let s = 0;
-  while (s < n - p && s < m - p && a[n - 1 - s].text === b[m - 1 - s].text) s++;
+  while (s < n - p && s < m - p && dlineEqual(a[n - 1 - s], b[m - 1 - s])) s++;
   const ops: DOp[] = [];
   for (let i = 0; i < p; i++) ops.push({ kind: " ", aIdx: i, bIdx: i });
   ops.push(...opsMyers(a.slice(p, n - s), b.slice(p, m - s), p));
@@ -138,7 +148,7 @@ function opsMyers(a: DLine[], b: DLine[], prefix: number): DOp[] {
         x = v[offset + k - 1] + 1;
       }
       let y = x - k;
-      while (x < n && y < m && a[x].text === b[y].text) {
+      while (x < n && y < m && dlineEqual(a[x], b[y])) {
         x++;
         y++;
       }
