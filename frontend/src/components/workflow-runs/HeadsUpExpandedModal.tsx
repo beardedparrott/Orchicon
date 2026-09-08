@@ -7,8 +7,7 @@
 // unmounting the grid (the grid stays mounted underneath; only the
 // expanded tile's grid stream is suspended so this modal owns the one
 // live subscription while open).
-import { useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Minimize2, Pause, Play, Square, X } from "lucide-react";
 
 import {
@@ -23,6 +22,9 @@ import {
   useStreamExecutionEvents,
 } from "@/api/executions";
 import { usageKeys } from "@/api/aigateway";
+import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
+import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
+import type { StreamStatus } from "@/api/useStream";
 import { TodoListCard } from "@/components/executions/ExecutionContextSidebar";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { Button } from "@/components/ui/button";
@@ -41,7 +43,6 @@ interface HeadsUpExpandedModalProps {
 }
 
 export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProps) {
-  const qc = useQueryClient();
   const execId = tile.execution?.id ?? "";
 
   // ESC closes; lock body scroll while open.
@@ -58,33 +59,48 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
     };
   }, [onClose]);
 
-  const { data: exec } = useGetExecution(execId);
   // The modal owns the live subscription while open (the grid suspended
   // this tile's stream via suspendedStepId — still exactly one stream).
   // Stream events invalidate the detail/session/todos/usage queries so the
   // Context rail and todo list go live while running (mirrors
-  // executions_.$id.tsx).
+  // executions_.$id.tsx). Invalidations are coalesced behind a trailing
+  // debounce so a token-frequency burst collapses to one batch, and the
+  // stream is gated by liveness so terminal executions never hold a
+  // connection.
+  const scheduleInvalidation = useDebouncedInvalidation([
+    executionKeys.detail(execId),
+    executionKeys.session(execId),
+    executionKeys.todos(execId),
+    usageKeys.records(undefined, execId),
+  ]);
+  // Stream status is mirrored into state so useGetExecution's pollMs can
+  // depend on it (the stream hook itself needs isTerminal from exec, which
+  // comes from useGetExecution — a cross-hook cycle broken by this state).
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
+  const { data: exec } = useGetExecution(execId, {
+    // Pause the 1s detail poll while the event stream is healthy in this
+    // tab — the stream is the liveness source then, and the poll's HTTP
+    // slot is freed for the heavy transcript fetch. Resumes automatically
+    // when the stream drops (closed/error/reconnecting).
+    pollMs: streamStatus === "open" ? 0 : 1_000,
+  });
+  const execStatus = exec?.status ?? tile.execution?.status ?? 0;
+  const isRunning = execStatus === 2 || execStatus === 3;
+  const isPaused = execStatus === 6;
+  const isTerminal =
+    execStatus === 7 || execStatus === 8 || execStatus === 9 || execStatus === 10;
   const { events, status } = useStreamExecutionEvents({
     executionId: execId,
-    enabled: Boolean(execId),
-    onEvent: () => {
-      qc.invalidateQueries({ queryKey: executionKeys.detail(execId) });
-      qc.invalidateQueries({ queryKey: executionKeys.session(execId) });
-      qc.invalidateQueries({ queryKey: executionKeys.todos(execId) });
-      qc.invalidateQueries({ queryKey: usageKeys.records(undefined, execId) });
-    },
+    enabled: executionStreamEnabled(execId, isTerminal),
+    onEvent: scheduleInvalidation,
   });
+  useEffect(() => setStreamStatus(status), [status]);
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
   const { data: pendingApprovals } = useListPendingApprovals(execId || undefined);
   const approveToolCall = useApproveToolCall();
 
-  const execStatus = exec?.status ?? tile.execution?.status ?? 0;
-  const isRunning = execStatus === 2 || execStatus === 3;
-  const isPaused = execStatus === 6;
-  const isTerminal =
-    execStatus === 7 || execStatus === 8 || execStatus === 9 || execStatus === 10;
   // Same cost + context counts as /executions/$id's sidebar (shared hook).
   const { workingSet, cost, contextWindow, contextPct, hasRecords } =
     useExecutionUsageSummary(execId);
@@ -205,7 +221,15 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
                   variant="outline"
                   size="sm"
                   className="mt-2 w-full"
-                  onClick={() => window.open(`/executions/${execId}`, "_blank")}
+                  onClick={() => {
+                    // Tear down this modal's stream before the full page
+                    // takes over in the new tab, so only ONE execution
+                    // event stream lives across the two tabs (the full
+                    // page's). Keeps window.open semantics — the run view
+                    // stays preserved in tab A.
+                    onClose();
+                    window.open(`/executions/${execId}`, "_blank");
+                  }}
                 >
                   Open full execution page
                 </Button>

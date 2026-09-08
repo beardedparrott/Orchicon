@@ -91,7 +91,8 @@ export function useListExecutions(opts?: {
   });
 }
 
-export function useGetExecution(id: string) {
+export function useGetExecution(id: string, opts?: { pollMs?: number }) {
+  const pollMs = opts?.pollMs ?? 1_000;
   return useQuery({
     queryKey: executionKeys.detail(id),
     queryFn: async () => {
@@ -99,13 +100,15 @@ export function useGetExecution(id: string) {
       return res.execution as WorkerExecution;
     },
     enabled: !!id,
-    // Poll aggressively so the page updates even when the event stream
-    // is not delivering real-time events (e.g. the stream consumer
-    // missed events during reconnect, or the outbox relay is batching).
-    // 1s polling means status transitions and metadata appear within
-    // at most 1 second of occurring.
-    refetchInterval: 1_000,
-    refetchIntervalInBackground: true,
+    // Poll so the page updates even when the event stream is not
+    // delivering real-time events (e.g. the stream consumer missed events
+    // during reconnect, or the outbox relay is batching). Callers that
+    // hold a healthy live stream pass pollMs: 0 to suspend the poll and
+    // free the HTTP slot (the stream is the liveness source then); the
+    // poll resumes automatically when the stream drops. Default 1s keeps
+    // the legacy behavior for callers without a stream.
+    refetchInterval: pollMs > 0 ? pollMs : undefined,
+    refetchIntervalInBackground: pollMs > 0,
   });
 }
 
