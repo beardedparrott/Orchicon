@@ -15,6 +15,8 @@ import {
   MessageSquare,
   PanelRight,
   PanelRightClose,
+  PanelLeft,
+  PanelLeftClose,
   History,
   Sparkles,
 } from "lucide-react";
@@ -60,6 +62,8 @@ import {
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
+import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
+import { usePersistentState } from "@/lib/diff/usePersistentState";
 import {
   DndContext,
   DragOverlay,
@@ -253,6 +257,16 @@ function AskOrchiconPage() {
       return next;
     });
   }, []);
+
+  // Diff sidebar state — persisted per page so it survives navigation within
+  // the session (per acceptance criteria). Closed is the default for
+  // first-time users (usePersistentState reads the localStorage default).
+  const [diffOpen, setDiffOpen] = usePersistentState("ask-orchicon:open", false);
+  const [diffTab, setDiffTab] = usePersistentState<DiffTab>("ask-orchicon:tab", "diff");
+  const [diffPath, setDiffPath] = usePersistentState("ask-orchicon:selectedPath", "");
+  const toggleDiffSidebar = useCallback(() => {
+    setDiffOpen((prev) => !prev);
+  }, [setDiffOpen]);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
   const lastMobileTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -1064,6 +1078,21 @@ function AskOrchiconPage() {
 
   return (
     <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
+      {/* Left diff rail — slide-out file-edit + diff side-by-side view.
+          First flex child; the chat column is flex-1 min-w-0 so it keeps
+          width as the rail opens. Distinct from the right conversation panel. */}
+      <DiffSidebar
+        open={diffOpen}
+        onClose={() => setDiffOpen(false)}
+        ownerKind="ask_conversation"
+        ownerId={activeConvId ?? ""}
+        isLive={isStreaming}
+        title="Diff"
+        tab={diffTab}
+        onTabChange={setDiffTab}
+        selectedPath={diffPath}
+        onSelectPath={setDiffPath}
+      />
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-h-0 min-w-0">
         {!activeConvId ? (
@@ -1145,6 +1174,20 @@ function AskOrchiconPage() {
                   className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground lg:hidden shrink-0"
                 >
                   <PanelRight aria-hidden="true" className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleDiffSidebar}
+                  aria-label="Toggle diff sidebar"
+                  aria-expanded={diffOpen}
+                  data-testid="ask-diff-sidebar-trigger"
+                  className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl glass-panel border border-black/10 dark:border-white/10 text-muted-foreground hover:text-foreground shrink-0"
+                >
+                  {diffOpen ? (
+                    <PanelLeftClose aria-hidden="true" className="h-5 w-5" />
+                  ) : (
+                    <PanelLeft aria-hidden="true" className="h-5 w-5" />
+                  )}
                 </button>
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}

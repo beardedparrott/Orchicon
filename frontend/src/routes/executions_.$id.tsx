@@ -12,7 +12,8 @@
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Trash2, ArrowLeft } from "lucide-react";
+import { useCallback } from "react";
+import { Pause, Play, Square, Trash2, ArrowLeft, PanelLeft, PanelLeftClose } from "lucide-react";
 
 import {
   useGetExecution,
@@ -32,6 +33,8 @@ import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
+import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
+import { usePersistentState } from "@/lib/diff/usePersistentState";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
@@ -66,6 +69,16 @@ function ExecutionDetailPage() {
   const deleteExec = useDeleteExecution();
 
   const navigate = useNavigate();
+
+  // Diff sidebar state — persisted per execution so it survives navigation
+  // within the session (per acceptance criteria). Closed is the default for
+  // first-time users (usePersistentState reads the localStorage default).
+  const [diffOpen, setDiffOpen] = usePersistentState(`execution:${id}:open`, false);
+  const [diffTab, setDiffTab] = usePersistentState<DiffTab>(`execution:${id}:tab`, "diff");
+  const [diffPath, setDiffPath] = usePersistentState(`execution:${id}:selectedPath`, "");
+  const toggleDiffSidebar = useCallback(() => {
+    setDiffOpen((prev) => !prev);
+  }, [setDiffOpen]);
 
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution. onEvent
@@ -128,6 +141,22 @@ function ExecutionDetailPage() {
             <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggleDiffSidebar}
+            className="shrink-0"
+            aria-expanded={diffOpen}
+            aria-label="Toggle diff sidebar"
+            data-testid="execution-diff-sidebar-trigger"
+          >
+            {diffOpen ? (
+              <PanelLeftClose aria-hidden="true" className="h-4 w-4" />
+            ) : (
+              <PanelLeft aria-hidden="true" className="h-4 w-4" />
+            )}
+            <span className="ml-1 hidden sm:inline">Diff</span>
+          </Button>
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">
             Execution
           </h1>
@@ -186,6 +215,24 @@ function ExecutionDetailPage() {
           on the right. Stacks on screens narrower than lg. */}
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <div className="space-y-4 min-w-0">
+          {/* Left diff rail — slide-out file-edit + diff side-by-side view.
+              Rendered as a flex sibling so the live session chat stays fully
+              visible and interactive alongside it (chat column is flex-1
+              min-w-0). Distinct from ExecutionContextSidebar on the right. */}
+          <div className="flex gap-3 min-w-0">
+            <DiffSidebar
+              open={diffOpen}
+              onClose={() => setDiffOpen(false)}
+              ownerKind="execution"
+              ownerId={exec.id}
+              isLive={isRunning}
+              title="Diff"
+              tab={diffTab}
+              onTabChange={setDiffTab}
+              selectedPath={diffPath}
+              onSelectPath={setDiffPath}
+            />
+            <div className="flex flex-1 min-w-0 flex-col space-y-4">
           {/* Failure card: pulled out of the sidebar so the operator
               sees the error first when something breaks. */}
           {exec.errorMessage && (
@@ -233,6 +280,8 @@ function ExecutionDetailPage() {
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
+            </div>
+          </div>
         </div>
 
         <ExecutionContextSidebar
