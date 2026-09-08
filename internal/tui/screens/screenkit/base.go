@@ -56,6 +56,9 @@ type Base struct {
 	paneW    int
 	paneH    int
 	detailFn DetailFn
+	onDetail func(src, id string) tea.Cmd
+	detailID string // id of the item the detail pane currently shows
+	shell    any    // the app shell (SetShell); screens type-assert for shell hooks
 	statuses []StatusMsg
 }
 
@@ -147,6 +150,8 @@ type fetchedMsg struct {
 }
 
 type detailMsg struct {
+	src    string
+	id     string
 	title  string
 	fields []Field
 	body   string
@@ -156,6 +161,38 @@ type detailErrMsg struct{ err error }
 
 // SetDetail installs the detail renderer for the given source name.
 func (b *Base) SetDetail(fn DetailFn) { b.detailFn = fn }
+
+// SetShell installs the app shell reference (screens type-assert it
+// for shell-side hooks — avoids a screenkit→tui import cycle).
+func (b *Base) SetShell(sh any) { b.shell = sh }
+
+// Shell returns the installed shell reference (nil when unset).
+func (b *Base) Shell() any { return b.shell }
+
+// SetOnDetail installs a hook fired whenever a detail lands (detailMsg
+// handling): the ask transcript / execution live-session views use it
+// to (re)attach the live item stream for the entity the pane now shows.
+// The returned cmd (if any) is batched by Base.Update's caller.
+func (b *Base) SetOnDetail(fn func(src, id string) tea.Cmd) { b.onDetail = fn }
+
+// DetailID returns the id of the item the detail pane currently shows
+// ("" = none).
+func (b *Base) DetailID() string { return b.detailID }
+
+// DetailWidth returns the detail pane's render width (bubble wrapping).
+func (b *Base) DetailWidth() int {
+	if w := b.detail.Width; w > 10 {
+		return w - 2
+	}
+	return 60
+}
+
+// SetDetailContent pushes live-updated content into the open detail
+// pane without touching scroll state fields it owns (title/fields kept
+// when body is unchanged by callers passing the same title).
+func (b *Base) SetDetailContent(title string, fields []Field, body string) {
+	b.detail.SetContent(title, fields, body)
+}
 
 // DetailFn renders an Item into detail content.
 type DetailFn func(ctx context.Context, src, id string) (title string, fields []Field, body string, err error)
@@ -300,7 +337,7 @@ func (b *Base) loadDetail() tea.Cmd {
 		if err != nil {
 			return detailErrMsg{err: err}
 		}
-		return detailMsg{title: title, fields: fields, body: body}
+		return detailMsg{src: src, id: id, title: title, fields: fields, body: body}
 	}
 }
 
@@ -343,3 +380,101 @@ func (b *Base) SourceItem(name, id string) (Item, bool) {
 	}
 	return Item{}, false
 }
+
+// SourceMeta is one list pane's identity, exposed for the shell's
+// nav/slash generation (the no-drift source of truth: commands are
+// generated from what screens actually have).
+type SourceMeta struct {
+	Name  string
+	Title string
+}
+
+// Sources returns the screen's list panes (nav command generation).
+func (b *Base) Sources() []SourceMeta {
+	out := make([]SourceMeta, 0, len(b.sources))
+	for _, s := range b.sources {
+		out = append(out, SourceMeta{Name: s.name, Title: s.title})
+	}
+	return out
+}
+
+// ActiveSourceName returns the focused source's name ("" when none).
+func (b *Base) ActiveSourceName() string {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return ""
+	}
+	return b.sources[b.active].name
+}
+
+// ActiveItem returns the selected item of the focused source.
+func (b *Base) ActiveItem() (Item, bool) {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return Item{}, false
+	}
+	it := b.sources[b.active].list.Selected()
+	if it == nil {
+		return Item{}, false
+	}
+	return *it, true
+}
+
+// SelectSource focuses the named source (slash nav); false when the
+// screen has no such source.
+func (b *Base) SelectSource(name string) bool {
+	for i, s := range b.sources {
+		if s.name == name {
+			b.active = i
+			b.focusD = false
+			return true
+		}
+	}
+	return false
+}
+
+// SelectItem selects the item with the given ID in the named source and
+// triggers its detail load (slash arg jumps). Works without the item
+// being visible (cursor move is by ID, not position). Returns false
+// when the source has no such item (not fetched yet).
+func (b *Base) SelectItem(src, id string) bool {
+	for i, s := range b.sources {
+		if s.name != src {
+			continue
+		}
+		b.active = i
+		b.focusD = false
+		for row, it := range s.list.Items {
+			if it.ID == id {
+				s.list.Cursor = row
+				s.list.clampOffset()
+				return true
+			}
+		}
+		// not on the loaded page — still focus the source; the caller
+		// can request the detail directly.
+		return false
+	}
+	return false
+}
+
+// RequestDetail loads the detail for (src, id) directly via the
+// screen's DetailFn — detail works without the item being on the
+// loaded page (plan §2). The result flows through the same detailMsg.
+func (b *Base) RequestDetail(src, id string) tea.Cmd {
+	if b.detailFn == nil {
+		return nil
+	}
+	fn := b.detailFn
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		title, fields, body, err := fn(ctx, src, id)
+		if err != nil {
+			return detailErrMsg{err: err}
+		}
+		return detailMsg{src: src, id: id, title: title, fields: fields, body: body}
+	}
+}
+
+// SelectSourceDelegator / SelectItemDelegator / RequestDetailDelegator
+// are optional screen interfaces the shell's slash navigation uses;
+// Base implements them so every list+detail screen gets nav jumps.

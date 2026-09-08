@@ -35,6 +35,12 @@ type Profile struct {
 	Token              string     // API key (oc_…) or access token from local-login
 	Username           string     // password mode only; the password is never stored
 	InsecureSkipVerify bool       // TLS skip-verify for self-signed dev instances
+	// Newline is the chat dock's newline-insertion chord: alt+enter
+	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty
+	// keyboard protocol support, so Shift+Enter cannot be enabled
+	// programmatically; CSI-u shift+enter is accepted when the terminal
+	// emits it anyway.
+	Newline string
 }
 
 // Config is the on-disk document.
@@ -195,6 +201,10 @@ func parse(data string) (*Config, error) {
 					return nil, fmt.Errorf("config line %d: %w", i+1, err)
 				}
 				cur.InsecureSkipVerify = b
+			}
+		case "newline":
+			if cur != nil {
+				cur.Newline = unquote(value)
 			}
 		default:
 			return nil, fmt.Errorf("config line %d: unknown key %q", i+1, key)

@@ -202,3 +202,18 @@ func (m *Model) View() string {
 	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"))
 	return b.String()
 }
+
+// SelectSource focuses the named source (slash nav command support).
+func (m *Model) SelectSource(name string) bool { return m.Base.SelectSource(name) }
+
+// SelectItem selects the item by ID in the named source (slash arg
+// jumps); detail loads via RequestDetail when the item is not paged in.
+func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, id) }
+
+// RequestDetail loads the detail view for (src, id) directly.
+func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
+
+// ActiveSourceName / ActiveItem expose the Base focus state to the
+// shell's context engine.
+func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
+func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
