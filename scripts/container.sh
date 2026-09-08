@@ -151,6 +151,11 @@ build_image() {
     return 1
   fi
   cp "$PROJECT_ROOT/bin/orchicon" "$CONTEXT/orchicon"
+  if [ ! -f "$PROJECT_ROOT/bin/orch" ]; then
+    log_err "bin/orch not found — run 'make build' first (builds both binaries)"
+    return 1
+  fi
+  cp "$PROJECT_ROOT/bin/orch" "$CONTEXT/orch"
 
   # BuildKit apt cache mounts when the host has buildx; otherwise build the
   # stock Dockerfile with the classic builder. Never hard-require buildx —

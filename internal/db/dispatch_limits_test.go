@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -197,10 +198,17 @@ func TestDispatchLimitSettingsRoundTrip(t *testing.T) {
 // TestAdmitInPlaceRun serializes admissions on the project-row lock: the
 // first admitted run claims the single slot, the second is denied, and a
 // third is admitted after the first reaches a terminal state.
+//
+// It runs in its OWN fresh tenant: the test creates synthetic 'running'
+// runs and later marks them terminal via optimistic-concurrency updates —
+// in the shared tnt_dev dev tenant the live sandbox daemon can touch
+// those rows between the re-fetch and the update, failing the test with
+// "db: not found" (row drift, same class as the TestListBackfillPRRuns
+// flake fixed in fd22fed2b).
 func TestAdmitInPlaceRun(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
-	const tenant = "tnt_dev"
+	tenant := "tnt_test_" + strings.ToLower(db.NewID()[:12])
 
 	ttx, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {

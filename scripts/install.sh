@@ -30,6 +30,7 @@ CLEAN=false
 FORCE_CLEAN=false
 DRY_RUN=false
 SETUP=true
+INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
+    --no-orch)         INSTALL_ORCH=false; shift ;;
     --help|-h)
       cat <<EOF
 Orchicon installer
@@ -343,6 +345,22 @@ main() {
     [ -n "$extracted_binary" ] || die "could not find orchicon binary in archive"
     mv "$extracted_binary" "$bin"
     chmod +x "$bin"
+  fi
+
+  # Companion install: orch (the thin remote TUI client) rides in the
+  # same archive. Optional via --no-orch; failure is a warning, not fatal
+  # (older releases predate the companion binary).
+  if [ "$INSTALL_ORCH" = true ] && [ "$DRY_RUN" = false ]; then
+    local orch_bin="$INSTALL_DIR/orch"
+    local extracted_orch
+    extracted_orch="$(find "$tmpdir" -type f -name orch -perm -u+x 2>/dev/null | head -1)"
+    if [ -n "$extracted_orch" ]; then
+      mv "$extracted_orch" "$orch_bin"
+      chmod +x "$orch_bin"
+      ok "orch (remote TUI client) installed: $orch_bin"
+    else
+      warn "orch companion binary not found in archive (older release?) — skipping"
+    fi
   fi
 
   # Verify

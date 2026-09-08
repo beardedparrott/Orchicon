@@ -65,6 +65,7 @@ COPY --from=grafana /etc/grafana /etc/grafana
 
 # The orchicon binary with the embedded frontend (see build steps above).
 COPY orchicon /usr/local/bin/orchicon
+COPY orch /usr/local/bin/orch
 
 ENV ORCHICON_CONTAINER_MODE=1
 # Container-wide default so ANY process (supervisor, control plane, or a
