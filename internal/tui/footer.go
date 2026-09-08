@@ -18,6 +18,7 @@ type footerModel struct {
 	StreamStatus  stream.Status
 	ContextChip   string // current project / work item
 	Width         int
+	MouseEnabled  bool // set by the shell; renders "Mouse Enabled" chip
 }
 
 // versionDrift reports whether client and server versions disagree
@@ -71,6 +72,9 @@ func (f footerModel) View() string {
 	}
 	if f.ContextChip != "" {
 		parts = append(parts, theme.ListMeta.Render(f.ContextChip))
+	}
+	if f.MouseEnabled {
+		parts = append(parts, theme.StatusOK.Render("Mouse Enabled"))
 	}
 	line := strings.Join(parts, theme.HintText.Render(" · "))
 	// Keep one line wide; lipgloss handles the terminal width naturally.

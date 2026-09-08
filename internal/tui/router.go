@@ -59,10 +59,10 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Handle: func(m *App, _ tea.Msg) bool { m.PrevTab(); return true },
 		},
 		{
-			Name: "redraw / reconnect streams", Keys: "r", Scope: "global",
-			Match: keyMatcher("r"),
+			Name: "toggle conversations rail", Keys: "ctrl+r", Scope: "global",
+			Match: keyMatcher("ctrl+r"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				m.reconnectStreams()
+				m.toggleRightRail()
 				return true
 			},
 		},
@@ -158,6 +158,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
+		m.footer.MouseEnabled = m.mouseEnabled
 		// Reflow the screen + dock (and the diff pane rail) to the new size,
 		// accounting for the pane when it is open.
 		m.reflowForDiff()
@@ -171,6 +172,58 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil // overlay swallows keys
 	}
+	// /connect in-place overlay owns all keys while open (never quits).
+	if m.palette.connectOpen {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			handled, cmd := m.connectHandleKey(k)
+			if handled {
+				return m, cmd
+			}
+		}
+		return m, nil
+	}
+	// Global mouse: clicks on the tab bar (row 0) switch tabs regardless of
+	// focus; clicks/wheel in the Ask right rail (rightmost columns, rows
+	// >= 1) navigate conversations; everything else falls through to the
+	// composer/screen/pane.
+	if mo, ok := msg.(tea.MouseMsg); ok {
+		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && mo.Y == 0 {
+			if id, ok := m.TabClick(mo.X); ok {
+				m.SwitchTo(id)
+				m.EnsureSubscriptions(id)
+				return m, nil
+			}
+		}
+		if m.railVisible() && mo.X >= m.width-ConversationsRailWidth {
+			if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+				if m.railHeaderHit(mo.Y) {
+					m.toggleRightRail()
+					return m, nil
+				}
+				if idx, ok := m.railRowAt(mo.Y); ok {
+					return m, m.openRailConversation(idx)
+				}
+			}
+			if mo.Button == tea.MouseButtonWheelUp {
+				m.convScroll--
+				if m.convScroll < 0 {
+					m.convScroll = 0
+				}
+				return m, nil
+			}
+			if mo.Button == tea.MouseButtonWheelDown {
+				max := len(m.conversations) - m.railVisibleRows()
+				if max < 0 {
+					max = 0
+				}
+				m.convScroll++
+				if m.convScroll > max {
+					m.convScroll = max
+				}
+				return m, nil
+			}
+		}
+	}
 	// Composer focus: composer keys first; tab chords fall through to
 	// the input (Ctrl+W/A/E/F/T remain delete-word / line-start / …).
 	if m.chatFocus == focusComposer {
@@ -178,6 +231,21 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// hard escape: quit always works, even mid-composition
 			m.quitting = true
 			return m, tea.Quit
+		}
+		// Composer '/' palette: while open, palette keys own the message
+		// (filter/navigate/select). Otherwise a leading '/' opens it.
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if m.palette.PaletteOpen() {
+				handled, cmd := m.paletteHandleKey(k)
+				if handled {
+					m.footer.StreamStatus = m.streamStatus()
+					return m, cmd
+				}
+			} else if k.String() == "/" {
+				m.openPalette()
+				m.footer.StreamStatus = m.streamStatus()
+				return m, nil
+			}
 		}
 		consumed, cmd := m.dock.Update(msg)
 		if k, ok := msg.(tea.KeyMsg); ok && consumed {

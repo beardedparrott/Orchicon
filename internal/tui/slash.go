@@ -108,22 +108,11 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		})
 	}
 
-	// 3. GUI-mirror notice-only panes (no TUI surface — the command
-	// lands you on the owning tab and points at the GUI).
-	for _, e := range guiMirrorEntries() {
-		eCopy := e
-		add(SlashCommand{
-			Name:  "/" + e.Cmd,
-			Usage: "/" + e.Cmd,
-			Desc:  e.Label + " (GUI-only — opens the " + string(e.Tab) + " area)",
-			Run: func(m *App, _ []string) tea.Cmd {
-				m.SwitchTo(eCopy.Tab)
-				m.EnsureSubscriptions(eCopy.Tab)
-				m.dock.SetNotice(eCopy.Label + " has no orch pane — use the web GUI")
-				return nil
-			},
-		})
-	}
+	// 3. GUI-mirror notice-only panes were removed (QA finding 4). The
+	// registry now builds commands only from real screens + system commands;
+	// no command surfaces a "use the web GUI" notice. GUI panes without a
+	// TUI source are documented in docs/tui-parity.md as child work items.
+
 	// 4. Arg-jump aliases (navigate straight to the detail view).
 	jump := func(name, alias, usage string) {
 		base := reg.byName[name]
@@ -153,9 +142,20 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Name: "/connect", Usage: "/connect",
 		Desc: "reopen the connection/auth screen",
 		Run: func(m *App, _ []string) tea.Cmd {
+			// In-place overlay: NEVER exits the process or tears down
+			// alt-screen. The main.go reconnect loop remains only the first-run
+			// fallback (no profile yet).
 			m.reconnectRequested = true
-			m.quitting = true // exits the program; main.go re-runs connection
-			return tea.Quit
+			return m.runConnectCommand()
+		},
+	})
+	add(SlashCommand{
+		Name: "/reconnect", Usage: "/reconnect",
+		Desc: "redial every live stream",
+		Run: func(m *App, _ []string) tea.Cmd {
+			m.reconnectStreams()
+			m.dock.SetNotice("live streams redialed")
+			return nil
 		},
 	})
 	add(SlashCommand{
@@ -166,7 +166,8 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	})
 	add(SlashCommand{
 		Name: "/quit", Usage: "/quit",
-		Desc: "exit orch (terminal state restored)",
+		Desc:    "exit orch (terminal state restored)",
+		Aliases: []string{"/exit"},
 		Run: func(m *App, _ []string) tea.Cmd {
 			m.quitting = true
 			return tea.Quit
