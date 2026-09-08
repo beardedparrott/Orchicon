@@ -27,3 +27,13 @@ CREATE TABLE IF NOT EXISTS file_edit_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_file_edit_ledger_owner
   ON file_edit_ledger (tenant_id, owner_kind, owner_id, seq);
+
+-- Row-level security: the uniform tenant_isolation policy (docs/09 §8.5).
+-- The data-access layer is the primary isolation layer; RLS is the
+-- backstop — even a buggy query cannot leak a ledger row across tenants.
+ALTER TABLE file_edit_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_edit_ledger FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON file_edit_ledger;
+CREATE POLICY tenant_isolation ON file_edit_ledger
+  FOR ALL USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
