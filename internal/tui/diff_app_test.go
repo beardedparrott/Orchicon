@@ -46,7 +46,9 @@ func TestDiffPaneStatePersistsAcrossSwitch(t *testing.T) {
 	m.diffOpen = true
 	m.diffTab = diffs.TabTree
 	m.diffPath = "cmd/new.go"
-	m.syncDiffPaneState()
+	// Seed the pane from the shell's saved state (the restore direction runs
+	// on open/refresh); the shell state is the authority and must survive.
+	m.restoreDiffPaneState()
 	// Switch away and back; state must not reset.
 	m.SwitchTo(TabWork)
 	m.SwitchTo(TabExecution)

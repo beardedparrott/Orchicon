@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -13,7 +14,15 @@ import (
 // uses the two-column side-by-side layout. Below it (a narrow window or the
 // pane is crowded out) it collapses to a single unified column — mirroring
 // the GUI's DiffView `unified` collapse below MOBILE_BREAKPOINT.
-const MinSideBySideWidth = 64
+//
+// This must be <= the shell's DiffPaneWidth (48) so the pane actually shows
+// side-by-side at its default width — otherwise the primary layout the
+// acceptance criteria pin (side-by-side with paired line numbers) is
+// unreachable and the pane always collapses to unified.
+const MinSideBySideWidth = 48
+
+// sideSep separates the old and new columns.
+const sideSep = " │ "
 
 // lineNumWidth is the padded width of each line-number gutter.
 const lineNumWidth = 4
@@ -33,26 +42,29 @@ func RenderPane(rows []Row, width int, profile termenv.Profile) string {
 // renderSideBySide lays out two columns (old | new), each with a line-number
 // gutter and line-level red/green. Paired line numbers (blank when a side has
 // no line) align via a fixed-width gutter. Hunk rows are never rendered.
+// Both columns and the header are derived from the actual pane width so the
+// output never exceeds the pane (no horizontal overflow / tearing) and the
+// two columns of every row line up (each cell is exactly colW cells).
 func renderSideBySide(rows []Row, width int) string {
 	if len(rows) == 0 {
 		return theme.DiffCtx.Render("   (no changes)")
 	}
-	half := width / 2
-	if half < 24 {
-		half = 24
+	// Two text columns plus one separator make up the content width.
+	colW := (width - ansi.StringWidth(sideSep)) / 2
+	if colW < 1 {
+		colW = 1
 	}
 	var b strings.Builder
-	header := theme.DiffHeader.Render("─ old ") + theme.DiffHeader.Render(strings.Repeat("─", max(1, half-6))) +
-		theme.DiffGutter.Render("  │  ") +
-		theme.DiffHeader.Render(" new ") + theme.DiffHeader.Render(strings.Repeat("─", max(1, half-6)))
-	b.WriteString(header)
+	// Header: each side is exactly colW cells so the separator stays in a
+	// fixed column aligned with the row separators below.
+	b.WriteString(theme.DiffHeader.Render("─ old " + strings.Repeat("─", max(0, colW-6))))
+	b.WriteString(theme.DiffGutter.Render(sideSep))
+	b.WriteString(theme.DiffHeader.Render(" new " + strings.Repeat("─", max(0, colW-6))))
 	b.WriteString("\n")
 	for _, r := range rows {
-		oldCell := renderCell(r, true, half)
-		newCell := renderCell(r, false, half)
-		b.WriteString(oldCell)
-		b.WriteString(theme.DiffGutter.Render(" │ "))
-		b.WriteString(newCell)
+		b.WriteString(renderCell(r, true, colW))
+		b.WriteString(theme.DiffGutter.Render(sideSep))
+		b.WriteString(renderCell(r, false, colW))
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -66,8 +78,7 @@ func renderUnified(rows []Row, width int) string {
 	}
 	var b strings.Builder
 	for _, r := range rows {
-		line := renderUnifiedLine(r, width)
-		b.WriteString(line)
+		b.WriteString(renderUnifiedLine(r, width))
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -102,7 +113,10 @@ func renderUnifiedLine(r Row, width int) string {
 
 // renderCell renders one half (old or new) of a side-by-side row. When the
 // row has no line on that side, it emits a blank gutter + cell so the two
-// columns stay aligned.
+// columns stay aligned. The returned string is exactly `width` printable
+// columns (the cell body is truncated/padded to the column), so the two cells
+// of a row always line up and the separator stays in a fixed column — no
+// tearing or truncation artifacts from a wide diff line.
 func renderCell(r Row, old bool, width int) string {
 	gutter := ""
 	var text string
@@ -124,27 +138,41 @@ func renderCell(r Row, old bool, width int) string {
 			gutter = strings.Repeat(" ", lineNumWidth)
 		}
 	}
-	text = truncate(text, width-lineNumWidth-1)
+	// The cell body starts after the gutter + a space. Truncate the text to
+	// what fits the column (gutter + " " + text <= width).
+	text = truncate(text, max(0, width-lineNumWidth-1))
+
+	if r.Kind == KindAdd && old {
+		// An add has no old text: show an empty old column, still with the
+		// add line-number gutter on the new side.
+		return padToWidth(theme.DiffGutter.Render(pad("", lineNumWidth-1))+" "+theme.DiffCtx.Render(""), width)
+	}
+	if r.Kind == KindDel && !old {
+		// A delete has no new text: show an empty new column.
+		return padToWidth(theme.DiffGutter.Render(pad("", lineNumWidth-1))+" "+theme.DiffCtx.Render(""), width)
+	}
+
 	var line string
 	switch r.Kind {
 	case KindAdd:
-		if old {
-			// An add has no old text: show an empty old column, still with
-			// the add line-number gutter on the new side.
-			line = theme.DiffGutter.Render(pad("", lineNumWidth-1)) + " " + theme.DiffCtx.Render("")
-		} else {
-			line = theme.DiffAdd.Render(gutter + " " + emphasis(text, spans))
-		}
+		line = theme.DiffAdd.Render(gutter + " " + emphasis(text, spans))
 	case KindDel:
-		if old {
-			line = theme.DiffDel.Render(gutter + " " + emphasis(text, spans))
-		} else {
-			line = theme.DiffGutter.Render(pad("", lineNumWidth-1)) + " " + theme.DiffCtx.Render("")
-		}
+		line = theme.DiffDel.Render(gutter + " " + emphasis(text, spans))
 	default:
 		line = theme.DiffCtx.Render(gutter + " " + text)
 	}
-	return line
+	return padToWidth(line, width)
+}
+
+// padToWidth right-pads a rendered cell to exactly `w` printable columns so
+// the two side-by-side columns align (the separator stays in a fixed column).
+// ansi.StringWidth ignores SGR escape codes, so emphasis/reverse styling does
+// not skew the alignment.
+func padToWidth(cell string, w int) string {
+	if cur := ansi.StringWidth(cell); cur < w {
+		return cell + strings.Repeat(" ", w-cur)
+	}
+	return cell
 }
 
 // emphasis wraps the span ranges of `text` in the emphasis attribute.

@@ -228,6 +228,18 @@ func (m *Model) Scroll(delta int) {
 // lineCount is the number of rendered diff rows.
 func (m *Model) lineCount() int { return len(m.rows) }
 
+// viewHeight is the number of body rows the pane can show (the pane's Height
+// minus the tab-bar row that occupies the first content line). Used for
+// page-scroll and the diff-body viewport so the pane never renders more rows
+// than it has room for.
+func (m *Model) viewHeight() int {
+	h := m.Height - 1 // tab bar row
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
 // CopySelectedDiff stages an OSC 52 copy of the selected file's unified diff
 // (copied verbatim from the ledger — not a re-render) so `y` works over SSH.
 func (m *Model) CopySelectedDiff() bool {
@@ -297,10 +309,10 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		m.Scroll(1)
 		return nil
 	case "pgup":
-		m.Scroll(-m.Height / 2)
+		m.Scroll(-m.viewHeight() / 2)
 		return nil
 	case "pgdown":
-		m.Scroll(m.Height / 2)
+		m.Scroll(m.viewHeight() / 2)
 		return nil
 	case "g":
 		m.scroll = 0
@@ -309,15 +321,27 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		m.scroll = m.lineCount() - 1
 		return nil
 	case "h", "l":
-		// switch tab (h = previous, l = next)
-		if m.Tab == TabDiff {
-			m.Tab = TabTree
-			return nil
-		}
-		if m.Tab == TabTimeline {
-			m.Tab = TabDiff
+		// Switch tab: l = next, h = previous (the two directions must be
+		// asymmetric — TabDiff→TabTree on `l`, TabDiff→TabTimeline on `h`).
+		// A single branch that maps both h and l to the same next tab is wrong.
+		if k.String() == "l" {
+			switch m.Tab {
+			case TabDiff:
+				m.Tab = TabTree
+			case TabTree:
+				m.Tab = TabTimeline
+			case TabTimeline:
+				m.Tab = TabDiff
+			}
 		} else {
-			m.Tab = TabTimeline
+			switch m.Tab {
+			case TabDiff:
+				m.Tab = TabTimeline
+			case TabTree:
+				m.Tab = TabDiff
+			case TabTimeline:
+				m.Tab = TabTree
+			}
 		}
 		return nil
 	case "y":
@@ -343,28 +367,61 @@ func (m *Model) handleMouse(ev tea.MouseMsg) tea.Cmd {
 }
 
 // click resolves a mouse click to a tab / file row within the pane.
+// (x, y) are terminal-global coordinates as forwarded by the shell. The pane
+// is a left rail rendered below the shell tab bar: the shell tab bar occupies
+// row 0 and its bottom border row 1 (the TabBar style has a bottom border),
+// so the pane's content starts at terminal row 2 with its left border at
+// column 0 — its tab bar is terminal row 2 and its body starts at row 3.
 func (m *Model) click(x, y int) {
 	if m.Width <= 0 {
 		return
 	}
-	contentW := m.Width
-	// Header row: tab switcher (y==0 after the top border).
-	if y == 0 {
-		if x >= 3 && x < 3+len(TabDiff) {
-			m.Tab = TabDiff
-		} else if x >= 3+len(TabDiff)+1 && x < 3+len(TabDiff)+1+len(TabTree) {
-			m.Tab = TabTree
-		} else if x >= 3+len(TabDiff)+1+len(TabTree)+1 && x < 3+len(TabDiff)+1+len(TabTree)+1+len(TabTimeline) {
-			m.Tab = TabTimeline
-		}
+	// The pane's content starts one column right of the left border, so a
+	// content-relative X is the terminal X minus the border column.
+	contentX := x - 1
+	// Tab bar is the pane's first content row — terminal row 2 (shell tab bar
+	// row 0 + its bottom border row 1).
+	if y == 2 {
+		m.clickTab(contentX)
 		return
 	}
-	// Tab body: file rows (tree / timeline tabs) map row index → path.
-	row := y - 2 // 0-based after header + blank
+	if y < 3 {
+		return
+	}
+	// Body row: terminal row 3 is body row 0 (after the tab bar at row 2).
+	row := y - 3
 	if m.Tab != TabDiff && row >= 0 && row < len(m.groups) {
 		m.SelectPath(m.groups[row].Path)
 	}
-	_ = contentW
+}
+
+// clickTab selects the tab under a content-relative X click, reproducing the
+// tabBar() layout: a leading space, then each padded label with a 1-space
+// separator. The hit region covers the label text AND its 1-cell horizontal
+// padding (the whole clickable button, matching the GUI tab button), so a
+// click anywhere on a tab activates it. Computed rather than hard-coded so
+// tab clicks stay correct if the theme padding ever changes.
+func (m *Model) clickTab(contentX int) {
+	// Layout constants mirror tabBar(): leading " " (1), per-label
+	// horizontal padding (1 each side), and a 1-space separator between tabs.
+	const leadingSpace = 1
+	const tabPadding = 1
+	const tabSep = 1
+	// First label's text starts after the leading space + its left padding.
+	textStart := leadingSpace + tabPadding
+	for _, t := range []Tab{TabDiff, TabTree, TabTimeline} {
+		end := textStart + len(t)
+		// Widen the hit to cover the label's padding so the whole button is
+		// clickable (the padding cells do not overlap other tabs — separated
+		// by the 1-space separator).
+		if contentX >= textStart-tabPadding && contentX < end+tabPadding {
+			m.Tab = t
+			return
+		}
+		// Advance past: this label's text + right padding (tabPadding) +
+		// separator (tabSep) + next label's left padding (tabPadding).
+		textStart = end + tabPadding + tabSep + tabPadding
+	}
 }
 
 // mergeLive folds the buffered live stream events into the groups and
@@ -461,13 +518,20 @@ func (m *Model) diffBody() string {
 	}
 	content := RenderPane(m.rows, m.Width, currentProfile())
 	lines := strings.Split(content, "\n")
+	// The pane has Height rows total, but the tab bar (rawView's first row)
+	// consumes one, so the diff body gets Height-1 rows — otherwise the pane
+	// would render Height+1 rows and overflow (tearing / pushing the footer).
+	viewH := m.viewHeight()
 	start := m.scroll
 	if start > len(lines) {
 		start = len(lines)
 	}
-	end := start + m.Height
+	end := start + viewH
 	if end > len(lines) {
 		end = len(lines)
+	}
+	if start > end {
+		start = end
 	}
 	visible := lines[start:end]
 	return strings.Join(visible, "\n")

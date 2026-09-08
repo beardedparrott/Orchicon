@@ -317,7 +317,7 @@ func (m *App) openDiffPane() tea.Cmd {
 		return nil
 	}
 	m.diffOpen = true
-	m.diffPane.SetTab(m.diffTab)
+	m.restoreDiffPaneState()
 	m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
 	m.reflowForDiff()
 	// The pane keeps its previously selected path if it matches this owner's
@@ -369,26 +369,37 @@ func (m *App) refreshDiffOwner() tea.Cmd {
 	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
 		return nil
 	}
-	m.diffPane.SetTab(m.diffTab)
-	if m.diffPath != "" {
-		m.diffPane.SelectPath(m.diffPath)
-	}
+	m.restoreDiffPaneState()
 	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
 }
 
-// syncDiffPaneState copies the shell-owned open/tab/selected state into the
-// pane and back, so the pane persists across SwitchTo.
+// syncDiffPaneState captures the pane's current tab/selection into the
+// shell-owned state (pane→shell). Called whenever the pane may have changed
+// (key/mouse interactions, close) so the shell's open/tab/selected state
+// stays authoritative and survives a later SwitchTo. It does NOT push the
+// shell state into the pane — that direction (restoreDiffPaneState) runs on
+// open/refresh so a reopened pane resumes the last view.
 func (m *App) syncDiffPaneState() {
+	if m.diffPane == nil {
+		return
+	}
+	m.diffTab = m.diffPane.Tab
+	if m.diffPane.SelectedPath != "" {
+		m.diffPath = m.diffPane.SelectedPath
+	}
+}
+
+// restoreDiffPaneState applies the shell-owned open/tab/selected state to the
+// pane (shell→pane). Called when the pane is (re)opened or re-pointed at a
+// new owner so the pane resumes the last view rather than resetting to the
+// default diff tab.
+func (m *App) restoreDiffPaneState() {
 	if m.diffPane == nil {
 		return
 	}
 	m.diffPane.SetTab(m.diffTab)
 	if m.diffPath != "" {
 		m.diffPane.SelectPath(m.diffPath)
-	}
-	m.diffTab = m.diffPane.Tab
-	if m.diffPane.SelectedPath != "" {
-		m.diffPath = m.diffPane.SelectedPath
 	}
 }
 
@@ -722,10 +733,18 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		// Global routes already consumed d/esc/y (and ctrl chords). Only
 		// forward navigation keys to the pane when it is open (the pane is
 		// the focus then); the screen's own list/detail navigation is
-		// intentionally left to the pane while it is open.
+		// intentionally left to the pane while it is open. Both tab-switch
+		// keys (h = previous, l = next) must reach the pane so the h/l
+		// switcher is symmetric.
 		switch msg.String() {
-		case "j", "k", "up", "down", "pgup", "pgdown", "g", "G", "l":
-			return true, m.diffPane.Update(msg)
+		case "h", "l", "j", "k", "up", "down", "pgup", "pgdown", "g", "G":
+			cmd := m.diffPane.Update(msg)
+			// The pane's tab/selection may have changed (tab-switch keys
+			// h/l, or scroll state); copy it back so the shell-owned state
+			// stays in sync and survives a later SwitchTo (the pane must not
+			// reset the user's tab when navigating screens).
+			m.syncDiffPaneState()
+			return true, cmd
 		}
 		return false, nil
 	case tea.MouseMsg:
@@ -733,7 +752,12 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		// DiffPaneWidth). Motion/Release stay native (Shift+drag); the pane
 		// ignores them anyway. Clicks right of the rail pass to the screen.
 		if msg.X < DiffPaneWidth {
-			return true, m.diffPane.Update(msg)
+			cmd := m.diffPane.Update(msg)
+			// A click may switch the pane's tab or select a file; copy the
+			// new tab/selection back to the shell-owned state so it persists
+			// across navigation.
+			m.syncDiffPaneState()
+			return true, cmd
 		}
 		return false, nil
 	}
