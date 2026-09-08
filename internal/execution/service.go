@@ -50,9 +50,10 @@ type Service struct {
 	apiv1connect.UnimplementedExecutionServiceHandler
 
 	// sendExecMessage routes a mid-run human message into a live session
-	// execution (Stage 3). Injected by the server (wired to the opencode
-	// adapter's SendExecutionMessage); nil when the session transport is
-	// unavailable → SendExecutionMessage returns Unimplemented.
+	// execution (Stage 3). Injected by the server (dispatcher-based — any
+	// registered MessageInjector adapter kind, e.g. the native orchicon and
+	// opencode bridges, via SendExecutionMessage); nil when the session
+	// transport is unavailable → SendExecutionMessage returns Unimplemented.
 	sendExecMessage func(ctx context.Context, execID, message string) error
 
 	// continueSession runs a one-shot follow-up question against a worker's
@@ -77,7 +78,8 @@ type Service struct {
 }
 
 // SetSendExecutionMessage injects the live-session message router (the
-// opencode adapter's SendExecutionMessage). Nil = the RPC is unavailable.
+// dispatcher-resolved MessageInjector — any registered adapter kind, not
+// just opencode). Nil = the RPC is unavailable.
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendExecMessage = fn
 }

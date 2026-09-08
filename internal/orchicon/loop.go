@@ -244,6 +244,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// leave resumable, no new provider call. The terminal verdict
 			// fires here — fireTerminalOnce dedupes against the monitor's
 			// terminal paths (opencode finish() first-arrival parity).
+			s.recordUndeliveredNudges()
 			_ = s.markState(ctx, "cancelled")
 			s.markNudgeFinished()
 			s.fireTerminalOnce(callbacks, s.id, false, "cancelled")
@@ -350,6 +351,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
 		if streamErr != nil {
 			msg := fmt.Sprintf("stream error: %v", streamErr)
+			s.recordUndeliveredNudges()
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
 			s.fireTerminalOnce(callbacks, s.id, false, msg)
@@ -383,6 +385,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// session fails with the budget_abort reason (recovery owns the
 		// re-dispatch decision).
 		if res := s.maybeCompact(ctx, steps, usage); strings.HasPrefix(res, "budget_abort:") {
+			s.recordUndeliveredNudges()
 			_ = s.transcript.Append(TransError, map[string]any{"error": res})
 			_ = s.markState(ctx, "failed")
 			s.fireTerminalOnce(callbacks, s.id, false, res)
@@ -441,15 +444,28 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// Injection drain between tool rounds: a queued user turn
 			// becomes the next user message; the reply streams back into
 			// the same session.
-			if msg := s.drainInjected(ctx); msg != "" {
-				s.appendUser(TransUserMessage, msg, "human")
-				if err := s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "human"}); err != nil {
+			if msgs := s.drainInjectedAll(ctx); len(msgs) > 0 {
+				if err := s.appendInjected(msgs); err != nil {
 					return err
 				}
 			}
 			continue
 
 		case StopStop:
+			// Injection drain at EVERY turn boundary (not just tool
+			// rounds): a queued human nudge must be delivered even when
+			// the model just produced a text-only turn. Before settling
+			// on EITHER path (follow-up or the success gate), drain: a
+			// queued nudge becomes the next user turn, the loop continues
+			// so the session answers it, and settles on the NEXT clean
+			// stop. A model that never stops cleanly is already bounded by
+			// the completion probe and stall monitor.
+			if msgs := s.drainInjectedAll(ctx); len(msgs) > 0 {
+				if err := s.appendInjected(msgs); err != nil {
+					return err
+				}
+				continue
+			}
 			// Follow-up mode: a follow-up answers a question; it does NOT
 			// complete a worker run, so the decision-signal gate is
 			// bypassed — the model's StopStop settles the turn directly.
@@ -506,6 +522,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// StopOther arrives when a provider stream never delivered a
 			// stop reason at all. Neither may be recorded as success.
 			msg := fmt.Sprintf("model terminated with stop reason %q", finish)
+			s.recordUndeliveredNudges()
 			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
 			_ = s.markState(ctx, "failed")
 			s.fireTerminalOnce(callbacks, s.id, false, msg)
@@ -1075,20 +1092,49 @@ func (s *Session) queueInjected(msg string) {
 	s.inj.mu.Unlock()
 }
 
-// drainInjected pops one queued message (between tool rounds). Returns ""
-// when the queue is empty.
-func (s *Session) drainInjected(ctx context.Context) string {
+// drainInjectedAll pops ALL queued injected messages in order (called at
+// every turn boundary and terminal path — a burst is delivered together,
+// never one per round). Returns nil when the queue is empty.
+func (s *Session) drainInjectedAll(ctx context.Context) []string {
 	if s.inj == nil {
-		return ""
+		return nil
 	}
 	s.inj.mu.Lock()
 	defer s.inj.mu.Unlock()
 	if len(s.inj.msgs) == 0 {
-		return ""
+		return nil
 	}
-	msg := s.inj.msgs[0]
-	s.inj.msgs = s.inj.msgs[1:]
-	return msg
+	msgs := s.inj.msgs
+	s.inj.msgs = nil
+	return msgs
+}
+
+// appendInjected appends each queued human message to history AND the
+// transcript (source "human") in order. A transcript failure aborts the
+// session rather than silently dropping the nudge.
+func (s *Session) appendInjected(msgs []string) error {
+	for _, msg := range msgs {
+		s.appendUser(TransUserMessage, msg, "human")
+		if err := s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "human"}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordUndeliveredNudges drains any still-queued nudges on a terminal
+// exit path and records a VISIBLE error transcript part naming the dropped
+// message(s), so the session pane shows what was swallowed instead of
+// nothing. No-op when the queue is empty.
+func (s *Session) recordUndeliveredNudges() []string {
+	msgs := s.drainInjectedAll(context.Background())
+	if len(msgs) == 0 {
+		return nil
+	}
+	errMsg := fmt.Sprintf("queued nudge(s) not delivered — execution ended before it could be answered (%d dropped: %q)", len(msgs), strings.Join(msgs, "; "))
+	_ = s.transcript.Append(TransError, map[string]any{"error": errMsg})
+	s.log.Warn("native session: dropped queued nudges at terminal exit", "execution", s.id, "dropped", len(msgs))
+	return msgs
 }
 
 // --- written-files tracking ----------------------------------------------
