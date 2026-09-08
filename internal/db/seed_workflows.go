@@ -19,7 +19,8 @@ type cannedWorkflow struct {
 	StepsJSON   string // JSON array of step objects
 	// GitStrategy pins the workflows row's git_strategy (local|pr|none).
 	// Empty = NULL (inherit the effective strategy). The Quick Work template
-	// pins "pr" so the single-step harness pushes + PRs into develop.
+	// pins "pr" so the run ends with a PR merged into develop (Quick SWE
+	// pushes, DevOps opens + merges).
 	GitStrategy string
 }
 
@@ -76,11 +77,12 @@ var cannedWorkflows = []cannedWorkflow{
 		ID:          "01M1ERHNCNF38MP3SEV1GTH26G",
 		VersionID:   "wfv_quick_work_v1",
 		Name:        "Quick Work",
-		VersionNote: "Single-step fast path (git_strategy=pr): Quick Software Engineer implements, verifies green, pushes, and reports the PR into develop, then End.",
+		VersionNote: "Merge-autonomy fast path (git_strategy=pr): Quick Software Engineer implements, verifies green, commits to the run branch and pushes to origin, then DevOps Engineer opens the PR into develop and merges it, then End. The DevOps step owns PR creation and merge (PR_URL + PR_STATE), so the run ends merged with fully autonomous handoff.",
 		GitStrategy: "pr",
 		StepsJSON: `[
   {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
-  {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-quick"],"position_x":366.4761407515862,"position_y":38.75,"worker_version":0,"gate_policy_ref":""}
+  {"id":"step-devops-pr","ref":"w_se_devops_engineer","kind":"task","name":"DevOps Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":["step-quick"],"position_x":220.07141302490234,"position_y":36.0,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-devops-pr"],"position_x":366.4761407515862,"position_y":43.75,"worker_version":0,"gate_policy_ref":""}
 ]`,
 	},
 }
