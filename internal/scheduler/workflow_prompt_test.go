@@ -404,10 +404,20 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 		"`feat/my-branch`",
 		"branch created off `develop`",
 		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+		// PR/merge ownership is workflow-agnostic: the block defers to the
+		// step contract instead of hardcoding a DevOps handoff (the Quick
+		// Work all-in-one worker opens + merges its own PR).
+		"defined by YOUR workflow's step contract",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("git guidance missing %q for a git-backed run; got:\n%s", want, out)
 		}
+	}
+	// The hardcoded SDLC-only handoff is gone from the shared block: a
+	// DevOps-less workflow (Quick Work) must never be told that "the DevOps
+	// Engineer step creates the PR" as a standing instruction.
+	if strings.Contains(out, "DevOps Engineer step creates the PR") {
+		t.Errorf("git guidance must not hardcode the DevOps PR handoff (workflow-agnostic); got:\n%s", out)
 	}
 	if strings.Contains(out, "work in place") {
 		t.Errorf("git-backed run must not get the in-place block; got:\n%s", out)

@@ -209,7 +209,16 @@ func StablePromptPrefix(runtimeImage, mode string) string {
 //     push" text that a seeded AGENTS.md may still carry — the guardrail is
 //     the prompt that actually reaches the worker.
 //   - ready → the develop-first git discipline block: work on the branch
-//     recorded for this run (never push/PR/merge to main).
+//     recorded for this run (never push/PR/merge to main). PR/merge
+//     ownership is NOT asserted here — it belongs to the workflow's step
+//     contract and the worker's own prompt (e.g. the Quick Software
+//     Engineer is the all-in-one that opens + merges its own PR; the SDLC
+//     DevOps Engineer step owns PR + merge for that workflow). A shared
+//     block that hardcoded "the DevOps Engineer step creates the PR"
+//     contradicted every non-SDLC workflow (observed: the Quick Work run's
+//     DevOps-less composite instructed the DevOps Engineer worker that
+//     "the DevOps Engineer step creates the PR" while its own profile said
+//     the same, leaving the PR owner ambiguous and blocking real merges).
 //   - anything else (skipped/pending/failed/pruned, or no project) → an
 //     in-place block: this run works directly in project_dir, no branch or
 //     worktree, so the worker must not create branches/commit/push/PR.
@@ -229,7 +238,7 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 			"- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n" +
 			"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
 			"- Use the branch recorded for this run (`" + worktreeBranch + "`); do not create a new branch unless the previous work was on `main`.\n" +
-			"- You do not open the pull request or merge it — the DevOps Engineer step creates the PR and merges into `develop` after approval.\n\n"
+			"- **PR / merge ownership is defined by YOUR workflow's step contract** — the role text and AGENTS.md in this prompt name who opens the PR and merges into `develop` (some paths are single-step all-in-one workers that open + merge their own PR; others hand off to a dedicated DevOps step). Follow that contract; this block only fixes the branch discipline.\n\n"
 	}
 	// Non-repo (or not-yet-git-backed) run: work in place, no branch.
 	if projectDir != "" {
