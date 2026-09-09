@@ -72,13 +72,13 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 - **Recovery**: execution failures are recoverable by default (opt-out). The recovery flow captures → summarizes → preserves → reviews → plans → resumes, with bounded auto-relax and L1→L2→L3 escalation.
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo traces, Loki logs, VictoriaMetrics metrics).
 - **Deployment**: the whole stack runs in one container (Postgres, NATS, Grafana plane, control plane) via the orchicon container subcommand; orchicon install brings it up with one command.
-- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts (a context path may be a file or a directory — directories are listed and read in full by the worker). Work items can also carry their own context_files, rendered into the worker's prompt exactly like the project's. Workers must operate within their assigned project directory. To see or read a project's files, use the list_project_dir and read_project_file tools — your session has no filesystem access of its own.
+- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts (a context path may be a file or a directory — directories are listed and read in full by the worker). Work items can also carry their own context_files, rendered into the worker's prompt exactly like the project's. Workers must operate within their assigned project directory. Your session also carries the native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash) scoped to the tenant's first active project_dir — use ask_file_root to see which directory it is, and the file tools to inspect and edit real source code, run builds/tests, and drive git.
 `)
 
 	// 3. Available tools — auto-generated from the tool registry (the same
 	// full Orchicon MCP surface both modes share).
 	b.WriteString("\n## Available Tools\n")
-	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation.\n\n")
+	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — it operates on the tenant's first active project_dir (ask_file_root reports it).\n\n")
 	for _, td := range toolRegistry.List() {
 		mutability := "read-only"
 		if td.Mutating {
