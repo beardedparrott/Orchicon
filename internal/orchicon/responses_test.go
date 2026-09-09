@@ -2,6 +2,7 @@ package orchicon
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -155,7 +156,8 @@ func TestResponsesStreamHoldsFinishUntilDrained(t *testing.T) {
 	}
 }
 
-func TestResponsesRequestShaping(t *testing.T) {	req := TurnRequest{
+func TestResponsesRequestShaping(t *testing.T) {
+	req := TurnRequest{
 		Model: "m", MaxTokens: 99, Temperature: fltPtr(0.5),
 		System: []SystemBlock{{Text: "be brief"}},
 		Tools:  []ToolDef{{Name: "fn", ParamsJSON: `{"type":"object"}`}},
@@ -219,6 +221,58 @@ func TestResponsesRequestShapingMixedAssistant(t *testing.T) {
 	}
 }
 
+// 2026-09-09 cross-provider resume regression: the Responses provider
+// REQUIRES the `output` field on every function_call_output item. A tool
+// result with empty content (a prior wire produced an empty result, or a
+// mid-session switch replayed history with a bare tool round) previously
+// serialized as `output,omitempty` — the field was dropped and the new
+// provider rejected the turn with "input[N] missing required field
+// `output`" (observed switching onto a muse-spark model). Empty output
+// must default to a present neutral placeholder and errors must be
+// prefixed so the field is ALWAYS present.
+func TestResponsesRequestShapingToolOutputAlwaysPresent(t *testing.T) {
+	base := []Message{
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "c1", Name: "fn", ArgsJSON: `{}`}}}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c1", Content: "res"}}}},
+	}
+	// Normal result: output carried verbatim.
+	rr := buildResponsesRequest(TurnRequest{Model: "m", Messages: base})
+	out := rr.Input[len(rr.Input)-1]
+	if out.Output != "res" {
+		t.Fatalf("normal tool result output = %q, want %q", out.Output, "res")
+	}
+	// Empty result: output must be PRESENT (never omitted) with a neutral
+	// placeholder — the reported 400 repro.
+	empty := []Message{
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "c2", Name: "fn", ArgsJSON: `{}`}}}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c2", Content: ""}}}},
+	}
+	rr = buildResponsesRequest(TurnRequest{Model: "m", Messages: empty})
+	last := rr.Input[len(rr.Input)-1]
+	if last.Type != "function_call_output" || last.Output == "" {
+		t.Fatalf("empty tool result = %#v, want a present non-empty output (missing required field `output` 400 repro)", last)
+	}
+	// Error result: prefixed, still present.
+	errRes := []Message{
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "c3", Name: "fn", ArgsJSON: `{}`}}}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c3", Content: "boom", IsError: true}}}},
+	}
+	rr = buildResponsesRequest(TurnRequest{Model: "m", Messages: errRes})
+	last = rr.Input[len(rr.Input)-1]
+	if last.Output != "ERROR: boom" {
+		t.Fatalf("error tool result output = %q, want %q", last.Output, "ERROR: boom")
+	}
+	// JSON marshaling must ALWAYS include the field (json:"output", NOT
+	// omitempty) — an absent field is exactly the reported 400.
+	raw, err := json.Marshal(rr.Input[len(rr.Input)-1])
+	if err != nil {
+		t.Fatalf("marshal function_call_output: %v", err)
+	}
+	if !strings.Contains(string(raw), `"output"`) {
+		t.Fatalf("function_call_output JSON %s missing the `output` field (must never be omitempty)", raw)
+	}
+}
+
 // Object-shaped deltas ({"delta":{"text":"Hi"}}) must decode like the
 // compact string form — otherwise a gateway that emits the object shape
 // fails every turn as "bad sse payload".
@@ -253,7 +307,8 @@ func TestResponsesStreamObjectDelta(t *testing.T) {
 // Done-only text (no deltas, text on output_text.done) must still produce
 // a reply — otherwise the Ask history commit is skipped (empty reply) and
 // the follow-up looks like a first message.
-func TestResponsesStreamDoneOnlyText(t *testing.T) {	body := sse(
+func TestResponsesStreamDoneOnlyText(t *testing.T) {
+	body := sse(
 		`{"type":"response.output_text.done","text":"full answer"}`,
 		`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		`[DONE]`,
