@@ -829,3 +829,29 @@ func TestReplayCapsToolOutputs(t *testing.T) {
 		t.Fatalf("capped content missing the truncation marker: %q", tr.Content[:40])
 	}
 }
+
+// 2026-09-09 follow-up contract regression: a follow-up session's system
+// prompt MUST carry the follow-up overlay (the standing worker contract
+// says "no human, work autonomously", which made the model answer every
+// follow-up with one acknowledgment line and no tool calls). A normal
+// session must NOT carry it.
+func TestFollowUpSystemOverlay(t *testing.T) {
+	s := qaSession(t, &mockProvider{turns: []scriptedTurn{}}, nil)
+	normal := s.AssembleSystem()
+	for _, b := range normal {
+		if strings.Contains(b.Text, "Follow-up mode") {
+			t.Fatalf("non-follow-up session must not carry the follow-up overlay")
+		}
+	}
+	s.SetFollowUp("open the PR")
+	follow := s.AssembleSystem()
+	found := false
+	for _, b := range follow {
+		if strings.Contains(b.Text, "Follow-up mode") && strings.Contains(b.Text, "use your tools") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("follow-up session system prompt missing the followUpSystemOverlay (blocks = %d)", len(follow))
+	}
+}

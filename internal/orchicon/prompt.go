@@ -98,12 +98,41 @@ func (s *Session) AssembleSystem() []SystemBlock {
 	if s.envFacts != "" {
 		static += "\n\n" + s.envFacts
 	}
+	// Follow-up mode (2026-09-09): the standing worker contract tells the
+	// model "there is no human; work autonomously to completion" — so a
+	// follow-up message reads as noise on a DONE run and the model answers
+	// with one acknowledgment line and no tools. A follow-up is a live
+	// conversation with the user: override the standing contract with the
+	// conversation one (appended LAST so it wins over the prefix).
+	if s.followUp {
+		static += "\n\n" + followUpSystemOverlay
+	}
 	blocks = append(blocks, SystemBlock{Text: static, Cache: true})
 	if zone := s.renderMutableZone(); zone != "" {
 		blocks = append(blocks, SystemBlock{Text: zone, Cache: false})
 	}
 	return blocks
 }
+
+// followUpSystemOverlay is appended to the static system prefix in
+// follow-up mode (ContinueSession). It supersedes the autonomous-worker
+// contract: the human IS on the session, the prior summary is history,
+// and the user's message is a live instruction to act on with tools.
+const followUpSystemOverlay = `## Follow-up mode (this overrides the worker contract above)
+
+The user is PRESENT on this session and is talking to you right now.
+The ORCHICON WORKER SUMMARY and any "work to completion" instructions
+above describe the PRIOR run — that run is finished and its summary is
+history, not the current objective.
+
+Answer the user's message and DO what it asks: if it names an action
+(open a PR, run a command, write code), use your tools (bash / git / gh /
+file tools) and actually perform it — do not just describe intent. Keep
+your role knowledge from above; drop the autonomous "work to completion"
+stance. When the user's request is fully handled, reply with what you
+did (no ORCHICON WORKER SUMMARY needed — that gate is disabled in this
+mode). If a request is ambiguous, ask a short clarifying question instead
+of guessing.`
 
 // renderMutableZone renders the after-breakpoint mutable block from live
 // session state: durable-memory digest (D3), memory notes (insertion
