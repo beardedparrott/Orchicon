@@ -787,3 +787,36 @@ func TestQAFollowUpEmptyReplyThreadStaysOpen(t *testing.T) {
 		t.Errorf("StreamTurn calls = %d, want 1 (no probe on an empty follow-up reply)", got)
 	}
 }
+
+// 2026-09-09 bounded-replay regression (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
+// a follow-up replayed the ENTIRE prior run's transcript — tool outputs up
+// to 128 KiB each live-capped, replayed UNcapped → ~600KB / ~150K tokens of
+// history, which free models cannot handle (text-only or empty replies,
+// the observed "one line then nothing" follow-up behavior). Replay now
+// applies a much smaller per-result cap (capReplayToolOutput) so a long
+// run's history stays proportional.
+func TestReplayCapsToolOutputs(t *testing.T) {
+	big := strings.Repeat("x", replayToolOutputCap*3) // ~18 KiB
+	s := qaSession(t, &mockProvider{turns: []scriptedTurn{{
+		events: []Event{TextDelta{Text: "done"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 1, OutputTokens: 1},
+	}}}, nil)
+	// Replay a tool_result with a huge output, as the loop would on follow-up.
+	s.replay([]replayEvent{
+		{Type: TransToolCall, Data: json.RawMessage(`{"text":"tooling","tool_calls":[{"Index":0,"ToolCallID":"c1","Name":"bash","ArgsJSON":"{\"command\":\"x\"}"}]}`)},
+		{Type: TransToolResult, Data: json.RawMessage(`{"tool_call":{"Index":0,"ToolCallID":"c1","Name":"bash"},"output":"` + big + `"}`)},
+	})
+	if len(s.history) != 2 {
+		t.Fatalf("history = %d messages, want 2 (tool_use + tool_result)", len(s.history))
+	}
+	// The tool_result's content must be capped to <= replayToolOutputCap.
+	tr := s.history[1].Content[0].ToolResult
+	if tr == nil {
+		t.Fatal("history[1] is not a tool_result")
+	}
+	if len(tr.Content) >= len(big) {
+		t.Fatalf("tool result content = %d bytes, want it capped below the raw %d", len(tr.Content), len(big))
+	}
+	if !strings.Contains(tr.Content, "output truncated by Orchicon") {
+		t.Fatalf("capped content missing the truncation marker: %q", tr.Content[:40])
+	}
+}

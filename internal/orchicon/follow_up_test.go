@@ -120,8 +120,8 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(umText, "Are you done?") || !strings.Contains(umText, "CONTINUATION INSTRUCTION") {
-		t.Fatalf("follow-up question = %q, want the user's message wrapped with the continuation-instruction frame", umText)
+	if umText != "Are you done?" {
+		t.Fatalf("follow-up question = %q, want the user's message verbatim (no injected frame)", umText)
 	}
 	if replyText != "Absolutely — here is the follow-up." {
 		t.Fatalf("follow-up reply = %q, want the collected reply", replyText)
