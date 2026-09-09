@@ -35,8 +35,24 @@ const (
 	defaultAskStallNoProgressWindow = 120 * time.Second
 	defaultAskStallRepetitionCount  = 5
 	defaultAskStallRepetitionWindow = 300 * time.Second
-	defaultAskMCPToolWedgeWindow    = 30 * time.Second
-	defaultAskMCPReconnectAttempts  = 1
+	// 2026-09-09 (operator: "the conversation session wedged on a tool
+	// (bash) and could not be recovered after 2 attempt(s) — please
+	// retry" killed live Ask sessions): the wedge detector fires when a
+	// tool part has been open with NO further events for the window. The
+	// serve emits NO streaming events while a tool runs (tool_part fires
+	// once at issue, tool_use once at completion), so a legitimately slow
+	// tool — a bash build/test, a gh merge, a long MCP call, 60-120s — is
+	// INDISTINGUISHABLE from a hung tool for the whole window. 30s tripped
+	// on every slow-but-healthy tool: the session was aborted, the same
+	// message re-dispatched, the tool re-issued, tripped again, and the
+	// turn FAILED (default reconnect budget 1) — the exact "wedged on a
+	// tool (bash) and could not be recovered after 2 attempt(s)"
+	// self-destruct. 120s still catches a genuinely hung tool (the
+	// no_progress window is also 120s) without killing slow-but-alive
+	// calls, and the recycle budget is raised so one recycle is never a
+	// death sentence.
+	defaultAskMCPToolWedgeWindow    = 120 * time.Second
+	defaultAskMCPReconnectAttempts  = 3
 )
 
 func askStallNoProgressWindow() time.Duration {

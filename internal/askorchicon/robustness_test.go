@@ -148,12 +148,14 @@ func TestCollectConversationReplyRecyclesWedgedSession(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyReconnectBudgetIsBounded verifies the reconnect
-// budget: after the bounded number of attempts, a persistently-wedged session
-// is NOT recycled forever — the turn fails with a clear retryable error naming
-// the stalled tool.
+// TestCollectConversationReplyReconnectBudgetIsBounded verifies the 2026-09-09
+// recycle contract: with the reconnect budget at 0, a tool-wedge NEVER fails
+// the turn and NEVER recycles the session — the collector keeps listening on
+// the live session inside the reply window, and the turn COMPLETES with the
+// reply when the (slow) tool completes. The budget bounds ABORT+re-dispatch
+// recycles only; it is never a death sentence.
 func TestCollectConversationReplyReconnectBudgetIsBounded(t *testing.T) {
-	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "500ms")
+	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "300ms")
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "1500ms")
 	t.Setenv("ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS", "0")
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
@@ -165,16 +167,28 @@ func TestCollectConversationReplyReconnectBudgetIsBounded(t *testing.T) {
 	}
 	go func() {
 		waitForSend(t, client, 1)
+		// A tool is issued and stays open past the wedge window…
 		client.sub.feed(busToolRunning("ses_live", "list_projects"))
+		// …then completes (a slow-but-alive tool). The collector must
+		// still be listening: the reply lands, no recycle, no wedge error.
+		time.Sleep(400 * time.Millisecond)
+		client.sub.feed(busText("ses_live", "projects: orchicon"))
+		client.sub.feed(busIdle("ses_live"))
 	}()
 
-	_, _, _, err := collectTurn(t, client, opts)
-	if err == nil || !strings.Contains(err.Error(), "wedged") {
-		t.Fatalf("error = %v, want a wedged-tool retryable error", err)
+	text, _, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("error = %v, want nil (budget 0 must never fail the turn on a wedge; the slow tool completed and the reply landed)", err)
+	}
+	if !strings.Contains(text, "projects: orchicon") {
+		t.Fatalf("reply = %q, want the post-wedge completion text (the turn kept listening)", text)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if len(client.created) != 0 {
 		t.Errorf("created = %v, want none (budget 0 → no recycle)", client.created)
+	}
+	if len(client.aborted) != 0 {
+		t.Errorf("aborted = %v, want none (a slow-but-alive tool must never abort the session)", client.aborted)
 	}
 }

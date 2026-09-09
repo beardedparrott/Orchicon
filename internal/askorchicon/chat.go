@@ -1348,14 +1348,36 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			// A tool call was issued on the session but never resolved (MCP
 			// wedge — AC1). Heal, don't fail: abort the wedged session, create
 			// a FRESH seeded session, and re-dispatch the SAME user message
-			// once (bounded by the reconnect budget). The reply window applies
+			// (bounded by the reconnect budget). The reply window applies
 			// and the turn continues transparently on a healthy session.
 			// Record the wedge so a mid-run interjection (D4) recycles rather
 			// than dispatching onto the (now-stuck) session.
-			s.turns.markWedged(c.convID, c.token)
+			//
+			// 2026-09-09 recycle-fix (operator: this path killed live Ask
+			// sessions mid-merge with "wedged on a tool (bash) and could not
+			// be recovered after 2 attempt(s)"): the recycle must NOT fail
+			// the turn on the LAST budget slot. When the budget is spent,
+			// DO NOT abort the session — the tool may still be running
+			// legitimately on the serve (the wedge window can only
+			// misfire on a slow-but-alive call) — and keep WAITING inside
+			// the reply window instead: the turn stays alive, the tool's
+			// completion (tool_use) still lands through the collector's
+			// event stream, and the reply is preserved. A genuinely hung
+			// session is bounded by the reply window, not by this gate.
+			// The budget now only bounds how many ABORT+RE-DISPATCH
+			// recycles we perform, never whether the turn may continue
+			// listening.
 			if reconnects >= askMCPReconnectAttempts() {
-				return res.text, reasoning, sid, fmt.Errorf("the conversation session wedged on a tool (%s) and could not be recovered after %d attempt(s) — please retry", res.wedgeTool, reconnects+1)
+				s.log.Warn("ask orchicon tool-wedge recycle budget spent — continuing on the live session (turn stays alive; bounded by the reply window)",
+					"conversation", c.convID, "session", sid, "tool", res.wedgeTool, "recycles", reconnects)
+				// Re-enter the attempt loop WITHOUT aborting: the current
+				// session keeps streaming; if the tool completes, the turn
+				// completes. runOneTurnAttempt re-arms the monitor on a
+				// fresh attempt; the reply window (askReplyWindow) bounds
+				// the total lifetime, so this cannot loop forever.
+				continue
 			}
+			s.turns.markWedged(c.convID, c.token)
 			oldSid := sid
 			reconnects++
 			s.log.Warn("ask orchicon session wedged on a tool — recycling to a fresh session",
