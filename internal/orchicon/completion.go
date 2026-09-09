@@ -118,6 +118,38 @@ func realDecisionMarkerIn(output string) int {
 // false when the probe budget is exhausted — the execution has been failed
 // (OnResult fired) and the caller must return immediately.
 func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.ExecutionCallbacks) bool {
+	// Budget gate (2026-09-09 liveness-kill fix): a probe only counts
+	// against the budget once its PREVIOUS probe was actually answered
+	// (completionProbeAwaiting false). A probe that is still awaiting a
+	// reply must not spend a slot — the model is mid-reply to it right now,
+	// and the very next StopStop (the probe reply landing) would otherwise
+	// burn budget #2 or fail outright for a response that had not yet
+	// arrived. Parity with the opencode cooldown-wait fix
+	// (completionProbeDecision).
+	if s.completionProbeAwaiting {
+		s.log.Info("native completion probe still awaiting a reply — deferring, not spending budget",
+			"execution", s.id, "probes", s.completionProbesSent, "max", completionProbeMaxTurns)
+		// Bound the deferral: the probe reply usually lands as deltas
+		// (nudgeObserved clears the flag), so reaching here twice in a row
+		// means the provider returned EMPTY turns for the probe — fail
+		// honestly after one retry instead of looping forever.
+		s.completionProbeDeferrals++
+		if s.completionProbeDeferrals > 1 {
+			msg := "stalled:missing_decision_signal:completion_probe_no_response"
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			s.log.Warn("native completion probe never produced a reply — failing",
+				"execution", s.id, "probes", s.completionProbesSent, "deferrals", s.completionProbeDeferrals)
+			callbacks.OnResult(ctx, s.id, false, s.output.String(), msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return false
+		}
+		// Re-queue the SAME probe turn so the model gets its full reply
+		// window: the settle re-enters with the reply's output. (The probe
+		// text is already in history; loop continues to let it stream.)
+		return true
+	}
 	if s.completionProbesSent >= completionProbeMaxTurns {
 		msg := "stalled:missing_decision_signal:completion_probe_no_response"
 		_ = s.transcript.Append(TransError, map[string]any{"error": msg})
@@ -130,6 +162,7 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 		return false
 	}
 	s.completionProbesSent++
+	s.completionProbeAwaiting = true
 	s.appendUser(TransUserMessage, completionProbeText, "completion_probe")
 	if err := s.transcript.Append(TransUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"}); err != nil {
 		// Transcript failure: fail the execution with the underlying error —

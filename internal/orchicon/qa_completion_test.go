@@ -62,15 +62,20 @@ func TestQADecisionGateProbesForMissingMarker(t *testing.T) {
 	}
 }
 
-// AC: a model that never delivers the marker — even after the probe budget
-// — fails honestly (stalled:missing_decision_signal:…), never succeeds.
+// AC: a model that goes SILENT through the full probe budget — probe turns
+// that produce NOTHING (no deltas, no tokens: consecutive UNANSWERED
+// probes) — fails honestly (stalled:missing_decision_signal:…), never
+// succeeds. 2026-09-09 liveness-kill fix: the budget counts consecutive
+// UNANSWERED probes; a session that keeps replying keeps getting probes
+// (bounded by the wall-clock budget ladder instead).
 func TestQADecisionGateFailsAfterProbeBudget(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "Work done."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 25}},
-		// Probe 1: still no marker.
-		{events: []Event{TextDelta{Text: "Hmm, more monologue."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 120, OutputTokens: 25}},
-		// Probe 2: still no marker → budget exhausted → honest failure.
-		{events: []Event{TextDelta{Text: "More monologue."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 140, OutputTokens: 25}},
+		// Probe 1: EMPTY reply (no deltas, no tokens) — unanswered.
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 120, OutputTokens: 0}},
+		// Probe 2: EMPTY again → consecutive-unanswered budget exhausted →
+		// honest failure.
+		{events: []Event{TextDelta{Text: ""}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 140, OutputTokens: 0}},
 	}}
 	s := qaSession(t, prov, nil)
 	cb := &recordedCallback{}
@@ -84,8 +89,8 @@ func TestQADecisionGateFailsAfterProbeBudget(t *testing.T) {
 	if len(results) == 1 && !strings.Contains(results[0].errMsg, "missing_decision_signal") {
 		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
 	}
-	// Probe budget: exactly 2 probe turns (completionProbeMaxTurns) after
-	// the model turn → 3 StreamTurn calls total.
+	// Probe budget: exactly 2 unanswered probe turns
+	// (completionProbeMaxTurns) after the model turn → 3 StreamTurn calls.
 	if got := prov.requestCount(); got != 3 {
 		t.Errorf("StreamTurn calls = %d, want 3 (turn + 2 probes)", got)
 	}
@@ -369,5 +374,86 @@ func TestQALegacyCCFlushWithoutFinishYieldsStopOther(t *testing.T) {
 	}
 	if got := mapLegacyStop(""); got != StopOther {
 		t.Errorf("mapLegacyStop(\"\") = %q, want StopOther", got)
+	}
+}
+
+// AC (2026-09-09 liveness-kill regression, operator-transcript parity): a
+// probe that gets a REPLY must not spend the next budget slot or fail the
+// session outright. Tonight's kill: probe #1 → model answers with a status
+// line ("Still here — resuming…") → the next markerless settle burned
+// probe #2 → instant missing_decision_signal failure inside ~11s on a
+// session that was actively replying. With the fix the budget counts
+// CONSECUTIVE UNANSWERED probes: every content reply resets it, so a
+// session that keeps replying keeps streaming (the wall-clock budget
+// ladder, not this gate, bounds a never-delivering session). The mock
+// running OUT OF TURNS while the session is still alive is the proof.
+func TestQADecisionGateProbeReplyResetsBudget(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: markerless intro → probe #1 (budget 1/2).
+		{events: []Event{TextDelta{Text: "Starting the work."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: the probe reply — a status line, still no marker. This
+		// reply is activity: it must RESET the outstanding probe + budget,
+		// not fail.
+		{events: []Event{TextDelta{Text: "Still here — resuming to verify state."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 15}},
+		// Turn 3: another markerless settle → probe #2 on a FRESH budget
+		// slot (the reply reset the budget), never an instant
+		// missing_decision_signal failure.
+		{events: []Event{TextDelta{Text: "Working on it."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 150, OutputTokens: 12}},
+		// Turn 4: probe #2's reply (content, still no marker) — resets
+		// again. The loop keeps going as long as the model keeps replying.
+		{events: []Event{TextDelta{Text: "Continuing."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 170, OutputTokens: 10}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	// THE FIX (old buggy path: instant fail on the settle after the
+	// reply, <= 3 provider calls): the model answered probe #1, so the
+	// loop must CONTINUE — turn1 + probe1 + reply + probe2 + reply = 5
+	// provider calls. The only OnResult is the mock running out of
+	// scripted turns (harness boundary) — never the probe gate killing
+	// an alive session.
+	if got := prov.requestCount(); got != 5 {
+		t.Errorf("StreamTurn calls = %d, want 5 (a probe reply must buy another probe, not an instant fail)", got)
+	}
+	for _, r := range results {
+		if strings.Contains(r.errMsg, "missing_decision_signal") {
+			t.Errorf("premature missing_decision_signal kill on a replying session: %q", r.errMsg)
+		}
+	}
+}
+
+// AC (parity): a probe whose provider turn returns EMPTY (zero deltas,
+// immediate StopStop) must not loop forever on the defer path — one
+// deferral retry, then the honest completion_probe_no_response failure.
+func TestQADecisionGateEmptyProbeTurnFailsHonestly(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: markerless intro → probe #1.
+		{events: []Event{TextDelta{Text: "Starting."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: probe #1's reply is EMPTY (deltas dropped, immediate
+		// StopStop) — the defer path re-queues the probe (no new provider
+		// turn is consumed by the defer itself).
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 0}},
+		// Turn 3: the re-queued probe's turn — STILL empty → deferral bound
+		// spent → honest failure. (The bound fires when the settle re-enters
+		// with awaiting still set and deferrals > 1.)
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 0}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	if len(results) != 1 {
+		t.Fatalf("OnResult count = %d, want 1", len(results))
+	}
+	if results[0].succeeded {
+		t.Error("OnResult succeeded — an empty probe turn must fail honestly, never a hollow success")
+	}
+	if !strings.Contains(results[0].errMsg, "missing_decision_signal") {
+		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
 	}
 }

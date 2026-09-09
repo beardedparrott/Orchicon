@@ -348,7 +348,15 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
 		_ = stream.Close()
 		s.pm.observeStepFinish(usage)
-		s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
+		// A completed turn is reply evidence ONLY when it carried content:
+		// an EMPTY turn (zero deltas — deltas already fired nudgeObserved in
+		// drain) proves nothing. 2026-09-09 liveness-kill regression: an
+		// empty probe reply cleared the awaiting probe and reset the probe
+		// budget here, so an empty-turn provider looped the probe forever
+		// (caught by TestQADecisionGateEmptyProbeTurnFailsHonestly).
+		if len(text) > 0 || len(toolCalls) > 0 || usage.OutputTokens > 0 {
+			s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
+		}
 		if streamErr != nil {
 			msg := fmt.Sprintf("stream error: %v", streamErr)
 			s.recordUndeliveredNudges()
@@ -687,6 +695,18 @@ func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execI
 func (s *Session) nudgeObserved() {
 	s.noteMu.Lock()
 	s.nudgePending = false
+	// Any model activity proves the session is alive and answering — clear
+	// the outstanding completion probe AND RESET THE BUDGET (opencode
+	// resolveProbe parity, 2026-09-09 liveness-kill fix): a probe that got
+	// a reply is ANSWERED, so the probe budget counts CONSECUTIVE
+	// UNANSWERED probes, not lifetime probes. A model that answers probe #1
+	// with a status line and keeps working gets a fresh budget — it is
+	// provably alive; only a session that goes silent through the full
+	// budget is failed (the kill transcripts: 2 probes + instant fail in
+	// ~11s while the model was streaming replies).
+	s.completionProbeAwaiting = false
+	s.completionProbeDeferrals = 0
+	s.completionProbesSent = 0
 	s.noteMu.Unlock()
 }
 
@@ -766,7 +786,14 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 			text.WriteString(e.Text)
 			s.output.WriteString(e.Text)
 			s.pm.observeText()
-			s.nudgeObserved() // continued output = the nudged turn replied
+			// Only REAL content is reply evidence: an empty-text delta
+			// (providers emit these as keep-alives / turn boundaries)
+			// proves nothing. 2026-09-09 liveness-kill fix — an empty
+			// delta reset the awaiting probe and the probe budget, looping
+			// a silent session's probe forever.
+			if e.Text != "" {
+				s.nudgeObserved() // continued output = the nudged turn replied
+			}
 			s.emitTextChunked(ctx, callbacks, e.Text)
 			_ = s.transcript.Append(TransText, map[string]any{"text": e.Text})
 		case ReasoningDelta:

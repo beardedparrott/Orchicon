@@ -93,7 +93,7 @@ type Session struct {
 	// worker's tools. The decision-signal gate (ORCHICON WORKER SUMMARY) is
 	// disabled — a follow-up answers a question, it does not complete a
 	// worker run.
-	followUp       bool
+	followUp         bool
 	followUpQuestion string
 	// completionProbesSent counts the completion-probe interjections this
 	// session has sent (decision-signal guard, completion.go). Bounded by
@@ -101,6 +101,23 @@ type Session struct {
 	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
 	// instead of recording a hollow success.
 	completionProbesSent int
+	// completionProbeAwaiting marks a completion probe whose reply has NOT
+	// arrived yet (2026-09-09 liveness-kill parity fix with the opencode
+	// adapter). Set when a probe is interjected; cleared on ANY model
+	// activity (nudgeObserved — text/reasoning deltas). The budget check
+	// only counts a probe when the PREVIOUS one was answered (or none is
+	// outstanding): a model that answers a probe with a status line and
+	// keeps working must never be failed for a second slot it was still
+	// owed. Without this, a reply-to-probe that wasn't the summary burned
+	// the whole 2-probe budget inside seconds (the kill transcripts).
+	completionProbeAwaiting bool
+	// completionProbeDeferrals bounds the consecutive unanswered-probe
+	// deferrals (runCompletionProbe): an EMPTY provider turn for a probe
+	// (zero deltas → immediate StopStop) clears nothing, so the defer path
+	// would loop forever without this bound. Cleared whenever a probe is
+	// actually answered (nudgeObserved). One deferral retry, then the
+	// honest completion_probe_no_response failure.
+	completionProbeDeferrals int
 	// lengthContinuationsSent counts the output-cap continuation turns
 	// (StopLength recovery, loop.go). Bounded by
 	// lengthContinuationMaxTurns — a session that keeps hitting the cap

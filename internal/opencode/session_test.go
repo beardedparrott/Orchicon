@@ -504,11 +504,16 @@ func TestCompletionProbeDecision(t *testing.T) {
 			wantProbe: false, wantFail: true,
 		},
 		{
-			name:      "missing marker fails inside cooldown window",
+			// 2026-09-09 liveness-kill regression (WI: liveness kills
+			// workers): probe #1 was answered by the model seconds later;
+			// when the next idle re-entered the decision INSIDE the probe
+			// cooldown, the old logic returned (fail) and killed an
+			// actively-streaming session. The cooldown must mean WAIT.
+			name:      "cooldown after a recent probe waits, never fails (live-kill regression)",
 			output:    withoutMarker,
-			nudges:    0,
-			lastNudge: now, // just nudged → cooldown blocks another probe
-			wantProbe: false, wantFail: true,
+			nudges:    1,
+			lastNudge: now, // probe #1 just sent, model mid-reply
+			wantProbe: true, wantFail: false,
 		},
 		{
 			name:      "placeholder marker echo is not a real decision",

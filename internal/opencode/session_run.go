@@ -145,8 +145,11 @@ const (
 	// defaultCompletionProbeGrace is how long the completion probe waits
 	// after a markerless session.idle before interjecting, giving the serve's
 	// trailing final-text part (which usually carries the ORCHICON WORKER
-	// SUMMARY marker) time to flush. See maybeProbeCompletion.
-	defaultCompletionProbeGrace = 3 * time.Second
+	// SUMMARY marker) time to flush. See maybeProbeCompletion. 30s (raised
+	// from 3s per the 2026-09-09 liveness-kill incident): a busy serve can
+	// legitimately take tens of seconds to flush a long final turn; probing
+	// at 3s interjected actively-streaming sessions mid-token.
+	defaultCompletionProbeGrace = 30 * time.Second
 	// maxStreamRetries bounds Tier B same-session stream-drop turn retries
 	// before falling through to the existing kill path.
 	maxStreamRetries = 2
@@ -952,6 +955,14 @@ func (r *sessionRun) resolveProbe() {
 	r.probePending = false
 	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
+	// 2026-09-09 liveness-kill fix: the nudge/completion-probe budget
+	// counts CONSECUTIVE UNANSWERED probes, not lifetime probes. A probe
+	// that got a reply is ANSWERED — the model is provably alive — so its
+	// budget slot is returned. Without this, a model that answers probe #1
+	// with a status line and keeps working burned the whole budget inside
+	// seconds and was failed mid-stream (the kill transcripts: 2 probes +
+	// instant fail in ~11s / 54s on actively-streaming sessions).
+	r.nudgesSent = 0
 	revived := r.monitor.revive()
 	r.mu.Unlock()
 	if revived {
@@ -1669,8 +1680,21 @@ func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now tim
 	if realDecisionMarkerIn(output) >= 0 {
 		return false, false
 	}
-	if nudgesSent >= nudgeMax || now.Sub(lastNudgeAt) < nudgeCooldown {
+	if nudgesSent >= nudgeMax {
+		// Probe budget spent AND the marker is still absent: the worker was
+		// given every chance (probes + full reply windows) and never
+		// delivered the sign-off — fail honestly.
 		return false, true
+	}
+	if now.Sub(lastNudgeAt) < nudgeCooldown {
+		// Inside the cooldown after the last nudge/probe. This is NOT a
+		// terminal condition: the model may be mid-reply to the previous
+		// probe right now (any activity since then clears lastNudgeAt via
+		// resolveProbe). Treat as "wait" — return probe=true so the idle
+		// defers to the grace/next-turn path instead of instantly failing
+		// an actively-streaming session (the observed kill: probe → model
+		// answers within seconds → next idle → cooldown branch → fail).
+		return true, false
 	}
 	return true, false
 }
@@ -1806,6 +1830,7 @@ func (r *sessionRun) sendCompletionProbe() {
 	}
 	r.nudgesSent++
 	r.probePending = true
+	r.lastNudgeAt = time.Now() // the cooldown measures THIS probe's reply window
 	r.probeDeadline = time.Now().Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 
