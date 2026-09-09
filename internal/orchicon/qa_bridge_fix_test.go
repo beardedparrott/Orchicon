@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -163,6 +164,17 @@ func TestQAContinueSessionRefusesCrossTenant(t *testing.T) {
 	if reply != "" {
 		t.Fatalf("same-tenant reply = %q, want empty (async follow-up)", reply)
 	}
+	// The follow-up runs fire-and-forget in a detached goroutine: wait for
+	// it to actually finish BEFORE the test ends so t.TempDir() cleanup
+	// never races a still-writing async session (observed: "TempDir RemoveAll
+	// cleanup ... directory not empty" from the async session writing
+	// .orchicon/sessions after the test returned).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && prov.requestCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Give the loop a beat to finish its async reply write before cleanup.
+	time.Sleep(50 * time.Millisecond)
 }
 
 func writeIdentityTranscript(t *testing.T, path string, ident Identity) {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -566,6 +567,14 @@ func TestQAContinueSessionIdentityVerified(t *testing.T) {
 	if reply != "" {
 		t.Fatalf("reply = %q, want empty (async — reply flows via transcript)", reply)
 	}
+	// Fire-and-forget follow-up: wait for the async session to finish so
+	// t.TempDir() cleanup never races a still-writing session (the
+	// "directory not empty" flake under the full suite).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && prov.requestCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
 	// No-identity transcript refused.
 	p2 := filepath.Join(dir, "noid.jsonl")
 	tr2, _ := openTranscript(p2)
