@@ -771,6 +771,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// as a clean, retryable turn failure — never as a silent opencode fallback
 	// (the AC routing landmine).
 	if client, cerr := s.resolveChatClient(convID, modelRef); cerr != nil {
+		// The turn was already registered above: release it so the
+		// conversation is not wedged behind a turn that will never run
+		// (the TTL sweeper would otherwise hold it for up to 31 minutes).
+		releaseTurn()
+		s.hubs.remove(convID)
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("Ask Orchicon could not resolve an adapter for this conversation: %w", cerr))
 	} else if client != nil {
@@ -791,12 +796,18 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		useSessionID = s.adapterScopedSessionID(client, useSessionID)
 		// Partial-reply mirror: the collector's onPartial callbacks feed a
 		// throttled flusher that upserts the running turn's collected
-		// text/reasoning under the ACKED assistant message id. A client that
-		// lost the live stream (refresh, another tab/device) polls ListMessages
-		// and watches the reply grow instead of a bare spinner. The flusher is
-		// cancelled and drained BEFORE the finalize so the complete reply
-		// always lands last (no stale partial can clobber it). Its own tiny
-		// tenant tx keeps it off the collector's hot path.
+		// text/reasoning AND live tool ledger under the ACKED assistant message
+		// id. A client that lost the live stream (refresh, another tab/device)
+		// polls ListMessages and watches the reply grow instead of a bare
+		// spinner — and a session killed mid-turn (timeout/abort/crash) leaves
+		// everything up to the kill visible. The flusher is cancelled and
+		// drained BEFORE the finalize so the complete reply always lands last
+		// (no stale partial can clobber it). Its own tiny tenant tx keeps it
+		// off the collector's hot path.
+		// turnLedger is the turn's live tool ledger, shared with the collector
+		// (pointer identity) and snapshotted by every mirror write and the
+		// terminal finalize.
+		turnLedger := newToolLedger()
 		partialMu := &sync.Mutex{}
 		partialDirty := false
 		var partialText string
@@ -815,7 +826,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				}
 				partialMu.Unlock()
 				if dirty {
-					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn)
+					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn, turnLedger)
 					continue
 				}
 				select {
@@ -849,6 +860,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				onStreamEvent:          onStreamEvent,
 				stallNoProgressSeconds: settings.StallNoProgressWindowSeconds,
 				onPartial:              onPartial,
+				ledger:                 turnLedger,
 			})
 			// Drain the partial mirror before finalizing: stop the flusher,
 			// wait for any in-flight write, then write whatever is still dirty
@@ -860,8 +872,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 			pText, pReasoning := partialText, append([]string(nil), partialReasoning...)
 			partialMu.Unlock()
 			if dirty {
-				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning)
+				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning, turnLedger)
 			}
+			// The terminal ledger snapshot travels with the finalize: the
+			// collector owns the pointer, so read the final state from it
+			// (every finalize path below persists text + reasoning + tools
+			// atomically — a killed session leaves the tool activity, not
+			// just the text). The superseded-empty case skips the write
+			// entirely (nothing arrived: no row), matching prior behavior.
+			finalLedger := turnLedger
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
 			// context.Cause on cancellation so Stop / supersede / expiry are
 			// distinguished:
@@ -877,15 +896,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				switch {
 				case errors.Is(terr, errTurnSuperseded):
 					if content := strings.TrimSpace(reply); content != "" {
-						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning)
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning, finalLedger)
 					}
 				case errors.Is(terr, errUserStop):
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning)
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning, finalLedger)
 				default:
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, terr.Error(), reasoning)
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, terr.Error(), reasoning, finalLedger)
 				}
 			} else {
-				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
+				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
 			}
 			close(streamEventCh)
 		}()
@@ -895,7 +914,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		releaseTurn()
 		s.hubs.remove(convID)
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
-			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{})
+			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{}, nil)
 		close(streamEventCh)
 	}
 
@@ -1197,6 +1216,13 @@ type turnCollectOpts struct {
 	// upserts the complete reply over the partial row. Nil when the dispatch
 	// path has no partial mirror (e.g. the no-serve fast-fail).
 	onPartial func(text string, reasoning []string)
+	// ledger is the turn's live tool ledger: tool starts/resolutions recorded
+	// by the drain loop as they happen. Shared across re-attach attempts (the
+	// pointer survives the collector loop) so serve loss never drops tool
+	// history; the partial mirror snapshots it and the finalize persists it
+	// terminally. Nil-safe (methods tolerate a nil receiver); the collector
+	// lazy-inits it when the dispatch path did not provide one (unit tests).
+	ledger *toolLedger
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1249,6 +1275,12 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	sid = c.sessionID
 	system := c.reuseSystem
 	recreated := false
+	// The live tool ledger survives re-attach attempts (one pointer shared by
+	// every attempt of this turn) so serve loss mid-tool never drops tool
+	// history. Lazy-init covers direct collector tests that build opts by hand.
+	if c.ledger == nil {
+		c.ledger = newToolLedger()
+	}
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
 	// session is healed once (or a small bound) instead of looping.
@@ -1712,6 +1744,14 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				}
 				monitor.observeToolStart(evt.Text)
 				s.turns.markActivity(c.convID, c.token)
+				// Live tool ledger: the call is recorded the moment it is
+				// issued (not at completion) and mirrored immediately, so a
+				// session killed while the tool runs still shows the call.
+				c.ledger.recordStart(evt.Text)
+				if c.onPartial != nil {
+					snapText, snapRsn := mirrorSnapshot()
+					c.onPartial(snapText, snapRsn)
+				}
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
@@ -1811,6 +1851,16 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// the adapter's previously-dropped step_finish is now
 					// recorded. Live-usage-only: no estimated/synthesized usage.
 					s.recordTurnUsage(ctx, c, evt.Part)
+				case "tool_use":
+					// Live tool ledger: a completed tool call resolves the
+					// in-flight entry (arguments backfilled, result appended)
+					// and mirrors immediately — a killed session leaves the
+					// tool activity visible, not just the text.
+					c.ledger.recordResolve(evt.Part)
+					if c.onPartial != nil {
+						snapText, snapRsn := mirrorSnapshot()
+						c.onPartial(snapText, snapRsn)
+					}
 				}
 			}
 		}
@@ -1899,7 +1949,7 @@ func toTurnInt64(v any) int64 {
 // It runs on the detached context (never the request's). Fail-safe: if the
 // conversation was deleted while the turn ran, the write is skipped (no
 // orphan row).
-func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string) {
+func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string, ledger *toolLedger) {
 	if s.pool == nil {
 		return
 	}
@@ -1922,14 +1972,20 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 		s.log.Info("conversation gone, dropping turn reply", "conversation", convID)
 		return
 	}
+	// The live tool ledger is snapshotted with the terminal reply: the same
+	// tx carries text + reasoning + tool activity, so a crash lands the full
+	// turn atomically and the finalize's overwrite can never resurrect a
+	// stale partial's tool columns (the UpsertMessage conflict clause
+	// overwrites them with this snapshot).
+	ledgerCalls, ledgerResults := ledger.snapshot()
 	assistantMsg := db.MessageRow{
 		ID:             assistantMsgID,
 		TenantID:       tenantID,
 		ConversationID: convID,
 		Role:           "assistant",
 		Content:        content,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
+		ToolCalls:      ledgerCalls,
+		ToolResults:    ledgerResults,
 		Attachments:    []byte("[]"),
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,
@@ -1951,7 +2007,7 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 // assistant message id (best-effort, its own tiny tenant tx so the collector's
 // hot loop never blocks on the DB). Only visible while the turn is in flight:
 // the finalize (persistConversationReply) upserts the complete reply over it.
-func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string) {
+func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string, ledger *toolLedger) {
 	if s.pool == nil {
 		return
 	}
@@ -1962,14 +2018,15 @@ func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, as
 		return
 	}
 	defer ttx.Rollback(ctx)
+	ledgerCalls, ledgerResults := ledger.snapshot()
 	if _, err := db.UpsertMessage(ctx, ttx.Tx, db.MessageRow{
 		ID:             assistantMsgID,
 		TenantID:       tenantID,
 		ConversationID: convID,
 		Role:           "assistant",
 		Content:        content,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
+		ToolCalls:      ledgerCalls,
+		ToolResults:    ledgerResults,
 		Attachments:    []byte("[]"),
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,

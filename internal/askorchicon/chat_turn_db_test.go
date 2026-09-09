@@ -151,7 +151,7 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 
 	// No reply events are fed — the stall monitor trips, aborts the session,
 	// and persists a clear retryable error (not a 30-minute timeout wait).
-	msg := waitForMessage(t, pool, convID, ackID)
+	msg := waitForErrorMessage(t, pool, convID, ackID)
 	if msg.Role != "assistant" {
 		t.Fatalf("acked message role = %q, want assistant", msg.Role)
 	}
@@ -199,7 +199,7 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	msg := waitForMessage(t, pool, convID, ackID)
+	msg := waitForErrorMessage(t, pool, convID, ackID)
 	var meta map[string]any
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
@@ -305,7 +305,32 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	}
 }
 
-// waitForMessage polls for a message by id and returns it.
+// waitForErrorMessage polls for a message by id until its metadata carries
+// an error, then returns it. Plain waitForMessage returns the FIRST sighting
+// of the row — which, since the live tool ledger mirrors tool activity into
+// the row mid-turn, may be a partial without the terminal error. Error-path
+// tests must use this helper so they assert the finalize, not the mirror.
+func waitForErrorMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		for _, m := range listMessages(t, pool, convID) {
+			if m.ID == id {
+				var meta map[string]any
+				if err := json.Unmarshal(m.Metadata, &meta); err == nil {
+					if _, isErr := meta["error"]; isErr {
+						return m
+					}
+				}
+			}
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("error message %s never persisted", id)
+		}
+	}
+}
 func waitForMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
