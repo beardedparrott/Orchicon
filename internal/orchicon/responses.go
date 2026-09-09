@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -75,7 +76,14 @@ type respInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
+	// Output is a REQUIRED field on function_call_output items (the
+	// Responses provider rejects a call without it as "missing required
+	// field `output`" — observed on a mid-session provider switch onto a
+	// muse-spark model where a prior tool round returned empty content).
+	// Never omitempty: an empty output must still be sent, and we default
+	// an empty string to a neutral placeholder so the field is always
+	// present.
+	Output string `json:"output"`
 }
 
 type respToolDef struct {
@@ -109,11 +117,23 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 		switch m.Role {
 		case RoleTool:
 			// Tool results are top-level function_call_output items —
-			// never nested in a message content array.
+			// never nested in a message content array. The `output` field
+			// is REQUIRED by the Responses provider; an empty tool result
+			// (a call that returned no text, or a cross-provider replayed
+			// history where a prior wire produced an empty result) must
+			// still carry a present output or the provider rejects the
+			// turn with `missing required field "output"`.
 			for _, c := range m.Content {
 				if c.ToolResult != nil {
+					out := c.ToolResult.Content
+					if out == "" {
+						// Neutral placeholder — never an empty/absent field.
+						out = "(empty result)"
+					} else if c.ToolResult.IsError {
+						out = "ERROR: " + out
+					}
 					rr.Input = append(rr.Input, respInputItem{
-						Type: "function_call_output", CallID: c.ToolResult.ToolCallID, Output: c.ToolResult.Content,
+						Type: "function_call_output", CallID: c.ToolResult.ToolCallID, Output: out,
 					})
 				}
 			}
@@ -193,7 +213,24 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 // StreamTurn streams one turn on the Responses wire. Pre-stream failures
 // retry per the policy; mid-stream failures surface as StreamError + error.
 func (c *ResponsesClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
-	body, err := json.Marshal(buildResponsesRequest(req))
+	rr := buildResponsesRequest(req)
+	// Wire diagnostic (2026-09-09 follow-up no-tools repro): log the
+	// EXACT outgoing request shape (model, input item count, tools count,
+	// last input item type) so a text-only reply can be attributed to the
+	// provider vs the request builder. Emitted through the standard logger
+	// (stdout → docker logs / container.sh logs) at Info level — one line
+	// per Responses turn, negligible in prod, essential for the repro.
+	{
+		var lastT, lastRole string
+		if n := len(rr.Input); n > 0 {
+			lastT = rr.Input[n-1].Type
+			lastRole = rr.Input[n-1].Role
+		}
+		slog.Info("orchicon responses request",
+			"model", rr.Model, "input_items", len(rr.Input), "tools", len(rr.Tools),
+			"last_type", lastT, "last_role", lastRole)
+	}
+	body, err := json.Marshal(rr)
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal responses request: %w", c.label(), err)
 	}
@@ -249,19 +286,19 @@ func (c *ResponsesClient) requestHeaders(sessionID string) map[string]string {
 // --- SSE decoding -------------------------------------------------------------
 
 type respUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
 	InputTokensDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
 }
 
 type respEvent struct {
-	Type        string         `json:"type"`
-	Delta       respDelta      `json:"delta"`
-	Text        string         `json:"text"`
-	ItemID      string         `json:"item_id"`
-	OutputIndex int            `json:"output_index"`
+	Type        string    `json:"type"`
+	Delta       respDelta `json:"delta"`
+	Text        string    `json:"text"`
+	ItemID      string    `json:"item_id"`
+	OutputIndex int       `json:"output_index"`
 	Item        *struct {
 		Type      string `json:"type"`
 		ID        string `json:"id"`
@@ -271,9 +308,9 @@ type respEvent struct {
 		Text      string `json:"text"`
 	} `json:"item"`
 	Response *struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-		Usage  *respUsage `json:"usage"`
+		ID                string     `json:"id"`
+		Status            string     `json:"status"`
+		Usage             *respUsage `json:"usage"`
 		IncompleteDetails *struct {
 			Reason string `json:"reason"`
 		} `json:"incomplete_details"`
@@ -343,7 +380,7 @@ type responsesStream struct {
 	// reasoning_text.done frame — feeding it too duplicates the whole
 	// reply (and re-splits inline reasoning into text). Done frames are
 	// only used for gateways that emit done WITHOUT deltas.
-	sawTextDelta     map[int]bool
+	sawTextDelta      map[int]bool
 	sawReasoningDelta map[int]bool
 
 	// think splits INLINE reasoning (the "think" tag pair inside a

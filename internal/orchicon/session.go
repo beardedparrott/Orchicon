@@ -93,7 +93,7 @@ type Session struct {
 	// worker's tools. The decision-signal gate (ORCHICON WORKER SUMMARY) is
 	// disabled — a follow-up answers a question, it does not complete a
 	// worker run.
-	followUp       bool
+	followUp         bool
 	followUpQuestion string
 	// completionProbesSent counts the completion-probe interjections this
 	// session has sent (decision-signal guard, completion.go). Bounded by
@@ -413,6 +413,11 @@ func (s *Session) SetContinuation(path string) {
 // it is appended as the user message after the prior transcript is
 // replayed, and the decision-signal gate is disabled so the session
 // answers the question instead of demanding a worker summary sign-off.
+// The user's message is used verbatim — no injected framing preamble
+// (the 2026-09-09 'CONTINUATION INSTRUCTION' prefix was removed: it did
+// not help and added noise; the real follow-up fix is bounded replay, not
+// prompt rewording). The thread stays open: every reply is a valid turn
+// the user can build on with the next message.
 func (s *Session) SetFollowUp(question string) {
 	s.followUp = true
 	s.followUpQuestion = question

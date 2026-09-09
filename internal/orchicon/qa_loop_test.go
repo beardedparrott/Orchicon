@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -566,6 +567,14 @@ func TestQAContinueSessionIdentityVerified(t *testing.T) {
 	if reply != "" {
 		t.Fatalf("reply = %q, want empty (async — reply flows via transcript)", reply)
 	}
+	// Fire-and-forget follow-up: wait for the async session to finish so
+	// t.TempDir() cleanup never races a still-writing session (the
+	// "directory not empty" flake under the full suite).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && prov.requestCount() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
 	// No-identity transcript refused.
 	p2 := filepath.Join(dir, "noid.jsonl")
 	tr2, _ := openTranscript(p2)
@@ -721,5 +730,128 @@ func TestQASetContinuationRefusesCrossWorker(t *testing.T) {
 	execDiff.WorkerID = "worker_B"
 	if err := verifyContinuationIdentity(path, execDiff); err == nil {
 		t.Error("cross-worker continuation must be refused")
+	}
+}
+
+// 2026-09-09 follow-up swallow regression (exec
+// 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up that settles StopStop with NO
+// substance (no tool calls, no meaningful text — just one line and stop)
+// must NOT settle as a hollow "done". It is probed (bounded) so the model
+// is asked to actually answer; a substantive reply (tool work or real
+// text) settles directly.
+
+// 2026-09-09 follow-up thread semantics (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
+// a follow-up is a CONVERSATION TURN, not a completion. There is NO
+// substance heuristic and NO completion probe for follow-ups: every reply
+// (short, long, empty, tool-driven) is a legitimate turn the user can
+// build on with the next message, and the thread stays open via the
+// durable session. A follow-up never fires a re-terminalizing verdict on
+// the execution (already terminal from the main run); it reports to the
+// follow-up callbacks and returns so the next ContinueSession continues
+// the same thread.
+func TestQAFollowUpOpenThreadAnyReplySettles(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// The reported repro: a one-line reply with no tools and no
+		// summary. This is a VALID conversation turn — the thread stays
+		// open; the user keeps asking on the same session.
+		{events: []Event{TextDelta{Text: "Opening the PR against develop and merging now."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 4, OutputTokens: 12}},
+	}}
+	s := qaSession(t, prov, nil)
+	s.SetFollowUp("Where did you get that devops handles the PR step?")
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	// Exactly one provider turn (no probe), OnResult fires (so the
+	// bridge's reply/empty checks work), and the reply is delivered.
+	if got := prov.requestCount(); got != 1 {
+		t.Errorf("StreamTurn calls = %d, want 1 (no probe — a follow-up reply is a valid turn)", got)
+	}
+	if len(results) != 1 || !results[0].succeeded {
+		t.Fatalf("OnResult = %+v, want a single success (follow-up callback contract)", results)
+	}
+	if !strings.Contains(results[0].output, "Opening the PR") {
+		t.Errorf("reply not delivered: %q", results[0].output)
+	}
+}
+
+// An EMPTY follow-up reply (provider stopped with no text and no tools)
+// is also a valid (empty) turn — the thread stays open; the bridge
+// surfaces an explicit 'no response — retry' hint rather than a hollow
+// success or a dead thread. No probe is fired.
+func TestQAFollowUpEmptyReplyThreadStaysOpen(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 3, OutputTokens: 0}},
+	}}
+	s := qaSession(t, prov, nil)
+	s.SetFollowUp("still there?")
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// One provider turn, no probe fired — the follow-up turn itself is
+	// the whole exchange; the conversation remains open for the next one.
+	if got := prov.requestCount(); got != 1 {
+		t.Errorf("StreamTurn calls = %d, want 1 (no probe on an empty follow-up reply)", got)
+	}
+}
+
+// 2026-09-09 bounded-replay regression (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
+// a follow-up replayed the ENTIRE prior run's transcript — tool outputs up
+// to 128 KiB each live-capped, replayed UNcapped → ~600KB / ~150K tokens of
+// history, which free models cannot handle (text-only or empty replies,
+// the observed "one line then nothing" follow-up behavior). Replay now
+// applies a much smaller per-result cap (capReplayToolOutput) so a long
+// run's history stays proportional.
+func TestReplayCapsToolOutputs(t *testing.T) {
+	big := strings.Repeat("x", replayToolOutputCap*3) // ~18 KiB
+	s := qaSession(t, &mockProvider{turns: []scriptedTurn{{
+		events: []Event{TextDelta{Text: "done"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 1, OutputTokens: 1},
+	}}}, nil)
+	// Replay a tool_result with a huge output, as the loop would on follow-up.
+	s.replay([]replayEvent{
+		{Type: TransToolCall, Data: json.RawMessage(`{"text":"tooling","tool_calls":[{"Index":0,"ToolCallID":"c1","Name":"bash","ArgsJSON":"{\"command\":\"x\"}"}]}`)},
+		{Type: TransToolResult, Data: json.RawMessage(`{"tool_call":{"Index":0,"ToolCallID":"c1","Name":"bash"},"output":"` + big + `"}`)},
+	})
+	if len(s.history) != 2 {
+		t.Fatalf("history = %d messages, want 2 (tool_use + tool_result)", len(s.history))
+	}
+	// The tool_result's content must be capped to <= replayToolOutputCap.
+	tr := s.history[1].Content[0].ToolResult
+	if tr == nil {
+		t.Fatal("history[1] is not a tool_result")
+	}
+	if len(tr.Content) >= len(big) {
+		t.Fatalf("tool result content = %d bytes, want it capped below the raw %d", len(tr.Content), len(big))
+	}
+	if !strings.Contains(tr.Content, "output truncated by Orchicon") {
+		t.Fatalf("capped content missing the truncation marker: %q", tr.Content[:40])
+	}
+}
+
+// 2026-09-09 follow-up contract regression: a follow-up session's system
+// prompt MUST carry the follow-up overlay (the standing worker contract
+// says "no human, work autonomously", which made the model answer every
+// follow-up with one acknowledgment line and no tool calls). A normal
+// session must NOT carry it.
+func TestFollowUpSystemOverlay(t *testing.T) {
+	s := qaSession(t, &mockProvider{turns: []scriptedTurn{}}, nil)
+	normal := s.AssembleSystem()
+	for _, b := range normal {
+		if strings.Contains(b.Text, "Follow-up mode") {
+			t.Fatalf("non-follow-up session must not carry the follow-up overlay")
+		}
+	}
+	s.SetFollowUp("open the PR")
+	follow := s.AssembleSystem()
+	found := false
+	for _, b := range follow {
+		if strings.Contains(b.Text, "Follow-up mode") && strings.Contains(b.Text, "use your tools") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("follow-up session system prompt missing the followUpSystemOverlay (blocks = %d)", len(follow))
 	}
 }

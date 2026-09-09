@@ -467,8 +467,20 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 				continue
 			}
 			// Follow-up mode: a follow-up answers a question; it does NOT
-			// complete a worker run, so the decision-signal gate is
-			// bypassed — the model's StopStop settles the turn directly.
+			// complete a worker run, so there is NO completion contract
+			// here — no decision-signal gate, no substance heuristic, no
+			// probe. Every reply (short or long) is a legitimate turn of a
+			// continuing conversation: the thread lives on the SESSION
+			// (the durable transcript), so the user can keep asking
+			// follow-ups and prior executions stay answerable. We still
+			// fire the terminal OnResult to the follow-up callbacks so the
+			// bridge's reply/empty checks work — but this is a no-op
+			// callback that NEVER re-terminals the execution row (the
+			// execution is already terminal from the main run; the
+			// follow-up merely appends to the shared session). The prior
+			// bug (2026-09-09, exec 01M23KR5AAR2GQXS42XSZBZ5QX) was not
+			// the OnResult — it was the probe/substance heuristic closing
+			// the thread; that is gone.
 			if s.followUp {
 				_ = s.markState(ctx, "done")
 				_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
@@ -1068,7 +1080,22 @@ func (s *Session) replay(evs []replayEvent) {
 			_ = json.Unmarshal(e.Data, &d)
 			merged := Message{Role: RoleTool}
 			merged.Content = append(merged.Content, Content{
-				ToolResult: &ContentToolResult{ToolCallID: d.ToolCall.ToolCallID, Content: d.Output, IsError: d.Err != ""},
+				ToolResult: &ContentToolResult{
+					ToolCallID: d.ToolCall.ToolCallID,
+					// Replay-time cap (2026-09-09 follow-up bloat fix, exec
+					// 01M23KR5AAR2GQXS42XSZBZ5QX): a tool result is capped
+					// at LIVE-time (capToolOutput, maxToolOutputBytes) but
+					// replay feeds the transcript's RAW output back
+					// UNcapped — a long run's tool outputs (each up to
+					// 128 KiB, ~50+ calls) replayed wholesale into a
+					// follow-up = 600KB / ~150K tokens of history, which
+					// free models can't handle (they reply text-only or
+					// nothing, exactly the observed follow-up failure).
+					// Apply the SAME cap on replay so follow-up context
+					// stays proportional. The marker tells the model to
+					// do a targeted read if it needs the full tail.
+					Content: capReplayToolOutput(d.Output), IsError: d.Err != "",
+				},
 			})
 			s.history = append(s.history, merged)
 		}
@@ -1172,11 +1199,28 @@ func mustJSON(v any) string {
 
 // capToolOutput truncates a tool result to maxToolOutputBytes keeping the
 // head + truncation marker (parity with opencode's capToolOutput).
-func capToolOutput(s string) string {
-	if maxToolOutputBytes < 1 || len(s) <= maxToolOutputBytes {
+func capToolOutput(s string) string { return capToolOutputAt(s, maxToolOutputBytes) }
+
+// replayToolOutputCap is the per-tool-result cap applied when a prior
+// session's transcript is REPLAYED into a follow-up (bounded-replay fix,
+// 2026-09-09). The live cap (maxToolOutputBytes, 128 KiB) is for the
+// working context the model is actively using; replaying an entire run's
+// tool outputs at 128 KiB each into a follow-up produced ~600KB / ~150K
+// tokens of history, which free models cannot handle (text-only or empty
+// replies). Follow-up context only needs the HEAD of each prior tool
+// result — the model re-reads/targets when it needs more. 6 KiB ≈ 1.5K
+// tokens per result keeps a long run's replay proportional.
+const replayToolOutputCap = 6 * 1024
+
+// capReplayToolOutput truncates a prior tool result for follow-up replay.
+func capReplayToolOutput(s string) string { return capToolOutputAt(s, replayToolOutputCap) }
+
+// capToolOutputAt truncates s to cap bytes keeping the head + marker.
+func capToolOutputAt(s string, cap int) string {
+	if cap < 1 || len(s) <= cap {
 		return s
 	}
-	head := maxToolOutputBytes - len(toolOutputTruncatedMarker)
+	head := cap - len(toolOutputTruncatedMarker)
 	if head < 1 {
 		head = 1
 	}
