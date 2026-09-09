@@ -99,18 +99,27 @@ type Session struct {
 	// session has sent (decision-signal guard, completion.go). Bounded by
 	// completionProbeMaxTurns — a session that cannot deliver its
 	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
-	// instead of recording a hollow success.
+	// instead of recording a hollow success. 2026-09-09 probe-loop fix:
+	// this budget NEVER resets on chatter (a bare status-line reply does
+	// not count as answering); it resets ONLY on the WORKING token, the
+	// probe's explicit mid-task continue answer (nudgeObserved).
 	completionProbesSent int
 	// completionProbeAwaiting marks a completion probe whose reply has NOT
 	// arrived yet (2026-09-09 liveness-kill parity fix with the opencode
-	// adapter). Set when a probe is interjected; cleared on ANY model
-	// activity (nudgeObserved — text/reasoning deltas). The budget check
-	// only counts a probe when the PREVIOUS one was answered (or none is
-	// outstanding): a model that answers a probe with a status line and
-	// keeps working must never be failed for a second slot it was still
-	// owed. Without this, a reply-to-probe that wasn't the summary burned
-	// the whole 2-probe budget inside seconds (the kill transcripts).
+	// adapter). Set when a probe is interjected; cleared ONLY when the
+	// reply ANSWERS the probe — the decision marker or the WORKING token
+	// (nudgeObserved + completionProbeReply). A bare status-line reply
+	// (the 15-probe loop in transcript 01M23C2MTF1ZYYHE8ACK17PMKV) is not
+	// an answer: the awaiting flag stays set and the budget counts the
+	// probe, so the loop is bounded by completionProbeMaxTurns.
 	completionProbeAwaiting bool
+	// completionProbeSawReply records that at least one NON-EMPTY turn
+	// streamed since the outstanding probe was sent but did NOT answer it
+	// (a bare status line). The gate uses it to distinguish "the provider
+	// returned an empty turn — the reply has not arrived, defer and
+	// re-queue" from "the model already replied with a non-answer — spend
+	// the budget slot and bound the probe loop".
+	completionProbeSawReply bool
 	// completionProbeDeferrals bounds the consecutive unanswered-probe
 	// deferrals (runCompletionProbe): an EMPTY provider turn for a probe
 	// (zero deltas → immediate StopStop) clears nothing, so the defer path

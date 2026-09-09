@@ -38,14 +38,86 @@ const decisionMarker = "ORCHICON WORKER SUMMARY:"
 // the correct owner of a missing signal, never a hollow success.
 const completionProbeMaxTurns = 2
 
+// probeReplyKind classifies the model's reply to a completion probe.
+const (
+	// probeReplyNone — no answer to the probe in the output.
+	probeReplyNone = iota
+	// probeReplySummary — the output carries a REAL decision marker.
+	probeReplySummary
+	// probeReplyWorking — the reply is (contains) the literal WORKING
+	// token: the model's explicit "still working, leave me alone" answer.
+	probeReplyWorking
+)
+
+// probeWorkingToken is the literal single-word answer the completion probe
+// offers a still-working model: reply WORKING and you will be left alone
+// to continue. Checked as a token (word-bounded, case-insensitive) so a
+// word like "networking" or a phrase containing "working on it" does NOT
+// match — only the standalone token does.
+const probeWorkingToken = "working"
+
+// completionProbeReply classifies whether the session output ANSWERS a
+// completion probe. Returns (probeReplySummary, idx>=0) when a real
+// ORCHICON WORKER SUMMARY marker is present, (probeReplyWorking, idx>=0)
+// when the probe reply is the WORKING token, and (probeReplyNone, -1)
+// otherwise (including bare status lines — those are NOT answers; see the
+// 2026-09-09 probe-loop incident). The WORKING token is only credited when
+// it appears AFTER the probe was sent — implemented by the caller passing
+// the probe-time output; here it is checked anywhere in the tail, because
+// the probe reply is by construction the LAST turn's output.
+func completionProbeReply(output string) (int, int) {
+	if idx := realDecisionMarkerIn(output); idx >= 0 {
+		return probeReplySummary, idx
+	}
+	// WORKING token: word-bounded scan of the output tail (the probe
+	// reply is the latest turn; earlier turns may legitimately contain the
+	// word, so only the last ~200 chars are considered).
+	tail := output
+	if len(tail) > 200 {
+		tail = tail[len(tail)-200:]
+	}
+	lower := strings.ToLower(tail)
+	search := 0
+	for search < len(lower) {
+		at := strings.Index(lower[search:], probeWorkingToken)
+		if at < 0 {
+			break
+		}
+		at += search
+		before := byte(' ')
+		if at > 0 {
+			before = lower[at-1]
+		}
+		after := byte(' ')
+		if at+len(probeWorkingToken) < len(lower) {
+			after = lower[at+len(probeWorkingToken)]
+		}
+		isBoundary := func(b byte) bool {
+			return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '.' || b == ',' || b == '!' || b == '?' || b == '"' || b == '\'' || b == '*' || b == '`' || b == '_' || b == '-' || b == ':' || b == ';'
+		}
+		if isBoundary(before) && isBoundary(after) {
+			return probeReplyWorking, at
+		}
+		search = at + len(probeWorkingToken)
+	}
+	return probeReplyNone, -1
+}
+
 // completionProbeText mirrors the opencode completion probe (opencode
-// session_run.go completionProbeText): do not restart work; deliver the
-// final summary now.
+// session_run.go completionProbeText). 2026-09-09 probe-loop incident: the
+// old "report your current status and then continue" phrasing made
+// mid-work models reply with a bare status line (no marker), which re-armed
+// the probe instantly — an infinite probe loop that never let the worker
+// start (transcripts: 15 "I need to re-sync" replies, zero tool calls). The
+// probe now DEMANDS the marker in the next response: the only acceptable
+// answers are the summary itself or the literal WORKING token (a real
+// continue turns into tool work, which re-enters the normal loop and
+// delivers the marker when it finishes).
 const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
-	"Please do not restart your work. " +
-	"If you have finished your task, reply with your final summary exactly in this form: " +
-	"ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>). " +
-	"If you are still working, report your current status and then continue, and be sure to end with your ORCHICON WORKER SUMMARY when done."
+	"Please do not restart your work and do NOT reply with a status update. " +
+	"Your NEXT reply must be one of exactly two things: " +
+	"(1) your final summary, in this form: ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>), or " +
+	"(2) the single word WORKING (nothing else) if you still have work to do — you will then be left alone to continue working."
 
 // placeholderMarkerBody reports whether the text following an
 // ORCHICON WORKER SUMMARY marker is a doc/plan placeholder ("success — <summary>",
@@ -126,7 +198,16 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 	// burn budget #2 or fail outright for a response that had not yet
 	// arrived. Parity with the opencode cooldown-wait fix
 	// (completionProbeDecision).
-	if s.completionProbeAwaiting {
+	//
+	// 2026-09-09 probe-loop fix: a NON-EMPTY turn that streamed since the
+	// probe but did not answer it (a bare status line — transcript
+	// 01M23C2MTF1ZYYHE8ACK17PMKV) is NOT "still waiting". Falling into the
+	// defer branch there looped the probe (re-queue → new status line →
+	// defer → …) without ever spending budget. When SawReply is set the
+	// gate FALLS THROUGH to the budget check: the non-answer spends the
+	// slot, so after completionProbeMaxTurns probes the session fails
+	// honestly instead of probing forever.
+	if s.completionProbeAwaiting && !s.completionProbeSawReply {
 		s.log.Info("native completion probe still awaiting a reply — deferring, not spending budget",
 			"execution", s.id, "probes", s.completionProbesSent, "max", completionProbeMaxTurns)
 		// Bound the deferral: the probe reply usually lands as deltas
@@ -163,6 +244,8 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 	}
 	s.completionProbesSent++
 	s.completionProbeAwaiting = true
+	s.completionProbeSawReply = false
+	s.completionProbeDeferrals = 0
 	s.appendUser(TransUserMessage, completionProbeText, "completion_probe")
 	if err := s.transcript.Append(TransUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"}); err != nil {
 		// Transcript failure: fail the execution with the underlying error —

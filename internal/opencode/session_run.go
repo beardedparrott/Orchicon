@@ -522,6 +522,68 @@ func realDecisionMarkerIn(output string) int {
 	return -1
 }
 
+// probeReplyKind classifies the model's reply to a completion probe.
+// 2026-09-09 probe-loop parity with the native adapter
+// (internal/orchicon/completion.go completionProbeReply).
+const (
+	// probeReplyNone — no answer to the probe in the output (a bare
+	// status-line reply is NOT an answer: it must not reset the probe
+	// budget, otherwise the probe re-arms instantly and the model is
+	// trapped answering probes forever — transcript 01M23C2MTF1ZYYHE8ACK17PMKV).
+	probeReplyNone = iota
+	// probeReplySummary — the output carries a REAL decision marker.
+	probeReplySummary
+	// probeReplyWorking — the reply contains the standalone WORKING token:
+	// the model's explicit "still working, leave me alone" answer.
+	probeReplyWorking
+)
+
+// probeWorkingToken is the literal single-word answer the completion probe
+// offers a still-working model. Word-bounded so "networking" never matches.
+const probeWorkingToken = "working"
+
+// completionProbeReply classifies whether the session output ANSWERS a
+// completion probe: (probeReplySummary, idx>=0) for a real marker,
+// (probeReplyWorking, idx>=0) for the standalone WORKING token, and
+// (probeReplyNone, -1) otherwise.
+func completionProbeReply(output string) (int, int) {
+	if idx := realDecisionMarkerIn(output); idx >= 0 {
+		return probeReplySummary, idx
+	}
+	// WORKING token: word-bounded scan of the output TAIL only (the probe
+	// reply is by construction the latest turn; earlier turns may
+	// legitimately contain the word).
+	tail := output
+	if len(tail) > 200 {
+		tail = tail[len(tail)-200:]
+	}
+	lower := strings.ToLower(tail)
+	search := 0
+	for search < len(lower) {
+		at := strings.Index(lower[search:], probeWorkingToken)
+		if at < 0 {
+			break
+		}
+		at += search
+		before := byte(' ')
+		if at > 0 {
+			before = lower[at-1]
+		}
+		after := byte(' ')
+		if at+len(probeWorkingToken) < len(lower) {
+			after = lower[at+len(probeWorkingToken)]
+		}
+		isBoundary := func(b byte) bool {
+			return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '.' || b == ',' || b == '!' || b == '?' || b == '"' || b == '\'' || b == '*' || b == '`' || b == '_' || b == '-' || b == ':' || b == ';'
+		}
+		if isBoundary(before) && isBoundary(after) {
+			return probeReplyWorking, at
+		}
+		search = at + len(probeWorkingToken)
+	}
+	return probeReplyNone, -1
+}
+
 // completionProbeText is sent on session.idle when the worker's turn ended
 // WITHOUT the decision marker — e.g. the final model response was truncated
 // mid-stream (a step_finish with reason "unknown"/0 tokens), so the worker
@@ -529,10 +591,10 @@ func realDecisionMarkerIn(output string) int {
 // the (still-live) session to finish the signal instead of recording a
 // hollow success; a session that still cannot produce the marker fails.
 const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
-	"Please do not restart your work. " +
-	"If you have finished your task, reply with your final summary exactly in this form: " +
-	"ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>). " +
-	"If you are still working, report your current status and then continue, and be sure to end with your ORCHICON WORKER SUMMARY when done."
+	"Please do not restart your work and do NOT reply with a status update. " +
+	"Your NEXT reply must be one of exactly two things: " +
+	"(1) your final summary, in this form: ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>), or " +
+	"(2) the single word WORKING (nothing else) if you still have work to do — you will then be left alone to continue working."
 
 // streamRetryText is the short continue-turn re-prompt for a stream-drop
 // retry (Tier B). The partial turn's parts are already in the transcript,
@@ -787,7 +849,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		} else if t != "" {
 			r.observeToolEnd()
 		}
-	// Folded-think segmentation (think_demux.go): a completed text part
+		// Folded-think segmentation (think_demux.go): a completed text part
 		// carrying a GLM-style inline think block must not reach the output
 		// accumulator, the live UI, or the durable transcript verbatim.
 		// Strip the blocks BEFORE parseEvent so all three see clean text,
@@ -955,14 +1017,21 @@ func (r *sessionRun) resolveProbe() {
 	r.probePending = false
 	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
-	// 2026-09-09 liveness-kill fix: the nudge/completion-probe budget
-	// counts CONSECUTIVE UNANSWERED probes, not lifetime probes. A probe
-	// that got a reply is ANSWERED — the model is provably alive — so its
-	// budget slot is returned. Without this, a model that answers probe #1
-	// with a status line and keeps working burned the whole budget inside
-	// seconds and was failed mid-stream (the kill transcripts: 2 probes +
-	// instant fail in ~11s / 54s on actively-streaming sessions).
-	r.nudgesSent = 0
+	// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
+	// native parity): the budget does NOT reset on mere activity. The old
+	// version reset nudgesSent on ANY reply, so a model that answered each
+	// probe with a bare status line re-armed the probe forever — the
+	// worker never started (15 probes in ~50s, zero tool calls). Now only
+	// a REAL ANSWER resets the budget: the decision marker, or the
+	// WORKING token (the probe's explicit mid-task continue, which disarms
+	// the gate so the model can work and deliver the marker later). A
+	// status-line reply keeps the budget spent → after nudgeMax probes the
+	// session fails honestly instead of looping probes forever.
+	if kind, idx := completionProbeReply(r.output.String()); kind != probeReplyNone && idx >= 0 {
+		if kind == probeReplySummary || kind == probeReplyWorking {
+			r.nudgesSent = 0
+		}
+	}
 	revived := r.monitor.revive()
 	r.mu.Unlock()
 	if revived {

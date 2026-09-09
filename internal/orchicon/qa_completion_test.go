@@ -387,43 +387,6 @@ func TestQALegacyCCFlushWithoutFinishYieldsStopOther(t *testing.T) {
 // session that keeps replying keeps streaming (the wall-clock budget
 // ladder, not this gate, bounds a never-delivering session). The mock
 // running OUT OF TURNS while the session is still alive is the proof.
-func TestQADecisionGateProbeReplyResetsBudget(t *testing.T) {
-	prov := &mockProvider{turns: []scriptedTurn{
-		// Turn 1: markerless intro → probe #1 (budget 1/2).
-		{events: []Event{TextDelta{Text: "Starting the work."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
-		// Turn 2: the probe reply — a status line, still no marker. This
-		// reply is activity: it must RESET the outstanding probe + budget,
-		// not fail.
-		{events: []Event{TextDelta{Text: "Still here — resuming to verify state."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 15}},
-		// Turn 3: another markerless settle → probe #2 on a FRESH budget
-		// slot (the reply reset the budget), never an instant
-		// missing_decision_signal failure.
-		{events: []Event{TextDelta{Text: "Working on it."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 150, OutputTokens: 12}},
-		// Turn 4: probe #2's reply (content, still no marker) — resets
-		// again. The loop keeps going as long as the model keeps replying.
-		{events: []Event{TextDelta{Text: "Continuing."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 170, OutputTokens: 10}},
-	}}
-	s := qaSession(t, prov, nil)
-	cb := &recordedCallback{}
-	if err := s.Run(context.Background(), cb); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	_, _, _, _, _, _, results := cb.snapshot()
-	// THE FIX (old buggy path: instant fail on the settle after the
-	// reply, <= 3 provider calls): the model answered probe #1, so the
-	// loop must CONTINUE — turn1 + probe1 + reply + probe2 + reply = 5
-	// provider calls. The only OnResult is the mock running out of
-	// scripted turns (harness boundary) — never the probe gate killing
-	// an alive session.
-	if got := prov.requestCount(); got != 5 {
-		t.Errorf("StreamTurn calls = %d, want 5 (a probe reply must buy another probe, not an instant fail)", got)
-	}
-	for _, r := range results {
-		if strings.Contains(r.errMsg, "missing_decision_signal") {
-			t.Errorf("premature missing_decision_signal kill on a replying session: %q", r.errMsg)
-		}
-	}
-}
 
 // AC (parity): a probe whose provider turn returns EMPTY (zero deltas,
 // immediate StopStop) must not loop forever on the defer path — one
@@ -455,5 +418,107 @@ func TestQADecisionGateEmptyProbeTurnFailsHonestly(t *testing.T) {
 	}
 	if !strings.Contains(results[0].errMsg, "missing_decision_signal") {
 		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
+	}
+}
+
+// AC (2026-09-09 probe-loop fix): a probe reply that is a BARE STATUS LINE
+// (no marker, no WORKING token) is NOT an answer — it must NOT reset the
+// probe budget. The budget counts LIFETIME probes now: intro + probe +
+// status reply + probe + status reply = budget spent → honest
+// completion_probe_no_response failure after exactly 2 probes. This is the
+// regression for the 15-probe / zero-tool-call loop
+// (transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the worker must never be trapped
+// answering probes instead of working.
+func TestQADecisionGateStatusLineReplyDoesNotResetBudget(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: markerless intro → probe #1 (budget 1/2).
+		{events: []Event{TextDelta{Text: "Starting the work."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: probe #1's reply — a bare status line, no marker, no
+		// WORKING token. NOT an answer: the budget stays spent.
+		{events: []Event{TextDelta{Text: "I'll re-sync state before continuing."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 15}},
+		// Turn 3: probe #2 fires (budget 2/2) → its reply is another status
+		// line → budget exhausted → honest failure (never an infinite
+		// probe loop).
+		{events: []Event{TextDelta{Text: "I need to re-sync my state."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 150, OutputTokens: 12}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	// Bounded: call1 = intro turn, probe #1 → call2 = status-line reply
+	// (non-answer, spends the slot), probe #2 → call3 = status-line reply
+	// → budget exhausted → honest failure. (The probe itself is an
+	// interjected history append — it does NOT consume a provider call.)
+	// NEVER an unbounded probe loop.
+	if got := prov.requestCount(); got != 3 {
+		t.Errorf("StreamTurn calls = %d, want 3 (intro + 2 probe-reply cycles, then fail)", got)
+	}
+	if len(results) != 1 || results[0].succeeded {
+		t.Errorf("OnResult = %+v, want honest failure (status-line replies never answer the probe)", results)
+	}
+	if len(results) == 1 && !strings.Contains(results[0].errMsg, "missing_decision_signal") {
+		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
+	}
+}
+
+// AC (2026-09-09 probe-loop fix): the probe's WORKING token IS a valid
+// answer — it disarms the gate (budget reset + awaiting cleared) so the
+// model continues its real work and delivers the marker on a later settle.
+// No kill, no probe spam.
+func TestQADecisionGateWorkingTokenDisarmsGate(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: markerless intro → probe #1.
+		{events: []Event{TextDelta{Text: "Starting the work."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: probe #1's reply is the WORKING token → gate disarmed
+		// (awaiting cleared, budget reset).
+		{events: []Event{TextDelta{Text: "WORKING"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 2}},
+		// Turn 3: the model continues real work and settles markerless →
+		// a fresh probe fires (budget was reset, this is probe #1 again).
+		{events: []Event{TextDelta{Text: "work segment done"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 150, OutputTokens: 10}},
+		// Turn 4: probe's reply carries the REAL marker → success.
+		{events: []Event{TextDelta{Text: "ORCHICON WORKER SUMMARY: success — did the thing"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 170, OutputTokens: 12}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	if len(results) != 1 || !results[0].succeeded {
+		t.Errorf("OnResult = %+v, want success (WORKING disarmed the gate; marker on the final settle)", results)
+	}
+	for _, r := range results {
+		if strings.Contains(r.errMsg, "missing_decision_signal") {
+			t.Errorf("missing_decision_signal after a WORKING answer: %q", r.errMsg)
+		}
+	}
+}
+
+// Unit pins for completionProbeReply classification (probe-loop fix).
+func TestCompletionProbeReplyClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"marker", "text ORCHICON WORKER SUMMARY: success — did it", probeReplySummary},
+		{"working token", "WORKING", probeReplyWorking},
+		{"working token lowercase", "working", probeReplyWorking},
+		{"working with punctuation", "*WORKING*", probeReplyWorking},
+		{"status line is NOT an answer", "I'll re-sync state and continue.", probeReplyNone},
+		{"working embedded in a word", "I am networking with the team.", probeReplyNone},
+		{"empty", "", probeReplyNone},
+		{"placeholder echo is not a real marker", "ORCHICON WORKER SUMMARY: success — <summary>", probeReplyNone},
+	}
+	for _, tc := range cases {
+		got, idx := completionProbeReply(tc.output)
+		if got != tc.want {
+			t.Errorf("completionProbeReply(%q) = kind %d idx %d, want kind %d", tc.output, got, idx, tc.want)
+		}
+		if tc.want == probeReplyNone && idx != -1 {
+			t.Errorf("probeReplyNone must carry idx -1, got %d", idx)
+		}
 	}
 }

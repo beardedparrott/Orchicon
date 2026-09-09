@@ -217,7 +217,8 @@ func TestChatTurnClientFollowUpReusesHistory(t *testing.T) {
 	}
 }
 
-func TestChatTurnClientPreStreamFailure(t *testing.T) {	prov := &chatTestProvider{preErr: errors.New("auth failed")}
+func TestChatTurnClientPreStreamFailure(t *testing.T) {
+	prov := &chatTestProvider{preErr: errors.New("auth failed")}
 	b := newChatBridge(t, prov)
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	sid, _ := b.CreateConversationSession(ctx, "conv-3", "ask-orchicon:conv-3")

@@ -961,3 +961,31 @@ func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
 		t.Fatalf("false positive: hangSends=%d stalls=%v, want 0/empty (no in-flight tool)", hangN, stallList)
 	}
 }
+
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV, native
+// parity): classification pins for completionProbeReply — a bare status
+// line is NOT an answer, the WORKING token is, a real marker is.
+func TestCompletionProbeReplyClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"marker", "text ORCHICON WORKER SUMMARY: success — did it", probeReplySummary},
+		{"working token", "WORKING", probeReplyWorking},
+		{"working token lowercase", "working", probeReplyWorking},
+		{"status line is NOT an answer", "I'll re-sync state and continue.", probeReplyNone},
+		{"working embedded in a word", "I am networking with the team.", probeReplyNone},
+		{"empty", "", probeReplyNone},
+		{"placeholder echo is not a real marker", "ORCHICON WORKER SUMMARY: success — <summary>", probeReplyNone},
+	}
+	for _, tc := range cases {
+		got, idx := completionProbeReply(tc.output)
+		if got != tc.want {
+			t.Errorf("completionProbeReply(%q) = kind %d idx %d, want kind %d", tc.output, got, idx, tc.want)
+		}
+		if tc.want == probeReplyNone && idx != -1 {
+			t.Errorf("probeReplyNone must carry idx -1, got %d", idx)
+		}
+	}
+}

@@ -355,6 +355,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// budget here, so an empty-turn provider looped the probe forever
 		// (caught by TestQADecisionGateEmptyProbeTurnFailsHonestly).
 		if len(text) > 0 || len(toolCalls) > 0 || usage.OutputTokens > 0 {
+			// A non-empty turn that did NOT answer the outstanding probe
+			// (a bare status line) marks SawReply so the gate spends the
+			// budget slot instead of deferring forever (probe-loop fix).
+			s.noteMu.Lock()
+			if s.completionProbeAwaiting {
+				s.completionProbeSawReply = true
+			}
+			s.noteMu.Unlock()
 			s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
 		}
 		if streamErr != nil {
@@ -692,21 +700,41 @@ func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execI
 
 // nudgeObserved marks nudge-reply progress: any text/step activity after
 // a nudge clears the pending probe (the reply IS the liveness evidence).
+//
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the
+// old version reset completionProbesSent on ANY activity, so a model that
+// answered each probe with a bare status line ("I'll re-sync state…")
+// re-armed the probe forever — 15 probes in ~50s, ZERO tool calls, the
+// worker never started. Now:
+//   - completionProbeAwaiting clears only when the reply carries the
+//     decision marker or the WORKING token (completionProbeReply);
+//   - completionProbesSent NEVER resets — a status-line reply counts as
+//     unanswered, so after completionProbeMaxTurns (2) probes the session
+//     fails honestly with completion_probe_no_response (a model trapped
+//     replying-to-probes is burned budget, not a healthy worker);
+//   - the deferral counter still bounds empty-turn loops.
 func (s *Session) nudgeObserved() {
 	s.noteMu.Lock()
 	s.nudgePending = false
-	// Any model activity proves the session is alive and answering — clear
-	// the outstanding completion probe AND RESET THE BUDGET (opencode
-	// resolveProbe parity, 2026-09-09 liveness-kill fix): a probe that got
-	// a reply is ANSWERED, so the probe budget counts CONSECUTIVE
-	// UNANSWERED probes, not lifetime probes. A model that answers probe #1
-	// with a status line and keeps working gets a fresh budget — it is
-	// provably alive; only a session that goes silent through the full
-	// budget is failed (the kill transcripts: 2 probes + instant fail in
-	// ~11s while the model was streaming replies).
-	s.completionProbeAwaiting = false
-	s.completionProbeDeferrals = 0
-	s.completionProbesSent = 0
+	// A completed turn is reply evidence only when it ANSWERS the probe:
+	// the marker (the sign-off) or the WORKING token (an explicit continue).
+	// Any other reply (a bare status line) does NOT clear the awaiting
+	// probe and does NOT reset the budget — the next StopStop re-enters
+	// the gate and the budget counts it, bounding the probe loop.
+	if s.completionProbeAwaiting {
+		if kind, idx := completionProbeReply(s.output.String()); kind != probeReplyNone && idx >= 0 {
+			s.completionProbeAwaiting = false
+			s.completionProbeSawReply = false
+			s.completionProbeDeferrals = 0
+			if kind == probeReplyWorking {
+				// WORKING: the model is mid-task and was told it will be
+				// left alone. Disarm the gate entirely — a real continue
+				// turns into tool work, and the marker arrives when the
+				// work's final turn settles.
+				s.completionProbesSent = 0
+			}
+		}
+	}
 	s.noteMu.Unlock()
 }
 
