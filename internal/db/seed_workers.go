@@ -151,6 +151,12 @@ type cannedWorker struct {
 	// problems). Deleting breaks workflow step refs that point at the old id;
 	// the operator updates those manually.
 	RecreateSlugOwner bool
+	// ConcurrencyLimit caps concurrent executions against this worker's
+	// dispatch. 0 = unlimited (the platform convention in
+	// dispatch_limits.go). Every canned worker seeds 0 (unlimited); carried
+	// into worker_versions.concurrency_limit by the seeder on install and
+	// re-roll so a seeded worker is never accidentally serialized at 1.
+	ConcurrencyLimit int
 	// RollMarker, when set, is an additional per-worker roll-forward key: a
 	// canned worker whose current published agents_md lacks this fragment is
 	// re-synced to its seed definition on boot. Use it for seed changes that
@@ -291,7 +297,7 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 // live published v1 Behavior, so this value is changed to re-roll exactly
 // the Quick worker on next boot; once the new fragment is present the seeder
 // is idempotent again.
-const quickWorkerMarker = "push-only implementer"
+const quickWorkerMarker = "emitting PR_URL + PR_STATE"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -317,8 +323,9 @@ var cannedWorkers = []cannedWorker{
 			"6. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			"## Completion\n" +
 			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green (pre-existing failures remedied by you, per step 5), and pushed; `failure` only if the plan itself proved unimplementable (say exactly where it broke down).",
-		BudgetOverrides: []byte(`{"wall_clock_seconds":3600}`),
-		RollMarker:      preExistingRemedyMarker,
+		BudgetOverrides:  []byte(`{"wall_clock_seconds":3600}`),
+		RollMarker:       preExistingRemedyMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_pr_reviewer",
@@ -344,8 +351,9 @@ var cannedWorkers = []cannedWorker{
 			"- `success` — the change passes as-is, or you fixed the bugs yourself and re-verified (build + code tests green, including any pre-existing failure you remedied yourself). List what you fixed.\n" +
 			"- `failure` — ONLY when you genuinely cannot fix the issue yourself after real attempts. Cite the exact file and line, state exactly what remains broken and what you already tried. Never pass a fixable bug back for someone else to fix — regression/UI testing is the QA Engineer's step, not yours.\n\n" +
 			"A change with only bugs you already fixed is a SUCCESS — do not report failure for what you have already fixed.",
-		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      preExistingRemedyMarker,
+		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
+		RollMarker:       preExistingRemedyMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_qa_engineer",
@@ -373,8 +381,9 @@ var cannedWorkers = []cannedWorker{
 			"- `success` — all acceptance criteria verified, or every finding fixed + re-verified by you, **and the suite you ran is green** (any pre-existing failure you encountered has been remedied by you — fixed, or the test corrected/removed after verification). State your surface-impact determination: what UI you verified, or why no user-visible surface was affected. List what you fixed.\n" +
 			"- `failure` — ONLY when you absolutely cannot fix the problem after exhausting your approaches. Include steps to reproduce and state exactly what you already tried. Never pass a fixable bug back for someone else to fix.\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock,
-		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      preExistingRemedyMarker,
+		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
+		RollMarker:       preExistingRemedyMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_principal_architect",
@@ -402,8 +411,9 @@ var cannedWorkers = []cannedWorker{
 			"- **Numbered step list**: the closing section is a numbered, mechanically executable implementation list the SSE can follow without re-planning. Implementation must be able to start with zero blocking questions.\n\n" +
 			"## Completion\n" +
 			"End with `ORCHICON WORKER SUMMARY: success` once the plan exists with the plan contract satisfied; `failure` only if you could not produce a grounded plan at all. Note where the plan lives and that implementation can start from it.",
-		BudgetOverrides: []byte(`{"wall_clock_seconds":1500}`),
-		RollMarker:      sdlcWorkhorseMarker,
+		BudgetOverrides:  []byte(`{"wall_clock_seconds":1500}`),
+		RollMarker:       sdlcWorkhorseMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_devops_engineer",
@@ -478,6 +488,7 @@ var cannedWorkers = []cannedWorker{
 			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
 			"identify the repo and hand the item to the engineer. " +
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_design_approver",
@@ -505,6 +516,7 @@ var cannedWorkers = []cannedWorker{
 			bt + bt + bt + "\n" +
 			"ORCHICON WORKER SUMMARY: failure — The plan does not meet the bar; it needs another design iteration.\n" +
 			bt + bt + bt,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "w_se_code_approver",
@@ -532,6 +544,7 @@ var cannedWorkers = []cannedWorker{
 			bt + bt + bt + "\n" +
 			"ORCHICON WORKER SUMMARY: failure — The implementation is not done; it needs another iteration.\n" +
 			bt + bt + bt,
+		ConcurrencyLimit: 0,
 	},
 	// ---- Automation Research trio (project-agnostic). These records were
 	// created LIVE during the 2026-08-29 test run of the Automation Research
@@ -563,7 +576,8 @@ var cannedWorkers = []cannedWorker{
 		// adapter segment alone governs dispatch. The former
 		// "orchicon-runtime:web-research" here was an image tag read as an
 		// adapter kind — a dispatch black hole for these canned workers.
-		RollMarker: researchEphemeralMarker,
+		RollMarker:       researchEphemeralMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "01M13DYJWHCYHWQ1X85J1BWWZ1",
@@ -585,7 +599,8 @@ var cannedWorkers = []cannedWorker{
 			researchHygieneBlock,
 		RoleRef: automationResearchRoleID,
 		// runtime_ref retired — see the Planner note above.
-		RollMarker: researchEphemeralMarker,
+		RollMarker:       researchEphemeralMarker,
+		ConcurrencyLimit: 0,
 	},
 	{
 		ID:          "01M13DYM3A7CTY8ECP4R7M33SR",
@@ -612,7 +627,8 @@ var cannedWorkers = []cannedWorker{
 		// so exactly the trio re-rolls for this wording change — the
 		// market-map/rejected-idea content still ships (it re-syncs along
 		// with the refreshed definition).
-		RollMarker: researchEphemeralMarker,
+		RollMarker:       researchEphemeralMarker,
+		ConcurrencyLimit: 0,
 	},
 	// ---- Quick Software Engineer (single-step fast path). The Quick Work
 	// workflow's only task step points at this canned ID; the seeder adopts
@@ -645,11 +661,12 @@ var cannedWorkers = []cannedWorker{
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
 			"## PR handoff (owned by the DevOps Engineer step)\n" +
-			"You do NOT open a pull request and you do not merge — the DevOps Engineer step that follows creates the PR into `develop` and merges it. Push your committed work to origin and stop; the PR/merge is that step's contract, not yours.\n\n" +
+			"Implement, verify the build and tests green, commit to the run branch, and push to origin. Do not open or merge pull requests yourself: the DevOps Engineer step that follows opens the PR into `develop` and merges it (emitting PR_URL + PR_STATE). Push and stop; the PR/merge is that step's contract.\n\n" +
 			"## Completion\n" +
 			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, and pushed (the DevOps Engineer step opens the PR into `develop` and merges); `failure` only if the task proved unimplementable (say exactly where it broke down).",
-		BudgetOverrides: []byte(`{"wall_clock_seconds":2400}`),
-		RollMarker:      quickWorkerMarker,
+		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
+		RollMarker:       quickWorkerMarker,
+		ConcurrencyLimit: 0,
 	},
 }
 
@@ -910,9 +927,9 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				     labels, published_at, created_at)
 				 VALUES ($1, 'tnt_dev', $2, 1, 'Safety context roll-forward', 'published',
 				        '', $3, $4, $5, $6,
-				        '[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', 1, '', '{}',
+				        '[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', $8, '', '{}',
 				        now(), now())`,
-				NewID(), targetID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam,
+				NewID(), targetID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam, w.ConcurrencyLimit,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: rebuild missing version as v1: %w", w.ID, err)
 			}
@@ -959,10 +976,11 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			// v1 is the canonical seed version — sync it in place.
 			if _, err := ttx.Exec(ctx,
 				`UPDATE worker_versions
-				    SET role = $1, skills = $2, behavior = $3, agents_md = $4
-				  WHERE worker_id = $5 AND tenant_id = 'tnt_dev'
+				    SET role = $1, skills = $2, behavior = $3, agents_md = $4,
+				        concurrency_limit = $5
+				  WHERE worker_id = $6 AND tenant_id = 'tnt_dev'
 				    AND version = 1`,
-				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), targetID,
+				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.ConcurrencyLimit, targetID,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: sync v1: %w", w.ID, err)
 			}
@@ -995,11 +1013,13 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				        $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools,
 				        COALESCE(NULLIF($8::jsonb, 'null'::jsonb), budget_overrides),
-				        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+				        execution_policy_ref,
+				        CASE WHEN $9 >= 0 THEN $9 ELSE concurrency_limit END,
+				        recovery_workflow_ref,
 				        labels, now(), now()
 				   FROM worker_versions
 				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
-				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID, budgetParam,
+				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID, budgetParam, w.ConcurrencyLimit,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: roll forward to v%d: %w", w.ID, newVer, err)
 			}
@@ -1224,10 +1244,10 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
 			'',
 			$3, $4, $5, $6,
-			'[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', 1, '', '{}',
+			'[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', $8, '', '{}',
 			now(), now())
 		 ON CONFLICT DO NOTHING`,
-		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam,
+		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), budgetParam, w.ConcurrencyLimit,
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker version: %w", err)
