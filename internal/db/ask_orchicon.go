@@ -219,10 +219,12 @@ func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 }
 
 // UpsertMessage creates a message row under its id or replaces the existing
-// one's content/reasoning/metadata. The running turn's PARTIAL reply is
-// written under the acked assistant message id as it is collected (so a
-// client that lost the live stream can watch it grow via ListMessages); the
-// finalize then upserts the complete reply over the partial. The row is only
+// one's content/reasoning/metadata AND tool ledger (tool_calls/tool_results
+// are part of the conflict overwrite so live tool activity mirrored mid-turn
+// is never resurrected over the terminal snapshot). The running turn's PARTIAL
+// reply is written under the acked assistant message id as it is collected
+// (so a client that lost the live stream can watch it grow via ListMessages);
+// the finalize then upserts the complete reply over the partial. The row is only
 // ever visible while the turn is in flight (its terminal state is written by
 // the finalize).
 func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
@@ -236,7 +238,9 @@ func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 		ON CONFLICT (tenant_id, id) DO UPDATE SET
 			content = EXCLUDED.content,
 			reasoning = EXCLUDED.reasoning,
-			metadata = EXCLUDED.metadata
+			metadata = EXCLUDED.metadata,
+			tool_calls = EXCLUDED.tool_calls,
+			tool_results = EXCLUDED.tool_results
 		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at`
 	row := m
 	err := tx.QueryRow(ctx, q, m.ID, m.TenantID, m.ConversationID, m.Role, m.Content,

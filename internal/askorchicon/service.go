@@ -930,9 +930,60 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 		Role:           r.Role,
 		Content:        r.Content,
 		Reasoning:      r.Reasoning,
+		ToolCalls:      toolCallsFromJSON(r.ToolCalls),
+		ToolResults:    toolResultsFromJSON(r.ToolResults),
 		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
 	}
+}
+
+// toolCallsFromJSON maps the ask_orchicon_messages.tool_calls column
+// (written live by the turn's tool ledger in ToolCall proto shape) onto the
+// ChatMessage wire field. Unknown/corrupt payloads yield nil — the ledger is
+// durability data, never a read-path failure.
+func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
+	if len(raw) == 0 {
+		return nil
+	}
+	var rows []struct {
+		ID           string `json:"id"`
+		Type         string `json:"type"`
+		FunctionName string `json:"function_name"`
+		Arguments    string `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
+		return nil
+	}
+	out := make([]*apiv1.ToolCall, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &apiv1.ToolCall{
+			Id: r.ID, Type: r.Type, FunctionName: r.FunctionName, Arguments: r.Arguments,
+		})
+	}
+	return out
+}
+
+// toolResultsFromJSON maps the ask_orchicon_messages.tool_results column
+// onto the ChatMessage wire field (same nil-on-corrupt posture as calls).
+func toolResultsFromJSON(raw []byte) []*apiv1.ToolResult {
+	if len(raw) == 0 {
+		return nil
+	}
+	var rows []struct {
+		ToolCallID string `json:"tool_call_id"`
+		Output     string `json:"output"`
+		IsError    bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
+		return nil
+	}
+	out := make([]*apiv1.ToolResult, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &apiv1.ToolResult{
+			ToolCallId: r.ToolCallID, Output: r.Output, IsError: r.IsError,
+		})
+	}
+	return out
 }
 
 func defaultAgentConfigProto() *apiv1.AgentConfig {
