@@ -774,6 +774,21 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("Ask Orchicon could not resolve an adapter for this conversation: %w", cerr))
 	} else if client != nil {
+		// Adapter-scoped session identity (AC: cross-adapter switch). The
+		// persisted conversation session id belongs to the adapter that
+		// created it (the transport the model originally ran on). When the
+		// CURRENT model_ref resolves to a DIFFERENT adapter, dispatching the
+		// stored id to that adapter is a cross-adapter leak: a session-ful
+		// adapter (opencode) rejects a foreign/unknown id with an opaque 500
+		// (observed: native synthetic "orchicon-ask:<conv>" sent to opencode
+		// serve → http 500 UnknownError). So before dispatching, if the
+		// stored id is NOT owned by the resolved adapter, force a fresh
+		// session on the new adapter (a non-empty calcSessionID will be
+		// created by the collector's first-path; clearing useSessionID makes
+		// the collector create + persist it). The native adapter is treated
+		// as OWNS-ALL (it accepts any id), so reverse-direction
+		// opencode→native switches keep working without a session reset.
+		useSessionID = s.adapterScopedSessionID(client, useSessionID)
 		// Partial-reply mirror: the collector's onPartial callbacks feed a
 		// throttled flusher that upserts the running turn's collected
 		// text/reasoning under the ACKED assistant message id. A client that
@@ -1073,6 +1088,40 @@ func (s *Service) resolveClientForAbort(modelRef string) scheduler.ChatTurnClien
 		return c
 	}
 	return nil
+}
+
+// adapterScopedSessionID enforces adapter-scoped conversation session
+// identity across a mid-conversation model/adapter switch (WI-3). The
+// persisted conversation session id belongs to the adapter that created it.
+// When the current model_ref resolves to a DIFFERENT adapter, the stored id
+// must not be dispatched to it: a session-ful adapter (opencode) rejects a
+// foreign/unknown id with an opaque 500. This returns the session id the
+// turn may actually use:
+//
+//   - an empty input stays empty (a fresh session is created by the collector);
+//   - the native ("orchicon") adapter owns ALL ids it accepts (it is
+//     deliberately sessionless) — so an opencode→native switch keeps the
+//     stored session id and keeps working;
+//   - any OTHER adapter (or a client that cannot report an owner kind) is
+//     treated as not owning a native-synthetic id ("orchicon-ask:" prefix),
+//     so that id is cleared and the collector creates a fresh session on the
+//     newly-resolved adapter instead of dispatching a foreign id to it.
+func (s *Service) adapterScopedSessionID(client scheduler.ChatTurnClient, sid string) string {
+	if sid == "" {
+		return ""
+	}
+	// The native bridge is OWNS-ALL: it is sessionless and accepts any id, so
+	// the reverse direction (opencode→native) never resets the session.
+	if owner, ok := client.(scheduler.SessionOwnerKind); ok && owner.SessionOwnerKind() == "orchicon" {
+		return sid
+	}
+	// Any non-native adapter must never dispatch a native-synthetic id to its
+	// serve — clear it so the collector creates a fresh session on this
+	// adapter instead.
+	if strings.HasPrefix(sid, scheduler.NativeSessionIDPrefix) {
+		return ""
+	}
+	return sid
 }
 
 // hostServeClient returns the host serve's session client, or nil when the

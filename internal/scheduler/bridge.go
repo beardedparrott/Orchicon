@@ -243,6 +243,29 @@ type ChatTurnClient interface {
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
 }
 
+// SessionOwner is the OPTIONAL capability for an adapter that can identify
+// whether a session id belongs to it. Ask Orchicon uses it to enforce
+// adapter-scoped session identity across a mid-conversation model/adapter
+// switch: when the conversation's persisted session id belongs to a DIFFERENT
+// adapter than the one the current model_ref resolves to, the turn must
+// create a fresh session on the new adapter instead of dispatching a foreign
+// session id to it (which a session-ful adapter like opencode rejects with an
+// opaque 500). Adapters without this capability are treated as OWNS-ALL:
+// they accept any session id (the native orchicon bridge is deliberately
+// sessionless and accepts any id, so the reverse-direction opencode→native
+// switch keeps working).
+type SessionOwnerKind interface {
+	// SessionOwnerKind returns the adapter kind this client's sessions
+	// belong to (e.g. "orchicon", "opencode").
+	SessionOwnerKind() string
+}
+
+// NativeSessionIDPrefix is the tag the native (orchicon) bridge prepends to
+// its synthetic session ids (internal/orchicon/chatturn.go). Any session id
+// carrying this prefix is owned by the native adapter; dispatching it to any
+// other adapter is always a cross-adapter leak that must recreate first.
+const NativeSessionIDPrefix = "orchicon-ask:"
+
 // SendTurnMessageWithAttachments is the OPTIONAL mid-run capability for
 // conversation turns that carry file/image attachments. It mirrors the
 // MessageInjector capability pattern: an adapter that supports attachments
@@ -368,16 +391,16 @@ type ContinueSessionOpts struct {
 	// loop) rather than a bare one-shot. The execution service populates
 	// them from the execution row + work item; the opencode adapter ignores
 	// them (its follow-up re-attaches to the serve).
-	WorktreePath     string
-	RuntimeImage     string
-	RuntimeWorkflowID string
-	ExecutionMode    string
-	WorkerName       string
-	ProjectID        string
-	TaskID           string
-	Goal             string // the ORIGINAL execution goal (context, not the follow-up question)
+	WorktreePath       string
+	RuntimeImage       string
+	RuntimeWorkflowID  string
+	ExecutionMode      string
+	WorkerName         string
+	ProjectID          string
+	TaskID             string
+	Goal               string // the ORIGINAL execution goal (context, not the follow-up question)
 	AcceptanceCriteria string
-	ContextWindow    int64
+	ContextWindow      int64
 }
 
 // UsageRecord is the usage sample a bridge emits on step_finish (docs/04

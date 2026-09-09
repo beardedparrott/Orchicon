@@ -129,6 +129,13 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 // Kind is the registered adapter kind ("orchicon").
 func (b *NativeBridge) Kind() string { return "orchicon" }
 
+// SessionOwnerKind implements scheduler.SessionOwnerKind: the native bridge
+// owns its synthetic session ids. Ask Orchicon uses this to force a fresh
+// session when a conversation that was on the native adapter switches to
+// another adapter (the stored synthetic id must never be dispatched to a
+// foreign adapter).
+func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
+
 // SetConfigSource sets the MCP server config-resolution source for
 // sessions (ADR-0008). Absent → no MCP tools. The platform injects a
 // real source once tenant server storage lands (adapter-settings task);

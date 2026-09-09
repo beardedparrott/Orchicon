@@ -349,9 +349,9 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 		System: []SystemBlock{
 			{Text: system, Cache: true},
 		},
-		Messages:    history,
-		Tools:       tools,
-		MaxTokens:   maxOutputTokens(),
+		Messages:     history,
+		Tools:        tools,
+		MaxTokens:    maxOutputTokens(),
 		CacheControl: CacheControlSystemAndTools,
 		// Stable per-conversation session id for OpenCode Zen/Go (D1): the
 		// provider requires x-opencode-session per conversation.
