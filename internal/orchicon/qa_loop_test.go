@@ -723,3 +723,67 @@ func TestQASetContinuationRefusesCrossWorker(t *testing.T) {
 		t.Error("cross-worker continuation must be refused")
 	}
 }
+
+// 2026-09-09 follow-up swallow regression (exec
+// 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up that settles StopStop with NO
+// substance (no tool calls, no meaningful text — just one line and stop)
+// must NOT settle as a hollow "done". It is probed (bounded) so the model
+// is asked to actually answer; a substantive reply (tool work or real
+// text) settles directly.
+
+// 2026-09-09 follow-up thread semantics (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
+// a follow-up is a CONVERSATION TURN, not a completion. There is NO
+// substance heuristic and NO completion probe for follow-ups: every reply
+// (short, long, empty, tool-driven) is a legitimate turn the user can
+// build on with the next message, and the thread stays open via the
+// durable session. A follow-up never fires a re-terminalizing verdict on
+// the execution (already terminal from the main run); it reports to the
+// follow-up callbacks and returns so the next ContinueSession continues
+// the same thread.
+func TestQAFollowUpOpenThreadAnyReplySettles(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// The reported repro: a one-line reply with no tools and no
+		// summary. This is a VALID conversation turn — the thread stays
+		// open; the user keeps asking on the same session.
+		{events: []Event{TextDelta{Text: "Opening the PR against develop and merging now."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 4, OutputTokens: 12}},
+	}}
+	s := qaSession(t, prov, nil)
+	s.SetFollowUp("Where did you get that devops handles the PR step?")
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	// Exactly one provider turn (no probe), OnResult fires (so the
+	// bridge's reply/empty checks work), and the reply is delivered.
+	if got := prov.requestCount(); got != 1 {
+		t.Errorf("StreamTurn calls = %d, want 1 (no probe — a follow-up reply is a valid turn)", got)
+	}
+	if len(results) != 1 || !results[0].succeeded {
+		t.Fatalf("OnResult = %+v, want a single success (follow-up callback contract)", results)
+	}
+	if !strings.Contains(results[0].output, "Opening the PR") {
+		t.Errorf("reply not delivered: %q", results[0].output)
+	}
+}
+
+// An EMPTY follow-up reply (provider stopped with no text and no tools)
+// is also a valid (empty) turn — the thread stays open; the bridge
+// surfaces an explicit 'no response — retry' hint rather than a hollow
+// success or a dead thread. No probe is fired.
+func TestQAFollowUpEmptyReplyThreadStaysOpen(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 3, OutputTokens: 0}},
+	}}
+	s := qaSession(t, prov, nil)
+	s.SetFollowUp("still there?")
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// One provider turn, no probe fired — the follow-up turn itself is
+	// the whole exchange; the conversation remains open for the next one.
+	if got := prov.requestCount(); got != 1 {
+		t.Errorf("StreamTurn calls = %d, want 1 (no probe on an empty follow-up reply)", got)
+	}
+}

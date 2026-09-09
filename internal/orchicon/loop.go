@@ -467,8 +467,20 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 				continue
 			}
 			// Follow-up mode: a follow-up answers a question; it does NOT
-			// complete a worker run, so the decision-signal gate is
-			// bypassed — the model's StopStop settles the turn directly.
+			// complete a worker run, so there is NO completion contract
+			// here — no decision-signal gate, no substance heuristic, no
+			// probe. Every reply (short or long) is a legitimate turn of a
+			// continuing conversation: the thread lives on the SESSION
+			// (the durable transcript), so the user can keep asking
+			// follow-ups and prior executions stay answerable. We still
+			// fire the terminal OnResult to the follow-up callbacks so the
+			// bridge's reply/empty checks work — but this is a no-op
+			// callback that NEVER re-terminals the execution row (the
+			// execution is already terminal from the main run; the
+			// follow-up merely appends to the shared session). The prior
+			// bug (2026-09-09, exec 01M23KR5AAR2GQXS42XSZBZ5QX) was not
+			// the OnResult — it was the probe/substance heuristic closing
+			// the thread; that is gone.
 			if s.followUp {
 				_ = s.markState(ctx, "done")
 				_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
