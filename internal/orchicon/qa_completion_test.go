@@ -19,7 +19,13 @@ import (
 // delivers the marker, and the session settles with the marker in output.
 func TestQADecisionGateProbesForMissingMarker(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
-		{events: []Event{TextDelta{Text: "Work done."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 25}},
+		// Turn 1: a tool-call round — the executed tool call ARMS the
+		// decision-signal gate (probe-startup guard). StopToolUse never
+		// settles; the loop continues.
+		{events: []Event{TextDelta{Text: "Work done."}, ToolCallStart{Index: 0, ToolCallID: "t1", Name: "noop"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 25}},
+		// Turn 2: markerless StopStop settle AFTER work began → the gate
+		// fires the completion probe.
+		{events: []Event{TextDelta{Text: "Summarizing next."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 110, OutputTokens: 10}},
 		// Probe turn: the model delivers the sign-off.
 		{events: []Event{TextDelta{Text: "ORCHICON WORKER SUMMARY: success — completed the QA scenario"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 120, OutputTokens: 30}},
 	}}
@@ -41,9 +47,11 @@ func TestQADecisionGateProbesForMissingMarker(t *testing.T) {
 	if len(results) == 1 && !strings.Contains(results[0].output, "ORCHICON WORKER SUMMARY: success") {
 		t.Errorf("OnResult output missing marker: %q", results[0].output)
 	}
-	// Two provider turns: the model turn + the probe turn.
-	if got := prov.requestCount(); got != 2 {
-		t.Errorf("StreamTurn calls = %d, turn+probe turn", got)
+	// Three provider turns: the tool round (arms the gate) + the
+	// markerless settle + the probe turn. The probe interjection itself
+	// does not consume a provider call.
+	if got := prov.requestCount(); got != 3 {
+		t.Errorf("StreamTurn calls = %d, want 3 (tool round + settle + probe turn)", got)
 	}
 	// The probe turn's history must contain the probe text as a user message.
 	req := prov.lastRequest()
@@ -70,12 +78,18 @@ func TestQADecisionGateProbesForMissingMarker(t *testing.T) {
 // (bounded by the wall-clock budget ladder instead).
 func TestQADecisionGateFailsAfterProbeBudget(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
-		{events: []Event{TextDelta{Text: "Work done."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 25}},
-		// Probe 1: EMPTY reply (no deltas, no tokens) — unanswered.
+		// Turn 1: a tool-call round — ARMS the gate (probe-startup guard).
+		{events: []Event{TextDelta{Text: "Work done."}, ToolCallStart{Index: 0, ToolCallID: "t1", Name: "noop"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 25}},
+		// Turn 2: markerless StopStop settle AFTER work began → probe #1.
+		{events: []Event{TextDelta{Text: "Summarizing next."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 110, OutputTokens: 10}},
+		// Probe 1: EMPTY reply (no deltas, no tokens) — unanswered, and the
+		// defer path re-queues (no provider call consumed).
 		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 120, OutputTokens: 0}},
-		// Probe 2: EMPTY again → consecutive-unanswered budget exhausted →
-		// honest failure.
-		{events: []Event{TextDelta{Text: ""}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 140, OutputTokens: 0}},
+		// Probe 1 (re-queued): STILL empty → deferral bound spent → the
+		// gate falls through, probe #1's slot stays spent, probe #2 fires.
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 0}},
+		// Probe 2: EMPTY again → probe budget exhausted → honest failure.
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 140, OutputTokens: 0}},
 	}}
 	s := qaSession(t, prov, nil)
 	cb := &recordedCallback{}
@@ -89,10 +103,14 @@ func TestQADecisionGateFailsAfterProbeBudget(t *testing.T) {
 	if len(results) == 1 && !strings.Contains(results[0].errMsg, "missing_decision_signal") {
 		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
 	}
-	// Probe budget: exactly 2 unanswered probe turns
-	// (completionProbeMaxTurns) after the model turn → 3 StreamTurn calls.
-	if got := prov.requestCount(); got != 3 {
-		t.Errorf("StreamTurn calls = %d, want 3 (turn + 2 probes)", got)
+	// 4 provider calls: tool round (arms the gate) + markerless settle
+	// (fires probe 1) + probe-1's empty reply + the re-queued probe-1's
+	// second empty reply → the deferral bound (2) fails the session
+	// HONESTLY at the defer path, before probe #2 ever fires. This is the
+	// empty-provider bound: never an infinite defer loop, never an
+	// unbounded probe cycle.
+	if got := prov.requestCount(); got != 4 {
+		t.Errorf("StreamTurn calls = %d, want 4 (tool round + settle + 2 empty probe replies)", got)
 	}
 	_ = stalls
 }
@@ -393,13 +411,15 @@ func TestQALegacyCCFlushWithoutFinishYieldsStopOther(t *testing.T) {
 // deferral retry, then the honest completion_probe_no_response failure.
 func TestQADecisionGateEmptyProbeTurnFailsHonestly(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
-		// Turn 1: markerless intro → probe #1.
-		{events: []Event{TextDelta{Text: "Starting."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
-		// Turn 2: probe #1's reply is EMPTY (deltas dropped, immediate
+		// Turn 1: a tool-call round — ARMS the gate (probe-startup guard).
+		{events: []Event{TextDelta{Text: "Starting."}, ToolCallStart{Index: 0, ToolCallID: "t1", Name: "noop"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: markerless StopStop settle AFTER work began → probe #1.
+		{events: []Event{TextDelta{Text: "Summarizing next."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 110, OutputTokens: 10}},
+		// Turn 3: probe #1's reply is EMPTY (deltas dropped, immediate
 		// StopStop) — the defer path re-queues the probe (no new provider
 		// turn is consumed by the defer itself).
 		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 0}},
-		// Turn 3: the re-queued probe's turn — STILL empty → deferral bound
+		// Turn 4: the re-queued probe's turn — STILL empty → deferral bound
 		// spent → honest failure. (The bound fires when the settle re-enters
 		// with awaiting still set and deferrals > 1.)
 		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 0}},
@@ -431,12 +451,14 @@ func TestQADecisionGateEmptyProbeTurnFailsHonestly(t *testing.T) {
 // answering probes instead of working.
 func TestQADecisionGateStatusLineReplyDoesNotResetBudget(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
-		// Turn 1: markerless intro → probe #1 (budget 1/2).
-		{events: []Event{TextDelta{Text: "Starting the work."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
-		// Turn 2: probe #1's reply — a bare status line, no marker, no
+		// Turn 1: a tool-call round — ARMS the gate (probe-startup guard).
+		{events: []Event{TextDelta{Text: "Starting the work."}, ToolCallStart{Index: 0, ToolCallID: "t1", Name: "noop"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: markerless StopStop settle AFTER work began → probe #1.
+		{events: []Event{TextDelta{Text: "Summarizing next."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 110, OutputTokens: 10}},
+		// Turn 3: probe #1's reply — a bare status line, no marker, no
 		// WORKING token. NOT an answer: the budget stays spent.
 		{events: []Event{TextDelta{Text: "I'll re-sync state before continuing."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 130, OutputTokens: 15}},
-		// Turn 3: probe #2 fires (budget 2/2) → its reply is another status
+		// Turn 4: probe #2 fires (budget 2/2) → its reply is another status
 		// line → budget exhausted → honest failure (never an infinite
 		// probe loop).
 		{events: []Event{TextDelta{Text: "I need to re-sync my state."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 150, OutputTokens: 12}},
@@ -447,13 +469,13 @@ func TestQADecisionGateStatusLineReplyDoesNotResetBudget(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	_, _, _, _, _, _, results := cb.snapshot()
-	// Bounded: call1 = intro turn, probe #1 → call2 = status-line reply
-	// (non-answer, spends the slot), probe #2 → call3 = status-line reply
-	// → budget exhausted → honest failure. (The probe itself is an
-	// interjected history append — it does NOT consume a provider call.)
-	// NEVER an unbounded probe loop.
-	if got := prov.requestCount(); got != 3 {
-		t.Errorf("StreamTurn calls = %d, want 3 (intro + 2 probe-reply cycles, then fail)", got)
+	// Bounded: call1 = tool round (arms), call2 = markerless settle →
+	// probe #1, call2's reply = status line (spends the slot), probe #2 →
+	// call4 = status-line reply → budget exhausted → honest failure. The
+	// probe interjections themselves consume no provider calls. NEVER an
+	// unbounded probe loop.
+	if got := prov.requestCount(); got != 4 {
+		t.Errorf("StreamTurn calls = %d, want 4 (tool round + settle + 2 probe-reply cycles, then fail)", got)
 	}
 	if len(results) != 1 || results[0].succeeded {
 		t.Errorf("OnResult = %+v, want honest failure (status-line replies never answer the probe)", results)
@@ -519,6 +541,81 @@ func TestCompletionProbeReplyClassification(t *testing.T) {
 		}
 		if tc.want == probeReplyNone && idx != -1 {
 			t.Errorf("probeReplyNone must carry idx -1, got %d", idx)
+		}
+	}
+}
+
+// AC (2026-09-09 probe-startup guard): a markerless settle BEFORE the
+// session has executed any tool call must NOT fire the completion probe.
+// The incident: the probe fired 6s after dispatch — before the model had
+// streamed a single token — and demanded summary-or-WORKING from a worker
+// that never got to start. Now the gate only arms from the first executed
+// tool call; a pre-work markerless settle just settles the turn and the
+// loop continues (the model gets another plain turn to actually begin).
+func TestQADecisionGateStartupGuardNoProbeBeforeWork(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: markerless intro (no tool calls) — the gate must NOT
+		// probe here; the loop continues and consumes turn 2.
+		{events: []Event{TextDelta{Text: "Planning the approach."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 100, OutputTokens: 20}},
+		// Turn 2: the model actually begins — a tool call round.
+		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "t1", Name: "bash"}, ToolCallDelta{Index: 0, ArgsJSONDelta: "{}"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 120, OutputTokens: 10}},
+		// Turn 3: markerless text settle AFTER work began — the gate is
+		// armed now, so the completion probe fires.
+		{events: []Event{TextDelta{Text: "Still verifying."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 140, OutputTokens: 8}},
+		// Probe turn: delivers the marker → success.
+		{events: []Event{TextDelta{Text: "ORCHICON WORKER SUMMARY: success — completed the task"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 160, OutputTokens: 12}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	// The run must SUCCEED — the startup guard let the model begin (turn 2
+	// tool call) and the marker arrived on the later settle.
+	if len(results) != 1 || !results[0].succeeded {
+		t.Errorf("OnResult = %+v, want success (startup guard never probed the pre-work settle)", results)
+	}
+	for _, r := range results {
+		if strings.Contains(r.errMsg, "missing_decision_signal") {
+			t.Errorf("missing_decision_signal with the startup guard active: %q", r.errMsg)
+		}
+	}
+	// 4 provider calls: intro + tool turn + post-work settle + probe turn.
+	if got := prov.requestCount(); got != 4 {
+		t.Errorf("StreamTurn calls = %d, want 4 (intro + tool turn + post-work settle + probe turn)", got)
+	}
+}
+
+// AC (2026-09-09 probe-loop fix, startup guard): the exact incident shape —
+// a worker whose FIRST turn is empty/instant (zero deltas, immediate
+// StopStop) and never executes a tool call must NOT be probed. The old
+// gate read the empty first turn as a "cut-off summary" and fired the
+// probe 6s after dispatch. Now the markerless settle before any work
+// simply continues; the session stays alive and gets its next turn.
+func TestQADecisionGateEmptyFirstTurnNotProbed(t *testing.T) {
+	prov := &mockProvider{turns: []scriptedTurn{
+		// Turn 1: EMPTY instant turn (the incident's first turn).
+		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 50, OutputTokens: 0}},
+		// Turn 2: the model now actually begins — tool call.
+		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "t1", Name: "bash"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, bare: true, usage: Usage{InputTokens: 70, OutputTokens: 5}},
+		// Turn 3: settles markerless after work → probe fires.
+		{events: []Event{TextDelta{Text: "Continuing."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 90, OutputTokens: 6}},
+		// Probe turn: marker → success.
+		{events: []Event{TextDelta{Text: "ORCHICON WORKER SUMMARY: success — done"}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 110, OutputTokens: 10}},
+	}}
+	s := qaSession(t, prov, nil)
+	cb := &recordedCallback{}
+	if err := s.Run(context.Background(), cb); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, _, _, _, _, _, results := cb.snapshot()
+	if len(results) != 1 || !results[0].succeeded {
+		t.Errorf("OnResult = %+v, want success (empty first turn must not trigger the probe)", results)
+	}
+	for _, r := range results {
+		if strings.Contains(r.errMsg, "missing_decision_signal") {
+			t.Errorf("missing_decision_signal on the incident shape: %q", r.errMsg)
 		}
 	}
 }

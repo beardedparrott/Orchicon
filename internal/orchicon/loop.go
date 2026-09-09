@@ -434,6 +434,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 					return err
 				}
 				s.appendAssistantToolUse(text, toolCalls)
+				// First executed tool call = the session has demonstrably
+				// begun its work. The decision-signal gate arms from here
+				// (probe-startup guard, 2026-09-09: the probe fired 6s
+				// after dispatch against a model that had not streamed a
+				// token — no work evidence, no gate).
+				s.noteMu.Lock()
+				s.probeWorkStarted = true
+				s.noteMu.Unlock()
 				// Execute pending tool calls (parallel where independent),
 				// append results to history, drain injection queue, loop.
 				for _, tc := range toolCalls {
@@ -504,7 +512,34 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// marker (loop continues; the NEXT StopStop turn settles with
 			// the marker present) or fails the execution honestly when the
 			// probe budget is spent. A genuinely finished session settles.
+			//
+			// Probe-startup guard (2026-09-09, transcript
+			// 01M23C2MTF1ZYYHE8ACK17PMKV): the gate only arms once the
+			// session has executed a tool call. The incident probe fired
+			// 6s after dispatch — before the model's first token — because
+			// an empty/instant first turn read as a "cut-off summary".
+			// With no work evidence there is nothing to be cut off: a
+			// markerless settle before any tool work is just the model
+			// thinking/planning out loud; it settles the turn and the loop
+			// continues (the wall-clock budget ladder is the backstop
+			// against a never-starting session).
 			if !s.decisionMarkerPresent() {
+				s.noteMu.Lock()
+				started := s.probeWorkStarted
+				s.noteMu.Unlock()
+				if !started {
+					// No work yet (no tool call executed): do NOT probe —
+					// the model has not begun, so it cannot be "cut off
+					// mid-summary". Do NOT settle success either (that
+					// would be a hollow success). Just continue: the model
+					// gets another plain provider turn to actually start
+					// (its next turn typically makes tool calls, which arms
+					// the gate for future settles). Bounded by the
+					// wall-clock budget ladder, never by this gate.
+					s.log.Info("markerless settle before any tool work — startup guard, continuing without a probe",
+						"execution", s.id)
+					continue
+				}
 				if !s.runCompletionProbe(ctx, callbacks) {
 					return nil // probe failed the execution — OnResult already fired
 				}

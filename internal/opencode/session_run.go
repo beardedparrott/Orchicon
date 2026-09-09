@@ -84,6 +84,18 @@ type sessionRun struct {
 	toolTrackName   string
 	toolTrackAt     time.Time
 	toolInFlightNow bool
+	// workStarted (probe-startup guard, 2026-09-09): set true the first
+	// time the session produces WORK evidence — a tool call or any
+	// substantive text output (a non-empty completed text part beyond a
+	// bare greeting is not tracked; the tool signal is the reliable one).
+	// While FALSE, the completion-probe gate is DISARMED: a session that
+	// has not yet done any tool work cannot be "cut off mid-summary" —
+	// probing it (the 15:20:19 probe, 6s after dispatch, before the
+	// model's first token) demands summary-or-WORKING against a worker
+	// that never got to start. The gate only arms after the session has
+	// demonstrably begun (or once output exists to judge, see
+	// maybeProbeCompletion). Guarded by hangMu.
+	workStarted bool
 	// hangAbortAt records the last Abort WE initiated (tool-hang or
 	// stream-retry). A `session.error: Aborted` arriving within
 	// hangAbortEchoWindow of it is the serve echoing our own cancel —
@@ -349,6 +361,9 @@ func (r *sessionRun) observeToolStart(name string) {
 	r.toolTrackName = name
 	r.toolTrackAt = time.Now()
 	r.toolInFlightNow = true
+	// First tool call = the session has demonstrably begun its work. The
+	// completion-probe gate arms from here (probe-startup guard).
+	r.workStarted = true
 	r.hangMu.Unlock()
 	if r.monitor != nil {
 		r.monitor.observeToolStart(name)
@@ -1787,6 +1802,28 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 	if r.finished || r.probePending {
 		r.mu.Unlock()
 		return false
+	}
+	// Probe-startup guard (2026-09-09, transcript 01M23C2MTF1ZYYHE8ACK17PMKV):
+	// the probe fired 6s after dispatch, BEFORE the model had streamed a
+	// single token — the first turn ended empty/instantly and the gate read
+	// it as a "cut-off summary". A session with NO work evidence (no tool
+	// call yet) cannot be "cut off mid-summary"; probing it demands
+	// summary-or-WORKING against a worker that never got to start. While
+	// workStarted is false, a markerless idle simply WAITS (the run stays
+	// alive; the wall-clock budget ladder is the backstop). The gate arms
+	// from the first tool call (observeToolStart).
+	r.hangMu.Lock()
+	started := r.workStarted
+	r.hangMu.Unlock()
+	if !started {
+		if realDecisionMarkerIn(r.output.String()) >= 0 {
+			r.mu.Unlock()
+			return false // marker present → the normal idle path settles
+		}
+		r.a.log.Info("session idle without decision marker before any work — startup guard, waiting (no probe)",
+			"execution", r.execRow.ID)
+		r.mu.Unlock()
+		return true
 	}
 	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
 	// A run that has been compacted is, by contract, mid-task: the compact
