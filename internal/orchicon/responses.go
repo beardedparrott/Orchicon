@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -212,7 +213,24 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 // StreamTurn streams one turn on the Responses wire. Pre-stream failures
 // retry per the policy; mid-stream failures surface as StreamError + error.
 func (c *ResponsesClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
-	body, err := json.Marshal(buildResponsesRequest(req))
+	rr := buildResponsesRequest(req)
+	// Wire diagnostic (2026-09-09 follow-up no-tools repro): log the
+	// EXACT outgoing request shape (model, input item count, tools count,
+	// last input item type) so a text-only reply can be attributed to the
+	// provider vs the request builder. Emitted through the standard logger
+	// (stdout → docker logs / container.sh logs) at Info level — one line
+	// per Responses turn, negligible in prod, essential for the repro.
+	{
+		var lastT, lastRole string
+		if n := len(rr.Input); n > 0 {
+			lastT = rr.Input[n-1].Type
+			lastRole = rr.Input[n-1].Role
+		}
+		slog.Info("orchicon responses request",
+			"model", rr.Model, "input_items", len(rr.Input), "tools", len(rr.Tools),
+			"last_type", lastT, "last_role", lastRole)
+	}
+	body, err := json.Marshal(rr)
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal responses request: %w", c.label(), err)
 	}
