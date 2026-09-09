@@ -26,6 +26,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/api"
+	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
@@ -674,6 +675,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// service above and stored it back on deps.
 	if deps.AskService != nil {
 		nativeBridge.SetAskTools(deps.AskService.NativeAskTools())
+		// The Ask file/shell suite's in-process bash carries the execution
+		// guard's destructive-command shim (worker-path parity). Wire the
+		// instance logger for its warnings; the shim dir is closed at
+		// daemon shutdown (s.Close below).
+		askorchicon.SetAskGuardLogger(log)
 	} else {
 		log.Warn("native Ask turns have no tool provider (Ask service unavailable) — orchicon-adapter conversations are text-only")
 	}

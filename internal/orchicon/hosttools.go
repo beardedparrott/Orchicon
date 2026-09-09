@@ -53,6 +53,12 @@ type HostTools struct {
 	base worktree.Base
 	// containerExec routes bash into the run container; nil = in-process.
 	containerExec func(ctx context.Context, command string, env []string, cwd string) (stdout, stderr string, exitCode int, err error)
+	// envForBash, when set, REPLACES the inherited environment for
+	// in-process bash (cmd.Env). Wired by the Ask path (SetBashEnviron)
+	// to prepend the execution guard's destructive-command shim to PATH
+	// (worker-path parity: runtime/agent.go's prependGuard). Nil →
+	// inherited env (pre-change behavior, worker path untouched).
+	envForBash func() []string
 }
 
 // NewHostTools builds the host tool suite scoped to the execution's
@@ -75,6 +81,14 @@ func NewContainerHostTools(workingDir, projectRoot string, execFn func(ctx conte
 	h := NewHostTools(workingDir, projectRoot)
 	h.containerExec = execFn
 	return h
+}
+
+// SetBashEnviron wires the environment factory for IN-PROCESS bash
+// (cmd.Env). The Ask path uses it to prepend the execution guard's
+// destructive-command shim to PATH (parity with the worker supervisor's
+// prependGuard). Nil (default) → inherited env (worker path unchanged).
+func (h *HostTools) SetBashEnviron(fn func() []string) {
+	h.envForBash = fn
 }
 
 // hostToolDefs is the core suite advertised to the model every turn. Arg
@@ -429,6 +443,9 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	}
 	cmd := exec.CommandContext(cctx, "bash", "-c", a.Command)
 	cmd.Dir = h.base.Worktree
+	if h.envForBash != nil {
+		cmd.Env = h.envForBash()
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
