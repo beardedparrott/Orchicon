@@ -82,6 +82,7 @@ interface EditFormData {
   gatedTools: string;
   budgetOverrides: string;
   contextSources: string;
+  concurrencyLimit: number;
   versionNote: string;
 }
 
@@ -142,6 +143,7 @@ function WorkerDetailPage() {
       gatedTools: "[]",
       budgetOverrides: DEFAULT_BUDGETS,
       contextSources: "[]",
+      concurrencyLimit: 1,
       versionNote: "",
     },
     values: (selectedVersion ?? latestVersion)
@@ -157,6 +159,7 @@ function WorkerDetailPage() {
             gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
             budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
             contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
+            concurrencyLimit: (selectedVersion ?? latestVersion)!.concurrencyLimit ?? 1,
             versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
           };
         })()
@@ -268,6 +271,7 @@ function WorkerDetailPage() {
                       gatedTools: formData.gatedTools,
                       budgetOverrides: formData.budgetOverrides,
                       contextSources: formData.contextSources,
+                      concurrencyLimit: formData.concurrencyLimit,
                       versionNote: formData.versionNote,
                     });
                     publishVersion.mutateAsync(id);
@@ -555,6 +559,7 @@ function WorkerDetailPage() {
                       gatedTools: formData.gatedTools,
                       budgetOverrides: formData.budgetOverrides,
                       contextSources: formData.contextSources,
+                      concurrencyLimit: formData.concurrencyLimit,
                       versionNote: formData.versionNote,
                     });
                     setEditing(false);
@@ -564,6 +569,21 @@ function WorkerDetailPage() {
               <div className="space-y-2">
                 <Label htmlFor="versionNote">Version note</Label>
                 <Input id="versionNote" {...register("versionNote")} />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="concurrencyLimit">Concurrency limit</Label>
+                <Input
+                  id="concurrencyLimit"
+                  type="number"
+                  min={0}
+                  {...register("concurrencyLimit", { valueAsNumber: true, min: 0 })}
+                  title="0 = unlimited"
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Max concurrent executions against this worker. 0 = unlimited.
+                </p>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">

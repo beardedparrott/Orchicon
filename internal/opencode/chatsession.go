@@ -21,6 +21,14 @@ func (a *Adapter) hostServeClient() *SessionClient {
 	return a.host.Client()
 }
 
+// SessionOwnerKind implements scheduler.SessionOwnerKind: sessions created
+// by this adapter belong to the opencode kind. Ask Orchicon uses it to
+// enforce adapter-scoped session identity — a conversation whose persisted
+// session came from another adapter (e.g. the native synthetic
+// "orchicon-ask:" id) must recreate first and never dispatch that foreign id
+// to the opencode serve (which 500s on an unknown session).
+func (a *Adapter) SessionOwnerKind() string { return "opencode" }
+
 // CreateConversationSession implements scheduler.ChatTurnClient, creating a
 // fresh session on the host serve. An Ask turn has no project directory, so
 // the request goes out unscoped (mirrors the historical chat behavior).

@@ -91,6 +91,60 @@ const (
 // existing behavior); the recovery_X kinds in the enum trigger their
 // corresponding strategy. New recovery kinds can be added without
 // touching this function (they'll default to summarize_restart).
+// deterministicStopErrorPatterns are error signatures of deterministic
+// infrastructure / configuration failures whose retry is guaranteed to fail
+// identically. Recovery of these is pure waste (a resume loop burns cycles
+// and produces noise acceptance reviews) — they must be classified as a
+// non-retryable stop: fail the item loudly with the exact error and clear
+// operator guidance to fix the config, then re-run. See WI-4 class 3.
+var deterministicStopErrorPatterns = []string{
+	`model ref "" has no provider/model`, // empty/invalid model ref
+	`has no provider/model`,              // orchicon bridge: empty provider or model
+	`adapter kind`,                       // unknown/unregistered adapter kind
+	`no suitable adapter`,                // dispatch: adapter kind matches zero rows
+	`no suitable worker`,                 // dispatch: no compatible worker (config)
+	`credential`,                         // absent/invalid credential
+	`authentication failed`,              // provider auth
+	"runtime image not found",            // missing image
+	"runtime image is not ready",         // missing/not-yet-built image
+	"image pull failed",                  // image pull failure
+	"failed_to_start",                    // execution failed before the model even ran
+	"no provider",                        // provider unresolved
+}
+
+// isDeterministicStopError reports whether a failed execution's error is a
+// deterministic configuration/infrastructure failure that a recovery resume
+// loop cannot fix. Such failures are treated as stop-class: no recovery
+// loop, a loud item-level failure carrying the exact error, and a retry
+// only once the underlying config changes.
+func isDeterministicStopError(errText string) bool {
+	if errText == "" {
+		return false
+	}
+	low := strings.ToLower(errText)
+	for _, p := range deterministicStopErrorPatterns {
+		if strings.Contains(low, strings.ToLower(p)) && len(p) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// effectiveStrategy resolves the recovery strategy for a failed execution.
+// The work item's kind drives the default (PR C), but a deterministic
+// config/infra failure (stop-class) ALWAYS resolves to stop — resuming
+// against a broken model ref / credential / image retries the identical
+// failure and burns the resume budget to no end (observed: the Quick Work
+// canned worker with a blank model_ref looped 6 recoveries per run on the
+// same instant 0-token failure). The exact error text is surfaced in the
+// failure summary so the operator sees precisely what must be fixed.
+func strategyForFailure(exec *db.ExecutionRow, kind string) string {
+	if exec != nil && isDeterministicStopError(exec.ErrorMessage) {
+		return RecoveryStrategyStop
+	}
+	return strategyForWorkItem(kind)
+}
+
 func strategyForWorkItem(kind string) string {
 	switch kind {
 	case domain.WorkItemKindRecoveryStop:
@@ -385,7 +439,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		TriggerReason:      triggerReason,
 		Level:              level,
 		Status:             domain.RecoveryPending,
-		Strategy:           strategyForWorkItem(task.Kind), // PR C — work item kind drives the strategy
+		Strategy:           strategyForFailure(&exec, task.Kind), // PR C + WI-4 stop-class override
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
@@ -995,18 +1049,18 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				if rec.Summary != "" {
 					wiResults["_recovery_summary"] = rec.Summary
 				}
-			wiResults["_recovery_execution_id"] = rec.FailedExecutionID
-			failedWorkerID := ""
-			failedWorkerVersion := 0
-			failedAdapter := ""
-			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
-				failedWorkerID = failedExec.WorkerID
-				failedWorkerVersion = failedExec.WorkerVersion
-				failedAdapter = adapterRef(failedExec)
-			}
-			wiResults["_recovery_worker_id"] = failedWorkerID
-			wiResults["_recovery_worker_version"] = failedWorkerVersion
-			wiResults["_recovery_adapter"] = failedAdapter
+				wiResults["_recovery_execution_id"] = rec.FailedExecutionID
+				failedWorkerID := ""
+				failedWorkerVersion := 0
+				failedAdapter := ""
+				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+					failedWorkerID = failedExec.WorkerID
+					failedWorkerVersion = failedExec.WorkerVersion
+					failedAdapter = adapterRef(failedExec)
+				}
+				wiResults["_recovery_worker_id"] = failedWorkerID
+				wiResults["_recovery_worker_version"] = failedWorkerVersion
+				wiResults["_recovery_adapter"] = failedAdapter
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),
