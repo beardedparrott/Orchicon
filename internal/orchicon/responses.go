@@ -549,6 +549,7 @@ func (s *responsesStream) pop() Event {
 // truncated final tag cannot swallow the response tail.
 func (s *responsesStream) flush() {
 	s.think.drain(&s.queue)
+	nTools := 0
 	for _, id := range s.toolOrd {
 		acc := s.tools[id]
 		args := acc.Args.String()
@@ -556,6 +557,7 @@ func (s *responsesStream) flush() {
 			args = "{}" // flush-on-drain: never emit unparseable args silently
 		}
 		s.queue = append(s.queue, ToolCall{Index: acc.Index, ToolCallID: acc.ID, Name: acc.Name, ArgsJSON: args})
+		nTools++
 	}
 	s.toolOrd = nil
 	s.drained = true
@@ -563,6 +565,19 @@ func (s *responsesStream) flush() {
 		// NO provider stop signal: the stream ended without response.completed
 		// (a truncated/aborted generation). StopOther is the honest terminal.
 		s.stop = StopOther
+	}
+	// A response that CARRIED tool calls after the completion marker must
+	// finish StopToolUse, never StopStop (2026-09-09 tool-swallow fix,
+	// exec 01M23EVJV4RGGH8EHTWMG8Q21P): the leader loop dispatches +
+	// persists + feeds back tool results ONLY on StopToolUse. Under Stop the
+	// tool calls were counted toward the tool_call_count budget but never
+	// executed or their results returned — the model re-emitted the same
+	// "I'll start by…" preamble each turn (45 text parts, 0 tool parts), the
+	// budget aborted at 100 calls, and the work never happened. Parity with
+	// the anthropic/legacy/openai-compat providers, all of which finish
+	// StopToolUse when tools are pending.
+	if nTools > 0 && s.stop == StopStop {
+		s.stop = StopToolUse
 	}
 	s.queue = append(s.queue, Finish{StopReason: s.stop, Usage: s.usage})
 }

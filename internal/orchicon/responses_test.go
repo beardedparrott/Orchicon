@@ -97,8 +97,8 @@ func TestResponsesStreamToolCall(t *testing.T) {
 	if !ok || tc.ToolCallID != "call_1" || tc.Name != "get_weather" || tc.ArgsJSON != `{"city":"SF"}` {
 		t.Fatalf("event 3 = %#v", evs[3])
 	}
-	if fin, ok := evs[4].(Finish); !ok || fin.StopReason != StopStop {
-		t.Fatalf("event 4 = %#v, want Finish stop", evs[4])
+	if fin, ok := evs[4].(Finish); !ok || fin.StopReason != StopToolUse {
+		t.Fatalf("event 4 = %#v, want Finish StopToolUse (2026-09-09 tool-swallow fix: a turn that carried tool calls must finish StopToolUse so the leader dispatches+persists+feeds back their results, not StopStop which counted them and dropped them)", evs[4])
 	}
 }
 
