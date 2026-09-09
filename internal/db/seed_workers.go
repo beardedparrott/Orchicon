@@ -290,14 +290,17 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 	"- Do **not** create a branch, commit a branch, or push to origin. Leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
 
 // quickWorkerMarker is the Quick Software Engineer seed's per-worker roll
-// marker (cannedWorker.RollMarker): it pins the push-only implementer
-// contract — implement, verify green, commit to the run branch, push to
-// origin, and hand off PR creation + merge to the DevOps Engineer step. The
-// previous generation marker ("single-step implementer") is present in the
-// live published v1 Behavior, so this value is changed to re-roll exactly
-// the Quick worker on next boot; once the new fragment is present the seeder
-// is idempotent again.
-const quickWorkerMarker = "emitting PR_URL + PR_STATE"
+// marker (cannedWorker.RollMarker). The Quick Work workflow is a SINGLE
+// worker step (step-quick → step-end, no separate DevOps step in
+// wfv_quick_work_v1), so this worker is the all-in-one: it implements,
+// verifies green, commits to the run branch, pushes, AND opens + merges the
+// PR into develop itself (git_strategy pr). The previous marker generations
+// ("single-step implementer", then the incorrect "hand off PR to a DevOps
+// Engineer step" wording that had no following step) must roll the live
+// worker forward; this fragment is present in the new all-in-one AgentsMD
+// and absent from the current published content, so exactly the Quick
+// worker re-rolls on next boot.
+const quickWorkerMarker = "no separate DevOps Engineer step"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -641,11 +644,11 @@ var cannedWorkers = []cannedWorker{
 		ID:          "01M1ERH9921YS9S1QWGZV8D1VM",
 		Name:        "Quick Software Engineer",
 		Slug:        "quick-software-engineer",
-		Description: "A fast push-only software engineer: implements the work item, verifies the build and tests are green, commits to the run branch and pushes to origin — then hands off to the DevOps Engineer step, which opens the PR into develop and merges it.",
-		Purpose:     "Implements the work item end to end in a single step — code, build, test, and push to origin — leaving PR creation and merge to the DevOps Engineer step for the Quick Work merge-autonomy path.",
+		Description: "An all-in-one software engineer for the Quick Work path: implements the work item, verifies the build and tests are green, commits to the run branch, pushes to origin, and opens + merges the PR into develop — the complete end-to-end single-step worker.",
+		Purpose:     "Implements and ships the work item end to end in a single step — code, build, test, commit, push, and create + merge the PR into develop.",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
 		Skills:      "Full-stack implementation (Go, TypeScript, React, SQL) • Build & test verification • Git • GitHub • PR management • GitHub CLI",
-		Behavior:    "Own the task end to end as a push-only implementer — no PRs, no merging: implement, verify green, commit to the run branch, push to origin, and hand off to the DevOps PR step.",
+		Behavior:    "Own the task end to end: implement, verify green, commit to the run branch, push to origin, then open a PR into develop and merge it. You do not hand off PR work to a separate DevOps step — there is none; you are the whole pipeline.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Hard time-box: 30 minutes\n" +
 			"You have 30 minutes of wall clock to finish. Work in scope order; skip anything the acceptance criteria don't require. When the box nears its end, land what you have — a green build with partial scope beats an unshipped complete change.\n\n" +
@@ -660,10 +663,10 @@ var cannedWorkers = []cannedWorker{
 			"Before pushing, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). They are gitignored working notes and must not land in the PR.\n\n" +
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
-			"## PR handoff (owned by the DevOps Engineer step)\n" +
-			"Implement, verify the build and tests green, commit to the run branch, and push to origin. Do not open or merge pull requests yourself: the DevOps Engineer step that follows opens the PR into `develop` and merges it (emitting PR_URL + PR_STATE). Push and stop; the PR/merge is that step's contract.\n\n" +
+			"## Pull request (owned by you — there is no DevOps step)\n" +
+			"Implement, verify the build and tests are green, commit to the run branch, and push to origin. Then open a pull request against `develop` and merge it yourself — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step. Create with `gh pr create --base develop` (head is your pushed branch), then merge with `gh pr merge --squash --admin`. Emit PR_URL: and PR_STATE: in your summary. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, and pushed (the DevOps Engineer step opens the PR into `develop` and merges); `failure` only if the task proved unimplementable (say exactly where it broke down).",
+			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, pushed, and its PR into `develop` is created and merged (the PR is yours to open and merge); `failure` only if the task proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:       quickWorkerMarker,
 		ConcurrencyLimit: 0,

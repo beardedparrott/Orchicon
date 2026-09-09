@@ -69,11 +69,14 @@ func TestQuickWorkerSeedDefinition(t *testing.T) {
 		sandboxPlaneMarker, // deny-by-default roll-forward fragment
 		"deny-by-default",
 		"Verify, don't assume",
-		// push-only implementer contract — the Quick SWE implements, verifies
-		// green, commits, and pushes; it does NOT open the PR.
+		// all-in-one contract — the Quick SWE implements, verifies green,
+		// commits, pushes, AND opens + merges the PR into develop.
 		w.RollMarker,
-		"push-only",
-		"DevOps",
+		"no separate DevOps Engineer step",
+		"gh pr create",
+		"gh pr merge",
+		"PR_URL:",
+		"PR_STATE:",
 		"pull request",
 		"architecture-notes/",
 	} {
@@ -81,12 +84,13 @@ func TestQuickWorkerSeedDefinition(t *testing.T) {
 			t.Errorf("seeded Quick AgentsMD missing %q", want)
 		}
 	}
-	// The PR self-report contract is gone from the Quick worker: no gh pr
-	// create, no PR reporting section, no PR_URL/PR_STATE emission — that is
-	// the DevOps Engineer step's contract now.
-	for _, gone := range []string{"gh pr create", "PR reporting (required)", "PR_URL:", "PR_STATE:"} {
+	// The all-in-one Quick worker owns the PR: it must NOT defer to a
+	// separate DevOps step (there is none in the Quick Work workflow) and
+	// must not forbid PR creation/merge. The obsolete push-only hand-off
+	// wording is gone.
+	for _, gone := range []string{"Do not open or merge", "hand off to the DevOps", "that step's contract", "hand off PR"} {
 		if strings.Contains(persisted, gone) {
-			t.Errorf("seeded Quick AgentsMD must not contain %q (DevOps owns the PR now)", gone)
+			t.Errorf("seeded Quick AgentsMD must not contain %q (the Quick worker owns the PR)", gone)
 		}
 	}
 	// The rationalizing fallback is gone from the default path.
@@ -109,14 +113,14 @@ func TestQuickWorkflowSeedDefinition(t *testing.T) {
 		t.Errorf("VersionID = %q, want wfv_quick_work_v1", w.VersionID)
 	}
 	if w.GitStrategy != "pr" {
-		t.Errorf("GitStrategy = %q, want pr (merge autonomy: Quick SWE pushes, DevOps opens + merges the PR)", w.GitStrategy)
+		t.Errorf("GitStrategy = %q, want pr (merge autonomy: the all-in-one Quick SWE implements, pushes, AND opens + merges the PR)", w.GitStrategy)
 	}
 	var steps []map[string]any
 	if err := json.Unmarshal([]byte(w.StepsJSON), &steps); err != nil {
 		t.Fatalf("StepsJSON invalid: %v", err)
 	}
-	if len(steps) != 3 {
-		t.Fatalf("Quick Work steps = %d, want 3 (step-quick + step-devops-pr + step-end)", len(steps))
+	if len(steps) != 2 {
+		t.Fatalf("Quick Work steps = %d, want 2 (step-quick + step-end)", len(steps))
 	}
 	byID := map[string]map[string]any{}
 	for _, s := range steps {
@@ -140,19 +144,9 @@ func TestQuickWorkflowSeedDefinition(t *testing.T) {
 	if err := json.Unmarshal([]byte(quick["config"].(string)), &cfg); err != nil {
 		t.Fatalf("step-quick config invalid: %v", err)
 	}
-	devops, ok := byID["step-devops-pr"]
-	if !ok {
-		t.Fatal("Quick Work steps missing step-devops-pr")
-	}
-	if devops["ref"] != "w_se_devops_engineer" {
-		t.Errorf("step-devops-pr ref = %v, want w_se_devops_engineer", devops["ref"])
-	}
-	if devops["kind"] != "task" {
-		t.Errorf("step-devops-pr kind = %v, want task", devops["kind"])
-	}
-	qqdeps, _ := devops["depends_on"].([]any)
-	if len(qqdeps) != 1 || qqdeps[0] != "step-quick" {
-		t.Errorf("step-devops-pr depends_on = %v, want [step-quick]", devops["depends_on"])
+	// No separate DevOps step: the all-in-one Quick worker owns the PR.
+	if _, ok := byID["step-devops-pr"]; ok {
+		t.Fatal("Quick Work must NOT contain step-devops-pr (the Quick worker owns PR + merge)")
 	}
 	end, ok := byID["step-end"]
 	if !ok {
@@ -162,8 +156,8 @@ func TestQuickWorkflowSeedDefinition(t *testing.T) {
 		t.Errorf("step-end kind = %v, want end", end["kind"])
 	}
 	deps, _ := end["depends_on"].([]any)
-	if len(deps) != 1 || deps[0] != "step-devops-pr" {
-		t.Errorf("step-end depends_on = %v, want [step-devops-pr]", end["depends_on"])
+	if len(deps) != 1 || deps[0] != "step-quick" {
+		t.Errorf("step-end depends_on = %v, want [step-quick]", end["depends_on"])
 	}
 }
 
