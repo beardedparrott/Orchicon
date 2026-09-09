@@ -93,7 +93,7 @@ type Session struct {
 	// worker's tools. The decision-signal gate (ORCHICON WORKER SUMMARY) is
 	// disabled — a follow-up answers a question, it does not complete a
 	// worker run.
-	followUp       bool
+	followUp         bool
 	followUpQuestion string
 	// completionProbesSent counts the completion-probe interjections this
 	// session has sent (decision-signal guard, completion.go). Bounded by
@@ -413,9 +413,23 @@ func (s *Session) SetContinuation(path string) {
 // it is appended as the user message after the prior transcript is
 // replayed, and the decision-signal gate is disabled so the session
 // answers the question instead of demanding a worker summary sign-off.
+//
+// 2026-09-09 follow-up framing fix (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
+// the replayed history ends with the original run's ORCHICON WORKER
+// SUMMARY: success. A bare follow-up ("Open the PR now") therefore reads
+// as a comment on an ALREADY-DONE task, and the model answered with a
+// confirmation line ("Opening the PR and merging now.") and NO tool
+// calls — every follow-up behaved this way. The question is now prefixed
+// with an explicit new-imperative frame so the model treats the follow-up
+// as a FRESH instruction to take real action (tools) against the
+// surviving state, not a conversational reply to a finished run. The
+// wrapping is instruction-only; the user's exact message is preserved
+// verbatim after the prefix.
 func (s *Session) SetFollowUp(question string) {
 	s.followUp = true
-	s.followUpQuestion = question
+	s.followUpQuestion = "CONTINUATION INSTRUCTION — the prior run ended, but you are still on the task and must act now.\n" +
+		"The user is giving you a NEW instruction. Ignore the previous ORCHICON WORKER SUMMARY if it conflicts: treat this as a direct command to do real work — run the tools the task requires (git/gh/file reads/writes) and actually complete what is asked, then report.\n\n" +
+		"User instruction: " + question
 }
 
 // SetUsageSink registers a per-turn usage drain (D2, opencode step_finish

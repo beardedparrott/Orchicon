@@ -69,14 +69,14 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 
 	started := time.Now()
 	reply, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
-		ExecutionID: "exec_now",
-		TenantID:    "tnt_test",
-		WorkerID:    "worker_test",
-		SessionID:   "exec_now",
-		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
-		Message:     "Are you done?",
+		ExecutionID:  "exec_now",
+		TenantID:     "tnt_test",
+		WorkerID:     "worker_test",
+		SessionID:    "exec_now",
+		ModelRef:     "orchicon/mockprov/deepseek-v4-flash",
+		Message:      "Are you done?",
 		SystemPrompt: "You are QA.",
-		ProjectDir:  dir,
+		ProjectDir:   dir,
 	})
 	if err != nil {
 		t.Fatalf("ContinueSession error: %v", err)
@@ -120,8 +120,8 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if umText != "Are you done?" {
-		t.Fatalf("follow-up question = %q, want 'Are you done?'", umText)
+	if !strings.Contains(umText, "Are you done?") || !strings.Contains(umText, "CONTINUATION INSTRUCTION") {
+		t.Fatalf("follow-up question = %q, want the user's message wrapped with the continuation-instruction frame", umText)
 	}
 	if replyText != "Absolutely — here is the follow-up." {
 		t.Fatalf("follow-up reply = %q, want the collected reply", replyText)
@@ -132,8 +132,8 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 	if len(req.Messages) == 0 || req.Messages[0].Role != RoleUser {
 		t.Fatalf("follow-up messages = %+v, want a leading user message", req.Messages)
 	}
-	if req.Messages[0].Content[0].Text == nil || *req.Messages[0].Content[0].Text != "Are you done?" {
-		t.Fatalf("follow-up user message = %v, want the question", req.Messages[0])
+	if req.Messages[0].Content[0].Text == nil || !strings.Contains(*req.Messages[0].Content[0].Text, "Are you done?") {
+		t.Fatalf("follow-up user message = %v, want the (wrapped) question", req.Messages[0])
 	}
 }
 
