@@ -84,6 +84,18 @@ type sessionRun struct {
 	toolTrackName   string
 	toolTrackAt     time.Time
 	toolInFlightNow bool
+	// workStarted (probe-startup guard, 2026-09-09): set true the first
+	// time the session produces WORK evidence — a tool call or any
+	// substantive text output (a non-empty completed text part beyond a
+	// bare greeting is not tracked; the tool signal is the reliable one).
+	// While FALSE, the completion-probe gate is DISARMED: a session that
+	// has not yet done any tool work cannot be "cut off mid-summary" —
+	// probing it (the 15:20:19 probe, 6s after dispatch, before the
+	// model's first token) demands summary-or-WORKING against a worker
+	// that never got to start. The gate only arms after the session has
+	// demonstrably begun (or once output exists to judge, see
+	// maybeProbeCompletion). Guarded by hangMu.
+	workStarted bool
 	// hangAbortAt records the last Abort WE initiated (tool-hang or
 	// stream-retry). A `session.error: Aborted` arriving within
 	// hangAbortEchoWindow of it is the serve echoing our own cancel —
@@ -145,8 +157,11 @@ const (
 	// defaultCompletionProbeGrace is how long the completion probe waits
 	// after a markerless session.idle before interjecting, giving the serve's
 	// trailing final-text part (which usually carries the ORCHICON WORKER
-	// SUMMARY marker) time to flush. See maybeProbeCompletion.
-	defaultCompletionProbeGrace = 3 * time.Second
+	// SUMMARY marker) time to flush. See maybeProbeCompletion. 30s (raised
+	// from 3s per the 2026-09-09 liveness-kill incident): a busy serve can
+	// legitimately take tens of seconds to flush a long final turn; probing
+	// at 3s interjected actively-streaming sessions mid-token.
+	defaultCompletionProbeGrace = 30 * time.Second
 	// maxStreamRetries bounds Tier B same-session stream-drop turn retries
 	// before falling through to the existing kill path.
 	maxStreamRetries = 2
@@ -346,6 +361,9 @@ func (r *sessionRun) observeToolStart(name string) {
 	r.toolTrackName = name
 	r.toolTrackAt = time.Now()
 	r.toolInFlightNow = true
+	// First tool call = the session has demonstrably begun its work. The
+	// completion-probe gate arms from here (probe-startup guard).
+	r.workStarted = true
 	r.hangMu.Unlock()
 	if r.monitor != nil {
 		r.monitor.observeToolStart(name)
@@ -519,6 +537,68 @@ func realDecisionMarkerIn(output string) int {
 	return -1
 }
 
+// probeReplyKind classifies the model's reply to a completion probe.
+// 2026-09-09 probe-loop parity with the native adapter
+// (internal/orchicon/completion.go completionProbeReply).
+const (
+	// probeReplyNone — no answer to the probe in the output (a bare
+	// status-line reply is NOT an answer: it must not reset the probe
+	// budget, otherwise the probe re-arms instantly and the model is
+	// trapped answering probes forever — transcript 01M23C2MTF1ZYYHE8ACK17PMKV).
+	probeReplyNone = iota
+	// probeReplySummary — the output carries a REAL decision marker.
+	probeReplySummary
+	// probeReplyWorking — the reply contains the standalone WORKING token:
+	// the model's explicit "still working, leave me alone" answer.
+	probeReplyWorking
+)
+
+// probeWorkingToken is the literal single-word answer the completion probe
+// offers a still-working model. Word-bounded so "networking" never matches.
+const probeWorkingToken = "working"
+
+// completionProbeReply classifies whether the session output ANSWERS a
+// completion probe: (probeReplySummary, idx>=0) for a real marker,
+// (probeReplyWorking, idx>=0) for the standalone WORKING token, and
+// (probeReplyNone, -1) otherwise.
+func completionProbeReply(output string) (int, int) {
+	if idx := realDecisionMarkerIn(output); idx >= 0 {
+		return probeReplySummary, idx
+	}
+	// WORKING token: word-bounded scan of the output TAIL only (the probe
+	// reply is by construction the latest turn; earlier turns may
+	// legitimately contain the word).
+	tail := output
+	if len(tail) > 200 {
+		tail = tail[len(tail)-200:]
+	}
+	lower := strings.ToLower(tail)
+	search := 0
+	for search < len(lower) {
+		at := strings.Index(lower[search:], probeWorkingToken)
+		if at < 0 {
+			break
+		}
+		at += search
+		before := byte(' ')
+		if at > 0 {
+			before = lower[at-1]
+		}
+		after := byte(' ')
+		if at+len(probeWorkingToken) < len(lower) {
+			after = lower[at+len(probeWorkingToken)]
+		}
+		isBoundary := func(b byte) bool {
+			return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '.' || b == ',' || b == '!' || b == '?' || b == '"' || b == '\'' || b == '*' || b == '`' || b == '_' || b == '-' || b == ':' || b == ';'
+		}
+		if isBoundary(before) && isBoundary(after) {
+			return probeReplyWorking, at
+		}
+		search = at + len(probeWorkingToken)
+	}
+	return probeReplyNone, -1
+}
+
 // completionProbeText is sent on session.idle when the worker's turn ended
 // WITHOUT the decision marker — e.g. the final model response was truncated
 // mid-stream (a step_finish with reason "unknown"/0 tokens), so the worker
@@ -526,10 +606,10 @@ func realDecisionMarkerIn(output string) int {
 // the (still-live) session to finish the signal instead of recording a
 // hollow success; a session that still cannot produce the marker fails.
 const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
-	"Please do not restart your work. " +
-	"If you have finished your task, reply with your final summary exactly in this form: " +
-	"ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>). " +
-	"If you are still working, report your current status and then continue, and be sure to end with your ORCHICON WORKER SUMMARY when done."
+	"Please do not restart your work and do NOT reply with a status update. " +
+	"Your NEXT reply must be one of exactly two things: " +
+	"(1) your final summary, in this form: ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>), or " +
+	"(2) the single word WORKING (nothing else) if you still have work to do — you will then be left alone to continue working."
 
 // streamRetryText is the short continue-turn re-prompt for a stream-drop
 // retry (Tier B). The partial turn's parts are already in the transcript,
@@ -784,7 +864,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		} else if t != "" {
 			r.observeToolEnd()
 		}
-	// Folded-think segmentation (think_demux.go): a completed text part
+		// Folded-think segmentation (think_demux.go): a completed text part
 		// carrying a GLM-style inline think block must not reach the output
 		// accumulator, the live UI, or the durable transcript verbatim.
 		// Strip the blocks BEFORE parseEvent so all three see clean text,
@@ -952,6 +1032,21 @@ func (r *sessionRun) resolveProbe() {
 	r.probePending = false
 	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
+	// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
+	// native parity): the budget does NOT reset on mere activity. The old
+	// version reset nudgesSent on ANY reply, so a model that answered each
+	// probe with a bare status line re-armed the probe forever — the
+	// worker never started (15 probes in ~50s, zero tool calls). Now only
+	// a REAL ANSWER resets the budget: the decision marker, or the
+	// WORKING token (the probe's explicit mid-task continue, which disarms
+	// the gate so the model can work and deliver the marker later). A
+	// status-line reply keeps the budget spent → after nudgeMax probes the
+	// session fails honestly instead of looping probes forever.
+	if kind, idx := completionProbeReply(r.output.String()); kind != probeReplyNone && idx >= 0 {
+		if kind == probeReplySummary || kind == probeReplyWorking {
+			r.nudgesSent = 0
+		}
+	}
 	revived := r.monitor.revive()
 	r.mu.Unlock()
 	if revived {
@@ -1669,8 +1764,21 @@ func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now tim
 	if realDecisionMarkerIn(output) >= 0 {
 		return false, false
 	}
-	if nudgesSent >= nudgeMax || now.Sub(lastNudgeAt) < nudgeCooldown {
+	if nudgesSent >= nudgeMax {
+		// Probe budget spent AND the marker is still absent: the worker was
+		// given every chance (probes + full reply windows) and never
+		// delivered the sign-off — fail honestly.
 		return false, true
+	}
+	if now.Sub(lastNudgeAt) < nudgeCooldown {
+		// Inside the cooldown after the last nudge/probe. This is NOT a
+		// terminal condition: the model may be mid-reply to the previous
+		// probe right now (any activity since then clears lastNudgeAt via
+		// resolveProbe). Treat as "wait" — return probe=true so the idle
+		// defers to the grace/next-turn path instead of instantly failing
+		// an actively-streaming session (the observed kill: probe → model
+		// answers within seconds → next idle → cooldown branch → fail).
+		return true, false
 	}
 	return true, false
 }
@@ -1694,6 +1802,28 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 	if r.finished || r.probePending {
 		r.mu.Unlock()
 		return false
+	}
+	// Probe-startup guard (2026-09-09, transcript 01M23C2MTF1ZYYHE8ACK17PMKV):
+	// the probe fired 6s after dispatch, BEFORE the model had streamed a
+	// single token — the first turn ended empty/instantly and the gate read
+	// it as a "cut-off summary". A session with NO work evidence (no tool
+	// call yet) cannot be "cut off mid-summary"; probing it demands
+	// summary-or-WORKING against a worker that never got to start. While
+	// workStarted is false, a markerless idle simply WAITS (the run stays
+	// alive; the wall-clock budget ladder is the backstop). The gate arms
+	// from the first tool call (observeToolStart).
+	r.hangMu.Lock()
+	started := r.workStarted
+	r.hangMu.Unlock()
+	if !started {
+		if realDecisionMarkerIn(r.output.String()) >= 0 {
+			r.mu.Unlock()
+			return false // marker present → the normal idle path settles
+		}
+		r.a.log.Info("session idle without decision marker before any work — startup guard, waiting (no probe)",
+			"execution", r.execRow.ID)
+		r.mu.Unlock()
+		return true
 	}
 	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
 	// A run that has been compacted is, by contract, mid-task: the compact
@@ -1806,6 +1936,7 @@ func (r *sessionRun) sendCompletionProbe() {
 	}
 	r.nudgesSent++
 	r.probePending = true
+	r.lastNudgeAt = time.Now() // the cooldown measures THIS probe's reply window
 	r.probeDeadline = time.Now().Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 

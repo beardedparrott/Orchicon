@@ -504,11 +504,16 @@ func TestCompletionProbeDecision(t *testing.T) {
 			wantProbe: false, wantFail: true,
 		},
 		{
-			name:      "missing marker fails inside cooldown window",
+			// 2026-09-09 liveness-kill regression (WI: liveness kills
+			// workers): probe #1 was answered by the model seconds later;
+			// when the next idle re-entered the decision INSIDE the probe
+			// cooldown, the old logic returned (fail) and killed an
+			// actively-streaming session. The cooldown must mean WAIT.
+			name:      "cooldown after a recent probe waits, never fails (live-kill regression)",
 			output:    withoutMarker,
-			nudges:    0,
-			lastNudge: now, // just nudged → cooldown blocks another probe
-			wantProbe: false, wantFail: true,
+			nudges:    1,
+			lastNudge: now, // probe #1 just sent, model mid-reply
+			wantProbe: true, wantFail: false,
 		},
 		{
 			name:      "placeholder marker echo is not a real decision",
@@ -602,8 +607,11 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	}
 
 	// Markerless + NOT compacted + budget spent → still fails (probe budget
-	// exhausted remains the terminal guard for non-compacted runs).
+	// exhausted remains the terminal guard for non-compacted runs). The run
+	// is armed (workStarted — tool work has begun) so the probe-startup
+	// guard does not shadow the budget check being pinned here.
 	r = mkRun("plain text pause", nudgeMax(), false)
+	r.workStarted = true
 	if v := r.maybeProbeCompletion(); !v {
 		t.Fatal("non-compacted markerless idle with spent budget must fail (return true)")
 	}
@@ -954,5 +962,115 @@ func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
 	mu.Unlock()
 	if hangN != 0 || len(stallList) != 0 {
 		t.Fatalf("false positive: hangSends=%d stalls=%v, want 0/empty (no in-flight tool)", hangN, stallList)
+	}
+}
+
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV, native
+// parity): classification pins for completionProbeReply — a bare status
+// line is NOT an answer, the WORKING token is, a real marker is.
+func TestCompletionProbeReplyClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"marker", "text ORCHICON WORKER SUMMARY: success — did it", probeReplySummary},
+		{"working token", "WORKING", probeReplyWorking},
+		{"working token lowercase", "working", probeReplyWorking},
+		{"status line is NOT an answer", "I'll re-sync state and continue.", probeReplyNone},
+		{"working embedded in a word", "I am networking with the team.", probeReplyNone},
+		{"empty", "", probeReplyNone},
+		{"placeholder echo is not a real marker", "ORCHICON WORKER SUMMARY: success — <summary>", probeReplyNone},
+	}
+	for _, tc := range cases {
+		got, idx := completionProbeReply(tc.output)
+		if got != tc.want {
+			t.Errorf("completionProbeReply(%q) = kind %d idx %d, want kind %d", tc.output, got, idx, tc.want)
+		}
+		if tc.want == probeReplyNone && idx != -1 {
+			t.Errorf("probeReplyNone must carry idx -1, got %d", idx)
+		}
+	}
+}
+
+// 2026-09-09 probe-startup guard (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
+// native parity in qa_completion_test.go): the probe fired 6s after
+// dispatch — BEFORE the model streamed a token — because an empty/instant
+// first turn read as a "cut-off summary". A session with NO work evidence
+// (no tool call yet) cannot be cut off mid-summary. While workStarted is
+// false, a markerless idle must WAIT (no probe, no fail, no settle); the
+// gate arms from the first tool call (observeToolStart).
+func TestCompletionProbeStartupGuardWaitsBeforeWork(t *testing.T) {
+	mkRun := func(output string, workStarted bool) *sessionRun {
+		r := &sessionRun{
+			a:           &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+			parentCtx:   context.Background(),
+			execRow:     db.ExecutionRow{ID: "exec-probe-startup", TenantID: "tnt_dev"},
+			callbacks:   &liveCallbacks{},
+			client:      NewSessionClient("http://localhost:1", "", ""),
+			done:        make(chan struct{}),
+			stats:       &execStreamState{},
+			output:      strings.Builder{},
+			nudgesSent:  0,
+			nudgeMaxVal: nudgeMax(),
+			// Budget + cooldown fully available so ONLY the startup guard
+			// decides the outcome.
+			nudgeReplyWindowVal: time.Hour,
+			nudgeCooldownVal:    time.Nanosecond,
+		}
+		r.output.WriteString(output)
+		if workStarted {
+			r.workStarted = true
+		}
+		return r
+	}
+
+	// Markerless + NO work yet → startup guard WAITS (return true):
+	// no probe is interjected against a worker that never started.
+	r := mkRun("", false)
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("markerless idle before any work must WAIT (return true): no probe, no fail, no settle")
+	}
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("pre-work markerless idle must not fail (the incident's 6s probe is forbidden)")
+	}
+
+	// Markerless + NO work + budget spent → STILL waits (the startup guard
+	// precedes the budget check — a never-started session is the
+	// wall-clock ladder's owner, not this gate).
+	r = mkRun("", false)
+	r.nudgesSent = nudgeMax()
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("pre-work markerless idle must wait even with budget spent (gate not armed)")
+	}
+	r.mu.Lock()
+	fin, ok := r.finished, r.resultOk
+	r.mu.Unlock()
+	if fin || ok {
+		t.Fatal("pre-work run must never be failed by the probe gate")
+	}
+
+	// Marker present + no work → the normal idle path settles (return
+	// false) — the guard never blocks a genuine delivery.
+	r = mkRun("ORCHICON WORKER SUMMARY: success — done", false)
+	if v := r.maybeProbeCompletion(); v {
+		t.Fatal("marker-present idle must settle (return false) regardless of the guard")
+	}
+
+	// Work HAS begun (tool call observed) → the gate arms normally:
+	// markerless + budget spent → honest fail (the guard is out of the way).
+	r = mkRun("mid-task text", true)
+	r.nudgesSent = nudgeMax()
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("post-work markerless idle with spent budget must fail (return true)")
+	}
+	r.mu.Lock()
+	fin, ok = r.finished, r.resultOk
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatal("post-work run with spent probe budget must fail honestly")
 	}
 }

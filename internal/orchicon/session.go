@@ -99,8 +99,45 @@ type Session struct {
 	// session has sent (decision-signal guard, completion.go). Bounded by
 	// completionProbeMaxTurns — a session that cannot deliver its
 	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
-	// instead of recording a hollow success.
+	// instead of recording a hollow success. 2026-09-09 probe-loop fix:
+	// this budget NEVER resets on chatter (a bare status-line reply does
+	// not count as answering); it resets ONLY on the WORKING token, the
+	// probe's explicit mid-task continue answer (nudgeObserved).
 	completionProbesSent int
+	// completionProbeAwaiting marks a completion probe whose reply has NOT
+	// arrived yet (2026-09-09 liveness-kill parity fix with the opencode
+	// adapter). Set when a probe is interjected; cleared ONLY when the
+	// reply ANSWERS the probe — the decision marker or the WORKING token
+	// (nudgeObserved + completionProbeReply). A bare status-line reply
+	// (the 15-probe loop in transcript 01M23C2MTF1ZYYHE8ACK17PMKV) is not
+	// an answer: the awaiting flag stays set and the budget counts the
+	// probe, so the loop is bounded by completionProbeMaxTurns.
+	completionProbeAwaiting bool
+	// completionProbeSawReply records that at least one NON-EMPTY turn
+	// streamed since the outstanding probe was sent but did NOT answer it
+	// (a bare status line). The gate uses it to distinguish "the provider
+	// returned an empty turn — the reply has not arrived, defer and
+	// re-queue" from "the model already replied with a non-answer — spend
+	// the budget slot and bound the probe loop".
+	completionProbeSawReply bool
+	// completionProbeDeferrals bounds the consecutive unanswered-probe
+	// deferrals (runCompletionProbe): an EMPTY provider turn for a probe
+	// (zero deltas → immediate StopStop) clears nothing, so the defer path
+	// would loop forever without this bound. Cleared whenever a probe is
+	// actually answered (nudgeObserved). One deferral retry, then the
+	// honest completion_probe_no_response failure.
+	completionProbeDeferrals int
+	// probeWorkStarted is the probe-startup guard (2026-09-09, transcript
+	// 01M23C2MTF1ZYYHE8ACK17PMKV): set true the first time the session
+	// executes a tool call. While FALSE, the StopStop decision-signal gate
+	// is DISARMED — the probe fired 6s after dispatch against a model that
+	// had not streamed a token (its first turn ended empty/instantly and
+	// the gate read it as a cut-off summary). A session with no work
+	// evidence cannot be "cut off mid-summary": the gate only arms from
+	// the first tool call. A plain markerless settle before any tool work
+	// simply settles the turn (the wall-clock budget ladder is the
+	// backstop against a never-starting session).
+	probeWorkStarted bool
 	// lengthContinuationsSent counts the output-cap continuation turns
 	// (StopLength recovery, loop.go). Bounded by
 	// lengthContinuationMaxTurns — a session that keeps hitting the cap

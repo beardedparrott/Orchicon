@@ -348,7 +348,23 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
 		_ = stream.Close()
 		s.pm.observeStepFinish(usage)
-		s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
+		// A completed turn is reply evidence ONLY when it carried content:
+		// an EMPTY turn (zero deltas — deltas already fired nudgeObserved in
+		// drain) proves nothing. 2026-09-09 liveness-kill regression: an
+		// empty probe reply cleared the awaiting probe and reset the probe
+		// budget here, so an empty-turn provider looped the probe forever
+		// (caught by TestQADecisionGateEmptyProbeTurnFailsHonestly).
+		if len(text) > 0 || len(toolCalls) > 0 || usage.OutputTokens > 0 {
+			// A non-empty turn that did NOT answer the outstanding probe
+			// (a bare status line) marks SawReply so the gate spends the
+			// budget slot instead of deferring forever (probe-loop fix).
+			s.noteMu.Lock()
+			if s.completionProbeAwaiting {
+				s.completionProbeSawReply = true
+			}
+			s.noteMu.Unlock()
+			s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
+		}
 		if streamErr != nil {
 			msg := fmt.Sprintf("stream error: %v", streamErr)
 			s.recordUndeliveredNudges()
@@ -418,6 +434,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 					return err
 				}
 				s.appendAssistantToolUse(text, toolCalls)
+				// First executed tool call = the session has demonstrably
+				// begun its work. The decision-signal gate arms from here
+				// (probe-startup guard, 2026-09-09: the probe fired 6s
+				// after dispatch against a model that had not streamed a
+				// token — no work evidence, no gate).
+				s.noteMu.Lock()
+				s.probeWorkStarted = true
+				s.noteMu.Unlock()
 				// Execute pending tool calls (parallel where independent),
 				// append results to history, drain injection queue, loop.
 				for _, tc := range toolCalls {
@@ -500,7 +524,34 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// marker (loop continues; the NEXT StopStop turn settles with
 			// the marker present) or fails the execution honestly when the
 			// probe budget is spent. A genuinely finished session settles.
+			//
+			// Probe-startup guard (2026-09-09, transcript
+			// 01M23C2MTF1ZYYHE8ACK17PMKV): the gate only arms once the
+			// session has executed a tool call. The incident probe fired
+			// 6s after dispatch — before the model's first token — because
+			// an empty/instant first turn read as a "cut-off summary".
+			// With no work evidence there is nothing to be cut off: a
+			// markerless settle before any tool work is just the model
+			// thinking/planning out loud; it settles the turn and the loop
+			// continues (the wall-clock budget ladder is the backstop
+			// against a never-starting session).
 			if !s.decisionMarkerPresent() {
+				s.noteMu.Lock()
+				started := s.probeWorkStarted
+				s.noteMu.Unlock()
+				if !started {
+					// No work yet (no tool call executed): do NOT probe —
+					// the model has not begun, so it cannot be "cut off
+					// mid-summary". Do NOT settle success either (that
+					// would be a hollow success). Just continue: the model
+					// gets another plain provider turn to actually start
+					// (its next turn typically makes tool calls, which arms
+					// the gate for future settles). Bounded by the
+					// wall-clock budget ladder, never by this gate.
+					s.log.Info("markerless settle before any tool work — startup guard, continuing without a probe",
+						"execution", s.id)
+					continue
+				}
 				if !s.runCompletionProbe(ctx, callbacks) {
 					return nil // probe failed the execution — OnResult already fired
 				}
@@ -696,9 +747,41 @@ func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execI
 
 // nudgeObserved marks nudge-reply progress: any text/step activity after
 // a nudge clears the pending probe (the reply IS the liveness evidence).
+//
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the
+// old version reset completionProbesSent on ANY activity, so a model that
+// answered each probe with a bare status line ("I'll re-sync state…")
+// re-armed the probe forever — 15 probes in ~50s, ZERO tool calls, the
+// worker never started. Now:
+//   - completionProbeAwaiting clears only when the reply carries the
+//     decision marker or the WORKING token (completionProbeReply);
+//   - completionProbesSent NEVER resets — a status-line reply counts as
+//     unanswered, so after completionProbeMaxTurns (2) probes the session
+//     fails honestly with completion_probe_no_response (a model trapped
+//     replying-to-probes is burned budget, not a healthy worker);
+//   - the deferral counter still bounds empty-turn loops.
 func (s *Session) nudgeObserved() {
 	s.noteMu.Lock()
 	s.nudgePending = false
+	// A completed turn is reply evidence only when it ANSWERS the probe:
+	// the marker (the sign-off) or the WORKING token (an explicit continue).
+	// Any other reply (a bare status line) does NOT clear the awaiting
+	// probe and does NOT reset the budget — the next StopStop re-enters
+	// the gate and the budget counts it, bounding the probe loop.
+	if s.completionProbeAwaiting {
+		if kind, idx := completionProbeReply(s.output.String()); kind != probeReplyNone && idx >= 0 {
+			s.completionProbeAwaiting = false
+			s.completionProbeSawReply = false
+			s.completionProbeDeferrals = 0
+			if kind == probeReplyWorking {
+				// WORKING: the model is mid-task and was told it will be
+				// left alone. Disarm the gate entirely — a real continue
+				// turns into tool work, and the marker arrives when the
+				// work's final turn settles.
+				s.completionProbesSent = 0
+			}
+		}
+	}
 	s.noteMu.Unlock()
 }
 
@@ -778,7 +861,14 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 			text.WriteString(e.Text)
 			s.output.WriteString(e.Text)
 			s.pm.observeText()
-			s.nudgeObserved() // continued output = the nudged turn replied
+			// Only REAL content is reply evidence: an empty-text delta
+			// (providers emit these as keep-alives / turn boundaries)
+			// proves nothing. 2026-09-09 liveness-kill fix — an empty
+			// delta reset the awaiting probe and the probe budget, looping
+			// a silent session's probe forever.
+			if e.Text != "" {
+				s.nudgeObserved() // continued output = the nudged turn replied
+			}
 			s.emitTextChunked(ctx, callbacks, e.Text)
 			_ = s.transcript.Append(TransText, map[string]any{"text": e.Text})
 		case ReasoningDelta:
