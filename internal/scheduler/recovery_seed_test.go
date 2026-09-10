@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -485,5 +486,204 @@ func TestResolveRecoverySeedFastPath(t *testing.T) {
 	}
 	if seed := resolveRecoverySeed(context.Background(), nil, "tnt_test", "wi-1", nil, nil, "w1"); seed != nil {
 		t.Error("no keys, no DB → must not resolve")
+	}
+}
+
+// ---- bootstrap-churn defense (substance-filtered resume tail) ----
+
+// churnOpenerUserPart / churnOpenerTextPart build the recovery-opener
+// announcement parts the bootstrap-churn loop produces.
+func churnOpenerUserPart(seq int64, variant string) db.SessionPart {
+	txt := "I'm resuming a recovered session, let me read the recovery file to continue (" + variant + ")."
+	return db.SessionPart{Seq: seq, Kind: db.SessionPartUserMessage, Payload: []byte(`{"text":` + strconv.Quote(txt) + `,"source":"goal"}`)}
+}
+
+func churnOpenerTextPart(seq int64, variant string) db.SessionPart {
+	txt := "Resuming the recovered session — the recovery seed file is present, proceeding. (" + variant + ")"
+	return db.SessionPart{Seq: seq, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":` + strconv.Quote(txt) + `}}`)}
+}
+
+// TestTailIsBootstrapChurn verifies the churn floor: >=2 recovery-opener
+// parts with no tool_use, no file-diff evidence, and no substantive text;
+// and that productive tails never classify as churn.
+func TestTailIsBootstrapChurn(t *testing.T) {
+	churn := []db.SessionPart{}
+	var seq int64 = 1
+	for i := 0; i < 5; i++ {
+		churn = append(churn, churnOpenerUserPart(seq, "v1"), churnOpenerTextPart(seq+1, "v2"))
+		seq += 2
+	}
+	if !tailIsBootstrapChurn(churn) {
+		t.Error("recovery-opener-only tail must classify as churn")
+	}
+
+	// Neutral kinds (errors, steps) in between don't mask churn.
+	withNeutral := append(append([]db.SessionPart{}, churn...), db.SessionPart{Seq: seq, Kind: db.SessionPartError, Payload: []byte(`{"error":"boom"}`)})
+	if !tailIsBootstrapChurn(withNeutral) {
+		t.Error("neutral error parts must not mask churn")
+	}
+
+	// A single opener is not repetition -> not churn.
+	if tailIsBootstrapChurn([]db.SessionPart{churnOpenerUserPart(1, "v1")}) {
+		t.Error("a single opener must not classify as churn")
+	}
+
+	// Any tool_use part -> productive, never churn.
+	withTool := append(append([]db.SessionPart{}, churn...), db.SessionPart{Seq: seq, Kind: db.SessionPartToolUse, Payload: []byte(`{"part":{"tool":"bash"}}`)})
+	if tailIsBootstrapChurn(withTool) {
+		t.Error("tool_use in the tail must prevent churn classification")
+	}
+
+	// Substantive non-opener text -> productive.
+	substantive := append(append([]db.SessionPart{}, churn...), db.SessionPart{Seq: seq, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":"` + strings.Repeat("real work happened here ", 8) + `"}}`)})
+	if tailIsBootstrapChurn(substantive) {
+		t.Error("substantive assistant text must prevent churn classification")
+	}
+
+	// File-diff evidence -> productive.
+	withDiff := append(append([]db.SessionPart{}, churn...), db.SessionPart{Seq: seq, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":"+++ b/main.go\n+added"}}`)})
+	if tailIsBootstrapChurn(withDiff) {
+		t.Error("file-diff evidence must prevent churn classification")
+	}
+
+	// Empty/short input -> not churn.
+	if tailIsBootstrapChurn(nil) {
+		t.Error("empty tail must not classify as churn")
+	}
+}
+
+// TestLastProductiveWindow verifies the walkback lands on the last
+// productive part and drops the churn after it.
+func TestLastProductiveWindow(t *testing.T) {
+	parts := []db.SessionPart{
+		churnOpenerUserPart(1, "v1"),
+		{Seq: 2, Kind: db.SessionPartToolUse, Payload: []byte(`{"part":{"tool":"bash"}}`)},
+		{Seq: 3, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":"` + strings.Repeat("productive ", 30) + `"}}`)},
+		churnOpenerUserPart(4, "v2"),
+		churnOpenerTextPart(5, "v3"),
+		churnOpenerUserPart(6, "v4"),
+	}
+	win, ok := lastProductiveWindow(parts, 60)
+	if !ok {
+		t.Fatal("productive window must be found")
+	}
+	if len(win) != 3 || win[len(win)-1].Seq != 3 {
+		t.Errorf("window must end at the last productive part (seq 3); got len=%d last=%d", len(win), win[len(win)-1].Seq)
+	}
+
+	// All churn -> not found.
+	if _, ok := lastProductiveWindow([]db.SessionPart{churnOpenerUserPart(1, "v"), churnOpenerTextPart(2, "v")}, 60); ok {
+		t.Error("all-churn transcript must report no productive window")
+	}
+
+	// Window respects the part cap.
+	var long []db.SessionPart
+	for i := int64(1); i <= 100; i++ {
+		long = append(long, db.SessionPart{Seq: i, Kind: db.SessionPartToolUse, Payload: []byte(`{"part":{"tool":"bash"}}`)})
+	}
+	win, ok = lastProductiveWindow(long, 10)
+	if !ok || len(win) != 10 || win[0].Seq != 91 {
+		t.Errorf("window cap: ok=%v len=%d first=%v", ok, len(win), win[0].Seq)
+	}
+}
+
+// TestResolveRecoveryTailContent verifies the substance filter end to end:
+// a productive tail seeds unchanged; a churn tail with a productive window
+// walks back to it (with the churn note); a churn-only transcript reports
+// churnOnly so the prior seed is carried instead of the churn.
+func TestResolveRecoveryTailContent(t *testing.T) {
+	// Genuinely productive tail -> unchanged (no churn note).
+	productive := []db.SessionPart{
+		{Seq: 1, Kind: db.SessionPartToolUse, Payload: []byte(`{"part":{"tool":"bash"}}`)},
+		{Seq: 2, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":"` + strings.Repeat("did the thing ", 20) + `"}}`)},
+	}
+	tail, churnOnly := resolveRecoveryTailContent(productive, nil, 64*1024)
+	if churnOnly || tail == "" || strings.Contains(tail, "bootstrap churn") {
+		t.Errorf("productive tail must seed unchanged: churnOnly=%v tail=%q", churnOnly, tail)
+	}
+
+	// Churn tail with an EARLIER productive window (the churn is what the
+	// raw tail sees; the walkback reaches past it in the deeper scan).
+	tailParts := []db.SessionPart{churnOpenerUserPart(10, "v1"), churnOpenerTextPart(11, "v2"), churnOpenerUserPart(12, "v3")}
+	fullScan := append(append([]db.SessionPart{}, productive...), tailParts...)
+	tail, churnOnly = resolveRecoveryTailContent(tailParts, fullScan, 64*1024)
+	if churnOnly {
+		t.Fatal("productive window exists — must not report churnOnly")
+	}
+	if !strings.Contains(tail, "TOOL CALL: bash") || !strings.Contains(tail, "last productive window") {
+		t.Errorf("walkback must carry the productive window + churn note:\n%s", tail)
+	}
+	if strings.Contains(tail, "continue (v1)") || strings.Contains(tail, "proceeding. (v2)") {
+		t.Error("the churn AFTER the productive window must be dropped")
+	}
+
+	// All-churn transcript -> churnOnly (explicit churn marker path).
+	allChurn := []db.SessionPart{}
+	for i := int64(1); i <= 6; i++ {
+		allChurn = append(allChurn, churnOpenerUserPart(i, "v1"), churnOpenerTextPart(i+100, "v2"))
+	}
+	tail, churnOnly = resolveRecoveryTailContent(allChurn, allChurn, 64*1024)
+	if !churnOnly || tail != "" {
+		t.Errorf("all-churn transcript must report churnOnly with no tail; got churnOnly=%v tail=%q", churnOnly, tail)
+	}
+
+	// Churn tail with NO deeper scan -> churnOnly (degraded but never churn-fed).
+	tail, churnOnly = resolveRecoveryTailContent(allChurn, nil, 64*1024)
+	if !churnOnly || tail != "" {
+		t.Errorf("missing scan must degrade to churnOnly; got churnOnly=%v tail=%q", churnOnly, tail)
+	}
+}
+
+// TestExtractRecoveryTailSection verifies the prior-seed tail extraction
+// round-trips the section content and stops at the footer.
+func TestExtractRecoveryTailSection(t *testing.T) {
+	content := buildRecoveryFileContent("w1", &recoverySeed{FailedExecID: "exec-1", FailedWorkerID: "w1"}, "ASSISTANT: did stuff\n\nTOOL CALL: bash\n\n")
+	got := extractRecoveryTailSection(content)
+	if got != "ASSISTANT: did stuff\n\nTOOL CALL: bash" {
+		t.Errorf("extracted = %q", got)
+	}
+	if extractRecoveryTailSection("no section here") != "" {
+		t.Error("missing section must extract empty")
+	}
+}
+
+// TestChurnOnlySeedCarriesPriorTail verifies the churn-only seed decision
+// at the content level: a churn-only successor must NOT overwrite the prior
+// seed's transcript — the carried content names the carried tail and the
+// NEW footer, while a churn-only successor with no prior transcript carries
+// the explicit churn marker. The header/footer/directive contract is
+// unchanged in both cases.
+func TestChurnOnlySeedCarriesPriorTail(t *testing.T) {
+	prior := buildRecoveryFileContent("Architect", &recoverySeed{Summary: "prior failed", FailedExecID: "exec-0", FailedWorkerID: "w1"}, "TOOL CALL: bash\n\nASSISTANT: real prior work\n\n")
+	priorTail := extractRecoveryTailSection(prior)
+	if priorTail == "" {
+		t.Fatal("prior tail must extract")
+	}
+
+	// Churn-only successor carries the prior tail forward under its own footer.
+	seed := &recoverySeed{Summary: "exec-1 failed", FailedExecID: "exec-1", FailedWorkerID: "w1"}
+	carried := recoveryChurnCarriedNote + priorTail + "\n"
+	content := buildRecoveryFileContent("w1", seed, carried)
+	for _, want := range []string{
+		"carried forward from the prior recovery seed",
+		"TOOL CALL: bash",
+		"ASSISTANT: real prior work",
+		"# recovery-execution-id: exec-1\n# worker-id: w1\n",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("carried seed missing %q", want)
+		}
+	}
+	if strings.Contains(content, "# recovery-execution-id: exec-0") {
+		t.Error("carried seed must carry the NEW footer, not the prior one")
+	}
+
+	// Churn-only successor with no prior transcript -> explicit churn marker.
+	content = buildRecoveryFileContent("w1", seed, recoveryChurnMarkerNote)
+	if !strings.Contains(content, "no productive transcript window exists to seed") {
+		t.Errorf("churn marker missing:\n%s", content)
+	}
+	if !strings.HasSuffix(content, "# recovery-execution-id: exec-1\n# worker-id: w1\n") {
+		t.Error("footer must remain the last lines")
 	}
 }
