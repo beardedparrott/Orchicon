@@ -110,14 +110,18 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.URL != "" {
 			m.inputs[fieldURL].SetValue(profile.URL)
 		}
-		if profile.Token != "" {
+		// The profile's stored auth method determines the INITIAL mode.
+		profileIsPassword := profile.AuthMethod == config.AuthPassword
+		m.authAPI = !profileIsPassword
+		// Pre-fill the credential ONLY when it belongs to the active mode:
+		// an oc_… API key must never pre-fill the password field as a wall
+		// of masked dots (operator bug 2026-09-10), and a password token
+		// must never show in the API-key field.
+		if profile.Token != "" && profileIsPassword == !m.authAPI {
 			m.inputs[fieldCredential].SetValue(profile.Token)
 		}
 		if profile.Username != "" {
 			m.inputs[fieldUsername].SetValue(profile.Username)
-		}
-		if profile.AuthMethod == config.AuthPassword {
-			m.authAPI = false
 		}
 		// Carry the stored refresh token through an edit — a re-connect of the
 		// same password profile keeps auto-refresh (API-key mode ignores it).
@@ -128,10 +132,26 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 	return m
 }
 
+// fieldOrder returns the tab cycle in the order the fields are RENDERED
+// for the active auth mode — the cycle must match the eye, or focus lands
+// on an invisible (masked) field and typing appears dead:
+//   - API-key mode renders: URL → API key (credential)
+//   - username+password mode renders: URL → Username → Password (credential)
+func (m *Model) fieldOrder() []int {
+	if m.authAPI {
+		return []int{fieldURL, fieldCredential}
+	}
+	return []int{fieldURL, fieldUsername, fieldCredential}
+}
+
 // applyCredentialMode derives the credential field's prompt + placeholder
 // from the active auth mode. API-key mode shows "API key >" with the oc_…
 // placeholder; username+password mode shows "Password >" with a password
-// placeholder — never "API key" in password mode.
+// placeholder — never "API key" in password mode. A stored API-key token
+// must never pre-fill the password field as a wall of masked dots (the
+// operator's "bunch of asterisks I cannot clear" — bug 2026-09-10), so
+// New() only pre-fills the credential when the profile's stored auth mode
+// matches the active one.
 func (m *Model) applyCredentialMode() {
 	if m.authAPI {
 		m.inputs[fieldCredential].Prompt = "API key > "
@@ -276,7 +296,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
-			m.focus = (m.focus + 1) % fieldCount
+			// Field order follows the RENDERED layout per auth mode
+			// (operator bug 2026-09-10: tabbing in username+password mode
+			// landed focus on the invisible password field because the
+			// cycle followed the internal array order — URL → credential →
+			// username — while the form RENDERS URL → Username → Password).
+			order := m.fieldOrder()
+			step := 1
+			if msg.Type == tea.KeyShiftTab || msg.Type == tea.KeyUp {
+				step = -1
+			}
+			pos := 0
+			for i, f := range order {
+				if f == m.focus {
+					pos = i
+					break
+				}
+			}
+			next := order[(pos+step+len(order))%len(order)]
+			m.focus = next
 			for i := range m.inputs {
 				if i == m.focus {
 					m.inputs[i].Focus()
@@ -295,7 +333,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyCredentialMode()
 			m.errMsg = ""
 			m.info = ""
-			// Switching to API-key mode drops the stored password-mode
+			// Switching modes drops the other mode's credential: an oc_…
+			// API key must never sit (masked) in the Password field, and a
+			// typed password must never leak into the API-key field
+			// (operator bug 2026-09-10 — the stale token pre-filled the
+			// password field as "a bunch of asterisks").
+			m.inputs[fieldCredential].SetValue("")
+			// Switching to API-key mode also drops the stored password-mode
 			// refresh token (it belongs to the local-login session).
 			if m.authAPI {
 				m.storedRefresh = ""
