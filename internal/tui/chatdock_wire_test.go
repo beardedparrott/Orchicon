@@ -58,15 +58,13 @@ func TestOnStreamDoneEndsTurnAndPolls(t *testing.T) {
 	}
 }
 
-// ctrl+c always escapes the composer (hard quit).
+// ctrl+c always escapes the composer (hard quit) — it is the launch focus.
 func TestCtrlCFromComposerQuits(t *testing.T) {
 	m := newWireApp()
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
-	m2 := nm.(*App)
-	if m2.chatFocus != focusComposer {
-		t.Fatal("precondition: composer focused")
+	if m.chatFocus != focusComposer {
+		t.Fatal("precondition: composer focused (Phase 2a launch default)")
 	}
-	nm, cmd := m2.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("ctrl+c while composing must return a quit cmd")
 	}

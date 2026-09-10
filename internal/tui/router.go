@@ -135,8 +135,16 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Scope: "global",
 			Match: keyMatcher(tab.Chord),
 			Handle: func(m *App, _ tea.Msg) bool {
+				wasActive := m.ActiveTab()
 				m.SwitchTo(tab.ID)
-				m.EnsureSubscriptions(tab.ID) // chord press re-arms streams
+				// Re-arm streams on every chord press, exactly once: on an
+				// actual switch the route arms here (SwitchTo doesn't arm
+				// for a NEW active tab); on a same-tab re-press SwitchTo's
+				// toggle path already armed — the route must not arm a
+				// second time (double-arm = double stream dials).
+				if m.ActiveTab() != wasActive || wasActive != tab.ID {
+					m.EnsureSubscriptions(tab.ID)
+				}
 				return true
 			},
 		})
@@ -151,9 +159,26 @@ func keyMatcher(s string) func(tea.Msg) bool {
 	}
 }
 
-// dispatch evaluates the route chain. Input routes registered by the
-// active screen always sit last so chords fall through to text editing
-// only when no global/screen route consumed the key.
+// composerBypassKeys are the structural chords that reach the global
+// routes even while the composer is focused (the launch default): tab
+// switches, the conversations-rail toggle, and quit. The textarea would
+// otherwise consume them as editing no-ops (it consumes EVERY key —
+// unknown chords are silent no-ops that still report consumed), locking
+// the shell chrome behind a focus escape forever.
+var composerBypassKeys = map[string]bool{
+	"ctrl+o": true, "ctrl+w": true, "ctrl+e": true,
+	"ctrl+a": true, "ctrl+f": true, "ctrl+t": true,
+	"ctrl+r": true, "ctrl+c": true, "q": true,
+	// Arrow tab cycling + tab key: structural chrome (the tab bar is the
+	// shell's spine — arrows must switch tabs while composing).
+	"right": true, "left": true, "tab": true, "shift+tab": true,
+}
+
+// dispatch evaluates the route chain. With the composer ALWAYS focused
+// (Phase 2a), the global routes run only when the composer is not in
+// control of a key: dispatch lets the dock consume each key first while
+// focused, then evaluates global chords (tab switching still works via
+// explicit chords the dock does not bind), then the screen.
 func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
@@ -161,7 +186,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.footer.MouseEnabled = m.mouseEnabled
 		// Reflow the screen + dock (and the diff pane rail) to the new size,
 		// accounting for the pane when it is open.
-		m.reflowForDiff()
+		m.refreshLayout()
 		// First layout: start the active screen's live streams.
 		m.EnsureSubscriptions(m.active)
 		return m, nil
@@ -185,92 +210,71 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, m.connectTick(msg)
 	}
-	// Global mouse: clicks on the tab bar (row 0) switch tabs regardless of
-	// focus; clicks/wheel in the Ask right rail (rightmost columns, rows
-	// >= 1) navigate conversations; everything else falls through to the
-	// composer/screen/pane.
 	if mo, ok := msg.(tea.MouseMsg); ok {
-		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && mo.Y == 0 {
-			if id, ok := m.TabClick(mo.X); ok {
-				m.SwitchTo(id)
-				m.EnsureSubscriptions(id)
-				return m, nil
-			}
-		}
-		if m.railVisible() && mo.X >= m.width-ConversationsRailWidth {
-			if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
-				if m.railHeaderHit(mo.Y) {
-					m.toggleRightRail()
-					return m, nil
-				}
-				if idx, ok := m.railRowAt(mo.Y); ok {
-					return m, m.openRailConversation(idx)
-				}
-			}
-			if mo.Button == tea.MouseButtonWheelUp {
-				m.convScroll--
-				if m.convScroll < 0 {
-					m.convScroll = 0
-				}
-				return m, nil
-			}
-			if mo.Button == tea.MouseButtonWheelDown {
-				max := len(m.conversations) - m.railVisibleRows()
-				if max < 0 {
-					max = 0
-				}
-				m.convScroll++
-				if m.convScroll > max {
-					m.convScroll = max
-				}
-				return m, nil
-			}
-		}
+		return m.dispatchMouse(mo)
 	}
-	// Composer focus: composer keys first; tab chords fall through to
-	// the input (Ctrl+W/A/E/F/T remain delete-word / line-start / …).
-	if m.chatFocus == focusComposer {
-		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
-			// hard escape: quit always works, even mid-composition
-			m.quitting = true
-			return m, tea.Quit
-		}
-		// Composer '/' palette: while open, palette keys own the message
-		// (filter/navigate/select). Otherwise a leading '/' opens it.
-		if k, ok := msg.(tea.KeyMsg); ok {
-			if m.palette.PaletteOpen() {
-				handled, cmd := m.paletteHandleKey(k)
-				if handled {
-					m.footer.StreamStatus = m.streamStatus()
-					return m, cmd
-				}
-			} else if k.String() == "/" {
-				m.openPalette()
-				m.footer.StreamStatus = m.streamStatus()
-				return m, nil
-			}
-		}
-		consumed, cmd := m.dock.Update(msg)
-		if k, ok := msg.(tea.KeyMsg); ok && consumed {
-			switch k.String() {
-			case "ctrl+g", "esc":
-				m.setFocus(focusContent)
-				m.footer.StreamStatus = m.streamStatus()
-				return m, nil
-			}
-		}
-		if consumed {
-			if text := m.dock.SendRequest(); text != "" {
-				cmd = m.sendFromComposer(text)
-			}
+	k, isKey := msg.(tea.KeyMsg)
+	if isKey && m.chatFocus == focusComposer && k.String() == "ctrl+c" {
+		// hard escape: quit always works, even mid-composition
+		m.quitting = true
+		return m, tea.Quit
+	}
+	// Tab dropdown submenu keys: the open menu owns arrows/enter/esc and
+	// its own tab chords (BEFORE composer handling so esc closes the menu
+	// instead of falling through to focus toggling — no focus trap).
+	if isKey && m.TabMenu() != nil {
+		if handled, cmd := m.menuHandleKey(k); handled {
 			m.footer.StreamStatus = m.streamStatus()
 			return m, cmd
 		}
-		if _, isKey := msg.(tea.KeyMsg); isKey {
-			// a key the dock did not take while focused: keep it out of
-			// the router's tab chords (focus stays in the composer).
+	}
+	// Composer '/' palette: while open, palette keys own the message
+	// (filter/navigate/select); esc hands the key back to the global
+	// routes. Otherwise a leading '/' opens it. The palette floats ABOVE
+	// the composer: the composer line + typed text stay visible in the
+	// base view while it filters (paletteView composes over the base).
+	if m.palette.PaletteOpen() && isKey {
+		handled, cmd := m.paletteHandleKey(k)
+		if handled {
 			m.footer.StreamStatus = m.streamStatus()
-			return m, nil
+			return m, cmd
+		}
+	} else if isKey && m.chatFocus == focusComposer && k.String() == "/" {
+		m.openPalette()
+		m.footer.StreamStatus = m.streamStatus()
+		return m, nil
+	}
+	// Composer focus (the launch default): KEY messages go to the dock
+	// first (typing works immediately), EXCEPT the shell's structural
+	// chords — tab switches, ctrl+r rail toggle, q quit, ctrl+c — which
+	// bypass the composer so the chrome always works while typing. Every
+	// other key is composer-local editing text; 'q'/'?'/'d'/'y' etc. are
+	// literal characters, never shortcuts, while composing. ALL non-key
+	// messages (chat results, subs pokes, diffs) fall through to appMsg —
+	// the dock must never swallow async traffic.
+	if m.chatFocus == focusComposer {
+		if k, isKeyMsg := msg.(tea.KeyMsg); isKeyMsg {
+			if composerBypassKeys[k.String()] {
+				// structural chord: skip the composer, the routes below
+				// own it (switchTab routes, quit, rail toggle).
+			} else {
+				consumed, cmd := m.dock.Update(msg)
+				switch k.String() {
+				case "ctrl+g", "esc":
+					if consumed {
+						m.setFocus(focusContent)
+						m.footer.StreamStatus = m.streamStatus()
+						return m, nil
+					}
+				}
+				if consumed {
+					if text := m.dock.SendRequest(); text != "" {
+						cmd = m.sendFromComposer(text)
+					}
+					m.footer.StreamStatus = m.streamStatus()
+					return m, cmd
+				}
+			}
 		}
 	}
 	if cmd := m.appMsg(msg); cmd != nil {
@@ -305,6 +309,91 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// Defer to the active screen (its input routes are inside its own
 	// Update — chords already consumed above).
 	return m.passToScreen(msg)
+}
+
+// dispatchMouse routes mouse events: the open dropdown first, then the
+// tab bar (click = switch + open its menu), the Ask rail, then
+// fall-through to the screen/pane.
+func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+		// Toggle decision BEFORE any close: one click = exactly one menu
+		// transition. Capturing the open state after the outside-click
+		// close would turn "click the open tab again" into "reopen" (the
+		// menu could never close by mouse).
+		wasOpen := m.MenuOpenID()
+		if m.TabMenu() != nil {
+			if m.MenuClick(mo.X, mo.Y) {
+				return m, nil
+			}
+			if m.menuHit(mo.X, mo.Y) {
+				return m, nil // header/border: keep the menu open
+			}
+			m.closeTabMenu() // click outside closes (standard menu behavior)
+		}
+		if mo.Y == 0 {
+			if id, ok := m.TabClick(mo.X); ok {
+				if wasOpen == id {
+					// Click the open tab again: close its dropdown (the
+					// tab is already active — SwitchTo re-arms only).
+					m.SwitchTo(id)
+					m.EnsureSubscriptions(id)
+				} else {
+					m.SwitchTo(id)
+					m.EnsureSubscriptions(id)
+					m.openTabMenu(id)
+				}
+				return m, nil
+			}
+		}
+	}
+	if m.railVisible() && mo.X >= m.width-ConversationsRailWidth {
+		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+			if m.railHeaderHit(mo.Y) {
+				m.toggleRightRail()
+				return m, nil
+			}
+			if idx, ok := m.railRowAt(mo.Y); ok {
+				return m, m.openRailConversation(idx)
+			}
+		}
+		if mo.Button == tea.MouseButtonWheelUp {
+			m.convScroll--
+			if m.convScroll < 0 {
+				m.convScroll = 0
+			}
+			return m, nil
+		}
+		if mo.Button == tea.MouseButtonWheelDown {
+			max := len(m.conversations) - m.railVisibleRows()
+			if max < 0 {
+				max = 0
+			}
+			m.convScroll++
+			if m.convScroll > max {
+				m.convScroll = max
+			}
+			return m, nil
+		}
+	}
+	if cmd := m.appMsg(mo); cmd != nil {
+		m.footer.StreamStatus = m.streamStatus()
+		return m, cmd
+	}
+	for _, r := range m.routes {
+		if r.Match == nil || !r.Match(mo) {
+			continue
+		}
+		if r.Handle(m, mo) {
+			m.footer.StreamStatus = m.streamStatus()
+			if m.pendingDiffCmd != nil {
+				cmd := m.pendingDiffCmd
+				m.pendingDiffCmd = nil
+				return m, cmd
+			}
+			return m, nil
+		}
+	}
+	return m.passToScreen(mo)
 }
 
 // appMsg handles App-level messages: chat controller results, pending

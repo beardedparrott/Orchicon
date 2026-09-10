@@ -33,21 +33,6 @@ func (m *App) toggleRightRail() {
 	m.refreshLayout()
 }
 
-// refreshLayout re-applies the current width/height to the active screen
-// and dock (the right rail and diff pane both consume width). Called after
-// toggling a rail so content reflows immediately.
-func (m *App) refreshLayout() {
-	if s := m.screens[m.active]; s != nil && m.width > 0 {
-		s.SetSize(m.contentWidth(), m.contentHeight())
-	}
-	if m.width > 0 {
-		m.dock.Width = m.contentWidth()
-	}
-	if m.diffPane != nil {
-		m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
-	}
-}
-
 // rightRailView renders the CONVERSATIONS rail (header + scrollable list)
 // at the fixed ConversationsRailWidth. The rail is joined horizontally to
 // the main column (joining at Top), so its first line sits at the same

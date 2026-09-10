@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -215,4 +216,148 @@ func TestAskTwoRailsPins(t *testing.T) {
 	if len(lines) > 40 {
 		t.Fatalf("Ask 3-zone overflow: %d lines > 40", len(lines))
 	}
+}
+
+// TestFullScreenTakeoverCoversViewport is the Phase-2a acceptance render
+// gate: on EVERY tab in the shell inventory (real screens from the
+// factories), the view is EXACTLY h rows and EVERY row is EXACTLY w cells
+// wide (opaque fill — zero terminal bleed-through) at 80x24 and 120x40.
+// The composer block is pinned to the bottom above the one-line footer.
+func TestFullScreenTakeoverCoversViewport(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		w, h := size[0], size[1]
+		for _, tab := range Tabs {
+			app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
+			app.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
+			app.SwitchTo(tab.ID)
+			v := app.View()
+			lines := strings.Split(v, "\n")
+			if len(lines) != h {
+				t.Errorf("%s %dx%d: %d rows, want exactly %d", tab.ID, w, h, len(lines), h)
+				continue
+			}
+			for i, l := range lines {
+				if got := lipgloss.Width(l); got != w {
+					t.Errorf("%s %dx%d row %d: width %d, want %d", tab.ID, w, h, i, got, w)
+					break
+				}
+			}
+			// The composer block is pinned to the bottom: the input line is
+			// inside the dock block (dockRows rows), directly above the
+			// one-line footer; notice strips render above the input line,
+			// so the exact row is found by scanning the dock block.
+			footerIdx := h - 1
+			dockRows := app.dock.Lines()
+			inputIdx := -1
+			for i := footerIdx - dockRows + 1; i <= footerIdx-1; i++ {
+				if i >= 0 && strings.Contains(lipglossStrip(lines[i]), "❯") {
+					inputIdx = i
+					break
+				}
+			}
+			if inputIdx < 0 {
+				t.Errorf("%s %dx%d: composer prompt missing from the dock block (rows %d-%d)", tab.ID, w, h, footerIdx-dockRows, footerIdx-1)
+				continue
+			}
+			if !strings.Contains(lipglossStrip(lines[inputIdx]), "❯") {
+				t.Errorf("%s %dx%d: composer prompt not on row %d (dock block): %q", tab.ID, w, h, inputIdx, lipglossStrip(lines[inputIdx]))
+			}
+			footer := lipglossStrip(lines[footerIdx])
+			if !strings.Contains(footer, "·") {
+				t.Errorf("%s %dx%d: footer not on the last row: %q", tab.ID, w, h, footer)
+			}
+		}
+	}
+}
+
+// TestComposerFocusedAtLaunch pins operator finding 3: the shell launches
+// with the composer focused (typing works immediately, no ctrl+g); esc
+// moves focus to content; ctrl+g returns it; the footer reflects focus.
+func TestComposerFocusedAtLaunch(t *testing.T) {
+	m := newTestApp()
+	if m.chatFocus != focusComposer {
+		t.Fatalf("launch focus = %v, want composer", m.chatFocus)
+	}
+	if !m.dock.Focused {
+		t.Fatal("launch: dock textarea not focused")
+	}
+	if !m.Footer().ComposerFocus {
+		t.Fatal("launch: footer must show the composer-focused hint")
+	}
+	// Typing lands in the composer with no ctrl+g first.
+	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = nm
+	if got := m.dock.Value(); got != "x" {
+		t.Fatalf("typed char must land in the composer at launch: %q", got)
+	}
+	if m.chatFocus != focusComposer {
+		t.Fatal("typing must not steal focus")
+	}
+	// esc → content; ctrl+g → composer.
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm
+	if m.chatFocus != focusContent {
+		t.Fatal("esc must move focus to content")
+	}
+	nm, _ = m.dispatch(keyFor("ctrl+g"))
+	m = nm
+	if m.chatFocus != focusComposer {
+		t.Fatal("ctrl+g must return focus to the composer")
+	}
+}
+
+// TestPaletteAboveComposerPins operator finding 4: the slash palette
+// floats ABOVE the composer — the composer input line (with the typed
+// text) stays visible BELOW the palette box while it filters.
+func TestPaletteAboveComposer(t *testing.T) {
+	m := newTestApp()
+	m.dispatch(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.dock.SetValue("/the")
+	m.openPalette()
+	v := m.View()
+	lines := strings.Split(v, "\n")
+	// The composer line with the typed text must be visible.
+	composerIdx := -1
+	for i, l := range lines {
+		if strings.Contains(lipglossStrip(l), "❯ /the") {
+			composerIdx = i
+			break
+		}
+	}
+	if composerIdx < 0 {
+		t.Fatalf("composer line with typed text invisible while palette open")
+	}
+	// The palette box renders ABOVE the composer line.
+	paletteIdx := -1
+	for i, l := range lines {
+		if strings.Contains(lipglossStrip(l), "command palette") {
+			paletteIdx = i
+			break
+		}
+	}
+	if paletteIdx < 0 {
+		t.Fatalf("palette box not rendered")
+	}
+	if paletteIdx >= composerIdx {
+		t.Fatalf("palette box (row %d) must float ABOVE the composer (row %d)", paletteIdx, composerIdx)
+	}
+}
+
+// lipglossStrip removes ANSI escapes for plain-text assertions.
+func lipglossStrip(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && !(s[j] >= 0x40 && s[j] <= 0x7e) {
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }

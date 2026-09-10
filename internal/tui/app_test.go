@@ -100,6 +100,8 @@ func TestArrowTabCycling(t *testing.T) {
 	if m.ActiveTab() != TabWork {
 		t.Fatalf("initial tab = %q", m.ActiveTab())
 	}
+	// Arrow tab cycling is a structural chord — it works even while the
+	// composer is focused (the Phase-2a launch default).
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if got := nm.(*App).ActiveTab(); got != TabExecution {
 		t.Fatalf("right from work = %q, want execution", got)
@@ -161,8 +163,16 @@ func TestHelpOverlayMatchesKeymap(t *testing.T) {
 func TestHelpOverlayToggle(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	// The help overlay opens from CONTENT focus (? is a literal character
+	// while composing — typing "how?" into the composer must never open
+	// an overlay). Esc also hands focus back: toggle content → composer.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}) // composer → content
 	m2 := nm.(*App)
+	if m2.chatFocus != focusContent {
+		t.Fatal("esc must return focus to content (precondition)")
+	}
+	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m2 = nm.(*App)
 	if !m2.help.open {
 		t.Fatal("? must open the overlay")
 	}
@@ -178,13 +188,16 @@ func TestHelpOverlayToggle(t *testing.T) {
 
 // Inside a text input (composer concern later), chords must fall through
 // to editing: the router consumes ctrl-chords first, but plain keys and
-// shift+letters reach the screen.
+// shift+letters reach the screen. The composer owns plain keys at launch
+// (Phase 2a) — after esc (content focus) they reach the screen.
 func TestRouterDefersPlainKeysToScreen(t *testing.T) {
 	m := newTestApp()
 	s := &stubScreen{id: "ask"}
 	m.RegisterScreen(TabAsk, s)
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}) // composer → content
 	m2 := nm.(*App)
+	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m2 = nm.(*App)
 	got := m2.screens[TabAsk].(*stubScreen)
 	if got.lastKey != "x" {
 		t.Fatalf("screen got %q, want x", got.lastKey)

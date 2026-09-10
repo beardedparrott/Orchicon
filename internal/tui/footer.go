@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/beardedparrott/orchicon/internal/tui/stream"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -19,6 +21,7 @@ type footerModel struct {
 	ContextChip   string // current project / work item
 	Width         int
 	MouseEnabled  bool // set by the shell; renders "Mouse Enabled" chip
+	ComposerFocus bool // set by the shell; renders the focus hint
 }
 
 // versionDrift reports whether client and server versions disagree
@@ -73,13 +76,23 @@ func (f footerModel) View() string {
 	if f.ContextChip != "" {
 		parts = append(parts, theme.ListMeta.Render(f.ContextChip))
 	}
+	if f.ComposerFocus {
+		parts = append(parts, theme.StatusOK.Render("— esc/ctrl+g content"))
+	} else {
+		parts = append(parts, theme.HintText.Render("ctrl+g composer"))
+	}
 	if f.MouseEnabled {
 		parts = append(parts, theme.StatusOK.Render("Mouse Enabled"))
 	}
 	line := strings.Join(parts, theme.HintText.Render(" · "))
-	// Keep one line wide; lipgloss handles the terminal width naturally.
+	// Phase 2a (operator finding 5): the footer is ONE row on every screen.
+	// It truncates (ANSI-aware) to the terminal width instead of wrapping —
+	// a wrapping footer steals a budget row and breaks the composer-flush
+	// layout. Priority order: connection state · URL · version · drift ·
+	// identity · context chip · mouse · focus hint (the hint is the first
+	// casualty of a narrow terminal, never the connection state).
 	if f.Width > 0 {
-		return theme.Footer.Width(f.Width).Render(line)
+		line = ansi.Truncate(line, f.Width-2, "")
 	}
 	return theme.Footer.Render(line)
 }
