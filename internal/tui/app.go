@@ -1048,9 +1048,63 @@ func fillView(content string, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
+// bgOpaque re-asserts the theme background after every SGR reset inside l.
+//
+// Why: padScreenLine wraps a rendered line in ScreenBg once, but ANY inner
+// style (HintText, DetailValue, …) emits its own trailing \x1b[0m reset,
+// which turns the background OFF for the rest of the line — including all
+// of padScreenLine's padding spaces. On a terminal whose own background is
+// not the theme background (most terminals; transparent-background setups
+// especially), every cell after an inner reset renders UNPAINTED and the
+// terminal's content bleeds straight through the "opaque" frame.
+//
+// The fix mirrors what bubbletea's renderer does for its own cells: after
+// each reset, immediately re-emit the background SGR so every subsequent
+// cell (content or padding) stays on the theme background. A reset that is
+// immediately followed by another escape needs no repair (the next SGR
+// sets its own state and the next reset is caught then).
+func bgOpaque(l string) string {
+	const reset = "\x1b[0m"
+	bg := theme.ScreenBg
+	// The re-assert sequence: the same SGR ScreenBg emits, minus its own
+	// trailing reset. We derive it once from a zero-width render so the
+	// repair always matches the active theme + color profile.
+	paint := bg.Render("")
+	if paint == "" {
+		return l // profile off / no background: nothing to re-assert
+	}
+	// paint is "<SGR>…<reset>"; strip the trailing reset to get the open seq.
+	if !strings.HasSuffix(paint, reset) {
+		return l
+	}
+	open := strings.TrimSuffix(paint, reset)
+	if open == "" {
+		return l
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(l, reset)
+		if i < 0 {
+			b.WriteString(l)
+			return b.String()
+		}
+		rest := l[i+len(reset):]
+		b.WriteString(l[:i+len(reset)])
+		// Re-assert the background unless another SGR follows immediately
+		// (its own sequence will establish state, and its eventual reset
+		// gets repaired on the next loop iteration).
+		if !strings.HasPrefix(rest, "\x1b[") {
+			b.WriteString(open)
+		}
+		l = rest
+	}
+}
+
 // padScreenLine renders one row at exactly w cells: overlong lines are
 // ANSI-aware truncated, short lines background-padded. Every cell —
-// including padding — carries the theme's solid background.
+// including padding — carries the theme's solid background. Any inner
+// style's reset is followed by a background re-assert (bgOpaque), so the
+// padding can never render unpainted.
 func padScreenLine(l string, w int) string {
 	cols := lipgloss.Width(l)
 	if cols > w {
@@ -1060,7 +1114,7 @@ func padScreenLine(l string, w int) string {
 	if cols < w {
 		l += strings.Repeat(" ", w-cols)
 	}
-	return theme.ScreenBg.Render(l)
+	return bgOpaque(theme.ScreenBg.Render(l))
 }
 
 // ReconnectRequested reports whether the shell exited for /connect

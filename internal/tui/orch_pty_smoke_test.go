@@ -263,3 +263,85 @@ func TestPTYSmokeLaunchFullTakeoverComposerFocused(t *testing.T) {
 		})
 	}
 }
+// countUnpaintedGaps scans a painted stream for cells the shell left
+// UNPAINTED after a style reset: `\x1b[0m` followed by printable content
+// or spaces that are not immediately re-opened by a background SGR. Every
+// such cell renders with the TERMINAL's own background — the bleed-through
+// the operator's screenshots show (matrix scrollback visible through the
+// "opaque" shell). This is the live-binary regression test for the
+// padScreenLine fix (bgOpaque re-asserts the background after resets).
+func countUnpaintedGaps(painted string) int {
+	gaps := 0
+	rest := painted
+	for {
+		i := strings.Index(rest, "\x1b[0m")
+		if i < 0 {
+			return gaps
+		}
+		rest = rest[i+len("\x1b[0m"):]
+		// Walk cells after the reset. A gap = printable/space cells that
+		// appear before any SGR re-paints (or the next reset). Escapes
+		// that are NOT SGR (cursor moves, alt-screen switches) don't
+		// repaint and don't count as cells.
+		j := 0
+		gapHere := 0
+		for j < len(rest) {
+			c := rest[j]
+			if c == 0x1b {
+				// Escape: if an SGR with a background/mode set follows,
+				// painting resumed — stop counting this gap.
+				if strings.HasPrefix(rest[j:], "\x1b[") {
+					break
+				}
+				// Non-SGR escape (e.g. \x1b= ): skip its bytes, keep walking.
+				k := j + 1
+				for k < len(rest) && (rest[k] == ';' || rest[k] == '?' || rest[k] == ']' ||
+					(rest[k] >= '0' && rest[k] <= '9')) {
+					k++
+				}
+				if k < len(rest) {
+					k++ // final byte
+				}
+				j = k
+				continue
+			}
+			if c == '\n' || c == '\r' {
+				j++
+				continue
+			}
+			gapHere++
+			j++
+		}
+		gaps += gapHere
+	}
+}
+
+// TestPTYNoUnpaintedGaps is the live-binary opacity gate: bin/orch in a
+// real pty paints its first frames and the stream must contain ZERO
+// unpainted cell runs after any style reset. This is the regression test
+// for the operator's "terminal bleeds through the shell" screenshots
+// (2026-09-10): inner styles' \x1b[0m resets killed the background for
+// everything after them — including fillView's padding — so the frame was
+// riddled with terminal-background holes. padScreenLine now re-asserts
+// the background after every reset (bgOpaque).
+func TestPTYNoUnpaintedGaps(t *testing.T) {
+	skipInteractivePTY(t)
+	if testing.Short() {
+		t.Skip("real-pty smoke: skipped in -short")
+	}
+	bin := orchBinPath(t)
+	s := startOrchPty(t, bin, 120, 40)
+	defer s.close()
+	// Let several frames paint (initial + capability handshake + first
+	// live repaint) and the composer receive typing (an inner-styled input
+	// row — exactly the shape that used to leak).
+	time.Sleep(2 * time.Second)
+	_, _ = s.tty.WriteString("orch opacity probe")
+	out := s.readFor(4 * time.Second)
+	if !strings.Contains(out, "\x1b[?1049h") {
+		t.Fatalf("orch never entered alt-screen (%d bytes)", len(out))
+	}
+	if gaps := countUnpaintedGaps(out); gaps > 0 {
+		t.Fatalf("LIVE BINARY left %d unpainted cells after style resets — terminal bleeds through (padScreenLine/bgOpaque regression)", gaps)
+	}
+}

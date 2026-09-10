@@ -305,7 +305,16 @@ func (m *App) openConnectOverlay() {
 	if m.palette.connectOpen {
 		return
 	}
-	form := connection.New(m.profile, connection.DefaultProbes())
+	// Re-auth pre-fills URL + username (stable, useful) but NEVER the
+	// credential: the stored token is by definition expired/invalid (that
+	// is why the overlay is open), and a pre-filled 300-char access token
+	// renders as a full-width echo row the operator cannot reason about —
+	// the "cannot type a password" trap from the operator's Phase 3
+	// screenshot. An empty credential field with a blinking cursor is the
+	// correct starting state.
+	prefill := *m.profile
+	prefill.Token = ""
+	form := connection.New(&prefill, connection.DefaultProbes())
 	form.SetEmbedded()
 	if m.width > 0 {
 		// Pre-size the form's text inputs via a WindowSizeMsg (it has no
