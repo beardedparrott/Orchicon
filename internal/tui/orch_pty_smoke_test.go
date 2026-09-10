@@ -40,7 +40,32 @@ import (
 	"github.com/creack/pty"
 )
 
+// skipInteractivePTY skips real-pty tests when running under a human's
+// interactive terminal: `go test` inherits make's terminal there, and a
+// real-pty spawn of the live TUI binary (alt-screen + mouse-cell-motion
+// reporting) hijacks the operator's terminal for the test's lifetime —
+// mouse capture, scrollback trashing, orphaned full-screen frames on a
+// crash. CI is unaffected (no controlling terminal → the gate stays on);
+// ORCH_PTY_SMOKE=1 opts a human back in when they actually want the
+// live-pty verification.
+func skipInteractivePTY(t *testing.T) {
+	t.Helper()
+	if os.Getenv("ORCH_PTY_SMOKE") == "1" {
+		return
+	}
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		t.Skip("real-pty test would hijack the interactive terminal (mouse capture + alt-screen); run with ORCH_PTY_SMOKE=1 to opt in")
+	}
+}
+
 // orchBinPath resolves (building if needed) the real bin/orch binary.
+// Freshness guard: a pre-existing bin/orch is only reused when it is NOT
+// older than the current HEAD commit — a stale build (old footer text,
+// old features) otherwise makes the live assertions fail against the
+// WRONG binary and blocks `make full-rebuild` (which builds artifacts
+// only AFTER `make test`) with phantom regressions. The check is cheap
+// (one git call); when HEAD is unresolvable (no git, shallow CI) the
+// existing binary is trusted rather than rebuilding every run.
 func orchBinPath(t *testing.T) string {
 	t.Helper()
 	// The test runs from internal/tui; the module root is two levels up.
@@ -49,7 +74,7 @@ func orchBinPath(t *testing.T) string {
 		t.Fatalf("resolve module root: %v", err)
 	}
 	bin := filepath.Join(root, "bin", "orch")
-	if _, err := os.Stat(bin); err == nil {
+	if fi, err := os.Stat(bin); err == nil && !orchBinaryStale(t, root, fi.ModTime()) {
 		return bin
 	}
 	// Build a scratch binary (never replaces a tracked bin/orch).
@@ -60,6 +85,23 @@ func orchBinPath(t *testing.T) string {
 		t.Fatalf("build bin/orch: %v\n%s", err, out)
 	}
 	return scratch
+}
+
+// orchBinaryStale reports whether bin/orch predates the current HEAD
+// commit (i.e. the binary could not contain the current source).
+func orchBinaryStale(t *testing.T, root string, builtAt time.Time) bool {
+	t.Helper()
+	cmd := exec.Command("git", "log", "-1", "--format=%cI")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return false // can't tell → trust the existing binary
+	}
+	headAt, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	if err != nil {
+		return false
+	}
+	return builtAt.Before(headAt)
 }
 
 // ptySession is one orch process on a real pty. buf accumulates every
@@ -202,7 +244,15 @@ func assertPTYTakeover(t *testing.T, cols, rows int) {
 // TestPTYSmokeLaunchFullTakeoverComposerFocused is the standing smoke
 // gate: bin/orch in a real pty at 80×24 and 120×40 — launch, full-screen
 // takeover, composer focused by default.
+//
+// The gate is OPT-IN for humans: a real pty spawn of the live binary
+// inside `go test` hijacks the developer's own terminal (alt-screen +
+// mouse-cell-motion capture) when `make test` runs from an interactive
+// shell — stdin is a TTY there, so the skip guard fires and the pty
+// never launches. CI runs non-interactively (no TTY) and keeps the gate;
+// set ORCH_PTY_SMOKE=1 to run it by hand from a terminal.
 func TestPTYSmokeLaunchFullTakeoverComposerFocused(t *testing.T) {
+	skipInteractivePTY(t)
 	if testing.Short() {
 		t.Skip("real-pty smoke: skipped in -short")
 	}
