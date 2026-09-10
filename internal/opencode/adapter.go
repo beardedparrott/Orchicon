@@ -984,6 +984,39 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		// the host or project disk without ballooning the transcript.
 		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID)
 
+		// Diff pipeline: record the file edits this tool made BEFORE any
+		// early-break branch below — notably the `write` artifact path, which
+		// breaks out of the switch for every write carrying a `content` input
+		// (both the opencode built-in writer AND the worktree engine's
+		// single-op `write` wrapper share that {filePath|path, content}
+		// shape). The hook sees rawOut (PRE-cap — capToolOutput may have
+		// spliced the tail out of outStr, hiding the file_edits payload of a
+		// huge batch_write). Best-effort: the hook owns its error posture; a
+		// ledger gap never fails the session. Only completed calls ledger: an
+		// error/failed/in-flight state carries no ground truth, and failed
+		// edits must never create phantom rows. An absent status keeps the
+		// legacy fire behavior.
+		toolStatus, _ := state["status"].(string)
+		if a.fileEdits != nil && (toolStatus == "" || toolStatus == "completed") {
+			inputMap, _ := inRaw.(map[string]any)
+			if inputMap == nil {
+				inputMap = map[string]any{}
+			}
+			// Remember engine-covered paths so the file_diff fallback never
+			// double-records one edit (the engine entry is the exact one).
+			if toolName == "batch_write" || toolName == "write" || toolName == "edit" {
+				if stats != nil {
+					if stats.engineEditedPaths == nil {
+						stats.engineEditedPaths = map[string]bool{}
+					}
+					for _, e := range engineEditedFromOutput(rawOut) {
+						stats.engineEditedPaths[e] = true
+					}
+				}
+			}
+			a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), toolName, inputMap, rawOut)
+		}
+
 		// Detect `todowrite` (native opencode todo tool) and mirror its
 		// payload into the DB-less sidecar snapshot so `todoread` — and the
 		// native todo surface — can re-sync it without a Postgres
@@ -1063,35 +1096,6 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		a.log.Info("opencode tool use",
 			"execution", execID, "tool", toolName,
 			"status", state["status"], "output_len", len(outStr))
-		// Diff pipeline: record the file edits this tool made BEFORE the
-		// tool-call telemetry fan-out (order irrelevant to both). The hook
-		// sees rawOut (PRE-cap — capToolOutput may have spliced the tail out
-		// of outStr, hiding the file_edits payload of a huge batch_write).
-		// Best-effort: the hook owns its error posture; a ledger gap never
-		// fails the session. Only completed calls ledger: an error/failed/
-		// in-flight state carries no ground truth, and failed edits must
-		// never create phantom rows. An absent status keeps the legacy fire
-		// behavior.
-		toolStatus, _ := state["status"].(string)
-		if a.fileEdits != nil && (toolStatus == "" || toolStatus == "completed") {
-			inputMap, _ := inRaw.(map[string]any)
-			if inputMap == nil {
-				inputMap = map[string]any{}
-			}
-			// Remember engine-covered paths so the file_diff fallback never
-			// double-records one edit (the engine entry is the exact one).
-			if toolName == "batch_write" || toolName == "write" || toolName == "edit" {
-				if stats != nil {
-					if stats.engineEditedPaths == nil {
-						stats.engineEditedPaths = map[string]bool{}
-					}
-					for _, e := range engineEditedFromOutput(rawOut) {
-						stats.engineEditedPaths[e] = true
-					}
-				}
-			}
-			a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), toolName, inputMap, rawOut)
-		}
 		callbacks.OnToolCall(ctx, execID, toolName, inp, []byte(outStr))
 	case evtReasoning:
 		// v1.x reasoning content (only when --thinking is enabled
