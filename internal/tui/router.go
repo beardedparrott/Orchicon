@@ -228,6 +228,15 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, cmd
 		}
 	}
+	// Tab submenu ACTIVATION (Phase 3 finding 3): Enter or Space on the
+	// active tab opens its dropdown. Enter with an empty composer is a
+	// no-op today (blank enter never sends), so the shell can claim it
+	// there too; with text in the composer Enter still means send.
+	if isKey && m.TabMenu() == nil && m.menuActivationKey(k) {
+		m.openTabMenu(m.active)
+		m.footer.StreamStatus = m.streamStatus()
+		return m, nil
+	}
 	// Composer '/' palette: while open, palette keys own the message
 	// (filter/navigate/select); esc hands the key back to the global
 	// routes. Otherwise a leading '/' opens it. The palette floats ABOVE
@@ -240,9 +249,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, cmd
 		}
 	} else if isKey && m.chatFocus == focusComposer && k.String() == "/" {
+		// The composer OWNS the typing: the "/" goes into the buffer
+		// FIRST so the operator's text ("/pro") stays visible in the bar
+		// while the palette above filters on it (Phase 3 finding 4 — the
+		// palette used to swallow the query and the bar stayed empty).
+		_, cmd := m.dock.Update(k)
 		m.openPalette()
 		m.footer.StreamStatus = m.streamStatus()
-		return m, nil
+		return m, cmd
 	}
 	// Composer focus (the launch default): KEY messages go to the dock
 	// first (typing works immediately), EXCEPT the shell's structural

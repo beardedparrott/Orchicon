@@ -97,20 +97,48 @@ func (m *App) MenuSelect() {
 	m.selectScreenSource(open, entry.Source)
 }
 
-// MenuClick activates the dropdown row under absolute terminal (x, y).
+// menuEntryRow maps an absolute terminal row to the dropdown entry index:
+// the panel is a rounded border (1 row) + the header row (tab title) + the
+// entries, so entry i sits at top+2+i. Returns -1 when the row is not an
+// entry (border, header, or outside the panel).
+func (m *App) menuEntryRow(tm *TabMenu, y int) int {
+	top, _ := m.menuGeometry()
+	row := y - top - 2
+	if row < 0 || row >= len(tm.Entries) {
+		return -1
+	}
+	return row
+}
+
+// MenuClick activates the dropdown row under absolute terminal (x, y) —
+// the mouse path for submenu entries (the geometry is derived from the
+// rendered panel, so key and mouse can never disagree).
 func (m *App) MenuClick(x, y int) bool {
 	tm := m.TabMenu()
 	if tm == nil {
 		return false
 	}
-	top, _ := m.menuGeometry()
-	row := y - top
-	if row < 1 || row > len(tm.Entries) { // row 0 is the header
+	row := m.menuEntryRow(tm, y)
+	if row < 0 {
 		return false
 	}
-	tm.Sel = row - 1
+	tm.Sel = row
 	m.MenuSelect()
 	return true
+}
+
+// menuActivationKey reports whether k is the submenu-open key: Enter on
+// the active tab (always from content focus; from the composer only when
+// the buffer is empty, so a real message keeps Enter as send), or Space
+// under the same rule.
+func (m *App) menuActivationKey(k tea.KeyMsg) bool {
+	switch k.String() {
+	case "enter":
+		return m.chatFocus == focusContent || strings.TrimSpace(m.dock.Value()) == ""
+	case " ", "space":
+		return m.chatFocus == focusContent || m.dock.Value() == ""
+	}
+	return false
 }
 
 // menuHit reports whether (x, y) is inside the open dropdown panel.
@@ -404,7 +432,7 @@ func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	case "down", "j":
 		m.selectMenu(1)
 		return true, nil
-	case "enter":
+	case "enter", " ", "space":
 		m.MenuSelect()
 		return true, nil
 	case "ctrl+c":

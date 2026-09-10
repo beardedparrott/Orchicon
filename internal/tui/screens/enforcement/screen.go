@@ -207,7 +207,7 @@ func (m *Model) View() string {
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
 	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh (approvals/decisions render from list data — no Get-RPC in v1)"))
-	return b.String()
+	return m.Base.Frame(b.String())
 }
 
 // SelectSource focuses the named source (slash nav command support).

@@ -108,6 +108,37 @@ func (b *Base) SetSize(w, h int) {
 // PaneSize returns the per-source pane dimensions.
 func (b *Base) PaneSize() (int, int) { return b.paneW, b.paneH }
 
+// Frame normalizes a screen's composed block into the exact content
+// region this screen was sized to (SetSize from the shell's
+// WindowSizeMsg). Screens call m.Base.Frame(composed) from View so their
+// panes fill the region; an unsized screen passes content through.
+func (b *Base) Frame(content string) string {
+	if b.width < 1 || b.height < 1 {
+		return content
+	}
+	return Frame(content, b.width, b.height)
+}
+
+// HasAuthRetry reports whether any list pane is showing the inline
+// re-auth retry state (an auth-expired fetch). The shell renders the
+// re-auth banner exactly once, so it consults this to avoid duplicating
+// the pane's own inline state.
+func (b *Base) HasAuthRetry() bool {
+	for _, s := range b.sources {
+		if isAuthText(s.list.Err) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAuthText reports whether an error string is the auth-expired shape.
+func isAuthText(errtxt string) bool {
+	l := strings.ToLower(errtxt)
+	return strings.Contains(l, "unauthenticated") || strings.Contains(l, "unauthorized") ||
+		strings.Contains(l, "re-authentication") || strings.Contains(l, "re-auth")
+}
+
 // Load fetches page 1 of every source (screens call from Init).
 func (b *Base) Load() tea.Cmd {
 	var cmds []tea.Cmd
