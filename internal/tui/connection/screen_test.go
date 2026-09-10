@@ -343,3 +343,152 @@ func TestConnectedMsgCompletesFlow(t *testing.T) {
 		t.Fatalf("result mismatch: %+v", final.Result())
 	}
 }
+
+// --- Phase 2b: the embedded (in-place /connect) overlay contract ---
+
+// TestEmbeddedOverlayNeverQuits pins the overlay contract: with
+// SetEmbedded, the FULL screen form (URL + auth-method toggle + credential
+// field) completes the whole submit→probe→connected cycle without ever
+// emitting tea.Quit, and the shell reads the result via Result()/Connected().
+func TestEmbeddedOverlayNeverQuits(t *testing.T) {
+	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
+	m.SetEmbedded()
+	m.inputs[fieldURL].SetValue("https://orch.example.com")
+	m.inputs[fieldCredential].SetValue("oc_k")
+
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("submit must return a cmd")
+	}
+	if _, ok := cmd().(probeStartMsg); !ok {
+		t.Fatal("submit cmd must produce probeStartMsg")
+	}
+	nm, cmd = m.Update(probeStartMsg{})
+	m = nm.(Model)
+	done := cmd()
+	pd, ok := done.(probeDoneMsg)
+	if !ok || pd.err != nil {
+		t.Fatalf("probe failed: %#v", done)
+	}
+	nm, cmd = m.Update(pd)
+	m = nm.(Model)
+	cm, ok := cmd().(connectedMsg)
+	if !ok {
+		t.Fatalf("expected connectedMsg, got %T", cmd())
+	}
+	nm, _ = m.Update(cm)
+	m = nm.(Model)
+	// Embedded: success does NOT quit the process — the shell consumes it.
+	if !m.Connected() {
+		t.Fatal("embedded model must report Connected() after a successful probe")
+	}
+	res := m.Result()
+	if res == nil || res.Profile.Token != "oc_k" || res.ServerVersion != "v9.0.1" {
+		t.Fatalf("result mismatch: %+v", res)
+	}
+}
+
+// TestEmbeddedCtrlCDoesNotQuit pins ctrl+c inertness inside the shell's
+// overlay (the shell's global quit chord owns process exit; ctrl+c inside
+// the embedded form is swallowed).
+func TestEmbeddedCtrlCDoesNotQuit(t *testing.T) {
+	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	m.SetEmbedded()
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = nm.(Model)
+	if cmd != nil {
+		if _, isQuit := cmd().(tea.QuitMsg); isQuit {
+			t.Fatal("embedded ctrl+c must never quit the process")
+		}
+	}
+	if m.embedded == false {
+		t.Fatal("embedded flag lost")
+	}
+	// Non-embedded behavior is unchanged: ctrl+c still quits.
+	m2 := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	nm2, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_ = nm2
+	if cmd2 == nil {
+		t.Fatal("standalone ctrl+c must still quit")
+	}
+	if _, ok := cmd2().(tea.QuitMsg); !ok {
+		t.Fatal("standalone ctrl+c must produce tea.Quit")
+	}
+}
+
+// TestPasswordModeStoresRefreshToken pins the auto-refresh plumbing on the
+// login path: the probe stores the login's refresh token (the HttpOnly
+// orchicon_refresh Set-Cookie value surfaced through LoginResponse) in the
+// profile so the client can refresh the 900s access token for 24h.
+func TestPasswordModeStoresRefreshToken(t *testing.T) {
+	m := New(nil, ProbeFuncs{
+		Versionz: func(ctx context.Context, baseURL string, insecure bool) (*client.VersionzResponse, error) {
+			return &client.VersionzResponse{Version: "v9"}, nil
+		},
+		ListProjects: func(ctx context.Context, baseURL, token string, insecure bool) error { return errors.New("unused") },
+		LocalLogin: func(ctx context.Context, baseURL, username, password string, insecure bool) (*client.LoginResponse, error) {
+			return &client.LoginResponse{AccessToken: "acc-xyz", ExpiresIn: 900, RefreshToken: "refresh-tok-24h"}, nil
+		},
+	})
+	m.SetEmbedded()
+	m.authAPI = false
+	m.inputs[fieldURL].SetValue("https://orch.example.com")
+	m.inputs[fieldUsername].SetValue("me")
+	m.inputs[fieldCredential].SetValue("hunter2")
+	res, err := m.probe(context.Background())
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if res.Profile.AuthMethod != config.AuthPassword {
+		t.Fatalf("auth method = %q", res.Profile.AuthMethod)
+	}
+	if res.Profile.RefreshToken != "refresh-tok-24h" {
+		t.Fatalf("refresh token must be stored for auto-refresh, got %q", res.Profile.RefreshToken)
+	}
+	if res.Profile.Token != "acc-xyz" {
+		t.Fatalf("token = %q", res.Profile.Token)
+	}
+	// An API-key switch clears the stored refresh token (it belongs to the
+	// password-mode session).
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m2 := nm.(Model)
+	if !m2.authAPI {
+		t.Fatal("ctrl+a must toggle to api-key mode")
+	}
+	probe, _ := m2.probe(context.Background())
+	if probe != nil && probe.Profile.RefreshToken != "" {
+		t.Fatalf("api-key profile must not carry a password-mode refresh token: %q", probe.Profile.RefreshToken)
+	}
+}
+
+// TestStoredRefreshCarriedThroughEdit pins: a re-connect of an existing
+// password profile (no re-login needed if fields unchanged) keeps the
+// stored refresh token; an API-key switch drops it.
+func TestStoredRefreshCarriedThroughEdit(t *testing.T) {
+	m := New(&config.Profile{Name: "default", URL: "https://orch.example.com", AuthMethod: config.AuthPassword, Token: "acc", RefreshToken: "r-24h"}, fakeProbes(nil, nil, nil, "v1"))
+	if m.storedRefresh != "r-24h" {
+		t.Fatalf("storedRefresh = %q, want r-24h carried from the profile", m.storedRefresh)
+	}
+	// Switch to api-key mode → refresh token dropped.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = nm.(Model)
+	if m.storedRefresh != "" {
+		t.Fatalf("api-key switch must drop the stored refresh token, got %q", m.storedRefresh)
+	}
+}
+
+// TestViewNamesInPlaceContract pins the operator-facing wording: the
+// password-mode hint must promise the in-place auto-refresh (never
+// "exit and re-run orch").
+func TestViewNamesInPlaceContract(t *testing.T) {
+	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	m.authAPI = false // the password-mode hint carries the in-place promise
+	view := m.View()
+	if strings.Contains(view, "re-run") || strings.Contains(view, "re-run orch") {
+		t.Fatalf("the screen must never tell the operator to exit and re-run: %s", view)
+	}
+	if !strings.Contains(view, "auto-refresh in place") {
+		t.Fatalf("password hint must name the in-place auto-refresh: %s", view)
+	}
+}

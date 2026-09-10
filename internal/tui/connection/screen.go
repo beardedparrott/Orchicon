@@ -70,6 +70,13 @@ type Model struct {
 	focus     int
 	authAPI   bool // true = API key, false = username+password
 	profile   *config.Profile
+	// storedRefresh carries the existing profile's refresh token through an
+	// edit (API-key switch clears it; password probe overwrites it).
+	storedRefresh string
+	// embedded marks the model as the SHELL's in-place /connect overlay:
+	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
+	// emitted on success — the shell polls Result() each Update.
+	embedded bool
 	width     int
 	height    int
 	busy      bool
@@ -107,6 +114,9 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.AuthMethod == config.AuthPassword {
 			m.authAPI = false
 		}
+		// Carry the stored refresh token through an edit — a re-connect of the
+		// same password profile keeps auto-refresh (API-key mode ignores it).
+		m.storedRefresh = profile.RefreshToken
 	}
 	m.applyCredentialMode()
 	m.inputs[fieldURL].Focus()
@@ -173,19 +183,28 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 		if err := m.probes.ListProjects(ctx, m.currentURL(), m.credential(), m.insecure); err != nil {
 			return nil, fmt.Errorf("API key rejected: %w\n\nRe-create the key in the GUI (Settings → API keys). Read scopes cover browsing; sending chat messages and interjecting into live executions needs the corresponding write scopes (conversations, execution messaging).", err)
 		}
-		return &Result{Profile: m.buildProfile(""), ServerVersion: vr.Version}, nil
+		return &Result{Profile: m.buildProfile(m.credential(), ""), ServerVersion: vr.Version}, nil
 	}
 	lr, err := m.probes.LocalLogin(ctx, m.currentURL(), m.username(), m.password(), m.insecure)
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
-	return &Result{Profile: m.buildProfile(lr.AccessToken), ServerVersion: vr.Version}, nil
+	// lr.RefreshToken carries the HttpOnly orchicon_refresh Set-Cookie value
+	// (24h TTL) — stored in the profile so the client auto-refreshes the
+	// 900s access token instead of dead-ending on auth-expired. A server
+	// without refresh support leaves it empty: fall back to the profile's
+	// stored token (the re-connect of the same session keeps auto-refresh).
+	refresh := lr.RefreshToken
+	if refresh == "" {
+		refresh = m.storedRefresh
+	}
+	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh), ServerVersion: vr.Version}, nil
 }
 
 // buildProfile assembles the profile from the form. token overrides the
 // credential field (password mode stores the minted access token, never
-// the password).
-func (m *Model) buildProfile(token string) *config.Profile {
+// the password); refresh carries the login's refresh token.
+func (m *Model) buildProfile(token, refresh string) *config.Profile {
 	name := "default"
 	method := config.AuthAPIKey
 	if !m.authAPI {
@@ -209,6 +228,7 @@ func (m *Model) buildProfile(token string) *config.Profile {
 		AuthMethod:         method,
 		Token:              cred,
 		Username:           user,
+		RefreshToken:       refresh,
 		InsecureSkipVerify: m.insecure,
 	}
 }
@@ -238,6 +258,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			if m.embedded {
+				// The overlay is the shell's /connect: ctrl+c must not kill
+				// the whole process (the shell's global quit chord does).
+				return m, nil
+			}
 			return m, tea.Quit
 		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
 			m.focus = (m.focus + 1) % fieldCount
@@ -259,6 +284,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyCredentialMode()
 			m.errMsg = ""
 			m.info = ""
+			// Switching to API-key mode drops the stored password-mode
+			// refresh token (it belongs to the local-login session).
+			if m.authAPI {
+				m.storedRefresh = ""
+			}
 			return m, nil
 		case tea.KeyCtrlS:
 			m.insecure = !m.insecure
@@ -287,6 +317,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The only handler: record the result so cmd/orch can read it via
 		// Result() after prog.Run returns, then exit the screen program.
 		m.connected = msg.result
+		if m.embedded {
+			// In-place /connect overlay: the SHELL consumes the result —
+			// the screen program must not quit the process.
+			return m, nil
+		}
 		return m, tea.Quit
 	}
 
@@ -328,6 +363,14 @@ func (m Model) Result() *Result {
 	return m.connected
 }
 
+// SetEmbedded marks the model as the shell's in-place /connect overlay
+// (never quits the process on success/ctrl+c).
+func (m *Model) SetEmbedded() { m.embedded = true }
+
+// Connected reports whether a successful probe has landed (the shell's
+// embedded overlay polls this each Update).
+func (m *Model) Connected() bool { return m.connected != nil }
+
 // connectedMsg is emitted on success; the app swaps to the shell.
 type connectedMsg struct{ result *Result }
 
@@ -353,7 +396,7 @@ func (m Model) View() string {
 	} else {
 		b.WriteString(m.inputs[fieldUsername].View() + "\n")
 		b.WriteString(m.inputs[fieldCredential].View() + "\n\n")
-		b.WriteString(theme.HintText.Render("  Password sessions expire (no refresh token for TUIs); API keys are recommended.") + "\n\n")
+		b.WriteString(theme.HintText.Render("  Password sessions auto-refresh in place (24h).") + "\n\n")
 	}
 
 	insecure := "off"

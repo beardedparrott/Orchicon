@@ -6,11 +6,18 @@ package tui
 // list, so the palette can never drift from /help or behavior).
 
 import (
+	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/config"
+	"github.com/beardedparrott/orchicon/internal/tui/connection"
+	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -20,10 +27,17 @@ type palette struct {
 	query string // the slash prefix typed so far ("" for first '/')
 	sel    int // selected index into the filtered candidate list
 	scroll int // viewport offset so the palette never overflows a short terminal
-	// connect state: /connect opens an in-place re-auth overlay that never
-	// tears down alt-screen or exits the process.
+	// connect state: /connect opens an in-place re-auth overlay — the FULL
+	// first-run connection screen (URL + auth-method toggle + credential
+	// field) hosted inside the running shell. It never tears down
+	// alt-screen or exits the process.
 	connectOpen bool
 	connectMsg  string
+	// connectModel is the embedded connection form (connection.Model).
+	// The shell routes keys into it while the overlay is open and applies
+	// the profile + reconnects when it reports a successful probe.
+	connectForm *connection.Model
+	connectBusy bool
 	filter      []*SlashCommand
 }
 
@@ -280,27 +294,43 @@ var _ = lipgloss.NewStyle
 // showing (never quits the process — first-run stays in main.go).
 func (m *App) ConnectOverlayOpen() bool { return m.palette.connectOpen }
 
-// openConnectOverlay opens the in-place re-auth overlay.
+// openConnectOverlay opens the in-place re-auth overlay hosting the FULL
+// connection form (the first-run screen: URL + auth-method toggle +
+// credential field). Pre-filled with the active profile. Never exits the
+// process or prints "exit and re-run orch" (operator finding #6).
 func (m *App) openConnectOverlay() {
+	if m.palette.connectOpen {
+		return
+	}
+	form := connection.New(m.profile, connection.DefaultProbes())
+	form.SetEmbedded()
+	if m.width > 0 {
+		// Pre-size the form's text inputs via a WindowSizeMsg (it has no
+		// SetSize — the form sizes itself from the shell's dimensions).
+		next, _ := form.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		if fm, ok := next.(connection.Model); ok {
+			form = fm
+		}
+	}
 	m.palette.connectOpen = true
-	m.palette.connectMsg = "Reconnect: open the Orchicon web GUI (Settings → API keys) to (re)create/rotate your key, then re-run orch with the new credential."
+	m.palette.connectForm = &form
+	m.palette.connectMsg = ""
 }
 
 // closeConnectOverlay closes it (esc).
-func (m *App) closeConnectOverlay() { m.palette.connectOpen = false }
+func (m *App) closeConnectOverlay() {
+	m.palette.connectOpen = false
+	m.palette.connectForm = nil
+	m.palette.connectMsg = ""
+}
 
-// connectOverlayView renders the overlay box. The message is wrapped to
-// the overlay's content width so a long re-auth hint never overflows the
-// terminal horizontally.
+// connectOverlayView renders the full connection form centered over the
+// shell (the same form the first-run screen renders — no drift).
 func (m *App) connectOverlayView() string {
-	max := m.paletteContentWidth()
-	var b strings.Builder
-	b.WriteString(theme.ListTitle.Render("  / connect (in place)  "))
-	b.WriteString("\n\n")
-	b.WriteString(theme.DetailValue.Render(wordWrap(m.palette.connectMsg, max)))
-	b.WriteString("\n\n")
-	b.WriteString(theme.HintText.Render(wordWrap("  esc: close · q: quit orch · the shell is still running (alt-screen intact)", max)))
-	return theme.HelpOverlay.Render(b.String())
+	if m.palette.connectForm == nil {
+		return ""
+	}
+	return m.palette.connectForm.View()
 }
 
 // wordWrap wraps s to width w cells at spaces (plain text only — no ANSI).
@@ -330,8 +360,15 @@ func wordWrap(s string, w int) string {
 }
 
 // connectHandleKey processes keys while the connect overlay is open.
-// Returns (handled, cmd).
+// Returns (handled, cmd). Keys route into the embedded connection form
+// (typing, tab between fields, ctrl+a auth toggle, ctrl+s TLS toggle,
+// enter submit); esc cancels back to the shell; ctrl+c quits for real.
+// Returns (handled=false) once a successful probe has landed so the
+// router stops routing keys here.
 func (m *App) connectHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
+	if m.palette.connectForm == nil {
+		return false, nil
+	}
 	switch k.String() {
 	case "esc":
 		// Cancel the re-auth: the shell stays put (in-place overlay). Clear
@@ -341,13 +378,92 @@ func (m *App) connectHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		m.reconnectRequested = false
 		m.closeConnectOverlay()
 		return true, nil
-	case "q", "ctrl+c":
+	case "q":
+		// q types a literal 'q' into the focused field (URLs/keys contain
+		// no q constraint) — only ctrl+c quits from here.
+	}
+	if k.String() == "ctrl+c" {
 		m.reconnectRequested = false // quitting for real, not re-auth
 		m.quitting = true
 		return true, tea.Quit
-	default:
-		return true, nil // swallow keys while the overlay is up
 	}
+	// Everything else drives the connection form.
+	next, cmd := m.palette.connectForm.Update(k)
+	if fm, ok := next.(connection.Model); ok {
+		m.palette.connectForm = &fm
+	}
+	if m.palette.connectForm.Connected() {
+		return true, m.applyConnectResult()
+	}
+	return true, cmd
+}
+
+// connectTick drives the embedded form's non-key messages (probe start,
+// probe done) so the async probe runs inside the shell's tea program.
+// The shell routes unhandled messages here while the overlay is open.
+func (m *App) connectTick(msg tea.Msg) tea.Cmd {
+	if m.palette.connectForm == nil {
+		return nil
+	}
+	next, cmd := m.palette.connectForm.Update(msg)
+	if fm, ok := next.(connection.Model); ok {
+		m.palette.connectForm = &fm
+	}
+	if m.palette.connectForm.Connected() {
+		return m.applyConnectResult()
+	}
+	return cmd
+}
+
+// applyConnectResult consumes the form's successful probe: persist the
+// profile, swap the shell onto the new client set, redial streams, and
+// close the overlay — all in place, without exiting the process.
+func (m *App) applyConnectResult() tea.Cmd {
+	res := m.palette.connectForm.Result()
+	if res == nil || res.Profile == nil {
+		return nil
+	}
+	profile := res.Profile
+	// Persist (env-driven profiles are still used in memory; a save error
+	// surfaces but does not block the reconnect).
+	if path, err := config.DefaultPath(); err == nil {
+		if os.Getenv(config.EnvURL) == "" {
+			if err := connection.SaveProfile(path, res); err != nil {
+				m.dock.SetError("connect: save profile: " + err.Error())
+			}
+		}
+	}
+	// Rebuild the client set with the (possibly refreshed) credential and
+	// the stored refresh token; redial every live stream + the chat rail.
+	opts := client.Options{
+		BaseURL:            profile.URL,
+		Token:              profile.Token,
+		InsecureSkipVerify: profile.InsecureSkipVerify,
+		Timeout:            30 * time.Second,
+		RefreshToken:       profile.RefreshToken,
+	}
+	cl := client.New(opts)
+	m.profile = profile
+	m.clients = cl
+	m.diffPane = diffs.NewModel(cl, m.reg)
+	m.chat = chat.NewController(cl)
+	m.chat.Bind(&appEventStore{m: m}, m.chatCmds)
+	// Screens hold the old client set: drop the active screen so it
+	// reconstructs lazily through its factory (fresh client set).
+	if s, ok := m.screens[m.active]; ok && s != nil {
+		s.Close()
+	}
+	delete(m.screens, m.active)
+	if m.width > 0 {
+		m.refreshLayout()
+	}
+	m.reconnectRequested = false
+	m.closeConnectOverlay()
+	m.reconnectStreams()
+	m.dock.SetError("")
+	m.dock.SetNotice("✓ connected to " + profile.URL + " — shell reconnected in place")
+	// Reload the ask rail + restart the chat waiter on the new clients.
+	return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 }
 
 // connectRequestRun runs the /connect command in place: it opens the

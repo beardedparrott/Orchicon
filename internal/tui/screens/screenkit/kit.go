@@ -139,7 +139,12 @@ func (l *List) View(focused bool) string {
 	b.WriteString("\n")
 
 	if l.Err != "" {
-		b.WriteString(theme.ErrorText.Render("error: "+l.Err) + "\n")
+		// Human-readable retry state, never a bare "error: unauthenticated"
+		// cascade (Phase 2b — the friendly text already names the fix, e.g.
+		// "run /connect"). The pane stays interactive: existing items are
+		// kept on view and r still refreshes.
+		b.WriteString(theme.ErrorText.Render("⚠ "+l.Err) + "\n")
+		b.WriteString(theme.HintText.Render("  press r to refresh once the issue is resolved") + "\n")
 		return b.String()
 	}
 	if l.Loading && len(l.Items) == 0 {

@@ -210,6 +210,10 @@ func runShell(profile *config.Profile) (bool, error) {
 		Token:              profile.Token,
 		InsecureSkipVerify: profile.InsecureSkipVerify,
 		Timeout:            30 * time.Second,
+		// Password mode: auto-refresh the 900s access token with the
+		// stored 24h refresh token (Phase 2b). Empty in api-key mode —
+		// the refresh interceptor is inert.
+		RefreshToken: profile.RefreshToken,
 	})
 	app := tui.NewApp(cl, profile, serverVersion)
 	if identity := probeIdentity(cl); identity != "" {

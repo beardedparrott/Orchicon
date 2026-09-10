@@ -190,12 +190,19 @@ func TestDockPresentEverywhere80x24(t *testing.T) {
 }
 
 // 401 (Unauthenticated) chat failures surface the re-auth prompt in the
-// dock error strip without crashing.
+// dock error strip without crashing (Phase 2b: the prompt names the
+// in-place /connect fix — never a bare "error: unauthenticated").
 func TestAuthExpiredSurfacesInDock(t *testing.T) {
 	m := newDockTestApp()
 	m.setChatError("send", &stubAuthErr{})
-	if !strings.Contains(m.dock.Err, "auth expired") || !strings.Contains(m.dock.Err, "/connect") {
+	if !strings.Contains(m.dock.Err, "/connect") {
 		t.Fatalf("dock error = %q, want re-auth prompt", m.dock.Err)
+	}
+	if !strings.Contains(m.dock.Err, "re-auth") {
+		t.Fatalf("dock error = %q, want explicit re-authentication wording", m.dock.Err)
+	}
+	if strings.Contains(m.dock.Err, "unauthenticated:") {
+		t.Fatalf("dock error = %q, want the bare unauthenticated text rewritten", m.dock.Err)
 	}
 	m.View() // must not panic
 }
