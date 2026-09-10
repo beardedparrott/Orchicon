@@ -94,6 +94,11 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 	for i := range m.inputs {
 		m.inputs[i] = textinput.New()
 		m.inputs[i].CharLimit = 512
+		// Explicit field width (Phase 3 finding 2): a zero-width textinput
+		// never bounds its frame, so the masked credential echo painted a
+		// full-width dotted line and the fields could not be read. ~40
+		// cells is the form's natural measure at the 80-col floor.
+		m.inputs[i].Width = 40
 	}
 	m.inputs[fieldURL].Placeholder = "https://orch.example.com"
 	m.inputs[fieldURL].Prompt = "Server URL > "
@@ -187,6 +192,12 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 	}
 	lr, err := m.probes.LocalLogin(ctx, m.currentURL(), m.username(), m.password(), m.insecure)
 	if err != nil {
+		// One wrap, never two: client.Login already prefixes its failures
+		// with "login failed:" (Phase 3 finding 2 — the message used to
+		// read "login failed: login failed: HTTP 401").
+		if strings.Contains(err.Error(), "login failed") {
+			return nil, err
+		}
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
 	// lr.RefreshToken carries the HttpOnly orchicon_refresh Set-Cookie value

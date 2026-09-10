@@ -198,7 +198,7 @@ func (m *Model) View() string {
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
 	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"))
-	return b.String()
+	return m.Base.Frame(b.String())
 }
 
 // RunningExecutionID returns the selected execution's ID when its

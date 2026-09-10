@@ -261,20 +261,23 @@ func (m *App) paletteHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		m.paletteSelect(1)
 		return true, nil
 	case "esc":
-		// Close the palette but hand the key back: the composer keeps the
-		// typed text and the global routes still see esc (e.g. closing the
-		// diff pane) — no focus trap.
+		// Close the palette. The composer keeps focus AND the typed text
+		// (the operator's text is never lost or hidden) — esc owns the
+		// palette only, so there is no focus trap to escape.
 		m.closePalette()
-		return false, nil
-	case "enter", "tab":
-		if c := m.paletteSelected(); c != nil {
-			m.closePalette()
-			// Run the command; insert its usage hint into the composer so
-			// arg-taking commands (e.g. /wi <id>) continue from a known text.
-			m.dock.SetValue(c.Name)
-			return true, c.Run(m, nil)
-		}
 		return true, nil
+	case "enter", "tab":
+		c := m.paletteSelected()
+		if c == nil {
+			// No selection (empty filter): fall through so Enter
+			// parses/sends the composer text exactly as today.
+			return false, nil
+		}
+		m.closePalette()
+		// Run the command; seed the composer with its name so arg-taking
+		// commands (e.g. /wi <id>) continue from a known text.
+		m.dock.SetValue(c.Name)
+		return true, c.Run(m, nil)
 	default:
 		// Editing keys flow through to the composer buffer FIRST so the
 		// user sees their input live (the palette floats above the composer

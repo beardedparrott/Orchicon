@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -290,6 +291,38 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// Frame is the screenkit frame helper: it normalizes a screen's composed
+// block into EXACTLY h rows of w cells, painting the opaque theme
+// background on every padding cell (ANSI-aware truncation when the block
+// is wider than the region). Every screen returns Frame(...) from View()
+// so its panes FILL the content region the shell budgeted — never a
+// content-sized box floating at the top-left. A non-positive region is
+// returned unchanged (an unsized screen must not collapse to 1×1).
+func Frame(content string, w, h int) string {
+	if w < 1 || h < 1 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for i, l := range lines {
+		cols := lipgloss.Width(l)
+		if cols > w {
+			l = ansi.Truncate(l, w, "")
+			cols = w
+		}
+		if cols < w {
+			l += strings.Repeat(" ", w-cols)
+		}
+		lines[i] = theme.ScreenBg.Render(l)
+	}
+	for len(lines) < h {
+		lines = append(lines, theme.ScreenBg.Render(strings.Repeat(" ", w)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // guard against unused import when styles evolve

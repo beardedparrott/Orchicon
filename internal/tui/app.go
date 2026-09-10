@@ -257,11 +257,15 @@ func (m *App) SwitchTo(id TabID) {
 	if _, ok := m.screens[id]; !ok {
 		if f, ok := m.factories[id]; ok {
 			s := f()
-			if m.width > 0 {
-				s.SetSize(m.contentWidth(), m.contentHeight())
-			}
-				m.screens[id] = s
+			m.screens[id] = s
 		}
+	}
+	// Always (re)apply the layout to the screen being activated: a screen
+	// cached earlier (e.g. the nav registry's introspection build, or a
+	// pre-resize visit) never saw a SetSize and would otherwise render
+	// against a zero-sized content region.
+	if s := m.screens[id]; s != nil && m.width > 0 {
+		s.SetSize(m.contentWidth(), m.contentHeight())
 	}
 	// A tab switch swaps the chrome's submenu to the new tab's (the
 	// dropdown follows focus, per the mockup's menu-under-tab pattern);
@@ -907,12 +911,32 @@ func (m App) View() string {
 	if h < 1 {
 		h = 1
 	}
+	// ONE opaque full-viewport frame is painted FIRST on every path
+	// (baseView); every overlay is a layer INSIDE that frame — never an
+	// inline drawing over the terminal (Phase 3 overlay discipline). The
+	// final fillView re-normalizes the composited result to exactly w×h so
+	// no overlay can ever change the row count or open a hole.
+	base := m.baseView(w, h)
 	if m.help.open {
 		overlay := m.help.view(m.routes) + "\n" + strings.Join(m.slash.helpLines(), "\n")
-		// ScreenBg repaints the placed block so even the help overlay's
-		// padding cells carry the opaque theme background.
-		return theme.ScreenBg.Render(lipglossPlace(w, h, overlay))
+		return fillView(m.overlayCentered(base, overlay), w, h)
 	}
+	if m.palette.connectOpen {
+		return fillView(m.overlayCentered(base, m.connectOverlayView()), w, h)
+	}
+	if m.palette.PaletteOpen() {
+		base = m.paletteComposerView(base)
+	}
+	base = m.composeView(base)
+	return fillView(base, w, h)
+}
+
+// baseView paints the opaque full-viewport shell grid: the centered tab
+// bar, the underline rule, one separator row, the active screen block,
+// the composer dock, and the one-line footer — every cell carrying the
+// theme's solid background, so nothing bleeds through from beneath the
+// alt-screen frame.
+func (m App) baseView(w, h int) string {
 	cw := m.contentWidth()
 	screenRows := m.contentHeight()
 	dockRows := m.dock.Lines()
@@ -944,18 +968,7 @@ func (m App) View() string {
 	rows = append(rows, m.centeredTabBarView(), m.tabBarUnderlineView(), gap)
 	rows = append(rows, strings.Split(body, "\n")...)
 	rows = append(rows, footerLine...)
-	base := fillView(strings.Join(rows, "\n"), w, h)
-	// Composer '/' palette + /connect overlay: drawn on top of the opaque
-	// base when open. The palette floats ABOVE the composer (the composer
-	// line + typed text stay visible); /connect is centered. The /connect
-	// overlay never exits the process.
-	if m.palette.connectOpen {
-		return m.overlayCentered(base, m.connectOverlayView())
-	}
-	if m.palette.PaletteOpen() {
-		base = m.paletteComposerView(base)
-	}
-	return m.composeView(base)
+	return fillView(strings.Join(rows, "\n"), w, h)
 }
 
 // safeView renders the active screen, tolerating a nil screen (the shell
@@ -1288,7 +1301,7 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 // the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
 	if chat.IsAuthExpired(err) {
-		m.dock.SetError("session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)")
+		m.setReauthBanner()
 		return
 	}
 	m.dock.SetError(where + ": " + err.Error())
@@ -1299,10 +1312,41 @@ func (m *App) setChatErrorPlain(errText string) {
 		return
 	}
 	if strings.Contains(errText, "Unauthenticated") || strings.Contains(errText, "unauthenticated") {
-		m.dock.SetError("session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)")
+		m.setReauthBanner()
 		return
 	}
 	m.dock.SetError(errText)
+}
+
+// reauthBannerText is the ONE global re-auth banner. The re-auth UX is
+// never duplicated: it renders either inline in the pane/rail that hit
+// the 401 or once here above the composer — never both.
+const reauthBannerText = "session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)"
+
+// setReauthBanner raises the single global re-auth banner. When an inline
+// retry state is already on screen (the active screen's panes or the
+// conversations rail) the banner is suppressed — that inline state IS the
+// banner, so the operator sees exactly one.
+func (m *App) setReauthBanner() {
+	if m.authRetryInline() {
+		return
+	}
+	m.dock.SetError(reauthBannerText)
+}
+
+// authRetryInline reports whether the shell already renders the re-auth
+// retry state inline (a pane's fetch error the rail's own retry row).
+func (m *App) authRetryInline() bool {
+	if m.convErr != "" && isAuthErrText(m.convErr) {
+		return true
+	}
+	type authRetrier interface{ HasAuthRetry() bool }
+	if s := m.screens[m.active]; s != nil {
+		if ar, ok := s.(authRetrier); ok && ar.HasAuthRetry() {
+			return true
+		}
+	}
+	return false
 }
 
 // sendChat sends text to the conversation with the context preamble.

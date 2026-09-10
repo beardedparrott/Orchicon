@@ -122,7 +122,7 @@ func (m *Model) View() string {
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
 	b.WriteString(theme.HintText.Render("enter: detail focus · f: more pages · r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
-	return b.String()
+	return m.Base.Frame(b.String())
 }
 
 // SelectSource focuses the named source (slash nav command support).
