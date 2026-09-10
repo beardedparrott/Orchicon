@@ -68,11 +68,6 @@ type Service struct {
 	// cancel only marks the row terminal (no live session transport).
 	abortSession func(ctx context.Context, execID, reason string) error
 
-	// fileEditLister reads the durable file-edit ledger (injected by the
-	// server over fileedit.PGStore). Nil = the FileEditService RPCs are
-	// unavailable (tests / DB-less planes).
-	fileEditLister fileEditListerFunc
-
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
 	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
 	// emits an ApprovalRequest, the TaskReconciler registers it here;

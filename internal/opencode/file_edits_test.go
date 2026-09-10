@@ -81,11 +81,14 @@ func TestFileEditHookNilIsNoOp(t *testing.T) {
 }
 
 // TestFileEditHookBuiltinWriteArtifactBranch: opencode's built-in `write`
-// is intercepted as an artifact (adapter.go's artifact branch breaks before
-// the tool-call tail), so it does NOT reach the file-edit hook — its edit
-// truth is covered by the evtFileDiff fallback (TestFileEditHookFileDiff).
-// This test pins that branch behavior: a built-in write with content
-// produces ZERO hook calls (no double-recording with the fallback).
+// is intercepted as an artifact (content streamed + artifact card) AND still
+// reaches the file-edit hook — the hook runs before the artifact early-break
+// (adapter.go), so the plane-side observer takes a live after-snapshot for
+// the successful mutation. No double-recording with the file_diff fallback:
+// the fallback skips engine-payload paths via stats.engineEditedPaths, and a
+// built-in write carries no payload (registers nothing) but the server-side
+// observer cache already holds the fresh read, so the later file_diff
+// ObserveAfter sees no change and yields no second row.
 func TestFileEditHookBuiltinWriteArtifactBranch(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}
@@ -112,8 +115,11 @@ func TestFileEditHookBuiltinWriteArtifactBranch(t *testing.T) {
 	textSeq := 0
 	adapter.parseEvent(context.Background(), db.ExecutionRow{ID: "exec-3", TenantID: "tnt-1"}, manifest, evt, noopCallbacks{}, nil, &output, nil, &textSeq, nil, nil)
 
-	if calls != 0 {
-		t.Fatalf("built-in write must be artifact-intercepted (0 hook calls), got %d", calls)
+	if calls != 1 {
+		t.Fatalf("built-in write must reach the file-edit hook once (live observer row), got %d", calls)
+	}
+	if !strings.Contains(output.String(), "hello") {
+		t.Fatalf("built-in write must still stream its content as an artifact, got %q", output.String())
 	}
 }
 
