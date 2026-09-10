@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -400,86 +399,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 				row.ID, payload)
 		}
 	}
-	// Per-execution built-in tool observers: on the first opencode built-in
-	// write/edit for a run, an Observer is created rooted at the run's exec
-	// dir (worktree or project dir); it caches last-seen content per path
-	// (git-HEAD-seeded) so each ObserveAfter diffs real file state on both
-	// sides. Guarded by feObsMu; entries live for the process lifetime —
-	// bounded by one entry per execution that used built-in write tools.
-	var (
-		feObsMu sync.Mutex
-		feObs   = map[string]*fileedit.Observer{}
-	)
-	feObserver := func(execID, execDir string) *fileedit.Observer {
-		if execDir == "" {
-			return nil
-		}
-		feObsMu.Lock()
-		defer feObsMu.Unlock()
-		o, ok := feObs[execID]
-		if !ok {
-			o = fileedit.NewObserver(execDir)
-			feObs[execID] = o
-		}
-		return o
-	}
-	// inputStr reads a string field off the tool_use input map.
-	inputStr := func(m map[string]any, key string) string {
-		if s, ok := m[key].(string); ok {
-			return s
-		}
-		return ""
-	}
-	adapterBridge.SetFileEditHook(func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string) {
-		// opencode built-in write/edit (the runtime's native file tools — the
-		// input shapes from the spike doc): take a plane-side after-snapshot.
-		// The engine tools never reach this branch (batch_write/write/edit are
-		// matched above), so a built-in `write` with a `filePath` input cannot
-		// double-record with the engine path. "before" is the observer's
-		// last-seen content (git-HEAD-seeded on first sight), "after" is the
-		// fresh read — real file state on both sides.
-		switch toolName {
-		case "write":
-			if o := feObserver(execID, execDir); o != nil {
-				p := inputStr(input, "filePath")
-				if p == "" {
-					p = inputStr(input, "path")
-				}
-				if e := o.ObserveAfter(p, fileedit.ToolOpenCodeWrite); e.Path != "" {
-					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
-				}
-			}
-		case "edit":
-			if o := feObserver(execID, execDir); o != nil {
-				p := inputStr(input, "filePath")
-				if p == "" {
-					p = inputStr(input, "path")
-				}
-				if e := o.ObserveAfter(p, fileedit.ToolOpenCodeEdit); e.Path != "" {
-					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
-				}
-			}
-		case "batch_write":
-			// Worktree engine tool: the engine already computed the
-			// ground-truth diffs in its structured output.
-			feSvc.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerExecution, execID, toolName, output)
-		case "file_diff":
-			// Adapter fallback for paths no known mutating tool covered:
-			// the input carries the file_diff event's path. Real file
-			// state both sides (observer cache vs fresh read); no-op reads
-			// drop out inside ObserveAfter.
-			if o := feObserver(execID, execDir); o != nil {
-				p := inputStr(input, "path")
-				if e := o.ObserveAfter(p, "file_diff"); e.Path != "" {
-					feSvc.Record(ctx, tenantID, db.FileEditOwnerExecution, execID, []fileedit.Entry{e})
-				}
-			}
-		case "write_artifact", "todowrite", "todowrite_more":
-			// Virtual tools: no file touched.
-		default:
-			return
-		}
-	})
+	// File-edit ledger hook (diff pipeline): the execution population's
+	// ingestion point — engine file_edits output tried first for
+	// write/edit, observer fallback for genuine built-in usage
+	// (internal/server/fileedit_hook.go).
+	adapterBridge.SetFileEditHook(newFileEditHook(feSvc, log))
 
 	// Register the opencode bridge under its adapter kind. This is the
 	// ONLY place the concrete adapter appears in a dispatch-capable

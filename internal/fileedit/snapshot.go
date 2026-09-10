@@ -65,19 +65,8 @@ func NewService(store Store, log *slog.Logger) *Service {
 // reconciler) may hand them to Record liberally; the funnel is the single
 // authority on what becomes a row.
 func (s *Service) Record(ctx context.Context, tenantID, ownerKind, ownerID string, entries []Entry) {
-	if len(entries) == 0 || s.store == nil {
-		return
-	}
-	filtered := make([]Entry, 0, len(entries))
-	for _, e := range entries {
-		if e.Path == "" || (e.UnifiedDiff == "" && !e.IsBinary) {
-			// No path (nothing to diff) or no diff and not a binary marker:
-			// skip — it is a no-op or an outside-base observation.
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-	if len(filtered) == 0 {
+	filtered := filterRecordable(entries)
+	if len(filtered) == 0 || s.store == nil {
 		return
 	}
 	entries = filtered
@@ -93,18 +82,55 @@ func (s *Service) Record(ctx context.Context, tenantID, ownerKind, ownerID strin
 	}
 }
 
+// filterRecordable is the Record funnel predicate shared by Record and
+// RecordEngineOutput (so the latter can report how many parsed entries
+// survived without duplicating the rule): an entry needs a path and either
+// a diff or a binary marker.
+func filterRecordable(entries []Entry) []Entry {
+	filtered := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Path == "" || (e.UnifiedDiff == "" && !e.IsBinary) {
+			// No path (nothing to diff) or no diff and not a binary marker:
+			// skip — it is a no-op or an outside-base observation.
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
+}
+
 // RecordEngineOutput parses a worktree tool's structured output and records
 // it. The common execution path: adapter evtToolUse → RecordEngineOutput.
-func (s *Service) RecordEngineOutput(ctx context.Context, tenantID, ownerKind, ownerID, tool, toolOutput string) {
+// Returns (parsed, recorded): how many file_edits entries the output
+// carried vs how many survived the Record funnel. A missing/empty/malformed
+// payload parses to (0, 0) — tolerance is preserved (failed tool calls stay
+// silent), but the miss is logged at debug with the tool and owner so the
+// next live-run gap is diagnosable instead of invisible (the tolerant chain
+// previously had zero miss logging, which is why unit tests and the sandbox
+// QA pass missed the live-run drop).
+func (s *Service) RecordEngineOutput(ctx context.Context, tenantID, ownerKind, ownerID, tool, toolOutput string) (parsed, recorded int) {
 	entries, err := ParseEngineOutput(toolOutput)
 	if err != nil || len(entries) == 0 {
-		return
+		s.log.Debug("file edit engine output: no payload",
+			"owner", ownerID, "tool", tool,
+			"has_payload", strings.Contains(toolOutput, "\"file_edits\""),
+			"output_len", len(toolOutput))
+		return 0, 0
 	}
 	ledger := make([]Entry, 0, len(entries))
 	for _, e := range entries {
 		ledger = append(ledger, EntryFromEngine(e, tool))
 	}
+	recorded = len(filterRecordable(ledger))
 	s.Record(ctx, tenantID, ownerKind, ownerID, ledger)
+	if recorded == 0 {
+		s.log.Warn("file edit engine output parsed but nothing recorded (funnel dropped all entries)",
+			"owner", ownerID, "tool", tool, "parsed", len(entries))
+	} else {
+		s.log.Debug("file edit engine output recorded",
+			"owner", ownerID, "tool", tool, "parsed", len(entries), "recorded", recorded)
+	}
+	return len(entries), recorded
 }
 
 // --- snapshot observer (opencode built-in write/edit) -----------------------

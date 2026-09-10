@@ -305,18 +305,10 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps.AbortExecution != nil {
 		execSvc.SetAbortExecution(deps.AbortExecution)
 	}
-	// File-edit ledger (diff pipeline): fetch + live stream over the shared
-	// pool/tx store. The lister is injected (over fileedit.PGStore) so this
-	// package keeps no direct pool→ledger SQL coupling. API-key auth rides
-	// the same interceptor chain as ExecutionService (same read policy).
-	if deps.Pool != nil {
-		feStore := fileedit.NewPGStore(deps.Pool)
-		execSvc.SetFileEditLister(feStore.List)
-	}
+
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 	// FileEditService (docs/07 §3.8 diff pipeline): the standalone fetch +
-	// stream RPCs for the GUI sidebar / TUI pane. Shares the pool-backed
-	// store with the ExecutionService lister wiring above.
+	// stream RPCs for the GUI sidebar / TUI pane over the pool-backed store.
 	if deps.Pool != nil {
 		feSvc := fileedit.NewRPCService(fileedit.NewPGStore(deps.Pool), deps.Log, deps.Subscriber)
 		mux.Handle(apiv1connect.NewFileEditServiceHandler(feSvc, interceptorOpt))
@@ -447,12 +439,21 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 			}
 			return o
 		}
+
 		askSvc.SetFileEditHook(func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string) {
 			switch toolName {
 			case "write", "edit":
-				// opencode built-in write/edit (input shapes per the spike
-				// doc): plane-side after-snapshot under the conversation's
-				// project dir.
+				// The worktree engine's single-op write/edit wrappers emit the
+				// structured file_edits payload (exact ground truth) under these
+				// same tool names — try it FIRST and claim the edit when the
+				// output carries a payload (even a funnel-dropped no-op: the
+				// HEAD-seeded observer must not hallucinate a row for it).
+				// Genuine built-in output never contains "file_edits", so the
+				// branch is unambiguous; only then take the plane-side
+				// after-snapshot under the conversation's project dir.
+				if parsed, _ := feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output); parsed > 0 {
+					break
+				}
 				dir := askBaseDir()
 				o := feObserver(convID, dir)
 				if o == nil {

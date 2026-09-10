@@ -128,19 +128,28 @@ export function mergeEdits(durable: FileEdit[], live: FileEdit[]): FileEdit[] {
  * git-reconciled ledger. When live, it merges durable + streamed edits with
  * the same discipline as mergeSessionItems — durable is a superset up to
  * ~2s ago, live events dedupe against it (mergeEdits).
+ *
+ * The returned `error` is non-null when the durable fetch OR the live stream
+ * failed. Callers must render an explicit error state in that case — the
+ * "No file edits" empty state is only valid when the ledger is genuinely
+ * empty (fetch succeeded AND no edits), so a data-loss can never masquerade
+ * as no-data.
  */
 export function useSessionFileEdits(
   ownerKind: string,
   ownerId: string,
   isLive: boolean,
-): { edits: FileEdit[]; status: string; loading: boolean } {
+): {
+  edits: FileEdit[];
+  status: string;
+  loading: boolean;
+  streamStatus: string;
+  error: Error | null;
+} {
   const [liveEdits, setLiveEdits] = useState<FileEdit[]>([]);
 
-  const { data, isLoading, isFetching } = useGetSessionFileEdits(
-    ownerKind,
-    ownerId,
-    true,
-  );
+  const { data, isLoading, isFetching, error: queryError } =
+    useGetSessionFileEdits(ownerKind, ownerId, true);
   const durable = useMemo(() => data?.edits ?? [], [data]);
 
   const onEvent = useCallback((edit: FileEdit) => {
@@ -157,7 +166,7 @@ export function useSessionFileEdits(
     });
   }, []);
 
-  useStreamFileEdits({
+  const { status: streamStatus, error: streamError } = useStreamFileEdits({
     ownerKind,
     ownerId,
     enabled: isLive && Boolean(ownerId),
@@ -172,5 +181,12 @@ export function useSessionFileEdits(
   // Invalidate the durable query when a live event lands so a subsequent
   // refetch sees the reconciled ledger. Live events are still merged on top
   // in the interim, so the UI never blanks.
-  return { edits, status: isLoading ? "loading" : isFetching ? "refetching" : "ready", loading: isLoading };
+  const error: Error | null = queryError ?? streamError;
+  return {
+    edits,
+    status: isLoading ? "loading" : isFetching ? "refetching" : "ready",
+    loading: isLoading,
+    streamStatus,
+    error,
+  };
 }

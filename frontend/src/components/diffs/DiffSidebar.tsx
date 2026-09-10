@@ -74,7 +74,7 @@ export function DiffSidebar({
   onSelectPath,
   unified = false,
 }: DiffSidebarProps) {
-  const { edits, loading } = useSessionFileEdits(ownerKind, ownerId, isLive);
+  const { edits, loading, error } = useSessionFileEdits(ownerKind, ownerId, isLive);
   const narrow = useIsNarrow();
 
   const files = useMemo(() => groupByFile(edits), [edits]);
@@ -104,6 +104,7 @@ export function DiffSidebar({
         <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
         <div className="absolute inset-y-0 left-0 flex w-[min(480px,88vw)] max-w-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background shadow-xl">
           <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
+          {error && <LedgerErrorBanner error={error} />}
           {tab === "timeline" && (
             <DiffTimeline files={files} onSelect={(p) => { onSelectPath(p); onTabChange("diff"); }} />
           )}
@@ -131,6 +132,7 @@ export function DiffSidebar({
     <div className="relative flex h-full shrink-0 overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur transition-[width] duration-300 ease-in-out w-[480px] min-w-[480px]">
       <aside className="flex h-full w-[480px] flex-col">
         <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
+        {error && <LedgerErrorBanner error={error} />}
         {/* Tab content */}
         {tab === "timeline" && (
           <DiffTimeline files={files} onSelect={(p) => { onSelectPath(p); onTabChange("diff"); }} />
@@ -151,6 +153,23 @@ export function DiffSidebar({
           </div>
         )}
       </aside>
+    </div>
+  );
+}
+
+// LedgerErrorBanner — explicit failure state for the diff pipeline. Rendered
+// ABOVE the tab content whenever the durable fetch or the live stream fails,
+// so an unreachable/broken ledger never masquerades as the "No file edits"
+// empty state (DiffTimeline/DiffTree empty text is then reachable only when
+// the fetch succeeded AND the ledger is genuinely empty).
+function LedgerErrorBanner({ error }: { error: Error }) {
+  return (
+    <div
+      role="alert"
+      className="border-b border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+    >
+      Couldn&apos;t load file edits: {error.message || "connection failed"}. The
+      ledger may have entries that aren&apos;t shown.
     </div>
   );
 }
