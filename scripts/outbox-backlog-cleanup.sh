@@ -37,6 +37,13 @@ if ! [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || [[ "$RETENTION_DAYS" -lt 1 ]]; then
   echo "error: RETENTION_DAYS must be an integer >= 1 (got '$RETENTION_DAYS')" >&2
   exit 2
 fi
+# ROW_BATCH is interpolated into the DELETE's LIMIT, so it must be a positive
+# integer — never interpolate unvalidated input into SQL (same rule as
+# RETENTION_DAYS above).
+if ! [[ "$ROW_BATCH" =~ ^[0-9]+$ ]] || [[ "$ROW_BATCH" -lt 1 ]]; then
+  echo "error: ROW_BATCH must be an integer >= 1 (got '$ROW_BATCH')" >&2
+  exit 2
+fi
 
 echo "outbox backlog cleanup"
 echo "  retention window : ${RETENTION_DAYS} days"

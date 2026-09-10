@@ -113,6 +113,19 @@ tenants are both pruned while unpublished rows of both survive.
 Wiring: `internal/server/server.go` passes the three options from `config.Default()`;
 `internal/config/config.go` owns the knobs.
 
+### Deploy ordering on the large `outbox`
+
+`20260923000000_outbox_retention.sql` creates `outbox_published_at_idx` with a plain,
+non-`CONCURRENTLY` `CREATE INDEX` — Atlas applies migrations inside a transaction, so
+`CONCURRENTLY` is not available. On the existing 8.4M-row / 8.4 GB table (98% of it
+`published_at IS NOT NULL`, i.e. all index-eligible) the build takes a `SHARE` lock on
+`outbox`, which blocks INSERT/UPDATE/DELETE — new enqueues and the relay's
+`MarkPublished` — for the duration of the build. Apply the migration in a maintenance
+window together with `scripts/outbox-backlog-cleanup.sh`, or after the backlog has been
+shrunk; do not apply it during a streaming-heavy period. Only the one-off index build
+locks the table — the scheduled prune is batched (10 × `ORCHICON_OUTBOX_PRUNE_BATCH` rows
+per pass) and never holds a long lock.
+
 ## 4. Observability
 
 Emitted on the existing telemetry pipeline (no new infra):
