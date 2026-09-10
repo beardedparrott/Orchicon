@@ -1048,6 +1048,21 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 				results[i] = toolResult{ToolCall: c, Err: err.Error()}
 				return
 			}
+			// Diff-pipeline ledger hook (native-loop file-edit gap): fired
+			// once per COMPLETED registry result with the PRE-cap output
+			// (the cap may splice the file_edits payload tail out of a
+			// huge batch_write). Failed calls carry no ground truth and
+			// never ledger. The hook owns its error posture (best-effort);
+			// nil = no ledger. This is the single funnel every native-loop
+			// provider (ollama, commandcode, openaicompat, anthropic,
+			// responses) shares — one site covers the whole family.
+			if s.fileEdits != nil {
+				var inputMap map[string]any
+				if err := json.Unmarshal([]byte(c.ArgsJSON), &inputMap); err != nil || inputMap == nil {
+					inputMap = map[string]any{}
+				}
+				s.fileEdits(ctx, s.id, s.identity.TenantID, s.execDir, c.Name, inputMap, out)
+			}
 			capped := capToolOutput(out)
 			results[i] = toolResult{ToolCall: c, Output: capped}
 			// OnToolCall parity (output capped).

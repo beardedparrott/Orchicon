@@ -616,6 +616,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	} else {
 		log.Warn("native Ask history persistence disabled (no data dir) — orchicon-adapter conversations lose context on restart")
 	}
+	// File-edit ledger hook (diff pipeline) for the native-loop family: the
+	// same constructor as the opencode adapter above — the session fires it
+	// once per completed registry result in executeTools, so every
+	// native-loop provider (ollama, commandcode, …) ledgers through one site.
+	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
 	dispatcher.Register("orchicon", nativeBridge)
 
 	// Wrap with OTel tracing interceptor (spans on every API call).

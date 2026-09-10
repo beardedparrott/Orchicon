@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/agentmemory"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -56,6 +57,10 @@ type NativeBridge struct {
 	cacheSink func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
+	// fileEditHook is the diff-pipeline ledger hook fanned out to every
+	// session built here (wired by the server with the same constructor as
+	// the opencode adapter). Nil = no ledger.
+	fileEditHook opencode.FileEditHookFunc
 	// rtClient routes native bash into the run's container when the run
 	// is container-backed (always-container runtime mode). Nil =
 	// in-process (local mode / standalone / headless).
@@ -261,6 +266,7 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 		}
 		return nil, nil, fmt.Errorf("orchicon bridge: %w", err)
 	}
+	sess.SetFileEditHook(b.fileEditHook)
 	cleanup := func() {
 		for _, c := range cleanups {
 			c()
@@ -643,6 +649,13 @@ func (b *NativeBridge) IsExecutionActive(execID string) bool {
 // SetUsageRecorder implements scheduler.ConfigurableBridge.
 func (b *NativeBridge) SetUsageRecorder(fn scheduler.UsageRecorderFunc) {
 	b.usageRecorder = fn
+}
+
+// SetFileEditHook wires the diff-pipeline ledger hook for every session
+// this bridge builds (one shared site in executeTools covers the whole
+// native-loop family). Nil = no ledger (sessions unaffected).
+func (b *NativeBridge) SetFileEditHook(fn opencode.FileEditHookFunc) {
+	b.fileEditHook = fn
 }
 
 // SetCacheSink wires the session-terminal prefix-cache rollup drain (D3,

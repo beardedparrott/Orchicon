@@ -203,6 +203,15 @@ type Session struct {
 	// the per-session cache rollup.
 	usageSink func(ctx context.Context, u Usage)
 
+	// execDir is the execution's working directory (manifest.WorktreePath
+	// when provisioned, else the project dir) — the observer-fallback root
+	// for the file-edit ledger hook (opencode executionDir parity).
+	execDir string
+	// fileEdits is the diff-pipeline ledger hook, fired once per completed
+	// registry tool result in executeTools (the single funnel every
+	// native-loop provider shares). Nil = no ledger (DB-less planes, tests).
+	fileEdits opencode.FileEditHookFunc
+
 	// pm is the progress monitor (opencode parity — internal/orchicon/
 	// progress.go): time-based stall detection (no_progress / no_file_diff /
 	// text_loop / repetition / tool_hang) with the advisory-first nudge
@@ -328,6 +337,12 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		Goal:               cfg.Manifest.Goal,
 		AcceptanceCriteria: cfg.Manifest.AcceptanceCriteria,
 	}
+	// Ledger observer root (opencode executionDir parity): the run worktree
+	// when provisioned, else the project dir.
+	execDir := cfg.Manifest.WorktreePath
+	if execDir == "" {
+		execDir = projectDir
+	}
 	s := &Session{
 		id:         cfg.ExecRow.ID,
 		identity:   ident,
@@ -337,6 +352,7 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		log:        cfg.Log,
 		output:     &strings.Builder{},
 		projectDir: projectDir,
+		execDir:    execDir,
 		memStore:   cfg.MemoryStore,
 		startedAt:  time.Now(),
 	}
@@ -467,6 +483,14 @@ func (s *Session) SetFollowUp(question string) {
 // whether a per-record usage is emitted.
 func (s *Session) SetUsageSink(fn func(ctx context.Context, u Usage)) {
 	s.usageSink = fn
+}
+
+// SetFileEditHook injects the diff-pipeline ledger hook. Nil = no ledger.
+// The bridge wires the server-built hook here; executeTools fires it once
+// per completed registry tool result (all native-loop providers share the
+// site, so ollama/commandcode/openaicompat are covered together).
+func (s *Session) SetFileEditHook(fn opencode.FileEditHookFunc) {
+	s.fileEdits = fn
 }
 
 // AddMemoryNote persists one durable note into the session's mutable
