@@ -394,9 +394,12 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		}
 
 		// Guarded compaction at the quiet turn boundary (D1): fires only on
-		// true context-window pressure (live hint) or the budget gate, from
-		// LIVE provider-reported usage. Never fires on token count alone
-		// when no window hint exists. A budget_abort result is TERMINAL
+		// true context-window pressure (live hint), the budget gate, or the
+		// turn-count hygiene gate (compact_max_turns — a chatty session is
+		// compacted periodically even with no budget breach and no window
+		// pressure), from LIVE provider-reported usage. Never fires on token
+		// count alone when no window hint exists. A budget_abort result is
+		// TERMINAL
 		// (opencode parity): the spend crossed the abort tier — the
 		// session fails with the budget_abort reason (recovery owns the
 		// re-dispatch decision).

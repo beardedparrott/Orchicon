@@ -85,6 +85,13 @@ func (l *BudgetLadder) CompactionTurnFloor() int { return compactMinTurns() }
 // (ORCHICON_COMPACT_MAX; 0 disables).
 func (l *BudgetLadder) CompactionMax() int { return compactMax() }
 
+// DefaultCompactMaxTurns returns the built-in turn-count hygiene gate
+// default (compact_max_turns; see compact.go defaultCompactMaxTurns) —
+// the default the native engine's policyFromSettings falls back to when
+// the merged budget JSON omits the key. ONE source of the default: the
+// native gate never re-states the number.
+func DefaultCompactMaxTurns() int { return defaultCompactMaxTurns }
+
 // BudgetSpend is the exported view of a cumulative spend accumulator
 // (fresh tokens + cost + step count). Fed from LIVE provider-reported
 // usage only.
