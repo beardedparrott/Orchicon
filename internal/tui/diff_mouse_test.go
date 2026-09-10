@@ -22,7 +22,7 @@ func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
 	m = nm.(*App)
 	m.width, m.height = 120, 40
-	m.reflowForDiff()
+	m.refreshLayout()
 
 	// Click the "tree" tab at the pane's tab-bar row (terminal row 2) and
 	// terminal column 10 (the "tree" label text, right of the left border).

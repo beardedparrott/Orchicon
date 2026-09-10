@@ -40,16 +40,28 @@ func TestMouseRailToggle(t *testing.T) {
 	}
 }
 
-// TestMouseTabClickPins the tab bar mouse switch.
+// TestMouseTabClickPins the tab bar mouse switch (Phase 2a: a click also
+// OPENS the tab's dropdown submenu — a second click closes it again, so
+// switch + close-menu is the two-step contract; tested via tabStartCol,
+// the visible-column hit-test that survives centering).
 func TestMouseTabClick(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "a"})
 	app.RegisterScreen(TabWork, &tabBarScreenStub{body: "w"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
-	x := strings.Index(app.tabBarView(), "2·Work")
+	x := app.tabStartCol(Tabs[1])
 	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: 0})
 	if nm.ActiveTab() != TabWork {
 		t.Fatalf("tab click: active = %s, want work", nm.ActiveTab())
+	}
+	if nm.MenuOpenID() != TabWork {
+		t.Fatalf("tab click must open the tab's dropdown, menu = %q", nm.MenuOpenID())
+	}
+	// Clicking the same tab again closes its dropdown (menu remains closed,
+	// active tab unchanged).
+	nm, _ = nm.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: 0})
+	if nm.ActiveTab() != TabWork || nm.MenuOpenID() != "" {
+		t.Fatalf("second click must close the menu: active=%s menu=%q", nm.ActiveTab(), nm.MenuOpenID())
 	}
 }
 

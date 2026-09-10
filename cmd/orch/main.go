@@ -218,7 +218,8 @@ func runShell(profile *config.Profile) (bool, error) {
 	// Open on Ask (the GUI nav's first entry) instead of an empty shell;
 	// its streams start on the first WindowSizeMsg.
 	app.SwitchTo(tui.TabAsk)
-	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion(),
+		tea.WithReportFocus())
 	_, err = prog.Run()
 	if err != nil {
 		return false, err

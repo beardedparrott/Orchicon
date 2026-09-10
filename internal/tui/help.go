@@ -34,7 +34,8 @@ func helpLines(routes []KeyRoute) []string {
 		out = append(out, screen...)
 	}
 	out = append(out, "", theme.HintText.Render("Mouse: click tabs/lists/panes, wheel scrolls. Shift+drag stays free for native select-copy."))
-	out = append(out, theme.HintText.Render("Chat dock: ctrl+g focuses the composer (esc returns). / opens the command palette. Enter sends; alt+enter (or a trailing \\ then Enter) inserts a newline; pasted text never sends until Enter. /help lists slash commands."))
+	out = append(out, theme.HintText.Render("Chat dock: the composer is focused at launch — type immediately; ctrl+g/esc toggle content↔composer. / opens the command palette (above the composer, input stays visible). Enter sends; alt+enter (or a trailing \\ then Enter) inserts a newline; pasted text never sends until Enter. /help lists slash commands."))
+	out = append(out, theme.HintText.Render("Tabs: click a tab (or esc then ctrl+o/w/e/a/f/t) to open its submenu of sub-screens — arrows + enter select, esc closes."))
 	out = append(out, theme.HintText.Render("Rails: ctrl+r toggles the Ask conversations rail; d toggles the diff pane. /connect shows the in-place re-auth overlay (never exits)."))
 	out = append(out, theme.HintText.Render("Windows: chords + mouse work in Windows Terminal; legacy conhost may degrade mouse."))
 	return out

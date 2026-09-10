@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -106,6 +107,12 @@ type App struct {
 	palette            palette
 	slash              *slashRegistry
 	contextOverride    string // /context pin <desc>
+	// Tab dropdown submenus (Phase 2a): per-tab menus built from nav
+	// config; menuOpen = the tab whose dropdown is open ("" = closed).
+	menus     map[TabID]*TabMenu
+	menuOpen  TabID
+	navReg    []NavEntry
+	themes    []string
 	reconnectRequested bool
 	chatConvID         string                     // active conversation ("" = none yet)
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items
@@ -186,11 +193,27 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	}
 	// The slash registry is generated from the screens' Sources() (the
 	// no-drift source of truth), so factories must exist before it builds.
+	// The nav registry (tab dropdown entries) shares that source — build it
+	// ONCE here and let buildSlashRegistry consume it, so the two can never
+	// disagree (and openTabMenu sees the same entries as /work-items).
+	m.navReg = buildNavEntries(m)
 	m.slash = buildSlashRegistry(m)
 	m.routes = GlobalKeyRoutes(Tabs)
 	m.mouseEnabled = true // cmd/orch runs tea.WithMouseCellMotion()
 	m.convRailOpen = true // Ask conversations rail OPEN on default (GUI parity)
 	m.rightRailOpen = true
+	m.menus = map[TabID]*TabMenu{}
+	m.themes = theme.Names()
+	// Phase 2a (operator finding 3): the composer is the launch focus —
+	// typing works immediately, no ctrl+g needed.
+	m.chatFocus = focusComposer
+	m.dock.Focus()
+	m.footer.ComposerFocus = true
+	if profile != nil && profile.Theme != "" && theme.Use(profile.Theme) {
+		// config-selected theme already applied (styles are package state).
+	} else {
+		theme.Use(theme.DefaultName)
+	}
 	return m
 }
 
@@ -210,6 +233,13 @@ func (m *App) RegisterScreen(id TabID, s Screen) {
 // screen is closed = unsubscribed, useStream semantics).
 func (m *App) SwitchTo(id TabID) {
 	if m.active == id {
+		// Re-selecting the OPEN tab's chord/click closes its dropdown
+		// (toggle); with no menu it just re-arms streams.
+		if m.menuOpen == id {
+			m.closeTabMenu()
+		} else {
+			m.EnsureSubscriptions(id)
+		}
 		return
 	}
 	if old, ok := m.screens[m.active]; ok && old != nil {
@@ -222,7 +252,19 @@ func (m *App) SwitchTo(id TabID) {
 			if m.width > 0 {
 				s.SetSize(m.contentWidth(), m.contentHeight())
 			}
-			m.screens[id] = s
+				m.screens[id] = s
+		}
+	}
+	// A tab switch swaps the chrome's submenu to the new tab's (the
+	// dropdown follows focus, per the mockup's menu-under-tab pattern);
+	// switching to the OPEN tab's neighbor while its menu is up moves the
+	// menu. A fresh SwitchTo with no menu open leaves it closed (the
+	// mouse route toggles explicitly around this call).
+	if m.menuOpen != "" {
+		if m.menuOpen == id {
+			m.closeTabMenu()
+		} else {
+			m.openTabMenu(id)
 		}
 	}
 	m.updateContextChip()
@@ -266,12 +308,13 @@ func (m *App) cycle(delta int) {
 }
 
 func (m *App) contentHeight() int {
-	// Fixed shell overhead is 5 rows, not 3: the tab bar renders 2 rows
-	// (text + theme.TabBar's bottom border), then one blank line after the
-	// tab bar, one blank line before the footer, and the 1-row footer.
-	// Subtracting only 3 let screens + dock overflow by 2 rows at 80×24,
-	// which scrolled the tab bar off the terminal.
-	h := m.height - 5 - m.dock.Lines()
+	// Fixed shell overhead (Phase 2a full-screen chrome): the centered tab
+	// bar + underline rule (2), the ONE blank separator after the chrome,
+	// the footer strip, and the composer pinned to the bottom (dock.Lines
+	// = input + notice strips). Screens get every remaining row; the
+	// content column is always m.height - 4 - dock.Lines() so the
+	// composer lands flush against the footer on every screen.
+	h := m.height - 4 - m.dock.Lines()
 	if h < 1 {
 		h = 1
 	}
@@ -346,7 +389,7 @@ func (m *App) openDiffPane() tea.Cmd {
 	m.diffOpen = true
 	m.restoreDiffPaneState()
 	m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
-	m.reflowForDiff()
+	m.refreshLayout()
 	// The pane keeps its previously selected path if it matches this owner's
 	// files; otherwise the SetOwner fetch defaults it (see diffs.Model).
 	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
@@ -367,14 +410,16 @@ func (m *App) closeDiffPane() {
 		m.diffPane.Close()
 	}
 	// Restore the full-width layout (the screen + dock reflow back).
-	m.reflowForDiff()
+	m.refreshLayout()
 }
 
 // reflowForDiff re-applies the current layout to the screen and dock given
 // whether the diff pane is open (the pane consumes DiffPaneWidth columns).
 // Called after toggling the pane, so the content reflows without waiting for
 // the next terminal resize.
-func (m *App) reflowForDiff() {
+// reflowForDiff was unified into refreshLayout (Phase 2a): one layout
+// applier for window resize, rail toggles, and diff-pane toggles.
+func (m *App) refreshLayout() {
 	if s := m.screens[m.active]; s != nil && m.width > 0 {
 		s.SetSize(m.contentWidth(), m.contentHeight())
 	}
@@ -667,6 +712,22 @@ type execSessionMsg struct {
 	err    error
 }
 
+// navEntries returns (building once) the tab's dropdown rows from the
+// screen inventory (buildNavEntries over Sources()) — the same no-drift
+// source as the slash registry, per docs/tui-parity.md.
+func (m *App) navEntries(tab TabID) []NavEntry {
+	if m.navReg == nil {
+		m.navReg = buildNavEntries(m)
+	}
+	var out []NavEntry
+	for _, e := range m.navReg {
+		if e.Tab == tab {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // streamStatus derives the footer state from the active screen's
 // reported subscription statuses (worst wins).
 func (m *App) streamStatus() streamStatusString {
@@ -732,6 +793,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	m.updateContextChip()
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
+	m.footer.ComposerFocus = m.chatFocus == focusComposer
 	return m, cmd
 }
 
@@ -799,113 +861,175 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 	return false, nil
 }
 
-// View implements tea.Model.
+// View implements tea.Model. Full-screen takeover (Phase 2a): the view
+// is EXACTLY m.height rows × m.width columns, every cell carrying the
+// theme's solid background — zero terminal bleed-through on every screen.
+// The budget is fixed chrome, not intrinsic content height:
+//
+//	row 0            centered tab bar
+//	row 1            full-width underline rule
+//	row 2            one blank separator (ScreenBg)
+//	rows 3…          the active screen (contentHeight() rows — every
+//	                 screen consumes the FULL budget, never its intrinsic
+//	                 content height) with the dock block pinned beneath it
+//	                 (rails join this region as extra columns)
+//	last row         the one-line footer
+//
+// fillView then pins the assembled grid to exactly w×h through ScreenBg.
+// The slash palette floats above the composer when open; the tab
+// dropdown overlays the body region.
 func (m App) View() string {
 	if m.quitting {
 		return ""
 	}
+	w, h := m.width, m.height
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
 	if m.help.open {
 		overlay := m.help.view(m.routes) + "\n" + strings.Join(m.slash.helpLines(), "\n")
-		return lipglossPlace(m.width, m.height, overlay)
+		// ScreenBg repaints the placed block so even the help overlay's
+		// padding cells carry the opaque theme background.
+		return theme.ScreenBg.Render(lipglossPlace(w, h, overlay))
 	}
-	var b strings.Builder
-	b.WriteString(m.tabBarView())
-	b.WriteString("\n")
-	// Main column: the active screen, the chat dock beneath it, and the
-	// left diff rail when open (the diff pane is the LEFT rail; the screen
-	// + dock reflow into the remaining width after both rails).
-	var main strings.Builder
-	if s := m.screens[m.active]; s != nil {
-		if m.diffOpen && m.diffPane != nil && m.diffPane.HasOwner() {
-			paneView := m.diffPane.View()
-			mainView := s.View() + "\n" + m.dock.View()
-			main.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, paneView, mainView))
-		} else {
-			main.WriteString(s.View())
-			main.WriteString("\n")
-			main.WriteString(m.dock.View())
-		}
-	} else {
-		main.WriteString(theme.HintText.Render("select an area"))
+	cw := m.contentWidth()
+	screenRows := m.contentHeight()
+	dockRows := m.dock.Lines()
+	if screenRows < 1 {
+		screenRows = 1
 	}
-	// Ask right rail (CONVERSATIONS sidebar): the rightmost column, joined
-	// to the main content so the center reflows between the left diff rail
-	// and the right conversations rail.
+	// Center column: the active screen block + the dock block beneath it,
+	// each normalized to its budget row count (padded with the theme
+	// background when short, truncated when over — the composer can never
+	// be pushed off-screen by an over-tall screen render).
+	screenBlock := normalizeBlock(safeView(m.screens[m.active]), cw, screenRows)
+	dockBlock := normalizeBlockKeepTail(m.dock.View(), cw, dockRows)
+	bodyLines := append(append([]string{}, screenBlock...), dockBlock...)
+	body := strings.Join(bodyLines, "\n")
+	// Left diff rail / right conversations rail: extra COLUMNS joined over
+	// the screen+dock region (the gap row spans the full width alone).
+	if m.diffOpen && m.diffPane != nil && m.diffPane.HasOwner() {
+		pane := strings.Join(normalizeBlock(m.diffPane.View(), DiffPaneWidth, screenRows+dockRows), "\n")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, pane, body)
+	}
 	if m.railVisible() {
-		rail := m.rightRailView()
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, main.String(), rail))
-	} else {
-		b.WriteString(main.String())
+		rail := strings.Join(normalizeBlock(m.rightRailView(), ConversationsRailWidth, screenRows+dockRows), "\n")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, rail)
 	}
-	b.WriteString("\n")
-	// The chat dock is always present: every screen composes above it.
-	b.WriteString(m.footer.View())
-	// Composer '/' palette + /connect overlay: drawn on top when open
-	// (centered, floating). The /connect overlay never exits the process.
+	// Assemble the exact-height grid: chrome · gap · body · footer.
+	gap := theme.ScreenBg.Render(strings.Repeat(" ", w))
+	footerLine := normalizeBlock(m.footer.View(), w, 1)
+	rows := make([]string, 0, h)
+	rows = append(rows, m.centeredTabBarView(), m.tabBarUnderlineView(), gap)
+	rows = append(rows, strings.Split(body, "\n")...)
+	rows = append(rows, footerLine...)
+	base := fillView(strings.Join(rows, "\n"), w, h)
+	// Composer '/' palette + /connect overlay: drawn on top of the opaque
+	// base when open. The palette floats ABOVE the composer (the composer
+	// line + typed text stay visible); /connect is centered. The /connect
+	// overlay never exits the process.
 	if m.palette.connectOpen {
-		return lipglossPlace(m.width, m.height, m.connectOverlayView())
+		return m.overlayCentered(base, m.connectOverlayView())
 	}
 	if m.palette.PaletteOpen() {
-		return lipglossPlace(m.width, m.height, m.paletteView())
+		base = m.paletteComposerView(base)
 	}
-	return b.String()
+	return m.composeView(base)
 }
 
-// tabBarView renders the top tab bar with numbered ordinal + active
-// highlight, matching the mockup's numbered tab chrome.
-func (m App) tabBarView() string {
-	parts := make([]string, len(Tabs))
-	for i, t := range Tabs {
-		label := t.Title
-		if t.ID == m.active {
-			parts[i] = theme.TabActive.Render(t.Ordinal + "·" + label)
-		} else {
-			parts[i] = theme.TabInactive.Render(t.Ordinal + "·" + label)
-		}
+// safeView renders the active screen, tolerating a nil screen (the shell
+// is briefly screenless before the first SwitchTo).
+func safeView(s Screen) string {
+	if s == nil {
+		return theme.HintText.Render("select an area")
 	}
-	return theme.TabBar.Render(strings.Join(parts, " "))
+	return s.View()
 }
 
-// TabClick maps a mouse click on the tab bar (row 0) to the tab whose
-// rendered span contains column x. It locates each tab label in the
-// actually-rendered tab bar string, so it never drifts from the layout
-// math (padding/gap). Returns (tabID, true) when a tab was hit.
-func (m App) TabClick(x int) (TabID, bool) {
-	bar := m.tabBarView()
-	for _, t := range Tabs {
-		label := t.Ordinal + "·" + t.Title
-		idx := strings.Index(bar, label)
-		if idx < 0 {
-			continue
-		}
-		// Mouse X is a terminal COLUMN (0-based) but strings.Index returns a
-		// BYTE offset into the ANSI-styled render. The two diverge by the
-		// width of every preceding colored/multibyte glyph, so the byte
-		// offset cannot be compared to x. Measure the visible width of the
-		// styled prefix with lipgloss.Width (ANSI-aware) to get the label's
-		// true starting column.
-		start := lipgloss.Width(bar[:idx])
-		// The tab span extends from the label's start to just before the
-		// following child block start (background padding + inter-tab gap).
-		end := start + lipgloss.Width(label) + 3
-		if x >= start && x < end {
-			return t.ID, true
-		}
+// normalizeBlock pins a rendered block to exactly h rows × w columns:
+// over-long rows are ANSI-aware truncated, short rows background-padded
+// (the padding cells are painted by fillView's ScreenBg pass), and the
+// row count is exact — a short block never leaves the rows below it to
+// drift up (the pre-Phase-2a bleed-through), an over-tall block never
+// pushes the composer/footer off-screen.
+func normalizeBlock(block string, w, h int) []string {
+	if w < 1 {
+		w = 1
 	}
-	return "", false
+	if h < 1 {
+		h = 1
+	}
+	lines := strings.Split(block, "\n")
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for i, l := range lines {
+		lines[i] = padScreenLine(l, w)
+	}
+	for len(lines) < h {
+		lines = append(lines, strings.Repeat(" ", w))
+	}
+	return lines
 }
 
-// tabStartCol returns the visible terminal column where tab's label begins
-// in the rendered tab bar (ANSI-aware). Used by the tab mouse hit-test and
-// its tests, so the click math never has to reconstruct lipgloss internals.
-func (m App) tabStartCol(t Tab) int {
-	bar := m.tabBarView()
-	label := t.Ordinal + "·" + t.Title
-	idx := strings.Index(bar, label)
-	if idx < 0 {
-		return 0
+// normalizeBlockKeepTail is normalizeBlock for blocks whose LAST row is
+// the load-bearing one (the dock: chip/notice strips sit above the input
+// line). Overflow drops rows from the TOP (the chip first) so the
+// composer input line survives an over-tall block.
+func normalizeBlockKeepTail(block string, w, h int) []string {
+	if w < 1 {
+		w = 1
 	}
-	return lipgloss.Width(bar[:idx])
+	if h < 1 {
+		h = 1
+	}
+	lines := strings.Split(block, "\n")
+	if len(lines) > h {
+		lines = lines[len(lines)-h:]
+	}
+	for i, l := range lines {
+		lines[i] = padScreenLine(l, w)
+	}
+	for len(lines) < h {
+		lines = append([]string{strings.Repeat(" ", w)}, lines...)
+	}
+	return lines
+}
+
+// fillView pins content to the exact viewport: every rendered line is
+// padded to w cells (truncated on overflow) and the whole grid is filled
+// to exactly h rows, ALL through ScreenBg so every cell is opaque theme
+// background — no terminal bleed-through anywhere.
+func fillView(content string, w, h int) string {
+	lines := strings.Split(content, "\n")
+	for i, l := range lines {
+		lines[i] = padScreenLine(l, w)
+	}
+	for len(lines) < h {
+		lines = append(lines, strings.Repeat(" ", w))
+	}
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// padScreenLine renders one row at exactly w cells: overlong lines are
+// ANSI-aware truncated, short lines background-padded. Every cell —
+// including padding — carries the theme's solid background.
+func padScreenLine(l string, w int) string {
+	cols := lipgloss.Width(l)
+	if cols > w {
+		l = ansi.Truncate(l, w, "")
+		cols = w
+	}
+	if cols < w {
+		l += strings.Repeat(" ", w-cols)
+	}
+	return theme.ScreenBg.Render(l)
 }
 
 // ReconnectRequested reports whether the shell exited for /connect
