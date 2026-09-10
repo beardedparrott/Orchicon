@@ -172,15 +172,18 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil // overlay swallows keys
 	}
-	// /connect in-place overlay owns all keys while open (never quits).
+	// /connect in-place overlay owns ALL messages while open (never quits):
+	// keys drive the embedded connection form; the async probe's start/done
+	// messages flow through connectTick.
 	if m.palette.connectOpen {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			handled, cmd := m.connectHandleKey(k)
 			if handled {
 				return m, cmd
 			}
+			return m, nil
 		}
-		return m, nil
+		return m, m.connectTick(msg)
 	}
 	// Global mouse: clicks on the tab bar (row 0) switch tabs regardless of
 	// focus; clicks/wheel in the Ask right rail (rightmost columns, rows

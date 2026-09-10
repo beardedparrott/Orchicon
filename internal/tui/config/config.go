@@ -34,6 +34,10 @@ type Profile struct {
 	AuthMethod         AuthMethod // apikey | password
 	Token              string     // API key (oc_…) or access token from local-login
 	Username           string     // password mode only; the password is never stored
+	// RefreshToken is password mode's refresh token from the HttpOnly
+	// orchicon_refresh Set-Cookie on local-login (24h TTL). Enables the
+	// client's auto-refresh of the 900s access token.
+	RefreshToken       string
 	InsecureSkipVerify bool       // TLS skip-verify for self-signed dev instances
 	// Newline is the chat dock's newline-insertion chord: alt+enter
 	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty
@@ -146,6 +150,7 @@ func render(cfg *Config) string {
 		fmt.Fprintf(&b, "auth_method = %q\n", string(p.AuthMethod))
 		fmt.Fprintf(&b, "token = %q\n", p.Token)
 		fmt.Fprintf(&b, "username = %q\n", p.Username)
+		fmt.Fprintf(&b, "refresh_token = %q\n", p.RefreshToken)
 		fmt.Fprintf(&b, "insecure_skip_verify = %t\n", p.InsecureSkipVerify)
 	}
 	return b.String()
@@ -193,6 +198,10 @@ func parse(data string) (*Config, error) {
 		case "username":
 			if cur != nil {
 				cur.Username = unquote(value)
+			}
+		case "refresh_token":
+			if cur != nil {
+				cur.RefreshToken = unquote(value)
 			}
 		case "insecure_skip_verify":
 			if cur != nil {

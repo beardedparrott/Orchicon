@@ -117,6 +117,28 @@ func (b *Base) Load() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// friendlyFetchErr maps a raw RPC error to a human-readable, retryable
+// state string (operator finding #9's auth-cascade half: a bare
+// "error: unauthenticated" is never shown — auth expiry names the fix,
+// transient failures name the retry).
+func friendlyFetchErr(errText string) string {
+	low := strings.ToLower(errText)
+	switch {
+	case strings.Contains(low, "unauthenticated"):
+		return "session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)"
+	case strings.Contains(low, "permission_denied") || strings.Contains(low, "forbidden"):
+		return "not permitted for this credential — check the API key's scopes (Settings → API keys) or re-authenticate with /connect"
+	case strings.Contains(low, "deadline_exceeded") || strings.Contains(low, "context deadline") || strings.Contains(low, "timeout"):
+		return "the plane took too long to answer — press r to refresh (transient timeouts retry)"
+	case strings.Contains(low, "unavailable") || strings.Contains(low, "connection refused") || strings.Contains(low, "no such host") || strings.Contains(low, "connection refused"):
+		return "the plane is unreachable right now — press r to refresh once it is back"
+	case strings.Contains(low, "unavailable") || strings.Contains(low, "unimplemented"):
+		return "this surface is not served by the connected plane — /connect to a plane with this feature"
+	default:
+		return errText
+	}
+}
+
 // loadMore fetches the next page of the active source ("f" key).
 func (b *Base) loadMore() tea.Cmd {
 	s := b.sources[b.active]
@@ -207,7 +229,7 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 				continue
 			}
 			if msg.err != nil {
-				s.list.Err = msg.err.Error()
+				s.list.Err = friendlyFetchErr(msg.err.Error())
 				s.list.Loading = false
 				return true, nil
 			}
@@ -229,7 +251,7 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 		return true, nil
 
 	case detailErrMsg:
-		b.detail.SetContent("detail error", []Field{{Key: "error", Value: msg.err.Error()}}, "")
+		b.detail.SetContent("couldn't load this item", []Field{{Key: "error", Value: friendlyFetchErr(msg.err.Error())}}, "")
 		return true, nil
 
 	case tea.KeyMsg:

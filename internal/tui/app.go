@@ -1104,10 +1104,10 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 }
 
 // setChatError maps a chat failure to the dock error strip (401 gets
-// the re-auth prompt; the app keeps running).
+// the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
 	if chat.IsAuthExpired(err) {
-		m.dock.SetError("auth expired — /connect to re-authenticate")
+		m.dock.SetError("session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)")
 		return
 	}
 	m.dock.SetError(where + ": " + err.Error())
@@ -1118,7 +1118,7 @@ func (m *App) setChatErrorPlain(errText string) {
 		return
 	}
 	if strings.Contains(errText, "Unauthenticated") || strings.Contains(errText, "unauthenticated") {
-		m.dock.SetError("auth expired — /connect to re-authenticate")
+		m.dock.SetError("session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)")
 		return
 	}
 	m.dock.SetError(errText)
