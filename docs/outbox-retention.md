@@ -178,3 +178,54 @@ Automated coverage above injects the outage at the publisher interface; the end-
    `execution_session_parts` → `GetExecutionSession`.
 4. Restart `nats-server`. Confirm the live stream resumes (unique MsgIDs now store every chunk) and
    that the pane and the terminal view show the complete conversation.
+
+## 6. QA acceptance review (independent re-verification)
+
+Re-verified on the branch head (base `3b37f987e` + QA commit) against the **disposable
+in-container sandbox plane** only (`ORCHICON_TEST_DSN`, Postgres on container-local 5432).
+Build/vet: `go build ./...` and `go vet` on every changed package — clean.
+
+| Acceptance criterion | QA evidence | Result |
+|---|---|---|
+| Published rows older than N pruned on schedule; unpublished never pruned; tenant-safe; batched | `TestPrunePublishedOutboxAcrossTenants`, `TestPrunePublishedOutboxRespectsBatchBound` (25 eligible rows, `batchLimit=10` ⇒ exactly 10 deleted), `TestRelayPruneOnceDeletesPublishedKeepsUnpublished`, `TestRelayPruneDisabledIsNoop` | PASS |
+| Batched one-off cleanup of the 8.4M-row backlog + vacuum guidance | `scripts/outbox-backlog-cleanup.sh` (bounded `LIMIT`, sleeps between batches, `MAX_MINUTES` budget, re-runnable; prints `VACUUM (ANALYZE)` / `VACUUM FULL` / `REINDEX CONCURRENTLY` guidance). Argument gates re-verified: `ROW_BATCH=abc` ⇒ exit 2, positional `RETENTION_DAYS=0` ⇒ exit 2, empty DSN ⇒ exit 2 | PASS |
+| Per-token `execution.text` no longer outboxed; direct publish remains; GUI unchanged in steady state | `TestOnTextDoesNotEnqueueOutbox` (4 deltas, NATS-down publisher: **0** `execution.text` outbox rows, 4 publish attempts); grep confirms `OnText` is no longer an `enqueueExecEvent` call site and no other per-token producer of `execution.text` exists. Live-feed delivery re-verified end-to-end at the broker boundary with the **production** publisher + subscriber: `TestDirectPublishLiveFeedDeliversEveryChunk` (`internal/eventbus`) publishes three chunks with `direct:<exec>:<type>:<seq>` and asserts all three reach the `StreamExecutionEvents` consumer (`Subscriber.Subscribe(ctx, "orchicon.events.execution.>")`) on **distinct** JetStream sequences, reassembling exactly | PASS |
+| Dropped guarantee covered: NATS down at commit, client reconnects, GUI recovers full text via durable transcript refetch | Outage injected at the publisher in `TestOnTextDoesNotEnqueueOutbox`; the full text is then recovered through `db.ListExecutionSessionParts` — the exact call behind `Service.GetExecutionSession` (`internal/execution/service.go:1168`). GUI side: `SessionChatPane` refetches the transcript every 2000 ms while running and once more on terminal (`frontend/src/components/executions/SessionChatPane.tsx:530-548`), so text lost to a NATS outage is recovered regardless of any event-stream gap. Manual outage/reconnect procedure documented in §5. No gap found in the refetch path | PASS |
+| `execution.tool_call` keep-decision documented | §2.3 (134,718 rows ≈ 3k/day, not per-token, `tool_use` parts reconstructible but the cut buys little); pinned by `TestOnToolCallStillEnqueuesOutbox` (exactly 1 outbox row per call) | PASS |
+| Low-frequency state-critical events stay outboxed, relay path unchanged | `enqueueExecEvent` call sites retained: `execution.created` (`reconciler.go:902`), `execution.tool_call` (`:2259`), `execution.artifact` (`:2316`), `execution.<status>` (`:2364`), plus `execution.checkpoint`/`execution.control` (`internal/execution/service.go`). Relay `tick`/`PollOutbox`/`MarkPublished` untouched | PASS |
+| Observability: depth gauge + oldest-unpublished-age gauge + alert threshold; stalled relay cannot accumulate silently | `TestCountAndOldestUnpublished`, `TestRelayLagAlertFires` (age threshold fires, gauge values sampled). QA added registration assertions: all three instruments (`orchicon_outbox_lag`, `orchicon_outbox_oldest_unpublished_seconds`, `orchicon_outbox_lag_alerts_total`) must be non-nil after `NewRelay` — a metric a stalled relay never registers cannot alert | PASS |
+| Dedup path (`direct:` MsgID vs outbox-row ULID) still passes its tests | `TestPublishExecEventMsgIDUnique` (3 publishes, 3 distinct MsgIDs, `direct:<exec>:<type>` prefix kept), `TestJetStreamConstantMsgIDIsDeduplicated` (real `nats-server`, `Duplicates: 5m`) | PASS |
+
+### Defect found and fixed by QA
+
+- `internal/scheduler/reconciler.go` failed `gofmt` **because of this diff**: inserting the
+  multi-line `eventSeq` comment between `eventPub` and the next field split the struct's gofmt
+  alignment group, so the four preceding field lines were no longer formatted (`gofmt -d` reports
+  one hunk; `develop`'s copy is gofmt-clean). Fixed with `gofmt -w` — formatting only, no
+  behaviour change, `go build ./internal/scheduler/` re-verified.
+- `internal/db/outbox.go` and `internal/config/config.go` are **also** unformatted on `develop`
+  (pre-existing, not introduced here); left untouched to avoid unrelated churn.
+
+### Surface-impact determination
+
+The diff contains **zero frontend changes**, but it does feed a user-visible surface — live
+streaming text — so it was treated as UI-affecting. A Playwright screenshot pass was **not
+possible in this runtime**: `frontend/dist` is empty and `frontend/node_modules` is unpopulated,
+and `npm ci` + a Vite build cannot complete inside the time box. The user-visible path was
+therefore verified at the layer the GUI consumes: the real JetStream publisher + subscriber
+round-trip (`TestDirectPublishLiveFeedDeliversEveryChunk`) proves every streamed chunk reaches
+`StreamExecutionEvents` on its own sequence, and the frontend dedup key
+(`${eventType}-${response.sequence}`, `frontend/src/api/executions.ts:130`) is unchanged — so the
+pane renders every chunk, exactly as when the outbox relay was the live path. The durable
+transcript poll that covers an outage is unchanged too. **No unverified user-visible regression
+remains.**
+
+### Suite status
+
+- Green: `internal/db` (retention tests), `internal/outbox`, `internal/eventbus`, `internal/config`.
+- Pre-existing red on `develop`, unrelated to this diff: `internal/workitem`
+  (`TestListIdeasRejectedScope`, `TestControlSequenceRejectsNonSequenceParent/bound-run ticket`).
+- The **full `internal/scheduler` package** exceeds this step's 30-minute box (the same limit the
+  PR review hit); its acceptance-critical tests (`TestOnTextDoesNotEnqueueOutbox`,
+  `TestOnToolCallStillEnqueuesOutbox`, `TestPublishExecEventMsgIDUnique`) pass individually. Step 5
+  (DevOps) should run the package/suite in CI, where it is not time-boxed.

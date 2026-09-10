@@ -181,4 +181,16 @@ func TestRelayLagAlertFires(t *testing.T) {
 	if r.lagVal.Load() < 1 {
 		t.Fatalf("unpublished-depth gauge should be at least 1, got %d", r.lagVal.Load())
 	}
+	// The two gauges and the alert counter must actually be registered on the
+	// telemetry pipeline — a stalled relay is only visible if the metrics
+	// exist in the first place.
+	if r.lagGauge == nil {
+		t.Error("orchicon_outbox_lag gauge was not registered")
+	}
+	if r.oldestGauge == nil {
+		t.Error("orchicon_outbox_oldest_unpublished_seconds gauge was not registered")
+	}
+	if r.alertCtr == nil {
+		t.Error("orchicon_outbox_lag_alerts_total counter was not registered")
+	}
 }

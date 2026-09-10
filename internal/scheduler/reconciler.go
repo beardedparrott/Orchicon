@@ -124,10 +124,10 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 // the execution's adapter kind (adapter.AdapterKind(manifest.ModelRef)
 // .Adapter).
 type TaskReconciler struct {
-	pool             *db.Pool
-	log              *slog.Logger
-	dispatcher       *Dispatcher
-	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	pool       *db.Pool
+	log        *slog.Logger
+	dispatcher *Dispatcher
+	eventPub   eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	// eventSeq is a monotonic per-process suffix that makes every direct
 	// publish's JetStream MsgID unique. The stream is created with
 	// Duplicates: 5m (internal/eventbus/nats.go), so a CONSTANT MsgID would
