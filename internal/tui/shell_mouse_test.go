@@ -34,7 +34,7 @@ func TestMouseRailToggle(t *testing.T) {
 		t.Fatal("rail should be open by default")
 	}
 	// Click the rail header (absolute row 2, right columns).
-	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 120 - ConversationsRailWidth + 5, Y: 2})
+	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 120 - ConversationsRailWidth + 5, Y: railTopRow})
 	if nm.railVisible() {
 		t.Fatal("click on rail header must collapse the rail")
 	}

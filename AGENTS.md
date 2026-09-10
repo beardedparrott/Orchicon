@@ -17,3 +17,21 @@ use. You may use, copy, and modify it for your own non-commercial
 purposes. Redistribution, sublicensing, or integration into commercial
 products that generate revenue requires explicit written permission from
 the owner. See the [LICENSE](./LICENSE) file for the full terms.
+
+## TUI QA policy — the standing real-pty verification gate
+
+Any work item that touches the TUI (`internal/tui/**`, `cmd/orch`) MUST be
+verified with the REAL-PTY gate, not with rendered-string assertions alone.
+The QA step must smoke-launch `bin/orch` in a real pty at two sizes
+(80×24, 120×40) and exercise: launch → composer focused, tab switch +
+submenu open, `/` palette with the composer input still visible, `/connect`
+in place with the auth toggle, a real mouse click on a tab AND on a rail,
+wheel scrolling, and a theme switch. Run it with `make tui-pty-gate`.
+
+Rationale and the harness facts live in `docs/tui-pty-verification-gate.md`:
+the Phase-2 Shell Overhaul (PR #515) verified via strings and missed nine
+operator findings, including a footer promising "Mouse Enabled" while real
+clicks did nothing, and a conversations rail that rendered as an empty
+floating box. Interactive behavior (mouse, focus, overlays) must add or
+extend a `TestPTY*` test in `internal/tui` that injects real events into
+the RUNNING program; a unit-level handler test is supporting evidence only.

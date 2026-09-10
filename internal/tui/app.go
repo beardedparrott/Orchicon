@@ -136,6 +136,11 @@ type App struct {
 	convRailOpen  bool
 	convSel       int
 	convScroll    int
+	// Rail load state (Phase 2c finding 9): the rail is never a silent
+	// empty box — a failed load holds an explicit error + retry state.
+	convErr     string // last rail load failure (auth/API); "" = healthy
+	convLoaded  bool   // a successful rail load has landed
+	convLoading bool   // a rail load is in flight
 
 	// rightRailOpen records the Ask screen's right-rail visibility; kept so
 	// the renderer knows whether to draw the rail without re-deriving it.
@@ -144,6 +149,9 @@ type App struct {
 	// pendingDiffCmd carries the diff-pane owner-setup cmd out of a route
 	// Handle (routes can't return a tea.Cmd; dispatch re-emits it).
 	pendingDiffCmd tea.Cmd
+	// pendingRailCmd carries the conversations-rail retry/reload cmd out of
+	// a route or a mouse handler that cannot return one directly.
+	pendingRailCmd tea.Cmd
 }
 
 // DiffPaneWidth is the left rail width (cells). Mirrors the GUI's ~480px
@@ -378,9 +386,12 @@ func (m *App) diffOwnerLive(kind, id string) bool {
 // openDiffPane opens the pane and points it at the active owner. If the
 // owner changed, it refetches the durable ledger + (re)arms the live stream.
 func (m *App) openDiffPane() tea.Cmd {
-	if m.diffPane == nil || m.chatFocus != focusContent {
+	if m.diffPane == nil {
 		return nil
 	}
+	// NOTE: the composer-vs-content focus rule lives on the `d`/`D` ROUTE
+	// (so `d` stays a literal character while composing); an explicit
+	// request (the /diff command) opens the rail regardless of focus.
 	kind, id := m.diffOwner()
 	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
 		// No diff-relevant session on this screen — the toggle is a no-op.
@@ -790,6 +801,13 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	}
 	ns, cmd := s.Update(msg)
 	m.screens[m.active] = ns
+	// The Ask screen's detail pane is the transcript surface: whenever it
+	// re-renders (e.g. a conversation detail just loaded — including from a
+	// rail click), relay the merged transcript into it. No-op unless the
+	// open detail is the active conversation (operator finding 9).
+	if m.active == TabAsk {
+		m.onChatWake()
+	}
 	m.updateContextChip()
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
@@ -1101,12 +1119,51 @@ func (s appEventStore) SetReconnecting(convID string, on bool) {
 // fresh chat context (GUI default behavior); existing conversations are
 // reached only deliberately (rail click, slash command, /context, chat).
 func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
+	m.convLoading = false
 	if msg.Err != "" {
+		// Explicit rail failure state (finding 9): the rail renders the
+		// error + a retry affordance instead of an empty box.
+		m.convErr = msg.Err
 		m.setChatErrorPlain(msg.Err)
 		return nil
 	}
+	m.convErr = ""
+	m.convLoaded = true
 	m.conversations = msg.Convs
+	if m.convSel >= len(m.conversations) {
+		m.convSel = 0
+	}
+	if m.convScroll > len(m.conversations) {
+		m.convScroll = 0
+	}
 	return nil
+}
+
+// reloadConversations re-fetches the conversations rail from the live API
+// (the rail's explicit retry path). Safe to call on the tea loop.
+func (m *App) reloadConversations() tea.Cmd {
+	if m.chat == nil {
+		return nil
+	}
+	m.convLoading = true
+	m.convLoaded = false
+	return m.chat.LoadConversations()
+}
+
+// drainRailCmd returns (once) the staged conversations-rail reload cmd.
+func (m *App) drainRailCmd() tea.Cmd {
+	c := m.pendingRailCmd
+	m.pendingRailCmd = nil
+	return c
+}
+
+// inDockRows reports whether an absolute terminal row is inside the dock
+// (composer) block — the chip/notice strip(s) and the input line. Used by
+// the mouse router: clicking the composer must FOCUS it (finding 7), not
+// just rely on the launch default.
+func (m *App) inDockRows(y int) bool {
+	dockRows := m.dock.Lines()
+	return y >= m.height-1-dockRows && y <= m.height-2
 }
 
 // chatStore guards the per-conversation live item lists (the stream
