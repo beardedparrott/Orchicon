@@ -100,7 +100,10 @@ func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger) opencode.FileEdi
 		case "batch_write":
 			// Worktree engine tool: the engine already computed the
 			// ground-truth diffs in its structured output.
-			feSvc.RecordEngineOutput(ctx, tenantID, ownerKind, execID, toolName, output)
+			if parsed, recorded := feSvc.RecordEngineOutput(ctx, tenantID, ownerKind, execID, toolName, output); parsed > 0 {
+				log.Debug("file edit hook: engine payload claimed batch_write",
+					"execution", execID, "tool", toolName, "parsed", parsed, "recorded", recorded)
+			}
 		case "file_diff":
 			// Adapter fallback for paths no known mutating tool covered:
 			// the input carries the file_diff event's path. Real file
