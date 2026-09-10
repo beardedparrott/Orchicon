@@ -636,7 +636,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
 		serveCancel: serveCancel}
 	if pub != nil {
-		s.relay = outbox.NewRelay(pool, pub, log)
+		// Outbox retention: published rows older than the configured window
+		// are pruned on a schedule in bounded batches. Retention <= 0 disables
+		// pruning (ORCHICON_OUTBOX_RETENTION_DAYS=0).
+		s.relay = outbox.NewRelay(pool, pub, log,
+			outbox.WithRetention(time.Duration(cfg.OutboxRetentionDays)*24*time.Hour),
+			outbox.WithPruneBatch(cfg.OutboxPruneBatch),
+			outbox.WithPruneInterval(cfg.OutboxPruneInterval),
+		)
 	}
 
 	// Wire the direct NATS publisher for low-latency execution event

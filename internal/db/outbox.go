@@ -123,6 +123,61 @@ func (p *Pool) CountUnpublished(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// PrunePublishedOutbox deletes up to batchLimit published outbox rows whose
+// published_at is older than olderThan, oldest first.
+//
+// This is the outbox retention pass. Published rows are otherwise never
+// removed and the table grows without bound — the exact pathology that
+// produced the 8.4M-row / 8.4 GB backlog this retention exists to prevent.
+//
+// Rows with published_at IS NULL are NEVER touched: an unpublished row is an
+// event that has not yet been delivered, and pruning it would silently drop a
+// delivery guarantee. The statement is bounded per call (batchLimit clamped to
+// [1, 100000]) so a single pass cannot hold a long lock or spike WAL; the
+// caller loops until a short batch is returned. It runs on the same
+// non-tenant pool path as PollOutbox/MarkPublished (the relay publishes on
+// behalf of every tenant), and the new partial outbox_published_at_idx makes
+// the ORDER BY published_at LIMIT scan index-backed instead of a seq scan over
+// the whole table.
+func (p *Pool) PrunePublishedOutbox(ctx context.Context, olderThan time.Time, batchLimit int) (int64, error) {
+	if batchLimit <= 0 {
+		batchLimit = 10000
+	}
+	if batchLimit > 100000 {
+		batchLimit = 100000
+	}
+	const q = `DELETE FROM outbox WHERE id IN (
+		SELECT id FROM outbox
+		WHERE published_at IS NOT NULL AND published_at < $1
+		ORDER BY published_at
+		LIMIT $2)`
+	tag, err := p.Exec(ctx, q, olderThan, batchLimit)
+	if err != nil {
+		return 0, fmt.Errorf("db: prune published outbox: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// CountAndOldestUnpublished returns the number of unpublished outbox rows and
+// the occurred_at of the oldest one (nil when there are none). Both come from
+// one index-backed query against the partial outbox_unpublished_idx, so the
+// relay's lag reporter costs a single round-trip per poll.
+//
+// Depth alone cannot distinguish "a busy relay keeping up" from "a stalled
+// relay falling behind" — the age of the oldest unpublished row is the stall
+// signal (docs/08 §5.2), which is why both are reported together.
+func (p *Pool) CountAndOldestUnpublished(ctx context.Context) (int64, *time.Time, error) {
+	var count int64
+	var oldest *time.Time
+	err := p.QueryRow(ctx,
+		`SELECT count(*), min(occurred_at) FROM outbox WHERE published_at IS NULL`,
+	).Scan(&count, &oldest)
+	if err != nil {
+		return 0, nil, fmt.Errorf("db: count and oldest unpublished: %w", err)
+	}
+	return count, oldest, nil
+}
+
 func nullableStr(s string) any {
 	if s == "" {
 		return nil

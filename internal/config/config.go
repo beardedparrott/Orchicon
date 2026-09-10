@@ -139,6 +139,23 @@ type Config struct {
 	// sweep (the boot check still runs).
 	IndexCheckInterval time.Duration
 
+	// OutboxRetentionDays is the retention window for PUBLISHED outbox
+	// rows (ORCHICON_OUTBOX_RETENTION_DAYS, default 7). The relay prunes
+	// published rows older than this on a schedule; unpublished rows are
+	// never pruned. 0 disables pruning (the table then grows without
+	// bound again, so this is a debugging escape hatch only).
+	OutboxRetentionDays int
+
+	// OutboxPruneBatch bounds how many rows one prune statement deletes
+	// (ORCHICON_OUTBOX_PRUNE_BATCH, default 10000), keeping the lock
+	// window and WAL spike per statement small. Clamped to [1, 100000].
+	OutboxPruneBatch int
+
+	// OutboxPruneInterval is how often the relay runs a retention pass
+	// (ORCHICON_OUTBOX_PRUNE_INTERVAL, default 1h). Each pass runs at most
+	// 10 bounded batches.
+	OutboxPruneInterval time.Duration
+
 	// DispatchConcurrency bounds how many ready work items the
 	// TaskReconciler scan pass dispatches CONCURRENTLY in one pass
 	// (ORCHICON_DISPATCH_CONCURRENCY, default 4). Independent,
@@ -200,6 +217,9 @@ func Default() Config {
 		ReadHeaderTimeout:   10 * time.Second,
 		ShutdownTimeout:     15 * time.Second,
 		IndexCheckInterval:  envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		OutboxRetentionDays: envInt("ORCHICON_OUTBOX_RETENTION_DAYS", 7),
+		OutboxPruneBatch:    envInt("ORCHICON_OUTBOX_PRUNE_BATCH", 10000),
+		OutboxPruneInterval: envDuration("ORCHICON_OUTBOX_PRUNE_INTERVAL", time.Hour),
 		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
 		SecretsKEK:       env("ORCHICON_SECRETS_KEK", ""),
 		DataDir:          env("ORCHICON_DATA_DIR", "/var/lib/orchicon"),
