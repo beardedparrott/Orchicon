@@ -2,9 +2,12 @@ package orchicon
 
 // compaction.go is the NATIVE guarded compaction engine (D1). It fires
 // ONLY on (a) approaching the model's TRUE context window (resolved via
-// live hints only — see contextwindow.go) or (b) the shared budget-gate
+// live hints only — see contextwindow.go), (b) the shared budget-gate
 // ladder (evaluated through the opencode budget facade over the SAME
-// merged budget JSON the adapters parse). It NEVER fires on token count
+// merged budget JSON the adapters parse), or (c) the turn-count
+// context-hygiene gate (compact_max_turns, opencode parity: a chatty
+// session is compacted periodically even when no budget dimension
+// breached and no window pressure exists). It NEVER fires on token count
 // alone when no window hint exists, never guesses a window, and never
 // uses estimated/interpolated usage.
 //
@@ -55,12 +58,24 @@ type CompactPolicy struct {
 	PressureFrac float64
 	// RecentTurns keeps this many trailing messages verbatim.
 	RecentTurns int
+	// CompactMaxTurns is the turn-count context-hygiene gate
+	// (compact_max_turns, opencode parity): when the turn count reaches
+	// this many turns since the last compaction, doCompact fires at the
+	// quiet turn boundary — even when no budget dimension breached and no
+	// window pressure exists. <= 0 disables the gate entirely (explicit 0
+	// in the merged budget JSON mirrors opencode's effectiveCompactMaxTurns).
+	CompactMaxTurns int
 }
 
 // DefaultCompactPolicy returns the built-in policy (used when the merged
 // settings JSON carries no context_compaction keys).
 func DefaultCompactPolicy() CompactPolicy {
-	return CompactPolicy{Enabled: true, PressureFrac: defaultWindowPressureFrac, RecentTurns: defaultRecentTurns}
+	return CompactPolicy{
+		Enabled:         true,
+		PressureFrac:    defaultWindowPressureFrac,
+		RecentTurns:     defaultRecentTurns,
+		CompactMaxTurns: opencode.DefaultCompactMaxTurns(),
+	}
 }
 
 // compactState latches compaction progress on the session.
@@ -135,11 +150,26 @@ func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 			}
 		}
 	}
+	// compact_max_turns is a TOP-LEVEL merged-budget key (opencode parity:
+	// the same key opencode's parseBudgetSpec reads), not nested under
+	// context_compaction. Unset → the opencode built-in default; an
+	// explicit value <= 0 disables the turn-count trigger entirely
+	// (effectiveCompactMaxTurns parity); malformed → built-in default.
+	if cmRaw, ok := raw["compact_max_turns"]; ok {
+		var maxTurns *float64
+		if err := json.Unmarshal(cmRaw, &maxTurns); err == nil && maxTurns != nil {
+			if *maxTurns <= 0 {
+				cp.CompactMaxTurns = 0 // explicit 0 disables the gate
+			} else {
+				cp.CompactMaxTurns = int(*maxTurns)
+			}
+		}
+	}
 	return cp, mp
 }
 
-// maybeCompact evaluates the two guarded triggers at a quiet boundary
-// (after a tool round) and fires compactPolicy when a trigger is armed.
+// maybeCompact evaluates the three guarded triggers at a quiet boundary
+// (after a completed turn) and fires compactPolicy when a trigger is armed.
 // usage is this turn's LIVE provider-reported usage. Returns "" when
 // nothing fired, "compacted:<reason>" when a compaction ran, or the
 // TERMINAL abort reason ("budget_abort:<dim>") when the budget ladder's
@@ -258,6 +288,31 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 				return "compacted:budget:" + key
 			}
 			return ""
+		}
+	}
+
+	// Trigger (c): the turn-count context-hygiene gate (compact_max_turns,
+	// opencode session_run.maybeCompact parity): a chatty session is
+	// compacted periodically even when no budget dimension breached and no
+	// window pressure exists — on providers without a prefix cache every
+	// turn re-sends the whole history, and when every budget dimension is
+	// disabled (explicit 0) or opted out of compact_dims the ladder can
+	// only warn/abort, never rescue. Orthogonal to the ladder: it compacts
+	// but never warns and never aborts, and it is best-effort (a failed or
+	// empty compaction never fails the session — opencode parity). The
+	// shared latches all apply: the step<2 floor above, doCompact's
+	// same-turn/min-turn re-arm floor, and the per-execution cap; a
+	// turn_count success latches like any doCompact success (lastCompactStep
+	// reset), so the window-pressure band and budget-tier latches behave
+	// identically afterwards and the gate cannot double-fire behind a
+	// compaction another trigger already ran this turn.
+	if s.cp.CompactMaxTurns > 0 {
+		turnsSinceLastCompact := step
+		if s.cs.lastCompactStep > 0 {
+			turnsSinceLastCompact = step - s.cs.lastCompactStep
+		}
+		if turnsSinceLastCompact >= s.cp.CompactMaxTurns && s.doCompact(step, "turn_count") {
+			return "compacted:turn_count"
 		}
 	}
 	return ""
