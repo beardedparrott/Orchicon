@@ -419,6 +419,27 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// sessions).
 		lastUsage = usage
 
+		// Tool-swallow guard (2026-09-09 responses.go fix, now
+		// transport-independent): a turn that CARRIES tool calls but ends
+		// with a plain stop reason must finish StopToolUse, never
+		// StopStop. The loop dispatches + persists + feeds back tool
+		// results ONLY on StopToolUse — under StopStop the calls were
+		// counted toward the tool_call_count budget at emission (drain)
+		// but never executed or answered: the model re-emitted the same
+		// announce-then-call turn every round until
+		// budget_abort:tool_call_count failed the session (incident:
+		// 24+ attempts, ~90-100 text parts, 0 tool parts). The responses
+		// transport received this guard in its finalize on 2026-09-09;
+		// the ollama native decoder (and any other transport that maps a
+		// done-with-tool-calls end to StopStop) did not — the guard
+		// belongs HERE, before the switch, so no transport can ever drop
+		// counted-but-unexecuted calls again.
+		if len(toolCalls) > 0 && finish == StopStop {
+			s.log.Info("stop reason promoted StopStop → StopToolUse — pending tool calls must execute",
+				"execution", s.id, "tool_calls", len(toolCalls))
+			finish = StopToolUse
+		}
+
 		switch finish {
 		case StopToolUse:
 			// History parity (BUG-1): the assistant's tool_use message must

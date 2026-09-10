@@ -289,8 +289,10 @@ type ollamaNativeStream struct {
 	toolIdx int
 	drained bool
 	// pending queues events produced by one decoded chunk: a final chunk
-	// can carry tail content AND done:true — both must surface to the
-	// consumer (the drain loop), never a dropped tail.
+	// can carry tail content AND done:true, and a chunk can batch SEVERAL
+	// tool calls alongside its content — everything the chunk carries
+	// must surface to the consumer (the drain loop), never a dropped
+	// tail or a lost batched tool call.
 	pending []Event
 }
 
@@ -304,6 +306,16 @@ func (s *ollamaNativeStream) Close() error {
 // Next yields text deltas and tool calls, then a single Finish after the
 // done chunk. EOF before the done chunk is a mid-stream disconnect (clean
 // failure per D11).
+//
+// Chunk-order invariants (2026-09-10 tool-swallow fix): ollama reports a
+// turn's tool calls in message.tool_calls and may end the turn on the SAME
+// line (done:true) or on a following one. Every chunk is decoded FULLY
+// into s.pending before any event is returned — the old shape returned
+// the first tool call of the loop IMMEDIATELY, which (a) dropped batched
+// calls when ollama emitted several tool_calls per chunk and (b) on a
+// done-carrying-tool-calls chunk skipped the Done branch entirely, so the
+// turn's Finish (stop reason + usage) never surfaced and the next Next()
+// failed the stream with "ended without done chunk" on tool-calling turns.
 func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
 	if len(s.pending) > 0 {
@@ -326,6 +338,19 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 		if ch.Error != "" {
 			return s.fail(fmt.Errorf("ollama: provider error: %s", ch.Error))
 		}
+		// Generation order preserved: the chunk's content streams BEFORE
+		// its tool calls (the model wrote the text, then issued the
+		// calls); the Done branch always processes fully, tool calls
+		// present or not — the Finish can never be skipped.
+		if ch.Message.Content != "" {
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+			// inside content becomes ReasoningDelta, everything else
+			// passes through as TextDelta.
+			s.think.feed(ch.Message.Content, &s.pending)
+		}
+		// ALL tool calls of the chunk surface, in wire order (queued,
+		// never a first-only early return — ollama batches multiple calls
+		// into one chunk).
 		for _, tc := range ch.Message.ToolCalls {
 			args := string(tc.Function.Arguments)
 			if args == "" || !json.Valid([]byte(args)) {
@@ -333,40 +358,26 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 			}
 			idx := s.toolIdx
 			s.toolIdx++
-			return ToolCall{Index: idx, ToolCallID: fmt.Sprintf("ollama_call_%d", idx), Name: tc.Function.Name, ArgsJSON: args}, true, nil
-		}
-		if ch.Message.Content != "" && !ch.Done {
-			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
-			// inside content becomes ReasoningDelta, everything else
-			// passes through as TextDelta. A chunk that is entirely a
-			// split-tag prefix yields no event yet — keep scanning.
-			s.think.feed(ch.Message.Content, &s.pending)
-			if len(s.pending) > 0 {
-				ev := s.pending[0]
-				s.pending = s.pending[1:]
-				return ev, true, nil
-			}
-			continue
+			s.pending = append(s.pending, ToolCall{Index: idx, ToolCallID: fmt.Sprintf("ollama_call_%d", idx), Name: tc.Function.Name, ArgsJSON: args})
 		}
 		if ch.Done {
-			// A final chunk may carry BOTH the tail content and done:true —
-			// route the tail through the splitter first (it may itself
-			// open/close a think block), then drain any holdback so a
-			// truncated final tag cannot swallow the response tail. An
-			// unterminated think block drains to reasoning, never text.
-			if ch.Message.Content != "" {
-				s.think.feed(ch.Message.Content, &s.pending)
-			}
+			// Drain any think-splitter holdback so a truncated final tag
+			// cannot swallow the response tail; an unterminated think
+			// block drains to reasoning, never text.
 			s.think.drain(&s.pending)
 			s.usage.InputTokens = ch.PromptEvalCount
 			s.usage.OutputTokens = ch.EvalCount
 			s.stop = mapOllamaDone(ch.DoneReason)
 			s.drained = true
 			s.pending = append(s.pending, Finish{StopReason: s.stop, Usage: s.usage})
+		}
+		if len(s.pending) > 0 {
 			ev := s.pending[0]
 			s.pending = s.pending[1:]
 			return ev, true, nil
 		}
+		// A chunk that produced no events (empty content, no tool calls,
+		// no done) keeps scanning — same as the old non-content continue.
 	}
 	if err := s.sc.Err(); err != nil {
 		return s.fail(fmt.Errorf("ollama: stream read: %w", err))
