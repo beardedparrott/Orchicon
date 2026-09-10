@@ -26,57 +26,72 @@ func newDockTestApp() *App {
 
 func keyRunes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
-// ctrl+g toggles focus to the composer; the dock is focused, tab chords
-// fall through to readline editing, and esc/ctrl+g return to content.
-func TestFocusChordAndFallthrough(t *testing.T) {
-	m := newDockTestApp()
-	if m.chatFocus != focusContent {
-		t.Fatal("must start in content focus")
-	}
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
-	m2 := nm.(*App)
-	if m2.chatFocus != focusComposer || !m2.dock.Focused {
-		t.Fatal("ctrl+g must focus the composer")
-	}
-	// Tab chord while focused: ctrl+w must reach the composer (delete
-	// word), NOT switch tabs.
-	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
-	m2 = nm.(*App)
-	if m2.ActiveTab() != TabAsk {
-		t.Fatalf("ctrl+w in composer switched tab to %q — must fall through to readline editing", m2.ActiveTab())
-	}
-	for _, chord := range []string{"ctrl+a", "ctrl+e", "ctrl+f", "ctrl+t", "ctrl+o"} {
-		nm, _ = m2.Update(keyFor(chord))
-		m2 = nm.(*App)
-		if m2.ActiveTab() != TabAsk {
-			t.Fatalf("%s in composer switched tab — must fall through", chord)
+// keyTabFor maps a structural tab chord to its tab (test helper mirroring
+// the Tabs registry).
+func keyTabFor(chord string) TabID {
+	for _, tab := range Tabs {
+		if tab.Chord == chord {
+			return tab.ID
 		}
 	}
-	// esc returns focus to content; chords work again
+	return ""
+}
+
+// ctrl+g toggles content↔composer focus. The COMPOSER is the launch
+// focus (Phase 2a — typing works immediately, no ctrl+g needed):
+// tab chords are structural and switch tabs while composing, and
+// esc/ctrl+g return focus to the content pane.
+func TestFocusChordAndFallthrough(t *testing.T) {
+	m := newDockTestApp()
+	if m.chatFocus != focusComposer {
+		t.Fatal("must start in composer focus (Phase 2a: typing works at launch)")
+	}
+	if !m.dock.Focused {
+		t.Fatal("the composer must be focused at launch")
+	}
+	// Structural chords bypass the composer while it is focused: ctrl+w
+	// switches tabs (it is a shell chord, never readline editing).
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	m2 := nm.(*App)
+	if m2.ActiveTab() != TabWork {
+		t.Fatalf("ctrl+w while composing must switch tabs (structural chord), got %q", m2.ActiveTab())
+	}
+	for _, chord := range []string{"ctrl+a", "ctrl+e", "ctrl+f", "ctrl+t", "ctrl+o"} {
+		nm, _ = m.Update(keyFor(chord))
+		m2 = nm.(*App)
+		if m2.ActiveTab() != keyTabFor(chord) {
+			t.Fatalf("%s while composing must switch tabs (structural chord), got %q", chord, m2.ActiveTab())
+		}
+	}
+	// esc returns focus to content; the composer blurs.
 	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m2 = nm.(*App)
-	if m2.chatFocus != focusContent {
+	if m2.chatFocus != focusContent || m2.dock.Focused {
 		t.Fatal("esc must return focus to content")
 	}
-	nm, _ = m2.Update(keyFor("ctrl+w"))
-	if nm.(*App).ActiveTab() != TabWork {
-		t.Fatal("ctrl+w must switch tabs again once focus is back in content")
+	// ctrl+g pulls focus back to the composer (content ↔ composer toggle).
+	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m2 = nm.(*App)
+	if m2.chatFocus != focusComposer || !m2.dock.Focused {
+		t.Fatal("ctrl+g must refocus the composer")
 	}
 }
 
 // Enter sends from the composer on any screen; the context preamble is
-// visible in the dock notice.
+// visible in the dock notice. The composer is focused at launch — typing
+// works with no ctrl+g first (Phase 2a).
 func TestComposerSendCarriesContext(t *testing.T) {
 	m := newDockTestApp()
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
-	m2 := nm.(*App)
-	m2.Update(keyRunes("hello worker"))
+	if m.chatFocus != focusComposer {
+		t.Fatal("precondition: composer focused at launch")
+	}
+	m.Update(keyRunes("hello worker"))
 	// stubScreen has no context → empty preamble; dock notice stays empty
-	_, cmd := m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enter must produce a send cmd")
 	}
-	if m2.dock.SendRequest() != "" {
+	if m.dock.SendRequest() != "" {
 		t.Fatal("send request must be consumed")
 	}
 }
@@ -84,11 +99,9 @@ func TestComposerSendCarriesContext(t *testing.T) {
 // Unknown /word gives usage feedback, never sends as chat.
 func TestUnknownSlashCommand(t *testing.T) {
 	m := newDockTestApp()
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m.Update(keyRunes("/definitely-not-a-command"))
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m2 := nm.(*App)
-	m2.Update(keyRunes("/definitely-not-a-command"))
-	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m2 = nm.(*App)
 	if m2.dock.Err == "" || !strings.Contains(m2.dock.Err, "unknown command") {
 		t.Fatalf("dock error = %q, want unknown-command usage feedback", m2.dock.Err)
 	}
@@ -268,14 +281,28 @@ func TestRailOpenSetsActive(t *testing.T) {
 	}
 }
 
-// The composer keys reach the dock only when focused; plain keys go to
-// the screen otherwise (foundation contract preserved).
+// Plain keys reach the SCREEN only in content focus; at launch the
+// composer owns the keyboard (Phase 2a), so a plain key is composer input,
+// never a screen shortcut.
 func TestPlainKeysStillReachScreen(t *testing.T) {
 	m := newDockTestApp()
 	s := &stubScreen{id: "ask"}
 	m.screens[TabAsk] = s
+	if m.chatFocus != focusComposer {
+		t.Fatal("precondition: composer focused at launch")
+	}
 	m.Update(keyRunes("x"))
+	if m.dock.Value() != "x" {
+		t.Fatalf("plain key must land in the focused composer, dock=%q", m.dock.Value())
+	}
+	if s.lastKey == "x" {
+		t.Fatal("plain key must NOT reach the screen while the composer is focused")
+	}
+	// After esc (content focus), plain keys reach the screen again.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m2 := nm.(*App)
+	m2.Update(keyRunes("x"))
 	if s.lastKey != "x" {
-		t.Fatalf("screen got %q, want x", s.lastKey)
+		t.Fatalf("screen got %q, want x (content focus)", s.lastKey)
 	}
 }

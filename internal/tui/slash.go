@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -165,6 +166,11 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Run:     runContextCmd,
 	})
 	add(SlashCommand{
+		Name:  "/theme", Usage: "/theme [dark | light]",
+		Desc:  "switch the TUI theme (no arg = list); persisted to the profile",
+		Run:   runThemeCmd,
+	})
+	add(SlashCommand{
 		Name: "/quit", Usage: "/quit",
 		Desc:    "exit orch (terminal state restored)",
 		Aliases: []string{"/exit"},
@@ -276,5 +282,44 @@ func runContextCmd(m *App, args []string) tea.Cmd {
 		return nil
 	}
 	m.dock.SetError("usage: /context [pin <description> | pin clear]")
+	return nil
+}
+
+// runThemeCmd switches the TUI theme ("/theme" lists, "/theme <name>"
+// switches + persists to the profile). Persisting keeps the selection
+// across launches; the profile is saved best-effort at the config path.
+func runThemeCmd(m *App, args []string) tea.Cmd {
+	if len(args) == 0 {
+		names := make([]string, 0, len(m.themes))
+		for _, n := range m.themes {
+			marker := " "
+			if n == theme.Active().Name {
+				marker = "*"
+			}
+			names = append(names, marker+" "+n)
+		}
+		m.dock.SetNotice("themes: " + strings.Join(names, " · ") + "  (/theme <name> switches)")
+		return nil
+	}
+	name := args[0]
+	if !theme.Use(name) {
+		known := strings.Join(m.themes, ", ")
+		m.dock.SetError(fmt.Sprintf("unknown theme %q — available: %s", name, known))
+		return nil
+	}
+	if m.profile != nil {
+		m.profile.Theme = name
+		if path, err := config.DefaultPath(); err == nil {
+			if cfg, err := config.Load(path); err == nil {
+				if p := cfg.Profiles[cfg.Active]; p != nil {
+					p.Theme = name
+					_ = config.Save(path, cfg)
+				} else if cfg.Profiles != nil {
+					_ = cfg
+				}
+			}
+		}
+	}
+	m.dock.SetNotice("theme: " + name)
 	return nil
 }

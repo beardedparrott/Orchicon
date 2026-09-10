@@ -59,7 +59,7 @@ type Model struct {
 // New builds the dock.
 func New() Model {
 	ta := textarea.New()
-	ta.Placeholder = "ask orchicon… (ctrl+g focus · enter send · alt+enter newline · /help commands)"
+	ta.Placeholder = "ask orchicon… (enter send · alt+enter newline · /help commands)"
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
@@ -219,7 +219,10 @@ func (m *Model) requestSend() tea.Cmd {
 	return nil
 }
 
-// View renders the dock: chip line, input, notice/error strip.
+// View renders the dock: chip line, input, notice/error strip. The lines
+// are joined WITHOUT a trailing newline — the shell normalizes this block
+// to exactly Lines() rows (a trailing newline would add a phantom row and
+// the shell's keep-tail normalization would drop the chip line).
 func (m *Model) View() string {
 	var b strings.Builder
 
@@ -243,7 +246,7 @@ func (m *Model) View() string {
 		b.WriteString(notice)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func truncate(s string, w int) string {

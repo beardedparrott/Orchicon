@@ -100,14 +100,18 @@ func (m *App) paletteSelected() *SlashCommand {
 }
 
 // paletteVisibleRows is how many candidate rows the floating palette can
-// render given the terminal height (header + border + padding consume ~6
-// rows). Bounding here keeps the overlay from overflowing a short terminal
-// (e.g. 80×24, where an unbounded list of ~20 commands would scroll off).
+// render given the terminal height. The palette floats ABOVE the composer
+// (Phase 2a): its box must fit between the tab chrome and the composer
+// line without ever covering the composer row (header + border + padding
+// consume ~6 rows). Bounding keeps the overlay from overflowing a short
+// terminal (e.g. 80×24, where an unbounded list of ~20 commands would
+// scroll off).
 func (m *App) paletteVisibleRows() int {
-	if m.height < 10 {
+	vis := m.height - m.dock.Lines() - 6
+	if vis < 3 {
 		return 3
 	}
-	return m.height - 6
+	return vis
 }
 
 // paletteContentWidth returns the max content width (cells) for one palette
@@ -154,9 +158,34 @@ func (m *App) ensurePaletteSelVisible() {
 	m.clampPaletteScroll()
 }
 
-// paletteView renders the overlay box centered over the content area,
-// listing matching commands with name + description. The candidate list is
-// windowed (via palette.scroll) so it never overflows the terminal height.
+// paletteComposerView composes the palette box floating ABOVE the
+// composer: the box's bottom edge sits on the composer line, so the
+// composer line + the user's typed text stay fully visible while the
+// palette filters (operator complaint: the centered popup hid the input).
+func (m *App) paletteComposerView(base string) string {
+	box := m.paletteView()
+	if box == "" {
+		return base
+	}
+	rows := strings.Split(base, "\n")
+	bh := len(strings.Split(box, "\n"))
+	// The composer input line is the second line of the dock block (chip
+	// first); its absolute row is h - dock.Lines(). The box ends there.
+	top := len(rows) - m.dock.Lines() - bh
+	if top < tabBarRows+1 {
+		top = tabBarRows + 1
+	}
+	bw := lipgloss.Width(box)
+	left := (m.width - bw) / 2
+	if left < 0 {
+		left = 0
+	}
+	return m.overlayBoxAt(base, box, top, left)
+}
+
+// paletteView renders the overlay box listing matching commands with
+// name + description. The candidate list is windowed (via palette.scroll)
+// so it never overflows the terminal height.
 func (m *App) paletteView() string {
 	if !m.palette.open {
 		return ""
@@ -218,8 +247,11 @@ func (m *App) paletteHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		m.paletteSelect(1)
 		return true, nil
 	case "esc":
+		// Close the palette but hand the key back: the composer keeps the
+		// typed text and the global routes still see esc (e.g. closing the
+		// diff pane) — no focus trap.
 		m.closePalette()
-		return true, nil
+		return false, nil
 	case "enter", "tab":
 		if c := m.paletteSelected(); c != nil {
 			m.closePalette()
@@ -230,20 +262,14 @@ func (m *App) paletteHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	default:
-		// Backspace edits the query; a printable rune appends to it.
-		if k.String() == "backspace" {
-			if len(m.palette.query) > 0 {
-				m.palette.query = m.palette.query[:len(m.palette.query)-1]
-				m.refreshPalette()
-			}
-			return true, nil
-		}
-		if len(k.Runes) > 0 {
-			m.palette.query += string(k.Runes)
-			m.refreshPalette()
-			return true, nil
-		}
-		return false, nil
+		// Editing keys flow through to the composer buffer FIRST so the
+		// user sees their input live (the palette floats above the composer
+		// line — operator requirement), then the filter re-seeds from the
+		// buffer (no second source of truth for the query).
+		consumed, cmd := m.dock.Update(tea.KeyMsg(k))
+		m.palette.query = strings.TrimPrefix(m.dock.Value(), "/")
+		m.refreshPalette()
+		return consumed, cmd
 	}
 }
 

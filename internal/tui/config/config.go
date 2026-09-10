@@ -41,6 +41,9 @@ type Profile struct {
 	// programmatically; CSI-u shift+enter is accepted when the terminal
 	// emits it anyway.
 	Newline string
+	// Theme selects the TUI palette: "dark" (default) | "light". The
+	// GUI's HSL design tokens are the source of truth (internal/tui/theme).
+	Theme string
 }
 
 // Config is the on-disk document.
@@ -147,6 +150,9 @@ func render(cfg *Config) string {
 		fmt.Fprintf(&b, "token = %q\n", p.Token)
 		fmt.Fprintf(&b, "username = %q\n", p.Username)
 		fmt.Fprintf(&b, "insecure_skip_verify = %t\n", p.InsecureSkipVerify)
+		if p.Theme != "" {
+			fmt.Fprintf(&b, "theme = %q\n", p.Theme)
+		}
 	}
 	return b.String()
 }
@@ -201,6 +207,10 @@ func parse(data string) (*Config, error) {
 					return nil, fmt.Errorf("config line %d: %w", i+1, err)
 				}
 				cur.InsecureSkipVerify = b
+			}
+		case "theme":
+			if cur != nil {
+				cur.Theme = unquote(value)
 			}
 		case "newline":
 			if cur != nil {
