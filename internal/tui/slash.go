@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/beardedparrott/orchicon/internal/tui/config"
+	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -148,6 +149,24 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			// fallback (no profile yet).
 			m.reconnectRequested = true
 			return m.runConnectCommand()
+		},
+	})
+	add(SlashCommand{
+		Name: "/diff", Usage: "/diff",
+		Desc: "toggle the left diff rail for the active execution/conversation",
+		Run: func(m *App, _ []string) tea.Cmd {
+			if m.diffOpen {
+				m.closeDiffPane()
+				m.dock.SetNotice("diff rail closed (d or /diff toggles)")
+				return nil
+			}
+			if kind, id := m.diffOwner(); kind == diffs.NoneOwner || id == diffs.NoneOwner {
+				m.dock.SetNotice("no diff session here — open an execution or conversation first")
+				return nil
+			}
+			cmd := m.openDiffPane()
+			m.dock.SetNotice("diff rail open (d or /diff toggles; ctrl+d is never bound)")
+			return cmd
 		},
 	})
 	add(SlashCommand{

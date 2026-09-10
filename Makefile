@@ -349,3 +349,7 @@ install-uninstall: ## Uninstall Orchicon via the install script
 .PHONY: ci ci-go
 ci-go: lint gen-check vet test synth-data rls-check ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
+
+.PHONY: tui-pty-gate
+tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)
+	ORCH_PTY_SMOKE=1 go test ./internal/tui/ -run 'TestPTY' -count=1 -timeout 420s -v

@@ -303,6 +303,9 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				m.pendingDiffCmd = nil
 				return m, cmd
 			}
+			if c := m.drainRailCmd(); c != nil {
+				return m, c
+			}
 			return m, nil
 		}
 	}
@@ -350,7 +353,12 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
 			if m.railHeaderHit(mo.Y) {
 				m.toggleRightRail()
-				return m, nil
+				return m, m.drainRailCmd()
+			}
+			if m.railRetryHit(mo.Y) {
+				// A failed rail: the whole body retries (never a silent
+				// empty rail — finding 9).
+				return m, m.reloadConversations()
 			}
 			if idx, ok := m.railRowAt(mo.Y); ok {
 				return m, m.openRailConversation(idx)
@@ -375,6 +383,17 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, nil
 		}
 	}
+	// Composer row: a click anywhere in the dock block FOCUSES the composer
+	// (operator finding 7 — mouse must genuinely focus the input, not only
+	// rely on the launch default). The diff rail owns clicks in its own
+	// columns, so those still go to the pane.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+		if !(m.diffOpen && mo.X < DiffPaneWidth) && m.inDockRows(mo.Y) {
+			m.setFocus(focusComposer)
+			m.footer.ComposerFocus = true
+			return m, nil
+		}
+	}
 	if cmd := m.appMsg(mo); cmd != nil {
 		m.footer.StreamStatus = m.streamStatus()
 		return m, cmd
@@ -389,6 +408,9 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 				cmd := m.pendingDiffCmd
 				m.pendingDiffCmd = nil
 				return m, cmd
+			}
+			if c := m.drainRailCmd(); c != nil {
+				return m, c
 			}
 			return m, nil
 		}
