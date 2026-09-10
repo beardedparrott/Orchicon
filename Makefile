@@ -227,22 +227,27 @@ container-ps: ## List orchicon container instances
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:
-#   1. all checks/tests          (make ci:  lint gen vet test rls-check)
-#   2. migration hash sync       (make migrate-hash — keeps db/migrations/atlas.sum
+#   1. binaries                 (make build — bin/orchicon + bin/orch are built
+#                                FIRST so every check/test exercises the code
+#                               about to ship, never a stale binary: the
+#                                 real-pty smoke gate executes bin/orch)
+#   2. all checks/tests         (make ci:  lint gen vet test rls-check)
+#   3. migration hash sync      (make migrate-hash — keeps db/migrations/atlas.sum
 #                                 in sync so the Atlas CLI path stays happy)
-#   3. frontend + binary + image (container-build force-fe=1 — the frontend is
-#                                 built and embedded into the binary via go:embed)
-#   4. stop/restart the instance (down then up; the container boots with
+#   4. frontend + binary + image (container-build force-fe=1 — the frontend is
+#                                 rebuilt and embedded into the binary via go:embed)
+#   5. stop/restart the instance (down then up; the container boots with
 #                                 MigrateOnBoot=true, which applies any pending
-#                                 embedded migrations — so step 2 is the repo
-#                                 hash sync and step 4 surfaces the DB migration)
+#                                 embedded migrations — so step 3 is the repo
+#                                 hash sync and step 5 surfaces the DB migration)
 #
 # The DB migration itself is applied by the container at boot (migrate.Run), so
 # there is no separate `make migrate` needed here — running it against the
 # instance's Postgres would conflict with the container-owned DB.
 .PHONY: full-rebuild rebuild-dev rebuild-prod
-full-rebuild: ## One command: all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
+	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
 	$(MAKE) container-rebuild instance=$(instance)
