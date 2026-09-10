@@ -222,10 +222,31 @@ remains.**
 
 ### Suite status
 
-- Green: `internal/db` (retention tests), `internal/outbox`, `internal/eventbus`, `internal/config`.
+- Green: `internal/db` (retention tests), `internal/outbox`, `internal/eventbus`, `internal/config`,
+  and the three acceptance-critical scheduler tests (`TestOnTextDoesNotEnqueueOutbox`,
+  `TestOnToolCallStillEnqueuesOutbox`, `TestPublishExecEventMsgIDUnique`).
+- **The full `internal/scheduler` package does not complete in this step's 30-minute box.** Two
+  distinct causes, both verified:
+  1. A stale `scheduler.test` from the PR-review step was still running with `-timeout 3000s`,
+     holding Postgres connections and advisory locks for over an hour (`SELECT
+     pg_try_advisory_lock($1)` sessions 1h old). Those locks made every dispatch-gate test fail
+     ("dispatch fired 0 times") and one test hang in cleanup. After terminating the stale sessions
+     and deleting a leftover `dirty-gate-/tmp` project row, `TestParallelBranchHeldUntilWorktreeReady`,
+     `TestDispatchLimitGateHoldsSecondUntilSlotFrees` and `TestSkippedRefusedWhenDirty` went green.
+  2. **Six tests still fail — identically on `develop` (`3e3acff8d`), re-run from a clean detached
+     worktree: byte-identical failure messages.** They are pre-existing and unrelated to this diff
+     (which changes only `OnText`, the direct-publish MsgID, the relay's prune options and
+     `db.PrunePublishedOutbox`): `TestReconcileRunProgressesLoopDecisionActiveIteration`
+     ("clear runtime gate (headless): db: not found"), `TestRecoveryDispatchGateRace`,
+     `TestRecoveryDispatchGateRetryStrategy` ("retry strategy must dispatch immediately (got 0
+     dispatches)"), `TestRunNeedsServeAdapterKinds`, `TestMaxDAGPassesCommitsRecoveryNotRollback`
+     ("parallel dispatch progress was rolled back"), `TestLoopDecisionUpstreamFailedNoIterationFlood`
+     ("first scan created 1 loop iterations, want 2"). Root cause of one, for the record: the
+     `runtime_serve_gate_test.go` fixture inserts SQL NULL into `worker_versions.context_sources`
+     (NOT NULL); once that is fixed the test panics inside the production
+     `db.GetLatestWorkerVersion` (`internal/db/worker.go:452`, nil deref) — a separate pre-existing
+     bug in an unrelated subsystem.
 - Pre-existing red on `develop`, unrelated to this diff: `internal/workitem`
   (`TestListIdeasRejectedScope`, `TestControlSequenceRejectsNonSequenceParent/bound-run ticket`).
-- The **full `internal/scheduler` package** exceeds this step's 30-minute box (the same limit the
-  PR review hit); its acceptance-critical tests (`TestOnTextDoesNotEnqueueOutbox`,
-  `TestOnToolCallStillEnqueuesOutbox`, `TestPublishExecEventMsgIDUnique`) pass individually. Step 5
-  (DevOps) should run the package/suite in CI, where it is not time-boxed.
+- Step 5 (DevOps) should run the full suite in CI (not time-boxed) against a freshly seeded plane;
+  the six scheduler failures above and `internal/workitem` need their own work items.
