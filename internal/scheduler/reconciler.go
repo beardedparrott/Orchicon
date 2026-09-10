@@ -124,10 +124,17 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 // the execution's adapter kind (adapter.AdapterKind(manifest.ModelRef)
 // .Adapter).
 type TaskReconciler struct {
-	pool             *db.Pool
-	log              *slog.Logger
-	dispatcher       *Dispatcher
-	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	pool       *db.Pool
+	log        *slog.Logger
+	dispatcher *Dispatcher
+	eventPub   eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	// eventSeq is a monotonic per-process suffix that makes every direct
+	// publish's JetStream MsgID unique. The stream is created with
+	// Duplicates: 5m (internal/eventbus/nats.go), so a CONSTANT MsgID would
+	// make JetStream drop every direct publish after the first within the
+	// window — for per-token execution.text that silently reduced live
+	// streaming to one chunk per 5 minutes per execution (see publishExecEvent).
+	eventSeq         atomic.Uint64
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 
 	// pendingWrittenFiles holds the file paths a running execution's
@@ -2275,10 +2282,16 @@ func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string)
 		r.log.Error("on text: get execution", "execution", execID, "error", err)
 		return
 	}
-	_ = enqueueExecEvent(ctx, ttx.Tx, "execution.text", current, map[string]any{
-		"text": text,
-	})
 	_ = ttx.Commit(ctx)
+	// Per-token text deltas are NOT outboxed (AGENTS.md invariant #3 is
+	// satisfied by the low-frequency state events below): a durable copy of
+	// the transcript already lands in execution_session_parts (the GUI's
+	// reconnecting refetch reads that), and the per-chunk event is
+	// worthless as a durable fallback — JetStream discards after 72h and the
+	// outbox row only bought "wait for NATS to recover" for a transient chat
+	// token. Writing one outbox row per 40-char chunk was 98% of an
+	// 8.4M-row / 8.4 GB table. The direct publish below is the delivery
+	// path (its MsgID is now unique per publish, see publishExecEvent).
 	r.publishExecEvent(ctx, "execution.text", current, map[string]any{
 		"text": text,
 	})
@@ -2445,12 +2458,16 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 		return
 	}
 	subject := eventbus.SubjectFor("execution", eventType)
-	// Use the execution ID + event type as the dedup key so the outbox
-	// relay's eventual publish with its own MsgID (the outbox row ULID)
-	// is a distinct message — the frontend's seenIds dedup catches the
-	// duplicate. This is intentional: the direct publish arrives fast,
-	// the outbox relay provides the durable fallback.
-	dedupID := fmt.Sprintf("direct:%s:%s", e.ID, eventType)
+	// The MsgID MUST be unique per publish. JetStream is configured with
+	// Duplicates: 5m (internal/eventbus/nats.go:74-88), so it silently drops
+	// any publish whose Nats-Msg-Id was seen inside that window. A constant
+	// key here ("direct:<exec>:<type>") therefore stored only the first
+	// event per execution per 5 minutes and left the outbox relay as the
+	// real live path — which is why per-token execution.text could not be
+	// de-outboxed until this suffix existed. eventSeq is a process-monotonic
+	// counter; combined with the execution ID the key is unique across
+	// publishes, exactly as the outbox row ULID is for relay publishes.
+	dedupID := fmt.Sprintf("direct:%s:%s:%d", e.ID, eventType, r.eventSeq.Add(1))
 	if err := r.eventPub.Publish(ctx, subject, dedupID, payload); err != nil {
 		r.log.Warn("publish exec event", "execution", e.ID, "subject", subject, "error", err)
 	}

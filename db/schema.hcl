@@ -298,6 +298,13 @@ table "outbox" {
     columns = [column.occurred_at]
     where = "published_at IS NULL"
   }
+  // Retention prune (db.PrunePublishedOutbox): published rows older than
+  // N days are deleted oldest-first in bounded batches. Partial on
+  // published_at IS NOT NULL so the index only covers prunable rows.
+  index "outbox_published_at_idx" {
+    columns = [column.published_at]
+    where = "published_at IS NOT NULL"
+  }
   index "outbox_event_id_idx" {
     unique  = true
     columns = [column.event_id]
