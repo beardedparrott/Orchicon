@@ -240,7 +240,9 @@ func (r *refreshingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryF
 func (r *refreshingInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
-		conn.RequestHeader().Set("Authorization", r.sc.Token())
+		if t := r.sc.Token(); t != "" {
+			conn.RequestHeader().Set("Authorization", "Bearer "+t)
+		}
 		return &refreshingStreamConn{conn: conn, interceptor: r, ctx: ctx}
 	}
 }

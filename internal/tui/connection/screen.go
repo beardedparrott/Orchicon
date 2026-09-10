@@ -191,8 +191,14 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 	}
 	// lr.RefreshToken carries the HttpOnly orchicon_refresh Set-Cookie value
 	// (24h TTL) — stored in the profile so the client auto-refreshes the
-	// 900s access token instead of dead-ending on auth-expired.
-	return &Result{Profile: m.buildProfile(lr.AccessToken, lr.RefreshToken), ServerVersion: vr.Version}, nil
+	// 900s access token instead of dead-ending on auth-expired. A server
+	// without refresh support leaves it empty: fall back to the profile's
+	// stored token (the re-connect of the same session keeps auto-refresh).
+	refresh := lr.RefreshToken
+	if refresh == "" {
+		refresh = m.storedRefresh
+	}
+	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh), ServerVersion: vr.Version}, nil
 }
 
 // buildProfile assembles the profile from the form. token overrides the

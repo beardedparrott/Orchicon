@@ -455,7 +455,7 @@ func (m *App) applyConnectResult() tea.Cmd {
 	}
 	delete(m.screens, m.active)
 	if m.width > 0 {
-		m.reflowForDiff()
+		m.refreshLayout()
 	}
 	m.reconnectRequested = false
 	m.closeConnectOverlay()

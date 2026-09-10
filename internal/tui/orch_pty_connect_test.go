@@ -55,6 +55,11 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 	fake := &ptyProjects{}
 	path, handler := apiv1connect.NewProjectServiceHandler(fake)
 	mux.Handle(path, handler)
+	// Ask service: ListConversations (the shell's ask rail + the post-
+	// reconnect chat load) — an empty rail is enough.
+	ask := &ptyAsk{}
+	askPath, askHandler := apiv1connect.NewAskOrchiconServiceHandler(ask)
+	mux.Handle(askPath, askHandler)
 	mux.HandleFunc("/auth/local-login", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Username string `json:"username"`
@@ -87,6 +92,15 @@ func (f *ptyProjects) ListProjects(ctx context.Context, req *connect.Request[v1.
 	out := &v1.ListProjectsResponse{}
 	out.Projects = append(out.Projects, &v1.Project{Id: "p1", Name: "pty"})
 	return connect.NewResponse(out), nil
+}
+
+// ptyAsk serves the shell's post-reconnect ask-rail load (an empty rail).
+type ptyAsk struct {
+	apiv1connect.UnimplementedAskOrchiconServiceHandler
+}
+
+func (f *ptyAsk) ListConversations(ctx context.Context, req *connect.Request[v1.ListConversationsRequest]) (*connect.Response[v1.ListConversationsResponse], error) {
+	return connect.NewResponse(&v1.ListConversationsResponse{}), nil
 }
 
 // writeOrchConfig seeds the config dir with an active api-key profile so
@@ -149,9 +163,10 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	}
 	pidBefore := s.cmd.Process.Pid
 
-	// The shell opens with content focus: ctrl+g moves focus to the
-	// composer (its placeholder proves the focus), then /connect+enter.
-	_, _ = s.tty.WriteString("\x07/connect\r")
+	// The shell opens COMPOSER-FOCUSED (Phase 2a, operator finding 3):
+	// typing lands in the composer directly — no ctrl+g needed.
+	// "/connect<enter>" opens the in-place overlay.
+	_, _ = s.tty.WriteString("/connect\r")
 	overlay := s.readFor(3 * time.Second)
 	for _, marker := range []string{"Connect to an Orchicon instance", "Server URL", "API key"} {
 		if !strings.Contains(overlay, marker) {
@@ -193,9 +208,13 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 			t.Fatalf("in-place reconnect incomplete: %q never painted after submit (%d bytes)\n---\n%s\n---", marker, len(reconnected), tailOf(reconnected, 4000))
 		}
 	}
-	// The overlay is gone: the connection form's title must not repaint.
-	if strings.Contains(reconnected, "Connect to an Orchicon instance") {
-		t.Fatalf("the connection overlay is still open after a successful connect: %s", tailOf(reconnected, 2000))
+	// The overlay is gone: submit's repaint must not include a NEW overlay
+	// frame. The harness accumulates every painted byte (the overlay's
+	// pre-submit frames stay in the log), so assert on the LAST screen
+	// instead: the reconnect notice painted, and the notice is dock text —
+	// the overlay closing lets the notice through the centered float.
+	if !strings.Contains(tailOf(reconnected, 1200), "reconnected in place") {
+		t.Fatalf("the final repaint lacks the reconnect notice — the overlay may still be up: %s", tailOf(reconnected, 1200))
 	}
 
 	// Close the run for the cancel path (fresh process + fresh HOME so the
@@ -207,7 +226,14 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	writeOrchConfig(t, home2, plane.URL)
 	s2 := startOrchPtyAt(t, bin, plane.URL, home2)
 	defer s2.close()
-	if _, err := fmt.Fprint(s2.tty, "\x07/connect\r"); err != nil {
+	// Wait for the first paint before sending keys (same budget as run 1):
+	// the TUI must finish termenv's capability handshake, or the typed
+	// "/connect" lands before the composer is armed.
+	first2 := s2.readFor(3 * time.Second)
+	if !strings.Contains(first2, "❯") {
+		t.Fatalf("second run: shell never painted the composer (%d bytes)", len(first2))
+	}
+	if _, err := fmt.Fprint(s2.tty, "/connect\r"); err != nil {
 		t.Fatalf("send /connect: %v", err)
 	}
 	overlay2 := s2.readFor(3 * time.Second)
