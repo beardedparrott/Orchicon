@@ -145,6 +145,7 @@ func startOrchPtyAt(t *testing.T, bin, planeURL, home string) *ptySession {
 // the composer returns, the process never exited). Then esc-cancel is
 // verified on a second run.
 func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
+	skipInteractivePTY(t)
 	if testing.Short() {
 		t.Skip("real-pty: skipped in -short")
 	}
