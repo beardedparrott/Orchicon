@@ -25,6 +25,13 @@ type Model struct {
 	reg *subs.Registry
 }
 
+// The centered empty state (GUI parity): Ask lands on a fresh
+// conversation and shows this until the first message is sent.
+const (
+	HeroTitle = "Ask Orchicon anything."
+	HeroBody  = "Plan, execute, and govern with real-time clarity and thin control."
+)
+
 // New builds the screen.
 func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m := &Model{cl: cl, reg: reg}
@@ -32,6 +39,11 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("conversations", "Conversations", m.fetchConversations)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
+	// The GUI never auto-opens a conversation at launch: the transcript
+	// pane shows the hero until the operator picks one or sends the first
+	// message (which creates a new conversation).
+	m.Base.SetNoAutoDetail(true)
+	m.Base.SetHero(HeroTitle, HeroBody)
 	m.Base.SetStatuses(nil) // no live stream in read-only v1
 	return m
 }
@@ -139,6 +151,14 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 // shell's context engine.
 func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
 func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+
+// NewChat resets the transcript pane to the empty hero (the shell's "new
+// chat" affordance, mirroring the GUI's New chat button).
+func (m *Model) NewChat() { m.Base.ClearDetail() }
+
+// ScrollDetail scrolls the transcript pane (mouse wheel + the
+// empty-composer vertical keys).
+func (m *Model) ScrollDetail(delta int) { m.Base.ScrollDetail(delta) }
 
 // DetailWidth exposes the detail pane width (transcript bubble wrap).
 func (m *Model) DetailWidth() int { return m.Base.DetailWidth() }

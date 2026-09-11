@@ -152,6 +152,15 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/new", Usage: "/new",
+		Desc: "start a new Ask Orchicon conversation",
+		Run: func(m *App, _ []string) tea.Cmd {
+			m.newChat()
+			m.dock.SetNotice("new conversation — type below to start")
+			return nil
+		},
+	})
+	add(SlashCommand{
 		Name: "/diff", Usage: "/diff",
 		Desc: "toggle the left diff rail for the active execution/conversation",
 		Run: func(m *App, _ []string) tea.Cmd {
@@ -185,9 +194,9 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Run:     runContextCmd,
 	})
 	add(SlashCommand{
-		Name:  "/theme", Usage: "/theme [dark | light]",
-		Desc:  "switch the TUI theme (no arg = list); persisted to the profile",
-		Run:   runThemeCmd,
+		Name: "/theme", Usage: "/theme [dark | light]",
+		Desc: "switch the TUI theme (no arg = list); persisted to the profile",
+		Run:  runThemeCmd,
 	})
 	add(SlashCommand{
 		Name: "/quit", Usage: "/quit",

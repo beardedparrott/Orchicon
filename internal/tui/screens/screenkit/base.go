@@ -6,6 +6,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // Screen is the contract every area screen implements. It lives here
@@ -58,8 +62,15 @@ type Base struct {
 	detailFn DetailFn
 	onDetail func(src, id string) tea.Cmd
 	detailID string // id of the item the detail pane currently shows
-	shell    any    // the app shell (SetShell); screens type-assert for shell hooks
-	statuses []StatusMsg
+	stripH   int    // 1 when the source strip renders (>1 source), else 0
+	// noAutoDetail suppresses the automatic detail load after a fetch:
+	// the Ask screen keeps its hero until the operator deliberately opens
+	// a conversation (the GUI never auto-opens one at launch).
+	noAutoDetail bool
+	heroTitle    string
+	heroBody     string
+	shell        any // the app shell (SetShell); screens type-assert for shell hooks
+	statuses     []StatusMsg
 }
 
 // AddSource registers a fetchable list pane.
@@ -84,25 +95,50 @@ func (b *Base) SetStatus(name, st string) {
 // ReportStatus returns the current per-subscription statuses.
 func (b *Base) ReportStatus() []StatusMsg { return b.statuses }
 
-// SetSize lays out: equal-width source panes (left), rest to detail.
+// SetSize lays out: the ACTIVE source pane (left) + detail (right), with
+// a one-row source strip on top when the screen has >1 source. The old
+// all-panes-side-by-side math needed w/(n+1) per pane — at 7 sources
+// (Control) that wanted ~186+ columns and pushed the detail off-screen,
+// so selecting "settings" focused a pane you could not see (operator
+// Phase-3.5 finding 4). One list pane has a fixed, bounded width; the
+// detail always gets the remainder.
 func (b *Base) SetSize(w, h int) {
 	b.width, b.height = w, h
 	n := len(b.sources)
 	if n == 0 {
+		b.stripH = 0
 		b.paneW, b.paneH = 0, h
 		b.detail.Width, b.detail.Height = w, h
 		return
 	}
-	lw := w / (n + 1)
+	b.stripH = 0
+	contentH := h
+	if n > 1 && h > 1 {
+		b.stripH = 1
+		contentH = h - 1
+	}
+	lw := w / 3
 	if lw < 24 {
 		lw = 24
 	}
-	b.paneW, b.paneH = lw, h
-	b.detail.Width = w - lw*n - 3*(n-1)
-	if b.detail.Width < 20 {
-		b.detail.Width = 20
+	if lw > 48 {
+		lw = 48
 	}
-	b.detail.Height = h
+	if w-lw-3 < 20 {
+		lw = w - 3 - 20
+		if lw < 12 {
+			lw = 12
+		}
+	}
+	if lw < 1 {
+		lw = 1
+	}
+	b.paneW, b.paneH = lw, contentH
+	b.detail.Width = w - lw - 3
+	if b.detail.Width < 1 {
+		b.detail.Width = 1
+	}
+	b.detail.Height = contentH
 }
 
 // PaneSize returns the per-source pane dimensions.
@@ -215,6 +251,33 @@ type detailErrMsg struct{ err error }
 // SetDetail installs the detail renderer for the given source name.
 func (b *Base) SetDetail(fn DetailFn) { b.detailFn = fn }
 
+// SetNoAutoDetail suppresses the post-fetch auto-detail: the pane keeps
+// the empty state the screen installed until the operator picks an item
+// (the Ask screen's hero).
+func (b *Base) SetNoAutoDetail(v bool) { b.noAutoDetail = v }
+
+// SetHero installs the detail pane's centered empty state, shown until
+// real content replaces it (and restored by ClearDetail).
+func (b *Base) SetHero(title, body string) {
+	b.heroTitle, b.heroBody = title, body
+	b.detail.SetHero(title, body)
+}
+
+// ClearDetail returns the detail pane to its empty state (the hero when
+// one is installed) and forgets the item it was showing.
+func (b *Base) ClearDetail() {
+	b.detailID = ""
+	if b.heroTitle != "" || b.heroBody != "" {
+		b.detail.SetHero(b.heroTitle, b.heroBody)
+		return
+	}
+	b.detail.SetContent("", nil, "")
+}
+
+// ScrollDetail scrolls the detail pane by delta lines (mouse wheel + the
+// empty-composer vertical keys).
+func (b *Base) ScrollDetail(delta int) { b.detail.Wheel(delta) }
+
 // SetShell installs the app shell reference (screens type-assert it
 // for shell-side hooks — avoids a screenkit→tui import cycle).
 func (b *Base) SetShell(sh any) { b.shell = sh }
@@ -273,12 +336,31 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 				s.list.SetItems(msg.items, msg.next)
 			}
 			s.list.Loading = false
+			if b.noAutoDetail {
+				// Stay on the empty state: nothing is auto-selected (the
+				// Ask screen shows its hero until a conversation is picked).
+				return true, nil
+			}
 			return true, b.loadDetail()
 		}
 		return true, nil
 
 	case detailMsg:
 		b.detail.SetContent(msg.title, msg.fields, msg.body)
+		// Record WHICH item the detail pane now shows. The shell's
+		// onChatWake repaints the open conversation's transcript keyed on
+		// DetailID() — a detailID that is never written makes that guard
+		// always fail and live chat chunks silently never render
+		// (operator Phase-3.5 finding 5: clicking a rail conversation
+		// appeared to do nothing).
+		b.detailID = msg.id
+		// Fire the on-detail hook (ask transcript / execution session
+		// follow). The hook's cmd is returned so Base.Update's caller
+		// (the screen) batches it — without this the hook is stored but
+		// never runs and chat targets never follow navigation.
+		if b.onDetail != nil {
+			return true, b.onDetail(msg.src, msg.id)
+		}
 		return true, nil
 
 	case detailErrMsg:
@@ -314,7 +396,7 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 		case "esc":
 			b.focusD = false
 			return true, nil
-		case "enter", "tab":
+		case "enter":
 			b.focusD = !b.focusD
 			return true, nil
 		}
@@ -340,30 +422,39 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		if b.focusD {
+		// Route by WHERE the wheel is, not by keyboard focus: a wheel
+		// over the detail pane scrolls the transcript even when the
+		// list holds focus (operator finding: mouse scroll in chat
+		// appeared dead — the wheel scrolled the list instead).
+		if b.ClickDetail(msg.X) {
 			b.detail.Wheel(-3)
 		} else {
 			b.sources[b.active].list.Wheel(-3)
 		}
 	case tea.MouseButtonWheelDown:
-		if b.focusD {
+		if b.ClickDetail(msg.X) {
 			b.detail.Wheel(3)
 		} else {
 			b.sources[b.active].list.Wheel(3)
 		}
 	case tea.MouseButtonLeft:
+		// Strip row first: clicking a source title switches the list
+		// pane (the mouse path for the >1-source strip).
+		if b.stripH == 1 && msg.Y == 0 {
+			if idx := b.stripSourceAt(msg.X); idx >= 0 && idx < len(b.sources) {
+				b.active = idx
+				b.focusD = false
+				return b.loadDetail()
+			}
+			return nil
+		}
 		if len(b.sources) == 0 || b.ClickDetail(msg.X) {
 			b.focusD = true
 			return nil
 		}
-		p := b.mousePane(msg.X)
-		if p < 0 || p >= len(b.sources) {
-			return nil
-		}
-		s := b.sources[p]
-		row := msg.Y - 1 // line 0 is the pane title
+		s := b.sources[b.active]
+		row := msg.Y - b.stripH - 1 // strip row + pane title line
 		if row >= 0 && s.list.Click(row) {
-			b.active = p
 			b.focusD = false
 			return b.loadDetail()
 		}
@@ -394,17 +485,44 @@ func (b *Base) loadDetail() tea.Cmd {
 	}
 }
 
-// View renders the source panes + detail side by side.
+// View renders the source strip (when >1 source) over the active source
+// pane + detail side by side. Only the ACTIVE source's list renders as a
+// pane — every source stays reachable via the strip (keyboard h/l,
+// slash jumps, mouse) without needing 186+ columns.
 func (b *Base) View() string {
 	if len(b.sources) == 0 {
 		return b.detail.View()
 	}
-	panes := make([]string, 0, len(b.sources)+1)
-	for i, s := range b.sources {
-		panes = append(panes, b.renderPane(s, i == b.active))
+	listBlock := b.renderPane(b.sources[b.active], true)
+	detailBlock := b.detail.View()
+	body := lipgloss.JoinHorizontal(lipgloss.Top, listBlock, PaneGap(), detailBlock)
+	if b.stripH == 0 {
+		return body
 	}
-	panes = append(panes, b.detail.View())
-	return strings.Join(panes, PaneGap())
+	return b.sourceStripView() + "\n" + body
+}
+
+// sourceStripView renders the one-row source switcher: every source title
+// in order, the active one highlighted. Titles truncate to fit; the strip
+// never wraps (a wrapping strip would steal a budget row).
+func (b *Base) sourceStripView() string {
+	parts := make([]string, 0, len(b.sources))
+	for i, s := range b.sources {
+		if i == b.active {
+			parts = append(parts, theme.ListItemSelected.Render(" "+s.title+" "))
+		} else {
+			parts = append(parts, theme.ListTitle.Render(" "+s.title+" "))
+		}
+	}
+	strip := strings.Join(parts, theme.HintText.Render(" │ "))
+	w := b.width
+	if w < 1 {
+		return strip
+	}
+	if lipgloss.Width(strip) > w {
+		strip = ansi.Truncate(strip, w, "")
+	}
+	return strip
 }
 
 func (b *Base) renderPane(s *source, focused bool) string {

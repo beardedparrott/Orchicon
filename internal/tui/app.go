@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -97,22 +97,22 @@ type App struct {
 	quitting  bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock               dock.Model
-	chat               *chat.Controller
-	chatStore          *chatStore    // guarded chatItems (stream goroutine writes)
-	chatWake           chan struct{} // live-chunk repaint poke (cap 1)
-	chatCmds           chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
-	chatFocus          focusMode
-	mouseEnabled       bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
-	palette            palette
-	slash              *slashRegistry
-	contextOverride    string // /context pin <desc>
+	dock            dock.Model
+	chat            *chat.Controller
+	chatStore       *chatStore    // guarded chatItems (stream goroutine writes)
+	chatWake        chan struct{} // live-chunk repaint poke (cap 1)
+	chatCmds        chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
+	chatFocus       focusMode
+	mouseEnabled    bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+	palette         palette
+	slash           *slashRegistry
+	contextOverride string // /context pin <desc>
 	// Tab dropdown submenus (Phase 2a): per-tab menus built from nav
 	// config; menuOpen = the tab whose dropdown is open ("" = closed).
-	menus     map[TabID]*TabMenu
-	menuOpen  TabID
-	navReg    []NavEntry
-	themes    []string
+	menus              map[TabID]*TabMenu
+	menuOpen           TabID
+	navReg             []NavEntry
+	themes             []string
 	reconnectRequested bool
 	chatConvID         string                     // active conversation ("" = none yet)
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items
@@ -152,6 +152,14 @@ type App struct {
 	// pendingRailCmd carries the conversations-rail retry/reload cmd out of
 	// a route or a mouse handler that cannot return one directly.
 	pendingRailCmd tea.Cmd
+	// pendingScreenCmd carries a newly activated screen's first-load cmd
+	// out of SwitchTo (which cannot return one).
+	pendingScreenCmd tea.Cmd
+	// loaded records which screens have run their first load. Screens are
+	// constructed eagerly for the nav registry, so without this bookkeeping
+	// ONLY the startup tab ever fetched its lists — every other tab
+	// rendered "nothing here" with no error.
+	loaded map[TabID]bool
 }
 
 // DiffPaneWidth is the left rail width (cells). Mirrors the GUI's ~480px
@@ -167,6 +175,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 		screens:      map[TabID]Screen{},
 		chatStore:    &chatStore{items: map[string][]chat.ChatItem{}},
 		execSessions: map[string][]chat.ChatItem{},
+		loaded:       map[TabID]bool{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -248,6 +257,7 @@ func (m *App) SwitchTo(id TabID) {
 		} else {
 			m.EnsureSubscriptions(id)
 		}
+		m.ensureLoaded(id)
 		return
 	}
 	if old, ok := m.screens[m.active]; ok && old != nil {
@@ -286,6 +296,10 @@ func (m *App) SwitchTo(id TabID) {
 	if m.diffOpen {
 		m.refreshDiffOwner()
 	}
+	// A screen first reached this session runs its first load now: the nav
+	// registry builds every screen eagerly, so a lazily-activated screen
+	// would otherwise never fetch (every pane "nothing here").
+	m.ensureLoaded(id)
 }
 
 // EnsureSubscriptions starts the screen's live event streams if it has
@@ -300,12 +314,163 @@ func (m *App) EnsureSubscriptions(id TabID) {
 	}
 }
 
+// ensureLoaded runs a screen's first load (Init → Load) exactly once, when
+// it first becomes activatable. Screens are constructed eagerly for the nav
+// registry (buildNavEntries → screenForNav), so relying on App.Init alone
+// means the startup tab loads and every other tab renders an empty list.
+func (m *App) ensureLoaded(id TabID) {
+	if id == "" || m.loaded[id] {
+		return
+	}
+	s := m.screens[id]
+	if s == nil {
+		return
+	}
+	m.loaded[id] = true
+	m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, s.Init())
+}
+
+// drainStaged returns (once) every cmd staged by a route or mouse handler
+// that cannot return one directly: screen first-loads, diff-pane owner
+// setup, and conversations-rail reloads.
+func (m *App) drainStaged() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.pendingScreenCmd != nil {
+		cmds = append(cmds, m.pendingScreenCmd)
+		m.pendingScreenCmd = nil
+	}
+	if m.pendingDiffCmd != nil {
+		cmds = append(cmds, m.pendingDiffCmd)
+		m.pendingDiffCmd = nil
+	}
+	if m.pendingRailCmd != nil {
+		cmds = append(cmds, m.pendingRailCmd)
+		m.pendingRailCmd = nil
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// newChat drops the active conversation and returns Ask to its hero: the
+// next composer send creates a fresh conversation (the GUI's New chat).
+func (m *App) newChat() {
+	m.chatConvID = ""
+	if m.chat != nil {
+		m.chat.SetActive("")
+	}
+	m.SwitchTo(TabAsk)
+	m.EnsureSubscriptions(TabAsk)
+	if s := m.screens[TabAsk]; s != nil {
+		if nc, ok := s.(interface{ NewChat() }); ok {
+			nc.NewChat()
+		}
+	}
+	m.updateContextChip()
+}
+
+// scrollKeyDelta maps the vertical keys to a line delta (0 = not a scroll
+// key).
+func scrollKeyDelta(key string) int {
+	switch key {
+	case "up":
+		return -3
+	case "down":
+		return 3
+	case "pgup":
+		return -12
+	case "pgdown":
+		return 12
+	}
+	return 0
+}
+
+// scrollActiveDetail scrolls the active screen's detail pane when it has
+// one (every list+detail screen embeds screenkit.Base.ScrollDetail).
+func (m *App) scrollActiveDetail(delta int) {
+	if s := m.screens[m.active]; s != nil {
+		if sc, ok := s.(interface{ ScrollDetail(int) }); ok {
+			sc.ScrollDetail(delta)
+		}
+	}
+}
+
 // ActiveTab returns the active tab ID.
 func (m *App) ActiveTab() TabID { return m.active }
 
 // NextTab / PrevTab cycle the tab bar.
 func (m *App) NextTab() { m.cycle(1) }
 func (m *App) PrevTab() { m.cycle(-1) }
+
+// tabRingNext advances the operator focus ring: chat prompt FIRST, then
+// the six area tabs in order, then back to the prompt. From the composer
+// Tab drops to the Ask tab's content; each further Tab advances to the
+// next tab's content; after Control it wraps back to the composer. Left /
+// right still switch tabs directly (content focus).
+func (m *App) tabRingNext() {
+	// One action per press: an open dropdown just closes (no focus move).
+	if m.TabMenu() != nil {
+		m.closeTabMenu()
+		return
+	}
+	if m.chatFocus == focusComposer {
+		m.setFocus(focusContent)
+		if m.active != TabAsk {
+			m.SwitchTo(TabAsk)
+		}
+		m.EnsureSubscriptions(TabAsk)
+		return
+	}
+	idx := 0
+	for i, t := range Tabs {
+		if t.ID == m.active {
+			idx = i
+			break
+		}
+	}
+	if idx >= len(Tabs)-1 {
+		// Control content → wrap back to the chat prompt.
+		m.setFocus(focusComposer)
+		return
+	}
+	m.SwitchTo(Tabs[idx+1].ID)
+	m.EnsureSubscriptions(Tabs[idx+1].ID)
+}
+
+// toggleSideRails pops the side rails (conversations right rail + diff
+// left pane) together — the secondary chrome toggle. Closing hides both;
+// opening restores both (the diff pane stays closed when it has no owner
+// — the existing no-op — and the rail refetches when unloaded/failed).
+func (m *App) toggleSideRails() {
+	if m.rightRailOpen || m.diffOpen {
+		m.rightRailOpen = false
+		if m.diffOpen {
+			m.closeDiffPane() // refreshes the layout
+		} else {
+			m.refreshLayout()
+		}
+		return
+	}
+	m.rightRailOpen = true
+	if m.convErr != "" || !m.convLoaded {
+		m.pendingRailCmd = m.reloadConversations()
+	}
+	m.refreshLayout()
+	// Stage the diff-pane setup alongside any rail reload: dispatch can
+	// only re-emit one staged cmd, so batch both here (non-nil only).
+	var cmds []tea.Cmd
+	if dc := m.openDiffPane(); dc != nil {
+		cmds = append(cmds, dc)
+	}
+	if rc := m.pendingRailCmd; rc != nil {
+		m.pendingRailCmd = nil
+		cmds = append(cmds, rc)
+	}
+	if len(cmds) > 0 {
+		m.pendingDiffCmd = tea.Batch(cmds...)
+	}
+}
 
 func (m *App) cycle(delta int) {
 	idx := 0
@@ -766,10 +931,13 @@ func (m *App) streamStatus() streamStatusString {
 // Init implements tea.Model.
 func (m *App) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	if s := m.screens[m.active]; s != nil {
-		cmds = append(cmds, s.Init())
-	}
+	// The startup tab loads here; every other tab loads on first activation
+	// (ensureLoaded, called from SwitchTo).
+	m.ensureLoaded(m.active)
 	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations())
+	if c := m.drainStaged(); c != nil {
+		cmds = append(cmds, c)
+	}
 	return tea.Batch(cmds...)
 }
 

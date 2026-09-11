@@ -263,6 +263,7 @@ func TestPTYSmokeLaunchFullTakeoverComposerFocused(t *testing.T) {
 		})
 	}
 }
+
 // countUnpaintedGaps scans a painted stream for cells the shell left
 // UNPAINTED after a style reset: `\x1b[0m` followed by printable content
 // or spaces that are not immediately re-opened by a background SGR. Every
@@ -343,5 +344,37 @@ func TestPTYNoUnpaintedGaps(t *testing.T) {
 	}
 	if gaps := countUnpaintedGaps(out); gaps > 0 {
 		t.Fatalf("LIVE BINARY left %d unpainted cells after style resets — terminal bleeds through (padScreenLine/bgOpaque regression)", gaps)
+	}
+}
+
+// TestPTYBottomRowPainted closes the operator's Phase-3.5 finding 1: a
+// one-row sliver of the terminal peeking through at the BOTTOM of the
+// frame. Root cause: the last View row ended in an SGR reset (styled
+// footer text) with no trailing background re-assert — bubbletea's
+// renderer pads the final row with terminal-background cells. The fix
+// (bgOpaque in padScreenLine) re-asserts the background on every row,
+// including the last. This test asserts the LIVE binary's final painted
+// row carries a trailing background SGR after its last reset.
+func TestPTYBottomRowPainted(t *testing.T) {
+	skipInteractivePTY(t)
+	if testing.Short() {
+		t.Skip("real-pty smoke: skipped in -short")
+	}
+	bin := orchBinPath(t)
+	s := startOrchPty(t, bin, 120, 40)
+	defer s.close()
+	time.Sleep(2 * time.Second)
+	out := s.readFor(3 * time.Second)
+	if !strings.Contains(out, "\x1b[?1049h") {
+		t.Fatalf("orch never entered alt-screen (%d bytes)", len(out))
+	}
+	// The footer row (last visible row) ends with styled text; after the
+	// fix every such reset is followed by a background re-assert before
+	// any further printable/space content. Scan the tail of the stream:
+	// every \x1b[0m not immediately followed by another escape must be
+	// re-painted (countUnpaintedGaps covers exactly this; assert zero
+	// gaps across the whole session INCLUDING the final frames).
+	if gaps := countUnpaintedGaps(out); gaps > 0 {
+		t.Fatalf("LIVE BINARY left %d unpainted cells (bottom sliver regression)", gaps)
 	}
 }
