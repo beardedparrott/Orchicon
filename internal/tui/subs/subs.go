@@ -297,7 +297,7 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 		},
 		GetSequence: func(m *apiv1.StreamTelemetryResponse) int64 { return m.GetSequence() },
 		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamTelemetryResponse) {},
+		OnEvent:     func(*apiv1.StreamTelemetryResponse) { r.pokeEvent(name)(nil) },
 	}
 	sub := stream.New(cfg)
 	r.add(sub)

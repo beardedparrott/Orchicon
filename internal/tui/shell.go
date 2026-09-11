@@ -175,7 +175,7 @@ func (m *App) menuSize(tm *TabMenu) (int, int) {
 			w = n
 		}
 	}
-	w += 4 // panel border + inner gutter
+	w += 4                   // panel border + inner gutter
 	h := len(tm.Entries) + 4 // border + header + rows + border
 	if h > m.height-tabBarRows {
 		h = m.height - tabBarRows
@@ -325,25 +325,52 @@ func overlayRow(row, overlay string, left, width int) string {
 	return prefix + overlay + suffix
 }
 
-// tabBarView renders the centered top tab bar: the numbered tab chrome
-// sitting on the opaque background. At narrow widths (< ~80) the inter-tab
-// gaps drop so all six tabs stay inside the viewport (the pills still
-// separate visually via their own padding).
-func (m App) tabBarView() string {
-	parts := make([]string, len(Tabs))
+// tabBarLayout picks the label form and inter-tab gap for the current
+// viewport: the widest tier that fits wins. Narrow widths drop the
+// inter-tab gaps first, then the ordinal prefixes, so all SEVEN tabs stay
+// inside the viewport (the pills still separate visually via their own
+// padding). m.width <= 0 (unsized — e.g. registry introspection) always
+// uses the full numbered form, so the numbered chrome is the default.
+func (m App) tabBarLayout() (labels []string, gap string) {
+	full := make([]string, len(Tabs))
+	plain := make([]string, len(Tabs))
 	for i, t := range Tabs {
-		label := t.Ordinal + "·" + t.Title
-		if t.ID == m.active {
+		full[i] = t.Ordinal + "·" + t.Title
+		plain[i] = t.Title
+	}
+	if m.width <= 0 {
+		return full, " "
+	}
+	for _, tier := range []struct {
+		labels []string
+		gap    string
+	}{{full, " "}, {full, ""}, {plain, " "}, {plain, ""}} {
+		if lipgloss.Width(m.tabBarRender(tier.labels, tier.gap)) <= m.width {
+			return tier.labels, tier.gap
+		}
+	}
+	return plain, ""
+}
+
+// tabBarRender renders the tab bar from explicit labels + gap (the active
+// tab styled, the rest inactive), wrapped in the TabBar container style.
+func (m App) tabBarRender(labels []string, gap string) string {
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if Tabs[i].ID == m.active {
 			parts[i] = theme.TabActive.Render(label)
 		} else {
 			parts[i] = theme.TabInactive.Render(label)
 		}
 	}
-	bar := theme.TabBar.Render(strings.Join(parts, " "))
-	if lipgloss.Width(bar) > m.width && m.width > 0 {
-		bar = theme.TabBar.Render(strings.Join(parts, ""))
-	}
-	return bar
+	return theme.TabBar.Render(strings.Join(parts, gap))
+}
+
+// tabBarView renders the centered top tab bar at the widest layout tier
+// that fits the viewport.
+func (m App) tabBarView() string {
+	labels, gap := m.tabBarLayout()
+	return m.tabBarRender(labels, gap)
 }
 
 // centeredTabBarView centers the tab bar row across m.width columns and
@@ -370,46 +397,75 @@ func (m App) tabTitle(id TabID) string {
 	return string(id)
 }
 
+// tabLabelStarts returns the visible terminal column where each tab's
+// rendered label begins in the centered tab bar (Tabs order, -1 when the
+// label is not found), using the SAME layout tier the bar was rendered
+// with — so key navigation, the dropdown geometry, and the mouse hit-test
+// can never disagree with what is on screen.
+//
+// Mouse X is a terminal COLUMN (0-based) but strings.Index returns a BYTE
+// offset into the ANSI-styled render — measure the visible width of the
+// styled prefix with lipgloss.Width (ANSI-aware) to get the label's true
+// starting column. Labels are located sequentially so a label that repeats
+// a substring earlier in the styled render cannot shift the result.
+func (m App) tabLabelStarts() []int {
+	labels, gap := m.tabBarLayout()
+	bar := m.tabBarRender(labels, gap)
+	barW := lipgloss.Width(bar)
+	offset := 0
+	if barW > 0 && barW < m.width {
+		offset = (m.width - barW) / 2
+	}
+	starts := make([]int, len(Tabs))
+	from := 0
+	for i := range Tabs {
+		idx := strings.Index(bar[from:], labels[i])
+		if idx < 0 {
+			starts[i] = -1
+			continue
+		}
+		idx += from
+		starts[i] = offset + lipgloss.Width(bar[:idx])
+		from = idx + len(labels[i])
+	}
+	return starts
+}
+
 // tabStartCol returns the visible terminal column where tab's label begins
 // in the centered tab bar (ANSI-aware) — used by the tab mouse hit-test,
 // the dropdown geometry, and their tests.
 func (m App) tabStartCol(t Tab) int {
-	bar := m.tabBarView()
-	label := t.Ordinal + "·" + t.Title
-	idx := strings.Index(bar, label)
-	if idx < 0 {
-		return 0
+	starts := m.tabLabelStarts()
+	for i, tt := range Tabs {
+		if tt.ID == t.ID {
+			if starts[i] < 0 {
+				return 0
+			}
+			return starts[i]
+		}
 	}
-	barW := lipgloss.Width(bar)
-	if barW >= m.width {
-		return lipgloss.Width(bar[:idx])
-	}
-	return (m.width-barW)/2 + lipgloss.Width(bar[:idx])
+	return 0
 }
 
 // TabClick maps a mouse click on the tab bar (row 0) to the tab whose
-// rendered span contains column x. It locates each tab label in the
-// actually-rendered tab bar string, so it never drifts from the layout
-// math. Returns (tabID, true) when a tab was hit.
+// rendered span contains column x. Spans TILE the bar (a tab owns the cells
+// from its label's start up to the next label's start, so the pills' own
+// padding and the inter-tab gaps stay clickable) and the last tab keeps
+// the historical +3-cell trailing tolerance — so the hit-test can never
+// overlap two tabs on a narrow (gap-dropping) layout. Returns (tabID, true)
+// when a tab was hit.
 func (m App) TabClick(x int) (TabID, bool) {
-	bar := m.tabBarView()
-	barW := lipgloss.Width(bar)
-	var offset int
-	if barW < m.width {
-		offset = (m.width - barW) / 2
-	}
-	for _, t := range Tabs {
-		label := t.Ordinal + "·" + t.Title
-		idx := strings.Index(bar, label)
-		if idx < 0 {
+	starts := m.tabLabelStarts()
+	labels, _ := m.tabBarLayout()
+	for i, t := range Tabs {
+		start := starts[i]
+		if start < 0 {
 			continue
 		}
-		// Mouse X is a terminal COLUMN (0-based) but strings.Index returns a
-		// BYTE offset into the ANSI-styled render — measure the visible
-		// width of the styled prefix with lipgloss.Width (ANSI-aware) to
-		// get the label's true starting column.
-		start := offset + lipgloss.Width(bar[:idx])
-		end := start + lipgloss.Width(label) + 3
+		end := start + lipgloss.Width(labels[i]) + 3
+		if i+1 < len(starts) && starts[i+1] >= 0 {
+			end = starts[i+1]
+		}
 		if x >= start && x < end {
 			return t.ID, true
 		}

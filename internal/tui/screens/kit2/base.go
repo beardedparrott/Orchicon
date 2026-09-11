@@ -123,6 +123,18 @@ func (b *Base) FocusedRegion() string {
 // SetStatuses seeds the status reporter.
 func (b *Base) SetStatuses(sts []StatusMsg) { b.statuses = sts }
 
+// SetSourceEmpty sets the named source's empty-state message. Every pane
+// names WHY it is empty ("no traces in the window — …"); the bare
+// "nothing here" default is never shown for a source that declares one.
+func (b *Base) SetSourceEmpty(name, msg string) {
+	for _, s := range b.sources {
+		if s.name == name {
+			s.table.Empty = msg
+			return
+		}
+	}
+}
+
 // SetStatus updates one named status.
 func (b *Base) SetStatus(name, st string) {
 	for i := range b.statuses {

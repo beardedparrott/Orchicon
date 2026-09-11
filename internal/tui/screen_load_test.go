@@ -44,11 +44,12 @@ func TestSwitchToRunsScreenFirstLoadOnce(t *testing.T) {
 	}
 }
 
-// The tab ring walks composer → six areas → composer, and Shift+Tab
+// The tab ring walks composer → seven areas → composer, and Shift+Tab
 // toggles both side rails.
 func TestTabRingAndRailToggle(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
+	m.RegisterScreen(TabOverview, &stubScreen{id: "overview"})
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
 	m.width, m.height = 120, 40
 	m.SwitchTo(TabAsk)
@@ -61,10 +62,10 @@ func TestTabRingAndRailToggle(t *testing.T) {
 	if m.chatFocus != focusContent || m.ActiveTab() != TabAsk {
 		t.Fatalf("tab from composer = (%v, %s), want (content, ask)", m.chatFocus, m.ActiveTab())
 	}
-	// Each further Tab advances one area.
+	// Each further Tab advances one area (Overview is the second domain).
 	m.tabRingNext()
-	if m.ActiveTab() != TabWork {
-		t.Fatalf("tab advanced to %s, want work", m.ActiveTab())
+	if m.ActiveTab() != TabOverview {
+		t.Fatalf("tab advanced to %s, want overview", m.ActiveTab())
 	}
 	// …and after the last area it wraps back to the prompt.
 	m.SwitchTo(TabControl)

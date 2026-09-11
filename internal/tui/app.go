@@ -1,5 +1,5 @@
-// Package tui is orch's app shell: the six-tab shell (Ask, Work,
-// Execution, Automation, Enforcement, Control) mirroring the GUI nav
+// Package tui is orch's app shell: the seven-tab shell (Ask, Overview,
+// Work, Execution, Automation, Enforcement, Control) mirroring the GUI nav
 // (frontend/src/lib/nav-config.ts + app-shell.tsx), with the global key
 // router, status footer, and help overlay.
 package tui
@@ -28,6 +28,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/enforcement"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/execution"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/overview"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
@@ -38,9 +39,10 @@ import (
 // TabID is a stable screen identifier.
 type TabID string
 
-// The six GUI nav domains.
+// The seven GUI nav domains.
 const (
 	TabAsk         TabID = "ask"
+	TabOverview    TabID = "overview"
 	TabWork        TabID = "work"
 	TabExecution   TabID = "execution"
 	TabAutomation  TabID = "automation"
@@ -61,11 +63,12 @@ type Tab struct {
 // (mouse) is wired in the shell dispatcher.
 var Tabs = []Tab{
 	{TabAsk, "Ask Orchicon", "ctrl+o", "1"},
-	{TabWork, "Work", "ctrl+w", "2"},
-	{TabExecution, "Execution", "ctrl+e", "3"},
-	{TabAutomation, "Automation", "ctrl+a", "4"},
-	{TabEnforcement, "Enforcement", "ctrl+f", "5"},
-	{TabControl, "Control", "ctrl+t", "6"},
+	{TabOverview, "Overview", "ctrl+v", "2"},
+	{TabWork, "Work", "ctrl+w", "3"},
+	{TabExecution, "Execution", "ctrl+e", "4"},
+	{TabAutomation, "Automation", "ctrl+a", "5"},
+	{TabEnforcement, "Enforcement", "ctrl+f", "6"},
+	{TabControl, "Control", "ctrl+t", "7"},
 }
 
 // Screen is the contract every area screen implements (alias of the
@@ -219,6 +222,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	// StreamProjectEvents ignores req.TenantId), so orch never guesses one.
 	m.factories = map[TabID]func() Screen{
 		TabAsk:         func() Screen { s := ask.New(cl, m.reg); s.SetShell(m); return s },
+		TabOverview:    func() Screen { return overview.New(cl, m.reg, "") },
 		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
 		TabExecution:   func() Screen { s := execution.New(cl, m.reg, ""); s.SetShell(m); return s },
 		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
