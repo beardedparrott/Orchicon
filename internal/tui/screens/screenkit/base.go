@@ -60,6 +60,7 @@ type Base struct {
 	detailID string // id of the item the detail pane currently shows
 	shell    any    // the app shell (SetShell); screens type-assert for shell hooks
 	statuses []StatusMsg
+	empties  map[string]string // per-source empty-state text (SetEmpty)
 }
 
 // AddSource registers a fetchable list pane.
@@ -83,6 +84,19 @@ func (b *Base) SetStatus(name, st string) {
 
 // ReportStatus returns the current per-subscription statuses.
 func (b *Base) ReportStatus() []StatusMsg { return b.statuses }
+
+// SetEmpty sets a source's empty-state message: what the pane shows when
+// the source has no items. Screens set one per source so an empty pane
+// always explains itself (never a bare "nothing here").
+func (b *Base) SetEmpty(name, msg string) {
+	if b.empties == nil {
+		b.empties = map[string]string{}
+	}
+	b.empties[name] = msg
+}
+
+// Size returns the region the screen was last sized to (0,0 = unsized).
+func (b *Base) Size() (int, int) { return b.width, b.height }
 
 // SetSize lays out: equal-width source panes (left), rest to detail.
 func (b *Base) SetSize(w, h int) {
@@ -410,6 +424,9 @@ func (b *Base) View() string {
 func (b *Base) renderPane(s *source, focused bool) string {
 	s.list.Title = s.title
 	s.list.Width, s.list.Height = b.paneW, b.paneH
+	if s.list.EmptyMsg == "" {
+		s.list.EmptyMsg = b.empties[s.name]
+	}
 	var out strings.Builder
 	out.WriteString(s.list.View(focused))
 	if s.list.Loading {

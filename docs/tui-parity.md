@@ -59,16 +59,16 @@ whole areas to "use the web GUI".
 | `/workflows/$id/runs/$runId` | Workflow run detail | **exists** | Execution (runs) | Detail + step runs body; live Execution detail pane. |
 | `/executions` | Executions | **exists** | Execution | Live list + detail, interjection message send (mutation: `SendExecutionMessage`). |
 | `/executions/$id` | Execution detail | **exists** | Execution | Live session view + diff pane. |
-| `/schedules` | Schedules | **exists** | Automation | Recurring work-item list + detail. **Child:** schedule create/edit/pause (mutation). |
+| `/schedules` | Schedules | **exists** | Automation | Same surface as `/recurring-items` (recurring work items); create/edit/pause/delete landed. |
 
 ## Automation
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/recurring-items` | Recurring Items | **exists** | Automation | Schedules source. **Child:** create/edit recurrence rules. |
-| `/recurring-items/$id` | Recurring item detail | **exists** | Automation | Detail + run history. |
-| `/recurring-items/new` | Create recurring item | **missing** | — | **Child:** recurring-item creation form (mutation). |
-| `/idea-cloud` | Idea Cloud | **missing** | — | **Child:** idea triage list (research-space). |
+| `/recurring-items` | Recurring Items | **exists** | Automation | `Recurring Items` source (`ListWorkItems` + `RecurringFilter_ONLY_RECURRING`); mutations: `n` create, `e` edit, `p` pause/resume, `x` delete (confirm) via `CreateWorkItem` / `UpdateWorkItem` (recurring_schedule + recurring_enabled) / `DeleteWorkItem`. |
+| `/recurring-items/$id` | Recurring item detail | **exists** | Automation | Detail (cadence + next fire) + per-fire run history: fire status, bound workflow run, that run's executions/outputs (`GetWorkItemRunHistory`). |
+| `/recurring-items/new` | Create recurring item | **exists** | Automation | Validated create form (project, kind, workflow binding, frequency/interval/days/start date+time, outputs mode) with the next fire computed server-side; `ctrl+s` saves, `esc` cancels. |
+| `/idea-cloud` | Idea Cloud | **exists** | Automation | `Idea Cloud` source (`ListIdeas`, idea_state_scope ACTIVE) with provenance (`spawned_by` + `spawned_by_run_id` + spawned-by-title badge); `p` promote (`PromoteIdea`), `x`+`y` dismiss (`DismissIdea`, confirm). A separate `Rejected Ideas` pane renders idea_state_scope REJECTED — the durable rejection history the automation dedupe gate consults. |
 
 ## Enforcement
 
@@ -114,11 +114,11 @@ Each child carries this grounding: the GUI route (from `routeTree.gen.ts`), the 
 2. **Create/edit project** (`/projects/new`) — mutates `ProjectService`.
 3. **Approve/reject step approval** (`/approvals`) — mutates `ApprovalService`.
 4. **Recovery actions** (`/recovery/$id`) — mutates `RecoveryService`.
-5. **Schedules + recurring-item create/edit** (`/schedules`, `/recurring-items/new`) — mutates `WorkItemService`.
+5. ~~**Schedules + recurring-item create/edit** (`/schedules`, `/recurring-items/new`) — mutates `WorkItemService`~~ — **landed** (Automation: Recurring Items create/edit/pause/resume/delete + per-fire run history).
 6. **Webhook subscription create/edit/delete + deliveries** (`/webhooks`) — mutates `WebhookService`.
 7. **Settings edit/save** (`/settings`) — mutates `SettingsService`.
 8. **Adapters list/enable** (`/adapters`) — wire `AdapterService` client + source.
 9. **Dashboard** (`/dashboard`) — aggregated overview pane.
 10. **Cost Explorer / Usage** — aggregation panes.
-11. **Idea Cloud** (`/idea-cloud`) — idea triage list.
+11. ~~**Idea Cloud** (`/idea-cloud`) — idea triage list~~ — **landed** (Automation: idea list with provenance, rejected section, promote/dismiss).
 12. **Admin** (`/admin`) — admin-gated surfaces.

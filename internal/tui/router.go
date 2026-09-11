@@ -219,6 +219,16 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	}
+	// Screen-owned input mode: a screen with an open form/modal claims EVERY
+	// key (bar the hard ctrl+c escape above), so typed characters are never
+	// intercepted by shell routes — 'q' would quit, space opens the tab menu,
+	// '/' opens the palette, 'd' the diff rail. Screens opt in through the
+	// optional ClaimsKeys hook (automation's recurring-item form).
+	if isKey && k.String() != "ctrl+c" {
+		if ks, ok := m.screens[m.active].(interface{ ClaimsKeys() bool }); ok && ks.ClaimsKeys() {
+			return m.passToScreen(msg)
+		}
+	}
 	// Tab dropdown submenu keys: the open menu owns arrows/enter/esc and
 	// its own tab chords (BEFORE composer handling so esc closes the menu
 	// instead of falling through to focus toggling — no focus trap).
