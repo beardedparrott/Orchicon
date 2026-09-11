@@ -739,6 +739,14 @@ func (m *App) activeContextLabel() string {
 	if src == "" {
 		return ""
 	}
+	// The Ask tab's conversations list IS the chat's own conversation: its
+	// title is self-referential inside that conversation's own messages, so
+	// it is not context. Injecting it made every send carry a useless
+	// "[context: Conversations: <its own title>]" header (the operator's
+	// report). The GUI injects nothing here either.
+	if m.active == TabAsk && src == "conversations" {
+		return ""
+	}
 	title := srcTitle(m, src)
 	out := title
 	if label != "" {
