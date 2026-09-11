@@ -1,11 +1,13 @@
-// Package control implements the Control screen: workers, runtime
-// images, secrets (names/metadata only — values are never rendered),
-// MCP entries, and settings (admin-gated reads render an error state
-// when the key's scopes are missing).
+// Package control implements the Control screen on the kit2 primitives:
+// bordered focus-aware Panels, selectable Tables, a typed Form, entity-bound
+// Actions running through the mutation layer, a Confirm dialog, and an
+// Activity stream. Secrets are names/metadata only — values are never
+// rendered, fetched, or stored.
 package control
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -13,16 +15,45 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/mutate"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
+// streamRows is the height of the Activity stream panel pinned to the
+// bottom of the screen.
+const streamRows = 7
+
+// dockSink is the shell hook Control uses to push mutation feedback into the
+// always-present chat dock (the App implements it).
+type dockSink interface {
+	DockError(string)
+	DockNotice(string)
+}
+
 // Model is the Control screen.
 type Model struct {
-	screenkit.Base
+	kit2.Base
 	cl  *client.Clients
 	reg *subs.Registry
+
+	stream *kit2.Stream
+	bar    *kit2.ActionBar
+	form   *kit2.Form
+
+	w, h int
+
+	// pending carries the action awaiting dialog confirmation.
+	pending *kit2.Action
+
+	// rpcCreateWebhook is the write thunk for the New Webhook form. It is a
+	// field so tests can assert the RPC fires with the field values.
+	rpcCreateWebhook func(ctx context.Context, r *apiv1.CreateSubscriptionRequest) error
+	// rpcDeleteWebhook / rpcUpdateWebhook are the Action write thunks.
+	rpcDeleteWebhook func(ctx context.Context, id string) error
+	rpcUpdateWebhook func(ctx context.Context, r *apiv1.UpdateSubscriptionRequest) error
 }
 
 // New builds the screen.
@@ -37,7 +68,34 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("settings", "Settings", m.fetchSettings)
 	m.SetDetail(m.detail)
-	m.Base.SetStatuses(nil) // no live stream on control (v1)
+	m.Base.SetStatuses(nil)
+
+	m.stream = kit2.NewStream("Activity", 78, streamRows-2)
+	m.bar = kit2.NewActionBar()
+	// Every write goes through the ONE mutation executor.
+	m.Exec = &mutate.Executor{Sink: m}
+
+	m.rpcCreateWebhook = func(ctx context.Context, r *apiv1.CreateSubscriptionRequest) error {
+		if m.cl == nil || m.cl.Webhooks == nil {
+			return fmt.Errorf("no webhook client")
+		}
+		_, err := m.cl.Webhooks.CreateSubscription(ctx, connect.NewRequest(r))
+		return err
+	}
+	m.rpcDeleteWebhook = func(ctx context.Context, id string) error {
+		if m.cl == nil || m.cl.Webhooks == nil {
+			return fmt.Errorf("no webhook client")
+		}
+		_, err := m.cl.Webhooks.DeleteSubscription(ctx, connect.NewRequest(&apiv1.DeleteSubscriptionRequest{Id: id}))
+		return err
+	}
+	m.rpcUpdateWebhook = func(ctx context.Context, r *apiv1.UpdateSubscriptionRequest) error {
+		if m.cl == nil || m.cl.Webhooks == nil {
+			return fmt.Errorf("no webhook client")
+		}
+		_, err := m.cl.Webhooks.UpdateSubscription(ctx, connect.NewRequest(r))
+		return err
+	}
 	return m
 }
 
@@ -46,11 +104,52 @@ func (m *Model) Name() string { return "control" }
 // Close unsubscribes (no live subs on this screen in v1).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-func (m *Model) SetSize(w, h int) { m.Base.SetSize(w, h) }
+// SetSize lays out the panes plus the Activity stream panel.
+func (m *Model) SetSize(w, h int) {
+	m.w, m.h = w, h
+	body := h - streamRows
+	if body < 6 {
+		body = 6
+	}
+	m.Base.SetSize(w, body)
+	m.stream.SetSize(w-2, streamRows-2)
+}
 
 func (m *Model) Init() tea.Cmd { return m.Load() }
 
-func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+// --- mutation sink (dock feedback + activity stream) --------------------
+
+// Progress reports a running mutation in the dock + activity stream.
+func (m *Model) Progress(msg string) {
+	m.appendActivity("▸ " + msg)
+	if d, ok := m.Shell().(dockSink); ok {
+		d.DockNotice(msg)
+	}
+}
+
+// Fail surfaces a mutation failure in the dock + activity stream.
+func (m *Model) Fail(msg string) {
+	m.appendActivity("✗ " + msg)
+	if d, ok := m.Shell().(dockSink); ok {
+		d.DockError(msg)
+	}
+}
+
+// Notice reports a successful mutation.
+func (m *Model) Notice(msg string) {
+	m.appendActivity("✓ " + msg)
+	if d, ok := m.Shell().(dockSink); ok {
+		d.DockNotice(msg)
+	}
+}
+
+func (m *Model) appendActivity(line string) {
+	m.stream.Append(line)
+}
+
+// --- sources ------------------------------------------------------------
+
+func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Workers.ListWorkers(ctx, connect.NewRequest(&apiv1.ListWorkersRequest{
 		PageSize:  100,
 		PageToken: pageToken,
@@ -58,18 +157,14 @@ func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Workers))
+	items := make([]kit2.Item, 0, len(resp.Msg.Workers))
 	for _, w := range resp.Msg.Workers {
-		items = append(items, screenkit.Item{
-			ID:    w.GetId(),
-			Title: w.GetName(),
-			Meta:  strings.ToLower(w.GetStatus().String()),
-		})
+		items = append(items, kit2.Item{ID: w.GetId(), Title: w.GetName(), Meta: strings.ToLower(w.GetStatus().String())})
 	}
 	return items, resp.Msg.NextPageToken, nil
 }
 
-func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{
 		PageSize:  100,
 		PageToken: pageToken,
@@ -77,20 +172,15 @@ func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]screenkit.
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.RuntimeImages))
+	items := make([]kit2.Item, 0, len(resp.Msg.RuntimeImages))
 	for _, im := range resp.Msg.RuntimeImages {
-		items = append(items, screenkit.Item{
-			ID:    im.GetId(),
-			Title: im.GetName(),
-			Meta:  strings.ToLower(im.GetStatus().String()),
-		})
+		items = append(items, kit2.Item{ID: im.GetId(), Title: im.GetName(), Meta: strings.ToLower(im.GetStatus().String())})
 	}
 	return items, resp.Msg.NextPageToken, nil
 }
 
-// fetchSecrets lists names/metadata ONLY. Secret values are never
-// fetched, rendered, or stored by orch (GetSecret is not called).
-func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+// fetchSecrets lists names/metadata ONLY.
+func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Secrets.ListSecrets(ctx, connect.NewRequest(&apiv1.ListSecretsRequest{
 		PageSize:  100,
 		PageToken: pageToken,
@@ -98,61 +188,49 @@ func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]screenkit
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Secrets))
+	items := make([]kit2.Item, 0, len(resp.Msg.Secrets))
 	for _, s := range resp.Msg.Secrets {
-		items = append(items, screenkit.Item{
-			ID:    s.GetId(),
-			Title: s.GetName(),
-			Meta:  "value hidden",
-		})
+		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: "value hidden"})
 	}
 	return items, resp.Msg.NextPageToken, nil
 }
 
-func (m *Model) fetchMCP(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchMCP(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Servers))
+	items := make([]kit2.Item, 0, len(resp.Msg.Servers))
 	for _, s := range resp.Msg.Servers {
 		meta := "disabled"
 		if s.GetEnabled() {
 			meta = "enabled"
 		}
-		items = append(items, screenkit.Item{
-			ID:    s.GetId(),
-			Title: s.GetName(),
-			Meta:  meta,
-		})
+		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: meta})
 	}
 	return items, "", nil
 }
 
-func (m *Model) fetchProviders(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchProviders(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Providers.ListProviders(ctx, connect.NewRequest(&apiv1.ProviderListRequest{}))
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.GetProviders()))
+	items := make([]kit2.Item, 0, len(resp.Msg.GetProviders()))
 	for _, p := range resp.Msg.GetProviders() {
 		meta := "disabled"
 		if p.GetEnabled() {
 			meta = "enabled"
 		}
-		if p.GetIsCustom() {
-			meta += " · custom"
-		}
-		items = append(items, screenkit.Item{
-			ID:    p.GetId(),
-			Title: p.GetDisplayName(),
-			Meta:  strings.ToLower(p.GetKind()) + " " + meta,
+		items = append(items, kit2.Item{
+			ID: p.GetId(), Title: p.GetDisplayName(),
+			Meta: strings.ToLower(p.GetKind()) + " " + meta,
 		})
 	}
 	return items, "", nil
 }
 
-func (m *Model) fetchWebhooks(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchWebhooks(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Webhooks.ListSubscriptions(ctx, connect.NewRequest(&apiv1.ListSubscriptionsRequest{
 		TenantId:  "",
 		PageSize:  100,
@@ -161,37 +239,31 @@ func (m *Model) fetchWebhooks(ctx context.Context, pageToken string) ([]screenki
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.GetSubscriptions()))
+	items := make([]kit2.Item, 0, len(resp.Msg.GetSubscriptions()))
 	for _, s := range resp.Msg.GetSubscriptions() {
 		meta := strings.ToLower(s.GetStatus())
 		if s.GetEventFilter() != "" {
 			meta += " · " + s.GetEventFilter()
 		}
-		items = append(items, screenkit.Item{
-			ID:    s.GetId(),
-			Title: s.GetName(),
-			Meta:  meta,
-		})
+		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: meta})
 	}
 	return items, resp.Msg.GetNextPageToken(), nil
 }
 
-func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
 	if err != nil {
 		return nil, "", err
 	}
-	s := resp.Msg.GetSettings()
-	if s == nil {
+	if resp.Msg.GetSettings() == nil {
 		return nil, "", nil
 	}
-	items := []screenkit.Item{
-		{ID: "tenant-settings", Title: "Tenant Settings", Meta: "admin-gated"},
-	}
-	return items, "", nil
+	return []kit2.Item{{ID: "tenant-settings", Title: "Tenant Settings", Meta: "admin-gated"}}, "", nil
 }
 
-func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
+// --- detail -------------------------------------------------------------
+
+func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Field, string, error) {
 	switch src {
 	case "workers":
 		resp, err := m.cl.Workers.GetWorker(ctx, connect.NewRequest(&apiv1.GetWorkerRequest{Id: id}))
@@ -199,7 +271,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorker()
-		fields := []screenkit.Field{
+		return "Worker: " + w.GetName(), []kit2.Field{
 			{Key: "id", Value: w.GetId()},
 			{Key: "name", Value: w.GetName()},
 			{Key: "slug", Value: w.GetSlug()},
@@ -208,8 +280,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "purpose", Value: w.GetPurpose()},
 			{Key: "current ver", Value: screenkit.FmtInt(int(w.GetCurrentVersion()))},
 			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
-		}
-		return "Worker: " + w.GetName(), fields, w.GetDescription(), nil
+		}, w.GetDescription(), nil
 
 	case "images":
 		resp, err := m.cl.Images.GetRuntimeImage(ctx, connect.NewRequest(&apiv1.GetRuntimeImageRequest{Id: id}))
@@ -217,7 +288,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		im := resp.Msg.GetRuntimeImage()
-		fields := []screenkit.Field{
+		return "Runtime Image: " + im.GetName(), []kit2.Field{
 			{Key: "id", Value: im.GetId()},
 			{Key: "name", Value: im.GetName()},
 			{Key: "status", Value: strings.ToLower(im.GetStatus().String())},
@@ -226,16 +297,10 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "apt packages", Value: im.GetAptPackages()},
 			{Key: "toolchains", Value: im.GetToolchains()},
 			{Key: "created", Value: screenkit.FmtTime(im.GetCreatedAt())},
-		}
-		body := im.GetError()
-		if body == "" {
-			body = ""
-		}
-		return "Runtime Image: " + im.GetName(), fields, body, nil
+		}, im.GetError(), nil
 
 	case "secrets":
-		// Names only — the value is never fetched or shown.
-		return "Secret (value hidden)", []screenkit.Field{
+		return "Secret (value hidden)", []kit2.Field{
 			{Key: "id", Value: id},
 			{Key: "note", Value: "values are managed in the GUI; orch never reads them"},
 		}, "", nil
@@ -246,7 +311,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		s := resp.Msg.GetServer()
-		fields := []screenkit.Field{
+		return "MCP Server: " + s.GetName(), []kit2.Field{
 			{Key: "id", Value: s.GetId()},
 			{Key: "name", Value: s.GetName()},
 			{Key: "transport", Value: strings.ToLower(s.GetTransport().String())},
@@ -255,8 +320,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "enabled", Value: screenkit.FmtBool(s.GetEnabled())},
 			{Key: "install status", Value: strings.ToLower(s.GetInstallStatus().String())},
 			{Key: "required secrets", Value: strings.Join(s.GetRequiredSecrets(), ", ")},
-		}
-		return "MCP Server: " + s.GetName(), fields, "", nil
+		}, "", nil
 
 	case "providers":
 		resp, err := m.cl.Providers.ListProviders(ctx, connect.NewRequest(&apiv1.ProviderListRequest{}))
@@ -267,22 +331,20 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			if p.GetId() != id {
 				continue
 			}
-			fields := []screenkit.Field{
+			return "Provider: " + p.GetDisplayName(), []kit2.Field{
 				{Key: "id", Value: p.GetId()},
 				{Key: "name", Value: p.GetDisplayName()},
 				{Key: "kind", Value: p.GetKind()},
 				{Key: "base url", Value: p.GetBaseUrl()},
-				{Key: "base url override", Value: p.GetBaseUrlOverride()},
 				{Key: "enabled", Value: screenkit.FmtBool(p.GetEnabled())},
 				{Key: "auth mode", Value: p.GetAuthMode()},
 				{Key: "is custom", Value: screenkit.FmtBool(p.GetIsCustom())},
 				{Key: "read only", Value: screenkit.FmtBool(p.GetReadOnly())},
 				{Key: "token stored", Value: screenkit.FmtBool(p.GetHasTokenStored())},
 				{Key: "ctx default", Value: screenkit.FmtInt64(p.GetNumCtxDefault())},
-			}
-			return "Provider: " + p.GetDisplayName(), fields, "", nil
+			}, "", nil
 		}
-		return "Provider", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+		return "Provider", []kit2.Field{{Key: "id", Value: id}}, "", nil
 
 	case "webhooks":
 		resp, err := m.cl.Webhooks.ListSubscriptions(ctx, connect.NewRequest(&apiv1.ListSubscriptionsRequest{TenantId: ""}))
@@ -293,7 +355,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			if s.GetId() != id {
 				continue
 			}
-			fields := []screenkit.Field{
+			return "Webhook: " + s.GetName(), []kit2.Field{
 				{Key: "id", Value: s.GetId()},
 				{Key: "name", Value: s.GetName()},
 				{Key: "target url", Value: s.GetTargetUrl()},
@@ -302,10 +364,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 				{Key: "status", Value: s.GetStatus()},
 				{Key: "max retries", Value: screenkit.FmtInt(int(s.GetMaxRetries()))},
 				{Key: "secret hint", Value: s.GetSecretHint()},
-			}
-			return "Webhook: " + s.GetName(), fields, "", nil
+			}, "", nil
 		}
-		return "Webhook", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+		return "Webhook", []kit2.Field{{Key: "id", Value: id}}, "", nil
 
 	case "settings":
 		resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
@@ -314,65 +375,256 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		}
 		s := resp.Msg.GetSettings()
 		if s == nil {
-			return "Settings", []screenkit.Field{{Key: "note", Value: "no settings returned"}}, "", nil
+			return "Settings", []kit2.Field{{Key: "note", Value: "no settings returned"}}, "", nil
 		}
-		fields := []screenkit.Field{
+		return "Tenant Settings", []kit2.Field{
 			{Key: "default worker model", Value: s.GetDefaultWorkerModel()},
 			{Key: "default ask model", Value: s.GetDefaultAskOrchiconModel()},
 			{Key: "max concurrent runs", Value: screenkit.FmtInt(int(s.GetMaxConcurrentRuns()))},
-			{Key: "stall no-progress window", Value: screenkit.FmtInt64(s.GetStallNoProgressWindowSeconds()) + "s"},
-			{Key: "stall no-diff window", Value: screenkit.FmtInt64(s.GetStallNoFileDiffWindowSeconds()) + "s"},
-			{Key: "stall text-loop window", Value: screenkit.FmtInt64(s.GetStallTextLoopWindowSeconds()) + "s"},
-			{Key: "stall repetition count", Value: screenkit.FmtInt(int(s.GetStallRepetitionCount()))},
-			{Key: "stall repetition window", Value: screenkit.FmtInt64(s.GetStallRepetitionWindowSeconds()) + "s"},
-			{Key: "stall nudge max", Value: screenkit.FmtInt(int(s.GetStallNudgeMax()))},
-			{Key: "stall tool-hang", Value: screenkit.FmtInt64(s.GetStallToolHangSeconds()) + "s"},
-			{Key: "exec reap grace", Value: screenkit.FmtInt64(s.GetExecutionReapGraceSeconds()) + "s"},
-			{Key: "exec reap failures", Value: screenkit.FmtInt(int(s.GetExecutionReapConsecutiveFailures()))},
 			{Key: "backup schedule", Value: s.GetBackupSchedule()},
 			{Key: "backup retention", Value: screenkit.FmtInt(int(s.GetBackupRetentionDays())) + "d"},
-			{Key: "backup dir", Value: s.GetBackupDirectory()},
 			{Key: "log dir", Value: s.GetLogDirectory()},
-			{Key: "log max size", Value: screenkit.FmtInt64(s.GetLogMaxSizeMb()) + "MB"},
-			{Key: "log retention", Value: screenkit.FmtInt(int(s.GetLogRetentionDays())) + "d"},
 			{Key: "session token ttl", Value: screenkit.FmtInt64(s.GetSessionAccessTokenTtlSeconds()) + "s"},
-		}
-		return "Tenant Settings", fields, "", nil
+		}, "", nil
 	}
 	return "", nil, "", nil
 }
+
+// --- actions ------------------------------------------------------------
+
+// actionsForSelection builds the entity-bound actions for the currently
+// selected row. Every action carries confirm + optimistic apply + rollback
+// and runs through the mutation executor.
+func (m *Model) actionsForSelection() []kit2.Action {
+	item, ok := m.ActiveItem()
+	if !ok {
+		return nil
+	}
+	switch m.ActiveSourceName() {
+	case "webhooks":
+		id, name := item.ID, item.Title
+		return []kit2.Action{
+			{
+				Label: "disable", Key: "d", Danger: true, Source: "webhooks",
+				Confirm:  "Disable " + name + "?\nDelivery to the target URL stops immediately.",
+				Apply:    func() { m.setWebhookStatusLocally(id, "disabled") },
+				Rollback: func() { m.setWebhookStatusLocally(id, "active") },
+				Do: func(ctx context.Context) error {
+					status := "disabled"
+					return m.rpcUpdateWebhook(ctx, &apiv1.UpdateSubscriptionRequest{Id: id, Status: &status})
+				},
+			},
+			{
+				Label: "delete", Key: "x", Danger: true, Source: "webhooks",
+				Confirm:  "Delete " + name + "?\nThis cannot be undone.",
+				Apply:    func() { m.removeWebhookLocally(id) },
+				Rollback: func() { m.Refresh("webhooks") },
+				Do: func(ctx context.Context) error {
+					return m.rpcDeleteWebhook(ctx, id)
+				},
+			},
+		}
+	case "secrets":
+		return []kit2.Action{
+			{Label: "rotate", Key: "r", Source: "secrets", Confirm: "Rotate " + item.Title + "?", Do: func(ctx context.Context) error { return nil }},
+		}
+	}
+	return nil
+}
+
+// setWebhookStatusLocally optimistically rewrites the selected webhook's
+// status cell (rollback restores the previous cell).
+func (m *Model) setWebhookStatusLocally(id, status string) {
+	m.MutateRow("webhooks", id, func(r *kit2.Row) { r.Meta = status })
+}
+
+func (m *Model) removeWebhookLocally(id string) {
+	m.RemoveRow("webhooks", id)
+}
+
+// openActionsDialog opens the Confirm dialog for an action that needs
+// confirmation, or runs it immediately when it does not.
+func (m *Model) openActionsDialog(a kit2.Action) tea.Cmd {
+	if a.NeedsConfirm() {
+		d := kit2.Confirm(a.Label, a.Confirm, a.Label)
+		d.Danger = a.Danger
+		m.Open = d
+		pending := a
+		m.pending = &pending
+		m.OnDialog = func(choice string) tea.Cmd {
+			pa := m.pending
+			m.pending = nil
+			m.OnDialog = nil
+			if pa == nil || choice == "" {
+				return nil // dismissed
+			}
+			return m.runAction(*pa)
+		}
+		return nil
+	}
+	return m.runAction(a)
+}
+
+// runAction hands the action to the mutation executor.
+func (m *Model) runAction(a kit2.Action) tea.Cmd {
+	return m.Mutate(mutate.Request{
+		Name: a.Label, Source: a.Source,
+		Apply: a.Apply, Rollback: a.Rollback, Do: a.Do,
+	})
+}
+
+// --- form ---------------------------------------------------------------
+
+// newWebhookForm builds the typed create form. Submission goes through the
+// mutation layer (never a direct RPC).
+func (m *Model) newWebhookForm() *kit2.Form {
+	f := kit2.NewForm("New webhook subscription",
+		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "build-finished"},
+		kit2.FieldSpec{Name: "target_url", Label: "Target URL", Kind: kit2.KText, Required: true, Placeholder: "https://…"},
+		kit2.FieldSpec{Name: "event_filter", Label: "Event filter", Kind: kit2.KText, Placeholder: "execution.completed"},
+		kit2.FieldSpec{Name: "scope", Label: "Scope", Kind: kit2.KSelect, Options: []kit2.Option{
+			{Value: "tenant", Label: "tenant"}, {Value: "workflow", Label: "workflow"}, {Value: "execution", Label: "execution"},
+		}},
+		kit2.FieldSpec{Name: "secret", Label: "Signing secret", Kind: kit2.KSecret},
+		kit2.FieldSpec{Name: "max_retries", Label: "Max retries", Kind: kit2.KNumber, Initial: "3"},
+	)
+	f.Focused = true
+	f.Width = 60
+	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
+		maxRetries := int32(3)
+		if n := strings.TrimSpace(v["max_retries"]); n != "" {
+			var parsed int
+			if _, err := fmt.Sscanf(n, "%d", &parsed); err == nil {
+				maxRetries = int32(parsed)
+			}
+		}
+		req := &apiv1.CreateSubscriptionRequest{
+			Name:        v["name"],
+			TargetUrl:   v["target_url"],
+			EventFilter: v["event_filter"],
+			Scope:       v["scope"],
+			Secret:      v["secret"],
+			MaxRetries:  maxRetries,
+		}
+		return m.Mutate(mutate.Request{
+			Name: "create webhook " + v["name"], Source: "webhooks",
+			Do: func(ctx context.Context) error { return m.rpcCreateWebhook(ctx, req) },
+		}), nil
+	}
+	return f
+}
+
+func (m *Model) formOpen() bool { return m.form != nil }
+
+// --- update -------------------------------------------------------------
 
 func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
+	case mutate.Result:
+		return m, m.HandleMutation(msg)
 	}
+
+	// The open form owns every key (modal, layered over the focus ring).
+	if m.formOpen() {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.String() == "esc" {
+				m.form = nil
+				return m, nil
+			}
+			cmd, _ := m.form.HandleKey(k)
+			if m.form.Submitted {
+				m.form = nil
+			}
+			return m, cmd
+		}
+	}
+
+	if k, ok := msg.(tea.KeyMsg); ok && m.Open == nil && !m.formOpen() {
+		switch k.String() {
+		case "n":
+			// New entity: the webhooks pane opens the typed create form.
+			if m.ActiveSourceName() == "webhooks" {
+				m.form = m.newWebhookForm()
+				return m, nil
+			}
+		case "x":
+			actions := m.actionsForSelection()
+			if len(actions) > 0 {
+				return m, m.openActionsDialog(actions[0])
+			}
+		case "D":
+			actions := m.actionsForSelection()
+			if len(actions) > 1 {
+				return m, m.openActionsDialog(actions[1])
+			}
+		}
+	}
+
 	if handled, cmd := m.Base.Update(msg); handled {
 		return m, cmd
 	}
 	return m, nil
 }
 
+// --- view ---------------------------------------------------------------
+
 func (m *Model) View() string {
-	var b strings.Builder
-	b.WriteString(m.Base.View())
-	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"))
-	return m.Base.Frame(b.String())
+	m.refreshActionBar()
+
+	body := m.Base.View()
+	sp := kit2.NewPanel("Activity", m.w, streamRows)
+	sp.SetContent(m.stream.View())
+	sp.Focused = false
+	out := body + "\n" + sp.View()
+
+	if m.formOpen() {
+		box := formBox(m.form, m.w)
+		out = kit2.Center(kit2.FitLines(out, m.w, m.h), box, m.w, m.h)
+	} else if m.Open != nil {
+		box := m.Open.Box(min(60, m.w-4), 9)
+		out = kit2.Center(kit2.FitLines(out, m.w, m.h), box, m.w, m.h)
+	}
+	if m.w > 0 && m.h > 0 {
+		return kit2.FitLines(out, m.w, m.h)
+	}
+	return out
 }
 
-// SelectSource focuses the named source (slash nav command support).
-func (m *Model) SelectSource(name string) bool { return m.Base.SelectSource(name) }
+// formBox wraps the form in a titled dialog-sized box.
+func formBox(f *kit2.Form, w int) string {
+	bw := min(66, w-4)
+	if bw < 20 {
+		bw = 20
+	}
+	d := &kit2.Dialog{Title: f.Title, Body: f.View(), Buttons: []string{"submit", "cancel"}}
+	return d.Box(bw, min(16, len(f.Specs)*2+4))
+}
 
-// SelectItem selects the item by ID in the named source (slash arg
-// jumps); detail loads via RequestDetail when the item is not paged in.
-func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, id) }
+func (m *Model) refreshActionBar() {
+	actions := m.actionsForSelection()
+	m.bar.Actions = actions
+	if m.bar.Sel >= len(actions) {
+		m.bar.Sel = 0
+	}
+}
 
-// RequestDetail loads the detail view for (src, id) directly.
+// Hint returns the screen's key cheat-sheet (also rendered by the shell).
+func (m *Model) HintLine() string {
+	return theme.HintText.Render("enter: detail focus · ←/→: pane · n: new · x: action · f: more pages · r: refresh")
+}
+
+// --- shell hooks --------------------------------------------------------
+
+func (m *Model) SelectSource(name string) bool        { return m.Base.SelectSource(name) }
+func (m *Model) SelectItem(src, id string) bool       { return m.Base.SelectItem(src, id) }
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
 
-// ActiveSourceName / ActiveItem expose the Base focus state to the
-// shell's context engine.
-func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
-func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

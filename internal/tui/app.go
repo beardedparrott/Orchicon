@@ -71,6 +71,12 @@ var Tabs = []Tab{
 // screenkit interface so shell code stays short).
 type Screen = screenkit.Screen
 
+// DockError / DockNotice are the shell hooks screens use to surface
+// mutation feedback (the kit2 mutate.Executor sink) in the always-present
+// chat dock.
+func (m *App) DockError(msg string)  { m.dock.SetError(msg) }
+func (m *App) DockNotice(msg string) { m.dock.SetNotice(msg) }
+
 // focusMode is where keyboard focus lives: the content pane (screens
 // keep tab chords + editing) or the chat composer (global tab chords
 // fall through to readline editing inside the input).
