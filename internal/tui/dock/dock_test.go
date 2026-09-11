@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func paste(runes string) tea.KeyMsg {
@@ -99,8 +101,9 @@ func TestShiftEnterCSIU(t *testing.T) {
 
 func TestLinesGrowsAndCaps(t *testing.T) {
 	m := New()
-	if m.Lines() < 2 {
-		t.Fatalf("lines = %d, want >= 2 (input + chip)", m.Lines())
+	// Composer 2.0: box border (2) + MinInputRows + the affordance row.
+	if want := 2 + MinInputRows + 1; m.Lines() != want {
+		t.Fatalf("lines = %d, want %d", m.Lines(), want)
 	}
 	m.Focus()
 	var sb strings.Builder
@@ -108,8 +111,8 @@ func TestLinesGrowsAndCaps(t *testing.T) {
 		sb.WriteString("line\n")
 	}
 	m.Update(paste(sb.String()))
-	if m.Lines() != 5 { // 4 input rows + chip strip (notice only when set)
-		t.Fatalf("lines = %d, want 5", m.Lines())
+	if want := 2 + MaxInputRows + 1; m.Lines() != want {
+		t.Fatalf("lines = %d, want %d", m.Lines(), want)
 	}
 }
 
@@ -164,5 +167,127 @@ func TestParseNewlineMode(t *testing.T) {
 	}
 	if ParseNewlineMode("garbage") != NewlineAltEnter {
 		t.Fatal("default must be alt+enter")
+	}
+}
+
+func TestBoxRendersExactRowsAndWidth(t *testing.T) {
+	m := New()
+	m.Width = 80
+	m.Focus()
+	rows := strings.Split(m.View(), "\n")
+	if len(rows) != m.Lines() {
+		t.Fatalf("box rows = %d, want Lines() = %d", len(rows), m.Lines())
+	}
+	for i, r := range rows {
+		if got := lipgloss.Width(r); got != 80 {
+			t.Fatalf("row %d width = %d, want 80 (%q)", i, got, r)
+		}
+	}
+	plain := ansi.Strip(m.View())
+	lines := strings.Split(plain, "\n")
+	if !strings.HasPrefix(lines[0], "╭") || !strings.HasSuffix(lines[0], "╮") {
+		t.Fatalf("top border missing: %q", lines[0])
+	}
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("bottom border missing: %q", last)
+	}
+	// Inner padding: the input row is inset from both borders by >= 2 cells
+	// (right after the left border sits a cell of padding).
+	input := ""
+	for i := 1; i < len(lines)-1; i++ {
+		if strings.Contains(lines[i], "❯") {
+			input = lines[i]
+			break
+		}
+	}
+	if input == "" {
+		t.Fatalf("no input row inside the box: %q", plain)
+	}
+	r := []rune(input)
+	if r[0] != '│' || r[len(r)-1] != '│' {
+		t.Fatalf("input row must be bordered: %q", input)
+	}
+	pos := strings.Index(input, "❯")
+	if pos < 0 {
+		t.Fatalf("input row missing the prompt: %q", input)
+	}
+	if got := len([]rune(input[:pos])); got < 3 {
+		t.Fatalf("input row inset = %d cells, want >= 3 (border + 2 padding): %q", got, input)
+	}
+}
+
+func TestInputRowsGrowToMax(t *testing.T) {
+	m := New()
+	m.Width = 120
+	if m.InputRows() != MinInputRows {
+		t.Fatalf("default input rows = %d, want %d", m.InputRows(), MinInputRows)
+	}
+	if m.Lines() != 2+MinInputRows+1 {
+		t.Fatalf("default lines = %d, want %d", m.Lines(), 2+MinInputRows+1)
+	}
+	m.Focus()
+	m.Update(paste(strings.Repeat("line\n", 20)))
+	if m.InputRows() != MaxInputRows {
+		t.Fatalf("grown input rows = %d, want %d", m.InputRows(), MaxInputRows)
+	}
+	if m.Lines() != 2+MaxInputRows+1 {
+		t.Fatalf("grown lines = %d, want %d", m.Lines(), 2+MaxInputRows+1)
+	}
+}
+
+func TestHintRowPersistent(t *testing.T) {
+	m := New()
+	m.Width = 100
+	hint := m.Hint()
+	for _, want := range []string{"enter", "newline", "commands"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("affordance row %q missing %q", hint, want)
+		}
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "enter send") {
+		t.Fatal("the affordance row must render inside the box")
+	}
+}
+
+func TestDraftRestoredAfterFailedSend(t *testing.T) {
+	m := New()
+	m.Width = 80
+	m.Focus()
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.SendRequest(); got != "hello" {
+		t.Fatalf("send = %q", got)
+	}
+	if m.Value() != "" {
+		t.Fatalf("buffer must clear after send, got %q", m.Value())
+	}
+	if !m.RestoreDraft() {
+		t.Fatal("a failed send must restore the draft")
+	}
+	if m.Value() != "hello" {
+		t.Fatalf("restored draft = %q, want hello", m.Value())
+	}
+	// Never clobber text typed since the failed send (SetValue leaves the
+	// cursor at the end of the restored draft, so the new rune appends).
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.RestoreDraft() {
+		t.Fatal("must not restore over text typed since")
+	}
+	if !strings.Contains(m.Value(), "x") {
+		t.Fatalf("typed text must stay in the box, got %q", m.Value())
+	}
+}
+
+func TestMultiLineSendPreservesNewlines(t *testing.T) {
+	m := New()
+	m.Width = 100
+	m.Focus()
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.SendRequest(); got != "a\nb" {
+		t.Fatalf("multi-line send = %q, want %q", got, "a\nb")
 	}
 }

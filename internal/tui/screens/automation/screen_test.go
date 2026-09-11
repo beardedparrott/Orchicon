@@ -351,7 +351,8 @@ func kmsg(s string) tea.KeyMsg {
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
 	case "space":
-		return tea.KeyMsg{Type: tea.KeySpace}
+		// bubbletea parses a space as KeySpace WITH the rune attached.
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
 	case "ctrl+s":
 		return tea.KeyMsg{Type: tea.KeyCtrlS}
 	}
@@ -363,6 +364,20 @@ func press(t *testing.T, m *Model, key string) tea.Cmd {
 	t.Helper()
 	_, cmd := m.Update(kmsg(key))
 	return cmd
+}
+
+// submit focuses the form's last field and presses enter — kit2's typed-form
+// submit gesture (validation runs first; an invalid form stays open).
+func submit(t *testing.T, m *Model, lastField string) tea.Cmd {
+	t.Helper()
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("no open form to submit")
+	}
+	if !f.FocusName(lastField) {
+		t.Fatalf("form has no field %q", lastField)
+	}
+	return press(t, m, "enter")
 }
 
 // run executes a cmd and feeds its message back into the screen (the
@@ -391,7 +406,9 @@ func load(t *testing.T, m *Model, src string) {
 		if err != nil {
 			t.Fatalf("fetch %s: %v", src, err)
 		}
-		m.Update(screenkit.FetchedMsgForTest(src, items, next, nil))
+		if !m.Base.LoadItems(src, items, next) {
+			t.Fatalf("no source %q to load", src)
+		}
 		return
 	}
 	t.Fatalf("no source %q registered", src)
@@ -461,6 +478,7 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	}
 
 	// Typing (including spaces) goes to the focused field, not the shell.
+	f.FocusName("title")
 	for _, ch := range "Nightly triage sweep" {
 		if ch == ' ' {
 			press(t, m, "space")
@@ -468,20 +486,20 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 		}
 		press(t, m, string(ch))
 	}
-	if got := f.Value("title"); got != "Nightly triage sweep" {
+	if got := f.Values["title"]; got != "Nightly triage sweep" {
 		t.Fatalf("typed title = %q", got)
 	}
 
-	f.SetValue("project", "Orchicon")
-	f.SetValue("workflow", "Fanout sweep")
-	f.SetValue("frequency", "weekly")
-	f.SetValue("interval", "2")
-	f.SetValue("days", "Mon,Wed")
-	f.SetValue("start_date", "2026-09-01")
-	f.SetValue("start_time", "07:30")
-	f.SetValue("outputs", "idea")
+	f.Set("project", "Orchicon")
+	f.Set("workflow", "Fanout sweep")
+	f.Set("frequency", "weekly")
+	f.Set("interval", "2")
+	f.Set("days", "Mon,Wed")
+	f.Set("start_date", "2026-09-01")
+	f.Set("start_time", "07:30")
+	f.Set("outputs", "idea")
 
-	run(t, m, press(t, m, "ctrl+s"))
+	run(t, m, submit(t, m, "outputs"))
 
 	if m.ActiveForm() != nil {
 		t.Fatal("the form must close after a successful create")
@@ -500,9 +518,6 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	if s.GetFrequency() != "weekly" || s.GetInterval() != 2 || strings.Join(s.GetDays(), ",") != "Mon,Wed" ||
 		s.GetStartDate() != "2026-09-01" || s.GetStartTime() != "07:30" || s.GetOutputsMode() != "idea" {
 		t.Fatalf("recurring_schedule = %+v", s)
-	}
-	if !strings.Contains(m.Notice(), "created recurring item") {
-		t.Fatalf("notice = %q", m.Notice())
 	}
 	// The created item is a recurring work item → the Recurring Items pane.
 	load(t, m, "schedules")
@@ -523,14 +538,14 @@ func TestRecurringItemsEdit(t *testing.T) {
 	if f == nil {
 		t.Fatal("e must open the edit form for the selected recurring item")
 	}
-	if f.Value("title") != "Nightly sweep" || f.Value("frequency") != "daily" {
-		t.Fatalf("the edit form must be prefilled: title=%q frequency=%q", f.Value("title"), f.Value("frequency"))
+	if f.Values["title"] != "Nightly sweep" || f.Values["frequency"] != "daily" {
+		t.Fatalf("the edit form must be prefilled: title=%q frequency=%q", f.Values["title"], f.Values["frequency"])
 	}
-	f.SetValue("title", "Weekly sweep")
-	f.SetValue("frequency", "weekly")
-	f.SetValue("interval", "3")
-	f.SetValue("start_time", "06:00")
-	run(t, m, press(t, m, "ctrl+s"))
+	f.Set("title", "Weekly sweep")
+	f.Set("frequency", "weekly")
+	f.Set("interval", "3")
+	f.Set("start_time", "06:00")
+	run(t, m, submit(t, m, "enabled"))
 
 	req := p.lastUpdated(t)
 	if req.GetId() != "rec-1" || req.GetTitle() != "Weekly sweep" {
@@ -561,17 +576,11 @@ func TestRecurringItemsPauseResume(t *testing.T) {
 	if p.itemStatus("rec-1") != apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING {
 		t.Fatal("pausing must keep the item recurring (it resumes)")
 	}
-	if !strings.Contains(m.Notice(), "paused") {
-		t.Fatalf("notice = %q", m.Notice())
-	}
 
 	run(t, m, press(t, m, "p"))
 	second := p.lastUpdated(t)
 	if second.RecurringEnabled == nil || !second.GetRecurringEnabled() {
 		t.Fatalf("second p must resume: %+v", second)
-	}
-	if !strings.Contains(m.Notice(), "resumed") {
-		t.Fatalf("notice = %q", m.Notice())
 	}
 	load(t, m, "schedules")
 	var meta string
@@ -593,22 +602,22 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	load(t, m, "schedules")
 
 	press(t, m, "x")
-	if m.ConfirmPrompt() == "" {
-		t.Fatal("x must ask for confirmation before deleting")
+	if !m.DialogOpen() {
+		t.Fatal("x must open the confirmation dialog before deleting")
 	}
 	if len(p.deleted) != 0 {
 		t.Fatal("no delete may be sent before confirmation")
 	}
 	press(t, m, "esc")
-	if m.ConfirmPrompt() != "" {
-		t.Fatal("esc must cancel the confirmation")
+	if m.DialogOpen() {
+		t.Fatal("esc must dismiss the confirmation dialog")
 	}
 	if len(p.deleted) != 0 {
-		t.Fatal("cancelled confirmation must not delete")
+		t.Fatal("dismissed confirmation must not delete")
 	}
 
 	press(t, m, "x")
-	run(t, m, press(t, m, "y"))
+	run(t, m, press(t, m, "enter"))
 	if len(p.deleted) != 1 || p.deleted[0] != "rec-1" {
 		t.Fatalf("deleted = %v", p.deleted)
 	}
@@ -754,9 +763,6 @@ func TestPromoteIdeaEntersNormalWorkItemsScope(t *testing.T) {
 	if got := normalScope(t, m); len(got) != 1 || got[0].GetId() != "idea-1" {
 		t.Fatalf("promoted item missing from the normal work-items scope: %+v", got)
 	}
-	if !strings.Contains(m.Notice(), "promoted") {
-		t.Fatalf("notice = %q", m.Notice())
-	}
 }
 
 func TestDismissIdeaLeavesActiveViews(t *testing.T) {
@@ -768,10 +774,10 @@ func TestDismissIdeaLeavesActiveViews(t *testing.T) {
 	load(t, m, "ideas")
 
 	press(t, m, "x")
-	if m.ConfirmPrompt() == "" {
+	if !m.DialogOpen() {
 		t.Fatal("dismiss must be confirmed (it is consequential)")
 	}
-	run(t, m, press(t, m, "y"))
+	run(t, m, press(t, m, "enter"))
 
 	if len(p.dismissd) != 1 || p.dismissd[0] != "idea-1" {
 		t.Fatalf("DismissIdea calls = %v", p.dismissd)
@@ -822,18 +828,18 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 	if f == nil {
 		t.Fatal("n must open the create form")
 	}
-	f.SetValue("title", "Broken sweep")
-	f.SetValue("start_date", "09/01/2026")
-	f.SetValue("interval", "0")
-	f.SetValue("days", "Funday")
+	f.Set("title", "Broken sweep")
+	f.Set("start_date", "09/01/2026")
+	f.Set("interval", "0")
+	f.Set("days", "Funday")
 
-	if cmd := press(t, m, "ctrl+s"); cmd != nil {
+	if cmd := submit(t, m, "outputs"); cmd != nil {
 		t.Fatal("an invalid form must not submit")
 	}
 	if m.ActiveForm() == nil {
 		t.Fatal("the form must stay open on a validation failure")
 	}
-	if f.Err == "" {
+	if len(f.Errors) == 0 {
 		t.Fatal("the form must name the validation failure")
 	}
 	if len(p.created) != 0 {

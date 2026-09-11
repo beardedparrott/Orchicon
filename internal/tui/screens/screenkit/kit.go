@@ -196,33 +196,79 @@ type Detail struct {
 	Height   int
 	vp       viewport.Model
 	initOnce bool
+	vpBody   string // body currently loaded into the viewport
+	dirty    bool   // Body changed since the viewport last loaded it
+
+	// Hero is the centered empty state (the GUI's "Ask Orchicon
+	// anything…" block): rendered until real content arrives.
+	Hero      bool
+	HeroTitle string
+	HeroBody  string
 }
 
-// SetContent replaces the detail content and rewinds scroll.
+// SetContent replaces the detail content. Scroll state is PRESERVED: the
+// viewport reloads lazily in View() and keeps the operator's offset,
+// following the tail only when they were already at the bottom. The old
+// code reset initOnce/vpBody here, so every live-chunk repaint (the
+// shell calls SetDetailContent on each chat wake) rebuilt the viewport
+// and snapped the transcript back to the top — scrolling a live
+// conversation was effectively dead.
 func (d *Detail) SetContent(title string, fields []Field, body string) {
 	d.Title, d.Fields, d.Body = title, fields, body
-	d.initOnce = false
+	d.Hero = false
+	if body != d.vpBody {
+		d.dirty = true
+	}
 }
 
-// Wheel scrolls the detail body.
-func (d *Detail) Wheel(delta int) { d.vp.LineDown(delta) } // negative scrolls up via LineDown? no — clamp below
+// SetHero installs the centered empty-state block, shown until real
+// content replaces it via SetContent.
+func (d *Detail) SetHero(title, body string) {
+	d.Hero, d.HeroTitle, d.HeroBody = true, title, body
+}
+
+// ensureVP (re)initializes the viewport for the current pane size.
+func (d *Detail) ensureVP() {
+	w, h := d.Width, d.Height-2
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	if !d.initOnce {
+		d.vp = viewport.New(w, h)
+		d.initOnce = true
+		d.dirty = true
+	}
+	d.vp.Width, d.vp.Height = w, h
+}
+
+// Wheel scrolls the detail body. Positive delta = scroll down
+// (LineDown), negative = scroll up (LineUp). The old code called
+// LineDown for both directions, so scrolling up in the chat transcript
+// appeared dead.
+func (d *Detail) Wheel(delta int) {
+	d.ensureVP()
+	if delta < 0 {
+		d.vp.LineUp(-delta)
+		return
+	}
+	d.vp.LineDown(delta)
+}
 
 // Update lets the viewport handle messages.
 func (d *Detail) Update(msg tea.Msg) {
-	if !d.initOnce {
-		h := d.Height - 2
-		if h < 1 {
-			h = 1
-		}
-		d.vp = viewport.New(d.Width, h)
-		d.initOnce = true
-	}
-	d.vp.Width, d.vp.Height = d.Width, max(1, d.Height-2)
+	d.ensureVP()
 	d.vp.Update(msg)
 }
 
 // View renders the pane.
 func (d *Detail) View() string {
+	if d.Hero {
+		return centerBlock(d.HeroTitle, d.HeroBody, d.Width, d.Height)
+	}
+	d.ensureVP()
 	var b strings.Builder
 	b.WriteString(theme.ListTitle.Render(d.Title) + "\n")
 	for _, f := range d.Fields {
@@ -235,25 +281,99 @@ func (d *Detail) View() string {
 		if len(key) > keyWidth {
 			key = key[:keyWidth]
 		}
-		line := "  " + key + strings.Repeat(" ", keyWidth-len(key)) + val
 		b.WriteString(theme.DetailKey.Render("  "+key) + " " + theme.DetailValue.Render(val) + "\n")
-		_ = line
 	}
 	if d.Body != "" {
 		b.WriteString("\n")
-		if !d.initOnce {
-			h := d.Height - 2
-			if h < 1 {
-				h = 1
+		if d.dirty || d.vpBody != d.Body {
+			// Reload the viewport but KEEP the operator's scroll: follow
+			// the tail only when they were already at the bottom (a live
+			// chat), otherwise restore the exact line offset (reading
+			// history must not be yanked away by the next chunk).
+			atBottom := d.vp.AtBottom()
+			offset := d.vp.YOffset
+			d.vp.SetContent(d.Body)
+			d.vpBody = d.Body
+			d.dirty = false
+			if atBottom {
+				d.vp.GotoBottom()
+			} else {
+				d.vp.SetYOffset(offset)
 			}
-			d.vp = viewport.New(d.Width, h)
-			d.initOnce = true
 		}
-		d.vp.Width, d.vp.Height = d.Width, max(1, d.Height-2)
-		d.vp.SetContent(d.Body)
 		b.WriteString(d.vp.View())
 	}
 	return b.String()
+}
+
+// centerBlock renders the centered empty state: title, a blank line, and
+// the word-wrapped body, vertically + horizontally centered in w×h.
+func centerBlock(title, body string, w, h int) string {
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	inner := w - 6
+	if inner < 10 {
+		inner = 10
+	}
+	lines := []string{theme.ListTitle.Render(title)}
+	if body != "" {
+		lines = append(lines, "")
+		for _, l := range wrapText(body, inner) {
+			lines = append(lines, theme.HintText.Render(l))
+		}
+	}
+	top := (h - len(lines)) / 2
+	if top < 0 {
+		top = 0
+	}
+	out := make([]string, 0, top+len(lines))
+	for i := 0; i < top; i++ {
+		out = append(out, "")
+	}
+	for _, l := range lines {
+		pad := (w - lipgloss.Width(l)) / 2
+		if pad < 0 {
+			pad = 0
+		}
+		out = append(out, strings.Repeat(" ", pad)+l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// wrapText word-wraps s to width columns (paragraph-aware).
+func wrapText(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var out []string
+	for _, para := range strings.Split(s, "\n") {
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			out = append(out, "")
+			continue
+		}
+		line := ""
+		for _, word := range words {
+			if line == "" {
+				line = word
+				continue
+			}
+			if len([]rune(line))+1+len([]rune(word)) <= width {
+				line += " " + word
+				continue
+			}
+			out = append(out, line)
+			line = word
+		}
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // StatusBadge maps a status string to a themed colored string.

@@ -2,8 +2,6 @@ package screenkit
 
 import (
 	"context"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestSource is the cross-package test view of one source pane: its
@@ -29,14 +27,4 @@ func (b *Base) SourcesForTest() []TestSource {
 		out = append(out, TestSource{Name: s.name, Fetch: s.fetch, Items: s.list.Items})
 	}
 	return out
-}
-
-// FetchedMsgForTest builds the exact message a source fetch produces, so a
-// screen's CROSS-PACKAGE test can drive the fetched→list wiring (the
-// message type is unexported; a test must never re-implement the state
-// machine). Feed the result to the screen's Update.
-//
-// Not part of the production API.
-func FetchedMsgForTest(src string, items []Item, next string, err error) tea.Msg {
-	return fetchedMsg{src: src, items: items, next: next, err: err}
 }

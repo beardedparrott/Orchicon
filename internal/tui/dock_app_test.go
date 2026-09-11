@@ -137,7 +137,7 @@ func TestNavCommandParity(t *testing.T) {
 	m := newDockTestApp()
 	required := []string{
 		// top-level tabs
-		"/ask", "/work", "/execution", "/automation", "/enforcement", "/control",
+		"/ask", "/overview", "/work", "/execution", "/automation", "/enforcement", "/control",
 		// entity commands from nav config
 		"/workers", "/work-items", "/workflows", "/runs", "/executions",
 		"/approvals", "/policies", "/secrets", "/mcp", "/runtime-images",
@@ -146,6 +146,8 @@ func TestNavCommandParity(t *testing.T) {
 		"/wi", "/exec", "/run", "/worker",
 		// remaining screen sources
 		"/projects", "/conversations", "/schedules", "/decisions",
+		// Overview domain (Dashboard / Telemetry / Cost Explorer + /usage)
+		"/dashboard", "/telemetry", "/cost-explorer", "/usage",
 		// system
 		"/help", "/connect", "/context", "/quit",
 	}

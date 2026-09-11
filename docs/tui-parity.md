@@ -22,15 +22,15 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat + composer + transcript (read-only transcript, live chunks). **Mutation surface (child):** new-topic creation, message send UX, conversation rename/delete, ask-model picker. |
+| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, ask-model picker (`/model` → `model_ref` at create), mode (`/mode` → `SetConversationMode`), attachments explicitly refused (`/attach`). |
 
 ## Overview
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/dashboard` | Dashboard | **missing** | — | No TUI surface. **Child:** a Dashboard pane on the Overview tab summarizing executions/work items/health. |
-| `/telemetry` | Telemetry | **partial** | Control (Telemetry client) | Control screen's Control tab has the `Telemetry` client but no source pane. **Child:** render telemetry spans/traces list on Control. |
-| `/cost-explorer` | Cost Explorer | **missing** | — | No TUI surface. **Child:** cost/usage aggregation pane. |
+| `/dashboard` | Dashboard | **exists** | Overview | Aggregate plane state: executions + work items by status, worker/runtime-image health, recent activity (`ListExecutions` / `ListWorkItems` / `ListWorkers` / `ListRuntimeImages`) with a list + detail. |
+| `/telemetry` | Telemetry | **exists** | Overview | Traces list + span detail (`TelemetryService.QueryTraces`) plus the live `StreamTelemetry` subscription (footer status, invalidate-on-event/reconnect). |
+| `/cost-explorer` | Cost Explorer | **exists** | Overview | Usage/cost aggregation broken down by provider and by model with a grand total (`AIGatewayService.GetUsage` — the `orchicon_get_usage` usage-records shape). |
 
 ## Work
 
@@ -89,7 +89,7 @@ whole areas to "use the web GUI".
 | `/adapters` | Adapters | **missing** | — | No TUI source; the Adapter client is not yet wired. **Child:** adapter list + detail + enable/disable (mutation). |
 | `/settings` | Settings | **exists** | Control (this run) | New `Settings` source + detail (`GetSettings`). **Child:** settings edit/save (mutation). |
 | `/admin` | Admin | **missing** | — | Admin-gated; **child:** admin surfaces. |
-| `/usage` | Usage | **missing** | — | **Child:** usage break-down pane. |
+| `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
 ## This run closed (real screens replacing GUI-mirror stubs)
 
@@ -118,7 +118,7 @@ Each child carries this grounding: the GUI route (from `routeTree.gen.ts`), the 
 6. **Webhook subscription create/edit/delete + deliveries** (`/webhooks`) — mutates `WebhookService`.
 7. **Settings edit/save** (`/settings`) — mutates `SettingsService`.
 8. **Adapters list/enable** (`/adapters`) — wire `AdapterService` client + source.
-9. **Dashboard** (`/dashboard`) — aggregated overview pane.
-10. **Cost Explorer / Usage** — aggregation panes.
+9. **Dashboard** (`/dashboard`) — landed: the Overview tab's Dashboard source.
+10. **Cost Explorer / Usage** (`/cost-explorer`, `/usage`) — landed: the Overview tab's Cost Explorer + Usage Records sources.
 11. ~~**Idea Cloud** (`/idea-cloud`) — idea triage list~~ — **landed** (Automation: idea list with provenance, rejected section, promote/dismiss).
 12. **Admin** (`/admin`) — admin-gated surfaces.
