@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -205,6 +206,92 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Run: func(m *App, _ []string) tea.Cmd {
 			m.quitting = true
 			return tea.Quit
+		},
+	})
+
+	// New chat / conversation management / ask-model + mode (parity with the
+	// GUI's Ask Orchicon surface). All writes go through the chat controller
+	// (the shell's single Ask write path).
+	add(SlashCommand{
+		Name: "/new", Usage: "/new",
+		Desc: "start a new conversation (the first send creates it)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			m.newChat()
+			m.dock.SetNotice("new chat — the next message starts a fresh conversation")
+			return nil
+		},
+	})
+	add(SlashCommand{
+		Name: "/rename", Usage: "/rename <title>",
+		Desc:    "rename the open conversation (UpdateConversationTitle)",
+		MinArgs: 1,
+		Run: func(m *App, args []string) tea.Cmd {
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /new or pick one from the rail")
+				return nil
+			}
+			title := strings.Join(args, " ")
+			m.dock.SetNotice("renaming to " + title)
+			return m.chat.RenameConversation(m.chatConvID, title)
+		},
+	})
+	add(SlashCommand{
+		Name: "/delete", Usage: "/delete",
+		Desc: "delete the open conversation (DeleteConversation)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /new or pick one from the rail")
+				return nil
+			}
+			id := m.chatConvID
+			m.dock.SetNotice("conversation deleted")
+			return m.chat.DeleteConversation(id)
+		},
+	})
+	add(SlashCommand{
+		Name: "/model", Usage: "/model <model_ref>",
+		Desc:    "set the Ask model new conversations are created with (persists to the conversation row's model_ref)",
+		MinArgs: 1,
+		Run: func(m *App, args []string) tea.Cmd {
+			ref := strings.TrimSpace(strings.Join(args, " "))
+			if ref == "" {
+				m.dock.SetError("usage: /model <model_ref>")
+				return nil
+			}
+			m.chat.SetPendingModel(ref)
+			m.dock.SetNotice("ask model: " + ref + " (applies to the next new conversation; /new then send)")
+			return nil
+		},
+	})
+	add(SlashCommand{
+		Name: "/mode", Usage: "/mode <brainstorm>",
+		Desc:    "set the conversation mode/persona (SetConversationMode)",
+		MinArgs: 1,
+		Run: func(m *App, args []string) tea.Cmd {
+			mode, ok := chat.ParseMode(args[0])
+			if !ok {
+				m.dock.SetError("unknown mode " + args[0] + " — known: brainstorm")
+				return nil
+			}
+			m.chat.SetPendingMode(mode)
+			if m.chatConvID == "" {
+				m.dock.SetNotice("mode " + strings.ToLower(args[0]) + " applies to the next new conversation")
+				return nil
+			}
+			m.dock.SetNotice("mode → " + strings.ToLower(args[0]))
+			return m.chat.SetConversationMode(m.chatConvID, mode)
+		},
+	})
+	add(SlashCommand{
+		Name: "/attach", Usage: "/attach <path>",
+		Desc:    "attach a file to the next message (not supported in the TUI)",
+		MinArgs: 1,
+		Run: func(m *App, args []string) tea.Cmd {
+			// Explicit, user-visible refusal — never a silent drop. The
+			// AttachConversationTurn surface is only reachable from the GUI
+			// today, so the TUI says so instead of swallowing the path.
+			m.dock.SetError("attachments are not supported in the TUI — attach " + args[0] + " in the web GUI (nothing was sent)")
+			return nil
 		},
 	})
 

@@ -470,6 +470,14 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return nil
 	case chat.ConversationsMsg:
 		return tea.Batch(m.onConversations(msg), m.waitChat())
+	case chat.ConversationCreatedMsg:
+		if msg.Err != "" {
+			m.dock.SetError(msg.Err)
+			return m.waitChat()
+		}
+		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
+	case chat.ConversationMutatedMsg:
+		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
 	case chat.TranscriptMsg:
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:
