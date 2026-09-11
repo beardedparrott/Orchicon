@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -71,6 +71,12 @@ var Tabs = []Tab{
 // screenkit interface so shell code stays short).
 type Screen = screenkit.Screen
 
+// DockError / DockNotice are the shell hooks screens use to surface
+// mutation feedback (the kit2 mutate.Executor sink) in the always-present
+// chat dock.
+func (m *App) DockError(msg string)  { m.dock.SetError(msg) }
+func (m *App) DockNotice(msg string) { m.dock.SetNotice(msg) }
+
 // focusMode is where keyboard focus lives: the content pane (screens
 // keep tab chords + editing) or the chat composer (global tab chords
 // fall through to readline editing inside the input).
@@ -97,22 +103,22 @@ type App struct {
 	quitting  bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock               dock.Model
-	chat               *chat.Controller
-	chatStore          *chatStore    // guarded chatItems (stream goroutine writes)
-	chatWake           chan struct{} // live-chunk repaint poke (cap 1)
-	chatCmds           chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
-	chatFocus          focusMode
-	mouseEnabled       bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
-	palette            palette
-	slash              *slashRegistry
-	contextOverride    string // /context pin <desc>
+	dock            dock.Model
+	chat            *chat.Controller
+	chatStore       *chatStore    // guarded chatItems (stream goroutine writes)
+	chatWake        chan struct{} // live-chunk repaint poke (cap 1)
+	chatCmds        chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
+	chatFocus       focusMode
+	mouseEnabled    bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+	palette         palette
+	slash           *slashRegistry
+	contextOverride string // /context pin <desc>
 	// Tab dropdown submenus (Phase 2a): per-tab menus built from nav
 	// config; menuOpen = the tab whose dropdown is open ("" = closed).
-	menus     map[TabID]*TabMenu
-	menuOpen  TabID
-	navReg    []NavEntry
-	themes    []string
+	menus              map[TabID]*TabMenu
+	menuOpen           TabID
+	navReg             []NavEntry
+	themes             []string
 	reconnectRequested bool
 	chatConvID         string                     // active conversation ("" = none yet)
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items

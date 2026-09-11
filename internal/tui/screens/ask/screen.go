@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -20,7 +21,7 @@ import (
 
 // Model is the Ask screen.
 type Model struct {
-	screenkit.Base
+	kit2.Base
 	cl  *client.Clients
 	reg *subs.Registry
 }
