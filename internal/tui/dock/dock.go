@@ -353,10 +353,13 @@ func (m *Model) View() string {
 	// The box's own background must survive the inner rows' resets: the rows
 	// carry styled spans (prompt, hint, the textarea's own cursor styling),
 	// and each one's reset would otherwise switch the background off for the
-	// rest of the row — the "hole" the operator sees as soon as they type.
+	// rest of the row — the "hole" the operator saw as soon as they typed.
+	// The repair takes the BACKGROUND-ONLY surface style: ComposerBox itself
+	// has a border + padding, and re-asserting through THAT injected border
+	// glyphs into the row.
 	return theme.RepairAfterResets(
 		theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n")),
-		theme.ComposerBox)
+		theme.SurfaceBg)
 }
 
 // inputLines returns exactly InputRows() rows of the input view (the

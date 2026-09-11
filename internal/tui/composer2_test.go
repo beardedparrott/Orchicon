@@ -386,3 +386,44 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 	}
 	assertFrameExact(t, m, 120, 40)
 }
+
+// Regression: typing must render VISIBLE text in the box. The repair that
+// re-asserts the box background after inner resets used to derive its
+// re-assert sequence from theme.ComposerBox itself — a BORDERED style, whose
+// render is a whole box. That injected border glyphs and spaces into every
+// row after a reset, garbling the textarea so the operator could not see the
+// cursor or their own text, and painting a stray band under the box. The
+// repair now takes the background-only style and rejects any style whose
+// render spans lines.
+func TestComposerTypingRendersVisibleText(t *testing.T) {
+	for _, size := range composer2Sizes() {
+		w, h := size[0], size[1]
+		m := phase3App(w, h)
+		m.setFocus(focusComposer)
+		for _, r := range "hello" {
+			m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		plain := lipglossStrip(m.View())
+		if !strings.Contains(plain, "hello") {
+			t.Fatalf("%dx%d: typed text is not visible in the composer\n%s", w, h, plain)
+		}
+		// The box's own border glyphs must appear only as the frame, not
+		// scattered through the dock rows: count the top border characters in
+		// the dock region and require exactly one contiguous run.
+		dockRows := strings.Split(plain, "\n")
+		start := len(dockRows) - 1 - m.dock.Lines()
+		if start < 0 {
+			start = 0
+		}
+		inBox := 0
+		for _, l := range dockRows[start:] {
+			if strings.Contains(l, "╭") {
+				inBox++
+			}
+		}
+		if inBox != 1 {
+			t.Fatalf("%dx%d: composer box has %d top-border rows, want exactly 1 (injected glyphs?)", w, h, inBox)
+		}
+		assertFrameExact(t, m, w, h)
+	}
+}

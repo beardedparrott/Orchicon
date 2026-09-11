@@ -105,9 +105,10 @@ func TestQADiffPaneMouseCloseEndToEnd(t *testing.T) {
 	if !m.diffOpen || !m.diffPane.HasOwner() {
 		t.Fatal("pane not open with owner before mouse-close")
 	}
-	// Click the ✕ close button (glyphX content-relative + 1 border, row 2).
+	// Click the ✕ close button (glyphX content-relative + 1 border, pane tab-bar
+	// row = terminal row 3).
 	gx := m.diffPane.GlyphX()
-	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: gx + 1, Y: 2})
+	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: gx + 1, Y: 3})
 	m = nm.(*App)
 	if m.diffOpen {
 		t.Fatalf("mouse click on ✕ did not close the pane")

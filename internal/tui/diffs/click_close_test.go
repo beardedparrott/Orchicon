@@ -23,14 +23,14 @@ func TestClickCloseButton(t *testing.T) {
 
 	// Click on the glyph: terminal X = content-relative glyphX + 1 (border).
 	m.closeReq = false
-	m.click(m.glyphX()+1, 2)
+	m.click(m.glyphX()+1, paneTopRow)
 	if !m.TakeCloseRequest() {
 		t.Fatalf("click on ✕ (contentX=%d) did not set a close request", m.glyphX())
 	}
 
 	// Click on the trailing inert padding must NOT close.
 	m.closeReq = false
-	m.click(m.Width+1, 2)
+	m.click(m.Width+1, paneTopRow)
 	if m.TakeCloseRequest() {
 		t.Fatalf("click on inert padding set a close request")
 	}
@@ -38,7 +38,7 @@ func TestClickCloseButton(t *testing.T) {
 	// Click on a tab label still switches the tab (does not close).
 	m.closeReq = false
 	m.Tab = TabDiff
-	m.click(10, 2)
+	m.click(10, paneTopRow)
 	if m.TakeCloseRequest() {
 		t.Fatalf("click on a tab label set a close request")
 	}
@@ -55,7 +55,7 @@ func TestClickCloseRequestClearedOnce(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width = 48
 	m.Height = 24
-	m.click(m.glyphX()+1, 2)
+	m.click(m.glyphX()+1, paneTopRow)
 	if !m.TakeCloseRequest() {
 		t.Fatal("first TakeCloseRequest should be true")
 	}

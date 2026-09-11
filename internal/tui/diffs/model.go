@@ -376,6 +376,14 @@ func (m *Model) handleMouse(ev tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
+// Shell chrome geometry the pane's hit-tests depend on. The shell paints
+// row 0 (centered tab bar), row 1 (underline rule) and row 2 (the gap) before
+// the body, so the pane's first content row is terminal row 3.
+const (
+	paneTopRow  = 3 // the pane's tab bar / first content row
+	paneBodyRow = 4 // the pane's first body row (below its tab bar)
+)
+
 // click resolves a mouse click to a tab / file row within the pane.
 // (x, y) are terminal-global coordinates as forwarded by the shell. The pane
 // is a left rail rendered below the shell tab bar: the shell tab bar occupies
@@ -389,9 +397,13 @@ func (m *Model) click(x, y int) {
 	// The pane's content starts one column right of the left border, so a
 	// content-relative X is the terminal X minus the border column.
 	contentX := x - 1
-	// Tab bar is the pane's first content row — terminal row 2 (shell tab bar
-	// row 0 + its bottom border row 1).
-	if y == 2 {
+	// ROW MATH: the shell paints row 0 = centered tab bar, row 1 = its
+	// underline rule, row 2 = the one-row gap, and the BODY starts at row 3.
+	// So the pane's tab bar is terminal row 3 and its body rows start at row 4.
+	// (This used to assume row 2 — an off-by-one that made every click land
+	// one row ABOVE the thing under the cursor, the operator's "I have to
+	// click above the item to select it".)
+	if y == paneTopRow {
 		// The far-right "✕" close button is the last hit region before the
 		// padding to the pane's content width (it sits right of the last tab).
 		if m.closeAt(contentX) {
@@ -401,11 +413,11 @@ func (m *Model) click(x, y int) {
 		m.clickTab(contentX)
 		return
 	}
-	if y < 3 {
+	if y < paneBodyRow {
 		return
 	}
-	// Body row: terminal row 3 is body row 0 (after the tab bar at row 2).
-	row := y - 3
+	// Body row: terminal row 4 is body row 0 (after the tab bar at row 3).
+	row := y - paneBodyRow
 	if m.Tab != TabDiff && row >= 0 && row < len(m.groups) {
 		m.SelectPath(m.groups[row].Path)
 	}

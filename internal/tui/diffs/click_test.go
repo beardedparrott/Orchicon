@@ -34,7 +34,7 @@ func TestClickTabCoordinates(t *testing.T) {
 	}
 	for _, c := range cases {
 		m.Tab = TabDiff
-		m.click(c.termX, 2)
+		m.click(c.termX, paneTopRow)
 		if m.Tab != c.want {
 			t.Errorf("tab click at terminal (%d,2): got %s, want %s", c.termX, m.Tab, c.want)
 		}
@@ -43,16 +43,16 @@ func TestClickTabCoordinates(t *testing.T) {
 	// A click on the shell tab bar (y=0) or its bottom border (y=1) must not
 	// change the pane tab.
 	m.Tab = TabDiff
-	m.click(10, 0)
+	m.click(10, paneTopRow-3)
 	if m.Tab != TabDiff {
 		t.Errorf("click at y=0 (shell tab bar) changed tab to %s", m.Tab)
 	}
-	m.click(10, 1)
+	m.click(10, paneTopRow-2)
 	if m.Tab != TabDiff {
 		t.Errorf("click at y=1 (shell tab bar border) changed tab to %s", m.Tab)
 	}
 	// A click right of the pane (x >= width+border) must not change the tab.
-	m.click(48+5, 2)
+	m.click(48+5, paneTopRow)
 	if m.Tab != TabDiff {
 		t.Errorf("out-of-pane click changed tab to %s", m.Tab)
 	}
@@ -74,12 +74,12 @@ func TestClickFileRowCoordinates(t *testing.T) {
 	m.Tab = TabTree
 
 	// terminal row 3 = body row 0 → group[0] ("create").
-	m.click(5, 3)
+	m.click(5, paneBodyRow)
 	if m.SelectedPath != vecs["create-new-file"].Path {
 		t.Errorf("file click (5,3) selected %q, want %q", m.SelectedPath, vecs["create-new-file"].Path)
 	}
 	// body row 1 = terminal row 4 → group[1] ("modify").
-	m.click(5, 4)
+	m.click(5, paneBodyRow+1)
 	if m.SelectedPath != vecs["modify-two-lines"].Path {
 		t.Errorf("file click (5,4) selected %q, want %q", m.SelectedPath, vecs["modify-two-lines"].Path)
 	}

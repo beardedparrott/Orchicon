@@ -26,7 +26,10 @@ func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 
 	// Click the "tree" tab at the pane's tab-bar row (terminal row 2) and
 	// terminal column 10 (the "tree" label text, right of the left border).
-	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 2})
+	// Click the "tree" tab at the pane's tab-bar row (terminal row 3: the
+	// shell paints tab bar / underline / gap on rows 0-2) and terminal column
+	// 10 (the "tree" label text, right of the left border).
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 3})
 	m.syncDiffPaneState()
 	if m.diffTab != "tree" {
 		t.Fatalf("mouse click did not switch pane to tree (shell diffTab=%s)", m.diffTab)

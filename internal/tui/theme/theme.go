@@ -203,6 +203,11 @@ var (
 	// shell paints, so nothing bleeds through from beneath alt-screen).
 	ScreenBg = lipgloss.NewStyle()
 
+	// SurfaceBg is the BACKGROUND-ONLY form of the surface token, for repairs
+	// that must re-assert a surface background without adding a border or
+	// padding. Never render content through it.
+	SurfaceBg = lipgloss.NewStyle()
+
 	// Tab bar: inactive tabs are dim glass, the active tab carries the
 	// GUI nav's cyan→indigo active gradient (approximated with the filled
 	// indigo pill the mockup shows).
@@ -280,6 +285,7 @@ func buildStyles(t Theme) {
 	white := lipgloss.Color("#f8fafc")
 
 	ScreenBg = lipgloss.NewStyle().Background(t.Bg)
+	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
 
 	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentIndigo).Padding(0, 1)
@@ -378,18 +384,22 @@ func Opaque(s string, w int) string {
 	return repairResets(ScreenBg.Render(s))
 }
 
-// RepairAfterResets re-asserts a style's background after every SGR reset in
-// an already-rendered string, using that style's own SGR prefix.
+// RepairAfterResets re-asserts a BACKGROUND-ONLY style's background after
+// every SGR reset in an already-rendered string.
 //
-// This is the general form of the repair the shell applies to its rows
-// (bgOpaque). Any composed block whose children carry their own styles is
-// vulnerable: each child's \x1b[0m reset turns the background OFF for the rest
-// of the line, so padding and later cells render on the TERMINAL's background
-// and the operator sees through the "opaque" frame.
-func RepairAfterResets(s string, st lipgloss.Style) string {
+// The style passed must carry a background and NOTHING else (no border, no
+// padding): the repair derives its re-assert sequence from the style's own
+// render, and a bordered/padded style renders a BOX — injecting border glyphs
+// into the row. That is the bug that garbled the composer (the operator's
+// "additional painted text area at the bottom"); the guard below now rejects
+// such a style outright instead of corrupting the row.
+func RepairAfterResets(s string, bg lipgloss.Style) string {
 	const reset = "\x1b[0m"
-	paint := st.Render("")
-	if paint == "" || !strings.HasSuffix(paint, reset) {
+	paint := bg.Render("")
+	if paint == "" || strings.Contains(paint, "\n") {
+		return s // no background to assert, or a non-background-only style
+	}
+	if !strings.HasSuffix(paint, reset) {
 		return s
 	}
 	open := strings.TrimSuffix(paint, reset)
