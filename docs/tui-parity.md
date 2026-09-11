@@ -51,14 +51,14 @@ whole areas to "use the web GUI".
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
 | `/workers` | Workers | **exists** | Control | Control list + detail. |
-| `/workers/$id` | Worker detail | **exists** | Control | Detail fields. |
+| `/workers/$id` | Worker detail | **exists** | Control | Detail fields + version list (`ListWorkerVersions`). **Mutations (child):** edit header (`UpdateWorker`), edit version draft (`UpdateWorkerVersion`), publish/deprecate (`PublishWorkerVersion`/`DeprecateWorker`), set active (`SetActiveWorkerVersion`). |
 | `/workers/new` | Register worker | **missing** | — | **Child:** worker registration form (mutation). |
 | `/workflows` | Workflows | **exists** | Automation | List + detail. |
-| `/workflows/$id` | Workflow detail | **exists** | Automation | Detail + version trail. |
+| `/workflows/$id` | Workflow detail | **exists** | Automation | Detail + version trail. **Mutations (child):** `CreateWorkflow`, edit steps (`UpdateWorkflowVersion`), `PublishWorkflow`, `DeprecateWorkflow`, `CreateWorkflowVersion`. |
 | `/workflows/new` | Create workflow | **missing** | — | **Child:** workflow DSL/definition form (mutation). |
-| `/workflows/$id/runs/$runId` | Workflow run detail | **exists** | Execution (runs) | Detail + step runs body; live Execution detail pane. |
-| `/executions` | Executions | **exists** | Execution | Live list + detail, interjection message send (mutation: `SendExecutionMessage`). |
-| `/executions/$id` | Execution detail | **exists** | Execution | Live session view + diff pane. |
+| `/workflows/$id/runs/$runId` | Workflow run detail | **exists** | Execution (runs) | Detail + step runs body (status per step) + failure diagnosis for a failed run (failed/blocked steps and the linked failed executions' error messages); live Execution detail pane. **Mutations:** `RetryFailedWorkflowRun` (Confirm) · `ForceProgressWorkflowRun` (Confirm) |
+| `/executions` | Executions | **exists** | Execution | Live list + detail. **Mutations:** `CancelExecution` (Confirm, reason recorded) · `SendExecutionMessage` (interject form) — both reconcile the list. |
+| `/executions/$id` | Execution detail | **exists** | Execution | Live session view (Stream widget, scroll preserved) + diff pane. **Mutations:** `CancelExecution` · `SendExecutionMessage`. |
 | `/schedules` | Schedules | **exists** | Automation | Same surface as `/recurring-items` (recurring work items); create/edit/pause/delete landed. |
 
 ## Automation

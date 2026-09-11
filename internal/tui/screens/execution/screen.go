@@ -28,6 +28,15 @@ type Model struct {
 	tenantID    string // "" lets the plane resolve it from the credential
 	sub         *stream.Sub[*apiv1.StreamExecutionEventsResponse]
 	reconnected bool
+
+	w, h int
+	// form is the open interjection form (nil when closed); pending is the
+	// action the open confirmation dialog will run; bar is the footer strip
+	// of the selected row's actions; notice is the screen's status line.
+	form    *kit2.Form
+	pending *kit2.Action
+	bar     *kit2.ActionBar
+	notice  string
 }
 
 // New builds the screen. Execution events stream live; workflow events
@@ -39,6 +48,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.AddSource("runs", "Workflow Runs", m.fetchRuns)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
+	m.bar = kit2.NewActionBar()
 	m.Base.SetStatuses([]screenkit.StatusMsg{
 		{Name: "execution-events", Status: "idle"},
 	})
@@ -58,7 +68,10 @@ func (m *Model) EnsureSubscriptions() {
 // Close unsubscribes (tab switch = unsubscribe).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-func (m *Model) SetSize(w, h int) { m.Base.SetSize(w, h) }
+func (m *Model) SetSize(w, h int) {
+	m.w, m.h = w, h
+	m.Base.SetSize(w, h)
+}
 
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.Load(), m.reg.WaitStatus("execution-events"), m.reg.WaitEventPoke("execution-events"))
@@ -186,6 +199,28 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			return m, tea.Batch(cmd, m.requestSessionRefresh())
 		}
 		return m, cmd
+
+	case tea.KeyMsg:
+		// The interjection form owns every key while it is up.
+		if m.form != nil {
+			if msg.String() == "esc" {
+				m.form = nil
+				m.notice = "cancelled"
+				return m, nil
+			}
+			cmd, _ := m.form.HandleKey(msg)
+			if m.form.Submitted {
+				m.form = nil
+			}
+			return m, cmd
+		}
+		// Write chords run only when no confirmation dialog is open (the
+		// dialog owns every key through the kit2 base).
+		if m.Open == nil {
+			if cmd, handled := m.handleActionKey(msg.String()); handled {
+				return m, cmd
+			}
+		}
 	}
 
 	if handled, cmd := m.Base.Update(msg); handled {
@@ -195,11 +230,52 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	var b strings.Builder
-	b.WriteString(m.Base.View())
-	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"))
-	return m.Base.Frame(b.String())
+	m.refreshActionBar()
+
+	body := m.Base.View()
+	if m.notice != "" {
+		body += "\n" + theme.HintText.Render(m.notice)
+	}
+	if m.w > 0 && m.h > 0 {
+		body = kit2.FitLines(body, m.w, m.h)
+		if m.form != nil {
+			body = kit2.Center(body, executionFormBox(m.form, m.w), m.w, m.h)
+		} else if m.Open != nil {
+			box := m.Open.Box(minInt(72, m.w-4), minInt(12, m.h-2))
+			body = kit2.Center(body, box, m.w, m.h)
+		}
+		// The hint line is rendered by the shell (HintLine()), never
+		// appended here — the screen must fill EXACTLY the content region.
+		return kit2.FitLines(body, m.w, m.h)
+	}
+	return m.Base.Frame(body)
+}
+
+// refreshActionBar publishes the focused row's actions into the footer strip.
+func (m *Model) refreshActionBar() {
+	actions := m.actionsForSelection()
+	m.bar.Actions = actions
+	if m.bar.Sel >= len(actions) {
+		m.bar.Sel = 0
+	}
+	m.Base.Bar = m.bar
+}
+
+// executionFormBox wraps the interjection form in a titled dialog-sized box.
+func executionFormBox(f *kit2.Form, w int) string {
+	bw := minInt(70, w-4)
+	if bw < 24 {
+		bw = 24
+	}
+	d := &kit2.Dialog{Title: f.Title, Body: f.View(), Buttons: []string{"send", "cancel"}}
+	return d.Box(bw, minInt(14, len(f.Specs)*2+5))
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // RunningExecutionID returns the selected execution's ID when its
