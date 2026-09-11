@@ -117,8 +117,13 @@ func TestActionRollsBackOnRPCErrorAndSurfacesInDock(t *testing.T) {
 	if len(acts) < 2 {
 		t.Fatalf("expected disable+delete actions, got %d", len(acts))
 	}
-	del := acts[1]
-	if !del.NeedsConfirm() {
+	var del kit2.Action
+	for _, a := range acts {
+		if a.Label == "delete" {
+			del = a
+		}
+	}
+	if del.Label != "delete" || !del.NeedsConfirm() {
 		t.Fatal("delete should require confirmation")
 	}
 	m.openActionsDialog(del)

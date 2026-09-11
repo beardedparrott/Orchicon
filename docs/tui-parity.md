@@ -85,10 +85,10 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/webhooks` | Webhooks | **exists** | Control (this run) | New `Webhooks` source + detail (`ListSubscriptions`). **Child:** create/edit/delete subscription (mutation), deliveries/replay. |
-| `/adapters` | Adapters | **missing** | — | No TUI source; the Adapter client is not yet wired. **Child:** adapter list + detail + enable/disable (mutation). |
-| `/settings` | Settings | **exists** | Control (this run) | New `Settings` source + detail (`GetSettings`). **Child:** settings edit/save (mutation). |
-| `/admin` | Admin | **missing** | — | Admin-gated; **child:** admin surfaces. |
+| `/webhooks` | Webhooks | **exists** (read-write) | Control | `Webhooks` source + detail (`ListSubscriptions`). Create/edit/delete subscription through the form + Confirm-gated actions (`CreateSubscription` / `UpdateSubscription` / `DeleteSubscription`), `TestSubscription`, and the deliveries log (`ListDeliveries`) rendered in the detail body. |
+| `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
+| `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; model refs are validated inline (provider/model) before submit. |
+| `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
 ## This run closed (real screens replacing GUI-mirror stubs)
@@ -100,6 +100,24 @@ replaced by real TUI surfaces on the Control screen:
 - **Webhooks** → `Webhooks` source + detail (`WebhookService.ListSubscriptions`).
 - **Settings** → `Settings` source + detail (`SettingsService.GetSettings`).
 - **Runtime Images / Secrets / MCP / Workers** — already real Control sources.
+
+## Control write parity (this run)
+
+The Control screen is now read-WRITE for every surface the GUI mutates:
+
+- **Settings** — view all + edit/save (`UpdateSettings`), model refs validated inline.
+- **Webhooks** — create/edit/delete subscription + test + deliveries view.
+- **Adapters** — `RuntimeAdapterService` client wired, source + detail + enable/disable.
+- **MCP servers** — create/edit/delete, enabled toggle, credential store/clear via the secret
+  store, and install (where the runtime supports it).
+- **Providers** — create custom/edit/delete, enable/disable, token store/clear.
+- **Secrets** — names/metadata only + create/update/delete by name; no code path reads a value
+  (`GetSecret` is never called).
+- **Admin** — reachable with an explicit permission state.
+
+Nine sources render ONE pane at a time (focused source + detail) — a nine-across grid truncates
+beyond reading. Secrets/provider tokens/MCP credentials are `${SECRET_NAME}` references: values
+are written once through the form (masked) and never fetched or rendered.
 
 The `/providers`, `/webhooks`, `/settings` slash commands resolve to these real panes (no
 notice-only list remains in the registry — asserted by `TestNoNoticeOnlyCommands`).
