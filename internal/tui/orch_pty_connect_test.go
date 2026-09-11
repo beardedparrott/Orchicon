@@ -36,9 +36,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/creack/pty"
 	v1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/creack/pty"
 )
 
 // connectPlaneFixture is a disposable Orchicon-shaped plane: versionz,

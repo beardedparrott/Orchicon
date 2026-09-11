@@ -74,12 +74,12 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/approvals` | Pending Approvals | **exists** | Enforcement | List + detail (render from list data). **Child:** approve/reject mutation (`ApproveStep`). |
-| `/policies` | Policies | **exists** | Enforcement | List + detail. |
-| `/policies/$id` | Policy detail | **exists** | Enforcement | Detail + version trail. |
-| `/policies/new` | Create policy | **missing** | — | **Child:** policy definition form (mutation). |
-| `/recovery` | Recovery | **exists** | Enforcement | Decisions source + recovery-events stream. **Child:** recovery actions (approve/deny). |
-| `/recovery/$id` | Recovery detail | **exists** | Enforcement | Decision detail. |
+| `/approvals` | Pending Approvals | **exists** | Enforcement | List + detail — the detail shows the upstream summary, acceptance criteria, touched files, the rejection reason and the recorded policy decision (`require_approval`, which policy). **Read-write:** `a` approve · `x` reject (`ApproveStep`), form-gated by the reason prompt, disabled while in flight, list reconciles after the write. |
+| `/policies` | Policies | **exists** | Enforcement | List + detail. **Read-write:** `n` create (`CreatePolicy`) · `e` edit the draft version (`UpdatePolicyVersion`) · `p` publish a version (`PublishPolicy`, Confirm) · `v` list versions. |
+| `/policies/$id` | Policy detail | **exists** | Enforcement | Detail + version trail; `v` opens the version picker and `enter` inspects a version's Rego/OPA body **verbatim** (no silent truncation). |
+| `/policies/new` | Create policy | **exists** | Enforcement | The `n` chord on Policies: the definition form (name / decision point / scope / effect / query / version note / Rego module) → `CreatePolicy`, the module body sent whole. |
+| `/recovery` | Recovery | **exists** | Enforcement | Recoveries source (`ListRecoveries`) + recovery-events stream. **Read-write:** `a` approve continuation plan · `x` reject plan (reason required) · `c` cancel recovery · `m` mark task succeeded — all Confirm-gated. |
+| `/recovery/$id` | Recovery detail | **exists** | Enforcement | Recovery detail + the continuation plan, plus the **available action surface** the plane allows for that recovery/plan state. |
 
 ## Control
 
@@ -112,13 +112,14 @@ Each child carries this grounding: the GUI route (from `routeTree.gen.ts`), the 
 
 1. **Work-item create/edit + Tree/Board/Archive toggles** (`/work-items/new`, `/work-items/$id`) — mutates `WorkItemService`.
 2. **Create/edit project** (`/projects/new`) — mutates `ProjectService`.
-3. **Approve/reject step approval** (`/approvals`) — mutates `ApprovalService`.
-4. **Recovery actions** (`/recovery/$id`) — mutates `RecoveryService`.
-5. ~~**Schedules + recurring-item create/edit** (`/schedules`, `/recurring-items/new`) — mutates `WorkItemService`~~ — **landed** (Automation: Recurring Items create/edit/pause/resume/delete + per-fire run history).
-6. **Webhook subscription create/edit/delete + deliveries** (`/webhooks`) — mutates `WebhookService`.
-7. **Settings edit/save** (`/settings`) — mutates `SettingsService`.
-8. **Adapters list/enable** (`/adapters`) — wire `AdapterService` client + source.
-9. **Dashboard** (`/dashboard`) — landed: the Overview tab's Dashboard source.
-10. **Cost Explorer / Usage** (`/cost-explorer`, `/usage`) — landed: the Overview tab's Cost Explorer + Usage Records sources.
-11. ~~**Idea Cloud** (`/idea-cloud`) — idea triage list~~ — **landed** (Automation: idea list with provenance, rejected section, promote/dismiss).
-12. **Admin** (`/admin`) — admin-gated surfaces.
+3. **Approve/reject step approval** (`/approvals`) — mutates `ApprovalService`. **Landed:** the Enforcement screen's `a`/`x` chords (`ApproveStep`) with the reason form, in-flight guard, and list reconciliation.
+4. **Recovery actions** (`/recovery`, `/recovery/$id`) — mutates `RecoveryService`. **Landed:** `a`/`x`/`c`/`m` on the Recoveries source (`ApproveContinuationPlan`, `RejectContinuationPlan`, `CancelRecovery`, `MarkTaskSucceeded`), all Confirm-gated.
+5. **Policies create/edit/publish + version inspection** (`/policies`, `/policies/new`) — mutates `PolicyService`. **Landed:** `n`/`e`/`p`/`v` on the Policies source (`CreatePolicy`, `UpdatePolicyVersion`, `PublishPolicy`, `ListPolicyVersions`); the `/policies/new` row moves missing → exists.
+6. ~~**Schedules + recurring-item create/edit** (`/schedules`, `/recurring-items/new`) — mutates `WorkItemService`~~ — **landed** (Automation: Recurring Items create/edit/pause/resume/delete + per-fire run history).
+7. **Webhook subscription create/edit/delete + deliveries** (`/webhooks`) — mutates `WebhookService`.
+8. **Settings edit/save** (`/settings`) — mutates `SettingsService`.
+9. **Adapters list/enable** (`/adapters`) — wire `AdapterService` client + source.
+10. **Dashboard** (`/dashboard`) — landed: the Overview tab's Dashboard source.
+11. **Cost Explorer / Usage** (`/cost-explorer`, `/usage`) — landed: the Overview tab's Cost Explorer + Usage Records sources.
+12. ~~**Idea Cloud** (`/idea-cloud`) — idea triage list~~ — **landed** (Automation: idea list with provenance, rejected section, promote/dismiss).
+13. **Admin** (`/admin`) — admin-gated surfaces.

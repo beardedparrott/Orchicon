@@ -187,6 +187,18 @@ func isAuthText(errtxt string) bool {
 		strings.Contains(l, "re-authentication") || strings.Contains(l, "re-auth")
 }
 
+// ReloadSource refetches page 1 of the named source (a write path
+// reconciles its list after a mutation lands). Returns nil when the screen
+// has no such source.
+func (b *Base) ReloadSource(name string) tea.Cmd {
+	for i, s := range b.sources {
+		if s.name == name {
+			return b.loadSource(i, "")
+		}
+	}
+	return nil
+}
+
 // Load fetches page 1 of every source (screens call from Init).
 func (b *Base) Load() tea.Cmd {
 	var cmds []tea.Cmd

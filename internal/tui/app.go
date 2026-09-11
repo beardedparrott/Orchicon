@@ -226,7 +226,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
 		TabExecution:   func() Screen { s := execution.New(cl, m.reg, ""); s.SetShell(m); return s },
 		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
-		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg, "") },
+		TabEnforcement: func() Screen { s := enforcement.New(cl, m.reg, ""); s.SetShell(m); return s },
 		TabControl:     func() Screen { return control.New(cl, m.reg) },
 	}
 	// The slash registry is generated from the screens' Sources() (the
