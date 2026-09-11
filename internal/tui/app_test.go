@@ -43,7 +43,7 @@ func (s *stubScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func TestTabOrderMirrorsGUINav(t *testing.T) {
-	want := []string{"Ask Orchicon", "Work", "Execution", "Automation", "Enforcement", "Control"}
+	want := []string{"Ask Orchicon", "Overview", "Work", "Execution", "Automation", "Enforcement", "Control"}
 	if len(Tabs) != len(want) {
 		t.Fatalf("tabs = %d, want %d", len(Tabs), len(want))
 	}
@@ -52,7 +52,7 @@ func TestTabOrderMirrorsGUINav(t *testing.T) {
 			t.Fatalf("tab %d = %q, want %q", i, Tabs[i].Title, title)
 		}
 	}
-	chords := []string{"ctrl+o", "ctrl+w", "ctrl+e", "ctrl+a", "ctrl+f", "ctrl+t"}
+	chords := []string{"ctrl+o", "ctrl+v", "ctrl+w", "ctrl+e", "ctrl+a", "ctrl+f", "ctrl+t"}
 	for i, chord := range chords {
 		if Tabs[i].Chord != chord {
 			t.Fatalf("tab %d chord = %q, want %q", i, Tabs[i].Chord, chord)
@@ -90,6 +90,8 @@ func keyFor(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlT}
 	case "ctrl+o":
 		return tea.KeyMsg{Type: tea.KeyCtrlO}
+	case "ctrl+v":
+		return tea.KeyMsg{Type: tea.KeyCtrlV}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

@@ -126,7 +126,7 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 	}
-	// One chord route per tab, in tab order: ctrl+o/w/e/a/f/t.
+	// One chord route per tab, in tab order: ctrl+o/v/w/e/a/f/t.
 	for i := range tabs {
 		tab := tabs[i]
 		routes = append(routes, KeyRoute{
@@ -166,7 +166,7 @@ func keyMatcher(s string) func(tea.Msg) bool {
 // unknown chords are silent no-ops that still report consumed), locking
 // the shell chrome behind a focus escape forever.
 var composerBypassKeys = map[string]bool{
-	"ctrl+o": true, "ctrl+w": true, "ctrl+e": true,
+	"ctrl+o": true, "ctrl+v": true, "ctrl+w": true, "ctrl+e": true,
 	"ctrl+a": true, "ctrl+f": true, "ctrl+t": true,
 	"ctrl+r": true, "ctrl+c": true, "q": true,
 	// Arrow tab cycling + tab key: structural chrome (the tab bar is the

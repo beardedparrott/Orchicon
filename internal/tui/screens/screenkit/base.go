@@ -70,6 +70,18 @@ func (b *Base) AddSource(name, title string, fetch func(ctx context.Context, pag
 // SetStatuses seeds the status reporter (screen wires its stream names).
 func (b *Base) SetStatuses(sts []StatusMsg) { b.statuses = sts }
 
+// SetSourceEmpty sets the named source's empty-state message. Every pane
+// names WHY it is empty ("no traces in the window — …"); a bare
+// "nothing here" is never shown.
+func (b *Base) SetSourceEmpty(name, msg string) {
+	for _, s := range b.sources {
+		if s.name == name {
+			s.list.EmptyMsg = msg
+			return
+		}
+	}
+}
+
 // SetStatus updates one named status (screen translates subs.StatusMsg).
 func (b *Base) SetStatus(name, st string) {
 	for i := range b.statuses {

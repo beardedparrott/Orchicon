@@ -73,7 +73,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		reg.names = append(reg.names, c.Name)
 	}
 
-	// 1. Tab commands (the six top-level areas).
+	// 1. Tab commands (the seven top-level areas).
 	for _, tab := range Tabs {
 		add(SlashCommand{
 			Name:  "/" + string(tab.ID),
