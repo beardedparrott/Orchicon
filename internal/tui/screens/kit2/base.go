@@ -72,6 +72,13 @@ type Base struct {
 	shell         any
 	statuses      []StatusMsg
 
+	// noAutoDetail suppresses the post-fetch auto-detail (the Ask screen's
+	// hero stays until the operator picks an item or sends the first
+	// message). heroTitle/heroBody are the centered empty state.
+	noAutoDetail bool
+	heroTitle    string
+	heroBody     string
+
 	// Focus is the ONE rule for key ownership across this screen's regions.
 	Focus *Focus
 	// Stream is the screen's first-class scrolling transcript (nil = none).
@@ -256,6 +263,33 @@ func friendlyFetchErr(errText string) string {
 // SetDetail installs the detail renderer.
 func (b *Base) SetDetail(fn DetailFn) { b.detailFn = fn }
 
+// SetNoAutoDetail suppresses the post-fetch auto-detail: the pane keeps the
+// empty state the screen installed until the operator picks an item (the Ask
+// screen's hero).
+func (b *Base) SetNoAutoDetail(v bool) { b.noAutoDetail = v }
+
+// SetHero installs the detail pane's centered empty state, shown until real
+// content replaces it (and restored by ClearDetail).
+func (b *Base) SetHero(title, body string) {
+	b.heroTitle, b.heroBody = title, body
+	b.detail.SetHero(title, body)
+}
+
+// ClearDetail returns the detail pane to its empty state (the hero when one
+// is installed) and forgets the item it was showing.
+func (b *Base) ClearDetail() {
+	b.detailID = ""
+	if b.heroTitle != "" || b.heroBody != "" {
+		b.detail.SetHero(b.heroTitle, b.heroBody)
+		return
+	}
+	b.detail.SetContent("", nil, "")
+}
+
+// ScrollDetail scrolls the detail pane by delta lines (mouse wheel + the
+// empty-composer vertical keys) — the transcript scroll preservation path.
+func (b *Base) ScrollDetail(delta int) { b.detail.Wheel(delta) }
+
 // SetShell installs the app shell reference.
 func (b *Base) SetShell(sh any) { b.shell = sh }
 
@@ -338,6 +372,9 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 				s.table.SetItems(msg.items, msg.next)
 			}
 			s.table.Loading = false
+			if b.noAutoDetail {
+				return true, nil
+			}
 			return true, b.loadDetail()
 		}
 		return true, nil
@@ -734,6 +771,25 @@ func (b *Base) SelectItem(src, id string) bool {
 		return false
 	}
 	return false
+}
+
+// SourcesForTest exposes the registered sources for screen tests (the
+// screenkit test hook, kept for kit2 screens). Items are the rows currently
+// loaded (nil before the first fetch lands).
+func (b *Base) SourcesForTest() []screenkit.TestSource {
+	out := make([]screenkit.TestSource, 0, len(b.sources))
+	for _, s := range b.sources {
+		var items []screenkit.Item
+		for _, r := range s.table.Rows {
+			title := ""
+			if len(r.Cells) > 0 {
+				title = r.Cells[0]
+			}
+			items = append(items, screenkit.Item{ID: r.ID, Title: title, Meta: r.Meta})
+		}
+		out = append(out, screenkit.TestSource{Name: s.name, Fetch: s.fetch, Items: items})
+	}
+	return out
 }
 
 // Loading reports whether any pane is fetching.

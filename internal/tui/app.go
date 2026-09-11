@@ -27,6 +27,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/control"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/enforcement"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/execution"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
@@ -122,8 +123,16 @@ type App struct {
 	reconnectRequested bool
 	chatConvID         string                     // active conversation ("" = none yet)
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items
-	pendingDetail      tea.Cmd
-	lastScreenKeys     string
+
+	// Transcript Stream widgets (kit2): one per conversation. Live chunks
+	// APPEND (preserving the operator's scroll offset; following the tail
+	// only when already pinned at the bottom) instead of resetting the pane
+	// on every repaint. transcriptLines is each stream's last rendered line
+	// set, so an extension is an Append and anything else a reload.
+	chatStreams     map[string]*kit2.Stream
+	transcriptLines map[string][]string
+	pendingDetail   tea.Cmd
+	lastScreenKeys  string
 
 	// Diff sidebar (TUI sibling of the GUI DiffSidebar). The shell owns the
 	// open/tab/selected state so it persists across SwitchTo (the GUI
@@ -175,13 +184,15 @@ const DiffPaneWidth = 48
 // NewApp builds the shell over an established client set.
 func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
 	m := &App{
-		clients:      cl,
-		profile:      profile,
-		reg:          subs.NewRegistry(),
-		screens:      map[TabID]Screen{},
-		chatStore:    &chatStore{items: map[string][]chat.ChatItem{}},
-		execSessions: map[string][]chat.ChatItem{},
-		loaded:       map[TabID]bool{},
+		clients:         cl,
+		profile:         profile,
+		reg:             subs.NewRegistry(),
+		screens:         map[TabID]Screen{},
+		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		execSessions:    map[string][]chat.ChatItem{},
+		loaded:          map[TabID]bool{},
+		chatStreams:     map[string]*kit2.Stream{},
+		transcriptLines: map[string][]string{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -361,6 +372,8 @@ func (m *App) drainStaged() tea.Cmd {
 
 // newChat drops the active conversation and returns Ask to its hero: the
 // next composer send creates a fresh conversation (the GUI's New chat).
+// The transcript starts EMPTY (the detail pane is cleared and the stream
+// for the new conversation has no lines yet).
 func (m *App) newChat() {
 	m.chatConvID = ""
 	if m.chat != nil {
@@ -371,6 +384,11 @@ func (m *App) newChat() {
 	if s := m.screens[TabAsk]; s != nil {
 		if nc, ok := s.(interface{ NewChat() }); ok {
 			nc.NewChat()
+		}
+		if st, ok := s.(interface {
+			SetDetailContent(title string, fields []screenkit.Field, body string)
+		}); ok {
+			st.SetDetailContent("New chat", nil, "")
 		}
 	}
 	m.updateContextChip()
@@ -393,8 +411,15 @@ func scrollKeyDelta(key string) int {
 }
 
 // scrollActiveDetail scrolls the active screen's detail pane when it has
-// one (every list+detail screen embeds screenkit.Base.ScrollDetail).
+// one (every list+detail screen embeds screenkit.Base.ScrollDetail). On the
+// Ask tab the transcript is the kit2 Stream, so vertical keys scroll IT
+// (the operator's scroll offset is what the Stream preserves across
+// appends).
 func (m *App) scrollActiveDetail(delta int) {
+	if m.active == TabAsk && m.chatConvID != "" {
+		m.ScrollTranscript(delta)
+		return
+	}
 	if s := m.screens[m.active]; s != nil {
 		if sc, ok := s.(interface{ ScrollDetail(int) }); ok {
 			sc.ScrollDetail(delta)
@@ -1511,10 +1536,120 @@ func (m *App) onChatWake() tea.Cmd {
 	}); ok {
 		items := m.chatStore.snapshot(m.chatConvID)
 		title, fields := askS.RenderTranscript(items)
-		body := chat.RenderItems(chat.GroupByPhase(items), s.(interface{ DetailWidth() int }).DetailWidth())
-		st.SetDetailContent(title, fields, body)
+		w := s.(interface{ DetailWidth() int }).DetailWidth()
+		// The transcript renders through the kit2 Stream widget: an
+		// extension of the previous render APPENDS (the operator's scroll
+		// offset is preserved; the tail is followed only when already at the
+		// bottom), anything else (durable reload / turn resolution) resets.
+		str := m.transcriptStream(m.chatConvID, w, m.contentHeight())
+		m.syncTranscript(m.chatConvID, str, items, w)
+		if m.chatStore.isReconnecting(m.chatConvID) {
+			str.Notice = "reconnecting…"
+		} else {
+			str.Notice = ""
+		}
+		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil
+}
+
+// transcriptStream returns (creating + sizing) the kit2 Stream backing a
+// conversation's transcript.
+func (m *App) transcriptStream(convID string, w, h int) *kit2.Stream {
+	if m.chatStreams == nil {
+		m.chatStreams = map[string]*kit2.Stream{}
+	}
+	str := m.chatStreams[convID]
+	if str == nil {
+		str = kit2.NewStream("transcript", w, h)
+		m.chatStreams[convID] = str
+	}
+	str.SetSize(w, h)
+	return str
+}
+
+// syncTranscript renders the grouped transcript and folds it into the
+// stream: when the new render EXTENDS the previous one the extra lines are
+// appended (preserving scroll offset / following only at the bottom); any
+// other change replaces the lines (a reload re-pins to the tail).
+func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatItem, w int) {
+	if m.transcriptLines == nil {
+		m.transcriptLines = map[string][]string{}
+	}
+	body := chat.RenderItems(chat.GroupByPhase(items), w)
+	var lines []string
+	if body != "" {
+		lines = strings.Split(strings.TrimRight(body, "\n"), "\n")
+	}
+	prev := m.transcriptLines[convID]
+	if len(lines) >= len(prev) && linesPrefix(lines, prev) {
+		if len(lines) > len(prev) {
+			str.Append(lines[len(prev):]...)
+		}
+	} else {
+		str.SetLines(lines)
+	}
+	m.transcriptLines[convID] = append([]string{}, lines...)
+}
+
+// linesPrefix reports whether prefix is a line-for-line prefix of lines.
+func linesPrefix(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i, p := range prefix {
+		if lines[i] != p {
+			return false
+		}
+	}
+	return true
+}
+
+// TranscriptStream returns the Stream backing a conversation's transcript
+// (nil when that conversation has never rendered).
+func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStreams[convID] }
+
+// ScrollTranscript wheels the open transcript by delta lines (the operator
+// scroll offset the Stream preserves across appends).
+func (m *App) ScrollTranscript(delta int) {
+	if str := m.chatStreams[m.chatConvID]; str != nil {
+		str.Wheel(delta)
+	}
+}
+
+// onConversationMutated reconciles the conversations rail after a rename /
+// delete / mode write: a delete drops the row locally (and clears the
+// active conversation when it was the deleted one), then the rail refetches
+// from the live API so it can never drift.
+func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
+	if msg.Err != "" {
+		m.dock.SetError(msg.Op + " failed: " + msg.Err)
+		return m.reloadConversations()
+	}
+	if msg.Op == "delete" {
+		kept := m.conversations[:0]
+		for _, c := range m.conversations {
+			if c.ID != msg.ID {
+				kept = append(kept, c)
+			}
+		}
+		m.conversations = kept
+		if m.convSel >= len(m.conversations) {
+			m.convSel = max(0, len(m.conversations)-1)
+		}
+		if m.chatConvID == msg.ID {
+			m.chatConvID = ""
+			m.chat.SetActive("")
+			if s := m.screens[TabAsk]; s != nil {
+				if st, ok := s.(interface {
+					SetDetailContent(title string, fields []screenkit.Field, body string)
+				}); ok {
+					st.SetDetailContent("New chat", nil, "")
+				}
+			}
+		}
+	}
+	return m.reloadConversations()
 }
 
 // onStreamDone resolves a finished turn: the slot clears (future sends
@@ -1590,11 +1725,15 @@ func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
 // sends the message into it (GUI CreateConversation pattern).
 func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	cl := m.clients
+	model := m.chat.PendingModel()
+	mode := m.chat.PendingMode()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		resp, err := cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
 			InitialMessage: text,
+			ModelRef:       model,
+			Mode:           mode,
 		}))
 		if err != nil {
 			return chat.ErrMsg{Where: "create conversation", Err: err}
