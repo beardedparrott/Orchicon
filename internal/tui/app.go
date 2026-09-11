@@ -1192,19 +1192,55 @@ func (m App) welcomeMode() bool {
 	return true
 }
 
-// welcomeBrand is the launch lockup: block letters plus the product line
-// underneath. Rendered only in the launch layout (no session yet), so it never
-// competes with the transcript for space.
+// brandGlyphs is a 5-row block font. EVERY glyph is EXACTLY brandGlyphW cells
+// wide in every row, and welcomeBrand below COMPOSES the word from them.
 //
-// Every glyph is EXACTLY 8 cells wide and the O carries a clear left and right
-// stroke with a real hole. The previous set mixed 6- and 7-cell rows, which
-// sheared the first glyph so its 'O' read as a 'D' (operator report).
-var welcomeBrand = []string{
-	" ██████   ██████   ██████  ██    ██  ███████  ██████   ██████  ██    ██",
-	"██    ██  ██   ██ ██       ██    ██     ██   ██       ██    ██ ███   ██",
-	"██    ██  ██████  ██       █████████   ██   ██       ██    ██ ██ ██ ██",
-	"██    ██  ██  ██  ██       ██    ██     ██   ██       ██    ██ ██  ████",
-	" ██████   ██   ██  ██████  ██    ██  ███████  ██████   ██████  ██    ██",
+// Hand-writing one aligned block is what broke the previous wordmark: a single
+// row came out one cell short, which shifted the H's crossbar and every glyph
+// after it on that row and sheared the whole thing (the operator's "looks like
+// I'm tripping on acid"). Composing per-glyph makes width drift impossible,
+// and TestWelcomeBrandRowsAreUniform asserts it.
+const brandGlyphW = 8
+
+var brandGlyphs = map[rune][]string{
+	'O': {" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "},
+	'R': {"███████ ", "██    ██", "███████ ", "██  ██  ", "██   ██ "},
+	'C': {" ██████ ", "██    ██", "██      ", "██    ██", " ██████ "},
+	'H': {"██    ██", "██    ██", "████████", "██    ██", "██    ██"},
+	'I': {"████████", "   ██   ", "   ██   ", "   ██   ", "████████"},
+	'N': {"██    ██", "███   ██", "██ ██ ██", "██  ████", "██    ██"},
+}
+
+// brandRows is the glyph stack height.
+const brandRows = 5
+
+// welcomeBrand is "ORCHICON" composed from brandGlyphs: each glyph padded to
+// brandGlyphW and separated by one space, so every row is the same width by
+// construction.
+var welcomeBrand = composeBrand("ORCHICON")
+
+// composeBrand lays out word in the block font, one string per row.
+func composeBrand(word string) []string {
+	rows := make([]string, brandRows)
+	for i, r := range word {
+		g, ok := brandGlyphs[r]
+		if !ok {
+			continue // unmapped rune: skipped rather than emitted at a wrong width
+		}
+		if i > 0 {
+			for row := range rows {
+				rows[row] += " "
+			}
+		}
+		for row := 0; row < brandRows; row++ {
+			cell := g[row]
+			if w := len([]rune(cell)); w < brandGlyphW {
+				cell += strings.Repeat(" ", brandGlyphW-w)
+			}
+			rows[row] += cell
+		}
+	}
+	return rows
 }
 
 const welcomeTagline = "Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control."
