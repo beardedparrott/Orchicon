@@ -49,7 +49,13 @@ func TestMouseTabClick(t *testing.T) {
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "a"})
 	app.RegisterScreen(TabWork, &tabBarScreenStub{body: "w"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
-	x := app.tabStartCol(Tabs[1])
+	var work Tab
+	for _, tb := range Tabs {
+		if tb.ID == TabWork {
+			work = tb
+		}
+	}
+	x := app.tabStartCol(work)
 	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: 0})
 	if nm.ActiveTab() != TabWork {
 		t.Fatalf("tab click: active = %s, want work", nm.ActiveTab())

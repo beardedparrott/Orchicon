@@ -249,8 +249,8 @@ type stubShell struct {
 	err    string
 }
 
-func (s *stubShell) EnforcementDockNotice(t string) { s.notice = t }
-func (s *stubShell) EnforcementDockError(t string)  { s.err = t }
+func (s *stubShell) DockNotice(t string) { s.notice = t }
+func (s *stubShell) DockError(t string)  { s.err = t }
 
 func newHarness(t *testing.T, f *fakePlane) (*Model, *stubShell) {
 	t.Helper()
@@ -379,7 +379,7 @@ func TestApprovalApproveRejectReconcile(t *testing.T) {
 	if sh.err != "" {
 		t.Fatalf("a successful approve must not set a dock error: %q", sh.err)
 	}
-	if !strings.Contains(sh.notice, "approved step approval sr-1") {
+	if !strings.Contains(sh.notice, "approve step approval sr-1") {
 		t.Fatalf("dock notice = %q, want the success notice", sh.notice)
 	}
 	// Reconciliation: the resolved step left the list.
@@ -417,7 +417,7 @@ func TestApprovalApproveRejectReconcile(t *testing.T) {
 	if got := f.approveReqs[1]; got.GetApproved() || got.GetReason() != "not shippable" {
 		t.Fatalf("reject request = %+v", got)
 	}
-	if !strings.Contains(sh.notice, "rejected step approval sr-2") {
+	if !strings.Contains(sh.notice, "reject step approval sr-2") {
 		t.Fatalf("dock notice = %q", sh.notice)
 	}
 }
@@ -494,7 +494,7 @@ func TestPolicyCreateEditPublishVersions(t *testing.T) {
 	if got.GetRegoModule() != draftRego {
 		t.Fatalf("the Rego body must be sent WHOLE (no truncation):\n%q", got.GetRegoModule())
 	}
-	if !strings.Contains(sh.notice, "created policy") {
+	if !strings.Contains(sh.notice, "create policy merge-gate") {
 		t.Fatalf("dock notice = %q", sh.notice)
 	}
 	// Reconciliation: the new policy is in the list.
@@ -767,7 +767,7 @@ func TestRecoveryActionsConfirmGated(t *testing.T) {
 	if got := f.succeedReqs[0]; got.GetTaskId() != "wi-1" || got.GetActorType() != "human" || got.GetReason() != "acceptance verified by hand" {
 		t.Fatalf("MarkTaskSucceeded request = %+v", got)
 	}
-	if !strings.Contains(sh.notice, "marked task wi-1 succeeded") {
+	if !strings.Contains(sh.notice, "mark task wi-1") {
 		t.Fatalf("dock notice = %q", sh.notice)
 	}
 }

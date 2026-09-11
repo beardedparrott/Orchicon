@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -20,10 +21,17 @@ import (
 
 // Model is the Ask screen.
 type Model struct {
-	screenkit.Base
+	kit2.Base
 	cl  *client.Clients
 	reg *subs.Registry
 }
+
+// The centered empty state (GUI parity): Ask lands on a fresh
+// conversation and shows this until the first message is sent.
+const (
+	HeroTitle = "Ask Orchicon anything."
+	HeroBody  = "Plan, execute, and govern with real-time clarity and thin control."
+)
 
 // New builds the screen.
 func New(cl *client.Clients, reg *subs.Registry) *Model {
@@ -32,6 +40,11 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("conversations", "Conversations", m.fetchConversations)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
+	// The GUI never auto-opens a conversation at launch: the transcript
+	// pane shows the hero until the operator picks one or sends the first
+	// message (which creates a new conversation).
+	m.Base.SetNoAutoDetail(true)
+	m.Base.SetHero(HeroTitle, HeroBody)
 	m.Base.SetStatuses(nil) // no live stream in read-only v1
 	return m
 }
@@ -139,6 +152,14 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 // shell's context engine.
 func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
 func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+
+// NewChat resets the transcript pane to the empty hero (the shell's "new
+// chat" affordance, mirroring the GUI's New chat button).
+func (m *Model) NewChat() { m.Base.ClearDetail() }
+
+// ScrollDetail scrolls the transcript pane (mouse wheel + the
+// empty-composer vertical keys).
+func (m *Model) ScrollDetail(delta int) { m.Base.ScrollDetail(delta) }
 
 // DetailWidth exposes the detail pane width (transcript bubble wrap).
 func (m *Model) DetailWidth() int { return m.Base.DetailWidth() }

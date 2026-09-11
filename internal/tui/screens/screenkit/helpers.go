@@ -13,21 +13,43 @@ func PaneGap() string { return theme.HintText.Render(" │ ") }
 // Hint renders dim helper text.
 func Hint(s string) string { return theme.HintText.Render(s) }
 
-// paneStride is the rendered width of one pane + the gap (3 columns of
-// " │ " rendering + padding).
-func (b *Base) paneStride() int { return b.paneW + 5 }
+// paneStride is the rendered width of the list pane + the gap (3 columns
+// of " │ " rendering). Single-pane layout: one list pane, then the gap,
+// then the detail — so any x past the pane + gap is the detail.
+func (b *Base) paneStride() int { return b.paneW + 3 }
 
-// mousePane returns the pane index under terminal column x (>= len
-// (sources) = detail pane).
+// mousePane returns 0 (the active list pane) or len(sources) (detail).
+// The strip row (y == 0 when stripH == 1) is NOT a pane — callers check
+// the strip first via stripSourceAt.
 func (b *Base) mousePane(x int) int {
 	if b.paneW <= 0 {
 		return 0
 	}
-	p := x / b.paneStride()
-	if p > len(b.sources) {
-		p = len(b.sources) // detail
+	if x < b.paneW+3 {
+		return 0
 	}
-	return p
+	return len(b.sources) // detail
+}
+
+// stripSourceAt maps a strip-row click x to a source index. The strip
+// renders titles joined by " │ " (same construction as sourceStripView),
+// so walk the segments' visible widths. Returns -1 outside any segment.
+func (b *Base) stripSourceAt(x int) int {
+	if b.stripH == 0 || len(b.sources) == 0 || x < 0 {
+		return -1
+	}
+	col := 0
+	for i := range b.sources {
+		w := len([]rune(" " + b.sources[i].title + " "))
+		if x >= col && x < col+w {
+			return i
+		}
+		col += w
+		if i < len(b.sources)-1 {
+			col += 3 // " │ " separator
+		}
+	}
+	return -1
 }
 
 // ClickDetail reports whether the click landed in the detail pane.

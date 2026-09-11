@@ -9,10 +9,10 @@ import (
 )
 
 // TestShellFirstLineRendersTabBar pins the app-shell layout contract: the
-// first visible line of the shell view is the six-area nav tab bar (Ask
-// Orchicon, Work, Execution, Automation, Enforcement, Control), mirroring
-// the GUI nav order. Regression for the QA pass on the TUI foundation
-// (caught against a real PTY render of the shell).
+// first visible line of the shell view is the seven-area nav tab bar (Ask
+// Orchicon, Overview, Work, Execution, Automation, Enforcement, Control),
+// mirroring the GUI nav order. Regression for the QA pass on the TUI
+// foundation (caught against a real PTY render of the shell).
 type tabBarScreenStub struct{ body string }
 
 func (f *tabBarScreenStub) Init() tea.Cmd                    { return nil }
@@ -34,6 +34,7 @@ func TestShellFirstLineRendersTabBar(t *testing.T) {
 	}
 	t.Logf("LINE1=%q", lines[0])
 	if !strings.Contains(lines[0], "Ask Orchicon") ||
+		!strings.Contains(lines[0], "Overview") ||
 		!strings.Contains(lines[0], "Work") ||
 		!strings.Contains(lines[0], "Execution") ||
 		!strings.Contains(lines[0], "Automation") ||

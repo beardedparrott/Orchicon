@@ -177,20 +177,20 @@ const DefaultName = "dark"
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.
 var (
-	Bg          lipgloss.TerminalColor
-	Surface     lipgloss.TerminalColor
-	SurfaceAlt  lipgloss.TerminalColor
-	Border      lipgloss.TerminalColor
-	BorderFaint lipgloss.TerminalColor
-	Text        lipgloss.TerminalColor
-	TextDim     lipgloss.TerminalColor
-	TextFaint   lipgloss.TerminalColor
-	AccentCyan  lipgloss.TerminalColor
+	Bg           lipgloss.TerminalColor
+	Surface      lipgloss.TerminalColor
+	SurfaceAlt   lipgloss.TerminalColor
+	Border       lipgloss.TerminalColor
+	BorderFaint  lipgloss.TerminalColor
+	Text         lipgloss.TerminalColor
+	TextDim      lipgloss.TerminalColor
+	TextFaint    lipgloss.TerminalColor
+	AccentCyan   lipgloss.TerminalColor
 	AccentIndigo lipgloss.TerminalColor
-	OK          lipgloss.TerminalColor
-	Warn        lipgloss.TerminalColor
-	Err         lipgloss.TerminalColor
-	Busy        lipgloss.TerminalColor
+	OK           lipgloss.TerminalColor
+	Warn         lipgloss.TerminalColor
+	Err          lipgloss.TerminalColor
+	Busy         lipgloss.TerminalColor
 )
 
 // Named styles. All TUI features consume these instead of building their
@@ -225,6 +225,10 @@ var (
 	DetailKey        = lipgloss.NewStyle()
 	DetailValue      = lipgloss.NewStyle()
 	PaneBorder       = lipgloss.NewStyle()
+
+	// ComposerBox is the bottom chat composer's bordered panel (Composer
+	// 2.0): rounded border + inner horizontal padding over the surface fill.
+	ComposerBox = lipgloss.NewStyle()
 
 	StatusOK   = lipgloss.NewStyle()
 	StatusWarn = lipgloss.NewStyle()
@@ -299,6 +303,11 @@ func buildStyles(t Theme) {
 	DetailKey = lipgloss.NewStyle().Foreground(t.TextDim)
 	DetailValue = lipgloss.NewStyle().Foreground(t.Text)
 	PaneBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Border)
+	ComposerBox = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Border).
+		Background(t.Surface).
+		Padding(0, 2)
 
 	StatusOK = lipgloss.NewStyle().Foreground(t.OK)
 	StatusWarn = lipgloss.NewStyle().Foreground(t.Warn)

@@ -19,7 +19,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
 
-type qaFE struct{ apiv1connect.UnimplementedFileEditServiceHandler }
+type qaFE struct {
+	apiv1connect.UnimplementedFileEditServiceHandler
+}
+
 func (f *qaFE) GetSessionFileEdits(ctx context.Context, _ *connect.Request[apiv1.GetSessionFileEditsRequest]) (*connect.Response[apiv1.GetSessionFileEditsResponse], error) {
 	return connect.NewResponse(&apiv1.GetSessionFileEditsResponse{
 		Edits: []*apiv1.FileEdit{{Id: "e1", Path: "docs/x.md", Kind: "modify", Seq: 1,
@@ -27,7 +30,11 @@ func (f *qaFE) GetSessionFileEdits(ctx context.Context, _ *connect.Request[apiv1
 		MaxSeq: 1,
 	}), nil
 }
-type qaAuth struct{ apiv1connect.UnimplementedAuthServiceHandler }
+
+type qaAuth struct {
+	apiv1connect.UnimplementedAuthServiceHandler
+}
+
 func (f *qaAuth) ListIdentities(context.Context, *connect.Request[apiv1.ListIdentitiesRequest]) (*connect.Response[apiv1.ListIdentitiesResponse], error) {
 	return connect.NewResponse(&apiv1.ListIdentitiesResponse{Identities: []*apiv1.Identity{{Id: "id1", TenantId: "tnt"}}}), nil
 }

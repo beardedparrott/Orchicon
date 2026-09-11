@@ -22,19 +22,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 )
 
 // rpcTimeout bounds each write RPC (the plane answers in-band).
 const rpcTimeout = 20 * time.Second
-
-// mutationMsg carries one write RPC's outcome back to the tea loop.
-type mutationMsg struct {
-	action  string
-	ref     string
-	notice  string
-	sources []string // list panes to reconcile after a successful write
-	err     error
-}
 
 // editLoadedMsg carries the policy version an edit form is prefilled from.
 type editLoadedMsg struct {
@@ -108,7 +100,7 @@ func (m *Model) handleActionKey(k tea.KeyMsg) (bool, tea.Cmd) {
 func (m *Model) refuse(why string) tea.Cmd {
 	m.lastErr = why
 	m.lastOK = ""
-	m.notifyError(why)
+	m.Fail(why)
 	return nil
 }
 
@@ -320,196 +312,164 @@ func (m *Model) beginMarkSucceeded() tea.Cmd {
 }
 
 // --- write RPCs ------------------------------------------------------------
+//
+// Every write goes through kit2's ONE mutation executor (m.Base.Mutate): the
+// RPC runs off the update loop, the dock reports progress/failure, and the
+// affected list reconciles on success. The plane's refusal text reaches the
+// dock VERBATIM inside the failure message (never a silent no-op), and the
+// in-flight guard makes a double-press a no-op.
+
+// beginWrite marks a write in flight (the action chords are inert until the
+// executor's Result lands) and clears the previous error.
+func (m *Model) beginWrite(action string) { m.inFlight = action; m.lastErr = "" }
 
 func (m *Model) cmdApproveStep(stepID string, approved bool, reason string) tea.Cmd {
-	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		_, err := cl.Approvals.ApproveStep(ctx, connect.NewRequest(&apiv1.ApproveStepRequest{
-			StepRunId: stepID,
-			Approved:  approved,
-			Reason:    reason,
-		}))
-		if err != nil {
-			return mutationMsg{action: "approval", ref: stepID, err: err}
-		}
-		verb := "approved"
-		if !approved {
-			verb = "rejected"
-		}
-		return mutationMsg{
-			action:  "approval",
-			ref:     stepID,
-			notice:  verb + " step approval " + stepID,
-			sources: []string{"approvals"},
-		}
+	m.beginWrite("approval")
+	verb := "approve"
+	if !approved {
+		verb = "reject"
 	}
+	cl := m.cl
+	return m.Base.Mutate(mutate.Request{
+		Name:   verb + " step approval " + stepID,
+		Source: "approvals",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Approvals.ApproveStep(ctx, connect.NewRequest(&apiv1.ApproveStepRequest{
+				StepRunId: stepID,
+				Approved:  approved,
+				Reason:    reason,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdCreatePolicy(pv policyValues) tea.Cmd {
+	m.beginWrite("policy-create")
 	cl := m.cl
 	tenant := m.tenantID
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		req := &apiv1.CreatePolicyRequest{
-			TenantId:      tenant,
-			Name:          pv.name,
-			DecisionPoint: pv.dp,
-			Scope:         pv.scope,
-			ScopeRef:      pv.scopeRef,
-			Effect:        pv.effect,
-			RegoModule:    pv.rego,
-			Query:         pv.query,
-			VersionNote:   pv.versionNote,
-		}
-		resp, err := cl.Policies.CreatePolicy(ctx, connect.NewRequest(req))
-		if err != nil {
-			return mutationMsg{action: "policy-create", err: err}
-		}
-		return mutationMsg{
-			action:  "policy-create",
-			ref:     resp.Msg.GetPolicy().GetId(),
-			notice:  "created policy " + resp.Msg.GetPolicy().GetName() + " (" + resp.Msg.GetPolicy().GetId() + ")",
-			sources: []string{"policies"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "create policy " + pv.name,
+		Source: "policies",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Policies.CreatePolicy(ctx, connect.NewRequest(&apiv1.CreatePolicyRequest{
+				TenantId:      tenant,
+				Name:          pv.name,
+				DecisionPoint: pv.dp,
+				Scope:         pv.scope,
+				ScopeRef:      pv.scopeRef,
+				Effect:        pv.effect,
+				RegoModule:    pv.rego,
+				Query:         pv.query,
+				VersionNote:   pv.versionNote,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdUpdatePolicyVersion(policyID string, pv policyValues) tea.Cmd {
+	m.beginWrite("policy-edit")
 	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		req := &apiv1.UpdatePolicyVersionRequest{
-			PolicyId:      policyID,
-			DecisionPoint: pv.dp,
-			Scope:         pv.scope,
-			ScopeRef:      pv.scopeRef,
-			Effect:        pv.effect,
-			RegoModule:    pv.rego,
-			Query:         pv.query,
-			VersionNote:   pv.versionNote,
-		}
-		resp, err := cl.Policies.UpdatePolicyVersion(ctx, connect.NewRequest(req))
-		if err != nil {
-			return mutationMsg{action: "policy-edit", ref: policyID, err: err}
-		}
-		return mutationMsg{
-			action:  "policy-edit",
-			ref:     policyID,
-			notice:  "saved policy " + policyID + " v" + fmt.Sprint(resp.Msg.GetVersion().GetVersion()),
-			sources: []string{"policies"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "save policy " + policyID,
+		Source: "policies",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Policies.UpdatePolicyVersion(ctx, connect.NewRequest(&apiv1.UpdatePolicyVersionRequest{
+				PolicyId:      policyID,
+				DecisionPoint: pv.dp,
+				Scope:         pv.scope,
+				ScopeRef:      pv.scopeRef,
+				Effect:        pv.effect,
+				RegoModule:    pv.rego,
+				Query:         pv.query,
+				VersionNote:   pv.versionNote,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdPublishPolicy(policyID string) tea.Cmd {
+	m.beginWrite("policy-publish")
 	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		resp, err := cl.Policies.PublishPolicy(ctx, connect.NewRequest(&apiv1.PublishPolicyRequest{PolicyId: policyID}))
-		if err != nil {
-			return mutationMsg{action: "policy-publish", ref: policyID, err: err}
-		}
-		return mutationMsg{
-			action:  "policy-publish",
-			ref:     policyID,
-			notice:  "published policy " + policyID + " v" + fmt.Sprint(resp.Msg.GetVersion().GetVersion()),
-			sources: []string{"policies"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "publish policy " + policyID,
+		Source: "policies",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Policies.PublishPolicy(ctx, connect.NewRequest(&apiv1.PublishPolicyRequest{PolicyId: policyID}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdApprovePlan(recoveryID, actor string) tea.Cmd {
+	m.beginWrite("recovery-approve-plan")
 	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		_, err := cl.Recovery.ApproveContinuationPlan(ctx, connect.NewRequest(&apiv1.ApproveContinuationPlanRequest{
-			RecoveryId: recoveryID,
-			Actor:      actor,
-		}))
-		if err != nil {
-			return mutationMsg{action: "recovery-approve-plan", ref: recoveryID, err: err}
-		}
-		return mutationMsg{
-			action:  "recovery-approve-plan",
-			ref:     recoveryID,
-			notice:  "approved the continuation plan for recovery " + recoveryID,
-			sources: []string{"recoveries"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "approve continuation plan for recovery " + recoveryID,
+		Source: "recoveries",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Recovery.ApproveContinuationPlan(ctx, connect.NewRequest(&apiv1.ApproveContinuationPlanRequest{
+				RecoveryId: recoveryID,
+				Actor:      actor,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdRejectPlan(recoveryID, actor, reason string) tea.Cmd {
+	m.beginWrite("recovery-reject-plan")
 	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		_, err := cl.Recovery.RejectContinuationPlan(ctx, connect.NewRequest(&apiv1.RejectContinuationPlanRequest{
-			RecoveryId: recoveryID,
-			Actor:      actor,
-			Reason:     reason,
-		}))
-		if err != nil {
-			return mutationMsg{action: "recovery-reject-plan", ref: recoveryID, err: err}
-		}
-		return mutationMsg{
-			action:  "recovery-reject-plan",
-			ref:     recoveryID,
-			notice:  "rejected the continuation plan for recovery " + recoveryID,
-			sources: []string{"recoveries"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "reject continuation plan for recovery " + recoveryID,
+		Source: "recoveries",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Recovery.RejectContinuationPlan(ctx, connect.NewRequest(&apiv1.RejectContinuationPlanRequest{
+				RecoveryId: recoveryID,
+				Actor:      actor,
+				Reason:     reason,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdCancelRecovery(recoveryID, reason string) tea.Cmd {
+	m.beginWrite("recovery-cancel")
 	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		_, err := cl.Recovery.CancelRecovery(ctx, connect.NewRequest(&apiv1.CancelRecoveryRequest{
-			RecoveryId: recoveryID,
-			Reason:     reason,
-		}))
-		if err != nil {
-			return mutationMsg{action: "recovery-cancel", ref: recoveryID, err: err}
-		}
-		return mutationMsg{
-			action:  "recovery-cancel",
-			ref:     recoveryID,
-			notice:  "cancelled recovery " + recoveryID,
-			sources: []string{"recoveries"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "cancel recovery " + recoveryID,
+		Source: "recoveries",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Recovery.CancelRecovery(ctx, connect.NewRequest(&apiv1.CancelRecoveryRequest{
+				RecoveryId: recoveryID,
+				Reason:     reason,
+			}))
+			return err
+		},
+	})
 }
 
 func (m *Model) cmdMarkSucceeded(recoveryID, taskID, actor, reason string) tea.Cmd {
+	m.beginWrite("recovery-mark-succeeded")
 	cl := m.cl
 	tenant := m.tenantID
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		_, err := cl.Recovery.MarkTaskSucceeded(ctx, connect.NewRequest(&apiv1.MarkTaskSucceededRequest{
-			TenantId:  tenant,
-			TaskId:    taskID,
-			ActorType: "human",
-			ActorId:   actor,
-			Reason:    reason,
-		}))
-		if err != nil {
-			return mutationMsg{action: "recovery-mark-succeeded", ref: recoveryID, err: err}
-		}
-		return mutationMsg{
-			action:  "recovery-mark-succeeded",
-			ref:     taskID,
-			notice:  "marked task " + taskID + " succeeded (human path)",
-			sources: []string{"recoveries"},
-		}
-	}
+	return m.Base.Mutate(mutate.Request{
+		Name:   "mark task " + taskID,
+		Source: "recoveries",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Recovery.MarkTaskSucceeded(ctx, connect.NewRequest(&apiv1.MarkTaskSucceededRequest{
+				TenantId:  tenant,
+				TaskId:    taskID,
+				ActorType: "human",
+				ActorId:   actor,
+				Reason:    reason,
+			}))
+			return err
+		},
+	})
 }
 
 // --- overlay key handling --------------------------------------------------
@@ -653,34 +613,34 @@ func (m *Model) submitOverlay() tea.Cmd {
 		if strings.TrimSpace(vals["name"]) == "" && o.action == "policy-create" {
 			o.err = "name is required"
 			m.lastErr = "policy: " + o.err
-			m.notifyError("policy: " + o.err)
+			m.Fail("policy: " + o.err)
 			return nil
 		}
 		dp, err := parseDecisionPoint(vals["decision_point"])
 		if err != nil {
 			o.err = err.Error()
 			m.lastErr = o.err
-			m.notifyError(o.err)
+			m.Fail(o.err)
 			return nil
 		}
 		sc, err := parseScope(vals["scope"])
 		if err != nil {
 			o.err = err.Error()
 			m.lastErr = o.err
-			m.notifyError(o.err)
+			m.Fail(o.err)
 			return nil
 		}
 		ef, err := parseEffect(vals["effect"])
 		if err != nil {
 			o.err = err.Error()
 			m.lastErr = o.err
-			m.notifyError(o.err)
+			m.Fail(o.err)
 			return nil
 		}
 		if strings.TrimSpace(vals["rego_module"]) == "" {
 			o.err = "the rego module must not be empty"
 			m.lastErr = o.err
-			m.notifyError(o.err)
+			m.Fail(o.err)
 			return nil
 		}
 		pv = policyValues{
@@ -697,13 +657,13 @@ func (m *Model) submitOverlay() tea.Cmd {
 	if o.action == "approval-reject" && strings.TrimSpace(vals["reason"]) == "" {
 		o.err = "a rejection reason is required (it is written to .orchicon/<run_id>/summary)"
 		m.lastErr = o.err
-		m.notifyError(o.err)
+		m.Fail(o.err)
 		return nil
 	}
 	if o.action == "recovery-reject-plan" && strings.TrimSpace(vals["reason"]) == "" {
 		o.err = "a rejection reason is required"
 		m.lastErr = o.err
-		m.notifyError(o.err)
+		m.Fail(o.err)
 		return nil
 	}
 
@@ -744,7 +704,7 @@ func (m *Model) submitOverlay() tea.Cmd {
 func (m *Model) handleEditLoaded(msg editLoadedMsg) tea.Cmd {
 	if msg.err != nil {
 		m.lastErr = msg.err.Error()
-		m.notifyError(msg.err.Error())
+		m.Fail(msg.err.Error())
 		return nil
 	}
 	v := msg.version
@@ -764,7 +724,7 @@ func (m *Model) handleEditLoaded(msg editLoadedMsg) tea.Cmd {
 func (m *Model) handleVersionsLoaded(msg versionsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
 		m.lastErr = msg.err.Error()
-		m.notifyError(msg.err.Error())
+		m.Fail(msg.err.Error())
 		return nil
 	}
 	m.policyFor = msg.policyID
@@ -785,51 +745,33 @@ func (m *Model) handleVersionsLoaded(msg versionsLoadedMsg) tea.Cmd {
 	return nil
 }
 
-// onMutation applies one write's outcome: clear the in-flight guard, surface
-// the plane's refusal verbatim (or the success notice), and reconcile the
-// affected list panes.
-func (m *Model) onMutation(msg mutationMsg) tea.Cmd {
-	m.inFlight = ""
-	if msg.err != nil {
-		m.lastErr = msg.err.Error()
-		m.lastOK = ""
-		m.notifyError(msg.err.Error())
-		return nil
-	}
+// --- dock surface (mutate.Sink) --------------------------------------------
+
+// Progress / Fail / Notice implement mutate.Sink: the executor's feedback
+// lands in the composer dock through the shell's hooks. A refusal is passed
+// through VERBATIM — an approval/policy decision the plane rejects is never a
+// silent no-op.
+func (m *Model) Progress(msg string) {
+	m.lastOK = msg
 	m.lastErr = ""
-	m.lastOK = msg.notice
-	m.notifyNotice(msg.notice)
-	var cmds []tea.Cmd
-	for _, src := range msg.sources {
-		if c := m.Base.ReloadSource(src); c != nil {
-			cmds = append(cmds, c)
-		}
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
-}
-
-// --- dock surface ----------------------------------------------------------
-
-// notifyNotice / notifyError push the outcome into the shell's composer dock
-// (the shell implements the hooks). A refusal is passed through VERBATIM.
-func (m *Model) notifyNotice(s string) {
-	if s == "" {
-		return
-	}
-	if n, ok := m.Shell().(interface{ EnforcementDockNotice(string) }); ok && n != nil {
-		n.EnforcementDockNotice("enforcement: " + s)
+	if d, ok := m.Shell().(interface{ DockNotice(string) }); ok && d != nil {
+		d.DockNotice(msg)
 	}
 }
 
-func (m *Model) notifyError(s string) {
-	if s == "" {
-		return
+func (m *Model) Fail(msg string) {
+	m.lastErr = msg
+	m.lastOK = ""
+	if d, ok := m.Shell().(interface{ DockError(string) }); ok && d != nil {
+		d.DockError(msg)
 	}
-	if n, ok := m.Shell().(interface{ EnforcementDockError(string) }); ok && n != nil {
-		n.EnforcementDockError(s)
+}
+
+func (m *Model) Notice(msg string) {
+	m.lastOK = msg
+	m.lastErr = ""
+	if d, ok := m.Shell().(interface{ DockNotice(string) }); ok && d != nil {
+		d.DockNotice(msg)
 	}
 }
 

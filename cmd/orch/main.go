@@ -24,6 +24,8 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 
@@ -44,6 +46,23 @@ type flags struct {
 
 func main() {
 	fl := parseArgs(os.Args[1:])
+	// Fullscreen takeover like opencode / Claude Code: the app owns the
+	// viewport and paints every cell itself. Two terminal-level settings
+	// complete that ownership:
+	//
+	//   1. 24-bit color when the terminal advertises it (COLORTERM), so the
+	//      theme's hex values render exactly instead of being rounded to
+	//      the 256-color cube.
+	//   2. Auto-wrap OFF for the app's lifetime (restored on exit): writing
+	//      the last cell of the last row otherwise leaves the terminal in
+	//      wrap-pending state, and the renderer's next line feed scrolls
+	//      the whole frame up by one row — leaving an unpainted hairline
+	//      along the bottom (the operator's persistent "sliver").
+	if os.Getenv("COLORTERM") == "truecolor" || os.Getenv("COLORTERM") == "24bit" {
+		lipgloss.SetColorProfile(termenv.TrueColor)
+	}
+	restoreWrap := disableAutoWrap()
+	defer restoreWrap()
 	if fl.showVer {
 		fmt.Println(version.Current())
 		return
@@ -52,6 +71,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "orch:", err)
 		os.Exit(1)
 	}
+}
+
+// disableAutoWrap turns the terminal's own line wrap OFF and returns the
+// restore func. A fullscreen TUI paints every cell up to the terminal's
+// last column; with auto-wrap enabled the cursor is left wrap-pending on
+// the final row, and the next line feed scrolls the frame by one row —
+// the unpainted hairline that appears along the bottom of the display.
+// Non-TTY stdout (pipes, CI) is left untouched.
+func disableAutoWrap() func() {
+	fi, err := os.Stdout.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return func() {}
+	}
+	fmt.Fprint(os.Stdout, "\x1b[?7l")
+	return func() { fmt.Fprint(os.Stdout, "\x1b[?7h") }
 }
 
 // parseArgs keeps the CLI intentionally tiny (plan step 10: no other

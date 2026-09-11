@@ -18,15 +18,15 @@ type toolLedger struct {
 	mu      sync.Mutex
 	nextID  int
 	calls   []toolCallEntry
-	results  []toolResultEntry
+	results []toolResultEntry
 }
 
 type toolCallEntry struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
+	ID           string `json:"id"`
+	Type         string `json:"type"`
 	FunctionName string `json:"function_name"`
-	Arguments   string `json:"arguments"`
-	resolved    bool
+	Arguments    string `json:"arguments"`
+	resolved     bool
 }
 
 type toolResultEntry struct {
@@ -93,7 +93,7 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 			Type:         "function",
 			FunctionName: tool,
 			Arguments:    argsJSON,
-			resolved:    true,
+			resolved:     true,
 		})
 	}
 	l.results = append(l.results, toolResultEntry{
@@ -123,6 +123,32 @@ func (l *toolLedger) snapshot() (calls, results []byte) {
 	}
 	results, _ = json.Marshal(res)
 	return calls, results
+}
+
+// repairedSnapshot returns the ledger's TERMINAL (tool_calls, tool_results)
+// documents, with an explicit aborted result attached for every call that
+// never resolved. The live snapshot() is what the throttled partial mirror
+// writes while the turn runs (a call is legitimately unresolved for as long as
+// it runs); the TERMINAL write — the finalize of any turn, including one that
+// ends abnormally (token exhaustion, Stop, provider error, supersede) — must
+// never persist an assistant row whose tool_calls have no matching
+// tool_results, because the next provider that replays that history rejects
+// the entire request ("No tool output found for function call …").
+func (l *toolLedger) repairedSnapshot() (calls, results []byte) {
+	calls, results = l.snapshot()
+	return sanitizeAssistantToolLedger(calls, results)
+}
+
+// hasCalls reports whether the ledger recorded any tool call. A turn that was
+// interrupted between a tool call and its result leaves calls but no reply
+// text: its row must still be finalized (repaired) rather than left dangling.
+func (l *toolLedger) hasCalls() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.calls) > 0
 }
 
 func marshalLedgerValue(v any) string {

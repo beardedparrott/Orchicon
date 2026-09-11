@@ -27,6 +27,8 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/mutate"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/stream"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
@@ -35,7 +37,7 @@ import (
 
 // Model is the Enforcement screen.
 type Model struct {
-	screenkit.Base
+	kit2.Base
 	cl          *client.Clients
 	reg         *subs.Registry
 	tenantID    string // "" lets the plane resolve it from the credential
@@ -80,6 +82,9 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 		versions:      map[string]*apiv1.PolicyVersion{},
 		decisionsFor:  map[string][]*apiv1.PolicyDecision{},
 	}
+	// Every write goes through the ONE mutation executor (dock feedback,
+	// rollback, and the affected source's reconcile).
+	m.Base.SetExecutor(&mutate.Executor{Sink: m})
 	m.NameStr = "enforcement"
 	m.AddSource("policies", "Policies", m.fetchPolicies)
 	m.AddSource("approvals", "Pending Approvals", m.fetchApprovals)
@@ -414,8 +419,11 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 		return m, cmd
 
-	case mutationMsg:
-		return m, m.onMutation(msg)
+	case mutate.Result:
+		// One write's outcome: clear the in-flight guard, then let the kit2
+		// base run the executor's Apply (dock feedback + reconcile).
+		m.inFlight = ""
+		return m, m.Base.HandleMutation(msg)
 
 	case editLoadedMsg:
 		return m, m.handleEditLoaded(msg)
@@ -444,28 +452,33 @@ func (m *Model) View() string {
 	if m.ov != nil {
 		return m.Base.Frame(m.ov.view())
 	}
-	var b strings.Builder
-	b.WriteString(m.Base.View())
-	b.WriteString("\n")
-	tail := "enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"
-	switch m.Base.ActiveSourceName() {
-	case "approvals":
-		tail = "a: approve · x: reject (the detail shows the upstream + policy context)"
-	case "policies":
-		tail = "n: new policy · e: edit draft · p: publish · v: versions (enter inspects a body)"
-	case "recoveries":
-		tail = "a: approve plan · x: reject plan · c: cancel recovery · m: mark task succeeded (Confirm-gated)"
-	}
-	b.WriteString(theme.HintText.Render(tail))
+	tail := []string{}
 	if m.inFlight != "" {
-		b.WriteString("\n" + theme.HintText.Render("⏳ "+m.inFlight+" in flight — the action is disabled until the plane answers"))
+		tail = append(tail, theme.HintText.Render("⏳ "+m.inFlight+" in flight — the action is disabled until the plane answers"))
 	}
 	if m.lastErr != "" {
-		b.WriteString("\n" + theme.ErrorText.Render("⚠ "+m.lastErr))
+		tail = append(tail, theme.ErrorText.Render("⚠ "+m.lastErr))
 	} else if m.lastOK != "" {
-		b.WriteString("\n" + theme.HintText.Render("✓ "+m.lastOK))
+		tail = append(tail, theme.HintText.Render("✓ "+m.lastOK))
 	}
-	return m.Base.Frame(b.String())
+	hint := "enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"
+	switch m.Base.ActiveSourceName() {
+	case "approvals":
+		hint = "a: approve · x: reject (the detail shows the upstream + policy context)"
+	case "policies":
+		hint = "n: new policy · e: edit draft · p: publish · v: versions (enter inspects a body)"
+	case "recoveries":
+		hint = "a: approve plan · x: reject plan · c: cancel recovery · m: mark task succeeded (Confirm-gated)"
+	}
+	tail = append(tail, theme.HintText.Render(hint))
+
+	// Reserve the last rows for the action hint + status so the frame can
+	// never clip the chords out of view.
+	body := strings.Split(m.Base.View(), "\n")
+	if keep := len(body) - len(tail); keep > 1 {
+		body = body[:keep]
+	}
+	return m.Base.Frame(strings.Join(body, "\n") + "\n" + strings.Join(tail, "\n"))
 }
 
 // SelectSource focuses the named source (slash nav command support).
