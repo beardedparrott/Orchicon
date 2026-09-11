@@ -21,14 +21,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// ConversationsRailWidth is the right rail's width (cells), INCLUDING the
-// one-cell left divider that makes it read as a docked rail. Narrowed from 30
-// to 26 per the operator's "conversations should be a tad smaller — always on
-// for MVP1".
-const ConversationsRailWidth = 26
+// ConversationsRailWidth is the right rail's width (cells). A real bordered
+// pane now (not a divider column), widened 26 -> 32 per the operator's
+// "keep it on the right side and make it a tad wider".
+const ConversationsRailWidth = 32
 
 // railDividerText is the rail's one-cell left border column.
 const railDividerText = "│"
@@ -74,65 +74,60 @@ func (m *App) railRetryHit(absoluteY int) bool {
 	return m.convErr != "" && absoluteY > railTopRow
 }
 
-// rightRailView renders the CONVERSATIONS rail (header + scrollable list)
-// at the fixed ConversationsRailWidth. The rail is joined horizontally to
-// the main column (joining at Top), so its first line sits at the same
-// terminal row as the main screen's first line (row 2 after the tab bar).
+// rightRailView renders the CONVERSATIONS rail as a REAL bordered pane (the
+// same kit2.Panel the screens use) at ConversationsRailWidth, joined
+// horizontally to the main column.
+//
+// Line semantics are unchanged for the hit-tests: rail line 0 is the panel's
+// top border + title (the header/collapse row), and line 1 is the first
+// conversation row — which is exactly what railRowAt/railHeaderHit assume.
 func (m *App) rightRailView() string {
-	contentW := ConversationsRailWidth - lipgloss.Width(railDividerText)
+	w := ConversationsRailWidth
 	h := m.contentHeight() + m.dock.Lines()
-
-	// Header row (rail line 0). Clicking it toggles collapse.
-	title := " CONVERSATIONS"
-	if n := len(m.conversations); n > 0 && m.convErr == "" {
-		title += fmt.Sprintf(" (%d)", n)
+	innerW := w - 4 // panel border (2 cells) + a 1-cell gutter each side
+	if innerW < 8 {
+		innerW = 8
 	}
-	title += " ▾"
-	lines := []string{theme.TabActive.Render(truncateRight(title, contentW))}
 
+	title := "Conversations"
+	if n := len(m.conversations); n > 0 && m.convErr == "" {
+		title = fmt.Sprintf("Conversations (%d)", n)
+	}
+
+	var body []string
 	switch {
 	case m.convErr != "":
-		// Explicit retry state — never a silent empty rail (finding 9):
-		// the header says what failed, the middle line says WHY (or the
-		// in-place re-auth path for a 401), the last line is the retry.
-		why := " " + firstLine(m.convErr)
+		// Explicit retry state — never a silent empty rail (finding 9).
+		why := firstLine(m.convErr)
 		if isAuthErrText(m.convErr) {
-			why = " /connect to re-auth"
+			why = "/connect to re-auth"
 		}
-		retry := "[ click here to retry ]"
-		if !isAuthErrText(m.convErr) {
-			retry = "[ click / ctrl+r to retry ]"
-		}
-		lines = append(lines,
-			theme.ErrorText.Render(truncateRight(" ⚠ conversations unavailable", contentW)),
-			theme.HintText.Render(truncateRight(why, contentW)),
-			theme.HintText.Render(truncateRight(" "+retry, contentW)),
+		body = append(body,
+			theme.ErrorText.Render(truncateRight("⚠ conversations unavailable", innerW)),
+			theme.HintText.Render(truncateRight(why, innerW)),
+			theme.HintText.Render(truncateRight("[ click to retry ]", innerW)),
 		)
 	case m.convLoading && len(m.conversations) == 0:
-		lines = append(lines, theme.HintText.Render(truncateRight(" loading conversations…", contentW)))
+		body = append(body, theme.HintText.Render(truncateRight("loading conversations…", innerW)))
 	case len(m.conversations) == 0:
-		lines = append(lines, theme.HintText.Render(truncateRight(" none yet — type below to start a chat", contentW)))
+		body = append(body, theme.HintText.Render(truncateRight("none yet — type below", innerW)))
 	default:
 		rows := 0
-		for i := m.convScroll; i < len(m.conversations) && rows < h-2; i++ {
-			lines = append(lines, m.conversationRow(m.conversations[i], i, contentW))
+		for i := m.convScroll; i < len(m.conversations) && rows < h-5; i++ {
+			body = append(body, m.conversationRow(m.conversations[i], i, innerW))
 			rows++
 		}
 		end := m.convScroll + rows
 		if end > len(m.conversations) {
 			end = len(m.conversations)
 		}
-		lines = append(lines, theme.HintText.Render(truncateRight(fmt.Sprintf(" %d-%d/%d", m.convScroll+1, end, len(m.conversations)), contentW)))
+		body = append(body, theme.HintText.Render(truncateRight(fmt.Sprintf("%d-%d/%d", m.convScroll+1, end, len(m.conversations)), innerW)))
 	}
 
-	// Prefix the divider column, then pad every line to the rail width so
-	// the horizontal join stays aligned (no ragged right edge).
-	prefixed := make([]string, len(lines))
-	div := theme.HintText.Render(railDividerText)
-	for i, l := range lines {
-		prefixed[i] = div + l
-	}
-	return alignRail(strings.Join(prefixed, "\n"), h)
+	p := kit2.NewPanel(title, w, h)
+	p.Focused = false
+	p.SetContent(strings.Join(body, "\n"))
+	return p.View()
 }
 
 // conversationRow renders one rail conversation row (title + meta).

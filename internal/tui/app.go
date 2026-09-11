@@ -1146,9 +1146,16 @@ func (m App) baseView(w, h int) string {
 	// each normalized to its budget row count (padded with the theme
 	// background when short, truncated when over — the composer can never
 	// be pushed off-screen by an over-tall screen render).
-	screenBlock := normalizeBlock(safeView(m.screens[m.active]), cw, screenRows)
-	dockBlock := normalizeBlockKeepTail(m.dock.View(), cw, dockRows)
-	bodyLines := append(append([]string{}, screenBlock...), dockBlock...)
+	var bodyLines []string
+	if m.welcomeMode() {
+		// opencode-style launch: the composer sits in the MIDDLE of the
+		// viewport with the brand above it, until a session starts.
+		bodyLines = m.centeredWelcomeView(cw, screenRows+dockRows)
+	} else {
+		screenBlock := normalizeBlock(safeView(m.screens[m.active]), cw, screenRows)
+		dockBlock := normalizeBlockKeepTail(m.dock.View(), cw, dockRows)
+		bodyLines = append(append([]string{}, screenBlock...), dockBlock...)
+	}
 	body := strings.Join(bodyLines, "\n")
 	// Left diff rail / right conversations rail: extra COLUMNS joined over
 	// the screen+dock region (the gap row spans the full width alone).
@@ -1168,6 +1175,75 @@ func (m App) baseView(w, h int) string {
 	rows = append(rows, strings.Split(body, "\n")...)
 	rows = append(rows, footerLine...)
 	return fillView(strings.Join(rows, "\n"), w, h)
+}
+
+// welcomeMode reports whether to render the centered launch layout: the Ask
+// tab, with no conversation open yet. Once the operator opens or creates a
+// conversation the normal transcript layout takes over.
+func (m App) welcomeMode() bool {
+	if m.active != TabAsk || m.chatConvID != "" {
+		return false
+	}
+	if s := m.screens[TabAsk]; s != nil {
+		if d, ok := s.(interface{ DetailID() string }); ok && d.DetailID() != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// centeredWelcomeView renders the launch block — brand, the composer box, and
+// the product line — vertically centered in the w×h body region. The composer
+// keeps its own rendering (border, hint row, palette target); only its width
+// and position change, so typing, slash commands and drafts behave identically
+// to the docked layout.
+func (m App) centeredWelcomeView(w, h int) []string {
+	boxW := w * 2 / 3
+	if boxW > 76 {
+		boxW = 76
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+	if boxW > w {
+		boxW = w
+	}
+	d := m.dock
+	d.Width = boxW
+	boxLines := strings.Split(d.View(), "\n")
+
+	brand := theme.ListTitle.Render("Orchicon")
+	prompt := theme.HintText.Render("Ask anything.")
+
+	var block []string
+	block = append(block, "", brand, "")
+	block = append(block, boxLines...)
+	block = append(block, "", prompt)
+
+	// Vertically center the block in the region, then center each line
+	// horizontally inside w cells.
+	out := make([]string, 0, h)
+	top := (h - len(block)) / 2
+	if top < 0 {
+		top = 0
+	}
+	for i := 0; i < top; i++ {
+		out = append(out, "")
+	}
+	for _, l := range block {
+		pad := (w - lipgloss.Width(l)) / 2
+		if pad < 0 {
+			pad = 0
+		}
+		out = append(out, strings.Repeat(" ", pad)+l)
+	}
+	for len(out) < h {
+		out = append(out, "")
+	}
+	if len(out) > h {
+		out = out[:h]
+	}
+	return out
 }
 
 // safeView renders the active screen, tolerating a nil screen (the shell

@@ -210,7 +210,7 @@ func TestAskTwoRailsPins(t *testing.T) {
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
 	v := app.View()
-	if !strings.Contains(v, "CONVERSATIONS") {
+	if !strings.Contains(v, "Conversations") {
 		t.Fatal("the conversations rail (right) is missing from the Ask view")
 	}
 	// The rail must sit on the RIGHT edge.
@@ -236,6 +236,11 @@ func TestFullScreenTakeoverCoversViewport(t *testing.T) {
 		for _, tab := range Tabs {
 			app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 			app.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
+			// Ask with no session renders the centered LAUNCH layout, where the
+			// composer is deliberately mid-viewport rather than docked — give it
+			// a session so this test keeps pinning the docked contract (the
+			// launch layout has its own test).
+			app.chatConvID = "conv-takeover"
 			app.SwitchTo(tab.ID)
 			v := app.View()
 			lines := strings.Split(v, "\n")

@@ -53,7 +53,7 @@ func assertFrameExact(t *testing.T, m *App, w, h int) {
 func TestComposerBoxedAtBothSizes(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 
 		if got := m.dock.InputRows(); got < dock.MinInputRows {
@@ -108,7 +108,7 @@ func TestComposerBoxedAtBothSizes(t *testing.T) {
 func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 		m.dock.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven")
 		if got := m.dock.InputRows(); got != dock.MaxInputRows {
@@ -132,7 +132,7 @@ func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 func TestComposerBoxShowsHintAndChip(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.dock.Chip = "Executions: exec-123 (running)"
 		box := lipglossStrip(m.dock.View())
 		if !strings.Contains(box, "[Executions: exec-123 (running)]") {
@@ -158,7 +158,7 @@ func TestComposerBoxShowsHintAndChip(t *testing.T) {
 func TestPaletteOpensAboveComposerBox(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 		for _, r := range "/pro" {
 			nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -398,7 +398,7 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 func TestComposerTypingRendersVisibleText(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 		for _, r := range "hello" {
 			m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})

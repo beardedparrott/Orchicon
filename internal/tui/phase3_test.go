@@ -283,3 +283,12 @@ func TestAuthBannerRendersOnce(t *testing.T) {
 		t.Fatalf("re-auth copy rendered %d times in one frame, want at most 1", got)
 	}
 }
+
+// dockedAskApp builds an app on Ask with a session already open, so the shell
+// renders the DOCKED layout (composer pinned at the bottom). Tests that assert
+// the dock's geometry use this; the centered launch layout has its own test.
+func dockedAskApp(w, h int) *App {
+	m := phase3App(w, h)
+	m.chatConvID = "conv-docked" // leaves welcome mode
+	return m
+}
