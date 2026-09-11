@@ -15,14 +15,20 @@ import (
 // RenderItems renders the items into lines clamped to maxWidth (0 =
 // unlimited). Grouping is the caller's concern (GroupByPhase /
 // MergeSessionItems); this renders what it is given.
+//
+// Chat layout matches the GUI: the operator's messages are RIGHT-aligned in a
+// shaded bubble, the model's are LEFT-aligned in a slightly different shade,
+// so a turn reads as a conversation (operator request: "put the users
+// messages and the models messages inside a shaded bubble", user on the
+// right).
 func RenderItems(items []ChatItem, maxWidth int) string {
 	var b strings.Builder
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderBubble("you", it.Text, theme.ListTitle, maxWidth))
+			b.WriteString(renderChatBubble(it.Text, theme.SurfaceAlt, theme.Text, maxWidth, true))
 		case KindText:
-			b.WriteString(renderBubble("orch", it.Text, theme.DetailValue, maxWidth))
+			b.WriteString(renderChatBubble(it.Text, theme.Surface, theme.Text, maxWidth, false))
 		case KindReasoning:
 			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
@@ -40,6 +46,56 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 		}
 	}
 	return b.String()
+}
+
+// renderChatBubble renders one message as a shaded bubble with padding, at
+// bubbleWidth (a fraction of the pane so the alignment reads), nudged to the
+// right or left edge of the pane.
+//
+// The bubble is composed with theme.Opaque so its background cannot leak onto
+// the row padding, and the alignment filler is plain spaces so the pane's own
+// background shows either side — no band across the pane.
+func renderChatBubble(text string, bg, fg lipgloss.TerminalColor, maxWidth int, right bool) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	pane := maxWidth
+	if pane <= 0 {
+		pane = 80
+	}
+	// Bubbles take at most ~72% of the pane, so the two sides stay visually
+	// distinct even on a long message.
+	bubbleW := pane * 3 / 4
+	if bubbleW > pane-4 {
+		bubbleW = pane - 4
+	}
+	if bubbleW < 12 {
+		bubbleW = pane
+	}
+
+	body := strings.Split(strings.TrimRight(wrapText(text, bubbleW-2), "\n"), "\n")
+	style := lipgloss.NewStyle().Background(bg).Foreground(fg).Padding(0, 1)
+
+	rows := make([]string, 0, len(body)+1)
+	for _, l := range body {
+		rows = append(rows, style.Render(l))
+	}
+	// A one-row blank gutter after each bubble separates turns.
+	var out strings.Builder
+	for _, r := range rows {
+		pad := pane - lipgloss.Width(r)
+		if pad < 0 {
+			pad = 0
+		}
+		if right {
+			out.WriteString(strings.Repeat(" ", pad) + r)
+		} else {
+			out.WriteString(r)
+		}
+		out.WriteString("\n")
+	}
+	out.WriteString("\n")
+	return out.String()
 }
 
 // renderBubble renders `label · text` with wrap, skipping empty bodies.

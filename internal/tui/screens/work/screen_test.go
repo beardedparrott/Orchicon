@@ -1340,14 +1340,22 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 }
 
 func TestEmptyStates(t *testing.T) {
+	// Two panes render at a time (focused source + detail), so each source's
+	// empty state is asserted by focusing it.
 	m := newModel(t, newPlane())
 	for _, src := range []string{srcProjects, srcWorkItems, srcImages} {
 		load(t, m, src)
 	}
-	view := m.View()
-	for _, want := range []string{"no projects yet", "no work items in this view", "no runtime images yet"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("empty pane missing its empty state: %q", want)
+	for _, tc := range []struct{ src, want string }{
+		{srcProjects, "no projects yet"},
+		{srcWorkItems, "no work items in this view"},
+		{srcImages, "no runtime images yet"},
+	} {
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
+		}
+		if view := m.View(); !strings.Contains(view, tc.want) {
+			t.Errorf("focused pane %q missing its empty state: %q", tc.src, tc.want)
 		}
 	}
 }

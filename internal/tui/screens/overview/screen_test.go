@@ -311,13 +311,20 @@ func TestUsageRecordsTableAndDetail(t *testing.T) {
 
 func TestEmptyStatesNameWhyEachPaneIsEmpty(t *testing.T) {
 	m := load(t, newModel(t, emptyPlane()))
-	v := m.View()
-	if strings.Contains(v, "nothing here") {
-		t.Fatalf("bare \"nothing here\" empty state leaked into the Overview view:\n%s", v)
+	// Two panes render at a time, so each source's empty state is checked by
+	// focusing it.
+	for _, tc := range []struct{ src, want string }{
+		{"dashboard", "no plane data to aggregate"},
+		{"telemetry", "no traces in the window"},
+		{"usage", "no usage records"},
+	} {
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
+		}
+		v := m.View()
+		if strings.Contains(v, "nothing here") {
+			t.Fatalf("bare \"nothing here\" empty state leaked into %s:\n%s", tc.src, v)
+		}
+		assertContains(t, v, tc.want)
 	}
-	assertContains(t, v,
-		"no plane data to aggregate",
-		"no traces in the window",
-		"no usage records",
-	)
 }

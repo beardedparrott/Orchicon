@@ -720,11 +720,15 @@ func TestIdeaCloudShowsProvenanceAndRejectedSection(t *testing.T) {
 		}
 	}
 
-	view := m.View()
-	for _, want := range []string{"Idea Cloud", "Rejected Ideas"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("automation view missing the %q section", want)
-		}
+	// Two panes render at a time now, so assert each section's PANEL TITLE by
+	// focusing it (the operator's left/right move between sources).
+	m.SelectSource("ideas")
+	if view := m.View(); !strings.Contains(view, "Idea Cloud") {
+		t.Errorf("focused ideas pane missing its title")
+	}
+	m.SelectSource("rejected")
+	if view := m.View(); !strings.Contains(view, "Rejected Ideas") {
+		t.Errorf("focused rejected pane missing its title")
 	}
 
 	// Detail carries the full provenance (spawner + spawner title + run).
@@ -802,19 +806,24 @@ func TestDismissIdeaLeavesActiveViews(t *testing.T) {
 // ---------- empty states + validation ----------
 
 func TestAutomationEmptyStates(t *testing.T) {
+	// The screen renders TWO panes (the focused source + detail), so each
+	// source's empty state is asserted by focusing it — the same way an
+	// operator reaches it (left/right).
 	m := newModelWith(t, newPlane(), nil)
 	for _, src := range []string{"workflows", "schedules", "ideas", "rejected"} {
 		load(t, m, src)
 	}
-	view := m.View()
-	for _, want := range []string{
-		"no workflows yet",
-		"no recurring items yet",
-		"no ideas awaiting triage",
-		"no dismissed ideas",
+	for _, tc := range []struct{ src, want string }{
+		{"workflows", "no workflows yet"},
+		{"schedules", "no recurring items yet"},
+		{"ideas", "no ideas awaiting triage"},
+		{"rejected", "no dismissed ideas"},
 	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("empty pane missing its empty state: %q", want)
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
+		}
+		if view := m.View(); !strings.Contains(view, tc.want) {
+			t.Errorf("focused pane %q missing its empty state: %q", tc.src, tc.want)
 		}
 	}
 }

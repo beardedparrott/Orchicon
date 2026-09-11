@@ -1195,12 +1195,16 @@ func (m App) welcomeMode() bool {
 // welcomeBrand is the launch lockup: block letters plus the product line
 // underneath. Rendered only in the launch layout (no session yet), so it never
 // competes with the transcript for space.
+//
+// Every glyph is EXACTLY 8 cells wide and the O carries a clear left and right
+// stroke with a real hole. The previous set mixed 6- and 7-cell rows, which
+// sheared the first glyph so its 'O' read as a 'D' (operator report).
 var welcomeBrand = []string{
-	"  ██████  ██████   ██████ ██   ██ ██  ██████  ██████  ███    ██",
-	"  ██   ██ ██   ██ ██      ██   ██ ██ ██      ██    ██ ████   ██",
-	"  ██   ██ ██████  ██      ███████ ██ ██      ██    ██ ██ ██  ██",
-	"  ██   ██ ██   ██ ██      ██   ██ ██ ██      ██    ██ ██  ██ ██",
-	"  ██████  ██   ██  ██████ ██   ██ ██  ██████  ██████  ██   ████",
+	" ██████   ██████   ██████  ██    ██  ███████  ██████   ██████  ██    ██",
+	"██    ██  ██   ██ ██       ██    ██     ██   ██       ██    ██ ███   ██",
+	"██    ██  ██████  ██       █████████   ██   ██       ██    ██ ██ ██ ██",
+	"██    ██  ██  ██  ██       ██    ██     ██   ██       ██    ██ ██  ████",
+	" ██████   ██   ██  ██████  ██    ██  ███████  ██████   ██████  ██    ██",
 }
 
 const welcomeTagline = "Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control."
@@ -1597,10 +1601,36 @@ func (s *chatStore) setReconnecting(convID string, on bool) {
 	s.mu.Unlock()
 }
 
+// mergeHistory folds the durable transcript UNDER the live chunks: the
+// durable rows are authoritative for everything already persisted, and the
+// live rows carry only what has not landed yet.
+//
+// Dedupe is required here: the composer appends an OPTIMISTIC user row
+// (Key "draft-*") the moment a message is sent, and the durable transcript
+// then arrives containing that same user message. Blind concatenation printed
+// the operator's text twice — and, because live rows were appended AFTER
+// history, the optimistic copy landed at the BOTTOM of the conversation,
+// below the reply (operator report). Dropping the optimistic row once history
+// carries its text also restores the correct chronological order: history is
+// built oldest-first, so the user row sits above the assistant's reply.
 func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	s.mu.Lock()
 	live := s.items[convID]
-	s.items[convID] = append(append([]chat.ChatItem{}, history...), live...)
+	// Index the durable user texts so an optimistic echo can be identified.
+	durableUser := map[string]bool{}
+	for _, it := range history {
+		if it.Kind == chat.KindUser {
+			durableUser[it.Text] = true
+		}
+	}
+	kept := make([]chat.ChatItem, 0, len(live))
+	for _, it := range live {
+		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && durableUser[it.Text] {
+			continue // the durable copy supersedes the optimistic echo
+		}
+		kept = append(kept, it)
+	}
+	s.items[convID] = append(append([]chat.ChatItem{}, history...), kept...)
 	s.mu.Unlock()
 }
 

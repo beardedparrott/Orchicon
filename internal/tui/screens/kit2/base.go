@@ -613,7 +613,16 @@ func (b *Base) RequestDetail(src, id string) tea.Cmd {
 	}
 }
 
-// View renders the source panes + detail, all inside kit2 Panels.
+// View renders the screen's panes.
+//
+// TWO PANES ONLY, matching the GUI: the FOCUSED source pane on the left and
+// the detail pane on the right. The old behaviour drew EVERY source side by
+// side, so a screen with three or four sources (Work carries Projects / Work
+// Items / Runtime Images) squeezed them into columns a few runes wide —
+// "it is showing everything on the screen at once in small panes" — and left
+// no room for a usable detail pane. The remaining sources stay reachable via
+// left/right (and the tab dropdown), and the detail pane is where a selected
+// entity is inspected and edited (its action bar drives the mutations).
 func (b *Base) View() string {
 	if b.Stream != nil && b.Stream.Title != "" {
 		return b.streamView()
@@ -624,25 +633,7 @@ func (b *Base) View() string {
 	if len(b.sources) == 0 {
 		return b.detail.View()
 	}
-	ws := b.regionWidths()
-	panels := make([]string, 0, len(b.sources)+1)
-	for i, s := range b.sources {
-		s.table.Width, s.table.Height = ws[i], b.paneHeight()
-		s.table.Focused = i == b.active && !b.focusD
-		p := NewPanel(s.title, ws[i], b.height)
-		p.Focused = s.table.Focused
-		p.SetContent(s.table.View())
-		panels = append(panels, p.View())
-	}
-	dpanel := NewPanel("Detail", ws[len(ws)-1], b.height)
-	dpanel.Focused = b.focusD
-	dpanel.SetContent(b.detail.View())
-	panels = append(panels, dpanel.View())
-	out := JoinRow(panels...)
-	if b.Bar != nil {
-		out += "\n" + b.Bar.View()
-	}
-	return out
+	return b.SinglePane(b.width, b.height)
 }
 
 func (b *Base) paneHeight() int { return b.height }
