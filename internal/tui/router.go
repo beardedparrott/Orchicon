@@ -213,6 +213,18 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if mo, ok := msg.(tea.MouseMsg); ok {
 		return m.dispatchMouse(mo)
 	}
+	// A screen may CLAIM the keyboard while a text-input overlay is open (the
+	// enforcement screen's policy editor / approval reason): every key must
+	// reach the editor VERBATIM, so the global chords (q quit, d/D diff
+	// toggle, y copy, ? help) and the composer never eat them mid-typing — a
+	// Rego body is full of d/q/y letters. ctrl+c stays the hard escape.
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() != "ctrl+c" {
+		if s := m.screens[m.active]; s != nil {
+			if kc, ok := s.(interface{ ClaimsKeys() bool }); ok && kc.ClaimsKeys() {
+				return m.passToScreen(msg)
+			}
+		}
+	}
 	k, isKey := msg.(tea.KeyMsg)
 	if isKey && m.chatFocus == focusComposer && k.String() == "ctrl+c" {
 		// hard escape: quit always works, even mid-composition

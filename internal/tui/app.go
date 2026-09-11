@@ -196,7 +196,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
 		TabExecution:   func() Screen { s := execution.New(cl, m.reg, ""); s.SetShell(m); return s },
 		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
-		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg, "") },
+		TabEnforcement: func() Screen { s := enforcement.New(cl, m.reg, ""); s.SetShell(m); return s },
 		TabControl:     func() Screen { return control.New(cl, m.reg) },
 	}
 	// The slash registry is generated from the screens' Sources() (the
@@ -1416,6 +1416,27 @@ func (m *App) interjectExecution(execID, text string) tea.Cmd {
 
 // interjectOKMsg confirms the interjection landed (dock notice).
 type interjectOKMsg struct{ execID string }
+
+// EnforcementDockNotice / EnforcementDockError are the enforcement screen's
+// dock surface (the screen holds the shell as `any` and type-asserts these):
+// every write's outcome lands in the composer dock. A plane refusal is passed
+// through VERBATIM — an approval/policy decision the plane rejects is never a
+// silent no-op.
+func (m *App) EnforcementDockNotice(s string) {
+	if s == "" {
+		return
+	}
+	m.dock.SetError("")
+	m.dock.SetNotice(s)
+}
+
+// EnforcementDockError puts a refusal on the dock's error strip verbatim.
+func (m *App) EnforcementDockError(s string) {
+	if s == "" {
+		return
+	}
+	m.dock.SetError(s)
+}
 
 // setFocus moves focus between the content pane and the composer,
 // syncing the dock's textarea.
