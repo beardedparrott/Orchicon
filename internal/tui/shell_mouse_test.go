@@ -31,6 +31,7 @@ func TestMouseRailToggle(t *testing.T) {
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
+	app.chatConvID = "conv-mouse" // leave the launch layout so the rail renders
 	if !app.railVisible() {
 		t.Fatal("the conversations rail must be on for Ask (MVP1)")
 	}

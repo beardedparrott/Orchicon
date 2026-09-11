@@ -1192,11 +1192,50 @@ func (m App) welcomeMode() bool {
 	return true
 }
 
-// centeredWelcomeView renders the launch block — brand, the composer box, and
-// the product line — vertically centered in the w×h body region. The composer
-// keeps its own rendering (border, hint row, palette target); only its width
-// and position change, so typing, slash commands and drafts behave identically
-// to the docked layout.
+// welcomeBrand is the launch lockup: block letters plus the product line
+// underneath. Rendered only in the launch layout (no session yet), so it never
+// competes with the transcript for space.
+var welcomeBrand = []string{
+	"  ██████  ██████   ██████ ██   ██ ██  ██████  ██████  ███    ██",
+	"  ██   ██ ██   ██ ██      ██   ██ ██ ██      ██    ██ ████   ██",
+	"  ██   ██ ██████  ██      ███████ ██ ██      ██    ██ ██ ██  ██",
+	"  ██   ██ ██   ██ ██      ██   ██ ██ ██      ██    ██ ██  ██ ██",
+	"  ██████  ██   ██  ██████ ██   ██ ██  ██████  ██████  ██   ████",
+}
+
+const welcomeTagline = "Ask Orchicon anything. Plan, execute, and govern with real-time clarity and thin control."
+
+// wrapPlain word-wraps s to width runes (used for the launch tagline).
+func wrapPlain(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	words := strings.Fields(s)
+	var out []string
+	line := ""
+	for _, w := range words {
+		if line == "" {
+			line = w
+			continue
+		}
+		if len([]rune(line))+1+len([]rune(w)) <= width {
+			line += " " + w
+			continue
+		}
+		out = append(out, line)
+		line = w
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
+// centeredWelcomeView renders the launch block — the large brand lockup, the
+// composer box, and the tagline — vertically centered in the w×h body region.
+// The composer keeps its own rendering (border, hint row, palette target);
+// only its width and position change, so typing, slash commands and drafts
+// behave identically to the docked layout.
 func (m App) centeredWelcomeView(w, h int) []string {
 	boxW := w * 2 / 3
 	if boxW > 76 {
@@ -1212,13 +1251,33 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	d.Width = boxW
 	boxLines := strings.Split(d.View(), "\n")
 
-	brand := theme.ListTitle.Render("Orchicon")
-	prompt := theme.HintText.Render("Ask anything.")
+	// The wordmark falls back to a plain bold title on terminals too narrow for
+	// the block letters (they are ~63 cells wide), so the launch screen never
+	// wraps or truncates mid-glyph.
+	brandW := lipgloss.Width(welcomeBrand[0])
+	var brand []string
+	if w >= brandW+4 {
+		for _, l := range welcomeBrand {
+			brand = append(brand, theme.ListTitle.Render(l))
+		}
+	} else {
+		brand = append(brand, theme.ListTitle.Render("Orchicon"))
+	}
+
+	// The tagline wraps to the composer's width so it reads as subtext rather
+	// than a single over-long line.
+	var tagline []string
+	for _, l := range wrapPlain(welcomeTagline, boxW) {
+		tagline = append(tagline, theme.HintText.Render(l))
+	}
 
 	var block []string
-	block = append(block, "", brand, "")
+	block = append(block, "")
+	block = append(block, brand...)
+	block = append(block, "")
 	block = append(block, boxLines...)
-	block = append(block, "", prompt)
+	block = append(block, "")
+	block = append(block, tagline...)
 
 	// Vertically center the block in the region, then center each line
 	// horizontally inside w cells.

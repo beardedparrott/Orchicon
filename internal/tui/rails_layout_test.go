@@ -25,14 +25,14 @@ import (
 
 var railSizes = [][2]int{{80, 24}, {120, 40}}
 
-// newRailsApp builds a shell on the Ask tab at the given size, wired with the
-// REAL ask screen so the conversation pane is the thing under test (a stub
-// would hide the duplicate/absence bugs these tests exist to catch).
+// newRailsApp builds a shell on Ask with a session OPEN (so the rail renders —
+// the launch layout deliberately hides the conversations list).
 func newRailsApp(w, h int) *App {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))
 	m.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
 	m.SwitchTo(TabAsk)
+	m.chatConvID = "conv-rails"
 	return m
 }
 

@@ -48,7 +48,17 @@ const railTopRow = tabBarRows + 1
 // have it on"). The Ask screen therefore renders its transcript only — the
 // rail owns the list, its selection and its mouse hit-test, so there is
 // exactly ONE conversation list (the old duplicate drew three columns).
-func (m *App) railVisible() bool { return m.active == TabAsk }
+// railVisible reports whether the Ask right rail should be rendered.
+//
+// Always on for Ask EXCEPT in the launch layout: the operator wants the first
+// screen to be just the brand + composer (no conversations list), and the list
+// appears once a session starts.
+func (m *App) railVisible() bool {
+	if m.active != TabAsk {
+		return false
+	}
+	return !m.welcomeMode()
+}
 
 // toggleRightRail collapses/expands the Ask conversations rail (ctrl+r).
 // When the rail is up but its last load FAILED, ctrl+r retries in place

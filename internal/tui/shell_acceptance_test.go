@@ -209,6 +209,7 @@ func TestAskTwoRailsPins(t *testing.T) {
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
+	app.chatConvID = "conv-askpins" // leave the launch layout so the rail renders
 	v := app.View()
 	if !strings.Contains(v, "Conversations") {
 		t.Fatal("the conversations rail (right) is missing from the Ask view")

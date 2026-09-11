@@ -31,8 +31,18 @@ func TestLaunchLayoutCentersComposerUntilSessionStarts(t *testing.T) {
 		}
 
 		plain := lipglossStrip(v)
-		if !strings.Contains(plain, "Orchicon") {
-			t.Fatalf("%dx%d: launch layout is missing the brand", w, h)
+		if !strings.Contains(plain, "██") {
+			t.Fatalf("%dx%d: launch layout is missing the block-letter brand", w, h)
+		}
+		if !strings.Contains(plain, "Ask Orchicon anything") {
+			t.Fatalf("%dx%d: launch layout is missing the tagline", w, h)
+		}
+		// The conversations list must NOT be on the launch screen.
+		if strings.Contains(plain, "Conversations") {
+			t.Fatalf("%dx%d: the conversations rail must be hidden at launch", w, h)
+		}
+		if m.railVisible() {
+			t.Fatalf("%dx%d: railVisible must be false in the launch layout", w, h)
 		}
 		// The composer must be OUT of the bottom dock block: the dock rows are
 		// the last dock.Lines() rows above the footer.
