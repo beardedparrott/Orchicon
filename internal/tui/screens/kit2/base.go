@@ -638,6 +638,42 @@ func (b *Base) View() string {
 
 func (b *Base) paneHeight() int { return b.height }
 
+// SinglePane is the hub-screen layout: the FOCUSED source pane beside the
+// detail pane. A screen with many sources (Control carries nine) renders one
+// pane at a time — a nine-across grid truncates every cell to a handful of
+// runes, so the operator can read nothing. Left/right (and Shift+Tab) still
+// cycle the source ring; the panel title names the focused pane.
+func (b *Base) SinglePane(w, h int) string {
+	if w < 1 || h < 1 {
+		return ""
+	}
+	ws := SplitWidths(w, 2, 1)
+	return JoinRow(b.focusedPaneView(ws[0], h), b.detailPaneView(ws[1], h))
+}
+
+// focusedPaneView renders the focused source pane sized to exactly w×h.
+func (b *Base) focusedPaneView(w, h int) string {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return NewPanel("", w, h).View()
+	}
+	s := b.sources[b.active]
+	s.table.Width, s.table.Height = w, h
+	s.table.Focused = !b.focusD
+	p := NewPanel(s.title, w, h)
+	p.Focused = s.table.Focused
+	p.SetContent(s.table.View())
+	return p.View()
+}
+
+// detailPaneView renders the detail pane sized to exactly w×h.
+func (b *Base) detailPaneView(w, h int) string {
+	b.detail.Width, b.detail.Height = w, h
+	p := NewPanel("Detail", w, h)
+	p.Focused = b.focusD
+	p.SetContent(b.detail.View())
+	return p.View()
+}
+
 func (b *Base) streamView() string {
 	p := NewPanel(b.Stream.Title, b.width, b.height-1)
 	p.Focused = true

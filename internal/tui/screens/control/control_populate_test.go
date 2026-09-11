@@ -42,7 +42,8 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// registers all seven sources with non-nil fetch functions.
 	want := map[string]bool{
 		"workers": false, "images": false, "secrets": false, "mcp": false,
-		"providers": false, "webhooks": false, "settings": false,
+		"providers": false, "webhooks": false, "adapters": false,
+		"settings": false, "admin": false,
 	}
 	for _, s := range m.Base.SourcesForTest() {
 		if _, ok := want[s.Name]; !ok {
