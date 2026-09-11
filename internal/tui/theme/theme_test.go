@@ -20,7 +20,8 @@ func TestStylesConstruct(t *testing.T) {
 		Footer.Render("footer") + FooterVersionDrift.Render("drift") +
 		ListTitle.Render("t") + ListItem.Render("i") + ListItemSelected.Render("s") +
 		ListMeta.Render("m") + DetailKey.Render("k") + DetailValue.Render("v") +
-		PaneBorder.Render("pane") + StatusOK.Render("ok") + StatusWarn.Render("w") +
+		PaneBorder.Render("pane") + ComposerBox.Render("box") +
+		StatusOK.Render("ok") + StatusWarn.Render("w") +
 		StatusErr.Render("e") + StatusBusy.Render("b") + HelpOverlay.Render("help") +
 		ErrorText.Render("err") + HintText.Render("hint") + SpinnerStyle.Render("*") +
 		DiffAdd.Render("+a") + DiffDel.Render("-d") + DiffCtx.Render(" c") +

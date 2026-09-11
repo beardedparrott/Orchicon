@@ -23,10 +23,10 @@ import (
 
 // palette is the composer '/' overlay state.
 type palette struct {
-	open  bool
-	query string // the slash prefix typed so far ("" for first '/')
-	sel    int // selected index into the filtered candidate list
-	scroll int // viewport offset so the palette never overflows a short terminal
+	open   bool
+	query  string // the slash prefix typed so far ("" for first '/')
+	sel    int    // selected index into the filtered candidate list
+	scroll int    // viewport offset so the palette never overflows a short terminal
 	// connect state: /connect opens an in-place re-auth overlay — the FULL
 	// first-run connection screen (URL + auth-method toggle + credential
 	// field) hosted inside the running shell. It never tears down
@@ -113,15 +113,19 @@ func (m *App) paletteSelected() *SlashCommand {
 	return nil
 }
 
+// paletteBoxChrome is the palette overlay's own chrome height: the header
+// row + the rounded border (2) + the vertical padding (2).
+const paletteBoxChrome = 5
+
 // paletteVisibleRows is how many candidate rows the floating palette can
-// render given the terminal height. The palette floats ABOVE the composer
-// (Phase 2a): its box must fit between the tab chrome and the composer
-// line without ever covering the composer row (header + border + padding
-// consume ~6 rows). Bounding keeps the overlay from overflowing a short
-// terminal (e.g. 80×24, where an unbounded list of ~20 commands would
-// scroll off).
+// render given the terminal height. The palette floats ABOVE the boxed
+// composer (Composer 2.0): its bottom edge sits one row above the composer
+// box's top border, so the candidates get every row between the tab chrome
+// and the composer box, minus the palette's own chrome. Bounding keeps the
+// overlay from overflowing a short terminal (e.g. 80×24, where an unbounded
+// list of ~35 commands would scroll off and cover the composer).
 func (m *App) paletteVisibleRows() int {
-	vis := m.height - m.dock.Lines() - 6
+	vis := (m.height - 1 - m.dock.Lines()) - (tabBarRows + 1) - paletteBoxChrome
 	if vis < 3 {
 		return 3
 	}
@@ -172,10 +176,11 @@ func (m *App) ensurePaletteSelVisible() {
 	m.clampPaletteScroll()
 }
 
-// paletteComposerView composes the palette box floating ABOVE the
-// composer: the box's bottom edge sits on the composer line, so the
-// composer line + the user's typed text stay fully visible while the
-// palette filters (operator complaint: the centered popup hid the input).
+// paletteComposerView composes the palette box floating ABOVE the boxed
+// composer: the palette's bottom edge sits one row above the composer
+// box's top border, so the composer box + the typed text stay fully
+// visible while the palette filters (operator complaint: the centered
+// popup hid the input).
 func (m *App) paletteComposerView(base string) string {
 	box := m.paletteView()
 	if box == "" {
@@ -183,9 +188,11 @@ func (m *App) paletteComposerView(base string) string {
 	}
 	rows := strings.Split(base, "\n")
 	bh := len(strings.Split(box, "\n"))
-	// The composer input line is the second line of the dock block (chip
-	// first); its absolute row is h - dock.Lines(). The box ends there.
-	top := len(rows) - m.dock.Lines() - bh
+	// The composer BOX occupies the dock block's rows: its top border is
+	// the block's first row, at h - 1 - dock.Lines(). The palette's bottom
+	// edge sits one row above that, so the whole boxed composer — border,
+	// padding, typed text and affordance row — stays visible.
+	top := len(rows) - 1 - m.dock.Lines() - bh
 	if top < tabBarRows+1 {
 		top = tabBarRows + 1
 	}
@@ -229,8 +236,16 @@ func (m *App) paletteView() string {
 		}
 		for i := lo; i < hi; i++ {
 			c := m.palette.filter[i]
-			line := "  " + c.Name
-			pad := 30 - len(c.Name)
+			// Usage + description per row (Composer 2.0): the usage is what
+			// the operator would type (args included), the description says
+			// what it does — both straight from the slash registry, so the
+			// palette can never drift from /help.
+			usage := c.Usage
+			if usage == "" {
+				usage = c.Name
+			}
+			line := "  " + usage
+			pad := 26 - len(usage)
 			if pad < 1 {
 				pad = 1
 			}

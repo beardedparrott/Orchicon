@@ -1528,11 +1528,15 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 // setChatError maps a chat failure to the dock error strip (401 gets
 // the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
+	// A failed send must not lose the operator's message: put the draft
+	// back in the composer (RestoreDraft never clobbers text typed since).
 	if chat.IsAuthExpired(err) {
 		m.setReauthBanner()
+		m.dock.RestoreDraft()
 		return
 	}
 	m.dock.SetError(where + ": " + err.Error())
+	m.dock.RestoreDraft()
 }
 
 func (m *App) setChatErrorPlain(errText string) {
