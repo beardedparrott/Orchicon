@@ -175,7 +175,7 @@ func (m *App) menuSize(tm *TabMenu) (int, int) {
 			w = n
 		}
 	}
-	w += 4 // panel border + inner gutter
+	w += 4                   // panel border + inner gutter
 	h := len(tm.Entries) + 4 // border + header + rows + border
 	if h > m.height-tabBarRows {
 		h = m.height - tabBarRows

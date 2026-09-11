@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -27,6 +27,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/control"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/enforcement"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/execution"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/overview"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
@@ -74,6 +75,12 @@ var Tabs = []Tab{
 // screenkit interface so shell code stays short).
 type Screen = screenkit.Screen
 
+// DockError / DockNotice are the shell hooks screens use to surface
+// mutation feedback (the kit2 mutate.Executor sink) in the always-present
+// chat dock.
+func (m *App) DockError(msg string)  { m.dock.SetError(msg) }
+func (m *App) DockNotice(msg string) { m.dock.SetNotice(msg) }
+
 // focusMode is where keyboard focus lives: the content pane (screens
 // keep tab chords + editing) or the chat composer (global tab chords
 // fall through to readline editing inside the input).
@@ -100,27 +107,35 @@ type App struct {
 	quitting  bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock               dock.Model
-	chat               *chat.Controller
-	chatStore          *chatStore    // guarded chatItems (stream goroutine writes)
-	chatWake           chan struct{} // live-chunk repaint poke (cap 1)
-	chatCmds           chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
-	chatFocus          focusMode
-	mouseEnabled       bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
-	palette            palette
-	slash              *slashRegistry
-	contextOverride    string // /context pin <desc>
+	dock            dock.Model
+	chat            *chat.Controller
+	chatStore       *chatStore    // guarded chatItems (stream goroutine writes)
+	chatWake        chan struct{} // live-chunk repaint poke (cap 1)
+	chatCmds        chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
+	chatFocus       focusMode
+	mouseEnabled    bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+	palette         palette
+	slash           *slashRegistry
+	contextOverride string // /context pin <desc>
 	// Tab dropdown submenus (Phase 2a): per-tab menus built from nav
 	// config; menuOpen = the tab whose dropdown is open ("" = closed).
-	menus     map[TabID]*TabMenu
-	menuOpen  TabID
-	navReg    []NavEntry
-	themes    []string
+	menus              map[TabID]*TabMenu
+	menuOpen           TabID
+	navReg             []NavEntry
+	themes             []string
 	reconnectRequested bool
 	chatConvID         string                     // active conversation ("" = none yet)
 	execSessions       map[string][]chat.ChatItem // execution id → durable session items
-	pendingDetail      tea.Cmd
-	lastScreenKeys     string
+
+	// Transcript Stream widgets (kit2): one per conversation. Live chunks
+	// APPEND (preserving the operator's scroll offset; following the tail
+	// only when already pinned at the bottom) instead of resetting the pane
+	// on every repaint. transcriptLines is each stream's last rendered line
+	// set, so an extension is an Append and anything else a reload.
+	chatStreams     map[string]*kit2.Stream
+	transcriptLines map[string][]string
+	pendingDetail   tea.Cmd
+	lastScreenKeys  string
 
 	// Diff sidebar (TUI sibling of the GUI DiffSidebar). The shell owns the
 	// open/tab/selected state so it persists across SwitchTo (the GUI
@@ -155,6 +170,14 @@ type App struct {
 	// pendingRailCmd carries the conversations-rail retry/reload cmd out of
 	// a route or a mouse handler that cannot return one directly.
 	pendingRailCmd tea.Cmd
+	// pendingScreenCmd carries a newly activated screen's first-load cmd
+	// out of SwitchTo (which cannot return one).
+	pendingScreenCmd tea.Cmd
+	// loaded records which screens have run their first load. Screens are
+	// constructed eagerly for the nav registry, so without this bookkeeping
+	// ONLY the startup tab ever fetched its lists — every other tab
+	// rendered "nothing here" with no error.
+	loaded map[TabID]bool
 }
 
 // DiffPaneWidth is the left rail width (cells). Mirrors the GUI's ~480px
@@ -164,12 +187,15 @@ const DiffPaneWidth = 48
 // NewApp builds the shell over an established client set.
 func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
 	m := &App{
-		clients:      cl,
-		profile:      profile,
-		reg:          subs.NewRegistry(),
-		screens:      map[TabID]Screen{},
-		chatStore:    &chatStore{items: map[string][]chat.ChatItem{}},
-		execSessions: map[string][]chat.ChatItem{},
+		clients:         cl,
+		profile:         profile,
+		reg:             subs.NewRegistry(),
+		screens:         map[TabID]Screen{},
+		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		execSessions:    map[string][]chat.ChatItem{},
+		loaded:          map[TabID]bool{},
+		chatStreams:     map[string]*kit2.Stream{},
+		transcriptLines: map[string][]string{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -252,6 +278,7 @@ func (m *App) SwitchTo(id TabID) {
 		} else {
 			m.EnsureSubscriptions(id)
 		}
+		m.ensureLoaded(id)
 		return
 	}
 	if old, ok := m.screens[m.active]; ok && old != nil {
@@ -290,6 +317,10 @@ func (m *App) SwitchTo(id TabID) {
 	if m.diffOpen {
 		m.refreshDiffOwner()
 	}
+	// A screen first reached this session runs its first load now: the nav
+	// registry builds every screen eagerly, so a lazily-activated screen
+	// would otherwise never fetch (every pane "nothing here").
+	m.ensureLoaded(id)
 }
 
 // EnsureSubscriptions starts the screen's live event streams if it has
@@ -304,12 +335,177 @@ func (m *App) EnsureSubscriptions(id TabID) {
 	}
 }
 
+// ensureLoaded runs a screen's first load (Init → Load) exactly once, when
+// it first becomes activatable. Screens are constructed eagerly for the nav
+// registry (buildNavEntries → screenForNav), so relying on App.Init alone
+// means the startup tab loads and every other tab renders an empty list.
+func (m *App) ensureLoaded(id TabID) {
+	if id == "" || m.loaded[id] {
+		return
+	}
+	s := m.screens[id]
+	if s == nil {
+		return
+	}
+	m.loaded[id] = true
+	m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, s.Init())
+}
+
+// drainStaged returns (once) every cmd staged by a route or mouse handler
+// that cannot return one directly: screen first-loads, diff-pane owner
+// setup, and conversations-rail reloads.
+func (m *App) drainStaged() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.pendingScreenCmd != nil {
+		cmds = append(cmds, m.pendingScreenCmd)
+		m.pendingScreenCmd = nil
+	}
+	if m.pendingDiffCmd != nil {
+		cmds = append(cmds, m.pendingDiffCmd)
+		m.pendingDiffCmd = nil
+	}
+	if m.pendingRailCmd != nil {
+		cmds = append(cmds, m.pendingRailCmd)
+		m.pendingRailCmd = nil
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// newChat drops the active conversation and returns Ask to its hero: the
+// next composer send creates a fresh conversation (the GUI's New chat).
+// The transcript starts EMPTY (the detail pane is cleared and the stream
+// for the new conversation has no lines yet).
+func (m *App) newChat() {
+	m.chatConvID = ""
+	if m.chat != nil {
+		m.chat.SetActive("")
+	}
+	m.SwitchTo(TabAsk)
+	m.EnsureSubscriptions(TabAsk)
+	if s := m.screens[TabAsk]; s != nil {
+		if nc, ok := s.(interface{ NewChat() }); ok {
+			nc.NewChat()
+		}
+		if st, ok := s.(interface {
+			SetDetailContent(title string, fields []screenkit.Field, body string)
+		}); ok {
+			st.SetDetailContent("New chat", nil, "")
+		}
+	}
+	m.updateContextChip()
+}
+
+// scrollKeyDelta maps the vertical keys to a line delta (0 = not a scroll
+// key).
+func scrollKeyDelta(key string) int {
+	switch key {
+	case "up":
+		return -3
+	case "down":
+		return 3
+	case "pgup":
+		return -12
+	case "pgdown":
+		return 12
+	}
+	return 0
+}
+
+// scrollActiveDetail scrolls the active screen's detail pane when it has
+// one (every list+detail screen embeds screenkit.Base.ScrollDetail). On the
+// Ask tab the transcript is the kit2 Stream, so vertical keys scroll IT
+// (the operator's scroll offset is what the Stream preserves across
+// appends).
+func (m *App) scrollActiveDetail(delta int) {
+	if m.active == TabAsk && m.chatConvID != "" {
+		m.ScrollTranscript(delta)
+		return
+	}
+	if s := m.screens[m.active]; s != nil {
+		if sc, ok := s.(interface{ ScrollDetail(int) }); ok {
+			sc.ScrollDetail(delta)
+		}
+	}
+}
+
 // ActiveTab returns the active tab ID.
 func (m *App) ActiveTab() TabID { return m.active }
 
 // NextTab / PrevTab cycle the tab bar.
 func (m *App) NextTab() { m.cycle(1) }
 func (m *App) PrevTab() { m.cycle(-1) }
+
+// tabRingNext advances the operator focus ring: chat prompt FIRST, then
+// the six area tabs in order, then back to the prompt. From the composer
+// Tab drops to the Ask tab's content; each further Tab advances to the
+// next tab's content; after Control it wraps back to the composer. Left /
+// right still switch tabs directly (content focus).
+func (m *App) tabRingNext() {
+	// One action per press: an open dropdown just closes (no focus move).
+	if m.TabMenu() != nil {
+		m.closeTabMenu()
+		return
+	}
+	if m.chatFocus == focusComposer {
+		m.setFocus(focusContent)
+		if m.active != TabAsk {
+			m.SwitchTo(TabAsk)
+		}
+		m.EnsureSubscriptions(TabAsk)
+		return
+	}
+	idx := 0
+	for i, t := range Tabs {
+		if t.ID == m.active {
+			idx = i
+			break
+		}
+	}
+	if idx >= len(Tabs)-1 {
+		// Control content → wrap back to the chat prompt.
+		m.setFocus(focusComposer)
+		return
+	}
+	m.SwitchTo(Tabs[idx+1].ID)
+	m.EnsureSubscriptions(Tabs[idx+1].ID)
+}
+
+// toggleSideRails pops the side rails (conversations right rail + diff
+// left pane) together — the secondary chrome toggle. Closing hides both;
+// opening restores both (the diff pane stays closed when it has no owner
+// — the existing no-op — and the rail refetches when unloaded/failed).
+func (m *App) toggleSideRails() {
+	if m.rightRailOpen || m.diffOpen {
+		m.rightRailOpen = false
+		if m.diffOpen {
+			m.closeDiffPane() // refreshes the layout
+		} else {
+			m.refreshLayout()
+		}
+		return
+	}
+	m.rightRailOpen = true
+	if m.convErr != "" || !m.convLoaded {
+		m.pendingRailCmd = m.reloadConversations()
+	}
+	m.refreshLayout()
+	// Stage the diff-pane setup alongside any rail reload: dispatch can
+	// only re-emit one staged cmd, so batch both here (non-nil only).
+	var cmds []tea.Cmd
+	if dc := m.openDiffPane(); dc != nil {
+		cmds = append(cmds, dc)
+	}
+	if rc := m.pendingRailCmd; rc != nil {
+		m.pendingRailCmd = nil
+		cmds = append(cmds, rc)
+	}
+	if len(cmds) > 0 {
+		m.pendingDiffCmd = tea.Batch(cmds...)
+	}
+}
 
 func (m *App) cycle(delta int) {
 	idx := 0
@@ -770,10 +966,13 @@ func (m *App) streamStatus() streamStatusString {
 // Init implements tea.Model.
 func (m *App) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	if s := m.screens[m.active]; s != nil {
-		cmds = append(cmds, s.Init())
-	}
+	// The startup tab loads here; every other tab loads on first activation
+	// (ensureLoaded, called from SwitchTo).
+	m.ensureLoaded(m.active)
 	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations())
+	if c := m.drainStaged(); c != nil {
+		cmds = append(cmds, c)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -1052,9 +1251,63 @@ func fillView(content string, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
+// bgOpaque re-asserts the theme background after every SGR reset inside l.
+//
+// Why: padScreenLine wraps a rendered line in ScreenBg once, but ANY inner
+// style (HintText, DetailValue, …) emits its own trailing \x1b[0m reset,
+// which turns the background OFF for the rest of the line — including all
+// of padScreenLine's padding spaces. On a terminal whose own background is
+// not the theme background (most terminals; transparent-background setups
+// especially), every cell after an inner reset renders UNPAINTED and the
+// terminal's content bleeds straight through the "opaque" frame.
+//
+// The fix mirrors what bubbletea's renderer does for its own cells: after
+// each reset, immediately re-emit the background SGR so every subsequent
+// cell (content or padding) stays on the theme background. A reset that is
+// immediately followed by another escape needs no repair (the next SGR
+// sets its own state and the next reset is caught then).
+func bgOpaque(l string) string {
+	const reset = "\x1b[0m"
+	bg := theme.ScreenBg
+	// The re-assert sequence: the same SGR ScreenBg emits, minus its own
+	// trailing reset. We derive it once from a zero-width render so the
+	// repair always matches the active theme + color profile.
+	paint := bg.Render("")
+	if paint == "" {
+		return l // profile off / no background: nothing to re-assert
+	}
+	// paint is "<SGR>…<reset>"; strip the trailing reset to get the open seq.
+	if !strings.HasSuffix(paint, reset) {
+		return l
+	}
+	open := strings.TrimSuffix(paint, reset)
+	if open == "" {
+		return l
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(l, reset)
+		if i < 0 {
+			b.WriteString(l)
+			return b.String()
+		}
+		rest := l[i+len(reset):]
+		b.WriteString(l[:i+len(reset)])
+		// Re-assert the background unless another SGR follows immediately
+		// (its own sequence will establish state, and its eventual reset
+		// gets repaired on the next loop iteration).
+		if !strings.HasPrefix(rest, "\x1b[") {
+			b.WriteString(open)
+		}
+		l = rest
+	}
+}
+
 // padScreenLine renders one row at exactly w cells: overlong lines are
 // ANSI-aware truncated, short lines background-padded. Every cell —
-// including padding — carries the theme's solid background.
+// including padding — carries the theme's solid background. Any inner
+// style's reset is followed by a background re-assert (bgOpaque), so the
+// padding can never render unpainted.
 func padScreenLine(l string, w int) string {
 	cols := lipgloss.Width(l)
 	if cols > w {
@@ -1064,7 +1317,7 @@ func padScreenLine(l string, w int) string {
 	if cols < w {
 		l += strings.Repeat(" ", w-cols)
 	}
-	return theme.ScreenBg.Render(l)
+	return bgOpaque(theme.ScreenBg.Render(l))
 }
 
 // ReconnectRequested reports whether the shell exited for /connect
@@ -1287,10 +1540,120 @@ func (m *App) onChatWake() tea.Cmd {
 	}); ok {
 		items := m.chatStore.snapshot(m.chatConvID)
 		title, fields := askS.RenderTranscript(items)
-		body := chat.RenderItems(chat.GroupByPhase(items), s.(interface{ DetailWidth() int }).DetailWidth())
-		st.SetDetailContent(title, fields, body)
+		w := s.(interface{ DetailWidth() int }).DetailWidth()
+		// The transcript renders through the kit2 Stream widget: an
+		// extension of the previous render APPENDS (the operator's scroll
+		// offset is preserved; the tail is followed only when already at the
+		// bottom), anything else (durable reload / turn resolution) resets.
+		str := m.transcriptStream(m.chatConvID, w, m.contentHeight())
+		m.syncTranscript(m.chatConvID, str, items, w)
+		if m.chatStore.isReconnecting(m.chatConvID) {
+			str.Notice = "reconnecting…"
+		} else {
+			str.Notice = ""
+		}
+		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil
+}
+
+// transcriptStream returns (creating + sizing) the kit2 Stream backing a
+// conversation's transcript.
+func (m *App) transcriptStream(convID string, w, h int) *kit2.Stream {
+	if m.chatStreams == nil {
+		m.chatStreams = map[string]*kit2.Stream{}
+	}
+	str := m.chatStreams[convID]
+	if str == nil {
+		str = kit2.NewStream("transcript", w, h)
+		m.chatStreams[convID] = str
+	}
+	str.SetSize(w, h)
+	return str
+}
+
+// syncTranscript renders the grouped transcript and folds it into the
+// stream: when the new render EXTENDS the previous one the extra lines are
+// appended (preserving scroll offset / following only at the bottom); any
+// other change replaces the lines (a reload re-pins to the tail).
+func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatItem, w int) {
+	if m.transcriptLines == nil {
+		m.transcriptLines = map[string][]string{}
+	}
+	body := chat.RenderItems(chat.GroupByPhase(items), w)
+	var lines []string
+	if body != "" {
+		lines = strings.Split(strings.TrimRight(body, "\n"), "\n")
+	}
+	prev := m.transcriptLines[convID]
+	if len(lines) >= len(prev) && linesPrefix(lines, prev) {
+		if len(lines) > len(prev) {
+			str.Append(lines[len(prev):]...)
+		}
+	} else {
+		str.SetLines(lines)
+	}
+	m.transcriptLines[convID] = append([]string{}, lines...)
+}
+
+// linesPrefix reports whether prefix is a line-for-line prefix of lines.
+func linesPrefix(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i, p := range prefix {
+		if lines[i] != p {
+			return false
+		}
+	}
+	return true
+}
+
+// TranscriptStream returns the Stream backing a conversation's transcript
+// (nil when that conversation has never rendered).
+func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStreams[convID] }
+
+// ScrollTranscript wheels the open transcript by delta lines (the operator
+// scroll offset the Stream preserves across appends).
+func (m *App) ScrollTranscript(delta int) {
+	if str := m.chatStreams[m.chatConvID]; str != nil {
+		str.Wheel(delta)
+	}
+}
+
+// onConversationMutated reconciles the conversations rail after a rename /
+// delete / mode write: a delete drops the row locally (and clears the
+// active conversation when it was the deleted one), then the rail refetches
+// from the live API so it can never drift.
+func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
+	if msg.Err != "" {
+		m.dock.SetError(msg.Op + " failed: " + msg.Err)
+		return m.reloadConversations()
+	}
+	if msg.Op == "delete" {
+		kept := m.conversations[:0]
+		for _, c := range m.conversations {
+			if c.ID != msg.ID {
+				kept = append(kept, c)
+			}
+		}
+		m.conversations = kept
+		if m.convSel >= len(m.conversations) {
+			m.convSel = max(0, len(m.conversations)-1)
+		}
+		if m.chatConvID == msg.ID {
+			m.chatConvID = ""
+			m.chat.SetActive("")
+			if s := m.screens[TabAsk]; s != nil {
+				if st, ok := s.(interface {
+					SetDetailContent(title string, fields []screenkit.Field, body string)
+				}); ok {
+					st.SetDetailContent("New chat", nil, "")
+				}
+			}
+		}
+	}
+	return m.reloadConversations()
 }
 
 // onStreamDone resolves a finished turn: the slot clears (future sends
@@ -1304,11 +1667,15 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 // setChatError maps a chat failure to the dock error strip (401 gets
 // the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
+	// A failed send must not lose the operator's message: put the draft
+	// back in the composer (RestoreDraft never clobbers text typed since).
 	if chat.IsAuthExpired(err) {
 		m.setReauthBanner()
+		m.dock.RestoreDraft()
 		return
 	}
 	m.dock.SetError(where + ": " + err.Error())
+	m.dock.RestoreDraft()
 }
 
 func (m *App) setChatErrorPlain(errText string) {
@@ -1362,11 +1729,15 @@ func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
 // sends the message into it (GUI CreateConversation pattern).
 func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	cl := m.clients
+	model := m.chat.PendingModel()
+	mode := m.chat.PendingMode()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		resp, err := cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
 			InitialMessage: text,
+			ModelRef:       model,
+			Mode:           mode,
 		}))
 		if err != nil {
 			return chat.ErrMsg{Where: "create conversation", Err: err}

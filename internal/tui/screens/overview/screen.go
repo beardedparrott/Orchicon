@@ -1,10 +1,11 @@
-// Package overview implements the Overview screen: the plane's aggregate
-// state in three GUI-parity sources — Dashboard (executions/work items by
-// status, worker + runtime-image health, recent activity), Telemetry
-// (traces list + span detail + the live StreamTelemetry), Cost Explorer
-// (usage/cost aggregation by provider + model + total) — plus the raw
-// Usage records table (`/usage`). Read-only: the GUI's Overview surfaces
-// expose no mutations (frontend/src/lib/nav-config.ts NAV_GROUPS[0]).
+// Package overview implements the Overview screen on the kit2 primitives:
+// the plane's aggregate state in three GUI-parity sources — Dashboard
+// (executions/work items by status, worker + runtime-image health, recent
+// activity), Telemetry (traces list + span detail + the live
+// StreamTelemetry), Cost Explorer (usage/cost aggregation by provider +
+// model + total) — plus the raw Usage records table (`/usage`). Read-only:
+// the GUI's Overview surfaces expose no mutations
+// (frontend/src/lib/nav-config.ts NAV_GROUPS[0]).
 package overview
 
 import (
@@ -20,6 +21,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/stream"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
@@ -28,7 +30,7 @@ import (
 
 // Model is the Overview screen.
 type Model struct {
-	screenkit.Base
+	kit2.Base
 	cl          *client.Clients
 	reg         *subs.Registry
 	tenantID    string // "" lets the plane resolve it from the credential
@@ -52,7 +54,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.Base.SetSourceEmpty("telemetry", "no traces in the window — the telemetry backend returned no spans (it may not be configured/reachable)")
 	m.Base.SetSourceEmpty("cost-explorer", "no usage records — the AI gateway recorded no LLM usage/cost in this window")
 	m.Base.SetSourceEmpty("usage", "no usage records — the AI gateway recorded no LLM calls in this window")
-	m.Base.SetStatuses([]screenkit.StatusMsg{
+	m.Base.SetStatuses([]kit2.StatusMsg{
 		{Name: "telemetry", Status: "idle"},
 	})
 	return m
@@ -86,15 +88,18 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	case subs.EventPokeMsg:
 		// A live telemetry event landed: refresh the panes that consume
 		// usage/trace data so the view stays current (the pokes are
-		// overflow-dropping, so a burst collapses to one reload).
+		// overflow-dropping, so a burst collapses to one refresh).
 		cmd := m.reg.WaitEventPoke("telemetry")
-		if msg.Name == "telemetry" {
-			switch m.Base.ActiveSourceName() {
-			case "telemetry", "cost-explorer", "usage":
-				return m, tea.Batch(cmd, m.Load())
+		if msg.Name != "telemetry" {
+			return m, cmd
+		}
+		cmds := []tea.Cmd{cmd}
+		for _, src := range []string{"telemetry", "cost-explorer", "usage"} {
+			if c := m.Base.Refresh(src); c != nil {
+				cmds = append(cmds, c)
 			}
 		}
-		return m, cmd
+		return m, tea.Batch(cmds...)
 
 	case subs.StatusMsg:
 		m.Base.SetStatus(msg.Name, string(msg.Status))
@@ -137,13 +142,13 @@ var dashOrder = []string{"executions", "work-items", "workers", "images", "activ
 type section struct {
 	title  string
 	meta   string
-	fields []screenkit.Field
+	fields []kit2.Field
 	body   string
 }
 
 // fetchDashboard aggregates the plane's state from the four read RPCs the
 // dashboard consumes (executions, work items, workers, runtime images).
-func (m *Model) fetchDashboard(ctx context.Context, _ string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchDashboard(ctx context.Context, _ string) ([]kit2.Item, string, error) {
 	d, anyData, err := m.dashboard(ctx)
 	if err != nil {
 		return nil, "", err
@@ -153,13 +158,13 @@ func (m *Model) fetchDashboard(ctx context.Context, _ string) ([]screenkit.Item,
 		// why) instead of five all-zero rows.
 		return nil, "", nil
 	}
-	items := make([]screenkit.Item, 0, len(dashOrder))
+	items := make([]kit2.Item, 0, len(dashOrder))
 	for _, id := range dashOrder {
 		sec, ok := d[id]
 		if !ok {
 			continue
 		}
-		items = append(items, screenkit.Item{ID: id, Title: sec.title, Meta: sec.meta})
+		items = append(items, kit2.Item{ID: id, Title: sec.title, Meta: sec.meta})
 	}
 	return items, "", nil
 }
@@ -208,14 +213,14 @@ func (m *Model) dashboard(ctx context.Context) (map[string]section, bool, error)
 	out["work-items"] = countSection("Work Items by status", wiBy, len(wiResp.Msg.GetWorkItems()))
 
 	workers := countSection("Workers", wBy, len(wResp.Msg.GetWorkers()))
-	workers.fields = append(workers.fields, screenkit.Field{
+	workers.fields = append(workers.fields, kit2.Field{
 		Key:   "health",
 		Value: fmt.Sprintf("%d published (active) · %d not published", wBy["published"], len(wResp.Msg.GetWorkers())-wBy["published"]),
 	})
 	out["workers"] = workers
 
 	images := countSection("Runtime Images", imBy, len(imResp.Msg.GetRuntimeImages()))
-	images.fields = append(images.fields, screenkit.Field{
+	images.fields = append(images.fields, kit2.Field{
 		Key:   "health",
 		Value: fmt.Sprintf("%d ready (usable) · %d failed", imBy["ready"], imBy["failed"]),
 	})
@@ -231,7 +236,7 @@ func (m *Model) dashboard(ctx context.Context) (map[string]section, bool, error)
 	out["activity"] = section{
 		title: "Recent activity",
 		meta:  fmt.Sprintf("%d execution(s) · newest first", len(exResp.Msg.GetExecutions())),
-		fields: []screenkit.Field{
+		fields: []kit2.Field{
 			{Key: "executions", Value: screenkit.FmtInt(len(exResp.Msg.GetExecutions()))},
 			{Key: "work items", Value: screenkit.FmtInt(len(wiResp.Msg.GetWorkItems()))},
 			{Key: "workers", Value: screenkit.FmtInt(len(wResp.Msg.GetWorkers()))},
@@ -251,10 +256,10 @@ func countSection(title string, by map[string]int, total int) section {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fields := []screenkit.Field{{Key: "total", Value: screenkit.FmtInt(total)}}
+	fields := []kit2.Field{{Key: "total", Value: screenkit.FmtInt(total)}}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		fields = append(fields, screenkit.Field{Key: k, Value: screenkit.FmtInt(by[k])})
+		fields = append(fields, kit2.Field{Key: k, Value: screenkit.FmtInt(by[k])})
 		parts = append(parts, k+" "+strconv.Itoa(by[k]))
 	}
 	meta := strconv.Itoa(total) + " total"
@@ -266,14 +271,14 @@ func countSection(title string, by map[string]int, total int) section {
 
 // ---- Telemetry --------------------------------------------------------
 
-func (m *Model) fetchTraces(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchTraces(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Telemetry.QueryTraces(ctx, connect.NewRequest(&apiv1.QueryTracesRequest{
 		Query: &apiv1.TelemetryQuery{Limit: 100, PageToken: pageToken},
 	}))
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.GetTraces()))
+	items := make([]kit2.Item, 0, len(resp.Msg.GetTraces()))
 	for _, tr := range resp.Msg.GetTraces() {
 		title := tr.GetRootSpanName()
 		if title == "" {
@@ -283,13 +288,13 @@ func (m *Model) fetchTraces(ctx context.Context, pageToken string) ([]screenkit.
 		if resp.Msg.GetDegraded() {
 			meta += " · degraded"
 		}
-		items = append(items, screenkit.Item{ID: tr.GetTraceId(), Title: title, Meta: meta})
+		items = append(items, kit2.Item{ID: tr.GetTraceId(), Title: title, Meta: meta})
 	}
 	return items, resp.Msg.GetNextPageToken(), nil
 }
 
 // traceDetail renders one trace: root fields + the span tree as body text.
-func (m *Model) traceDetail(ctx context.Context, id string) (string, []screenkit.Field, string, error) {
+func (m *Model) traceDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
 	resp, err := m.cl.Telemetry.QueryTraces(ctx, connect.NewRequest(&apiv1.QueryTracesRequest{
 		Query: &apiv1.TelemetryQuery{TraceId: id, Limit: 1},
 	}))
@@ -307,12 +312,12 @@ func (m *Model) traceDetail(ctx context.Context, id string) (string, []screenkit
 		tr = resp.Msg.GetTraces()[0]
 	}
 	if tr == nil {
-		return "Trace " + id, []screenkit.Field{
+		return "Trace " + id, []kit2.Field{
 			{Key: "trace", Value: id},
 			{Key: "note", Value: "trace not returned by the telemetry backend"},
 		}, "", nil
 	}
-	fields := []screenkit.Field{
+	fields := []kit2.Field{
 		{Key: "trace", Value: tr.GetTraceId()},
 		{Key: "root span", Value: tr.GetRootSpanName()},
 		{Key: "duration", Value: fmtDuration(tr.GetDurationUs())},
@@ -333,7 +338,7 @@ func (m *Model) traceDetail(ctx context.Context, id string) (string, []screenkit
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
-func (m *Model) fetchCost(ctx context.Context, _ string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, error) {
 	agg, err := m.usageAggregate(ctx)
 	if err != nil {
 		return nil, "", err
@@ -341,14 +346,14 @@ func (m *Model) fetchCost(ctx context.Context, _ string) ([]screenkit.Item, stri
 	return agg.items(), "", nil
 }
 
-func (m *Model) fetchUsage(ctx context.Context, _ string) ([]screenkit.Item, string, error) {
+func (m *Model) fetchUsage(ctx context.Context, _ string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.AIGateway.GetUsage(ctx, connect.NewRequest(&apiv1.GetUsageRequest{
 		TenantId: m.tenantID, PageSize: 500,
 	}))
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.GetRecords()))
+	items := make([]kit2.Item, 0, len(resp.Msg.GetRecords()))
 	for _, r := range resp.Msg.GetRecords() {
 		title := r.GetWorkerName()
 		if title == "" {
@@ -357,7 +362,7 @@ func (m *Model) fetchUsage(ctx context.Context, _ string) ([]screenkit.Item, str
 		if title == "" {
 			title = r.GetProvider() + "/" + r.GetModel()
 		}
-		items = append(items, screenkit.Item{
+		items = append(items, kit2.Item{
 			ID:    r.GetId(),
 			Title: title,
 			Meta:  fmt.Sprintf("%s/%s · %s tok · %s", r.GetProvider(), r.GetModel(), fmtTokens(r.GetTotalTokens()), fmtCost(r.GetCostUsd())),
@@ -382,14 +387,14 @@ func (m *Model) usageAggregate(ctx context.Context) (*usageAgg, error) {
 	return a, nil
 }
 
-func (m *Model) costDetail(ctx context.Context, id string) (string, []screenkit.Field, string, error) {
+func (m *Model) costDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
 	agg, err := m.usageAggregate(ctx)
 	if err != nil {
 		return "", nil, "", err
 	}
 	switch {
 	case id == "total":
-		return "Cost — total", []screenkit.Field{
+		return "Cost — total", []kit2.Field{
 			{Key: "total cost", Value: fmtCost(agg.cost)},
 			{Key: "total tokens", Value: screenkit.FmtInt64(agg.tokens)},
 			{Key: "records", Value: screenkit.FmtInt(agg.count)},
@@ -400,9 +405,9 @@ func (m *Model) costDetail(ctx context.Context, id string) (string, []screenkit.
 		p := strings.TrimPrefix(id, "provider:")
 		b := agg.providers[p]
 		if b == nil {
-			return "Cost — provider " + p, []screenkit.Field{{Key: "provider", Value: p}}, "", nil
+			return "Cost — provider " + p, []kit2.Field{{Key: "provider", Value: p}}, "", nil
 		}
-		return "Cost — provider " + p, []screenkit.Field{
+		return "Cost — provider " + p, []kit2.Field{
 			{Key: "provider", Value: p},
 			{Key: "cost", Value: fmtCost(b.cost)},
 			{Key: "tokens", Value: screenkit.FmtInt64(b.tokens)},
@@ -412,9 +417,9 @@ func (m *Model) costDetail(ctx context.Context, id string) (string, []screenkit.
 		mo := strings.TrimPrefix(id, "model:")
 		b := agg.models[mo]
 		if b == nil {
-			return "Cost — model " + mo, []screenkit.Field{{Key: "model", Value: mo}}, "", nil
+			return "Cost — model " + mo, []kit2.Field{{Key: "model", Value: mo}}, "", nil
 		}
-		return "Cost — model " + mo, []screenkit.Field{
+		return "Cost — model " + mo, []kit2.Field{
 			{Key: "model", Value: mo},
 			{Key: "cost", Value: fmtCost(b.cost)},
 			{Key: "tokens", Value: screenkit.FmtInt64(b.tokens)},
@@ -424,7 +429,7 @@ func (m *Model) costDetail(ctx context.Context, id string) (string, []screenkit.
 	return "", nil, "", nil
 }
 
-func (m *Model) usageDetail(ctx context.Context, id string) (string, []screenkit.Field, string, error) {
+func (m *Model) usageDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
 	resp, err := m.cl.AIGateway.GetUsage(ctx, connect.NewRequest(&apiv1.GetUsageRequest{
 		TenantId: m.tenantID, PageSize: 500,
 	}))
@@ -435,7 +440,7 @@ func (m *Model) usageDetail(ctx context.Context, id string) (string, []screenkit
 		if r.GetId() != id {
 			continue
 		}
-		fields := []screenkit.Field{
+		fields := []kit2.Field{
 			{Key: "id", Value: r.GetId()},
 			{Key: "provider", Value: r.GetProvider()},
 			{Key: "model", Value: r.GetModel()},
@@ -450,12 +455,12 @@ func (m *Model) usageDetail(ctx context.Context, id string) (string, []screenkit
 		}
 		return "Usage record", fields, "", nil
 	}
-	return "Usage record", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+	return "Usage record", []kit2.Field{{Key: "id", Value: id}}, "", nil
 }
 
 // ---- detail dispatch --------------------------------------------------
 
-func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
+func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Field, string, error) {
 	switch src {
 	case "dashboard":
 		d, _, err := m.dashboard(ctx)
@@ -465,7 +470,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		if sec, ok := d[id]; ok {
 			return sec.title, sec.fields, sec.body, nil
 		}
-		return "Dashboard", []screenkit.Field{{Key: "id", Value: id}}, "", nil
+		return "Dashboard", []kit2.Field{{Key: "id", Value: id}}, "", nil
 	case "telemetry":
 		return m.traceDetail(ctx, id)
 	case "cost-explorer":
@@ -487,8 +492,8 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 
 // ActiveSourceName / ActiveItem expose the Base focus state to the shell's
 // context engine.
-func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
-func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+func (m *Model) ActiveSourceName() string      { return m.Base.ActiveSourceName() }
+func (m *Model) ActiveItem() (kit2.Item, bool) { return m.Base.ActiveItem() }
 
 // ---- helpers ----------------------------------------------------------
 
@@ -582,18 +587,18 @@ func addTo(m map[string]*bucket, key string, r *apiv1.UsageRecord) {
 // items renders the cost-explorer list: the total first, then the provider
 // breakdown, then the model breakdown. Empty (no records) returns nil so
 // the pane's empty state fires.
-func (a *usageAgg) items() []screenkit.Item {
+func (a *usageAgg) items() []kit2.Item {
 	if a.count == 0 {
 		return nil
 	}
-	items := []screenkit.Item{{
+	items := []kit2.Item{{
 		ID:    "total",
 		Title: "Total",
 		Meta:  fmt.Sprintf("%s · %s tok · %d rec", fmtCost(a.cost), fmtTokens(a.tokens), a.count),
 	}}
 	for _, p := range sortedKeys(a.providers) {
 		b := a.providers[p]
-		items = append(items, screenkit.Item{
+		items = append(items, kit2.Item{
 			ID:    "provider:" + p,
 			Title: "By provider · " + p,
 			Meta:  fmt.Sprintf("%s · %s tok", fmtCost(b.cost), fmtTokens(b.tokens)),
@@ -601,7 +606,7 @@ func (a *usageAgg) items() []screenkit.Item {
 	}
 	for _, mo := range sortedKeys(a.models) {
 		b := a.models[mo]
-		items = append(items, screenkit.Item{
+		items = append(items, kit2.Item{
 			ID:    "model:" + mo,
 			Title: "By model · " + mo,
 			Meta:  fmt.Sprintf("%s · %s tok", fmtCost(b.cost), fmtTokens(b.tokens)),

@@ -68,6 +68,14 @@ type Controller struct {
 	active string
 	err    string // last dock-visible error ("" = none)
 
+	// pendingModel / pendingMode are the model + persona a NEW conversation
+	// is created with (the Ask-model picker + /mode). The Ask API has no
+	// update-model RPC, so a model change applies to the next new
+	// conversation (model_ref on CreateConversation) — matching the GUI's
+	// New chat, which also only sets model_ref at create time.
+	pendingModel string
+	pendingMode  apiv1.ConversationMode
+
 	seq int // chunk key sequence (st-/sr- keys like the GUI)
 
 	// store receives live chunks (the chat view); cmds receives follow-up
@@ -93,6 +101,8 @@ type Conversation struct {
 	Title     string
 	TurnInFly bool
 	MessageN  int32
+	ModelRef  string
+	Mode      apiv1.ConversationMode
 }
 
 // Registrar is the minimal subscription hook the controller needs
@@ -145,6 +155,22 @@ type TurnResolvedMsg struct {
 type ErrMsg struct {
 	Where string
 	Err   error
+}
+
+// ConversationCreatedMsg carries a freshly created conversation (the GUI's
+// CreateConversation). ConvID is empty when Err is set.
+type ConversationCreatedMsg struct {
+	ConvID   string
+	ModelRef string
+	Err      string
+}
+
+// ConversationMutatedMsg reports the outcome of a conversation write
+// (rename / delete / mode change) so the shell can reconcile the rail.
+type ConversationMutatedMsg struct {
+	Op  string // "rename" | "delete" | "mode"
+	ID  string
+	Err string
 }
 
 // StreamDoneMsg marks the goroutine forwarding loop ended (exported —
@@ -208,6 +234,108 @@ func (c *Controller) setErr(where string, err error) {
 
 // --- tea.Cmd factories ----------------------------------------------------
 
+// SetPendingModel records the model a NEW conversation is created with.
+func (c *Controller) SetPendingModel(ref string) {
+	c.mu.Lock()
+	c.pendingModel = ref
+	c.mu.Unlock()
+}
+
+// PendingModel returns the model new conversations are created with.
+func (c *Controller) PendingModel() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingModel
+}
+
+// SetPendingMode records the persona a NEW conversation is created with.
+func (c *Controller) SetPendingMode(mode apiv1.ConversationMode) {
+	c.mu.Lock()
+	c.pendingMode = mode
+	c.mu.Unlock()
+}
+
+// PendingMode returns the persona new conversations are created with.
+func (c *Controller) PendingMode() apiv1.ConversationMode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingMode
+}
+
+// ParseMode maps a user-typed persona to the proto enum (case-insensitive).
+func ParseMode(s string) (apiv1.ConversationMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "brainstorm":
+		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM, true
+	}
+	return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED, false
+}
+
+// CreateConversation creates a conversation with the given model + persona
+// (the GUI's New chat: model_ref + mode are create-time fields).
+func (c *Controller) CreateConversation(modelRef string, mode apiv1.ConversationMode, initialMessage string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
+			ModelRef:       modelRef,
+			InitialMessage: initialMessage,
+			Mode:           mode,
+		}))
+		if err != nil {
+			return ConversationCreatedMsg{Err: err.Error()}
+		}
+		cv := resp.Msg.GetConversation()
+		return ConversationCreatedMsg{ConvID: cv.GetId(), ModelRef: cv.GetModelRef()}
+	}
+}
+
+// RenameConversation persists a conversation title (UpdateConversationTitle).
+func (c *Controller) RenameConversation(id, title string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.UpdateConversationTitle(ctx, connect.NewRequest(&apiv1.UpdateConversationTitleRequest{
+			Id:    id,
+			Title: title,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "rename", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "rename", ID: id}
+	}
+}
+
+// DeleteConversation deletes a conversation and all its messages.
+func (c *Controller) DeleteConversation(id string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.DeleteConversation(ctx, connect.NewRequest(&apiv1.DeleteConversationRequest{Id: id}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "delete", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "delete", ID: id}
+	}
+}
+
+// SetConversationMode switches the conversation's persona (SetConversationMode).
+// The change applies from the NEXT message on — no session change.
+func (c *Controller) SetConversationMode(id string, mode apiv1.ConversationMode) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.SetConversationMode(ctx, connect.NewRequest(&apiv1.SetConversationModeRequest{
+			Id:   id,
+			Mode: mode,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "mode", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "mode", ID: id}
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
@@ -224,6 +352,8 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				Title:     cv.GetTitle(),
 				TurnInFly: cv.GetTurnInFlight(),
 				MessageN:  cv.GetMessageCount(),
+				ModelRef:  cv.GetModelRef(),
+				Mode:      cv.GetMode(),
 			})
 		}
 		return ConversationsMsg{Convs: convs}

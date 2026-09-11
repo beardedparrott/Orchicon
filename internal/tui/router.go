@@ -8,6 +8,8 @@ package tui
 // touching screen code.
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -43,19 +45,38 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
-			Name: "next tab", Keys: "right / tab", Scope: "global",
+			// OPERATOR SPEC (Phase-3.5 finding 3): Tab is the focus ring —
+			// chat prompt FIRST, then the six area tabs in order, then back
+			// to the prompt. From the composer Tab drops to the current
+			// tab's content; each further Tab advances to the next tab's
+			// content; after Control it wraps back to the composer. Left /
+			// right still switch tabs directly (content focus).
+			Name: "focus ring", Keys: "tab", Scope: "global",
 			Match: func(msg tea.Msg) bool {
 				k, ok := msg.(tea.KeyMsg)
-				return ok && (k.String() == "right" || k.String() == "tab")
+				return ok && k.String() == "tab"
 			},
+			Handle: func(m *App, _ tea.Msg) bool { m.tabRingNext(); return true },
+		},
+		{
+			// Shift+Tab pops the side rails (conversations right rail +
+			// diff left pane) together — the secondary chrome toggle.
+			Name: "toggle side rails", Keys: "shift+tab", Scope: "global",
+			Match: func(msg tea.Msg) bool {
+				k, ok := msg.(tea.KeyMsg)
+				return ok && k.String() == "shift+tab"
+			},
+			Handle: func(m *App, _ tea.Msg) bool { m.toggleSideRails(); return true },
+		},
+		{
+			// Left / right switch tabs directly (content focus).
+			Name: "next tab", Keys: "right", Scope: "global",
+			Match:  keyMatcher("right"),
 			Handle: func(m *App, _ tea.Msg) bool { m.NextTab(); return true },
 		},
 		{
-			Name: "previous tab", Keys: "left / shift+tab", Scope: "global",
-			Match: func(msg tea.Msg) bool {
-				k, ok := msg.(tea.KeyMsg)
-				return ok && (k.String() == "left" || k.String() == "shift+tab")
-			},
+			Name: "previous tab", Keys: "left", Scope: "global",
+			Match:  keyMatcher("left"),
 			Handle: func(m *App, _ tea.Msg) bool { m.PrevTab(); return true },
 		},
 		{
@@ -187,7 +208,8 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		// Reflow the screen + dock (and the diff pane rail) to the new size,
 		// accounting for the pane when it is open.
 		m.refreshLayout()
-		// First layout: start the active screen's live streams.
+		// First layout: run the active screen's first load + live streams.
+		m.ensureLoaded(m.active)
 		m.EnsureSubscriptions(m.active)
 		return m, nil
 	}
@@ -268,6 +290,16 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// the dock must never swallow async traffic.
 	if m.chatFocus == focusComposer {
 		if k, isKeyMsg := msg.(tea.KeyMsg); isKeyMsg {
+			// Empty composer: the vertical keys scroll the active pane (the
+			// GUI's transcript scroll). With text in the buffer the textarea
+			// keeps them for cursor movement.
+			if strings.TrimSpace(m.dock.Value()) == "" {
+				if d := scrollKeyDelta(k.String()); d != 0 {
+					m.scrollActiveDetail(d)
+					m.footer.StreamStatus = m.streamStatus()
+					return m, nil
+				}
+			}
 			if composerBypassKeys[k.String()] {
 				// structural chord: skip the composer, the routes below
 				// own it (switchTab routes, quit, rail toggle).
@@ -312,12 +344,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// A route may have staged a diff-pane setup cmd (e.g. the D
 			// toggle's openDiffPane); re-emit it. The route already consumed
 			// the message, so there is no screen fall-through here.
-			if m.pendingDiffCmd != nil {
-				cmd := m.pendingDiffCmd
-				m.pendingDiffCmd = nil
-				return m, cmd
-			}
-			if c := m.drainRailCmd(); c != nil {
+			if c := m.drainStaged(); c != nil {
 				return m, c
 			}
 			return m, nil
@@ -418,12 +445,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 		if r.Handle(m, mo) {
 			m.footer.StreamStatus = m.streamStatus()
-			if m.pendingDiffCmd != nil {
-				cmd := m.pendingDiffCmd
-				m.pendingDiffCmd = nil
-				return m, cmd
-			}
-			if c := m.drainRailCmd(); c != nil {
+			if c := m.drainStaged(); c != nil {
 				return m, c
 			}
 			return m, nil
@@ -448,6 +470,14 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return nil
 	case chat.ConversationsMsg:
 		return tea.Batch(m.onConversations(msg), m.waitChat())
+	case chat.ConversationCreatedMsg:
+		if msg.Err != "" {
+			m.dock.SetError(msg.Err)
+			return m.waitChat()
+		}
+		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
+	case chat.ConversationMutatedMsg:
+		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
 	case chat.TranscriptMsg:
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:
@@ -461,6 +491,20 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.chatConvID = msg.convID
 		m.chat.SetActive(msg.convID)
 		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
+		// The new conversation has no detail open: without a RequestDetail
+		// the onChatWake DetailID()==chatConvID guard never passes and the
+		// fresh turn's chunks land in chatStore but never repaint (first
+		// send looks dead). Open the detail so the transcript surface
+		// follows the new conversation.
+		if s := m.screens[TabAsk]; s != nil {
+			if rd, ok := s.(interface {
+				RequestDetail(src, id string) tea.Cmd
+			}); ok {
+				if cmd := rd.RequestDetail("conversations", msg.convID); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
 		if m.diffOpen {
 			cmds = append(cmds, m.refreshDiffOwner())
 		}
