@@ -422,6 +422,9 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 		m.dock.SetError(fmt.Sprintf("unknown theme %q — available: %s", name, known))
 		return nil
 	}
+	// The composer captures textarea/cursor styles at construction, so a theme
+	// switch must re-pin them (otherwise the box keeps the old palette).
+	m.dock.ApplyTheme()
 	if m.profile != nil {
 		m.profile.Theme = name
 		if path, err := config.DefaultPath(); err == nil {

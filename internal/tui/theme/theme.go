@@ -415,7 +415,13 @@ func RepairAfterResets(s string, bg lipgloss.Style) string {
 		}
 		rest := s[i+len(reset):]
 		b.WriteString(s[:i+len(reset)])
-		if !strings.HasPrefix(rest, "\x1b[") {
+		// Re-assert unless another escape follows immediately (it sets its own
+		// state) or NOTHING follows at all. The trailing case matters: a
+		// re-assert at the very end of a composed block leaks that block's
+		// background onto whatever the caller paints next — e.g. the composer
+		// box's surface colour bleeding across the rest of the row past its
+		// right border (the operator's "blue box riding off the pane").
+		if rest != "" && !strings.HasPrefix(rest, "\x1b[") {
 			b.WriteString(open)
 		}
 		s = rest

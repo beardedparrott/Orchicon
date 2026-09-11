@@ -85,11 +85,37 @@ func New() Model {
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	m := Model{ta: ta, Newlines: NewlineAltEnter}
+	// themeStyles pins every textarea cell to the box's surface so no cell can
+	// be left unpainted, and makes the caret a visible accent block. Called at
+	// construction and again after a theme switch (theme.Use re-derives the
+	// package styles, but these are captured per-render).
+	m.themeStyles()
 	_ = m.ta.Focus() // safe: textarea always lets you re-focus
 	m.resizeTa()
 	return m
+}
+
+// ApplyTheme re-pins the composer's captured styles to the ACTIVE palette.
+// The shell calls it after /theme so the box never keeps the old theme.
+func (m *Model) ApplyTheme() { m.themeStyles() }
+
+// themeStyles derives the textarea/cursor styles from the active theme.
+func (m *Model) themeStyles() {
+	base := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
+	ta := m.ta
+	ta.FocusedStyle.Base = base
+	ta.BlurredStyle.Base = base
+	ta.FocusedStyle.Text = base
+	ta.BlurredStyle.Text = base
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
+	// The cursor is a solid accent block with dark text: unmistakable, and it
+	// carries a background so its cell can never be a hole.
+	ta.Cursor.Style = lipgloss.NewStyle().Background(theme.AccentCyan).Foreground(theme.Bg)
+	ta.Cursor.TextStyle = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	m.ta = ta
 }
 
 // SendRequest returns and clears the pending send text ("" = none).
