@@ -74,15 +74,19 @@ func TestTabRingAndRailToggle(t *testing.T) {
 	if m.chatFocus != focusComposer {
 		t.Fatal("tab after the last area must wrap back to the chat prompt")
 	}
-	// Shift+Tab pops both rails together.
+	// Shift+Tab toggles the diff pane only (the conversations rail is always
+	// on for MVP1 and is never part of this toggle).
 	m.rightRailOpen = true
 	m.toggleSideRails()
-	if m.rightRailOpen || m.diffOpen {
-		t.Fatal("shift+tab must collapse both side rails")
+	if !m.diffOpen {
+		t.Fatal("shift+tab must open the diff pane")
+	}
+	if !m.rightRailOpen {
+		t.Fatal("shift+tab must leave the conversations rail alone")
 	}
 	m.toggleSideRails()
-	if !m.rightRailOpen {
-		t.Fatal("shift+tab must restore the conversations rail")
+	if m.diffOpen {
+		t.Fatal("shift+tab must close the diff pane again")
 	}
 }
 

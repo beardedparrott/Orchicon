@@ -52,62 +52,65 @@ func railLines(t *testing.T, m *App, w, h int) []string {
 	return lines
 }
 
-// The rail must stay OFF: it duplicated the Ask screen's own conversation
-// list and disappeared the list on Shift+Tab.
-func TestConversationsRailIsDisabled(t *testing.T) {
+// The conversation list lives on the shell's right rail, always on for MVP1.
+func TestConversationsRailIsAlwaysOnForAsk(t *testing.T) {
 	for _, size := range railSizes {
 		w, h := size[0], size[1]
 		m := newRailsApp(w, h)
-		if m.railVisible() {
-			t.Fatalf("%dx%d: the redundant CONVERSATIONS rail must not render", w, h)
+		if !m.railVisible() {
+			t.Fatalf("%dx%d: the conversations rail must be on for Ask (MVP1)", w, h)
+		}
+		if ConversationsRailWidth > 30 {
+			t.Fatalf("rail width = %d, want it narrowed (<=30)", ConversationsRailWidth)
 		}
 		railLines(t, m, w, h)
 	}
 }
 
-// Consequence: the Ask tab draws ONE conversation list, not two.
+// Exactly ONE conversation list: the rail. The screen renders the transcript
+// only (Base.HideSources), so the tab no longer draws two lists.
 func TestAskRendersExactlyOneConversationList(t *testing.T) {
 	for _, size := range railSizes {
 		w, h := size[0], size[1]
 		m := newRailsApp(w, h)
 		v := m.View()
-		if strings.Contains(v, "CONVERSATIONS") {
-			t.Errorf("%dx%d: the shell rail header is still painted (duplicate list)", w, h)
-		}
-		if !strings.Contains(v, "Conversations") {
-			t.Errorf("%dx%d: the screen's own conversation pane is missing", w, h)
+		if n := strings.Count(v, "CONVERSATIONS"); n != 1 {
+			t.Errorf("%dx%d: %d conversation-list headers, want exactly 1", w, h, n)
 		}
 		railLines(t, m, w, h)
 	}
 }
 
-// Regression for the operator's "conversations go away" report: Shift+Tab
-// toggles the rails and must NOT remove the conversation list, because the
-// list is the screen's pane, not the rail.
-func TestShiftTabKeepsTheConversationList(t *testing.T) {
+// Shift+Tab toggles the LEFT diff pane and must leave the conversation list
+// alone (the operator: "Shift+Tab should just bring out the diff pane").
+func TestShiftTabTogglesDiffAndKeepsConversations(t *testing.T) {
 	m := newRailsApp(120, 40)
-	if !strings.Contains(m.View(), "Conversations") {
+	if !strings.Contains(m.View(), "CONVERSATIONS") {
 		t.Fatal("precondition: the conversation list must render")
 	}
 	m.toggleSideRails()
-	if !strings.Contains(m.View(), "Conversations") {
-		t.Fatal("Shift+Tab removed the conversation list — the rail must not own it")
+	if !m.diffOpen {
+		t.Fatal("Shift+Tab must open the diff pane")
+	}
+	if !strings.Contains(m.View(), "CONVERSATIONS") {
+		t.Fatal("Shift+Tab removed the conversation list")
+	}
+	m.toggleSideRails()
+	if m.diffOpen {
+		t.Fatal("Shift+Tab must close the diff pane again")
 	}
 	railLines(t, m, 120, 40)
 }
 
-// ctrl+r (rail toggle) must stay inert rather than throw the layout off:
-// the rail is disabled, so the key is a no-op and the list keeps rendering.
-func TestRailToggleIsInertWhileRailsAreDisabled(t *testing.T) {
+// ctrl+r is inert: the rail is always on for MVP1, so the key must not hide
+// it or disturb the frame contract.
+func TestRailToggleIsInert(t *testing.T) {
 	m := newRailsApp(120, 40)
 	_, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
-	if m.railVisible() {
-		t.Fatal("ctrl+r must not re-enable the disabled rail")
+	if !m.railVisible() {
+		t.Fatal("ctrl+r hid the always-on conversations rail")
 	}
-	if strings.Contains(m.View(), "CONVERSATIONS") {
-		t.Fatal("ctrl+r painted the duplicate rail header")
-	}
-	if !strings.Contains(m.View(), "Conversations") {
+	if !strings.Contains(m.View(), "CONVERSATIONS") {
 		t.Fatal("ctrl+r removed the conversation list")
 	}
 	railLines(t, m, 120, 40)

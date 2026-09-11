@@ -378,14 +378,19 @@ func Opaque(s string, w int) string {
 	return repairResets(ScreenBg.Render(s))
 }
 
-// repairResets re-asserts the background after every SGR reset in s, except a
-// reset immediately followed by another escape (the next SGR sets its own
-// state, and its eventual reset is repaired on the next pass).
-func repairResets(s string) string {
+// RepairAfterResets re-asserts a style's background after every SGR reset in
+// an already-rendered string, using that style's own SGR prefix.
+//
+// This is the general form of the repair the shell applies to its rows
+// (bgOpaque). Any composed block whose children carry their own styles is
+// vulnerable: each child's \x1b[0m reset turns the background OFF for the rest
+// of the line, so padding and later cells render on the TERMINAL's background
+// and the operator sees through the "opaque" frame.
+func RepairAfterResets(s string, st lipgloss.Style) string {
 	const reset = "\x1b[0m"
-	paint := ScreenBg.Render("")
+	paint := st.Render("")
 	if paint == "" || !strings.HasSuffix(paint, reset) {
-		return s // profile off / no background: nothing to re-assert
+		return s
 	}
 	open := strings.TrimSuffix(paint, reset)
 	if open == "" {
@@ -406,3 +411,6 @@ func repairResets(s string) string {
 		s = rest
 	}
 }
+
+// repairResets is Opaque's ScreenBg-specialised repair.
+func repairResets(s string) string { return RepairAfterResets(s, ScreenBg) }

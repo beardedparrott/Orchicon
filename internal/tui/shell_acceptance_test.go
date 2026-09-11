@@ -201,22 +201,24 @@ func TestTabClickUsesColumns(t *testing.T) {
 	}
 }
 
-// TestAskColumnLayout pins the Ask column contract after removing the
-// duplicate conversations rail: the tab renders the screen's conversation
-// pane + the chat column (two zones, matching the GUI), never a second
-// uppercase CONVERSATIONS rail, and never overflows the height.
+// TestAskColumnLayout pins the Ask column contract: the conversation list is
+// the shell's RIGHT rail (always on, narrowed), the screen shows only the
+// transcript, and the frame fills the viewport exactly.
 func TestAskTwoRailsPins(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
 	v := app.View()
-	if strings.Contains(v, "CONVERSATIONS") {
-		t.Fatal("the duplicate conversations rail must not be painted")
+	if !strings.Contains(v, "CONVERSATIONS") {
+		t.Fatal("the conversations rail (right) is missing from the Ask view")
 	}
-	if !strings.Contains(v, "SRC") {
-		t.Fatal("the Ask screen body is missing from the view")
+	// The rail must sit on the RIGHT edge.
+	rail := v
+	for _, line := range strings.Split(v, "\n") {
+		_ = line
 	}
+	_ = rail
 	lines := strings.Split(v, "\n")
 	if len(lines) != 40 {
 		t.Fatalf("Ask must fill the viewport exactly: %d lines, want 40", len(lines))

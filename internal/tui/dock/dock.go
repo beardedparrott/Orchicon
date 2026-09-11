@@ -350,7 +350,13 @@ func (m *Model) View() string {
 	}
 	rows = append(rows, theme.HintText.Render(fit(m.Hint(), inner)))
 
-	return theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n"))
+	// The box's own background must survive the inner rows' resets: the rows
+	// carry styled spans (prompt, hint, the textarea's own cursor styling),
+	// and each one's reset would otherwise switch the background off for the
+	// rest of the row — the "hole" the operator sees as soon as they type.
+	return theme.RepairAfterResets(
+		theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n")),
+		theme.ComposerBox)
 }
 
 // inputLines returns exactly InputRows() rows of the input view (the

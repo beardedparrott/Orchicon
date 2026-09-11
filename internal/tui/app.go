@@ -473,38 +473,26 @@ func (m *App) tabRingNext() {
 	m.EnsureSubscriptions(Tabs[idx+1].ID)
 }
 
-// toggleSideRails pops the side rails (conversations right rail + diff
-// left pane) together — the secondary chrome toggle. Closing hides both;
-// opening restores both (the diff pane stays closed when it has no owner
-// — the existing no-op — and the rail refetches when unloaded/failed).
+// toggleSideRails is the Shift+Tab action: toggle the LEFT diff pane.
+//
+// The operator's ask was explicit — "Shift+Tab should honestly just bring out
+// the diff pane back and forth" — so the conversations rail is NOT part of
+// this toggle (it is always on for MVP1; see railVisible).
 func (m *App) toggleSideRails() {
-	if m.rightRailOpen || m.diffOpen {
-		m.rightRailOpen = false
-		if m.diffOpen {
-			m.closeDiffPane() // refreshes the layout
-		} else {
-			m.refreshLayout()
-		}
+	if m.diffOpen {
+		m.closeDiffPane()
 		return
 	}
-	m.rightRailOpen = true
-	if m.convErr != "" || !m.convLoaded {
-		m.pendingRailCmd = m.reloadConversations()
+	if kind, id := m.diffOwner(); kind == diffs.NoneOwner || id == diffs.NoneOwner {
+		// No diff-relevant session yet: still bring the pane OUT so Shift+Tab
+		// is a predictable toggle (it renders its empty state) rather than a
+		// silent no-op — the operator's "Shift+Tab should just bring out the
+		// diff pane back and forth".
+		m.diffOpen = true
+		m.refreshLayout()
+		return
 	}
-	m.refreshLayout()
-	// Stage the diff-pane setup alongside any rail reload: dispatch can
-	// only re-emit one staged cmd, so batch both here (non-nil only).
-	var cmds []tea.Cmd
-	if dc := m.openDiffPane(); dc != nil {
-		cmds = append(cmds, dc)
-	}
-	if rc := m.pendingRailCmd; rc != nil {
-		m.pendingRailCmd = nil
-		cmds = append(cmds, rc)
-	}
-	if len(cmds) > 0 {
-		m.pendingDiffCmd = tea.Batch(cmds...)
-	}
+	m.pendingDiffCmd = m.openDiffPane()
 }
 
 func (m *App) cycle(delta int) {
@@ -1156,7 +1144,7 @@ func (m App) baseView(w, h int) string {
 	body := strings.Join(bodyLines, "\n")
 	// Left diff rail / right conversations rail: extra COLUMNS joined over
 	// the screen+dock region (the gap row spans the full width alone).
-	if m.diffOpen && m.diffPane != nil && m.diffPane.HasOwner() {
+	if m.diffOpen && m.diffPane != nil {
 		pane := strings.Join(normalizeBlock(m.diffPane.View(), DiffPaneWidth, screenRows+dockRows), "\n")
 		body = lipgloss.JoinHorizontal(lipgloss.Top, pane, body)
 	}

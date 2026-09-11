@@ -24,21 +24,19 @@ func TestMouseFooterChip(t *testing.T) {
 	}
 }
 
-// The Ask conversations rail is disabled (it duplicated the screen's own
-// conversation pane and vanished the list on Shift+Tab). A click in the old
-// rail columns must therefore change nothing — in particular it must NOT
-// toggle a rail back on. ctrl+r inertness is pinned in rails_layout_test.go.
+// The conversations rail is always on for MVP1, so a click on its header must
+// NOT hide it (the header is no longer a collapse affordance).
 func TestMouseRailToggle(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
-	if app.railVisible() {
-		t.Fatal("the redundant conversations rail must be off")
+	if !app.railVisible() {
+		t.Fatal("the conversations rail must be on for Ask (MVP1)")
 	}
 	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 120 - ConversationsRailWidth + 5, Y: railTopRow})
-	if nm.railVisible() {
-		t.Fatal("a click in the old rail columns must not re-enable the rail")
+	if !nm.railVisible() {
+		t.Fatal("clicking the rail header must not hide the always-on rail")
 	}
 }
 

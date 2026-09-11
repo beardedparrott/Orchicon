@@ -37,6 +37,7 @@ const (
 func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m := &Model{cl: cl, reg: reg}
 	m.NameStr = "ask"
+	m.Base.HideSources = true
 	m.AddSource("conversations", "Conversations", m.fetchConversations)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)

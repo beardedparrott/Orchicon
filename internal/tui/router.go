@@ -300,12 +300,27 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// the dock must never swallow async traffic.
 	if m.chatFocus == focusComposer {
 		if k, isKeyMsg := msg.(tea.KeyMsg); isKeyMsg {
-			// Empty composer: the vertical keys scroll the active pane (the
-			// GUI's transcript scroll). With text in the buffer the textarea
-			// keeps them for cursor movement.
+			// Empty composer: the vertical keys drive the conversation list
+			// when the conversations rail is up (the operator's "I can't go
+			// up/down with the arrow keys"), otherwise they scroll the active
+			// pane's detail. With text in the buffer the textarea keeps them
+			// for cursor movement.
 			if strings.TrimSpace(m.dock.Value()) == "" {
 				if d := scrollKeyDelta(k.String()); d != 0 {
-					m.scrollActiveDetail(d)
+					if m.railVisible() && m.active == TabAsk {
+						switch k.String() {
+						case "up":
+							m.selectRailConversation(-1)
+						case "down":
+							m.selectRailConversation(1)
+						case "pgup":
+							m.selectRailConversation(-5)
+						case "pgdown":
+							m.selectRailConversation(5)
+						}
+					} else {
+						m.scrollActiveDetail(d)
+					}
 					m.footer.StreamStatus = m.streamStatus()
 					return m, nil
 				}

@@ -90,6 +90,12 @@ type Base struct {
 	// Exec is the single write path (nil = direct-RPC fallback, tests).
 	Exec *mutate.Executor
 
+	// HideSources renders the detail pane ONLY (no source panes). Set by
+	// screens whose list lives elsewhere — the Ask screen's conversations are
+	// the shell's right rail, so the screen shows just the transcript and the
+	// tab has exactly ONE conversation list.
+	HideSources bool
+
 	// OnDialog runs when the open Dialog resolves ("" = dismissed).
 	OnDialog func(choice string) tea.Cmd
 }
@@ -611,6 +617,9 @@ func (b *Base) RequestDetail(src, id string) tea.Cmd {
 func (b *Base) View() string {
 	if b.Stream != nil && b.Stream.Title != "" {
 		return b.streamView()
+	}
+	if b.HideSources {
+		return b.detailPaneView(b.width, b.height)
 	}
 	if len(b.sources) == 0 {
 		return b.detail.View()
