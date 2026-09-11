@@ -724,6 +724,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
+	// The DB window is what a fresh session replays (the seed prompt) and what
+	// the session-ownership check below reads: sanitize it so no assistant row
+	// carrying tool_calls without matching tool_results can ever be replayed
+	// to a provider (BUG: dangling tool_call replayed to the new provider).
+	prevMessages = sanitizeHistoryRows(prevMessages)
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
 	// The tenant's stall window for THIS turn: read at dispatch time so a
 	// settings change applies to the next turn, and the collector's stall
@@ -794,6 +799,18 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		// as OWNS-ALL (it accepts any id), so reverse-direction
 		// opencode→native switches keep working without a session reset.
 		useSessionID = s.adapterScopedSessionID(client, useSessionID)
+		// Model-change invalidation (BUG: model switch fails with a dangling
+		// tool-call replay). A session is created under the model that built
+		// it, and the stored one is replayed to whatever model runs the next
+		// turn. When the conversation's model changed, reusing that session
+		// hands the NEW provider history it did not produce — including a
+		// dangling tool call from an interrupted turn. Force a fresh session
+		// so the switch dispatches on sanitized history instead.
+		if useSessionID != "" && sessionCreatedUnderDifferentModel(conv.SessionID, modelRef, prevMessages) {
+			s.log.Warn("ask orchicon model change — creating a fresh session (the stored session belongs to the previous model)",
+				"conversation", convID, "old_session", conv.SessionID, "model", modelRef)
+			useSessionID = ""
+		}
 		// Partial-reply mirror: the collector's onPartial callbacks feed a
 		// throttled flusher that upserts the running turn's collected
 		// text/reasoning AND live tool ledger under the ACKED assistant message
@@ -897,11 +914,34 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				case errors.Is(terr, errTurnSuperseded):
 					if content := strings.TrimSpace(reply); content != "" {
 						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning, finalLedger)
+					} else if finalLedger.hasCalls() {
+						// The turn was interrupted between a tool call and its
+						// result: nothing arrived as text, but the partial mirror
+						// already wrote the row. Finalize it with the REPAIRED ledger
+						// rather than leaving an assistant row whose tool_calls have
+						// no results (the dangling call the new provider rejects).
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "", reasoning, finalLedger)
 					}
 				case errors.Is(terr, errUserStop):
 					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning, finalLedger)
 				default:
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, terr.Error(), reasoning, finalLedger)
+					errText := terr.Error()
+					// Surface the failure verbatim on the stream (the TUI dock
+					// notice) as well as in the persisted error row the poll
+					// renders — a provider 400 must reach the operator in the
+					// provider's own words.
+					emitTurnError(onStreamEvent, errText)
+					if isDanglingToolCallProviderError(errText) {
+						// The session that produced the rejection is poisoned: its
+						// replayed history carries a tool call with no result. Drop
+						// the session so the NEXT send creates a fresh one seeded
+						// with sanitized history instead of replaying the poison
+						// forever (the conversation must not wedge on a 400).
+						s.log.Warn("ask orchicon dropping session after a dangling-tool-call provider rejection",
+							"conversation", convID, "session", sid)
+						s.persistConversationSessionID(detached, tenantID, convID, "")
+					}
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning, finalLedger)
 				}
 			} else {
 				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
@@ -1999,7 +2039,11 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 	// turn atomically and the finalize's overwrite can never resurrect a
 	// stale partial's tool columns (the UpsertMessage conflict clause
 	// overwrites them with this snapshot).
-	ledgerCalls, ledgerResults := ledger.snapshot()
+	// TERMINAL write: the ledger is repaired (an explicit aborted result is
+	// attached to every call that never resolved) so the DB never holds an
+	// assistant row whose tool_calls have no matching tool_results, however
+	// abnormally the turn ended.
+	ledgerCalls, ledgerResults := ledger.repairedSnapshot()
 	assistantMsg := db.MessageRow{
 		ID:             assistantMsgID,
 		TenantID:       tenantID,

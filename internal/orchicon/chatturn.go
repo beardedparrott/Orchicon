@@ -330,6 +330,12 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 		// re-sends the full context instead of starting over.
 		history = append([]Message(nil), b.loadAskHistoryLocked(sessionID)...)
 	}
+	// REPLAY BOUNDARY: regardless of where the history came from (this
+	// process, the persisted file, an interrupted prior turn), what is sent to
+	// the provider is well-formed — and the repair is persisted, so a session
+	// poisoned by a dangling tool call heals permanently instead of 400ing on
+	// every subsequent turn.
+	history = sanitizeChatHistory(history)
 	history = append(history, Message{Role: RoleUser, Content: userContent})
 	b.chatHistory[sessionID] = history
 	b.persistAskHistoryLocked(sessionID)
@@ -612,6 +618,113 @@ func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, call
 	*working = append(*working, Message{Role: RoleAssistant, Content: content})
 }
 
+// danglingToolResultOutput is the explicit tool result attached in place of a
+// result that never arrived (the turn ended abnormally between the assistant's
+// tool call and its result).
+const danglingToolResultOutput = "tool call aborted — the turn ended before this tool returned a result"
+
+// hasDanglingToolCalls reports whether a provider-bound history contains an
+// assistant message with a tool use that no tool-role message answers. Such a
+// history is exactly what providers reject with:
+//
+//	No tool output found for function call <id>.
+//	An assistant message with 'tool_calls' must be followed by tool messages
+//	responding to each 'tool_call_id'. (insufficient tool messages following
+//	tool_calls message)
+func hasDanglingToolCalls(messages []Message) bool {
+	answered := map[string]bool{}
+	for _, m := range messages {
+		if m.Role != RoleTool {
+			continue
+		}
+		for _, c := range m.Content {
+			if c.ToolResult != nil && c.ToolResult.ToolCallID != "" {
+				answered[c.ToolResult.ToolCallID] = true
+			}
+		}
+	}
+	for _, m := range messages {
+		if m.Role != RoleAssistant {
+			continue
+		}
+		for _, c := range m.Content {
+			if c.ToolUse != nil && !answered[c.ToolUse.ToolCallID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sanitizeChatHistory returns a copy of the provider-bound history in which
+// every assistant tool use is paired with a tool result: a call whose result is
+// missing gets an explicit aborted result (so the model still learns the call
+// happened and did not return), and a call with no id — which can never be
+// matched to a result — is dropped, along with the assistant message when
+// nothing else in it remains. This is the REPLAY-BOUNDARY invariant for the
+// native Ask transport, whose history is re-sent in full on every turn (D2):
+// whatever the session accumulated (an interrupted turn, a tool that never
+// returned, a switch to a different model), what leaves for the provider is
+// always well-formed.
+func sanitizeChatHistory(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	answered := map[string]bool{}
+	for _, m := range messages {
+		if m.Role != RoleTool {
+			continue
+		}
+		for _, c := range m.Content {
+			if c.ToolResult != nil && c.ToolResult.ToolCallID != "" {
+				answered[c.ToolResult.ToolCallID] = true
+			}
+		}
+	}
+
+	out := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role != RoleAssistant {
+			out = append(out, m)
+			continue
+		}
+		var content []Content
+		var missing []string
+		seen := map[string]bool{}
+		for _, c := range m.Content {
+			if c.ToolUse == nil {
+				content = append(content, c)
+				continue
+			}
+			id := c.ToolUse.ToolCallID
+			if id == "" {
+				// Unaddressable call: replaying it is the bare tool_calls shape
+				// the provider rejects, and no result could ever match it.
+				continue
+			}
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			content = append(content, c)
+			if !answered[id] {
+				missing = append(missing, id)
+			}
+		}
+		if len(content) == 0 {
+			// Only unaddressable tool uses: the message itself goes away.
+			continue
+		}
+		out = append(out, Message{Role: RoleAssistant, Content: content})
+		for _, id := range missing {
+			out = append(out, Message{Role: RoleTool, Content: []Content{{
+				ToolResult: &ContentToolResult{ToolCallID: id, Content: danglingToolResultOutput, IsError: true},
+			}}})
+		}
+	}
+	return out
+}
+
 // commitChatHistory replaces the session's in-memory history with the
 // turn's full working history (user message, assistant texts, tool uses
 // and tool results) so a follow-up re-sends the complete context.
@@ -637,6 +750,9 @@ func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Me
 	} else {
 		cur = append([]Message(nil), working...)
 	}
+	// Never persist a dangling tool call: a turn that ended between a call and
+	// its result must not poison the session for the next provider.
+	cur = sanitizeChatHistory(cur)
 	b.chatHistory[sessionID] = cur
 	b.persistAskHistoryLocked(sessionID)
 }
