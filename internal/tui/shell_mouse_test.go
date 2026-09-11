@@ -24,19 +24,21 @@ func TestMouseFooterChip(t *testing.T) {
 	}
 }
 
-// TestMouseRailTogglePins clicking the Ask rail header collapses it.
+// The Ask conversations rail is disabled (it duplicated the screen's own
+// conversation pane and vanished the list on Shift+Tab). A click in the old
+// rail columns must therefore change nothing — in particular it must NOT
+// toggle a rail back on. ctrl+r inertness is pinned in rails_layout_test.go.
 func TestMouseRailToggle(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
-	if !app.railVisible() {
-		t.Fatal("rail should be open by default")
+	if app.railVisible() {
+		t.Fatal("the redundant conversations rail must be off")
 	}
-	// Click the rail header (absolute row 2, right columns).
 	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 120 - ConversationsRailWidth + 5, Y: railTopRow})
 	if nm.railVisible() {
-		t.Fatal("click on rail header must collapse the rail")
+		t.Fatal("a click in the old rail columns must not re-enable the rail")
 	}
 }
 
@@ -71,21 +73,6 @@ func TestMouseTabClick(t *testing.T) {
 	}
 }
 
-// TestCtrlRTogglesRailPins the documented ctrl+r rail toggle.
-func TestCtrlRTogglesRail(t *testing.T) {
-	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
-	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
-	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app.SwitchTo(TabAsk)
-	if !app.railVisible() {
-		t.Fatal("rail should be open by default")
-	}
-	app.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
-	if app.railVisible() {
-		t.Fatal("ctrl+r must collapse the rail")
-	}
-	app.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
-	if !app.railVisible() {
-		t.Fatal("ctrl+r must re-open the rail")
-	}
-}
+// TestCtrlRTogglesRail is retired: the conversations rail is disabled, so
+// ctrl+r is deliberately inert. See TestRailToggleIsInertWhileRailsAreDisabled
+// in rails_layout_test.go for the pinned contract.

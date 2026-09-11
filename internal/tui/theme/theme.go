@@ -18,8 +18,10 @@ package theme
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // hsl converts the GUI's `H S% L%` token notation to a hex color.
@@ -345,3 +347,62 @@ func buildStyles(t Theme) {
 }
 
 func init() { buildStyles(Dark) }
+
+// Opaque pins one rendered row to exactly w cells with the app background
+// painted on EVERY cell, and repairs the inner-reset hole that makes the
+// terminal bleed through.
+//
+// Why this exists: any inner style (a panel border, a title, a list row, a
+// status pill) ends its span with its own \x1b[0m reset. That reset turns the
+// background OFF for every cell after it — including the padding this helper
+// adds — so those cells render on the TERMINAL's own background. With a
+// non-default terminal background (Konsole matrix, transparent setups) the
+// operator sees straight through the "opaque" frame: panels riddled with
+// see-through regions.
+//
+// The repair re-emits the background SGR immediately after each reset, so no
+// cell is ever left unpainted. The shell has done this for its own rows since
+// the opaque-frame work (bgOpaque in internal/tui/app.go); kit2's panels and
+// dialogs compose their own rows and were never covered — this is the shared
+// implementation both can use.
+func Opaque(s string, w int) string {
+	if w < 1 {
+		return s
+	}
+	if lipgloss.Width(s) > w {
+		s = ansi.Truncate(s, w, "")
+	}
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return repairResets(ScreenBg.Render(s))
+}
+
+// repairResets re-asserts the background after every SGR reset in s, except a
+// reset immediately followed by another escape (the next SGR sets its own
+// state, and its eventual reset is repaired on the next pass).
+func repairResets(s string) string {
+	const reset = "\x1b[0m"
+	paint := ScreenBg.Render("")
+	if paint == "" || !strings.HasSuffix(paint, reset) {
+		return s // profile off / no background: nothing to re-assert
+	}
+	open := strings.TrimSuffix(paint, reset)
+	if open == "" {
+		return s
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(s, reset)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		rest := s[i+len(reset):]
+		b.WriteString(s[:i+len(reset)])
+		if !strings.HasPrefix(rest, "\x1b[") {
+			b.WriteString(open)
+		}
+		s = rest
+	}
+}

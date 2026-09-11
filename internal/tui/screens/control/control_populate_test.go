@@ -40,8 +40,10 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// the fetch → list population path pinned at the screenkit layer
 	// (TestBaseFetchedMsgPopulatesList) — here we pin that Control
 	// registers all seven sources with non-nil fetch functions.
+	// Control's own surfaces only — Workers moved to the Execution tab and
+	// Runtime Images to the Work tab (GUI nav-config group placement).
 	want := map[string]bool{
-		"workers": false, "images": false, "secrets": false, "mcp": false,
+		"secrets": false, "mcp": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 	}

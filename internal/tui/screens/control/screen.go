@@ -41,10 +41,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// streamRows is the height of the Activity stream panel pinned to the
-// bottom of the screen.
-const streamRows = 7
-
 // dockSink is the shell hook Control uses to push mutation feedback into the
 // always-present chat dock (the App implements it).
 type dockSink interface {
@@ -77,9 +73,8 @@ type Model struct {
 	cl  *client.Clients
 	reg *subs.Registry
 
-	stream *kit2.Stream
-	bar    *kit2.ActionBar
-	form   *kit2.Form
+	bar  *kit2.ActionBar
+	form *kit2.Form
 
 	w, h int
 
@@ -142,8 +137,9 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		adapterDisabled: map[string]bool{},
 	}
 	m.NameStr = "control"
-	m.AddSource("workers", "Workers", m.fetchWorkers)
-	m.AddSource("images", "Runtime Images", m.fetchImages)
+	// Workers live on the Execution tab and Runtime Images on the Work tab
+	// (both match the GUI nav-config group placement); Control keeps only the
+	// surfaces the GUI files under Control.
 	m.AddSource("secrets", "Secrets (names only)", m.fetchSecrets)
 	m.AddSource("mcp", "MCP Servers", m.fetchMCP)
 	m.AddSource("providers", "Providers", m.fetchProviders)
@@ -154,7 +150,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses(nil)
 
-	m.stream = kit2.NewStream("Activity", 78, streamRows-2)
 	m.bar = kit2.NewActionBar()
 	// Every write goes through the ONE mutation executor.
 	m.SetExecutor(&mutate.Executor{Sink: m})
@@ -357,46 +352,36 @@ func (m *Model) Name() string { return "control" }
 // Close unsubscribes (no live subs on this screen in v1).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-// SetSize lays out the panes plus the Activity stream panel.
+// SetSize lays out the panes across the whole content region. (The old
+// Activity stream panel that stole 7 rows was removed: mutation feedback
+// already goes to the always-present dock, so the panel was a second,
+// redundant surface that shrank every pane.)
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h
-	body := h - streamRows
-	if body < 6 {
-		body = 6
-	}
-	m.Base.SetSize(w, body)
-	m.stream.SetSize(w-2, streamRows-2)
+	m.Base.SetSize(w, h)
 }
 
 func (m *Model) Init() tea.Cmd { return m.Load() }
 
-// bodyHeight is the height of the pane row (viewport minus the Activity panel).
-func (m *Model) bodyHeight() int {
-	body := m.h - streamRows
-	if body < 6 {
-		body = 6
-	}
-	return body
-}
+// bodyHeight is the height of the pane row (the whole content region).
+func (m *Model) bodyHeight() int { return m.h }
 
 // ClaimsKeys reports whether the screen owns the keyboard: while a form or a
 // Confirm dialog is open the shell hands over every key verbatim, so a secret
 // value or a URL containing q / d / / is never eaten by a global chord.
 func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
 
-// --- mutation sink (dock feedback + activity stream) --------------------
+// --- mutation sink (dock feedback) --------------------------------------
 
-// Progress reports a running mutation in the dock + activity stream.
+// Progress reports a running mutation in the always-present dock.
 func (m *Model) Progress(msg string) {
-	m.appendActivity("▸ " + msg)
 	if d, ok := m.Shell().(dockSink); ok {
 		d.DockNotice(msg)
 	}
 }
 
-// Fail surfaces a mutation failure in the dock + activity stream.
+// Fail surfaces a mutation failure in the dock.
 func (m *Model) Fail(msg string) {
-	m.appendActivity("✗ " + msg)
 	if d, ok := m.Shell().(dockSink); ok {
 		d.DockError(msg)
 	}
@@ -404,13 +389,10 @@ func (m *Model) Fail(msg string) {
 
 // Notice reports a successful mutation.
 func (m *Model) Notice(msg string) {
-	m.appendActivity("✓ " + msg)
 	if d, ok := m.Shell().(dockSink); ok {
 		d.DockNotice(msg)
 	}
 }
-
-func (m *Model) appendActivity(line string) { m.stream.Append(line) }
 
 // --- sources ------------------------------------------------------------
 
@@ -1659,11 +1641,7 @@ func (m *Model) View() string {
 
 	// Nine Control sources render ONE pane at a time (focused source +
 	// detail) — a nine-across grid truncates every cell to a few runes.
-	body := m.Base.SinglePane(m.w, m.bodyHeight())
-	sp := kit2.NewPanel("Activity", m.w, streamRows)
-	sp.SetContent(m.stream.View())
-	sp.Focused = false
-	out := body + "\n" + sp.View()
+	out := m.Base.SinglePane(m.w, m.bodyHeight())
 
 	if m.formOpen() {
 		box := formBox(m.form, m.w, m.h)

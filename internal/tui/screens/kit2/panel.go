@@ -107,11 +107,11 @@ func (p *Panel) View() string {
 	if w < 3 || h < 2 {
 		return FitLines(strings.Join(p.body, "\n"), w, h)
 	}
-	border := lipgloss.NewStyle().Foreground(theme.Border)
-	titleStyle := theme.ListTitle
+	border := lipgloss.NewStyle().Foreground(theme.Border).Background(theme.Bg)
+	titleStyle := theme.ListTitle.Background(theme.Bg)
 	if p.Focused {
-		border = lipgloss.NewStyle().Foreground(theme.AccentCyan)
-		titleStyle = lipgloss.NewStyle().Foreground(theme.AccentCyan).Bold(true)
+		border = lipgloss.NewStyle().Foreground(theme.AccentCyan).Background(theme.Bg)
+		titleStyle = lipgloss.NewStyle().Foreground(theme.AccentCyan).Bold(true).Background(theme.Bg)
 	}
 
 	innerW, innerH := w-2, h-2
@@ -232,10 +232,12 @@ func FitLines(content string, w, h int) string {
 		lines = lines[:h]
 	}
 	for i, l := range lines {
-		lines[i] = theme.ScreenBg.Render(Pad(l, w))
+		// theme.Opaque (not ScreenBg.Render) so an inner style's reset cannot
+		// leave the tail of the row painted on the terminal's background.
+		lines[i] = theme.Opaque(l, w)
 	}
 	for len(lines) < h {
-		lines = append(lines, theme.ScreenBg.Render(strings.Repeat(" ", w)))
+		lines = append(lines, theme.Opaque("", w))
 	}
 	return strings.Join(lines, "\n")
 }

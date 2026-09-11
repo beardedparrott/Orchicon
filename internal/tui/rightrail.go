@@ -40,12 +40,18 @@ const railDividerText = "│"
 // on the gap row / first conversation instead of toggling the rail.)
 const railTopRow = tabBarRows + 1
 
-// railVisible reports whether the Ask right rail should be rendered. It is
-// only drawn on the Ask screen (the GUI Ask sidebar lives there; Overview
-// may reuse it but the shell keeps the rail Ask-scoped for now).
-func (m *App) railVisible() bool {
-	return m.active == TabAsk && m.rightRailOpen
-}
+// railVisible reports whether the Ask right rail should be rendered.
+//
+// It is OFF: the Ask screen already renders the conversation list as its own
+// source pane (a kit2 Table with selection + the shell's open-conversation
+// hook), so the rail was a SECOND, redundant list — three columns where the
+// GUI has two. It also made the list vanish on Shift+Tab (which closes the
+// rail), the operator's "conversations go away and never come back".
+//
+// Kept as a function (rather than deleted) because the rail rendering, hit
+// testing and retry state stay for a future explicit rail surface; flipping
+// this to the old predicate restores it.
+func (m *App) railVisible() bool { return false }
 
 // toggleRightRail collapses/expands the Ask conversations rail (ctrl+r).
 // When the rail is up but its last load FAILED, ctrl+r retries in place

@@ -201,20 +201,25 @@ func TestTabClickUsesColumns(t *testing.T) {
 	}
 }
 
-// TestAskTwoRailsPins the Ask 3-zone layout: left diff rail + center + right
-// conversations rail render together without overflow.
+// TestAskColumnLayout pins the Ask column contract after removing the
+// duplicate conversations rail: the tab renders the screen's conversation
+// pane + the chat column (two zones, matching the GUI), never a second
+// uppercase CONVERSATIONS rail, and never overflows the height.
 func TestAskTwoRailsPins(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
 	v := app.View()
-	if !strings.Contains(v, "CONVERSATIONS") {
-		t.Fatal("right conversations rail missing from Ask view")
+	if strings.Contains(v, "CONVERSATIONS") {
+		t.Fatal("the duplicate conversations rail must not be painted")
+	}
+	if !strings.Contains(v, "SRC") {
+		t.Fatal("the Ask screen body is missing from the view")
 	}
 	lines := strings.Split(v, "\n")
-	if len(lines) > 40 {
-		t.Fatalf("Ask 3-zone overflow: %d lines > 40", len(lines))
+	if len(lines) != 40 {
+		t.Fatalf("Ask must fill the viewport exactly: %d lines, want 40", len(lines))
 	}
 }
 

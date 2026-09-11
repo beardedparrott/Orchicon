@@ -1,14 +1,16 @@
 package tui
 
-// rails_layout_test.go — Phase 2c (operator finding 9) LAYOUT REGRESSION
-// tests for the two Ask rails at the 80×24 and 120×40 floors:
+// rails_layout_test.go — LAYOUT REGRESSION tests for the Ask column layout.
 //
-//   - the CONVERSATIONS rail is a PROPER right-side rail, open by default,
-//     populated from the live API (never a floating box);
-//   - an auth/API failure renders an explicit retry state, never a silent
-//     empty rail;
-//   - the diff pane is a PROPER left-side rail (toggle d / /diff) and both
-//     rails FLANK the chat column with the widths adding up exactly.
+// History: Phase 2c added a shell-level CONVERSATIONS right rail. The Ask
+// screen ALSO renders the conversation list as its own source pane, so the
+// tab drew THREE columns where the GUI has two — the operator's "there are
+// two conversation panes for some reason". Worse, Shift+Tab closes the rail,
+// so the conversation list vanished and never came back ("conversations go
+// away").
+//
+// The rail is now disabled (railVisible() == false); the screen's source pane
+// is the single conversation list. These tests pin that contract.
 
 import (
 	"strings"
@@ -17,21 +19,25 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 var railSizes = [][2]int{{80, 24}, {120, 40}}
 
-// newRailsApp builds a shell on the Ask tab at the given size.
+// newRailsApp builds a shell on the Ask tab at the given size, wired with the
+// REAL ask screen so the conversation pane is the thing under test (a stub
+// would hide the duplicate/absence bugs these tests exist to catch).
 func newRailsApp(w, h int) *App {
 	m := newTestApp()
-	m.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
+	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))
 	m.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
 	m.SwitchTo(TabAsk)
 	return m
 }
 
+// railLines asserts the render contract (exactly h rows, each exactly w
+// cells) and returns the rows.
 func railLines(t *testing.T, m *App, w, h int) []string {
 	t.Helper()
 	lines := strings.Split(m.View(), "\n")
@@ -46,143 +52,65 @@ func railLines(t *testing.T, m *App, w, h int) []string {
 	return lines
 }
 
-// rightBand returns the last ConversationsRailWidth cells of a row.
-func rightBand(row string, w int) string {
-	r := []rune(row)
-	if len(r) < ConversationsRailWidth {
-		return row
-	}
-	return string(r[len(r)-ConversationsRailWidth:])
-}
-
-func TestConversationsRailIsAProperRightRail(t *testing.T) {
+// The rail must stay OFF: it duplicated the Ask screen's own conversation
+// list and disappeared the list on Shift+Tab.
+func TestConversationsRailIsDisabled(t *testing.T) {
 	for _, size := range railSizes {
 		w, h := size[0], size[1]
 		m := newRailsApp(w, h)
-		m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
-			{ID: "c1", Title: "rail-alpha", MessageN: 3},
-			{ID: "c2", Title: "rail-beta", MessageN: 7, TurnInFly: true},
-		}})
-		lines := railLines(t, m, w, h)
-
-		header := lipglossStrip(lines[railTopRow])
-		if !strings.Contains(header, "CONVERSATIONS") {
-			t.Fatalf("%dx%d: rail header missing: %q", w, h, header)
+		if m.railVisible() {
+			t.Fatalf("%dx%d: the redundant CONVERSATIONS rail must not render", w, h)
 		}
-		if band := rightBand(header, w); !strings.Contains(band, "CONVERSATIONS") {
-			t.Fatalf("%dx%d: rail is not on the RIGHT edge: %q", w, h, band)
-		}
-		// The rail's leftmost cell is the divider column (a docked rail, not
-		// a floating box).
-		if !strings.Contains(rightBand(header, w), railDividerText) {
-			t.Fatalf("%dx%d: rail has no divider column: %q", w, h, rightBand(header, w))
-		}
-		body := lipglossStrip(lines[railTopRow+1])
-		if !strings.Contains(body, "rail-alpha") {
-			t.Fatalf("%dx%d: rail row not populated from the list: %q", w, h, body)
-		}
-		if strings.Contains(lipglossStrip(m.View()), "none yet") {
-			t.Fatalf("%dx%d: populated rail must not render the empty state", w, h)
-		}
+		railLines(t, m, w, h)
 	}
 }
 
-func TestConversationsRailAuthFailureShowsRetry(t *testing.T) {
+// Consequence: the Ask tab draws ONE conversation list, not two.
+func TestAskRendersExactlyOneConversationList(t *testing.T) {
 	for _, size := range railSizes {
 		w, h := size[0], size[1]
 		m := newRailsApp(w, h)
-		m.onConversations(chat.ConversationsMsg{Err: "rpc error: code = Unauthenticated desc = unauthenticated"})
-		v := lipglossStrip(m.View())
-		for _, want := range []string{"conversations unavailable", "click here to retry"} {
-			if !strings.Contains(v, want) {
-				t.Fatalf("%dx%d: failed rail missing %q\n%s", w, h, want, v)
-			}
+		v := m.View()
+		if strings.Contains(v, "CONVERSATIONS") {
+			t.Errorf("%dx%d: the shell rail header is still painted (duplicate list)", w, h)
 		}
-		if strings.Contains(v, "none yet") {
-			t.Fatalf("%dx%d: a failed load must never render as an empty rail", w, h)
+		if !strings.Contains(v, "Conversations") {
+			t.Errorf("%dx%d: the screen's own conversation pane is missing", w, h)
 		}
-		// The dock error names the in-place fix (never exit and re-run).
-		if !strings.Contains(v, "/connect") {
-			t.Fatalf("%dx%d: auth failure must name the in-place re-auth path\n%s", w, h, v)
-		}
-
-		// Clicking the failed rail retries against the live API.
-		nm, cmd := m.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
-			X: w - ConversationsRailWidth + 5, Y: railTopRow + 2})
-		if cmd == nil {
-			t.Fatalf("%dx%d: clicking the failed rail must issue a retry cmd", w, h)
-		}
-		if !nm.convLoading {
-			t.Fatalf("%dx%d: retry must mark the rail loading", w, h)
-		}
+		railLines(t, m, w, h)
 	}
 }
 
-func TestBothRailsFlankTheChatColumn(t *testing.T) {
+// Regression for the operator's "conversations go away" report: Shift+Tab
+// toggles the rails and must NOT remove the conversation list, because the
+// list is the screen's pane, not the rail.
+func TestShiftTabKeepsTheConversationList(t *testing.T) {
 	m := newRailsApp(120, 40)
-	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1", Title: "rail-alpha", MessageN: 2}}})
-	m.chatConvID = "conv-1" // gives the diff rail an ask-conversation owner
-	m.setFocus(focusContent)
-	// Toggle D (the epic's locked key; ctrl+d is never bound).
-	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
-	m = nm
-	if !m.diffOpen {
-		t.Fatal("D must open the left diff rail when an owner exists")
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("precondition: the conversation list must render")
 	}
-	if got, want := m.contentWidth(), 120-DiffPaneWidth-ConversationsRailWidth; got != want {
-		t.Fatalf("content column = %d, want %d (both rails flanking)", got, want)
+	m.toggleSideRails()
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("Shift+Tab removed the conversation list — the rail must not own it")
 	}
-	lines := railLines(t, m, 120, 40)
-	strip := lipglossStrip(m.View())
-	if !strings.Contains(strip, "✕") {
-		t.Fatal("diff rail (left) missing from the shell view")
-	}
-	if band := rightBand(lipglossStrip(lines[railTopRow]), 120); !strings.Contains(band, "CONVERSATIONS") {
-		t.Fatalf("conversations rail (right) missing: %q", band)
-	}
-	// The diff rail's content sits in the LEFT band of the body rows.
-	left := string([]rune(lipglossStrip(lines[railTopRow+1]))[:DiffPaneWidth])
-	if strings.TrimSpace(left) == "" {
-		t.Fatalf("left band empty — diff rail not rendering in the left columns")
-	}
+	railLines(t, m, 120, 40)
 }
 
-// railAskStub records the detail the shell asks the Ask screen to open.
-type railAskStub struct {
-	stubScreen
-	detailID string
-	reqSrc   string
-	reqID    string
-}
-
-func (s *railAskStub) RequestDetail(src, id string) tea.Cmd {
-	s.reqSrc, s.reqID = src, id
-	return nil
-}
-func (s *railAskStub) DetailID() string { return s.detailID }
-
-// TestRailRowClickOpensConversationDetail pins operator finding 9's click
-// contract: a rail row click must open the conversation's DETAIL (its
-// transcript surface) as well as the chat target — otherwise the click
-// changed invisible state and looked like a dead click (finding 7).
-func TestRailRowClickOpensConversationDetail(t *testing.T) {
-	m := newTestApp()
-	ask := &railAskStub{}
-	m.RegisterScreen(TabAsk, ask)
-	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
-	m.SwitchTo(TabAsk)
-	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "conv-7", Title: "rail-seven", MessageN: 4}}})
-	_, cmd := m.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
-		X: 120 - ConversationsRailWidth + 5, Y: railTopRow + 1})
-	if cmd == nil {
-		t.Fatal("a rail row click must issue a command")
+// ctrl+r (rail toggle) must stay inert rather than throw the layout off:
+// the rail is disabled, so the key is a no-op and the list keeps rendering.
+func TestRailToggleIsInertWhileRailsAreDisabled(t *testing.T) {
+	m := newRailsApp(120, 40)
+	_, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m.railVisible() {
+		t.Fatal("ctrl+r must not re-enable the disabled rail")
 	}
-	if ask.reqSrc != "conversations" || ask.reqID != "conv-7" {
-		t.Fatalf("rail row click must open the conversation detail, got %q/%q", ask.reqSrc, ask.reqID)
+	if strings.Contains(m.View(), "CONVERSATIONS") {
+		t.Fatal("ctrl+r painted the duplicate rail header")
 	}
-	if m.chatConvID != "conv-7" {
-		t.Fatalf("rail row click must pin the chat target, got %q", m.chatConvID)
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("ctrl+r removed the conversation list")
 	}
+	railLines(t, m, 120, 40)
 }
 
 // TestThemeStepSequence mirrors the real-pty gate's theme step at shell
@@ -232,20 +160,6 @@ func TestMouseClickFocusesComposer(t *testing.T) {
 		if !nm.Footer().ComposerFocus {
 			t.Fatalf("%dx%d: footer must reflect the composer focus", w, h)
 		}
-	}
-}
-
-func TestWheelScrollsConversationsRail(t *testing.T) {
-	m := newRailsApp(120, 40)
-	convs := make([]chat.Conversation, 0, 60)
-	for i := 0; i < 60; i++ {
-		convs = append(convs, chat.Conversation{ID: "c", Title: "rail-conv", MessageN: 1})
-	}
-	m.onConversations(chat.ConversationsMsg{Convs: convs})
-	nm, _ := m.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown,
-		X: 120 - 5, Y: 10})
-	if nm.convScroll == 0 {
-		t.Fatal("wheel over the rail must scroll the conversation list")
 	}
 }
 

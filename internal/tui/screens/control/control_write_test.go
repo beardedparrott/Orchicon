@@ -64,7 +64,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) mutateResult {
 func TestControlRegistersEverySource(t *testing.T) {
 	m := New(nil, nil)
 	want := map[string]bool{
-		"workers": false, "images": false, "secrets": false, "mcp": false,
+		"secrets": false, "mcp": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 	}
@@ -836,10 +836,10 @@ func TestAdminExplicitPermissionState(t *testing.T) {
 // claimed while a Confirm dialog is open.
 func TestControlKeyChordsAndModality(t *testing.T) {
 	m, _ := newWriteModel(t)
-	m.SelectSource("workers")
+	m.SelectSource("admin")
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	if m.formOpen() {
-		t.Fatal("workers has no create surface")
+		t.Fatal("admin has no create surface")
 	}
 	m.SelectSource("settings")
 	if m.newFormForSource() != nil {

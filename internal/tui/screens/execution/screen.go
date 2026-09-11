@@ -46,6 +46,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.NameStr = "execution"
 	m.AddSource("executions", "Executions", m.fetchExecutions)
 	m.AddSource("runs", "Workflow Runs", m.fetchRuns)
+	m.AddSource("workers", "Workers", m.fetchWorkers)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
 	m.bar = kit2.NewActionBar()
@@ -97,6 +98,25 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 	return items, resp.Msg.NextPageToken, nil
 }
 
+func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+	resp, err := m.cl.Workers.ListWorkers(ctx, connect.NewRequest(&apiv1.ListWorkersRequest{
+		PageSize:  100,
+		PageToken: pageToken,
+	}))
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]screenkit.Item, 0, len(resp.Msg.Workers))
+	for _, w := range resp.Msg.Workers {
+		items = append(items, screenkit.Item{
+			ID:    w.GetId(),
+			Title: w.GetName(),
+			Meta:  strings.ToLower(w.GetStatus().String()) + " v" + screenkit.FmtInt(int(w.GetCurrentVersion())),
+		})
+	}
+	return items, resp.Msg.NextPageToken, nil
+}
+
 func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	resp, err := m.cl.Workflows.ListWorkflowRuns(ctx, connect.NewRequest(&apiv1.ListWorkflowRunsRequest{
 		PageSize:  100,
@@ -118,6 +138,36 @@ func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.It
 
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
+	case "workers":
+		// Workers belong to the Execution domain (GUI nav-config groups
+		// Workers with Workflows/Executions/Schedules/Recovery).
+		resp, err := m.cl.Workers.GetWorker(ctx, connect.NewRequest(&apiv1.GetWorkerRequest{Id: id}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		w := resp.Msg.GetWorker()
+		fields := []screenkit.Field{
+			{Key: "id", Value: w.GetId()},
+			{Key: "name", Value: w.GetName()},
+			{Key: "slug", Value: w.GetSlug()},
+			{Key: "status", Value: strings.ToLower(w.GetStatus().String())},
+			{Key: "current ver", Value: screenkit.FmtInt(int(w.GetCurrentVersion()))},
+			{Key: "description", Value: w.GetDescription()},
+			{Key: "purpose", Value: w.GetPurpose()},
+			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
+		}
+		// Version trail (published versions are immutable; the model_ref is
+		// pinned by a human, so surfacing it per version matters).
+		var body strings.Builder
+		if vr, err := m.cl.Workers.ListWorkerVersions(ctx, connect.NewRequest(&apiv1.ListWorkerVersionsRequest{WorkerId: id})); err == nil {
+			body.WriteString(theme.ListTitle.Render("VERSIONS") + "\n")
+			for _, v := range vr.Msg.GetVersions() {
+				body.WriteString("  v" + screenkit.FmtInt(int(v.GetVersion())) +
+					"  " + strings.ToLower(v.GetStatus().String()) +
+					"  " + v.GetModelRef() + "\n")
+			}
+		}
+		return "Worker: " + w.GetName(), fields, strings.TrimRight(body.String(), "\n"), nil
 	case "executions":
 		resp, err := m.cl.Executions.GetExecution(ctx, connect.NewRequest(&apiv1.GetExecutionRequest{Id: id}))
 		if err != nil {
