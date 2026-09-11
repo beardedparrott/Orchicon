@@ -415,13 +415,22 @@ func RepairAfterResets(s string, bg lipgloss.Style) string {
 		}
 		rest := s[i+len(reset):]
 		b.WriteString(s[:i+len(reset)])
-		// Re-assert unless another escape follows immediately (it sets its own
-		// state) or NOTHING follows at all. The trailing case matters: a
-		// re-assert at the very end of a composed block leaks that block's
-		// background onto whatever the caller paints next — e.g. the composer
-		// box's surface colour bleeding across the rest of the row past its
-		// right border (the operator's "blue box riding off the pane").
-		if rest != "" && !strings.HasPrefix(rest, "\x1b[") {
+		// Re-assert only when MORE CELLS follow on this line. Two cases where
+		// it must not:
+		//   - nothing follows at all (end of the block);
+		//   - the next thing is a line break, so this line has no more cells.
+		// In both, a re-assert would leave this block's background ON for
+		// whatever the CALLER paints on the same row — the shell pads every
+		// row to the terminal width, so the composer's surface colour bled
+		// across the rest of the row past its right border (the operator's
+		// "blue box riding off the pane").
+		// An immediately-following escape needs no repair either (it sets its
+		// own state, and its reset is handled on the next pass).
+		if rest == "" || strings.HasPrefix(rest, "\n") {
+			s = rest
+			continue
+		}
+		if !strings.HasPrefix(rest, "\x1b[") {
 			b.WriteString(open)
 		}
 		s = rest
