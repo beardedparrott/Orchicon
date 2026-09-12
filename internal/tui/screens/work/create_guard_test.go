@@ -52,11 +52,23 @@ func TestCreateFormKindFollowsParent(t *testing.T) {
 	// And an illegal pairing is refused locally, WITH A MESSAGE, before any RPC.
 	f.Set("kind", "epic")
 	f.Set("title", "Bad")
-	if err := validateItemHierarchy("wi-epic", "epic", m.parentKind); err == nil {
+	if err := m.validateHierarchy("proj-1", "wi-epic", "epic"); err == nil {
 		t.Fatal("an epic under an epic parent must be rejected")
 	}
-	if err := validateItemHierarchy("", "task", m.parentKind); err == nil {
+	if err := m.validateHierarchy("proj-1", "", "task"); err == nil {
 		t.Fatal("a parentless task must be rejected")
+	}
+
+	// FEATURES AND TASKS ARE LEGAL PARENTS — the rule is "strictly deeper", not
+	// "only epics may have children". These must NOT be rejected.
+	legal := []struct{ parent, kind string }{
+		{"wi-epic", "feature"}, {"wi-epic", "task"}, {"wi-epic", "subtask"},
+		{"wi-task", "subtask"},
+	}
+	for _, c := range legal {
+		if err := m.validateHierarchy("proj-1", c.parent, c.kind); err != nil {
+			t.Errorf("%s under %s must be legal, got %v", c.kind, c.parent, err)
+		}
 	}
 }
 

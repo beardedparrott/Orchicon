@@ -57,9 +57,11 @@ type itemFormMsg struct {
 	parents []kit2.Option
 	images  []kit2.Option
 	// parentKinds maps each parent option's id to its kind, so the create form
-	// can derive the child kind from the chosen parent.
-	parentKinds map[string]apiv1.WorkItemKind
-	err         error
+	// can derive the child kind from the chosen parent; parentProjects maps it
+	// to its project, because a parent must be in the child's project.
+	parentKinds    map[string]apiv1.WorkItemKind
+	parentProjects map[string]string
+	err            error
 }
 
 // kindOptions is the create form's kind vocabulary (max 4 levels; the
@@ -189,12 +191,14 @@ func (m *Model) prepCreateItem() tea.Cmd {
 		})); err == nil {
 			msg.parents = append(msg.parents, kit2.Option{Value: "", Label: "— none (top level · epic) —"})
 			msg.parentKinds = map[string]apiv1.WorkItemKind{}
+			msg.parentProjects = map[string]string{}
 			for _, w := range ir.Msg.GetWorkItems() {
 				msg.parents = append(msg.parents, kit2.Option{
 					Value: w.GetId(),
 					Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
 				})
 				msg.parentKinds[w.GetId()] = w.GetKind()
+				msg.parentProjects[w.GetId()] = w.GetProjectId()
 			}
 		}
 		// The runtime-image picker lists the real images (value = the tag the
@@ -268,13 +272,12 @@ func pickerOptsWithCurrent(opts []kit2.Option, cur, prefix string) []kit2.Option
 	return append([]kit2.Option{{Value: cur, Label: prefix + cur + " (current)"}}, opts...)
 }
 
-// kindForParent is the child kind the hierarchy allows under a parent of kind
-// `parent` ("" = no parent, so the item must be an epic). It returns "" when
-// nothing can sit under that parent (a subtask is the bottom level).
+// kindForParent is the kind to CORRECT to under a parent of kind `parent`:
+// the shallowest kind that is strictly deeper, i.e. the closest legal child.
+// Note this is only a correction target — a parent may legitimately take any
+// strictly deeper kind (an epic may parent a feature, a task OR a subtask).
 func kindForParent(parent apiv1.WorkItemKind) string {
 	switch parent {
-	case apiv1.WorkItemKind_WORK_ITEM_KIND_UNSPECIFIED:
-		return "epic"
 	case apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC:
 		return "feature"
 	case apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE:
@@ -285,11 +288,40 @@ func kindForParent(parent apiv1.WorkItemKind) string {
 	return ""
 }
 
-// validateItemHierarchy mirrors the server's rules locally, so a bad
-// combination is caught in the form with a clear message instead of coming back
-// as a rejected write. (internal/workitem/validate.go: only an epic may be
-// top-level, and a child must be strictly deeper than its parent.)
-func validateItemHierarchy(parentID, kind string, parentKind map[string]apiv1.WorkItemKind) error {
+// parentOptionsFor is the parent picker's option list scoped to a project. The
+// server rejects a parent outside the child's project, so offering one would be
+// offering a guaranteed failure.
+func (m *Model) parentOptionsFor(projectID string) []kit2.Option {
+	opts := []kit2.Option{{Value: "", Label: "— none (top level · epic) —"}}
+	for _, o := range m.parents {
+		if o.Value == "" {
+			continue
+		}
+		if m.parentProject[o.Value] == projectID {
+			opts = append(opts, o)
+		}
+	}
+	return opts
+}
+
+func hasOption(opts []kit2.Option, v string) bool {
+	for _, o := range opts {
+		if o.Value == v {
+			return true
+		}
+	}
+	return false
+}
+
+// validateHierarchy mirrors the server's parent rules locally
+// (internal/workitem/validate.go), so an illegal combination is caught in the
+// form with a clear message instead of coming back as a rejected write:
+//   - a parentless item must be an EPIC (only epics may be top-level),
+//   - a parent must live in the SAME project as its child,
+//   - a child must be strictly DEEPER than its parent — which means an epic may
+//     parent a feature, a task or a subtask; a FEATURE may parent a task or a
+//     subtask; and a TASK may parent a subtask.
+func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 	depth := map[string]int{"epic": 1, "feature": 2, "task": 3, "subtask": 4}
 	if parentID == "" {
 		if kind != "epic" {
@@ -297,7 +329,10 @@ func validateItemHierarchy(parentID, kind string, parentKind map[string]apiv1.Wo
 		}
 		return nil
 	}
-	pk, ok := parentKind[parentID]
+	if p, ok := m.parentProject[parentID]; ok && p != projectID {
+		return fmt.Errorf("the parent is in a different project — a parent must be in the same project as its child")
+	}
+	pk, ok := m.parentKind[parentID]
 	if !ok {
 		return nil // an unknown parent is the server's call
 	}
@@ -317,11 +352,19 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 	for _, w := range m.workflows {
 		wfOpts = append(wfOpts, kit2.Option{Value: w.ID, Label: w.Name})
 	}
+	initialProject := ""
+	if len(projOpts) > 0 {
+		initialProject = projOpts[0].Value
+	}
 	f := kit2.NewForm("New work item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "add retry to the sweeper"},
-		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: projOpts[0].Value},
+		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: initialProject},
 		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Options: kindOptions(), Initial: "epic"},
-		kit2.FieldSpec{Name: "parent", Label: "Parent", Kind: kit2.KPicker, Options: m.parents, Placeholder: "type to search work items"},
+		// The parent list is scoped to the CHOSEN project: a parent must be in
+		// the same project as its child, so offering another project's items
+		// would offer a guaranteed rejection.
+		kit2.FieldSpec{Name: "parent", Label: "Parent", Kind: kit2.KPicker,
+			Options: m.parentOptionsFor(initialProject), Placeholder: "type to search work items"},
 		kit2.FieldSpec{Name: "description", Label: "Description", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "acceptance", Label: "Acceptance criteria", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "priority", Label: "Priority", Kind: kit2.KNumber, Initial: "0", Validate: validateNonNegativeInt},
@@ -332,21 +375,37 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	// The Kind FOLLOWS the Parent only when it must: any kind STRICTLY deeper
-	// than the parent is legal, so a deliberate choice is preserved and only an
-	// illegal pairing is corrected. No parent means the item must be an epic
-	// (the only legal top-level kind). This makes the combinations the server
-	// rejects unreachable, without second-guessing the operator.
+	// Two derived-field rules keep the form on legal ground:
+	//
+	//  1. Changing the PROJECT re-scopes the parent picker to that project and
+	//     drops a parent that no longer belongs (the server requires the same
+	//     project).
+	//  2. Choosing a PARENT corrects the kind ONLY when the pairing is illegal.
+	//     Any strictly deeper kind is legal, so a deliberate choice survives —
+	//     an epic may parent a feature, a task or a subtask; a FEATURE may
+	//     parent a task or a subtask; a TASK may parent a subtask.
 	f.OnChange = func(name, value string) {
-		if name != "parent" {
-			return
-		}
-		cur := f.Values["kind"]
-		if validateItemHierarchy(value, cur, m.parentKind) == nil {
-			return // already legal for this parent
-		}
-		if k := kindForParent(m.parentKind[value]); k != "" {
-			f.Values["kind"] = k
+		switch name {
+		case "project":
+			opts := m.parentOptionsFor(value)
+			for i := range f.Specs {
+				if f.Specs[i].Name == "parent" {
+					f.Specs[i].Options = opts
+				}
+			}
+			if cur := f.Values["parent"]; cur != "" && !hasOption(opts, cur) {
+				// Direct assignment (not Set) so this correction cannot recurse.
+				f.Values["parent"] = ""
+				f.Values["kind"] = "epic"
+			}
+		case "parent":
+			cur := f.Values["kind"]
+			if m.validateHierarchy(f.Values["project"], value, cur) == nil {
+				return // already legal for this parent
+			}
+			if k := kindForParent(m.parentKind[value]); k != "" {
+				f.Values["kind"] = k
+			}
 		}
 	}
 	m.wireItemForm(f, formCreateItem, "")
@@ -462,16 +521,17 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 		title := strings.TrimSpace(v["title"])
 		switch mode {
 		case formCreateItem:
-			if v["project"] == "" {
+			project := v["project"]
+			if project == "" {
 				return nil, fmt.Errorf("a work item belongs to a project")
 			}
 			kind := kindFromName(v["kind"])
 			parentID := strings.TrimSpace(v["parent"])
-			if err := validateItemHierarchy(parentID, kindBadge(kind), m.parentKind); err != nil {
+			if err := m.validateHierarchy(project, parentID, kindBadge(kind)); err != nil {
 				return nil, err
 			}
 			req := &apiv1.CreateWorkItemRequest{
-				ProjectId:          v["project"],
+				ProjectId:          project,
 				ParentId:           parentID,
 				Kind:               kind,
 				Title:              title,

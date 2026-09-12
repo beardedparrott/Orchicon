@@ -74,6 +74,10 @@ type Model struct {
 	// invited combinations the server rejects — which is how a create read as
 	// "the item is nowhere to be found".
 	parentKind map[string]apiv1.WorkItemKind
+	// parentProject maps a parent id to its project. The server requires a
+	// parent to be in the SAME project as its child, so the picker must only
+	// offer parents from the chosen project (it used to list every project).
+	parentProject map[string]string
 
 	// form is the open typed form (nil = closed).
 	form     *kit2.Form
@@ -541,6 +545,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 		if len(msg.parentKinds) > 0 {
 			m.parentKind = msg.parentKinds
+			m.parentProject = msg.parentProjects
 		}
 		if len(msg.images) > 0 {
 			m.images = msg.images
