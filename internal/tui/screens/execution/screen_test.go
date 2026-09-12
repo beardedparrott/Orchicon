@@ -204,7 +204,7 @@ func TestInterjectSendsMessageThroughForm(t *testing.T) {
 	if !f.FocusName("message") {
 		t.Fatal("form has no message field")
 	}
-	run(t, m, press(t, m, "enter"))
+	run(t, m, press(t, m, "ctrl+s"))
 	if len(p.messages) != 1 {
 		t.Fatalf("SendExecutionMessage calls = %d, want 1", len(p.messages))
 	}

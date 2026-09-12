@@ -67,6 +67,10 @@ type Form struct {
 	Cursor    int
 	Errors    map[string]string
 	Submitted bool
+	// SubmitErr is why the last save did NOT go through ("" = none). The host
+	// keeps the form open on a rejected submit, so this is the only signal the
+	// operator gets.
+	SubmitErr string
 	Width     int
 	Height    int
 	Focused   bool
@@ -83,6 +87,12 @@ type Form struct {
 	pickerField string
 	pickerQuery string
 	pickerSel   int
+
+	// OnChange is called after a field's value changes programmatically (a
+	// picker commit, Set). A screen uses it to keep DERIVED fields consistent
+	// — e.g. the work-item Kind follows the chosen Parent, so the form can
+	// never offer a combination the server rejects.
+	OnChange func(name, value string)
 
 	// OnSubmit is invoked by Submit with a copy of the collected values. It
 	// is where the screen wires the mutation executor; the returned cmd (the
@@ -181,6 +191,9 @@ func (f *Form) pickerChoose(s *FieldSpec) {
 	}
 	f.Values[s.Name] = opts[sel].Value
 	f.setCaret(s.Name, len([]rune(opts[sel].Value)))
+	if f.OnChange != nil {
+		f.OnChange(s.Name, opts[sel].Value)
+	}
 	f.pickerClose()
 }
 
@@ -263,6 +276,9 @@ func (f *Form) Set(name, value string) {
 		f.pos = map[string]int{}
 	}
 	f.pos[name] = len([]rune(value))
+	if f.OnChange != nil {
+		f.OnChange(name, value)
+	}
 }
 
 // caret returns the rune index of the caret within the named field's value,
@@ -406,12 +422,20 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	case "up":
 		f.Prev()
 		return nil, true
+	case "ctrl+s":
+		// Save. The operator: "On new work items, I think submit should be
+		// ctrl+s not enter. Enter is already used on individual items to
+		// select things so this is not working well."
+		cmd, _ := f.Submit()
+		return cmd, true
 	case "enter":
-		if f.Cursor == len(f.Specs)-1 || k.Alt {
-			cmd, _ := f.Submit()
-			return cmd, true
+		// Enter NEVER submits: on a form full of pickers and selectors it is
+		// the CHOOSE gesture, and overloading it made selecting a value
+		// commit the whole form. It advances to the next field, and is a
+		// no-op on the last one (ctrl+s is the one save chord).
+		if f.Cursor < len(f.Specs)-1 {
+			f.Next()
 		}
-		f.Next()
 		return nil, true
 	case "esc":
 		return nil, false // caller closes the form
@@ -607,10 +631,17 @@ func (f *Form) Submit() (tea.Cmd, error) {
 		return nil, nil
 	}
 	cmd, err := f.OnSubmit(vals, multi)
-	if err == nil {
-		f.Submitted = true
+	if err != nil {
+		// A rejected submit must SAY why. The host keeps the form open (Submitted
+		// stays false), so without this the operator pressed save and saw
+		// nothing happen — the same silent-rejection class as a swallowed RPC
+		// error.
+		f.SubmitErr = err.Error()
+		return cmd, err
 	}
-	return cmd, err
+	f.SubmitErr = ""
+	f.Submitted = true
+	return cmd, nil
 }
 
 // display renders a field's value for the view. A secret field NEVER
@@ -817,6 +848,9 @@ func (f *Form) View() string {
 			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
-	b.WriteString(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: submit · esc: cancel"))
+	b.WriteString(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"))
+	if f.SubmitErr != "" {
+		b.WriteString("\n" + theme.ErrorText.Render("✗ "+f.SubmitErr))
+	}
 	return strings.TrimSuffix(b.String(), "\n")
 }

@@ -42,7 +42,6 @@ const (
 	formCreateItem   = "item-create"
 	formEditItem     = "item-edit"
 	formStatusItem   = "item-status"
-	formAssignItem   = "item-assign"
 	formScheduleItem = "item-schedule"
 )
 
@@ -57,7 +56,10 @@ type itemFormMsg struct {
 	// as ids the operator would have to know).
 	parents []kit2.Option
 	images  []kit2.Option
-	err     error
+	// parentKinds maps each parent option's id to its kind, so the create form
+	// can derive the child kind from the chosen parent.
+	parentKinds map[string]apiv1.WorkItemKind
+	err         error
 }
 
 // kindOptions is the create form's kind vocabulary (max 4 levels; the
@@ -185,12 +187,14 @@ func (m *Model) prepCreateItem() tea.Cmd {
 			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
 			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
 		})); err == nil {
-			msg.parents = append(msg.parents, kit2.Option{Value: "", Label: "— none (top level) —"})
+			msg.parents = append(msg.parents, kit2.Option{Value: "", Label: "— none (top level · epic) —"})
+			msg.parentKinds = map[string]apiv1.WorkItemKind{}
 			for _, w := range ir.Msg.GetWorkItems() {
 				msg.parents = append(msg.parents, kit2.Option{
 					Value: w.GetId(),
 					Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
 				})
+				msg.parentKinds[w.GetId()] = w.GetKind()
 			}
 		}
 		// The runtime-image picker lists the real images (value = the tag the
@@ -264,6 +268,45 @@ func pickerOptsWithCurrent(opts []kit2.Option, cur, prefix string) []kit2.Option
 	return append([]kit2.Option{{Value: cur, Label: prefix + cur + " (current)"}}, opts...)
 }
 
+// kindForParent is the child kind the hierarchy allows under a parent of kind
+// `parent` ("" = no parent, so the item must be an epic). It returns "" when
+// nothing can sit under that parent (a subtask is the bottom level).
+func kindForParent(parent apiv1.WorkItemKind) string {
+	switch parent {
+	case apiv1.WorkItemKind_WORK_ITEM_KIND_UNSPECIFIED:
+		return "epic"
+	case apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC:
+		return "feature"
+	case apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE:
+		return "task"
+	case apiv1.WorkItemKind_WORK_ITEM_KIND_TASK:
+		return "subtask"
+	}
+	return ""
+}
+
+// validateItemHierarchy mirrors the server's rules locally, so a bad
+// combination is caught in the form with a clear message instead of coming back
+// as a rejected write. (internal/workitem/validate.go: only an epic may be
+// top-level, and a child must be strictly deeper than its parent.)
+func validateItemHierarchy(parentID, kind string, parentKind map[string]apiv1.WorkItemKind) error {
+	depth := map[string]int{"epic": 1, "feature": 2, "task": 3, "subtask": 4}
+	if parentID == "" {
+		if kind != "epic" {
+			return fmt.Errorf("only an epic can be top-level — choose a parent, or set kind to epic")
+		}
+		return nil
+	}
+	pk, ok := parentKind[parentID]
+	if !ok {
+		return nil // an unknown parent is the server's call
+	}
+	if depth[kind] <= depth[kindBadge(pk)] {
+		return fmt.Errorf("a %s must be deeper than its parent (the parent is a %s) — pick a deeper kind or a shallower parent", kind, kindBadge(pk))
+	}
+	return nil
+}
+
 // newItemCreateForm builds the typed create form.
 func (m *Model) newItemCreateForm() *kit2.Form {
 	projOpts := make([]kit2.Option, 0, len(m.projects))
@@ -277,7 +320,7 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 	f := kit2.NewForm("New work item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "add retry to the sweeper"},
 		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: projOpts[0].Value},
-		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Options: kindOptions(), Initial: "task"},
+		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Options: kindOptions(), Initial: "epic"},
 		kit2.FieldSpec{Name: "parent", Label: "Parent", Kind: kit2.KPicker, Options: m.parents, Placeholder: "type to search work items"},
 		kit2.FieldSpec{Name: "description", Label: "Description", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "acceptance", Label: "Acceptance criteria", Kind: kit2.KTextArea},
@@ -289,6 +332,23 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
+	// The Kind FOLLOWS the Parent only when it must: any kind STRICTLY deeper
+	// than the parent is legal, so a deliberate choice is preserved and only an
+	// illegal pairing is corrected. No parent means the item must be an epic
+	// (the only legal top-level kind). This makes the combinations the server
+	// rejects unreachable, without second-guessing the operator.
+	f.OnChange = func(name, value string) {
+		if name != "parent" {
+			return
+		}
+		cur := f.Values["kind"]
+		if validateItemHierarchy(value, cur, m.parentKind) == nil {
+			return // already legal for this parent
+		}
+		if k := kindForParent(m.parentKind[value]); k != "" {
+			f.Values["kind"] = k
+		}
+	}
 	m.wireItemForm(f, formCreateItem, "")
 	return f
 }
@@ -336,25 +396,60 @@ func (m *Model) newItemStatusForm(w *apiv1.WorkItem) *kit2.Form {
 	return f
 }
 
-// newItemAssignForm assigns a worker (worker_ref is the JSON
-// {worker_id, version} binding the service expects).
-func (m *Model) newItemAssignForm(w *apiv1.WorkItem) *kit2.Form {
-	f := kit2.NewForm("Assign worker",
-		kit2.FieldSpec{Name: "worker_ref", Label: "Worker ref", Kind: kit2.KJSON, Required: true, Initial: w.GetAssignedWorkerRef(), Placeholder: `{"worker_id":"wrk_…","version":1}`, Validate: validateJSON},
+// newItemScheduleForm sets scheduled_start_at (the ScheduleWorkItem path: the
+// schedule is an UpdateWorkItem field, opt-in via auto_start_workflow).
+//
+// Auto-start is deliberately UNCHECKED by default and does not inherit the
+// item's stored value: enabling it starts the bound workflow the moment the
+// schedule fires, and the operator called having that on by default "dangerous".
+// It is now an explicit opt-in per scheduling action.
+//
+// The Quick pick fills the timestamp field with a concrete RFC3339 value; the
+// field stays editable for an exact time, so the picker assists rather than
+// replaces it.
+func (m *Model) newItemScheduleForm(w *apiv1.WorkItem) *kit2.Form {
+	f := kit2.NewForm("Schedule work item",
+		kit2.FieldSpec{Name: "quick", Label: "Quick pick", Kind: kit2.KPicker, Options: schedulePresets()},
+		kit2.FieldSpec{Name: "scheduled_start", Label: "Start at", Kind: kit2.KText, Required: true,
+			Initial: rfc3339OrEmpty(w.GetScheduledStartAt()), Placeholder: "2026-09-01T09:00:00Z", Validate: validateRFC3339},
+		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	m.wireItemForm(f, formAssignItem, w.GetId())
+	f.OnChange = func(name, value string) {
+		if name == "quick" && value != "" {
+			f.Values["scheduled_start"] = value
+		}
+	}
+	m.wireItemForm(f, formScheduleItem, w.GetId())
 	return f
 }
 
-// newItemScheduleForm sets scheduled_start_at (the ScheduleWorkItem path:
-// the schedule is an UpdateWorkItem field, opt-in via auto_start_workflow).
-func (m *Model) newItemScheduleForm(w *apiv1.WorkItem) *kit2.Form {
-	f := kit2.NewForm("Schedule work item",
-		kit2.FieldSpec{Name: "scheduled_start", Label: "Start at", Kind: kit2.KText, Required: true, Initial: rfc3339OrEmpty(w.GetScheduledStartAt()), Placeholder: "2026-09-01T09:00:00Z", Validate: validateRFC3339},
-		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
-	)
-	m.wireItemForm(f, formScheduleItem, w.GetId())
-	return f
+// schedulePresets are ready-made scheduled times, computed at form-build time so
+// each carries a concrete RFC3339 value. They cover the common cases without
+// asking anyone to hand-write a timestamp.
+func schedulePresets() []kit2.Option {
+	now := time.Now().UTC()
+	return []kit2.Option{
+		{Value: "", Label: "— pick a time, or type one below —"},
+		{Value: now.Add(15 * time.Minute).Format(time.RFC3339), Label: "in 15 minutes"},
+		{Value: now.Add(time.Hour).Format(time.RFC3339), Label: "in 1 hour"},
+		{Value: now.Add(4 * time.Hour).Format(time.RFC3339), Label: "in 4 hours"},
+		{Value: tomorrowAt9(now).Format(time.RFC3339), Label: "tomorrow 09:00 UTC"},
+		{Value: nextMondayAt9(now).Format(time.RFC3339), Label: "next Monday 09:00 UTC"},
+	}
+}
+
+func tomorrowAt9(now time.Time) time.Time {
+	y, m, d := now.AddDate(0, 0, 1).Date()
+	return time.Date(y, m, d, 9, 0, 0, 0, time.UTC)
+}
+
+func nextMondayAt9(now time.Time) time.Time {
+	d := now.AddDate(0, 0, 1)
+	for d.Weekday() != time.Monday {
+		d = d.AddDate(0, 0, 1)
+	}
+	y, m, dd := d.Date()
+	return time.Date(y, m, dd, 9, 0, 0, 0, time.UTC)
 }
 
 // wireItemForm installs the submit handler: it builds the RPC request from
@@ -370,10 +465,15 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			if v["project"] == "" {
 				return nil, fmt.Errorf("a work item belongs to a project")
 			}
+			kind := kindFromName(v["kind"])
+			parentID := strings.TrimSpace(v["parent"])
+			if err := validateItemHierarchy(parentID, kindBadge(kind), m.parentKind); err != nil {
+				return nil, err
+			}
 			req := &apiv1.CreateWorkItemRequest{
 				ProjectId:          v["project"],
-				ParentId:           strings.TrimSpace(v["parent"]),
-				Kind:               kindFromName(v["kind"]),
+				ParentId:           parentID,
+				Kind:               kind,
 				Title:              title,
 				Description:        v["description"],
 				AcceptanceCriteria: v["acceptance"],
@@ -442,18 +542,6 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				},
 			}), nil
 
-		case formAssignItem:
-			ref := strings.TrimSpace(v["worker_ref"])
-			return m.Mutate(mutate.Request{
-				Name: "assign worker", Source: srcWorkItems,
-				Apply:    func() { m.setRowMeta(srcWorkItems, id, "assigned") },
-				Rollback: func() { m.Refresh(srcWorkItems) },
-				Do: func(ctx context.Context) error {
-					_, err := m.cl.WorkItems.AssignWorker(ctx, connect.NewRequest(&apiv1.AssignWorkerRequest{Id: id, WorkerRef: ref}))
-					return err
-				},
-			}), nil
-
 		case formScheduleItem:
 			auto := v["auto_start"] == "true"
 			req := &apiv1.UpdateWorkItemRequest{
@@ -502,13 +590,6 @@ func (m *Model) itemActions() []kit2.Action {
 		{
 			Label: "toggle auto-start", Key: "y", Source: srcWorkItems,
 			Do: func(ctx context.Context) error { return m.rpcToggleAutoStart(ctx, id) },
-		},
-		{
-			Label: "unassign worker", Key: "W", Source: srcWorkItems,
-			Do: func(ctx context.Context) error {
-				_, err := m.cl.WorkItems.UnassignWorker(ctx, connect.NewRequest(&apiv1.UnassignWorkerRequest{Id: id}))
-				return err
-			},
 		},
 		{
 			Label: "archive", Key: "a", Danger: true, Source: srcWorkItems,

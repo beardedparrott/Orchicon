@@ -67,6 +67,12 @@ type Model struct {
 	// image): references chosen from a filtered list rather than typed ids.
 	parents []kit2.Option
 	images  []kit2.Option
+	// parentKind maps a parent id to its kind, so the create form can DERIVE
+	// the child's kind from the chosen parent. The hierarchy is deterministic
+	// (epic > feature > task > subtask), so asking the operator to pick both
+	// invited combinations the server rejects — which is how a create read as
+	// "the item is nowhere to be found".
+	parentKind map[string]apiv1.WorkItemKind
 
 	// form is the open typed form (nil = closed).
 	form     *kit2.Form
@@ -108,6 +114,11 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.Base.SetSourceEmpty(srcProjects, "no projects yet — press n to create one")
 	m.Base.SetSourceEmpty(srcWorkItems, "no work items in this view — press n to create one, or / to search")
 	m.Base.SetSourceEmpty(srcImages, "no runtime images yet — press n to define one, b to build")
+	// The mutation executor is installed HERE so every write has a feedback
+	// surface. Without it Base.Mutate fell back to a zero executor with a nil
+	// Sink, so a REJECTED write rolled back silently and the operator only saw
+	// an item that never appeared (the operator's "it is nowhere to be found").
+	m.Base.SetExecutor(&mutate.Executor{Sink: workSink{m}})
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
@@ -176,9 +187,37 @@ func (m *Model) ClaimsKeys() bool {
 		m.Base.EditingDetail() || m.Base.Filtering()
 }
 
-// ActiveForm returns the form currently open on this screen, whichever host it
-// is drawn in — the modal form (creates) or the inline detail-pane editor
-// (edits). Tests and the shell read the in-progress input through it.
+// workSink adapts the screen to mutate.Sink. It is an adapter rather than
+// methods on Model because Model already has a `Notice() string` accessor the
+// shell reads; the Sink needs `Notice(msg string)`.
+type workSink struct{ m *Model }
+
+// Progress reports a mutation starting.
+func (s workSink) Progress(msg string) { s.m.notice = msg }
+
+// Notice reports a successful mutation.
+func (s workSink) Notice(msg string) { s.m.notice = msg }
+
+// Fail surfaces a FAILED mutation. It is deliberately loud: a rejected write
+// must never look like nothing happened, which is exactly how a server-side
+// rejection ("a task must have a parent; only epics can be top-level") read as
+// an item that vanished. The message also goes to the shell's dock error strip
+// so it is visible even when the screen's notice line is elsewhere.
+func (s workSink) Fail(msg string) {
+	s.m.notice = "✗ " + msg
+	if d, ok := s.m.Shell().(dockSink); ok {
+		d.DockError(msg)
+	}
+}
+
+type dockSink interface {
+	DockError(msg string)
+	DockNotice(msg string)
+}
+
+// ActiveForm returns the form currently open on this screen, whichever host
+// draws it — the modal form (creates) or the inline detail-pane editor (edits).
+// Tests and the shell read the in-progress input through it.
 func (m *Model) ActiveForm() *kit2.Form {
 	if m.form != nil {
 		return m.form
@@ -477,6 +516,9 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		if len(msg.parents) > 0 {
 			m.parents = msg.parents
 		}
+		if len(msg.parentKinds) > 0 {
+			m.parentKind = msg.parentKinds
+		}
 		if len(msg.images) > 0 {
 			m.images = msg.images
 		}
@@ -492,8 +534,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
 		case formStatusItem:
 			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
-		case formAssignItem:
-			m.Base.BeginDetailEdit("Assign worker", m.newItemAssignForm(msg.item))
 		case formScheduleItem:
 			m.Base.BeginDetailEdit("Schedule", m.newItemScheduleForm(msg.item))
 		}
@@ -689,10 +729,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.prepEditItem(formStatusItem), true
 		}
-	case "w":
-		if src == srcWorkItems {
-			return m.prepEditItem(formAssignItem), true
-		}
 	case "t":
 		if src == srcWorkItems {
 			return m.prepEditItem(formScheduleItem), true
@@ -734,7 +770,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.reorderChildren(-1), true
 		}
-	case "y", "W", "a", "R", "x":
+	case "y", "a", "R", "x":
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}
@@ -825,7 +861,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the button) · enter: detail")
+		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · J/K: reorder children · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the button) · enter: detail")
 	}
 }
 

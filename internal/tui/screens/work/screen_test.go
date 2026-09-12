@@ -535,7 +535,7 @@ func submit(t *testing.T, m *Model, lastField string) tea.Cmd {
 	if !f.FocusName(lastField) {
 		t.Fatalf("form has no field %q", lastField)
 	}
-	return press(t, m, "enter")
+	return press(t, m, "ctrl+s")
 }
 
 // run executes a cmd and feeds its message back into the screen.
@@ -1043,31 +1043,6 @@ func TestArchiveRestoreFromArchiveView(t *testing.T) {
 	}
 }
 
-func TestAssignAndUnassignWorker(t *testing.T) {
-	p := newPlane()
-	p.seedProject("proj-1", "Orchicon")
-	p.addItem(&apiv1.WorkItem{Id: "wi-1", Title: "Item", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
-	m := newModel(t, p)
-	m.SelectSource(srcWorkItems)
-	load(t, m, srcWorkItems)
-
-	run(t, m, press(t, m, "w"))
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("w must open the assign form")
-	}
-	f.Set("worker_ref", `{"worker_id":"wrk_1","version":1}`)
-	run(t, m, submit(t, m, "worker_ref"))
-	if len(p.assigned) != 1 || p.assigned[0].GetWorkerRef() != `{"worker_id":"wrk_1","version":1}` {
-		t.Fatalf("assign = %+v", p.assigned)
-	}
-
-	run(t, m, press(t, m, "W"))
-	if len(p.unassigned) != 1 || p.unassigned[0] != "wi-1" {
-		t.Fatalf("unassign = %v", p.unassigned)
-	}
-}
-
 func TestScheduleWorkItem(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -1376,7 +1351,7 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 		t.Fatal("an invalid form must not submit")
 	}
 	if m.ActiveForm() == nil || len(f.Errors) == 0 {
-		t.Fatal("the form must stay open and name the failure")
+		t.Fatalf("the form must stay open and name the failure (errors=%v submitErr=%q)", f.Errors, f.SubmitErr)
 	}
 	if len(p.created) != 0 {
 		t.Fatal("no RPC may be sent for an invalid form")

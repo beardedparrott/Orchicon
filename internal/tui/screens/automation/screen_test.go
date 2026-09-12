@@ -377,7 +377,7 @@ func submit(t *testing.T, m *Model, lastField string) tea.Cmd {
 	if !f.FocusName(lastField) {
 		t.Fatalf("form has no field %q", lastField)
 	}
-	return press(t, m, "enter")
+	return press(t, m, "ctrl+s")
 }
 
 // run executes a cmd and feeds its message back into the screen (the

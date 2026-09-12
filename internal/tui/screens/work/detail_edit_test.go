@@ -105,9 +105,10 @@ func TestDetailEditEscCancels(t *testing.T) {
 }
 
 // The other work-item edit gestures use the same host, so there is ONE
-// editing surface rather than a mix of modals.
-func TestStatusAndAssignAlsoEditInThePane(t *testing.T) {
-	for _, key := range []string{"s", "w", "t"} {
+// editing surface rather than a mix of modals. Assign is deliberately GONE:
+// a worker ref does not belong on a work item (workflows bind the work).
+func TestStatusAndScheduleEditInThePane(t *testing.T) {
+	for _, key := range []string{"s", "t"} {
 		m := editPlane(t)
 		run(t, m, press(t, m, key))
 		if m.form != nil {
@@ -117,5 +118,27 @@ func TestStatusAndAssignAlsoEditInThePane(t *testing.T) {
 			t.Fatalf("%q must open the detail-pane editor", key)
 		}
 		press(t, m, "esc")
+	}
+}
+
+// Assigning a worker ref directly to a work item is REMOVED: the operator's
+// "assign makes no sense on work items and is dangerous. That is old left over
+// from earlier versions ... Workflows handle this." 'w'/'W' must be inert and
+// no assign action may be offered.
+func TestAssignIsRemovedFromWorkItems(t *testing.T) {
+	m := editPlane(t)
+	for _, key := range []string{"w", "W"} {
+		press(t, m, key)
+	}
+	if m.form != nil || m.Base.EditingDetail() {
+		t.Fatal("w/W must not open any editor")
+	}
+	for _, a := range m.itemActions() {
+		if strings.Contains(strings.ToLower(a.Label), "assign") {
+			t.Fatalf("the assign action must be gone, still offered: %q", a.Label)
+		}
+	}
+	if v := strings.ToLower(m.HintLine()); strings.Contains(v, "assign") {
+		t.Fatalf("the hint must not advertise assign:\n%s", m.HintLine())
 	}
 }
