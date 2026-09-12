@@ -696,6 +696,10 @@ func formBox(f *kit2.Form, w int) string {
 	if bw < 24 {
 		bw = 24
 	}
+	// The form's own width must reflect the box it is drawn in, or its
+	// horizontal window (and its caret) would be computed against the terminal
+	// rather than the dialog's inner width.
+	f.Width = bw - 4
 	d := &kit2.Dialog{Title: f.Title, Body: f.View(), Buttons: []string{"submit", "cancel"}}
 	return d.Box(bw, minInt(26, len(f.Specs)*2+5))
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -63,6 +64,12 @@ type Form struct {
 	Focused   bool
 	Title     string
 
+	// pos is the CARET position (a rune index) per editable field. Without it
+	// the only edit available was appending to the end of the prefilled value,
+	// which is why editing an existing item read as "I can't actually edit
+	// anything": no way to correct mid-string and no way to clear a field.
+	pos map[string]int
+
 	// OnSubmit is invoked by Submit with a copy of the collected values. It
 	// is where the screen wires the mutation executor; the returned cmd (the
 	// mutation's async RPC) is handed back to the bubbletea update loop.
@@ -77,6 +84,7 @@ func NewForm(title string, specs ...FieldSpec) *Form {
 		Values: map[string]string{},
 		Multi:  map[string]map[string]bool{},
 		Errors: map[string]string{},
+		pos:    map[string]int{},
 	}
 	for _, s := range specs {
 		if s.Initial != "" {
@@ -105,8 +113,79 @@ func (f *Form) CurrentName() string {
 	return ""
 }
 
-// Set assigns a field value (used by tests and programmatic prefill).
-func (f *Form) Set(name, value string) { f.Values[name] = value }
+// Set assigns a field value (used by tests and programmatic prefill). The caret
+// moves to the end, which is where an operator continues typing.
+func (f *Form) Set(name, value string) {
+	f.Values[name] = value
+	if f.pos == nil {
+		f.pos = map[string]int{}
+	}
+	f.pos[name] = len([]rune(value))
+}
+
+// caret returns the rune index of the caret within the named field's value,
+// clamped to the value's length (an unvisited field starts at the end, which is
+// where appending used to happen, so nothing about typing at a fresh field
+// changes).
+func (f *Form) caret(name string) int {
+	n := len([]rune(f.Values[name]))
+	p, ok := f.pos[name]
+	if !ok || p > n {
+		return n
+	}
+	if p < 0 {
+		return 0
+	}
+	return p
+}
+
+func (f *Form) setCaret(name string, p int) {
+	if f.pos == nil {
+		f.pos = map[string]int{}
+	}
+	n := len([]rune(f.Values[name]))
+	if p < 0 {
+		p = 0
+	}
+	if p > n {
+		p = n
+	}
+	f.pos[name] = p
+}
+
+// insertRunes splices text into a field at the caret.
+func (f *Form) insertRunes(name, ins string) {
+	v := []rune(f.Values[name])
+	p := f.caret(name)
+	out := make([]rune, 0, len(v)+len(ins))
+	out = append(out, v[:p]...)
+	out = append(out, []rune(ins)...)
+	out = append(out, v[p:]...)
+	f.Values[name] = string(out)
+	f.setCaret(name, p+len([]rune(ins)))
+}
+
+// backspaceRune deletes the rune BEFORE the caret; deleteRune deletes the rune
+// AT the caret.
+func (f *Form) backspaceRune(name string) {
+	v := []rune(f.Values[name])
+	p := f.caret(name)
+	if p == 0 || len(v) == 0 {
+		return
+	}
+	f.Values[name] = string(append(v[:p-1], v[p:]...))
+	f.setCaret(name, p-1)
+}
+
+func (f *Form) deleteRune(name string) {
+	v := []rune(f.Values[name])
+	p := f.caret(name)
+	if p >= len(v) {
+		return
+	}
+	f.Values[name] = string(append(v[:p], v[p+1:]...))
+	f.setCaret(name, p)
+}
 
 // SetMulti toggles a multi-select option.
 func (f *Form) SetMulti(name, value string, on bool) {
@@ -191,10 +270,31 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		return nil, false // caller closes the form
 	case "backspace":
 		if s != nil && f.editable(s.Kind) {
-			v := []rune(f.Values[s.Name])
-			if len(v) > 0 {
-				f.Values[s.Name] = string(v[:len(v)-1])
-			}
+			f.backspaceRune(s.Name)
+		}
+		return nil, true
+	case "delete":
+		if s != nil && f.editable(s.Kind) {
+			f.deleteRune(s.Name)
+		}
+		return nil, true
+	case "home":
+		if s != nil && f.editable(s.Kind) {
+			f.setCaret(s.Name, 0)
+		}
+		return nil, true
+	case "end":
+		if s != nil && f.editable(s.Kind) {
+			f.setCaret(s.Name, len([]rune(f.Values[s.Name])))
+		}
+		return nil, true
+	case "ctrl+u":
+		// Clear the field. Without a clear gesture an operator could only ever
+		// APPEND to a prefilled value, which is the difference between editing
+		// an item and being unable to.
+		if s != nil && f.editable(s.Kind) {
+			f.Values[s.Name] = ""
+			f.setCaret(s.Name, 0)
 		}
 		return nil, true
 	case " ", "space":
@@ -225,10 +325,16 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 				f.Values[s.Name] = toggleBool(f.Values[s.Name])
 				return nil, true
 			}
+			// An editable TEXT field uses left/right to move the CARET — the
+			// gesture an operator expects inside a text box.
+			if f.editable(s.Kind) {
+				f.setCaret(s.Name, f.caret(s.Name)+d)
+				return nil, true
+			}
 		}
 	}
 	if s != nil && len(k.Runes) > 0 && f.editable(s.Kind) {
-		f.Values[s.Name] += string(k.Runes)
+		f.insertRunes(s.Name, string(k.Runes))
 		return nil, true
 	}
 	return nil, false
@@ -402,8 +508,62 @@ func (f *Form) display(s FieldSpec) string {
 	}
 }
 
+// valueWithCaret renders an editable field's value with a caret at the edit
+// position, windowed to at most `avail` cells so the caret is ALWAYS visible.
+// A clipped edge is marked with an ellipsis (the same cell the character would
+// have used, so the width stays exact).
+func (f *Form) valueWithCaret(name string, avail int) string {
+	const caretRune = "\u258f" // ▏
+	if avail < 2 {
+		avail = 2
+	}
+	runes := []rune(f.Values[name])
+	pos := f.caret(name)
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	// The whole value plus the caret fits: no windowing needed.
+	if len(runes)+1 <= avail {
+		return string(runes[:pos]) + caretRune + string(runes[pos:])
+	}
+	win := avail - 1 // one cell reserved for the caret
+	start := 0
+	if pos > win-1 {
+		start = pos - (win - 1)
+	}
+	if start > len(runes)-win {
+		start = len(runes) - win
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + win
+	shown := append([]rune{}, runes[start:end]...)
+	if start > 0 {
+		shown[0] = '…'
+	}
+	if end < len(runes) {
+		shown[len(shown)-1] = '…'
+	}
+	idx := pos - start
+	if idx < 0 {
+		idx = 0
+	}
+	if idx > len(shown) {
+		idx = len(shown)
+	}
+	return string(shown[:idx]) + caretRune + string(shown[idx:])
+}
+
 // View renders the form body.
 func (f *Form) View() string {
+	// A form rendered without an explicit width still needs a sane one: Pad
+	// truncates to it, so width 0 erased every line (the Work screen's forms
+	// never set it) and windowing needs it to keep the caret visible.
+	width := f.Width
+	if width <= 0 {
+		width = 64
+	}
 	var b strings.Builder
 	if f.Title != "" {
 		b.WriteString(theme.ListTitle.Render(f.Title))
@@ -418,16 +578,31 @@ func (f *Form) View() string {
 			label += " *"
 		}
 		cursor := "  "
-		if f.Focused && i == f.Cursor {
+		focused := f.Focused && i == f.Cursor
+		if focused {
 			cursor = "▸ "
 		}
-		val := f.display(s)
-		line := fmt.Sprintf("%s%s: %s", cursor, label, val)
-		if s.Kind == KSecret && val != "" {
-			line += theme.HintText.Render("  (hidden)")
+		prefix := cursor + label + ": "
+		var line string
+		if focused && f.editable(s.Kind) && width > 0 {
+			// An editable field shows a CARET and horizontally windows its
+			// value, so the character being edited is always on screen. The
+			// append-only editor it replaced silently pushed every keystroke
+			// past the pane width, which read as "I can't edit anything".
+			avail := width - lipgloss.Width(prefix)
+			if avail < 8 {
+				avail = 8
+			}
+			line = prefix + f.valueWithCaret(s.Name, avail)
+		} else {
+			val := f.display(s)
+			line = prefix + val
+			if s.Kind == KSecret && val != "" {
+				line += theme.HintText.Render("  (hidden)")
+			}
 		}
 		if i == f.Cursor && f.Focused {
-			b.WriteString(theme.ListItemSelected.Render(Pad(line, f.Width)))
+			b.WriteString(theme.ListItemSelected.Render(Pad(line, width)))
 		} else {
 			b.WriteString(theme.ListItem.Render(line))
 		}
@@ -437,6 +612,6 @@ func (f *Form) View() string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString(theme.HintText.Render("↑/↓ or tab: next field · enter: submit · esc: cancel"))
+	b.WriteString(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: submit · esc: cancel"))
 	return strings.TrimSuffix(b.String(), "\n")
 }
