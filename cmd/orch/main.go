@@ -154,6 +154,12 @@ func run(fl *flags) error {
 	}
 	if profile != nil {
 		applyFlags(profile, fl)
+		// The TUI palette preference lives at the config's top level so it
+		// survives without a saved profile (env-driven sessions and first runs
+		// never write one). It wins over a legacy per-profile value.
+		if cfg != nil && cfg.Theme != "" {
+			profile.Theme = cfg.Theme
+		}
 	}
 
 	if profile == nil || profile.Token == "" {

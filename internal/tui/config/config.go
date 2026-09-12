@@ -57,6 +57,15 @@ type Profile struct {
 type Config struct {
 	Active   string              // name of the profile used at launch
 	Profiles map[string]*Profile // keyed by profile name
+	// Theme is the TUI palette preference, stored at the TOP LEVEL so it
+	// survives independently of any profile. It used to live only inside
+	// [profiles.<name>], which meant a theme never persisted when the session
+	// was env-driven (ORCHICON_URL/TOKEN resolve to a synthetic "env" profile
+	// that is deliberately never written), or on a first run with no config
+	// file yet — the operator's "themes are not saving when you exit orch and
+	// re-enter". A display preference is not a credential, so it no longer
+	// depends on one being saved.
+	Theme string
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -141,6 +150,9 @@ func render(cfg *Config) string {
 	var b strings.Builder
 	b.WriteString("# orch — Orchicon remote client config (0600; holds credentials)\n")
 	fmt.Fprintf(&b, "active = %q\n", cfg.Active)
+	if cfg.Theme != "" {
+		fmt.Fprintf(&b, "theme = %q\n", cfg.Theme)
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -221,8 +233,12 @@ func parse(data string) (*Config, error) {
 				cur.InsecureSkipVerify = b
 			}
 		case "theme":
+			// Top-level (outside any [profiles.*] section) is the TUI palette
+			// preference; inside a profile it is the legacy per-profile value.
 			if cur != nil {
 				cur.Theme = unquote(value)
+			} else {
+				cfg.Theme = unquote(value)
 			}
 		case "newline":
 			if cur != nil {

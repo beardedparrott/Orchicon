@@ -450,13 +450,18 @@ func (m *App) SetTheme(name string) bool {
 	m.dock.ApplyTheme()
 	if m.profile != nil {
 		m.profile.Theme = name
-		if path, err := config.DefaultPath(); err == nil {
-			if cfg, err := config.Load(path); err == nil {
-				if p := cfg.Profiles[cfg.Active]; p != nil {
-					p.Theme = name
-					_ = config.Save(path, cfg)
-				}
+	}
+	// Persist at the CONFIG top level, which does not require a saved profile:
+	// env-driven sessions and first runs never write one, and relying on
+	// [profiles.<active>] is why a theme used to be lost on restart. The active
+	// profile (when there is one) is mirrored too, so older readers still agree.
+	if path, err := config.DefaultPath(); err == nil {
+		if cfg, err := config.Load(path); err == nil {
+			cfg.Theme = name
+			if p := cfg.Profiles[cfg.Active]; p != nil {
+				p.Theme = name
 			}
+			_ = config.Save(path, cfg)
 		}
 	}
 	// Reconcile any open Themes pane so its active marker moves.

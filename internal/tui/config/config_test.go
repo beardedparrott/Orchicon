@@ -136,3 +136,52 @@ func TestResolveNothingConfigured(t *testing.T) {
 		t.Fatalf("expected nil profile for nil config, got %+v", p)
 	}
 }
+
+// Regression for the operator's "themes are not saving when you exit orch and
+// re-enter". The palette lived only inside [profiles.<active>], so it was lost
+// whenever no profile was written — env-driven sessions (which resolve to a
+// synthetic "env" profile that is deliberately never persisted) and first runs
+// with no config file. A display preference must not depend on a credential
+// being saved.
+func TestThemePersistsWithoutAProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+
+	// Simulates an env-driven session: a config with NO profiles at all.
+	cfg := &Config{Profiles: map[string]*Profile{}, Theme: "gruvbox-dark"}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.Theme != "gruvbox-dark" {
+		t.Fatalf("theme = %q after a round trip with no profiles, want gruvbox-dark", got.Theme)
+	}
+	if len(got.Profiles) != 0 {
+		t.Fatalf("round trip invented %d profiles", len(got.Profiles))
+	}
+
+	// And it still parses when profiles ARE present (the top-level key must not
+	// be confused with the legacy per-profile one).
+	cfg2 := &Config{
+		Active: "default",
+		Profiles: map[string]*Profile{
+			"default": {Name: "default", URL: "http://x", Token: "t", Theme: "legacy"},
+		},
+		Theme: "forest",
+	}
+	if err := Save(path, cfg2); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	got2, err := Load(path)
+	if err != nil {
+		t.Fatalf("load 2: %v", err)
+	}
+	if got2.Theme != "forest" {
+		t.Fatalf("top-level theme = %q, want forest", got2.Theme)
+	}
+	if p := got2.Profiles["default"]; p == nil || p.Theme != "legacy" {
+		t.Fatalf("legacy per-profile theme lost: %+v", p)
+	}
+}
