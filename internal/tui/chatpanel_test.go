@@ -162,7 +162,7 @@ func TestSlideOutPanelClickEscalatesAndConsumes(t *testing.T) {
 	if top < 0 {
 		t.Fatal("strip has no top row while visible")
 	}
-	x0, x1 := m.panelEscalateX(m.width)
+	_, _, x0, x1 := m.panelButtonsX(m.width)
 	upd, _ := m.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
 		X: (x0 + x1) / 2, Y: top,
@@ -191,5 +191,70 @@ func TestSlideOutPanelBodyClickDoesNotReachThePane(t *testing.T) {
 	}
 	if m.chatFocus != focusComposer {
 		t.Fatal("a body click keeps the composer focus (it is the compose area)")
+	}
+}
+
+// Regression: the header's buttons must SURVIVE layout. The first cut built the
+// header left-to-right and then truncated from the right, which cut the
+// escalate button off entirely (the operator's "the continue button was there
+// and now it's not even there"). Both affordances must be present and their
+// returned hit columns must line up with where they are actually drawn.
+func TestSlideOutPanelHeaderKeepsBothButtons(t *testing.T) {
+	m := panelApp(t)
+	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = nm
+	for _, w := range []int{80, 100, 120, 160} {
+		m.dock.Width = w - ConversationsRailWidth
+		view := m.chatPanelView(w)
+		lines := strings.Split(view, "\n")
+		if len(lines) == 0 {
+			t.Fatalf("w=%d: no panel rendered", w)
+		}
+		header := lipglossStrip(lines[0])
+		if !strings.Contains(header, panelMinimiseLabel) {
+			t.Errorf("w=%d: header is missing %s: %q", w, panelMinimiseLabel, header)
+		}
+		if !strings.Contains(header, panelEscalateLabel) {
+			t.Errorf("w=%d: header is missing %s: %q", w, panelEscalateLabel, header)
+		}
+		// The hit columns must bracket the drawn buttons.
+		visible := []rune(header)
+		minX0, minX1, eX0, eX1 := m.panelButtonsX(w)
+		if eX1 > len(visible) {
+			t.Fatalf("w=%d: escalate hit range %d..%d exceeds the header width %d", w, eX0, eX1, len(visible))
+		}
+		guessMin := string(visible[minX0:min(visible, minX1)])
+		guessEsc := string(visible[eX0:min(visible, eX1)])
+		if !strings.Contains(lipglossStrip(guessMin), "minim") {
+			t.Errorf("w=%d: minimise hit columns %d..%d land on %q", w, minX0, minX1, guessMin)
+		}
+		if !strings.Contains(lipglossStrip(guessEsc), "continue") {
+			t.Errorf("w=%d: escalate hit columns %d..%d land on %q", w, eX0, eX1, guessEsc)
+		}
+	}
+}
+
+func min(r []rune, n int) int {
+	if n > len(r) {
+		return len(r)
+	}
+	return n
+}
+
+// The minimise affordance collapses the strip (the operator asked for an
+// explicit minimise on the box, not only Esc).
+func TestSlideOutPanelMinimiseButtonCollapses(t *testing.T) {
+	m := panelApp(t)
+	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = nm
+	top := m.panelTopRow()
+	minX0, minX1, _, _ := m.panelButtonsX(m.width)
+	upd, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: (minX0 + minX1) / 2, Y: top,
+	})
+	m = upd.(*App)
+	if m.panelVisible() {
+		t.Fatal("clicking [minimize] must collapse the strip")
 	}
 }

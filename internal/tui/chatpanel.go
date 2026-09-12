@@ -23,6 +23,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -35,6 +36,10 @@ const panelDefaultRows = 9
 // panelEscalateLabel is the affordance that jumps to the full conversation
 // view. Bracketed per the operator's ask; clickable, and bound to ctrl+z.
 const panelEscalateLabel = "[continue in conversations]"
+
+// panelMinimiseLabel collapses the strip back into the prompt (Esc does the
+// same). The operator asked for an explicit minimise on the box.
+const panelMinimiseLabel = "[minimize]"
 
 // panelVisible reports whether the conversation strip should be drawn.
 func (m *App) panelVisible() bool {
@@ -89,16 +94,22 @@ func (m *App) panelTopRow() int {
 	return tabBarRows + 1 + m.screenRows()
 }
 
-// panelEscalateX returns the [start, end) columns of the escalate affordance on
-// the strip's header row, for hit-testing.
-func (m *App) panelEscalateX(w int) (int, int) {
-	label := panelEscalateLabel
+// panelButtonsX returns the [start, end) columns of the strip's header
+// affordances: the minimise button then the escalate button, both right-aligned
+// and both clickable.
+func (m *App) panelButtonsX(w int) (minX0, minX1, eX0, eX1 int) {
 	end := w - 2
-	start := end - lipgloss.Width(label)
-	if start < 0 {
-		start = 0
+	eX1 = end
+	eX0 = eX1 - lipgloss.Width(panelEscalateLabel) - 1
+	if eX0 < 0 {
+		eX0 = 0
 	}
-	return start, end
+	minX1 = eX0 - 1
+	minX0 = minX1 - lipgloss.Width(panelMinimiseLabel) - 1
+	if minX0 < 0 {
+		minX0 = 0
+	}
+	return minX0, minX1, eX0, eX1
 }
 
 // openPanel slides the strip out (idempotent).
@@ -147,23 +158,27 @@ func (m *App) chatPanelView(w int) string {
 	}
 	inner := w - 4 // a 1-cell gutter either side, like the other panels
 
-	// Header: the conversation identity on the left, the escalate affordance
-	// right-aligned (the clickable target).
+	// Header: identity on the left, then the MINIMISE and ESCALATE affordances,
+	// both right-aligned and both clickable. The header is laid out
+	// right-to-left so the buttons keep their exact columns and can never be
+	// truncated away — the first cut built it left-to-right and then truncated
+	// from the right, which cut the escalate button off entirely (the operator's
+	// "the continue button was there and now it's not even there").
 	title := "Conversation"
 	if m.chatConvID == "" {
 		title = "New conversation"
 	}
-	left := theme.ListTitle.Render(" " + title)
-	bx0, bx1 := m.panelEscalateX(w)
-	btn := theme.StatusOK.Render(panelEscalateLabel)
-	pad := bx0 - lipgloss.Width(left)
-	if pad < 1 {
-		pad = 1
+	_, _, _, eX1 := m.panelButtonsX(w)
+	tail := theme.StatusWarn.Render(panelMinimiseLabel) + " " + theme.StatusOK.Render(panelEscalateLabel)
+	headW := 0
+	if eX1 > lipgloss.Width(tail) {
+		headW = eX1 - lipgloss.Width(tail)
 	}
-	header := left + strings.Repeat(" ", pad) + btn
-	if lipgloss.Width(header) < bx1 {
-		header += strings.Repeat(" ", bx1-lipgloss.Width(header))
+	left := ansi.Truncate(theme.ListTitle.Render(" "+title), headW, "…")
+	if pad := headW - lipgloss.Width(left); pad > 0 {
+		left += strings.Repeat(" ", pad)
 	}
+	header := left + tail
 
 	// The context that will be attached to the next send — so the operator can
 	// see what the conversation is pinned to.
@@ -179,7 +194,7 @@ func (m *App) chatPanelView(w int) string {
 	// Body: the live transcript, scrolled (panelScroll = lines up from the end).
 	body := m.panelTranscript(inner, h-2)
 
-	out := []string{truncateRight(header, w), chipLine}
+	out := []string{padScreenLine(header, w), chipLine}
 	out = append(out, body...)
 	return strings.Join(out, "\n")
 }

@@ -64,3 +64,35 @@ func TestMouseRegionMatchesTwoPaneLayout(t *testing.T) {
 		t.Fatal("right of the pane split must be the detail pane")
 	}
 }
+
+// Regression for the operator's "the conversation opened up a conversation pane
+// there taking over the details pane of theme view".
+//
+// Detail payloads are produced by ASYNCHRONOUS cmds. Ask's
+// RequestDetail("conversations", id) can resolve after the operator has switched
+// tabs, and the shell routes the message to whichever screen is active — which
+// then painted another screen's conversation into its own detail pane. A screen
+// must only accept details for a source it owns.
+func TestForeignDetailIsRejected(t *testing.T) {
+	b := &Base{}
+	b.AddSource("themes", "Themes", func(ctx context.Context, pageToken string) ([]Item, string, error) { return nil, "", nil })
+	b.SetSize(100, 30)
+
+	// A detail for a source this screen does NOT own.
+	b.Update(detailMsg{src: "conversations", id: "conv-x", title: "Conversation: x"})
+	if b.DetailID() != "" {
+		t.Fatalf("a foreign detail set DetailID to %q", b.DetailID())
+	}
+	if got := b.detail.Title; got != "" {
+		t.Fatalf("a foreign detail painted the pane: title = %q", got)
+	}
+
+	// Its OWN detail still lands.
+	b.Update(detailMsg{src: "themes", id: "ember", title: "Theme: ember"})
+	if b.DetailID() != "ember" {
+		t.Fatalf("own detail rejected: DetailID = %q", b.DetailID())
+	}
+	if got := b.detail.Title; got != "Theme: ember" {
+		t.Fatalf("own detail not painted: title = %q", got)
+	}
+}

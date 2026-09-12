@@ -405,6 +405,16 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 		return true, nil
 
 	case detailMsg:
+		// A detail payload belongs to the screen that REQUESTED it. Cmds are
+		// asynchronous: Ask's RequestDetail("conversations", id) can resolve
+		// after the operator has switched tabs, and the shell routes the
+		// message to whatever screen is active — which then painted another
+		// screen's conversation into its own detail pane (the operator's
+		// "the conversation took over the Details pane of the theme view").
+		// A screen only accepts details for a source it actually owns.
+		if !b.ownsSource(msg.src) {
+			return true, nil // consumed and dropped: not ours
+		}
 		b.detailID = msg.id
 		b.detail.SetContent(msg.title, msg.fields, msg.body)
 		if b.onDetail != nil {
@@ -724,6 +734,21 @@ func (b *Base) streamView() string {
 		out += "\n" + b.Bar.View()
 	}
 	return out
+}
+
+// ownsSource reports whether this screen has a source with that name. Used to
+// reject detail payloads that belong to another screen (cmds outlive the tab
+// that issued them).
+func (b *Base) ownsSource(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, s := range b.sources {
+		if s.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // SourceItem returns the named source's item by ID.

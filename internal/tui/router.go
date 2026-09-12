@@ -8,7 +8,9 @@ package tui
 // touching screen code.
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -487,14 +489,21 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// "hitting v does nothing", "I can't move the cursor with the arrow key").
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
 		inDiffRail := m.diffOpen && mo.X < DiffPaneWidth
-		// The slide-out conversation strip owns its own rows: its header's
-		// affordance escalates to the full conversation view, and clicking its
-		// body just keeps the composer focus (it is part of the compose area).
+		// The slide-out conversation strip owns its own rows: its header carries
+		// [minimize] and [continue in conversations], and clicking the body just
+		// keeps the composer focus (it is part of the compose area).
 		if !inDiffRail && m.panelVisible() {
 			if top := m.panelTopRow(); top >= 0 && mo.Y >= top && mo.Y < top+m.panelRows() {
-				if x0, x1 := m.panelEscalateX(m.width); mo.Y == top && mo.X >= x0 && mo.X < x1 {
-					m.escalateToConversation()
-					return m, nil
+				if mo.Y == top {
+					minX0, minX1, eX0, eX1 := m.panelButtonsX(m.width)
+					switch {
+					case mo.X >= eX0 && mo.X < eX1:
+						m.escalateToConversation()
+						return m, nil
+					case mo.X >= minX0 && mo.X < minX1:
+						m.closePanel()
+						return m, nil
+					}
 				}
 				return m, nil // consumed: never focus the composer through the strip
 			}
@@ -567,6 +576,14 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
 		m.chat.SetActive(msg.convID)
+		// Optimistic echo of the operator's own message. The existing-conversation
+		// path appends this; the create path did not, so the FIRST send from any
+		// screen left the transcript (and the slide-out strip) blank until the
+		// reply landed — the message looked lost.
+		m.chatStore.append(msg.convID, chat.ChatItem{
+			Kind: chat.KindUser, Text: msg.text, At: time.Now().UnixMilli(),
+			Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
+		})
 		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
 		// The new conversation has no detail open: without a RequestDetail
 		// the onChatWake DetailID()==chatConvID guard never passes and the

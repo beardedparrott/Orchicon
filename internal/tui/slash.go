@@ -8,6 +8,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -424,7 +425,14 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 			}
 			names = append(names, marker+" "+n)
 		}
-		m.dock.SetNotice("themes (TUI palettes): " + strings.Join(names, " · ") + "  (/theme <name> switches)")
+		where := ""
+		if path, err := config.DefaultPath(); err == nil {
+			where = "  ·  saved in " + path
+		}
+		if os.Getenv(config.EnvTheme) != "" {
+			where += "  ·  pinned by " + config.EnvTheme + "=" + os.Getenv(config.EnvTheme)
+		}
+		m.dock.SetNotice("themes (TUI palettes): " + strings.Join(names, " · ") + "  (/theme <name> switches)" + where)
 		return nil
 	}
 	name := args[0]
@@ -451,19 +459,29 @@ func (m *App) SetTheme(name string) bool {
 	if m.profile != nil {
 		m.profile.Theme = name
 	}
-	// Persist at the CONFIG top level, which does not require a saved profile:
-	// env-driven sessions and first runs never write one, and relying on
-	// [profiles.<active>] is why a theme used to be lost on restart. The active
-	// profile (when there is one) is mirrored too, so older readers still agree.
-	if path, err := config.DefaultPath(); err == nil {
-		if cfg, err := config.Load(path); err == nil {
-			cfg.Theme = name
-			if p := cfg.Profiles[cfg.Active]; p != nil {
-				p.Theme = name
-			}
-			_ = config.Save(path, cfg)
-		}
+	// Report WHERE the choice is persisted so a non-persisting environment is
+	// visible instead of mysterious: the operator's "themes are not saving" is
+	// unsolvable without knowing the config path (a launcher with an ephemeral
+	// HOME writes somewhere that does not survive the run).
+	path, pathErr := config.DefaultPath()
+	if pathErr != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — no config path: " + pathErr.Error() + ")")
+		return true
 	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — cannot read " + path + ")")
+		return true
+	}
+	cfg.Theme = name
+	if p := cfg.Profiles[cfg.Active]; p != nil {
+		p.Theme = name
+	}
+	if err := config.Save(path, cfg); err != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — cannot write " + path + ": " + err.Error() + ")")
+		return true
+	}
+	m.dock.SetNotice("theme: " + name + " (saved to " + path + ")")
 	// Reconcile any open Themes pane so its active marker moves.
 	if s := m.screens[TabControl]; s != nil {
 		if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {

@@ -25,6 +25,11 @@ const (
 const (
 	EnvURL   = "ORCHICON_URL"
 	EnvToken = "ORCHICON_TOKEN"
+	// EnvTheme is an explicit palette override. It wins over the config file so
+	// the theme can be pinned in an environment where the config is not
+	// writable or not persisted (a launcher with an ephemeral HOME, a container,
+	// CI). When it is set, orch reports it rather than silently saving.
+	EnvTheme = "ORCHICON_THEME"
 )
 
 // Profile is one instance connection.
