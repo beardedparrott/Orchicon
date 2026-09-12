@@ -81,7 +81,11 @@ type Model struct {
 // New builds the dock.
 func New() Model {
 	ta := textarea.New()
-	ta.Placeholder = "ask orchicon…"
+	// No placeholder: the box shows a plain blinking cursor instead of hint
+	// text. The hints live on the affordance row below, so the placeholder was
+	// redundant — and bubbles takes a SEPARATE view path for an empty value
+	// with a placeholder, which rendered differently from the typed state.
+	ta.Placeholder = ""
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
@@ -100,22 +104,64 @@ func New() Model {
 // The shell calls it after /theme so the box never keeps the old theme.
 func (m *Model) ApplyTheme() { m.themeStyles() }
 
-// themeStyles derives the textarea/cursor styles from the active theme.
-func (m *Model) themeStyles() {
-	base := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
+// styledTa returns the textarea with this theme's styles applied and the
+// ACTIVE-style pointer re-resolved.
+//
+// Two bubbles details make this necessary, and both produced visible bugs:
+//
+//   - EndOfBuffer defaults to a FOREGROUND-only style, and bubbles renders the
+//     cursor line's TRAILING PADDING with that style and nothing else. With no
+//     background on those cells they render on the terminal's own background —
+//     the black band that appeared the moment the operator typed.
+//   - Style resolution goes through an unexported `style` POINTER that Focus()
+//     /Blur() re-point. Assigning the Style structs alone can leave the pointer
+//     on a stale copy, so the assignment is followed by Focus()/Blur() to make
+//     bubbles re-resolve it against the styles just set.
+func (m *Model) styledTa() textarea.Model {
 	ta := m.ta
+	base := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
+	dim := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
+
 	ta.FocusedStyle.Base = base
 	ta.BlurredStyle.Base = base
 	ta.FocusedStyle.Text = base
 	ta.BlurredStyle.Text = base
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
-	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
-	// The cursor is a solid accent block with dark text: unmistakable, and it
-	// carries a background so its cell can never be a hole.
+	// The cursor's own line, and the padding that follows the text on it.
+	ta.FocusedStyle.CursorLine = base
+	ta.BlurredStyle.CursorLine = base
+	ta.FocusedStyle.EndOfBuffer = base
+	ta.BlurredStyle.EndOfBuffer = base
+	ta.FocusedStyle.Prompt = base
+	ta.BlurredStyle.Prompt = base
+	ta.FocusedStyle.Placeholder = dim
+	ta.BlurredStyle.Placeholder = dim
+	ta.FocusedStyle.CursorLineNumber = dim
+	ta.BlurredStyle.CursorLineNumber = dim
+	ta.FocusedStyle.LineNumber = dim
+	ta.BlurredStyle.LineNumber = dim
+
+	// A standard solid block caret with dark text: unmistakable, and its cell
+	// carries a background so it can never be a hole.
 	ta.Cursor.Style = lipgloss.NewStyle().Background(theme.AccentCyan).Foreground(theme.Bg)
-	ta.Cursor.TextStyle = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	m.ta = ta
+	ta.Cursor.TextStyle = base
+
+	// Re-resolve the active style pointer against what we just assigned.
+	if m.Focused {
+		_ = ta.Focus()
+	} else {
+		ta.Blur()
+	}
+	return ta
+}
+
+// Placeholder returns the composer's placeholder text ("" — the box shows a
+// plain cursor; the hints live on the affordance row).
+func (m *Model) Placeholder() string { return m.ta.Placeholder }
+
+// themeStyles re-pins the model's own textarea styles (kept so Focus/Blur and
+// any direct render of m.ta stay consistent).
+func (m *Model) themeStyles() {
+	m.ta = m.styledTa()
 }
 
 // SendRequest returns and clears the pending send text ("" = none).
@@ -393,7 +439,7 @@ func (m *Model) View() string {
 // to it).
 func (m *Model) inputLines() []string {
 	n := m.InputRows()
-	src := strings.Split(m.ta.View(), "\n")
+	src := strings.Split(m.styledTa().View(), "\n")
 	if len(src) > n {
 		src = src[:n]
 	}
