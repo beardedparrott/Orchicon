@@ -307,6 +307,10 @@ func TestComposerFocusedAtLaunch(t *testing.T) {
 		t.Fatal("typing must not steal focus")
 	}
 	// esc → content; ctrl+g → composer.
+	// NOTE: this app launches on Ask, so typing did NOT slide the conversation
+	// strip out (Ask shows the real transcript). esc therefore moves focus
+	// straight to the content. On any OTHER tab the first esc minimises the
+	// strip — see TestSlideOutPanel* in chatpanel_test.go.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm
 	if m.chatFocus != focusContent {

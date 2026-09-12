@@ -331,11 +331,36 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			} else {
 				consumed, cmd := m.dock.Update(msg)
 				switch k.String() {
+				case "ctrl+z":
+					// Escalate to the full conversation view with this conversation
+					// selected (the operator's ctrl+z).
+					if m.panelVisible() {
+						m.escalateToConversation()
+						m.footer.StreamStatus = m.streamStatus()
+						return m, nil
+					}
 				case "ctrl+g", "esc":
+					// Disengaging keys: they never SLIDE THE PANEL OUT. Esc first
+					// minimises an open strip back into the prompt (the operator's
+					// ask); a second esc, or esc with no strip, moves focus to the
+					// content. Opening here instead would make esc open-then-close
+					// the strip in one dispatch and appear dead.
 					if consumed {
+						if m.panelVisible() {
+							m.closePanel()
+							m.footer.StreamStatus = m.streamStatus()
+							return m, nil
+						}
 						m.setFocus(focusContent)
 						m.footer.StreamStatus = m.streamStatus()
 						return m, nil
+					}
+				default:
+					// Engagement: typing (or any composed key) on a screen other
+					// than Ask slides the conversation strip out, so the send
+					// target is visible instead of the message landing off-screen.
+					if consumed {
+						m.openPanel()
 					}
 				}
 				if consumed {
@@ -462,8 +487,21 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// "hitting v does nothing", "I can't move the cursor with the arrow key").
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
 		inDiffRail := m.diffOpen && mo.X < DiffPaneWidth
+		// The slide-out conversation strip owns its own rows: its header's
+		// affordance escalates to the full conversation view, and clicking its
+		// body just keeps the composer focus (it is part of the compose area).
+		if !inDiffRail && m.panelVisible() {
+			if top := m.panelTopRow(); top >= 0 && mo.Y >= top && mo.Y < top+m.panelRows() {
+				if x0, x1 := m.panelEscalateX(m.width); mo.Y == top && mo.X >= x0 && mo.X < x1 {
+					m.escalateToConversation()
+					return m, nil
+				}
+				return m, nil // consumed: never focus the composer through the strip
+			}
+		}
 		if !inDiffRail && m.inDockRows(mo.Y) {
 			m.setFocus(focusComposer)
+			m.openPanel()
 			m.footer.ComposerFocus = true
 			return m, nil
 		}
@@ -502,6 +540,7 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+g" && m.chatFocus == focusContent {
 			m.setFocus(focusComposer)
+			m.openPanel()
 			return nil
 		}
 		return nil

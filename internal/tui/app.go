@@ -150,7 +150,12 @@ type App struct {
 	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
 	// via ctrl+r toggle and a mouse click on the rail header. State persists
 	// for the session. The diff pane is the LEFT rail; this is the RIGHT rail.
-	askMode       askMode // Ask's presentation: launch page vs conversations
+	askMode askMode // Ask's presentation: launch page vs conversations
+	// Slide-out conversation strip (chatpanel.go): open when the operator
+	// engages the composer on a screen other than Ask, so a send is VISIBLE.
+	// panelScroll is in lines up from the transcript tail (0 = following).
+	panelOpen     bool
+	panelScroll   int
 	conversations []chat.Conversation
 	convRailOpen  bool
 	convSel       int
@@ -297,7 +302,7 @@ func (m *App) SwitchTo(id TabID) {
 	// pre-resize visit) never saw a SetSize and would otherwise render
 	// against a zero-sized content region.
 	if s := m.screens[id]; s != nil && m.width > 0 {
-		s.SetSize(m.contentWidth(), m.contentHeight())
+		s.SetSize(m.contentWidth(), m.screenRows())
 	}
 	// A tab switch swaps the chrome's submenu to the new tab's (the
 	// dropdown follows focus, per the mockup's menu-under-tab pattern);
@@ -644,13 +649,13 @@ func (m *App) closeDiffPane() {
 // applier for window resize, rail toggles, and diff-pane toggles.
 func (m *App) refreshLayout() {
 	if s := m.screens[m.active]; s != nil && m.width > 0 {
-		s.SetSize(m.contentWidth(), m.contentHeight())
+		s.SetSize(m.contentWidth(), m.screenRows())
 	}
 	if m.width > 0 {
 		m.dock.Width = m.contentWidth()
 	}
 	if m.diffPane != nil {
-		m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
+		m.diffPane.SetSize(DiffPaneWidth, m.screenRows()+m.dock.Lines()+m.panelRows())
 	}
 }
 
@@ -1191,9 +1196,15 @@ func (m App) baseView(w, h int) string {
 		// viewport with the brand above it, until a session starts.
 		bodyLines = m.centeredWelcomeView(cw, screenRows+dockRows)
 	} else {
-		screenBlock := normalizeBlock(safeView(m.screens[m.active]), cw, screenRows)
+		screenBlock := normalizeBlock(safeView(m.screens[m.active]), cw, m.screenRows())
+		var panelBlock []string
+		if pRows := m.panelRows(); pRows > 0 {
+			// The slide-out strip sits BETWEEN the screen and the composer, so
+			// its rows come out of the screen's budget (never over content).
+			panelBlock = normalizeBlockKeepTail(m.chatPanelView(cw), cw, pRows)
+		}
 		dockBlock := normalizeBlockKeepTail(m.dock.View(), cw, dockRows)
-		bodyLines = append(append([]string{}, screenBlock...), dockBlock...)
+		bodyLines = append(append(screenBlock, panelBlock...), dockBlock...)
 	}
 	body := strings.Join(bodyLines, "\n")
 	// Left diff rail / right conversations rail: extra COLUMNS joined over
