@@ -560,17 +560,19 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 const shellChromeRows = 3
 
 // tableTopRow returns the number of terminal rows above the FIRST data row of
-// a source pane: the shell chrome, the panel's top border (the title is
-// embedded in it), and the table's column-header row when it has columns.
+// the focused source pane: the shell chrome, the panel's top border (the title
+// is embedded in it), and the table's own title/header rows when it renders
+// them.
 //
-// This is the correction for the operator's "if I click on one conversation it
-// might select one four or five rows down": the old code subtracted a fixed 2
-// (assuming a bare list at the top of the body), so every click selected a row
-// several positions away from the cursor — on every screen.
+// This is the correction for the operator's "I have to click above the item to
+// select it": the embedded table keeps its title HIDDEN (the panel shows it)
+// and does not render an empty header, so those rows no longer exist — and the
+// count here describes exactly what View() draws.
 func (b *Base) tableTopRow() int {
 	head := 0
-	if b.active >= 0 && b.active < len(b.sources) && len(b.sources[b.active].table.Columns) > 0 {
-		head = 1
+	if b.active >= 0 && b.active < len(b.sources) {
+		t := b.sources[b.active].table
+		head = t.TitleRows() + t.HeaderRows()
 	}
 	return shellChromeRows + 1 + head
 }
@@ -681,6 +683,8 @@ func (b *Base) focusedPaneView(w, h int) string {
 	s := b.sources[b.active]
 	s.table.Width, s.table.Height = w, h
 	s.table.Focused = !b.focusD
+	// The panel border carries the title; the embedded table must not repeat it.
+	s.table.HideTitle = true
 	p := NewPanel(s.title, w, h)
 	p.Focused = s.table.Focused
 	p.SetContent(s.table.View())

@@ -5,29 +5,43 @@ import (
 	"testing"
 )
 
-// Regression for the operator's "if I click on one conversation it might select
-// one four or five rows down": the data-row offset ignored the shell chrome and
-// the panel border, so every click selected a row several positions from the
-// cursor. It must count chrome rows + the panel's top border (+ a column header
-// when the table has columns).
-func TestTableTopRowCountsChromeAndPanelBorder(t *testing.T) {
+// Regression for the operator's "I have to click above the item to select it".
+//
+// The click row must count EVERY row the pane draws above its first data row:
+// the shell chrome, the panel's top border, and whatever the embedded table
+// adds. The embedded table hides its own title (the panel border shows it, so
+// rendering both duplicated the title AND shifted the hit-test by one) and does
+// not draw an empty column header.
+func TestTableTopRowMatchesRenderedRows(t *testing.T) {
 	b := &Base{}
 	b.AddSource("a", "A", func(ctx context.Context, pageToken string) ([]Item, string, error) { return nil, "", nil })
 	b.AddSource("b", "B", func(ctx context.Context, pageToken string) ([]Item, string, error) { return nil, "", nil })
 	b.SetSize(100, 30)
-
-	// A table with columns carries a header row; one without does not.
-	b.sources[0].table.Columns = nil
 	b.active = 0
-	noHeader := b.tableTopRow()
-	b.sources[0].table.Columns = []Column{{Title: "Name"}, {Title: "Status"}}
-	withHeader := b.tableTopRow()
+	tbl := b.sources[0].table
 
-	if withHeader != noHeader+1 {
-		t.Fatalf("a column header must add exactly one row: %d vs %d", noHeader, withHeader)
+	// A pane embedded in a Panel: the panel owns the title.
+	tbl.HideTitle = true
+	if got := b.tableTopRow(); got != shellChromeRows+1 {
+		t.Fatalf("tableTopRow = %d, want chrome(%d) + panel border = %d", got, shellChromeRows, shellChromeRows+1)
 	}
-	if noHeader != shellChromeRows+1 {
-		t.Fatalf("tableTopRow = %d, want shell chrome (%d) + the panel border = %d", noHeader, shellChromeRows, shellChromeRows+1)
+
+	// A REAL column header adds exactly one row.
+	tbl.Columns = []Column{{Title: "Name"}, {Title: "Status"}}
+	if got := b.tableTopRow(); got != shellChromeRows+2 {
+		t.Fatalf("with a header tableTopRow = %d, want %d", got, shellChromeRows+2)
+	}
+
+	// An EMPTY header must not add a row (the default single-column display).
+	tbl.Columns = []Column{{Title: ""}}
+	if got := b.tableTopRow(); got != shellChromeRows+1 {
+		t.Fatalf("an empty header must not add a row: tableTopRow = %d, want %d", got, shellChromeRows+1)
+	}
+
+	// A standalone table (no panel) renders its title, and that row counts.
+	tbl.HideTitle = false
+	if got := b.tableTopRow(); got != shellChromeRows+2 {
+		t.Fatalf("a standalone title row must count: tableTopRow = %d, want %d", got, shellChromeRows+2)
 	}
 }
 

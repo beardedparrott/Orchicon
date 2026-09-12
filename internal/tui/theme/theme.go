@@ -108,8 +108,8 @@ var Dark = Theme{
 	Bg:           lipgloss.Color(hsl(222, 35, 7)),
 	Surface:      lipgloss.Color(hsl(222, 35, 11)),
 	SurfaceAlt:   lipgloss.Color(hsl(222, 30, 15)),
-	Border:       lipgloss.Color(hsl(217, 28, 17)),
-	BorderFaint:  lipgloss.Color(hsl(217, 28, 20)),
+	Border:       lipgloss.Color(hsl(217, 28, 28)),
+	BorderFaint:  lipgloss.Color(hsl(217, 28, 22)),
 	Text:         lipgloss.Color(hsl(210, 40, 98)),
 	TextDim:      lipgloss.Color(hsl(215, 20, 68)),
 	TextFaint:    lipgloss.Color(hsl(215, 16, 52)),
@@ -128,16 +128,24 @@ var Dark = Theme{
 //	--background 210 40% 98%  --card 0 0% 100%   --secondary/--muted 210 20% 96%
 //	--border 214 32% 91%      --foreground 222 47% 11%
 //	--muted-foreground 215 19% 38%               --primary 199 89% 36%
+//
+// TUI DELIBERATE DIVERGENCE: Border/BorderFaint are darker than the GUI's
+// tokens (91%/94% → 64%/78%). In a browser a 91%-lightness border on a 98%
+// background is a tasteful hairline; in a TUI that hairline is the ONLY thing
+// separating panes and it CARRIES THE PANEL TITLE, so at ~1.1:1 contrast the
+// whole layout reads as invisible (the operator's "the light theme was
+// abysmal — I couldn't see anything"). Darkened to ~3:1 / ~2:1 so structure
+// and titles are legible. Asserted by TestStructuralContrast.
 var Light = Theme{
 	Name:         "light",
 	Bg:           lipgloss.Color(hsl(210, 40, 98)),
 	Surface:      lipgloss.Color(hsl(0, 0, 100)),
-	SurfaceAlt:   lipgloss.Color(hsl(210, 20, 96)),
-	Border:       lipgloss.Color(hsl(214, 32, 91)),
-	BorderFaint:  lipgloss.Color(hsl(214, 32, 94)),
+	SurfaceAlt:   lipgloss.Color(hsl(210, 20, 94)),
+	Border:       lipgloss.Color(hsl(214, 24, 64)),
+	BorderFaint:  lipgloss.Color(hsl(214, 24, 78)),
 	Text:         lipgloss.Color(hsl(222, 47, 11)),
 	TextDim:      lipgloss.Color(hsl(215, 19, 38)),
-	TextFaint:    lipgloss.Color(hsl(215, 16, 58)),
+	TextFaint:    lipgloss.Color(hsl(215, 16, 52)),
 	Accent:       lipgloss.Color(hsl(199, 89, 36)),
 	AccentCyan:   lipgloss.Color(hsl(188, 86, 32)),
 	AccentIndigo: lipgloss.Color(hsl(234, 89, 60)),

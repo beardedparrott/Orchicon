@@ -50,6 +50,11 @@ type Table struct {
 	// SortCol is the sorted column index (-1 = insertion order).
 	SortCol  int
 	SortDesc bool
+
+	// HideTitle suppresses the table's own title row. Panels already embed the
+	// source title in their border, so an embedded table must not repeat it —
+	// the duplicate row also shifted every click hit-test by one.
+	HideTitle bool
 }
 
 // NewTable builds an empty table with columns.
@@ -219,20 +224,42 @@ func (t *Table) VisibleRows() []Row {
 }
 
 // View renders the table body (title + header + rows + position).
+// TitleRows reports whether the table renders a leading title row.
+func (t *Table) TitleRows() int {
+	if t.HideTitle {
+		return 0
+	}
+	return 1
+}
+
+// HeaderRows reports whether the table renders a column-header row. An empty
+// header (all column titles blank — the common single-column display) is NOT
+// rendered: it would be a blank row that shifts the hit-test for nothing.
+func (t *Table) HeaderRows() int {
+	for _, c := range t.Columns {
+		if strings.TrimSpace(c.Title) != "" {
+			return 1
+		}
+	}
+	return 0
+}
+
 func (t *Table) View() string {
 	var b strings.Builder
-	title := t.Title
-	if t.NextPageToken != "" {
-		title += theme.HintText.Render("  (more: f)")
+	if t.TitleRows() > 0 {
+		title := t.Title
+		if t.NextPageToken != "" {
+			title += theme.HintText.Render("  (more: f)")
+		}
+		if t.Focused {
+			b.WriteString(theme.ListTitle.Render(title))
+		} else {
+			b.WriteString(theme.ListMeta.Render(title))
+		}
+		b.WriteString("\n")
 	}
-	if t.Focused {
-		b.WriteString(theme.ListTitle.Render(title))
-	} else {
-		b.WriteString(theme.ListMeta.Render(title))
-	}
-	b.WriteString("\n")
 
-	if len(t.Columns) > 0 {
+	if t.HeaderRows() > 0 {
 		hb := make([]string, 0, len(t.Columns))
 		for i, c := range t.Columns {
 			mark := ""
