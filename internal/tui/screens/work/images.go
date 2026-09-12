@@ -44,6 +44,7 @@ func (m *Model) prepEditImage() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {
@@ -171,6 +172,7 @@ func (m *Model) startBuild() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {

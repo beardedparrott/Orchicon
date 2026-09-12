@@ -154,6 +154,7 @@ func validateRFC3339(v string) error {
 // prepCreateItem loads the form's option lists (projects, workflows) — the
 // create form cannot be built without them.
 func (m *Model) prepCreateItem() tea.Cmd {
+	m.formLoading = true
 	cl := m.cl
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -183,6 +184,7 @@ func (m *Model) prepEditItem(mode string) tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {

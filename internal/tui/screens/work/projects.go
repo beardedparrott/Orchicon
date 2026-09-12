@@ -47,6 +47,7 @@ func (m *Model) prepEditProject(mode string) tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {
@@ -168,6 +169,7 @@ func (m *Model) projectActions() []kit2.Action {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return []kit2.Action{{

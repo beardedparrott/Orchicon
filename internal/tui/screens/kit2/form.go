@@ -153,8 +153,13 @@ func inOptions(spec FieldSpec, v string) bool {
 }
 
 // HandleKey drives form editing. Returns true when the message was consumed.
-// Tab/Shift+Tab move field focus (shared focus model); Enter on the last
-// field submits; Esc cancels (the caller closes the form).
+// Tab/Shift+Tab and Up/Down move field focus (shared focus model); Enter on
+// the last field submits; Esc cancels (the caller closes the form).
+//
+// Up/Down walk the fields and are CONSUMED (handled=true) rather than falling
+// through: a modal must own the vertical keys, so the list behind it can never
+// scroll while it is up (the operator's "the arrow keys control the work item
+// list instead of moving through the field values").
 func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	s := f.current()
 	switch k.String() {
@@ -162,6 +167,17 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		f.Next()
 		return nil, true
 	case "shift+tab":
+		f.Prev()
+		return nil, true
+	case "down":
+		// Vertical keys walk the FIELDS. The operator's report was that the
+		// arrows "still control the work item list versus moving through the
+		// New Work Item fields": a form must own the two vertical keys so
+		// nothing can move behind an open modal. Left/Right keep the
+		// select/checkbox cycling below (a horizontal gesture on a value).
+		f.Next()
+		return nil, true
+	case "up":
 		f.Prev()
 		return nil, true
 	case "enter":
@@ -421,6 +437,6 @@ func (f *Form) View() string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString(theme.HintText.Render("tab: next field · enter: submit · esc: cancel"))
+	b.WriteString(theme.HintText.Render("↑/↓ or tab: next field · enter: submit · esc: cancel"))
 	return strings.TrimSuffix(b.String(), "\n")
 }

@@ -68,6 +68,13 @@ type Model struct {
 	formMode string
 	formID   string
 
+	// formLoading is true from the moment a modal is REQUESTED until its
+	// payload arrives. The create/edit forms need an option-list round trip
+	// (projects / workflows / images) before they can be drawn, and until
+	// ClaimsKeys reports true the vertical keys fell through to the list
+	// BEHIND the modal and scrolled it.
+	formLoading bool
+
 	// pending is the action the open confirmation dialog will run.
 	pending *kit2.Action
 	bar     *kit2.ActionBar
@@ -137,10 +144,14 @@ func (m *Model) Init() tea.Cmd {
 }
 
 // ClaimsKeys reports whether the screen owns every key right now (an open
-// form, confirmation dialog or build log). The shell consults it before its
-// own routes so a typed character is never stolen ('q' would quit, space
-// would open the tab menu, '/' the palette).
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
+// form, a confirmation dialog, or a modal that is still being PREPARED). The
+// shell consults it before its own routes so a typed character is never
+// stolen ('q' would quit, space would open the tab menu, '/' the palette).
+//
+// formLoading participates on purpose: the create/edit forms fetch their
+// option lists asynchronously, and in that window a form is not yet open —
+// so without this the arrow keys reached the list behind the modal.
+func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil || m.formLoading }
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
@@ -398,6 +409,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, cmd
 
 	case itemFormMsg:
+		m.formLoading = false
 		if msg.err != nil {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
@@ -424,6 +436,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 
 	case projectFormMsg:
+		m.formLoading = false
 		if msg.err != nil {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
@@ -441,6 +454,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 
 	case imageFormMsg:
+		m.formLoading = false
 		if msg.err != nil {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
