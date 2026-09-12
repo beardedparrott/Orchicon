@@ -46,7 +46,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m := &Model{cl: cl, reg: reg, tenantID: tenantID}
 	m.NameStr = "overview"
 	m.AddSource("dashboard", "Dashboard", m.fetchDashboard)
-	m.AddSource("telemetry", "Telemetry", m.fetchTraces)
+	m.AddSource("telemetry", "Telemetry", m.fetchTelemetry)
 	m.AddSource("cost-explorer", "Cost Explorer", m.fetchCost)
 	m.AddSource("usage", "Usage Records", m.fetchUsage)
 	m.SetDetail(m.detail)
@@ -272,63 +272,7 @@ func countSection(title string, by map[string]int, total int) section {
 
 // ---- Telemetry --------------------------------------------------------
 
-func (m *Model) fetchTraces(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
-	resp, err := m.cl.Telemetry.QueryTraces(ctx, connect.NewRequest(&apiv1.QueryTracesRequest{
-		Query: &apiv1.TelemetryQuery{Limit: 100, PageToken: pageToken},
-	}))
-	if err != nil {
-		return nil, "", err
-	}
-	traces := resp.Msg.GetTraces()
-	if len(traces) == 0 {
-		// No summary row for an empty window: the pane's empty state names WHY
-		// (backend unreachable / not configured). A "0 traces" summary would
-		// suppress that explanation and say nothing useful.
-		return nil, resp.Msg.GetNextPageToken(), nil
-	}
-
-	// A summary row FIRST, so the pane opens on the at-a-glance numbers rather
-	// than "just a bunch of traces" (the operator's read of this screen): how
-	// many traces/spans, how many errored, and the slowest.
-	totalSpans, errSpans := 0, 0
-	for _, tr := range traces {
-		totalSpans += int(tr.GetSpanCount())
-		for _, sp := range tr.GetSpans() {
-			if sp.GetStatusCode() == 2 {
-				errSpans++
-			}
-		}
-	}
-
-	items := make([]kit2.Item, 0, len(traces)+1)
-	meta := fmt.Sprintf("%d traces · %d spans", len(traces), totalSpans)
-	if errSpans > 0 {
-		meta += fmt.Sprintf(" · %d errored", errSpans)
-	}
-	if resp.Msg.GetDegraded() {
-		meta += " · degraded"
-	}
-	items = append(items, kit2.Item{ID: "summary", Title: "SUMMARY", Meta: meta})
-
-	for _, tr := range traces {
-		title := tr.GetRootSpanName()
-		if title == "" {
-			title = tr.GetTraceId()
-		}
-		errN := 0
-		for _, sp := range tr.GetSpans() {
-			if sp.GetStatusCode() == 2 {
-				errN++
-			}
-		}
-		tmeta := fmt.Sprintf("%s · %d spans", fmtDuration(tr.GetDurationUs()), tr.GetSpanCount())
-		if errN > 0 {
-			tmeta += fmt.Sprintf(" · %d err", errN)
-		}
-		items = append(items, kit2.Item{ID: tr.GetTraceId(), Title: title, Meta: tmeta})
-	}
-	return items, resp.Msg.GetNextPageToken(), nil
-}
+// fetchTelemetry (telemetry.go) builds the traces/metrics/logs sections.
 
 // traceDetail renders one trace: root fields + the span tree as body text.
 func (m *Model) traceDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
@@ -412,17 +356,24 @@ func (m *Model) traceDetail(ctx context.Context, id string) (string, []kit2.Fiel
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
+// tsOf is the protobuf timestamp for a time (the query windows).
+func tsOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }
+
 // costWindow is the lookback the Cost Explorer reports over.
 const costWindow = 30 * 24 * time.Hour
 
-// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels.
+// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels,
+// grouped into TOP-N sections so the pane is scannable rather than a dump: the
+// grand total, then the ten costliest models, projects and tasks, then the ten
+// costliest workflows. Exactly the shape the operator asked for ("top 10
+// project, task, workflow, model, etc. and then clicking on those brings it over
+// to the right detail pane").
 //
 // The TUI used to aggregate the first page of raw usage records client-side,
 // which is why its breakdowns did not match the GUI — and it silently missed
-// everything past the first page of records. GetCost returns the grand total,
-// per-model and per-project groups, and the next level as children.
+// everything past the first page.
 func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, error) {
-	items := []kit2.Item{}
+	var items []kit2.Item
 
 	total, err := m.getCostTotal(ctx)
 	if err != nil {
@@ -440,15 +391,26 @@ func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, e
 	for _, lvl := range []struct {
 		rollup apiv1.UsageRollup
 		label  string
+		noun   string
 	}{
-		{apiv1.UsageRollup_USAGE_ROLLUP_MODEL, "model"},
-		{apiv1.UsageRollup_USAGE_ROLLUP_PROJECT, "project"},
+		{apiv1.UsageRollup_USAGE_ROLLUP_MODEL, "model", "Models"},
+		{apiv1.UsageRollup_USAGE_ROLLUP_PROJECT, "project", "Projects"},
+		{apiv1.UsageRollup_USAGE_ROLLUP_TASK, "task", "Tasks"},
 	} {
 		sums, err := m.getCostSummaries(ctx, lvl.rollup)
 		if err != nil {
 			return nil, "", err
 		}
-		for _, s := range sums {
+		if len(sums) == 0 {
+			continue
+		}
+		// GetCost returns the groups; the costliest come first, then we cap.
+		sort.SliceStable(sums, func(i, j int) bool { return sums[i].GetCostUsd() > sums[j].GetCostUsd() })
+		items = append(items, sectionHeader(lvl.noun, len(sums)))
+		for i, s := range sums {
+			if i >= signalTopN {
+				break
+			}
 			name := s.GetDisplayName()
 			if name == "" {
 				name = s.GetGroupKey()
@@ -456,21 +418,26 @@ func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, e
 			items = append(items, kit2.Item{
 				ID:    lvl.label + ":" + s.GetGroupKey(),
 				Title: name,
-				Meta: lvl.label + " · " + fmtCost(s.GetCostUsd()) + " · " +
-					fmtTokens(s.GetTotalTokens()) + " tok",
+				Meta: fmtCost(s.GetCostUsd()) + " · " + fmtTokens(s.GetTotalTokens()) + " tok · " +
+					screenkit.FmtInt(int(s.GetExecutionCount())) + " exec",
 			})
 		}
 	}
 
-	// Per-workflow cost (the GUI's workflow cost view; one row per template,
-	// aggregating every run).
-	if wfs, err := m.getWorkflowCosts(ctx); err == nil {
-		for _, w := range wfs {
+	// Per-workflow cost (one row per template, aggregating every run).
+	if wfs, err := m.getWorkflowCosts(ctx); err == nil && len(wfs) > 0 {
+		sort.SliceStable(wfs, func(i, j int) bool { return wfs[i].GetTotalCostUsd() > wfs[j].GetTotalCostUsd() })
+		items = append(items, sectionHeader("Workflows", len(wfs)))
+		for i, w := range wfs {
+			if i >= signalTopN {
+				break
+			}
 			items = append(items, kit2.Item{
 				ID:    "workflow:" + w.GetWorkflowId(),
 				Title: w.GetWorkflowName(),
-				Meta: "workflow · " + fmtCost(w.GetTotalCostUsd()) + " · " +
-					screenkit.FmtInt(int(w.GetRunCount())) + " runs",
+				Meta: fmtCost(w.GetTotalCostUsd()) + " · " +
+					screenkit.FmtInt(int(w.GetRunCount())) + " runs · " +
+					fmtTokens(w.GetTotalTokens()) + " tok",
 			})
 		}
 	}
@@ -603,11 +570,14 @@ func (m *Model) costDetail(ctx context.Context, id string) (string, []kit2.Field
 		return "Cost — total", costSummaryFields(t, "total"),
 			joinBody(costChildrenBody(t), m.costWorkflowLines(ctx)), nil
 
-	case strings.HasPrefix(id, "model:"), strings.HasPrefix(id, "project:"):
+	case strings.HasPrefix(id, "model:"), strings.HasPrefix(id, "project:"), strings.HasPrefix(id, "task:"):
 		lvlName, key, _ := strings.Cut(id, ":")
 		lvl := apiv1.UsageRollup_USAGE_ROLLUP_MODEL
-		if lvlName == "project" {
+		switch lvlName {
+		case "project":
 			lvl = apiv1.UsageRollup_USAGE_ROLLUP_PROJECT
+		case "task":
+			lvl = apiv1.UsageRollup_USAGE_ROLLUP_TASK
 		}
 		sums, err := m.getCostSummaries(ctx, lvl)
 		if err != nil {
@@ -743,6 +713,13 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 		}
 		return "Dashboard", []kit2.Field{{Key: "id", Value: id}}, "", nil
 	case "telemetry":
+		// Row IDs carry the signal: summary | <trace id> | metric:<name> | log:<n>.
+		switch {
+		case strings.HasPrefix(id, "metric:"):
+			return m.metricDetail(ctx, strings.TrimPrefix(id, "metric:"))
+		case strings.HasPrefix(id, "log:"):
+			return m.logDetail(ctx, id)
+		}
 		return m.traceDetail(ctx, id)
 	case "cost-explorer":
 		return m.costDetail(ctx, id)
