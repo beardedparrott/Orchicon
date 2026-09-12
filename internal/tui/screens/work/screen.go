@@ -16,7 +16,6 @@ package work
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -349,7 +348,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "workflow run", Value: w.GetWorkflowRunId()},
 			{Key: "auto-start", Value: boolStr(w.GetAutoStartWorkflow())},
 			{Key: "scheduled", Value: screenkit.FmtTime(w.GetScheduledStartAt())},
-			{Key: "sort order", Value: strconv.FormatFloat(w.GetSortOrder(), 'g', -1, 64)},
+			// The numeric sort_order is deliberately NOT shown: a bare float is
+			// meaningless to a human. The step position is visible in the list
+			// itself, where it can be compared against its siblings.
 			{Key: "archived from", Value: w.GetArchivedFromStatus()},
 			{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
 		}
@@ -784,13 +785,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if m.Base.StartFilter() {
 			return nil, true
 		}
-	case "J":
-		if src == srcWorkItems {
-			return m.reorderChildren(1), true
-		}
-	case "K":
-		if src == srcWorkItems {
+	case "+", "=":
+		// Move the selected item one step EARLIER in its sibling sequence (its
+		// workflow then runs sooner). "=" is accepted because "+" is a shifted
+		// key on most layouts and the shifted/unshifted pair is easy to hit with
+		// the wrong finger.
+		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.reorderChildren(-1), true
+		}
+	case "-", "_":
+		// Move the selected item one step LATER in its sibling sequence.
+		if src == srcWorkItems && m.ViewMode() == viewTree {
+			return m.reorderChildren(1), true
 		}
 	case "y", "a", "R", "x":
 		if a, ok := m.actionByKey(msg.String()); ok {
@@ -883,7 +889,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · J/K: reorder CHILDREN (stored sequence) · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
+		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · +/-: move step up/down · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
 	}
 }
 

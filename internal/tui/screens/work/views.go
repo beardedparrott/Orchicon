@@ -12,6 +12,7 @@ package work
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -82,6 +83,23 @@ func rowTitle(w *apiv1.WorkItem) string {
 // treeRows walks the real parent links (WorkItem.parent_id) depth-first from
 // the roots, preserving sibling order (sort_order, then title). Orphans
 // (parent not in the page) are rendered as roots so no item is ever dropped.
+// stepNumber prefixes a row with its position in the STORED sequence, so an
+// execution order is visible in the list itself. Only a sibling GROUP of two or
+// more is numbered (a lone child has no order to show), and the number always
+// reflects the stored sequence even when the DISPLAY sort is something else —
+// so a list sorted by title shows the steps out of order, which is exactly the
+// distinction between "how it is displayed" and "the order it runs in".
+func stepNumber(seqIndex map[string]int, groupSize int, id string) string {
+	if groupSize < 2 {
+		return ""
+	}
+	n, ok := seqIndex[id]
+	if !ok {
+		return ""
+	}
+	return strconv.Itoa(n+1) + ". "
+}
+
 func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	byParent := map[string][]*apiv1.WorkItem{}
 	known := map[string]bool{}
@@ -99,6 +117,15 @@ func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	var walk func(parent string, depth int)
 	walk = func(parent string, depth int) {
 		kids := byParent[parent]
+		// The STEP NUMBER comes from the stored sequence; the row ORDER comes
+		// from the selected display mode. Computing both here keeps them
+		// independent (and keeps the number honest under any sort).
+		seq := append([]*apiv1.WorkItem{}, kids...)
+		sortSiblings(seq, sortSequence)
+		seqIndex := make(map[string]int, len(seq))
+		for i, w := range seq {
+			seqIndex[w.GetId()] = i
+		}
 		sortSiblings(kids, mode)
 		for _, w := range kids {
 			// The tree metadata is what makes the pane a REAL tree: Depth
@@ -106,7 +133,7 @@ func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 			// HasChildren decides whether the row draws a +/- toggle.
 			out = append(out, kit2.Item{
 				ID:          w.GetId(),
-				Title:       rowTitle(w),
+				Title:       stepNumber(seqIndex, len(kids), w.GetId()) + rowTitle(w),
 				Meta:        workItemMeta(w),
 				Depth:       depth,
 				Parent:      parent,

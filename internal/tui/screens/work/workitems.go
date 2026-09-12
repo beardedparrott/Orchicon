@@ -628,10 +628,18 @@ func (m *Model) rpcToggleAutoStart(ctx context.Context, id string) error {
 	return err
 }
 
-// reorderChildren moves the selected item within its sibling sequence and
-// persists the new order with ReorderWorkItems — the only RPC that writes
-// sort_order. The siblings are re-read from the plane so the order sent is
-// the server's current one, not a stale display grouping.
+// reorderChildren moves the selected item one step within its SIBLING sequence
+// and persists the new order with ReorderWorkItems — the only RPC that writes
+// sort_order.
+//
+// This is a SEQUENCE edit, not a display sort: a parent with children IS a
+// sequential run, and its children execute in this order (the first
+// non-succeeded child arms, and the next arms when it succeeds). Moving an item
+// up makes its workflow run earlier. delta is -1 for up, +1 for down.
+//
+// The siblings are re-read from the plane so the order sent is the server's
+// current one, not a stale display grouping, and the swap is computed from the
+// STORED sequence regardless of the display sort.
 func (m *Model) reorderChildren(delta int) tea.Cmd {
 	it, ok := m.ActiveItem()
 	if !ok {

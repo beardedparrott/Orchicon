@@ -930,8 +930,8 @@ func TestReorderChildrenPersists(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	press(t, m, "down") // select wi-a (first child)
-	run(t, m, press(t, m, "J"))
+	press(t, m, "down")         // select wi-a (the first step)
+	run(t, m, press(t, m, "-")) // move it DOWN one step
 
 	if len(p.reorders) != 1 {
 		t.Fatalf("ReorderWorkItems calls = %d, want 1", len(p.reorders))
@@ -943,13 +943,15 @@ func TestReorderChildrenPersists(t *testing.T) {
 	if strings.Join(req.GetChildIds(), ",") != "wi-b,wi-a,wi-c" {
 		t.Fatalf("reorder child_ids = %v, want wi-b,wi-a,wi-c", req.GetChildIds())
 	}
-	// The new sequence persisted: the tree now renders it. Titles are flush
-	// and the nesting is the row's Depth, so every child of the epic sits at
-	// depth 1.
+	// The new sequence persisted: the tree now renders it IN THE NEW ORDER, and
+	// each step is NUMBERED by its position in the stored sequence. Titles are
+	// flush and the nesting is the row's Depth, so every child of the epic sits
+	// at depth 1. The epic itself is unnumbered because it is an only child at
+	// the top level (a group of one has no order to show).
 	load(t, m, srcWorkItems)
 	rows := itemsOf(m, srcWorkItems)
 	got := titles(rows)
-	want := []string{"[epic] Epic", "[task] B", "[task] A", "[task] C"}
+	want := []string{"[epic] Epic", "1. [task] B", "2. [task] A", "3. [task] C"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("tree after reorder = %v\nwant %v", got, want)
 	}
