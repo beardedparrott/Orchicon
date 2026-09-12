@@ -43,7 +43,7 @@ func TestBuildConfigContentRegistersOrchiconMCP(t *testing.T) {
 func TestBuildConfigContentCompositeWorktreeTools(t *testing.T) {
 	out := BuildConfigContent(ConfigOptions{
 		AgentName:      workerAgent,
-		AgentPrompt:    workerAgentPrompt,
+		AgentPrompt:    sessionToolShell,
 		DefaultAgent:   workerAgent,
 		CompositeTools: true,
 		WorktreeDir:    "/worktree",
@@ -83,7 +83,7 @@ func TestBuildConfigContentCompositeWorktreeTools(t *testing.T) {
 }
 
 func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
-	out := BuildConfigContent(ConfigOptions{AgentName: workerAgent, AgentPrompt: workerAgentPrompt, DefaultAgent: workerAgent})
+	out := BuildConfigContent(ConfigOptions{AgentName: workerAgent, AgentPrompt: sessionToolShell, DefaultAgent: workerAgent})
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("config content is not valid JSON: %v", err)

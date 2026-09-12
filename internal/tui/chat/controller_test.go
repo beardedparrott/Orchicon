@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,37 @@ func drainCmds(t *testing.T, ch chan tea.Cmd, n int) []tea.Cmd {
 		}
 	}
 	return out
+}
+
+// Compaction must be refused while a turn is live: it rewrites the history the
+// turn is generating from, so it would corrupt an answer in progress.
+func TestCanCompactRefusesWhileStreaming(t *testing.T) {
+	stub := &stubAsk{}
+	cl, _ := newTestServer(t, stub)
+	c := NewController(cl)
+	rec := &recorder{conn: map[string]bool{}}
+	cmds := make(chan tea.Cmd, 16)
+	c.Bind(rec, cmds)
+
+	if reason := c.CanCompact(""); reason == "" {
+		t.Error("no conversation must refuse with a reason")
+	}
+	if reason := c.CanCompact("c1"); reason != "" {
+		t.Errorf("an idle conversation must be compactable, got refusal %q", reason)
+	}
+
+	// A real send puts the slot in flight.
+	c.Send("c1", "hi", "")
+	if !c.IsStreaming("c1") {
+		t.Fatal("the slot must be streaming after a send")
+	}
+	reason := c.CanCompact("c1")
+	if reason == "" {
+		t.Fatal("an in-flight turn must refuse compaction")
+	}
+	if !strings.Contains(reason, "turn is in flight") || !strings.Contains(reason, "/compact") {
+		t.Errorf("the refusal must name the cause and the command, got %q", reason)
+	}
 }
 
 func TestSendStreamsAndAcks(t *testing.T) {

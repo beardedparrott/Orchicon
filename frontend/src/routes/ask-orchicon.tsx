@@ -37,11 +37,13 @@ import {
   useGetConversation,
   useAbortConversationTurn,
   useSetConversationMode,
+  useCompactConversation,
   askKeys,
 } from "@/api/askOrchicon";
 import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
+import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import {
   groupStreamItems,
   nextChunkKey,
@@ -376,6 +378,7 @@ function AskOrchiconPage() {
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
+  const compactConv = useCompactConversation();
   const qc = useQueryClient();
 
   // The effective model answering this conversation: the conversation's own
@@ -899,6 +902,23 @@ function AskOrchiconPage() {
     [runStream, setStream],
   );
 
+  // handleCompactConversation runs the /compact composer command. The server owns
+  // the policy (it may decline with a reason), so the outcome text is returned
+  // verbatim for the toast rather than being invented here.
+  const handleCompactConversation = useCallback(
+    async (conversationId: string): Promise<string> => {
+      const res = await compactConv.mutateAsync(conversationId);
+      // The server never estimates: a non-zero size is a real measurement, so a
+      // zero is omitted rather than shown as "0 tokens".
+      const before = Number(res.contextTokensBefore ?? 0);
+      const after = Number(res.contextTokensAfter ?? 0);
+      const size = before > 0 ? ` (${before} → ${after} tokens)` : "";
+      const verdict = res.detail || (res.compacted ? "conversation compacted" : "nothing to compact");
+      return `${verdict}${size}`;
+    },
+    [compactConv],
+  );
+
   const handleSendMessage = useCallback(
     async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       if (!text.trim() || !activeConvId) return false;
@@ -1373,6 +1393,7 @@ function AskOrchiconPage() {
                 onModeChange={handleModeChange}
                 convId={activeConvId}
                 restoreDraft={restoreDraft}
+                onCompact={handleCompactConversation}
               />
             </div>
           </div>
@@ -1663,6 +1684,10 @@ function MessageBubble({
   );
 }
 
+// parseComposerCommand lives in @/lib/composer-command (a pure, unit-tested
+// module) because the grammar must stay identical to the TUI's ParseSlash — see
+// internal/tui/slash.go. It is imported at the top of this file.
+
 // --- ChatInputField: auto-resizing textarea with attach/voice/send ---
 
 function ChatInputField({
@@ -1674,6 +1699,7 @@ function ChatInputField({
   onModeChange,
   convId,
   restoreDraft,
+  onCompact,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -1686,6 +1712,10 @@ function ChatInputField({
   // reply errored), it signals this with the sent text so the composer puts
   // it back in the box. Null/absent = nothing to restore.
   restoreDraft?: { convId: string; text: string; token: number } | null;
+  // onCompact runs the /compact command (free context by compacting this
+  // conversation's history). It resolves to a human-readable outcome that the
+  // composer reports; the server owns the policy (it may decline).
+  onCompact?: (convId: string) => Promise<string>;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1751,6 +1781,46 @@ function ChatInputField({
     }
     const sentText = text.trim();
     const sentAttachments = attachments.length > 0 ? attachments : undefined;
+
+    // Composer commands are intercepted BEFORE the send path, so a command is
+    // never delivered to the model as a chat message. Only /compact exists
+    // today; an unknown /word intentionally falls through to chat (the server
+    // is the authority on what a message is, and silently swallowing an
+    // unrecognized slash would lose the user's text).
+    const cmd = parseComposerCommand(sentText);
+    if (cmd && cmd.name === COMPACT_COMMAND) {
+      setText("");
+      if (inputRef.current) inputRef.current.style.height = "auto";
+      if (!convId) {
+        useToastStore.getState().push({ kind: "error", message: "No conversation open — send a message first." });
+        return;
+      }
+      // Refuse mid-turn: compaction rewrites the history the running turn is
+      // generating from, so doing it underneath a live answer would corrupt it.
+      // (The TUI refuses identically — CanCompact.)
+      if (isStreaming) {
+        useToastStore.getState().push({
+          kind: "error",
+          message: "A turn is in flight — stop it before /compact (compaction rewrites the history the turn is using).",
+        });
+        return;
+      }
+      if (!onCompact) return;
+      setSending(true);
+      try {
+        const detail = await onCompact(convId);
+        useToastStore.getState().push({ kind: "success", message: detail || "/compact complete" });
+      } catch (err) {
+        useToastStore.getState().push({
+          kind: "error",
+          message: `/compact failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     if (sentText || attachments.length > 0) {
       setSending(true);
       // Clear the box immediately on send (no lingering text while the model
@@ -1771,7 +1841,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend, pendingReads, isStreaming]);
+  }, [sending, text, attachments, onSend, pendingReads, isStreaming, convId, onCompact]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

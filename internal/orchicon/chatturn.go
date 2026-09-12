@@ -23,6 +23,7 @@ import (
 // dropped).
 var _ scheduler.ChatTurnClient = (*NativeBridge)(nil)
 var _ scheduler.SendTurnMessageWithAttachments = (*NativeBridge)(nil)
+var _ scheduler.ConversationHistoryPurger = (*NativeBridge)(nil)
 
 // Attachment caps mirror the server-side turn validation
 // (startConversationTurnOpts): the bridge enforces them too so direct
@@ -205,6 +206,50 @@ func (b *NativeBridge) CreateConversationSession(ctx context.Context, conversati
 	return sid, nil
 }
 
+// PurgeConversationHistory implements scheduler.ConversationHistoryPurger:
+// it discards a deleted conversation's durable Ask history — the in-memory
+// map entry AND the persisted JSON file — because nothing else reclaims them.
+// The native adapter is sessionless, so the history file is the only on-disk
+// artifact of a conversation; without this, every deleted conversation leaked
+// its file forever (observed: 19 conversation files totalling 19MB, several of
+// them multi-MB).
+//
+// Idempotent: a missing map entry or missing file is a successful no-op. The
+// caller treats any error as advisory (logged, never failing the delete RPC),
+// since the durable DB record is already gone by the time this runs.
+func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationID, sessionID string) error {
+	sid := sessionID
+	if sid == "" && conversationID != "" {
+		// Sessionless adapters mint their own synthetic id; resolve it so a
+		// conversation row without a persisted session id still purges.
+		sid = scheduler.NativeSessionIDPrefix + conversationID
+	}
+	if sid == "" {
+		return nil
+	}
+	b.mu.Lock()
+	delete(b.chatHistory, sid)
+	// The pressure bookkeeping describes a conversation that no longer exists:
+	// drop it with the history so a deleted conversation leaves no memory behind
+	// (nor a stale measurement that could fire a gate on a NEW conversation that
+	// happened to reuse the session id).
+	delete(b.askPromptTokens, sid)
+	delete(b.askWindowTokens, sid)
+	dir := b.askHistoryDir
+	b.mu.Unlock()
+	if dir == "" {
+		return nil // memory-only history: nothing persisted to reclaim
+	}
+	path := filepath.Join(dir, askHistoryFilename(sid)+".json")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("orchicon bridge: purge ask history %s: %w", path, err)
+	}
+	// Sweep the atomic-write temp file too: a crash mid-persist can leave it
+	// behind, and a deleted conversation must leave nothing on disk.
+	_ = os.Remove(path + ".tmp")
+	return nil
+}
+
 // Subscribe implements scheduler.ChatTurnClient: it returns a fresh buffered
 // SessionBus for the conversation's next turn and registers it under the
 // conversation's session so SendTurnMessage feeds it. The bus is fed by the
@@ -314,6 +359,16 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 		return fmt.Errorf("orchicon bridge: resolve Ask provider: %w", err)
 	}
 
+	// PROACTIVE CONTEXT GATE (askpressure.go): when the conversation's measured
+	// prompt size has crossed the configured fraction of this model's live
+	// context window, compact BEFORE dispatching — so the turn never reaches the
+	// provider over-limit in the first place. Compaction rewrites the history
+	// this turn is about to send, so it must run before the snapshot below.
+	// Best-effort: a failure or a disarmed gate (no live window hint, no
+	// measurement yet) leaves the turn untouched, and the reactive path
+	// (askreduce.go) remains the backstop.
+	b.maybeCompactForPressure(ctx, prov, conversationID, sessionID, modelRef, model)
+
 	// Append the user message to the session's replayable history (committed
 	// under the lock so a concurrent turn never double-appends). The
 	// content carries the text plus any attachments (images as data URLs,
@@ -369,12 +424,20 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	turnCtx, cancel := context.WithCancel(ctx)
 	// Start the stream SYNCHRONOUSLY so a pre-stream failure surfaces as a
 	// send-accept failure (the collector fails the turn) rather than a
-	// dropped first delta (D4).
-	stream, err := prov.StreamTurn(turnCtx, req)
+	// dropped first delta (D4). A provider context-window overflow is the one
+	// failure with a deterministic remedy: reduce the replayed history and
+	// retry (askreduce.go). Without that, a long conversation is permanently
+	// wedged — every subsequent turn re-sends the same oversized history and
+	// 400s (observed live on a 1574-message Ask session at ~1.02M tokens).
+	stream, err := b.startTurnWithContextRecovery(turnCtx, prov, &req, sessionID)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("orchicon bridge: start Ask turn: %w", err)
 	}
+	// A reduction (when one happened) replaced the replayed history. Drain
+	// against what the provider actually ACCEPTED, so the session's working
+	// context matches the prompt it saw.
+	history = req.Messages
 
 	// Drain the stream on a goroutine, mapping events onto the bus.
 	b.mu.Lock()
@@ -388,7 +451,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	}
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history)
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -404,7 +467,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // completion the full working history (assistant texts, tool uses and tool
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message) {
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.Close()
 	defer func() {
 		b.mu.Lock()
@@ -440,7 +503,14 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	}
 
 	for round := 0; ; round++ {
-		roundDone, calls, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
+		roundDone, calls, usage, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
+		// Report the round's REAL usage (never estimated). Emitted per ROUND
+		// because each round is one provider call — so the newest sample's prompt
+		// size is exactly the context pressure a gate needs, and a multi-round
+		// turn does not collapse into a single misleading total.
+		if usageSink != nil {
+			usageSink(ctx, usage)
+		}
 		_ = stream.Close()
 		if aborted {
 			// Abort (D7): the turn was cancelled — finalize without
@@ -502,18 +572,18 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 // reply text. It returns roundDone (a Finish event arrived), the complete
 // tool calls issued this round, and aborted (the turn context was
 // cancelled).
-func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, aborted bool) {
+func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, usage Usage, aborted bool) {
 	for {
 		evt, ok, err := stream.Next(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return false, nil, true
+				return false, nil, Usage{}, true
 			}
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
-			return false, nil, false
+			return false, nil, Usage{}, false
 		}
 		if !ok {
-			return false, nil, false
+			return false, nil, Usage{}, false
 		}
 		switch e := evt.(type) {
 		case TextDelta:
@@ -527,10 +597,61 @@ func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream T
 			calls = append(calls, e)
 		case StreamError:
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: e.Err.Error()})
-			return false, nil, false
+			return false, nil, Usage{}, false
 		case Finish:
-			return true, calls, false
+			// The round's REAL provider usage rides the Finish event. Surfaced to
+			// the caller so the Ask path can attribute it to the conversation
+			// (never estimated — see askUsageSink).
+			return true, calls, e.Usage, false
 		}
+	}
+}
+
+// askUsageSink builds the per-round usage reporter for one Ask turn, or nil
+// when no recorder is wired (Ask then records no usage, matching the worker
+// path's behaviour under a nil recorder).
+//
+// The sample is attributed to the CONVERSATION via SessionID rather than to an
+// execution: a chat turn has no execution/task/project row (mirroring the
+// opencode Ask path, askorchicon.recordTurnUsage). That attribution is also what
+// makes the rows prunable — DeleteConversation de-links usage by conversation id
+// (db.ClearUsageSessionIDs) instead of deleting it, because usage_records is the
+// tenant's real spend ledger and Cost Explorer/Telemetry roll up from it.
+//
+// Before this, a native Ask turn recorded NOTHING: the native per-turn usage
+// sink was wired only on the worker-execution path (bridge.go, emitTurnUsage),
+// which is bound to an execution row. That left the Ask path with no measurable
+// prompt size at all.
+func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRef, provider, model string) func(context.Context, Usage) {
+	if b.usageRecorder == nil {
+		return nil
+	}
+	return func(ctx context.Context, u Usage) {
+		// A genuinely empty round is dropped (parity with emitTurnUsage): a
+		// provider that reported nothing is not a zero-cost sample.
+		if u.InputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
+			u.OutputTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == 0 {
+			return
+		}
+		// Remember the REAL prompt size: this is the numerator of the proactive
+		// context-pressure gate (askpressure.go), so it must be the provider's
+		// own number and never a character-count estimate.
+		b.recordAskPromptTokens(sessionID, u.InputTokens)
+		// context.WithoutCancel: this is real usage that has already been paid
+		// for, so a turn that ends (or is aborted) mid-record must not lose it.
+		_ = b.usageRecorder(context.WithoutCancel(ctx), scheduler.UsageRecord{
+			TenantID:         tenantID,
+			Provider:         provider,
+			Model:            model,
+			PromptTokens:     u.InputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CompletionTokens: u.OutputTokens,
+			ReasoningTokens:  u.ReasoningTokens,
+			CostUSD:          u.CostUSD,
+			AdapterKind:      adapter.AdapterKind(modelRef),
+			SessionID:        conversationID,
+		})
 	}
 }
 

@@ -283,6 +283,18 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/compact", Usage: "/compact",
+		Desc: "summarize this conversation's history to free context (compact the model's context window)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			if reason := m.chat.CanCompact(m.chatConvID); reason != "" {
+				m.dock.SetError(reason)
+				return nil
+			}
+			m.dock.SetNotice("compacting conversation…")
+			return m.chat.CompactConversation(m.chatConvID)
+		},
+	})
+	add(SlashCommand{
 		Name: "/attach", Usage: "/attach <path>",
 		Desc:    "attach a file to the next message (not supported in the TUI)",
 		MinArgs: 1,
