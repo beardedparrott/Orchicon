@@ -435,7 +435,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	}
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history)
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -451,7 +451,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // completion the full working history (assistant texts, tool uses and tool
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message) {
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.Close()
 	defer func() {
 		b.mu.Lock()
@@ -487,7 +487,14 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	}
 
 	for round := 0; ; round++ {
-		roundDone, calls, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
+		roundDone, calls, usage, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
+		// Report the round's REAL usage (never estimated). Emitted per ROUND
+		// because each round is one provider call — so the newest sample's prompt
+		// size is exactly the context pressure a gate needs, and a multi-round
+		// turn does not collapse into a single misleading total.
+		if usageSink != nil {
+			usageSink(ctx, usage)
+		}
 		_ = stream.Close()
 		if aborted {
 			// Abort (D7): the turn was cancelled — finalize without
@@ -549,18 +556,18 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 // reply text. It returns roundDone (a Finish event arrived), the complete
 // tool calls issued this round, and aborted (the turn context was
 // cancelled).
-func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, aborted bool) {
+func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, usage Usage, aborted bool) {
 	for {
 		evt, ok, err := stream.Next(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return false, nil, true
+				return false, nil, Usage{}, true
 			}
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
-			return false, nil, false
+			return false, nil, Usage{}, false
 		}
 		if !ok {
-			return false, nil, false
+			return false, nil, Usage{}, false
 		}
 		switch e := evt.(type) {
 		case TextDelta:
@@ -574,10 +581,57 @@ func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream T
 			calls = append(calls, e)
 		case StreamError:
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: e.Err.Error()})
-			return false, nil, false
+			return false, nil, Usage{}, false
 		case Finish:
-			return true, calls, false
+			// The round's REAL provider usage rides the Finish event. Surfaced to
+			// the caller so the Ask path can attribute it to the conversation
+			// (never estimated — see askUsageSink).
+			return true, calls, e.Usage, false
 		}
+	}
+}
+
+// askUsageSink builds the per-round usage reporter for one Ask turn, or nil
+// when no recorder is wired (Ask then records no usage, matching the worker
+// path's behaviour under a nil recorder).
+//
+// The sample is attributed to the CONVERSATION via SessionID rather than to an
+// execution: a chat turn has no execution/task/project row (mirroring the
+// opencode Ask path, askorchicon.recordTurnUsage). That attribution is also what
+// makes the rows prunable — DeleteConversation de-links usage by conversation id
+// (db.ClearUsageSessionIDs) instead of deleting it, because usage_records is the
+// tenant's real spend ledger and Cost Explorer/Telemetry roll up from it.
+//
+// Before this, a native Ask turn recorded NOTHING: the native per-turn usage
+// sink was wired only on the worker-execution path (bridge.go, emitTurnUsage),
+// which is bound to an execution row. That left the Ask path with no measurable
+// prompt size at all.
+func (b *NativeBridge) askUsageSink(tenantID, conversationID, modelRef, provider, model string) func(context.Context, Usage) {
+	if b.usageRecorder == nil {
+		return nil
+	}
+	return func(ctx context.Context, u Usage) {
+		// A genuinely empty round is dropped (parity with emitTurnUsage): a
+		// provider that reported nothing is not a zero-cost sample.
+		if u.InputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
+			u.OutputTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == 0 {
+			return
+		}
+		// context.WithoutCancel: this is real usage that has already been paid
+		// for, so a turn that ends (or is aborted) mid-record must not lose it.
+		_ = b.usageRecorder(context.WithoutCancel(ctx), scheduler.UsageRecord{
+			TenantID:         tenantID,
+			Provider:         provider,
+			Model:            model,
+			PromptTokens:     u.InputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CompletionTokens: u.OutputTokens,
+			ReasoningTokens:  u.ReasoningTokens,
+			CostUSD:          u.CostUSD,
+			AdapterKind:      adapter.AdapterKind(modelRef),
+			SessionID:        conversationID,
+		})
 	}
 }
 

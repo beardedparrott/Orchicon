@@ -491,6 +491,18 @@ type UsageRecord struct {
 	CorrelationID    string
 	TraceID          string
 	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
+	// AdapterKind tags the adapter that drove the model call (persisted as
+	// usage_records.adapter_kind). The native worker path sets "orchicon"; the
+	// Ask path sets the kind parsed from the conversation's model_ref, so a
+	// non-native ref attributes to the adapter that actually served it.
+	AdapterKind string
+	// SessionID carries the Ask Orchicon conversation id for Ask attribution —
+	// a chat turn has no execution/task/project row to attribute through.
+	// Empty for worker executions (which use ExecutionID/TaskID). It is also
+	// the field the conversation delete path CLEARS rather than deletes:
+	// usage_records is the tenant's spend ledger, so de-linking keeps historical
+	// cost intact (db.ClearUsageSessionIDs).
+	SessionID string
 }
 
 // UsageRecorderFunc records a usage sample. Decoupled from the

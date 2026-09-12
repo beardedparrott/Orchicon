@@ -789,8 +789,12 @@ func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, 
 		CompletionTokens: u.OutputTokens,
 		ReasoningTokens:  u.ReasoningTokens,
 		CostUSD:          u.CostUSD,
-		CorrelationID:    exec.ID,
-		WorkflowRunID:    exec.WorkflowRunID,
+		// AdapterKind is set here so the record self-describes: the native
+		// in-process engine is the "orchicon" kind. The Ask path sets its own
+		// (parsed from the conversation's model_ref).
+		AdapterKind:   "orchicon",
+		CorrelationID: exec.ID,
+		WorkflowRunID: exec.WorkflowRunID,
 	})
 }
 
