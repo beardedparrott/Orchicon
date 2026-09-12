@@ -973,8 +973,26 @@ func (m *App) Init() tea.Cmd {
 }
 
 // Update implements tea.Model (via the router dispatch).
+// Update implements tea.Model.
+//
+// It is the ONE choke point every input path funnels through, so it also
+// flushes any cmd a handler staged but did not return. Staging exists because
+// SwitchTo must run the newly-activated screen's first load, and SwitchTo
+// cannot return a tea.Cmd — handlers that switch tabs then return their own
+// cmd and silently DROPPED the staged load. That is why every domain rendered
+// its empty state forever when tabs were reached by mouse (the chord routes
+// happened to drain it; the mouse tab-click, the dropdown chord and MenuSelect
+// did not). Rather than depend on every present and future caller remembering,
+// flush here.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m.dispatch(msg)
+	next, cmd := m.dispatch(msg)
+	if staged := next.drainStaged(); staged != nil {
+		if cmd == nil {
+			return next, staged
+		}
+		return next, tea.Batch(cmd, staged)
+	}
+	return next, cmd
 }
 
 // passToScreen forwards to the active screen. When the diff pane is open it

@@ -453,11 +453,23 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// (operator finding 7 — mouse must genuinely focus the input, not only
 	// rely on the launch default). The diff rail owns clicks in its own
 	// columns, so those still go to the pane.
+	//
+	// A click anywhere ELSE in the content region must move focus to the
+	// CONTENT. Without this the composer kept focus after any pane click, so
+	// the screen's own keys were typed into the chat box instead: "v" never
+	// switched the work-item view, arrows never moved the list cursor, and
+	// the per-screen create/edit/delete keys never fired (operator report:
+	// "hitting v does nothing", "I can't move the cursor with the arrow key").
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
-		if !(m.diffOpen && mo.X < DiffPaneWidth) && m.inDockRows(mo.Y) {
+		inDiffRail := m.diffOpen && mo.X < DiffPaneWidth
+		if !inDiffRail && m.inDockRows(mo.Y) {
 			m.setFocus(focusComposer)
 			m.footer.ComposerFocus = true
 			return m, nil
+		}
+		if !inDiffRail && mo.Y > tabBarRows {
+			m.setFocus(focusContent)
+			m.footer.ComposerFocus = false
 		}
 	}
 	if cmd := m.appMsg(mo); cmd != nil {
