@@ -23,6 +23,7 @@ package orchicon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -43,6 +44,17 @@ const (
 	// toolResultHeadChars is how much of a tool result survives elision — enough
 	// to keep the gist of what the tool returned.
 	toolResultHeadChars = 200
+
+	// toolArgsHeadChars is how much of a tool call's ARGUMENTS survive. This
+	// matters because a file-writing call (batch_write) carries the entire file
+	// body in its arguments — measured on the real wedged conversation, the
+	// arguments were the largest bucket the first version of this pass left
+	// untouched, which left the reduced history at ~285k tokens: comfortably
+	// inside a 1M window but still over a 200k one. Only the arguments are
+	// trimmed: the call id and the tool name stay verbatim, because the pairing
+	// (an assistant tool_use must be answered by its tool_result) and the record
+	// of WHICH tool ran both survive.
+	toolArgsHeadChars = 200
 
 	// textPartCapChars caps ONE text part. Conversation text is a small slice of
 	// a bloated prompt, so this only bites on a genuinely enormous message.
@@ -83,6 +95,7 @@ func isContextLengthError(err error) bool {
 type ReduceStats struct {
 	ImagesDropped      int
 	ToolResultsElided  int
+	ToolArgsTruncated  int
 	TextPartsTruncated int
 	BytesBefore        int
 	BytesAfter         int
@@ -129,6 +142,20 @@ func ReduceConversationHistoryForContext(history []Message, keepTail int) ([]Mes
 					IsError:    c.ToolResult.IsError,
 				}
 				nm.Content = append(nm.Content, Content{ToolResult: &elided})
+			case c.ToolUse != nil:
+				// The ID and the tool name are load-bearing (pairing + knowing
+				// what ran) and stay verbatim; only the ARGUMENTS are trimmed,
+				// because a file-writing call carries a whole file body there.
+				capped, truncated := capToolArgs(c.ToolUse.ArgsJSON)
+				if truncated {
+					st.ToolArgsTruncated++
+				}
+				use := ContentToolUse{
+					ToolCallID: c.ToolUse.ToolCallID,
+					Name:       c.ToolUse.Name,
+					ArgsJSON:   capped,
+				}
+				nm.Content = append(nm.Content, Content{ToolUse: &use})
 			case c.Text != nil:
 				capped, truncated := capTextPart(*c.Text)
 				if truncated {
@@ -154,6 +181,26 @@ func elideToolResult(s string) string {
 	}
 	return fmt.Sprintf("%s\n… [tool result truncated: %d of %d characters elided to fit the context window]",
 		head, int64(len([]rune(s))-toolResultHeadChars), len([]rune(s)))
+}
+
+// capToolArgs trims one oversized tool-call argument blob. The result stays
+// VALID JSON (a truncated argument string would be a malformed tool call, and
+// some providers validate the replay), so an oversize object is replaced by an
+// object that states the elision instead of a half-written one.
+func capToolArgs(args string) (string, bool) {
+	head, truncated := headRunes(args, toolArgsHeadChars)
+	if !truncated {
+		return args, false
+	}
+	// Keep it parseable: JSON wants quotes and escapes, so build the marker with
+	// the encoder rather than concatenating raw text into the head.
+	note := fmt.Sprintf("… [tool arguments truncated: %d of %d characters elided to fit the context window]",
+		int64(len([]rune(args))-toolArgsHeadChars), len([]rune(args)))
+	if b, err := json.Marshal(map[string]any{"_truncated_args_head": head, "_note": note}); err == nil {
+		return string(b), true
+	}
+	// Unreachable for map[string]any of strings, but never return invalid JSON.
+	return `{"_note":"tool arguments elided to fit the context window"}`, true
 }
 
 // capTextPart trims one oversized text part. Rune-based so a multi-byte
@@ -223,6 +270,7 @@ func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, pro
 			"keep_tail", keepTail,
 			"images_dropped", st.ImagesDropped,
 			"tool_results_elided", st.ToolResultsElided,
+			"tool_args_truncated", st.ToolArgsTruncated,
 			"text_parts_truncated", st.TextPartsTruncated,
 			"bytes_before", st.BytesBefore,
 			"bytes_after", st.BytesAfter)

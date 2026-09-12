@@ -2,6 +2,7 @@ package orchicon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -110,6 +111,48 @@ func TestReduceDropsImagesAndElidesToolResultsButKeepsText(t *testing.T) {
 	}
 	if len(elided.Content) > toolResultHeadChars+200 {
 		t.Errorf("elided tool result still long: %d chars", len(elided.Content))
+	}
+}
+
+// Tool-call ARGUMENTS are trimmed, but the pairing and the tool name survive: a
+// file-writing call carries a whole file body in its arguments, which is the same
+// class of bloat as a tool result. The result must stay valid JSON (a malformed
+// tool call could itself be rejected on replay).
+func TestReduceTrimsToolArgsButKeepsIDNameAndValidJSON(t *testing.T) {
+	bigArgs := `{"path":"a.go","content":"` + strings.Repeat("Y", 50_000) + `"}`
+	history := []Message{
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "call_9", Name: "batch_write", ArgsJSON: bigArgs}}}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "call_9", Content: "ok"}}}},
+	}
+	reduced, st := ReduceConversationHistoryForContext(history, 0)
+
+	if st.ToolArgsTruncated != 1 {
+		t.Errorf("ToolArgsTruncated = %d, want 1", st.ToolArgsTruncated)
+	}
+	use := reduced[0].Content[0].ToolUse
+	if use == nil {
+		t.Fatal("the tool call was dropped — its result would then be unpaired")
+	}
+	if use.ToolCallID != "call_9" {
+		t.Errorf("tool call id changed: %q (pairing broken)", use.ToolCallID)
+	}
+	if use.Name != "batch_write" {
+		t.Errorf("tool name changed: %q (the model must still see WHICH tool ran)", use.Name)
+	}
+	if len(use.ArgsJSON) >= len(bigArgs)/10 {
+		t.Errorf("arguments barely shrank: %d of %d bytes", len(use.ArgsJSON), len(bigArgs))
+	}
+	if !json.Valid([]byte(use.ArgsJSON)) {
+		t.Errorf("truncated arguments are not valid JSON: %q", use.ArgsJSON)
+	}
+	if !strings.Contains(use.ArgsJSON, "tool arguments truncated") {
+		t.Errorf("the elision must be stated, got %q", use.ArgsJSON)
+	}
+	// Small arguments are untouched.
+	small := `{"path":"a.txt"}`
+	kept, truncated := capToolArgs(small)
+	if truncated || kept != small {
+		t.Errorf("small args must pass through verbatim, got (%q, %v)", kept, truncated)
 	}
 }
 
