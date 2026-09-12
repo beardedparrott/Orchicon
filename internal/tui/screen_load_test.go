@@ -44,8 +44,8 @@ func TestSwitchToRunsScreenFirstLoadOnce(t *testing.T) {
 	}
 }
 
-// The tab ring walks composer → seven areas → composer, and Shift+Tab
-// toggles both side rails.
+// The tab ring walks composer → every area → composer, and Shift+Tab toggles
+// the diff pane.
 func TestTabRingAndRailToggle(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
@@ -62,7 +62,7 @@ func TestTabRingAndRailToggle(t *testing.T) {
 	if m.chatFocus != focusContent || m.ActiveTab() != TabAsk {
 		t.Fatalf("tab from composer = (%v, %s), want (content, ask)", m.chatFocus, m.ActiveTab())
 	}
-	// Each further Tab advances one area (Overview is the second domain).
+	// Each further Tab advances one area, in tab-bar order (Overview is second).
 	m.tabRingNext()
 	if m.ActiveTab() != TabOverview {
 		t.Fatalf("tab advanced to %s, want overview", m.ActiveTab())
@@ -102,5 +102,27 @@ func TestNewChatSlashResetsConversation(t *testing.T) {
 	}
 	if m.ActiveTab() != TabAsk {
 		t.Fatalf("active tab = %s after /new, want ask", m.ActiveTab())
+	}
+}
+
+// Regression for "themes are still not saving". The shell reference was injected
+// by hand inside each factory and CONTROL's was missing, so Control.Shell()
+// returned nil: its Themes pane switched the palette in-session but could never
+// persist it (applyTheme fell through to theme.Use), and its notices were
+// silently dropped. Every screen must be constructed with a shell.
+func TestEveryScreenGetsTheShellReference(t *testing.T) {
+	m := newTestApp()
+	for _, tab := range Tabs {
+		s := m.newScreen(tab.ID)
+		if s == nil {
+			t.Fatalf("tab %q has no screen factory", tab.ID)
+		}
+		sh, ok := s.(interface{ Shell() any })
+		if !ok {
+			t.Fatalf("tab %q screen has no Shell()", tab.ID)
+		}
+		if sh.Shell() == nil {
+			t.Errorf("tab %q screen was built WITHOUT a shell reference — persistence and notices would silently fail", tab.ID)
+		}
 	}
 }

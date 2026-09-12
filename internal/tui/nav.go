@@ -83,11 +83,10 @@ func (m *App) screenForNav(tab TabID) Screen {
 	if s, ok := m.screens[tab]; ok && s != nil {
 		return s
 	}
-	f, ok := m.factories[tab]
-	if !ok {
+	s := m.newScreen(tab)
+	if s == nil {
 		return nil
 	}
-	s := f()
 	m.screens[tab] = s // cache like a normal visit
 	return s
 }

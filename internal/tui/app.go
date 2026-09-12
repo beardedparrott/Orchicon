@@ -93,18 +93,22 @@ const (
 
 // App is the root model.
 type App struct {
-	clients   *client.Clients
-	profile   *config.Profile
-	reg       *subs.Registry
-	screens   map[TabID]Screen
-	factories map[TabID]func() Screen
-	active    TabID
-	width     int
-	height    int
-	footer    footerModel
-	help      helpModel
-	routes    []KeyRoute
-	quitting  bool
+	clients *client.Clients
+	profile *config.Profile
+	reg     *subs.Registry
+	// A constructed screen is never built without its shell reference: newScreen
+	// injects this into every screen it creates (see the helper's comment for
+	// the bug that omission caused).
+	shellOwner *App
+	screens    map[TabID]Screen
+	factories  map[TabID]func() Screen
+	active     TabID
+	width      int
+	height     int
+	footer     footerModel
+	help       helpModel
+	routes     []KeyRoute
+	quitting   bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
 	dock            dock.Model
@@ -227,12 +231,12 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	// tenant from the bearer credential (internal/project/service.go —
 	// StreamProjectEvents ignores req.TenantId), so orch never guesses one.
 	m.factories = map[TabID]func() Screen{
-		TabAsk:         func() Screen { s := ask.New(cl, m.reg); s.SetShell(m); return s },
+		TabAsk:         func() Screen { return ask.New(cl, m.reg) },
 		TabOverview:    func() Screen { return overview.New(cl, m.reg, "") },
 		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
-		TabExecution:   func() Screen { s := execution.New(cl, m.reg, ""); s.SetShell(m); return s },
+		TabExecution:   func() Screen { return execution.New(cl, m.reg, "") },
 		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
-		TabEnforcement: func() Screen { s := enforcement.New(cl, m.reg, ""); s.SetShell(m); return s },
+		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg, "") },
 		TabControl:     func() Screen { return control.New(cl, m.reg) },
 	}
 	// The slash registry is generated from the screens' Sources() (the
@@ -273,6 +277,27 @@ func (m *App) RegisterScreen(id TabID, s Screen) {
 	}
 }
 
+// newScreen constructs a tab's screen and injects the shell reference.
+//
+// This used to be hand-written inside each factory and Control's was MISSING,
+// so Control.Shell() returned nil — which meant its Themes pane switched the
+// palette in-session but could never persist it (applyTheme fell through to
+// theme.Use), and its mutation notices were silently dropped (Notice reports
+// through the shell's dock sink). Both failures were invisible: no error, no
+// message, just a theme that did not come back. Constructing through this ONE
+// helper makes forgetting impossible.
+func (m *App) newScreen(id TabID) Screen {
+	f, ok := m.factories[id]
+	if !ok {
+		return nil
+	}
+	s := f()
+	if ss, ok := s.(interface{ SetShell(any) }); ok {
+		ss.SetShell(m)
+	}
+	return s
+}
+
 // SwitchTo activates a tab (lazily constructing its screen; the previous
 // screen is closed = unsubscribed, useStream semantics).
 func (m *App) SwitchTo(id TabID) {
@@ -292,8 +317,7 @@ func (m *App) SwitchTo(id TabID) {
 	}
 	m.active = id
 	if _, ok := m.screens[id]; !ok {
-		if f, ok := m.factories[id]; ok {
-			s := f()
+		if s := m.newScreen(id); s != nil {
 			m.screens[id] = s
 		}
 	}
@@ -1711,32 +1735,50 @@ func (s *chatStore) setReconnecting(convID string, on bool) {
 // live rows carry only what has not landed yet.
 //
 // Dedupe is required here: the composer appends an OPTIMISTIC user row
-// (Key "draft-*") the moment a message is sent, and the durable transcript
-// then arrives containing that same user message. Blind concatenation printed
-// the operator's text twice — and, because live rows were appended AFTER
-// history, the optimistic copy landed at the BOTTOM of the conversation,
-// below the reply (operator report). Dropping the optimistic row once history
-// carries its text also restores the correct chronological order: history is
-// built oldest-first, so the user row sits above the assistant's reply.
+// (Key "draft-*") the moment a message is sent, and the durable transcript then
+// arrives containing that same user message. Blind concatenation printed the
+// operator's text twice — and, because live rows were appended AFTER history,
+// the optimistic copy landed at the BOTTOM, below the reply.
+//
+// The match must be a SUFFIX, not equality: the message that reaches the plane
+// is the context preamble prepended to the text (chat.Controller.Send does
+// `full = preamble + "\n" + text`), while the optimistic row carries the raw
+// text. Comparing them exactly never matched, so the dedupe silently did
+// nothing and the duplicate came back (the operator's "it sent my message twice
+// and put it below the model's response").
 func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	s.mu.Lock()
 	live := s.items[convID]
-	// Index the durable user texts so an optimistic echo can be identified.
-	durableUser := map[string]bool{}
+	// Durable user texts, for matching an optimistic echo.
+	var durableUser []string
 	for _, it := range history {
 		if it.Kind == chat.KindUser {
-			durableUser[it.Text] = true
+			durableUser = append(durableUser, it.Text)
 		}
 	}
 	kept := make([]chat.ChatItem, 0, len(live))
 	for _, it := range live {
-		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && durableUser[it.Text] {
+		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && matchesAny(durableUser, it.Text) {
 			continue // the durable copy supersedes the optimistic echo
 		}
 		kept = append(kept, it)
 	}
 	s.items[convID] = append(append([]chat.ChatItem{}, history...), kept...)
 	s.mu.Unlock()
+}
+
+// matchesAny reports whether want equals, or is a suffix of, any candidate.
+// Suffix covers the prepended context preamble without needing to parse it.
+func matchesAny(candidates []string, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, c := range candidates {
+		if c == want || strings.HasSuffix(c, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // replace swaps the conversation's items for the durable transcript —
