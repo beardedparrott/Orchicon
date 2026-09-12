@@ -310,6 +310,7 @@ func (m *App) SwitchTo(id TabID) {
 			m.EnsureSubscriptions(id)
 		}
 		m.ensureLoaded(id)
+		m.refreshComposerHint()
 		return
 	}
 	if old, ok := m.screens[m.active]; ok && old != nil {
@@ -341,6 +342,7 @@ func (m *App) SwitchTo(id TabID) {
 		}
 	}
 	m.updateContextChip()
+	m.refreshComposerHint()
 	// The diff pane's open state persists across SwitchTo (the GUI persists
 	// it at the host). Re-point it at the new tab's owner (if any) so it
 	// shows the active session without resetting open/tab/selected.
@@ -730,6 +732,21 @@ func (m *App) restoreDiffPaneState() {
 // reconnectStreams forces every live subscription to redial now.
 func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
 
+// refreshComposerHint fills the composer's affordance row with the ACTIVE
+// screen's shortcut list, so the guidance follows the page the operator is on
+// (the screen's own HintLine is the single source of truth) and always leads
+// with the ctrl+g focus chord. A screen with no HintLine just clears the
+// context.
+func (m *App) refreshComposerHint() {
+	ctx := ""
+	if s := m.screens[m.active]; s != nil {
+		if h, ok := s.(interface{ HintLine() string }); ok {
+			ctx = ansi.Strip(strings.TrimSpace(h.HintLine()))
+		}
+	}
+	m.dock.SetContext(ctx)
+}
+
 func (m *App) updateContextChip() {
 	if s := m.screens[m.active]; s != nil {
 		if c, ok := s.(interface{ ContextChip() string }); ok {
@@ -1080,6 +1097,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 		m.onChatWake()
 	}
 	m.updateContextChip()
+	m.refreshComposerHint()
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
 	m.footer.ComposerFocus = m.chatFocus == focusComposer

@@ -70,6 +70,11 @@ type Model struct {
 	Height   int // allocated rows (set by the shell)
 	Newlines NewlineMode
 
+	// Context is the ACTIVE screen's shortcut list (the shell derives it from the
+	// screen's HintLine), rendered at the head of the affordance row so the
+	// guidance always names what the current page can do.
+	Context string
+
 	// sendRequest is a non-nil callback when Enter produced a send; the
 	// shell checks+clears it after Update (avoids channel plumbing).
 	sendRequest string
@@ -379,8 +384,10 @@ func (m *Model) requestSend() tea.Cmd {
 	return nil
 }
 
-// Hint is the persistent affordance row's text: what Enter does, the
-// newline chord, and how to reach the command palette.
+// Hint is the persistent affordance row: the ctrl+g focus chord FIRST (so it
+// survives truncation on a narrow pane), then the ACTIVE screen's shortcut
+// list (Context, set by the shell from that screen's HintLine), then the
+// composer's own chords.
 func (m *Model) Hint() string {
 	nl := "alt+enter"
 	switch m.Newlines {
@@ -389,8 +396,16 @@ func (m *Model) Hint() string {
 	case NewlineBoth:
 		nl = "alt+enter or \\+enter"
 	}
-	return "enter send · " + nl + " newline · / commands (↑/↓ pick · esc close)"
+	parts := []string{"ctrl+g text box"}
+	if s := strings.TrimSpace(m.Context); s != "" {
+		parts = append(parts, s)
+	}
+	parts = append(parts, "enter send · "+nl+" newline · / commands")
+	return strings.Join(parts, " · ")
 }
+
+// SetContext sets the active screen's shortcut list for the affordance row.
+func (m *Model) SetContext(s string) { m.Context = s }
 
 // View renders the composer as a bordered box: the context chip, the input
 // rows (the "❯ " prompt on the first), the notice/error strip, and the

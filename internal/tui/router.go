@@ -213,6 +213,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		// First layout: run the active screen's first load + live streams.
 		m.ensureLoaded(m.active)
 		m.EnsureSubscriptions(m.active)
+		m.refreshComposerHint()
 		return m, nil
 	}
 	if m.help.open {
