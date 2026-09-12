@@ -1630,6 +1630,17 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 		m.dock.SetError(msg.Op + " failed: " + msg.Err)
 		return m.reloadConversations()
 	}
+	if msg.Op == "compact" {
+		// Compaction rewrites the server-side history, so the transcript the
+		// pane shows is now stale (and the summary is a new assistant message).
+		// Surface the outcome, then re-poll so the collapsed history is visible
+		// instead of the pre-compaction transcript.
+		if msg.ID == m.chatConvID && msg.Detail != "" {
+			m.dock.SetNotice("compact: " + msg.Detail)
+			return tea.Batch(m.chat.Poll(msg.ID), m.reloadConversations())
+		}
+		return m.reloadConversations()
+	}
 	if msg.Op == "delete" {
 		kept := m.conversations[:0]
 		for _, c := range m.conversations {
