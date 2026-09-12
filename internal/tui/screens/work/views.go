@@ -73,10 +73,12 @@ func workItemMeta(w *apiv1.WorkItem) string {
 	return meta
 }
 
-// rowTitle renders a tree row's cell: indentation from the item's DEPTH in
-// the real parent-child DAG, its kind badge, and its title.
-func rowTitle(w *apiv1.WorkItem, depth int) string {
-	return strings.Repeat("  ", depth) + "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle()
+// rowTitle is a tree row's cell text: its kind badge and its title. The INDENT
+// is deliberately not baked in here — the row now carries its Depth and the
+// list pane draws the indent (and the +/- toggle), so padding the title as
+// well would double it.
+func rowTitle(w *apiv1.WorkItem) string {
+	return "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle()
 }
 
 // treeRows walks the real parent links (WorkItem.parent_id) depth-first from
@@ -101,7 +103,17 @@ func treeRows(items []*apiv1.WorkItem) []kit2.Item {
 		kids := byParent[parent]
 		sortSiblings(kids)
 		for _, w := range kids {
-			out = append(out, kit2.Item{ID: w.GetId(), Title: rowTitle(w, depth), Meta: workItemMeta(w)})
+			// The tree metadata is what makes the pane a REAL tree: Depth
+			// indents the row, Parent lets a collapse hide the subtree, and
+			// HasChildren decides whether the row draws a +/- toggle.
+			out = append(out, kit2.Item{
+				ID:          w.GetId(),
+				Title:       rowTitle(w),
+				Meta:        workItemMeta(w),
+				Depth:       depth,
+				Parent:      parent,
+				HasChildren: len(byParent[w.GetId()]) > 0,
+			})
 			walk(w.GetId(), depth+1)
 		}
 	}

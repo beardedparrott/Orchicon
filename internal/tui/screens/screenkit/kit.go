@@ -23,6 +23,13 @@ type Item struct {
 	ID    string
 	Title string
 	Meta  string // dim right-hand context, e.g. status or timestamp
+
+	// Tree metadata (optional — only a tree view sets these). The list pane
+	// draws the indent and the +/- collapse affordance from them, so a tree
+	// row's Title must NOT pre-indent itself.
+	Depth       int    // indent level (0 = root)
+	Parent      string // parent row's ID ("" = root)
+	HasChildren bool   // a parent: draws a toggle and can collapse
 }
 
 // Field is one key-value row in the detail pane.

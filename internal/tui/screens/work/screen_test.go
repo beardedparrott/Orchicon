@@ -667,10 +667,19 @@ func TestWorkItemCreateFromForm(t *testing.T) {
 		req.GetBudgets() != `{"tokens":100000}` || !req.GetAutoStartWorkflow() {
 		t.Fatalf("create request lost mutable fields: %+v", req)
 	}
-	// The new item reconciles into the tree (nested one level under its parent).
+	// The new item reconciles into the tree, nested one level under its parent.
+	// The nesting is the row's DEPTH now (the pane draws the indent), not
+	// whitespace baked into the title.
 	load(t, m, srcWorkItems)
-	if !hasTitle(itemsOf(m, srcWorkItems), "  [subtask] Retry the sweeper") {
-		t.Fatalf("created item must render nested under its parent: %v", titles(itemsOf(m, srcWorkItems)))
+	rows := itemsOf(m, srcWorkItems)
+	depth := -1
+	for _, r := range rows {
+		if strings.HasSuffix(r.Title, "Retry the sweeper") {
+			depth = r.Depth
+		}
+	}
+	if depth != 1 {
+		t.Fatalf("created item must nest one level under its parent: depth=%d rows=%v", depth, titles(rows))
 	}
 }
 
@@ -776,14 +785,36 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	load(t, m, srcWorkItems)
 
 	got := titles(itemsOf(m, srcWorkItems))
+	// The titles are FLUSH (no baked-in indent): the hierarchy now travels on
+	// the row itself, and the list pane draws the indent so it cannot be
+	// applied twice.
 	want := []string{
 		"[epic] Epic E",
-		"  [feature] Feature F",
-		"    [task] Task T",
-		"      [subtask] Subtask S",
+		"[feature] Feature F",
+		"[task] Task T",
+		"[subtask] Subtask S",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("tree rows = %v\nwant %v", got, want)
+	}
+	// The REAL hierarchy is the row's Depth (epic → feature → task → subtask).
+	rows := itemsOf(m, srcWorkItems)
+	wantDepths := []int{0, 1, 2, 3}
+	if len(rows) != len(wantDepths) {
+		t.Fatalf("tree rows = %d, want %d", len(rows), len(wantDepths))
+	}
+	for i, r := range rows {
+		if r.Depth != wantDepths[i] {
+			t.Fatalf("row %d (%q) depth = %d, want %d", i, r.Title, r.Depth, wantDepths[i])
+		}
+	}
+	// Only parents carry a collapse toggle; the epic is a root parent and the
+	// subtask is the leaf.
+	if rows[0].Parent != "" || !rows[0].HasChildren {
+		t.Fatalf("the epic must be a root parent: %+v", rows[0])
+	}
+	if rows[3].HasChildren {
+		t.Fatalf("the subtask is a leaf and must not draw a toggle: %+v", rows[3])
 	}
 	// Kind badges + state pills come from the real fields.
 	if meta := metaOf(itemsOf(m, srcWorkItems), "wi-task"); !strings.HasPrefix(meta, "running") {
@@ -903,12 +934,20 @@ func TestReorderChildrenPersists(t *testing.T) {
 	if strings.Join(req.GetChildIds(), ",") != "wi-b,wi-a,wi-c" {
 		t.Fatalf("reorder child_ids = %v, want wi-b,wi-a,wi-c", req.GetChildIds())
 	}
-	// The new sequence persisted: the tree now renders it.
+	// The new sequence persisted: the tree now renders it. Titles are flush
+	// and the nesting is the row's Depth, so every child of the epic sits at
+	// depth 1.
 	load(t, m, srcWorkItems)
-	got := titles(itemsOf(m, srcWorkItems))
-	want := []string{"[epic] Epic", "  [task] B", "  [task] A", "  [task] C"}
+	rows := itemsOf(m, srcWorkItems)
+	got := titles(rows)
+	want := []string{"[epic] Epic", "[task] B", "[task] A", "[task] C"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("tree after reorder = %v\nwant %v", got, want)
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i].Depth != 1 {
+			t.Fatalf("row %d (%q) must nest one level under the epic: depth=%d", i, rows[i].Title, rows[i].Depth)
+		}
 	}
 	if _, ok := p.items["wi-c"]; !ok {
 		t.Fatal("reorder must touch only the listed siblings")

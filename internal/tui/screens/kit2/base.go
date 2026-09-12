@@ -390,7 +390,15 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			if msg.append {
 				rows := make([]Row, 0, len(msg.items))
 				for _, it := range msg.items {
-					rows = append(rows, Row{ID: it.ID, Cells: []string{it.Title}, Meta: it.Meta})
+					rows = append(rows, Row{
+						ID:     it.ID,
+						Cells:  []string{it.Title},
+						Meta:   it.Meta,
+						Depth:  it.Depth,
+						Parent: it.Parent,
+						Expand: it.HasChildren,
+						Open:   true,
+					})
 				}
 				s.table.AppendRows(rows, msg.next)
 			} else {
@@ -526,6 +534,15 @@ func (b *Base) setFocusForPane() {
 func (b *Base) curTable() *Table {
 	if b.active < 0 || b.active >= len(b.sources) {
 		return &Table{}
+	}
+	return b.sources[b.active].table
+}
+
+// ActiveTable exposes the focused source's table to the owning screen (the
+// Work screen's collapse/expand-all gesture reaches the tree through it).
+func (b *Base) ActiveTable() *Table {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return nil
 	}
 	return b.sources[b.active].table
 }
@@ -899,7 +916,16 @@ func (b *Base) SourcesForTest() []screenkit.TestSource {
 			if len(r.Cells) > 0 {
 				title = r.Cells[0]
 			}
-			items = append(items, screenkit.Item{ID: r.ID, Title: title, Meta: r.Meta})
+			// Carry the tree metadata back too, so a test reading the source
+			// sees the same tree shape the pane draws.
+			items = append(items, screenkit.Item{
+				ID:          r.ID,
+				Title:       title,
+				Meta:        r.Meta,
+				Depth:       r.Depth,
+				Parent:      r.Parent,
+				HasChildren: r.Expand,
+			})
 		}
 		out = append(out, screenkit.TestSource{Name: s.name, Fetch: s.fetch, Items: items})
 	}

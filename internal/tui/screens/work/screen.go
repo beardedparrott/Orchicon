@@ -15,6 +15,7 @@ package work
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -637,6 +638,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.switchView(viewArchive), true
 		}
+	case "O":
+		// The OVERALL collapse/expand toggle ('o' is the single-node one,
+		// handled by the table itself). Tree only — Board/Archive are flat.
+		if src == srcWorkItems && m.ViewMode() == viewTree {
+			return m.toggleAllTreeNodes(), true
+		}
 	case "J":
 		if src == srcWorkItems && m.ViewMode() != viewBoard {
 			return m.reorderChildren(1), true
@@ -706,6 +713,24 @@ func (m *Model) refreshActionBar() {
 	m.Base.Bar = m.bar
 }
 
+// toggleAllTreeNodes flips every node of the work-item Tree at once — the
+// operator's "overall collapse and expand". A no-op on a flat list (no parents)
+// and on Board/Archive, which have no tree.
+func (m *Model) toggleAllTreeNodes() tea.Cmd {
+	t := m.Base.ActiveTable()
+	if t == nil || t.ExpandableCount() == 0 {
+		return nil
+	}
+	open := !t.AllExpanded()
+	n := t.ExpandAll(open)
+	if open {
+		m.notice = fmt.Sprintf("expanded %d node(s)", n)
+	} else {
+		m.notice = fmt.Sprintf("collapsed %d node(s)", n)
+	}
+	return nil
+}
+
 // HintLine is the screen's key cheat-sheet.
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
@@ -714,7 +739,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · e: edit · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/B/Z: tree/board/archive")
+		return theme.HintText.Render("n: new · e: edit · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/B/Z: tree/board/archive · o: collapse/expand · O: all")
 	}
 }
 
