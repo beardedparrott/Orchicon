@@ -69,7 +69,7 @@ func TestAskUsageSinkAttributesToConversation(t *testing.T) {
 			return nil
 		},
 	}
-	sink := b.askUsageSink("tnt_dev", "conv-1", "orchicon/deepseek/deepseek-flash", "deepseek", "deepseek-flash")
+	sink := b.askUsageSink("tnt_dev", "conv-1", "orchicon-ask:conv-1", "orchicon/deepseek/deepseek-flash", "deepseek", "deepseek-flash")
 	if sink == nil {
 		t.Fatal("a wired recorder must produce a sink")
 	}
@@ -108,7 +108,7 @@ func TestAskUsageSinkAttributesToConversation(t *testing.T) {
 // and a genuinely empty round is not a zero-cost sample.
 func TestAskUsageSinkNilRecorderAndEmptyUsage(t *testing.T) {
 	b := &NativeBridge{log: testLogger()}
-	if s := b.askUsageSink("t", "c", "orchicon/x/y", "p", "m"); s != nil {
+	if s := b.askUsageSink("t", "c", "s", "orchicon/x/y", "p", "m"); s != nil {
 		t.Error("a nil recorder must yield a nil sink (no usage recorded)")
 	}
 
@@ -117,12 +117,12 @@ func TestAskUsageSinkNilRecorderAndEmptyUsage(t *testing.T) {
 		n++
 		return nil
 	}}
-	b2.askUsageSink("t", "c", "orchicon/x/y", "p", "m")(context.Background(), Usage{})
+	b2.askUsageSink("t", "c", "s", "orchicon/x/y", "p", "m")(context.Background(), Usage{})
 	if n != 0 {
 		t.Error("an empty round must not be recorded as a zero-cost sample")
 	}
 	// A cache-only round IS real usage and must be kept (parity with emitTurnUsage).
-	b2.askUsageSink("t", "c", "orchicon/x/y", "p", "m")(context.Background(), Usage{CacheReadTokens: 123})
+	b2.askUsageSink("t", "c", "s", "orchicon/x/y", "p", "m")(context.Background(), Usage{CacheReadTokens: 123})
 	if n != 1 {
 		t.Errorf("a cache-only round recorded %d samples, want 1 (it is real usage)", n)
 	}

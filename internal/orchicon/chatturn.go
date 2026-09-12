@@ -229,6 +229,12 @@ func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationI
 	}
 	b.mu.Lock()
 	delete(b.chatHistory, sid)
+	// The pressure bookkeeping describes a conversation that no longer exists:
+	// drop it with the history so a deleted conversation leaves no memory behind
+	// (nor a stale measurement that could fire a gate on a NEW conversation that
+	// happened to reuse the session id).
+	delete(b.askPromptTokens, sid)
+	delete(b.askWindowTokens, sid)
 	dir := b.askHistoryDir
 	b.mu.Unlock()
 	if dir == "" {
@@ -353,6 +359,16 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 		return fmt.Errorf("orchicon bridge: resolve Ask provider: %w", err)
 	}
 
+	// PROACTIVE CONTEXT GATE (askpressure.go): when the conversation's measured
+	// prompt size has crossed the configured fraction of this model's live
+	// context window, compact BEFORE dispatching — so the turn never reaches the
+	// provider over-limit in the first place. Compaction rewrites the history
+	// this turn is about to send, so it must run before the snapshot below.
+	// Best-effort: a failure or a disarmed gate (no live window hint, no
+	// measurement yet) leaves the turn untouched, and the reactive path
+	// (askreduce.go) remains the backstop.
+	b.maybeCompactForPressure(ctx, prov, conversationID, sessionID, modelRef, model)
+
 	// Append the user message to the session's replayable history (committed
 	// under the lock so a concurrent turn never double-appends). The
 	// content carries the text plus any attachments (images as data URLs,
@@ -435,7 +451,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	}
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, modelRef, providerID, model))
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -606,7 +622,7 @@ func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream T
 // sink was wired only on the worker-execution path (bridge.go, emitTurnUsage),
 // which is bound to an execution row. That left the Ask path with no measurable
 // prompt size at all.
-func (b *NativeBridge) askUsageSink(tenantID, conversationID, modelRef, provider, model string) func(context.Context, Usage) {
+func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRef, provider, model string) func(context.Context, Usage) {
 	if b.usageRecorder == nil {
 		return nil
 	}
@@ -617,6 +633,10 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, modelRef, provider
 			u.OutputTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == 0 {
 			return
 		}
+		// Remember the REAL prompt size: this is the numerator of the proactive
+		// context-pressure gate (askpressure.go), so it must be the provider's
+		// own number and never a character-count estimate.
+		b.recordAskPromptTokens(sessionID, u.InputTokens)
 		// context.WithoutCancel: this is real usage that has already been paid
 		// for, so a turn that ends (or is aborted) mid-record must not lose it.
 		_ = b.usageRecorder(context.WithoutCancel(ctx), scheduler.UsageRecord{

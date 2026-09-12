@@ -102,6 +102,15 @@ type NativeBridge struct {
 	// history is lost on a server restart while the DB transcript stays
 	// the durable record). Guarded by mu.
 	askHistoryDir string
+	// askPromptTokens is the newest MEASURED prompt size per Ask session
+	// (sessionID → input tokens from the provider's own usage report). It is
+	// the numerator of the proactive context-pressure gate and is never
+	// estimated. Guarded by mu; dropped by PurgeConversationHistory.
+	askPromptTokens map[string]int64
+	// askWindowTokens caches the resolved context window per Ask session
+	// (sessionID → tokens, 0 = resolved-but-unknown). Resolved once from the
+	// bound provider's ListModels, mirroring the execution path. Guarded by mu.
+	askWindowTokens map[string]int64
 }
 
 // liveSession is the bridge's handle on one running session.
