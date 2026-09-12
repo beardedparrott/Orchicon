@@ -146,6 +146,10 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("adapters", "Adapters", m.fetchAdapters)
 	m.AddSource("settings", "Settings", m.fetchSettings)
+	// Themes is a Control surface (Settings → Themes in the GUI sense): the TUI
+	// owns its palette set, and this is where the operator picks one. Selecting
+	// a row and pressing the action key applies + persists it.
+	m.AddSource("themes", "Themes", m.fetchThemes)
 	m.AddSource("admin", "Admin", m.fetchAdmin)
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses(nil)
@@ -530,6 +534,36 @@ func (m *Model) fetchAdapters(ctx context.Context, pageToken string) ([]kit2.Ite
 	return items, "", nil
 }
 
+// fetchThemes lists the TUI's OWN palette set (internal/tui/theme). Themes are
+// a TUI concern: the palettes are chosen and contrast-validated for terminals
+// rather than ported from the GUI's CSS tokens.
+func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
+	active := theme.Active().Name
+	names := theme.Names()
+	items := make([]kit2.Item, 0, len(names))
+	for _, name := range names {
+		meta := "available"
+		if name == active {
+			meta = "active"
+		}
+		items = append(items, kit2.Item{ID: name, Title: name, Meta: meta})
+	}
+	return items, "", nil
+}
+
+// applyTheme switches the TUI palette through the shell (the shell owns the
+// profile and the construction-captured styles), then reconciles this pane so
+// the active marker moves.
+func (m *Model) applyTheme(name string) {
+	type themer interface{ SetTheme(string) bool }
+	if sh, ok := m.Shell().(themer); ok {
+		sh.SetTheme(name)
+	} else if !theme.Use(name) {
+		return
+	}
+	m.Refresh("themes")
+}
+
 func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
 	if err != nil {
@@ -769,6 +803,24 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "actions", Value: "t: enable/disable (local dispatch filter)"},
 		}, body, nil
 
+	case "themes":
+		// Themes is a TUI-owned surface: no RPC, the palette set lives in
+		// internal/tui/theme. The detail names the active theme and the action
+		// that applies the selected one.
+		active := theme.Active().Name
+		state := "available"
+		if id == active {
+			state = "ACTIVE"
+		}
+		fields := []screenkit.Field{
+			{Key: "theme", Value: id},
+			{Key: "state", Value: state},
+			{Key: "palettes", Value: strings.Join(theme.Names(), ", ")},
+			{Key: "apply", Value: "a: apply & save (persists to the profile)"},
+		}
+		body := "TUI palettes are validated for terminal contrast — the borders carry each panel's title, so a browser hairline would render them invisible."
+		return "Theme: " + id, fields, body, nil
+
 	case "settings":
 		s := m.settings
 		if s == nil {
@@ -854,6 +906,17 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		return nil
 	}
 	switch m.ActiveSourceName() {
+	case "themes":
+		id := item.ID
+		if id == theme.Active().Name {
+			return nil // already active: nothing to apply
+		}
+		return []kit2.Action{{
+			Label: "apply", Key: "a", Source: "themes",
+			Apply: func() { m.applyTheme(id) },
+			// No RPC: applying a palette is local + a profile write.
+			Do: func(ctx context.Context) error { return nil },
+		}}
 	case "webhooks":
 		id, name := item.ID, item.Title
 		enabled := true
@@ -1698,6 +1761,8 @@ func (m *Model) HintLine() string {
 		hint = "t: enable/disable (local dispatch filter) · ←/→: pane · r: refresh"
 	case "settings":
 		hint = "e: edit & save (model refs validated before submit)"
+	case "themes":
+		hint = "a: apply the selected palette & save (TUI-owned palettes)"
 	case "admin":
 		hint = "admin-gated — the first row reports the live permission state"
 	}

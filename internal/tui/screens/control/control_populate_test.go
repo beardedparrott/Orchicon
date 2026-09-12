@@ -43,7 +43,7 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// Control's own surfaces only — Workers moved to the Execution tab and
 	// Runtime Images to the Work tab (GUI nav-config group placement).
 	want := map[string]bool{
-		"secrets": false, "mcp": false,
+		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 	}

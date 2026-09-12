@@ -428,13 +428,25 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 		return nil
 	}
 	name := args[0]
-	if !theme.Use(name) {
+	if !m.SetTheme(name) {
 		known := strings.Join(m.themes, ", ")
 		m.dock.SetError(fmt.Sprintf("unknown theme %q — available: %s", name, known))
 		return nil
 	}
-	// The composer captures textarea/cursor styles at construction, so a theme
-	// switch must re-pin them (otherwise the box keeps the old palette).
+	m.dock.SetNotice("theme: " + name)
+	return nil
+}
+
+// SetTheme applies a TUI palette, re-pins the styles captured at construction,
+// and persists the choice to the profile. Reports false for an unknown name
+// (nothing changes). This is the ONE path for switching themes, shared by the
+// /theme command and the Control screen's Themes pane.
+func (m *App) SetTheme(name string) bool {
+	if !theme.Use(name) {
+		return false
+	}
+	// The composer captures textarea/cursor styles at construction, so a switch
+	// must re-pin them (otherwise the box keeps the old palette).
 	m.dock.ApplyTheme()
 	if m.profile != nil {
 		m.profile.Theme = name
@@ -443,12 +455,15 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 				if p := cfg.Profiles[cfg.Active]; p != nil {
 					p.Theme = name
 					_ = config.Save(path, cfg)
-				} else if cfg.Profiles != nil {
-					_ = cfg
 				}
 			}
 		}
 	}
-	m.dock.SetNotice("theme: " + name)
-	return nil
+	// Reconcile any open Themes pane so its active marker moves.
+	if s := m.screens[TabControl]; s != nil {
+		if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {
+			m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, r.Refresh("themes"))
+		}
+	}
+	return true
 }

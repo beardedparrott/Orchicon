@@ -64,7 +64,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) mutateResult {
 func TestControlRegistersEverySource(t *testing.T) {
 	m := New(nil, nil)
 	want := map[string]bool{
-		"secrets": false, "mcp": false,
+		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 	}
