@@ -91,6 +91,12 @@ type Theme struct {
 	// Accents (from --primary and the --nav-active-from/to gradient).
 	Accent, AccentCyan, AccentIndigo lipgloss.Color
 
+	// Select is the SELECTION FILL behind white text (selected list rows, the
+	// active tab pill, the file-selection chip). It is deliberately separate
+	// from the accents: an accent may be vivid because it draws thin strokes,
+	// whereas a fill must be dark enough for white to read on it.
+	Select lipgloss.Color
+
 	// Status.
 	OK, Warn, Err, Busy lipgloss.Color
 }
@@ -116,6 +122,7 @@ var Dark = Theme{
 	Accent:       lipgloss.Color(hsl(199, 89, 52)),
 	AccentCyan:   lipgloss.Color(hsl(189, 94, 43)),
 	AccentIndigo: lipgloss.Color(hsl(239, 84, 67)),
+	Select:       lipgloss.Color(hsl(189, 94, 34)),
 	OK:           lipgloss.Color("#34d399"),
 	Warn:         lipgloss.Color("#fbbf24"),
 	Err:          lipgloss.Color("#fb7185"),
@@ -149,6 +156,7 @@ var Light = Theme{
 	Accent:       lipgloss.Color(hsl(199, 89, 36)),
 	AccentCyan:   lipgloss.Color(hsl(188, 86, 32)),
 	AccentIndigo: lipgloss.Color(hsl(234, 89, 60)),
+	Select:       lipgloss.Color(hsl(188, 86, 31)),
 	OK:           lipgloss.Color("#059669"),
 	Warn:         lipgloss.Color("#d97706"),
 	Err:          lipgloss.Color("#e11d48"),
@@ -172,6 +180,7 @@ var GruvboxDark = Theme{
 	Accent:       lipgloss.Color("#83a598"),
 	AccentCyan:   lipgloss.Color("#8ec07c"),
 	AccentIndigo: lipgloss.Color("#d3869b"),
+	Select:       lipgloss.Color("#427b58"),
 	OK:           lipgloss.Color("#b8bb26"),
 	Warn:         lipgloss.Color("#fabd2f"),
 	Err:          lipgloss.Color("#fb4934"),
@@ -192,6 +201,7 @@ var GruvboxLight = Theme{
 	Accent:       lipgloss.Color("#076678"),
 	AccentCyan:   lipgloss.Color("#427b58"),
 	AccentIndigo: lipgloss.Color("#8f3f71"),
+	Select:       lipgloss.Color("#427b58"),
 	OK:           lipgloss.Color("#79740e"),
 	Warn:         lipgloss.Color("#b57614"),
 	Err:          lipgloss.Color("#9d0006"),
@@ -202,11 +212,20 @@ var GruvboxLight = Theme{
 // TUI-OWNED: these palettes are chosen for terminal contrast and are NOT a
 // copy of the GUI's CSS tokens (bar dark/light, which are ported and then
 // adjusted where a browser hairline would vanish on a terminal — see Light).
-var registry = []*Theme{
-	&Dark,
-	&Light,
-	&GruvboxDark,
-	&GruvboxLight,
+//
+// "dark" and "light" are the long-standing base names (persisted in operator
+// configs, so they are never renamed); the derived families from
+// theme_palettes.go follow.
+var registry = buildRegistry()
+
+// buildRegistry assembles the base palettes plus the derived families, in a
+// stable listing order (bases first, then dark families, then light).
+func buildRegistry() []*Theme {
+	out := []*Theme{&Dark, &Light, &GruvboxDark, &GruvboxLight}
+	for _, t := range derivedThemes {
+		out = append(out, t)
+	}
+	return out
 }
 
 var active = &Dark
@@ -237,6 +256,9 @@ func Use(name string) bool {
 
 // Lookup resolves a theme name (nil when unknown).
 func Lookup(name string) *Theme {
+	if t := lookupDerived(name); t != nil {
+		return t
+	}
 	for _, t := range registry {
 		if t.Name == name {
 			return t
@@ -360,7 +382,7 @@ func buildStyles(t Theme) {
 	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
 
 	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
-	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentIndigo).Padding(0, 1)
+	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
 	TabBar = lipgloss.NewStyle().Background(t.Bg).Padding(0, 1)
 	TabBarUnderline = lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg)
 
@@ -371,14 +393,14 @@ func buildStyles(t Theme) {
 		Foreground(t.Text)
 	MenuTitle = lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Background(t.Surface)
 	MenuRow = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface)
-	MenuRowSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentCyan)
+	MenuRowSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 
 	Footer = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	FooterVersionDrift = lipgloss.NewStyle().Foreground(t.Warn).Bold(true)
 
 	ListTitle = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
 	ListItem = lipgloss.NewStyle().Foreground(t.Text)
-	ListItemSelected = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentCyan)
+	ListItemSelected = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 	ListMeta = lipgloss.NewStyle().Foreground(t.TextDim)
 	DetailKey = lipgloss.NewStyle().Foreground(t.TextDim)
 	DetailValue = lipgloss.NewStyle().Foreground(t.Text)
@@ -416,9 +438,9 @@ func buildStyles(t Theme) {
 		Background(t.Bg).
 		Border(lipgloss.RoundedBorder(), false, false, false, true).
 		BorderForeground(t.Border)
-	DiffTabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentIndigo).Padding(0, 1)
+	DiffTabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
 	DiffTabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
-	DiffFileSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.AccentCyan)
+	DiffFileSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 	DiffClose = lipgloss.NewStyle().Foreground(t.TextFaint).Bold(true)
 	DiffBadgeAdd = lipgloss.NewStyle().Foreground(t.OK)
 	DiffBadgeDel = lipgloss.NewStyle().Foreground(t.Err)

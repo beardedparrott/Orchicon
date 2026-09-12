@@ -131,3 +131,48 @@ func TestRegistryIsUsable(t *testing.T) {
 	}
 	Use(DefaultName)
 }
+
+// The SELECTION FILL carries WHITE text (selected rows, the active tab pill,
+// the file-selection chip). A fill that is too light renders the selection as a
+// blank block — and this is exactly what the extended palette set risked, since
+// each family's fill lightness comes from its accent.
+func TestSelectionFillCarriesWhiteText(t *testing.T) {
+	const white = "#f8fafc"
+	for _, name := range Names() {
+		Use(name)
+		th := Active()
+		if r := contrastRatio(white, string(th.Select)); r < 3.0 {
+			t.Errorf("%s: white on the selection fill (%s) is %.2f:1 — a selected row reads as a blank block", name, th.Select, r)
+		}
+		// The fill must also be visible against the pane background.
+		if r := contrastRatio(string(th.Select), string(th.Bg)); r < 1.5 {
+			t.Errorf("%s: the selection fill (%s) is indistinguishable from the background", name, th.Select)
+		}
+	}
+	Use(DefaultName)
+}
+
+// The palette set must cover the requested families in both modes, so the
+// operator can actually choose greens, blues, purples, greys, etc.
+func TestPaletteFamiliesPresent(t *testing.T) {
+	have := map[string]bool{}
+	for _, n := range Names() {
+		have[n] = true
+	}
+	want := []string{
+		// dark families (greens, blues, purples, blacks, greys…)
+		"obsidian", "forest", "ocean", "violet", "ember", "amber", "rose", "teal", "crimson", "slate",
+		// light families (light green, light purple, light grey…)
+		"lumen", "forest-light", "ocean-light", "violet-light", "ember-light", "amber-light", "rose-light", "teal-light", "slate-light",
+		// the ported pair that existing configs reference
+		"dark", "light", "gruvbox-dark", "gruvbox-light",
+	}
+	for _, n := range want {
+		if !have[n] {
+			t.Errorf("palette %q is missing from the registry", n)
+		}
+	}
+	if len(Names()) < 20 {
+		t.Errorf("registry has %d palettes, want the full family set (>= 20)", len(Names()))
+	}
+}
