@@ -543,7 +543,7 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 			return nil
 		}
 		s := b.sources[p]
-		row := msg.Y - 2 // line 0 title, line 1 column header
+		row := msg.Y - b.tableTopRow()
 		if row >= 0 && s.table.Click(row) {
 			b.active = p
 			b.focusD = false
@@ -555,23 +555,45 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 }
 
 // mouseRegion maps column x to a pane index (or the detail).
+// Shell chrome above the screen body: the centered tab bar (row 0), its
+// underline rule (row 1) and the one-row gap (row 2).
+const shellChromeRows = 3
+
+// tableTopRow returns the number of terminal rows above the FIRST data row of
+// a source pane: the shell chrome, the panel's top border (the title is
+// embedded in it), and the table's column-header row when it has columns.
+//
+// This is the correction for the operator's "if I click on one conversation it
+// might select one four or five rows down": the old code subtracted a fixed 2
+// (assuming a bare list at the top of the body), so every click selected a row
+// several positions away from the cursor — on every screen.
+func (b *Base) tableTopRow() int {
+	head := 0
+	if b.active >= 0 && b.active < len(b.sources) && len(b.sources[b.active].table.Columns) > 0 {
+		head = 1
+	}
+	return shellChromeRows + 1 + head
+}
+
+// mouseRegion maps a terminal column to a source index, or to the detail pane.
+//
+// It MUST describe the layout View() actually renders: two panes (the focused
+// source, then the detail) with a one-cell gap. It previously used the widths
+// of the old ALL-panes grid, so the X hit-test was wrong on every screen with
+// more than one source — clicking the detail pane mapped to a source that was
+// not on screen, which is why clicking one thing selected another.
 func (b *Base) mouseRegion(x int) (int, bool) {
 	if len(b.sources) == 0 || b.width < 1 {
 		return 0, true
 	}
-	ws := b.regionWidths()
-	col := 0
-	for i, w := range ws {
-		end := col + w
-		if x < end {
-			if i == len(ws)-1 {
-				return -1, true
-			}
-			return i, false
-		}
-		col = end + 1 // gap
+	ws := SplitWidths(b.width, 2, 1)
+	if x < ws[0] {
+		return b.active, false // the focused source pane
 	}
-	return -1, true
+	if x < ws[0]+1 {
+		return -1, false // the gap between the panes
+	}
+	return -1, true // the detail pane
 }
 
 func (b *Base) loadDetail() tea.Cmd {
