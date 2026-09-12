@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,94 @@ type fakeGateway struct {
 
 func (f *fakeGateway) GetUsage(context.Context, *connect.Request[apiv1.GetUsageRequest]) (*connect.Response[apiv1.GetUsageResponse], error) {
 	return connect.NewResponse(&apiv1.GetUsageResponse{Records: f.records}), nil
+}
+
+// GetCost stands in for the backend's server-side roll-up: the grand total plus
+// one summary per group at the requested level, derived from the same records.
+func (f *fakeGateway) GetCost(_ context.Context, req *connect.Request[apiv1.GetCostRequest]) (*connect.Response[apiv1.GetCostResponse], error) {
+	total := costTotal(f.records)
+	var sums []*apiv1.CostSummary
+	switch req.Msg.GetRollup() {
+	case apiv1.UsageRollup_USAGE_ROLLUP_MODEL:
+		sums = costGroups(f.records, "model")
+	case apiv1.UsageRollup_USAGE_ROLLUP_PROJECT:
+		sums = costGroups(f.records, "project")
+	}
+	return connect.NewResponse(&apiv1.GetCostResponse{Summaries: sums, Total: total}), nil
+}
+
+// GetWorkflowCosts returns one aggregate per worker (a stand-in for the
+// per-workflow view; the screen only renders the numbers it is given).
+func (f *fakeGateway) GetWorkflowCosts(context.Context, *connect.Request[apiv1.GetWorkflowCostsRequest]) (*connect.Response[apiv1.GetWorkflowCostsResponse], error) {
+	byName := map[string]*apiv1.WorkflowCostAggregate{}
+	var order []string
+	for _, r := range f.records {
+		w, ok := byName[r.GetWorkerName()]
+		if !ok {
+			w = &apiv1.WorkflowCostAggregate{WorkflowId: "wf-" + r.GetWorkerName(), WorkflowName: r.GetWorkerName()}
+			byName[r.GetWorkerName()] = w
+			order = append(order, r.GetWorkerName())
+		}
+		w.TotalCostUsd += r.GetCostUsd()
+		w.TotalTokens += r.GetTotalTokens()
+		w.RunCount++
+	}
+	out := make([]*apiv1.WorkflowCostAggregate, 0, len(order))
+	for _, n := range order {
+		out = append(out, byName[n])
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowCostsResponse{Workflows: out}), nil
+}
+
+// costTotal sums the window's usage into one summary.
+func costTotal(records []*apiv1.UsageRecord) *apiv1.CostSummary {
+	s := &apiv1.CostSummary{GroupBy: "tenant", GroupKey: "tenant"}
+	for _, r := range records {
+		s.TotalTokens += r.GetTotalTokens()
+		s.PromptTokens += r.GetPromptTokens()
+		s.CompletionTokens += r.GetCompletionTokens()
+		s.CacheReadTokens += r.GetCacheReadTokens()
+		s.CacheWriteTokens += r.GetCacheWriteTokens()
+		s.CostUsd += r.GetCostUsd()
+		s.RecordCount++
+		s.ExecutionCount++
+	}
+	return s
+}
+
+// costGroups rolls the records up by model or project.
+func costGroups(records []*apiv1.UsageRecord, level string) []*apiv1.CostSummary {
+	key := func(r *apiv1.UsageRecord) string {
+		if level == "model" {
+			return r.GetModel()
+		}
+		if r.GetProjectId() == "" {
+			return "(unassigned)"
+		}
+		return r.GetProjectId()
+	}
+	seen := map[string]int{}
+	var out []*apiv1.CostSummary
+	for _, r := range records {
+		k := key(r)
+		i, ok := seen[k]
+		if !ok {
+			out = append(out, &apiv1.CostSummary{GroupBy: level, GroupKey: k, DisplayName: k})
+			i = len(out) - 1
+			seen[k] = i
+		}
+		s := out[i]
+		s.TotalTokens += r.GetTotalTokens()
+		s.PromptTokens += r.GetPromptTokens()
+		s.CompletionTokens += r.GetCompletionTokens()
+		s.CacheReadTokens += r.GetCacheReadTokens()
+		s.CacheWriteTokens += r.GetCacheWriteTokens()
+		s.CostUsd += r.GetCostUsd()
+		s.RecordCount++
+		s.ExecutionCount++
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetCostUsd() > out[j].GetCostUsd() })
+	return out
 }
 
 // plane is the disposable mocked Orchicon plane the Overview screen reads.
@@ -190,8 +279,8 @@ func populatedPlane() plane {
 			},
 		}}},
 		gw: &fakeGateway{records: []*apiv1.UsageRecord{
-			{Id: "r1", Provider: "anthropic", Model: "claude-sonnet-4", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUsd: 1.5, WorkerName: "impl"},
-			{Id: "r2", Provider: "openai", Model: "gpt-x", PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30, CostUsd: 0.5, TaskTitle: "fix bug"},
+			{Id: "r1", ProjectId: "proj-a", Provider: "anthropic", Model: "claude-sonnet-4", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUsd: 1.5, WorkerName: "impl"},
+			{Id: "r2", ProjectId: "proj-b", Provider: "openai", Model: "gpt-x", PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30, CostUsd: 0.5, TaskTitle: "fix bug"},
 		}},
 	}
 }
@@ -283,19 +372,32 @@ func TestTelemetryLiveStreamDeliversEvents(t *testing.T) {
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
+// The Cost Explorer reads the SERVER-SIDE roll-up (GetCost) at the GUI's
+// drill-down levels: a grand total, per-model and per-project groups, and the
+// per-workflow view. It used to aggregate the first page of raw usage records
+// client-side, which is why its breakdowns did not match the GUI.
 func TestCostExplorerBreakdownAndTotal(t *testing.T) {
 	m := load(t, newModel(t, populatedPlane()))
 	m.SelectSource("cost-explorer")
 	assertContains(t, m.View(),
-		"Total", "$2.00",
-		"By provider · anthropic", "By provider · openai",
-		"By model · claude-sonnet-4", "By model · gpt-x")
+		"TOTAL", "$2.00",
+		"claude-sonnet-4", "gpt-x", // by model
+		"proj-a", "proj-b") // by project
 
+	// The total's detail carries the full breakdown numbers.
 	m = drive(t, m, m.RequestDetail("cost-explorer", "total"))
-	assertContains(t, m.View(), "by provider", "by model", "claude-sonnet-4", "gpt-x", "$2.00")
+	assertContains(t, m.View(),
+		"Cost — total", "cost", "$2.00", "total tokens", "180",
+		"prompt tokens", "120", "completion tokens", "60",
+		"cache read", "cache write", "executions", "records", "window")
 
-	m = drive(t, m, m.RequestDetail("cost-explorer", "provider:anthropic"))
-	assertContains(t, m.View(), "Cost — provider anthropic", "claude-sonnet-4")
+	// A model group's detail names the group and shows its own numbers.
+	m = drive(t, m, m.RequestDetail("cost-explorer", "model:claude-sonnet-4"))
+	assertContains(t, m.View(), "Cost — model claude-sonnet-4", "$1.50", "150")
+
+	// A project group's detail likewise.
+	m = drive(t, m, m.RequestDetail("cost-explorer", "project:proj-b"))
+	assertContains(t, m.View(), "Cost — project proj-b", "$0.50", "30")
 }
 
 func TestUsageRecordsTableAndDetail(t *testing.T) {
@@ -327,4 +429,35 @@ func TestEmptyStatesNameWhyEachPaneIsEmpty(t *testing.T) {
 		}
 		assertContains(t, v, tc.want)
 	}
+}
+
+// The operator's read of Telemetry was "just a bunch of traces". The pane now
+// opens on an at-a-glance SUMMARY row (traces, spans, errored spans, slowest)
+// and each trace row flags its own errored span count.
+func TestTelemetrySummaryAndErrorFlagging(t *testing.T) {
+	m := load(t, newModel(t, populatedPlane()))
+	m.SelectSource("telemetry")
+	assertContains(t, m.View(),
+		"SUMMARY", // the aggregate row, first
+		"1 traces · 2 spans",
+		"1 errored",
+		"gateway.anthropic.request", // the trace row
+		"1 err")                     // …flagged because it carries an error span
+
+	// The summary's detail reports the numbers, not a trace.
+	m = drive(t, m, m.RequestDetail("telemetry", "summary"))
+	assertContains(t, m.View(),
+		"Telemetry — summary", "traces", "spans", "errored spans", "slowest trace")
+}
+
+// An empty window must NOT show a 0/0 summary row: the pane's empty state names
+// WHY it is empty, and a summary would suppress that explanation.
+func TestTelemetryEmptyWindowKeepsItsExplanation(t *testing.T) {
+	m := load(t, newModel(t, emptyPlane()))
+	m.SelectSource("telemetry")
+	v := m.View()
+	if strings.Contains(v, "SUMMARY") {
+		t.Fatalf("an empty window must not render a summary row:\n%s", v)
+	}
+	assertContains(t, v, "no traces in the window")
 }

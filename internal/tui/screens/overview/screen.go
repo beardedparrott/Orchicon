@@ -18,6 +18,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -278,23 +279,96 @@ func (m *Model) fetchTraces(ctx context.Context, pageToken string) ([]kit2.Item,
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]kit2.Item, 0, len(resp.Msg.GetTraces()))
-	for _, tr := range resp.Msg.GetTraces() {
+	traces := resp.Msg.GetTraces()
+	if len(traces) == 0 {
+		// No summary row for an empty window: the pane's empty state names WHY
+		// (backend unreachable / not configured). A "0 traces" summary would
+		// suppress that explanation and say nothing useful.
+		return nil, resp.Msg.GetNextPageToken(), nil
+	}
+
+	// A summary row FIRST, so the pane opens on the at-a-glance numbers rather
+	// than "just a bunch of traces" (the operator's read of this screen): how
+	// many traces/spans, how many errored, and the slowest.
+	totalSpans, errSpans := 0, 0
+	for _, tr := range traces {
+		totalSpans += int(tr.GetSpanCount())
+		for _, sp := range tr.GetSpans() {
+			if sp.GetStatusCode() == 2 {
+				errSpans++
+			}
+		}
+	}
+
+	items := make([]kit2.Item, 0, len(traces)+1)
+	meta := fmt.Sprintf("%d traces · %d spans", len(traces), totalSpans)
+	if errSpans > 0 {
+		meta += fmt.Sprintf(" · %d errored", errSpans)
+	}
+	if resp.Msg.GetDegraded() {
+		meta += " · degraded"
+	}
+	items = append(items, kit2.Item{ID: "summary", Title: "SUMMARY", Meta: meta})
+
+	for _, tr := range traces {
 		title := tr.GetRootSpanName()
 		if title == "" {
 			title = tr.GetTraceId()
 		}
-		meta := fmt.Sprintf("%s · %d spans", fmtDuration(tr.GetDurationUs()), tr.GetSpanCount())
-		if resp.Msg.GetDegraded() {
-			meta += " · degraded"
+		errN := 0
+		for _, sp := range tr.GetSpans() {
+			if sp.GetStatusCode() == 2 {
+				errN++
+			}
 		}
-		items = append(items, kit2.Item{ID: tr.GetTraceId(), Title: title, Meta: meta})
+		tmeta := fmt.Sprintf("%s · %d spans", fmtDuration(tr.GetDurationUs()), tr.GetSpanCount())
+		if errN > 0 {
+			tmeta += fmt.Sprintf(" · %d err", errN)
+		}
+		items = append(items, kit2.Item{ID: tr.GetTraceId(), Title: title, Meta: tmeta})
 	}
 	return items, resp.Msg.GetNextPageToken(), nil
 }
 
 // traceDetail renders one trace: root fields + the span tree as body text.
 func (m *Model) traceDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
+	// The summary row reports the aggregate the pane is really asking about.
+	if id == "summary" {
+		resp, err := m.cl.Telemetry.QueryTraces(ctx, connect.NewRequest(&apiv1.QueryTracesRequest{
+			Query: &apiv1.TelemetryQuery{Limit: 100},
+		}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		traces := resp.Msg.GetTraces()
+		totalSpans, errSpans := 0, 0
+		var slowest *apiv1.Trace
+		for _, tr := range traces {
+			totalSpans += int(tr.GetSpanCount())
+			for _, sp := range tr.GetSpans() {
+				if sp.GetStatusCode() == 2 {
+					errSpans++
+				}
+			}
+			if slowest == nil || tr.GetDurationUs() > slowest.GetDurationUs() {
+				slowest = tr
+			}
+		}
+		fields := []kit2.Field{
+			{Key: "traces", Value: screenkit.FmtInt(len(traces))},
+			{Key: "spans", Value: screenkit.FmtInt(totalSpans)},
+			{Key: "errored spans", Value: screenkit.FmtInt(errSpans)},
+			{Key: "degraded", Value: screenkit.FmtBool(resp.Msg.GetDegraded())},
+		}
+		if slowest != nil {
+			fields = append(fields,
+				kit2.Field{Key: "slowest trace", Value: slowest.GetRootSpanName()},
+				kit2.Field{Key: "slowest", Value: fmtDuration(slowest.GetDurationUs())},
+			)
+		}
+		return "Telemetry — summary", fields, "Select a trace to see its spans.", nil
+	}
+
 	resp, err := m.cl.Telemetry.QueryTraces(ctx, connect.NewRequest(&apiv1.QueryTracesRequest{
 		Query: &apiv1.TelemetryQuery{TraceId: id, Limit: 1},
 	}))
@@ -338,12 +412,249 @@ func (m *Model) traceDetail(ctx context.Context, id string) (string, []kit2.Fiel
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
+// costWindow is the lookback the Cost Explorer reports over.
+const costWindow = 30 * 24 * time.Hour
+
+// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels.
+//
+// The TUI used to aggregate the first page of raw usage records client-side,
+// which is why its breakdowns did not match the GUI — and it silently missed
+// everything past the first page of records. GetCost returns the grand total,
+// per-model and per-project groups, and the next level as children.
 func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, error) {
-	agg, err := m.usageAggregate(ctx)
+	items := []kit2.Item{}
+
+	total, err := m.getCostTotal(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	return agg.items(), "", nil
+	if total != nil {
+		items = append(items, kit2.Item{
+			ID:    "total",
+			Title: "TOTAL",
+			Meta: fmtCost(total.GetCostUsd()) + " · " + fmtTokens(total.GetTotalTokens()) + " tok · " +
+				screenkit.FmtInt(int(total.GetExecutionCount())) + " exec",
+		})
+	}
+
+	for _, lvl := range []struct {
+		rollup apiv1.UsageRollup
+		label  string
+	}{
+		{apiv1.UsageRollup_USAGE_ROLLUP_MODEL, "model"},
+		{apiv1.UsageRollup_USAGE_ROLLUP_PROJECT, "project"},
+	} {
+		sums, err := m.getCostSummaries(ctx, lvl.rollup)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, s := range sums {
+			name := s.GetDisplayName()
+			if name == "" {
+				name = s.GetGroupKey()
+			}
+			items = append(items, kit2.Item{
+				ID:    lvl.label + ":" + s.GetGroupKey(),
+				Title: name,
+				Meta: lvl.label + " · " + fmtCost(s.GetCostUsd()) + " · " +
+					fmtTokens(s.GetTotalTokens()) + " tok",
+			})
+		}
+	}
+
+	// Per-workflow cost (the GUI's workflow cost view; one row per template,
+	// aggregating every run).
+	if wfs, err := m.getWorkflowCosts(ctx); err == nil {
+		for _, w := range wfs {
+			items = append(items, kit2.Item{
+				ID:    "workflow:" + w.GetWorkflowId(),
+				Title: w.GetWorkflowName(),
+				Meta: "workflow · " + fmtCost(w.GetTotalCostUsd()) + " · " +
+					screenkit.FmtInt(int(w.GetRunCount())) + " runs",
+			})
+		}
+	}
+	return items, "", nil
+}
+
+// costWindows is the reporting window (start, end).
+func (m *Model) costWindows() (time.Time, time.Time) {
+	now := time.Now()
+	return now.Add(-costWindow), now
+}
+
+// getCostSummaries returns the roll-up at one drill-down level.
+func (m *Model) getCostSummaries(ctx context.Context, lvl apiv1.UsageRollup) ([]*apiv1.CostSummary, error) {
+	start, end := m.costWindows()
+	resp, err := m.cl.AIGateway.GetCost(ctx, connect.NewRequest(&apiv1.GetCostRequest{
+		TenantId: m.tenantID,
+		Rollup:   lvl,
+		Start:    timestamppb.New(start),
+		End:      timestamppb.New(end),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSummaries(), nil
+}
+
+// getCostTotal returns the grand total for the window.
+func (m *Model) getCostTotal(ctx context.Context) (*apiv1.CostSummary, error) {
+	start, end := m.costWindows()
+	resp, err := m.cl.AIGateway.GetCost(ctx, connect.NewRequest(&apiv1.GetCostRequest{
+		TenantId: m.tenantID,
+		Rollup:   apiv1.UsageRollup_USAGE_ROLLUP_TENANT,
+		Start:    timestamppb.New(start),
+		End:      timestamppb.New(end),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetTotal(), nil
+}
+
+// getWorkflowCosts returns per-workflow aggregates for the window.
+func (m *Model) getWorkflowCosts(ctx context.Context) ([]*apiv1.WorkflowCostAggregate, error) {
+	start, end := m.costWindows()
+	resp, err := m.cl.AIGateway.GetWorkflowCosts(ctx, connect.NewRequest(&apiv1.GetWorkflowCostsRequest{
+		Start: timestamppb.New(start),
+		End:   timestamppb.New(end),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWorkflows(), nil
+}
+
+// costSummaryFields renders a roll-up's numbers — the GUI's cost breakdown
+// (cost, token split, cache buckets, executions, records, window).
+func costSummaryFields(s *apiv1.CostSummary, label string) []kit2.Field {
+	if s == nil {
+		return []kit2.Field{{Key: label, Value: "no usage in the window"}}
+	}
+	return []kit2.Field{
+		{Key: label + " key", Value: s.GetGroupKey()},
+		{Key: "cost", Value: fmtCost(s.GetCostUsd())},
+		{Key: "total tokens", Value: screenkit.FmtInt64(s.GetTotalTokens())},
+		{Key: "prompt tokens", Value: screenkit.FmtInt64(s.GetPromptTokens())},
+		{Key: "completion tokens", Value: screenkit.FmtInt64(s.GetCompletionTokens())},
+		{Key: "cache read", Value: screenkit.FmtInt64(s.GetCacheReadTokens())},
+		{Key: "cache write", Value: screenkit.FmtInt64(s.GetCacheWriteTokens())},
+		{Key: "executions", Value: screenkit.FmtInt(int(s.GetExecutionCount()))},
+		{Key: "records", Value: screenkit.FmtInt(int(s.GetRecordCount()))},
+		{Key: "window", Value: screenkit.FmtTime(s.GetWindowStart()) + " → " + screenkit.FmtTime(s.GetWindowEnd())},
+	}
+}
+
+// costChildrenBody lists the next drill-down level the backend attached.
+func costChildrenBody(s *apiv1.CostSummary) string {
+	if s == nil || len(s.GetChildren()) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(theme.ListTitle.Render("BREAKDOWN") + "\n")
+	for _, c := range s.GetChildren() {
+		name := c.GetDisplayName()
+		if name == "" {
+			name = c.GetGroupKey()
+		}
+		b.WriteString(fmt.Sprintf("  %-28s %10s  %10s tok  %d exec\n",
+			truncateName(name, 28), fmtCost(c.GetCostUsd()), fmtTokens(c.GetTotalTokens()), c.GetExecutionCount()))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// costWorkflowLines lists per-workflow cost under the total.
+func (m *Model) costWorkflowLines(ctx context.Context) string {
+	wfs, err := m.getWorkflowCosts(ctx)
+	if err != nil || len(wfs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + theme.ListTitle.Render("BY WORKFLOW") + "\n")
+	for _, w := range wfs {
+		b.WriteString(fmt.Sprintf("  %-28s %10s  %d runs\n",
+			truncateName(w.GetWorkflowName(), 28), fmtCost(w.GetTotalCostUsd()), w.GetRunCount()))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// truncateName clips a display name to n runes.
+func truncateName(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n < 2 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// costDetail renders one roll-up row: the full CostSummary breakdown plus the
+// next drill-down level the backend attached.
+func (m *Model) costDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
+	switch {
+	case id == "total":
+		t, err := m.getCostTotal(ctx)
+		if err != nil {
+			return "", nil, "", err
+		}
+		return "Cost — total", costSummaryFields(t, "total"),
+			joinBody(costChildrenBody(t), m.costWorkflowLines(ctx)), nil
+
+	case strings.HasPrefix(id, "model:"), strings.HasPrefix(id, "project:"):
+		lvlName, key, _ := strings.Cut(id, ":")
+		lvl := apiv1.UsageRollup_USAGE_ROLLUP_MODEL
+		if lvlName == "project" {
+			lvl = apiv1.UsageRollup_USAGE_ROLLUP_PROJECT
+		}
+		sums, err := m.getCostSummaries(ctx, lvl)
+		if err != nil {
+			return "", nil, "", err
+		}
+		for _, s := range sums {
+			if s.GetGroupKey() != key {
+				continue
+			}
+			return "Cost — " + lvlName + " " + key, costSummaryFields(s, lvlName), costChildrenBody(s), nil
+		}
+		return "Cost — " + lvlName + " " + key, []kit2.Field{{Key: lvlName, Value: key}}, "", nil
+
+	case strings.HasPrefix(id, "workflow:"):
+		wid := strings.TrimPrefix(id, "workflow:")
+		wfs, err := m.getWorkflowCosts(ctx)
+		if err != nil {
+			return "", nil, "", err
+		}
+		for _, w := range wfs {
+			if w.GetWorkflowId() != wid {
+				continue
+			}
+			fields := []kit2.Field{
+				{Key: "workflow", Value: w.GetWorkflowName()},
+				{Key: "workflow id", Value: w.GetWorkflowId()},
+				{Key: "total cost", Value: fmtCost(w.GetTotalCostUsd())},
+				{Key: "total tokens", Value: screenkit.FmtInt64(w.GetTotalTokens())},
+				{Key: "runs", Value: screenkit.FmtInt(int(w.GetRunCount()))},
+				{Key: "executions", Value: screenkit.FmtInt(int(w.GetExecutionCount()))},
+			}
+			return "Cost — workflow " + w.GetWorkflowName(), fields, "", nil
+		}
+		return "Cost — workflow", []kit2.Field{{Key: "workflow id", Value: wid}}, "", nil
+	}
+	return "", nil, "", nil
+}
+
+// joinBody joins non-empty body sections with a blank line between them.
+func joinBody(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "\n\n")
 }
 
 func (m *Model) fetchUsage(ctx context.Context, _ string) ([]kit2.Item, string, error) {
@@ -387,47 +698,7 @@ func (m *Model) usageAggregate(ctx context.Context) (*usageAgg, error) {
 	return a, nil
 }
 
-func (m *Model) costDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
-	agg, err := m.usageAggregate(ctx)
-	if err != nil {
-		return "", nil, "", err
-	}
-	switch {
-	case id == "total":
-		return "Cost — total", []kit2.Field{
-			{Key: "total cost", Value: fmtCost(agg.cost)},
-			{Key: "total tokens", Value: screenkit.FmtInt64(agg.tokens)},
-			{Key: "records", Value: screenkit.FmtInt(agg.count)},
-			{Key: "providers", Value: screenkit.FmtInt(len(agg.providers))},
-			{Key: "models", Value: screenkit.FmtInt(len(agg.models))},
-		}, agg.providerLines() + "\n\n" + agg.modelLines(), nil
-	case strings.HasPrefix(id, "provider:"):
-		p := strings.TrimPrefix(id, "provider:")
-		b := agg.providers[p]
-		if b == nil {
-			return "Cost — provider " + p, []kit2.Field{{Key: "provider", Value: p}}, "", nil
-		}
-		return "Cost — provider " + p, []kit2.Field{
-			{Key: "provider", Value: p},
-			{Key: "cost", Value: fmtCost(b.cost)},
-			{Key: "tokens", Value: screenkit.FmtInt64(b.tokens)},
-			{Key: "records", Value: screenkit.FmtInt(b.count)},
-		}, agg.modelLinesFor(p), nil
-	case strings.HasPrefix(id, "model:"):
-		mo := strings.TrimPrefix(id, "model:")
-		b := agg.models[mo]
-		if b == nil {
-			return "Cost — model " + mo, []kit2.Field{{Key: "model", Value: mo}}, "", nil
-		}
-		return "Cost — model " + mo, []kit2.Field{
-			{Key: "model", Value: mo},
-			{Key: "cost", Value: fmtCost(b.cost)},
-			{Key: "tokens", Value: screenkit.FmtInt64(b.tokens)},
-			{Key: "records", Value: screenkit.FmtInt(b.count)},
-		}, agg.providerLinesFor(mo), nil
-	}
-	return "", nil, "", nil
-}
+// usageDetail renders one raw usage record (`/usage`).
 
 func (m *Model) usageDetail(ctx context.Context, id string) (string, []kit2.Field, string, error) {
 	resp, err := m.cl.AIGateway.GetUsage(ctx, connect.NewRequest(&apiv1.GetUsageRequest{
