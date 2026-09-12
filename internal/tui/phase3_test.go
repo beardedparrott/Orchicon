@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
@@ -87,13 +88,31 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	if m.MenuOpenID() != m.active {
 		t.Fatalf("enter must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
 	}
-	tm := m.TabMenu()
-	want := tm.Entries[1]
+	// Esc closes it, and Space re-opens it (the second activation key).
+	//
+	// Space runs HERE, on the LAUNCH page, where no conversations rail is up.
+	// On Ask with the rail VISIBLE, Space/Enter are the rail's SELECT gesture
+	// instead — the operator's "I should be able to move up/down with arrow
+	// keys and space or enter selects". That override owns the key only while
+	// the rail is drawn, and is pinned separately by
+	// TestAskRailEnterSpaceSelectsConversation.
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatal("esc must close the dropdown")
+	}
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeySpace})
+	m = nm
+	if m.MenuOpenID() != m.active {
+		t.Fatalf("space must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
+	}
+	// Arrows move the selection; Enter selects + closes.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm
 	if m.TabMenu().Sel != 1 {
 		t.Fatalf("down must move the dropdown selection (sel=%d)", m.TabMenu().Sel)
 	}
+	want := m.TabMenu().Entries[1]
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm
 	if m.MenuOpenID() != "" {
@@ -110,23 +129,57 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 			t.Fatalf("selected entry must navigate: active source %q, want %q", ar.ActiveSourceName(), want.Source)
 		}
 	}
-	// Space also opens it (second activation key), then esc closes.
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeySpace})
-	m = nm
-	if m.MenuOpenID() != m.active {
-		t.Fatalf("space must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
-	}
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
-	m = nm
-	if m.MenuOpenID() != "" {
-		t.Fatal("esc must close the dropdown")
-	}
+	// (Space/esc coverage lives above, on the launch page, so the rail's
+	// select gesture cannot shadow the submenu activation.)
 	// A non-empty composer keeps Enter as send (no surprise menu).
 	m.dock.SetValue("hello")
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm
 	if m.MenuOpenID() != "" {
 		t.Fatal("enter with a non-empty composer must send, not open the submenu")
+	}
+}
+
+// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract:
+// while the conversations rail is UP and the composer is empty, Enter/Space
+// open the HIGHLIGHTED conversation — the operator's "I should be able to move
+// up/down with arrow keys and space or enter selects". This deliberately
+// overrides the tab-submenu activation on Ask, so it is asserted separately
+// from TestSubmenuOpensByKeyAndSelects (which covers the launch page).
+func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
+	newRails := func() *App {
+		m := newRailsApp(120, 40)
+		m.conversations = []chat.Conversation{
+			{ID: "c1", Title: "Alpha"},
+			{ID: "c2", Title: "Beta"},
+		}
+		m.convSel, m.convScroll, m.convLoaded = 1, 0, true
+		return m
+	}
+
+	m := newRails()
+	if !m.railVisible() {
+		t.Fatal("the conversations rail must be visible for this contract")
+	}
+	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatalf("enter on Ask with the rail up must select, not open the submenu (menuOpen=%q)", m.MenuOpenID())
+	}
+	if m.chatConvID != "c2" {
+		t.Fatalf("enter must open the HIGHLIGHTED conversation: chatConvID=%q, want c2", m.chatConvID)
+	}
+
+	// Space is the same gesture (a fresh app — re-opening the same
+	// conversation is deliberately idempotent).
+	m2 := newRails()
+	nm2, _ := m2.dispatch(tea.KeyMsg{Type: tea.KeySpace})
+	m2 = nm2
+	if m2.MenuOpenID() != "" {
+		t.Fatalf("space on Ask with the rail up must select, not open the submenu (menuOpen=%q)", m2.MenuOpenID())
+	}
+	if m2.chatConvID != "c2" {
+		t.Fatalf("space must open the highlighted conversation: chatConvID=%q, want c2", m2.chatConvID)
 	}
 }
 

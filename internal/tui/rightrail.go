@@ -242,7 +242,8 @@ func (m *App) openRailConversation(idx int) tea.Cmd {
 }
 
 // selectRailConversation moves the rail selection (up/down keys while the
-// rail is focused) and opens the detail on enter.
+// rail is focused) and keeps it on screen. Opening is the Enter/Space
+// gesture (openSelectedRailConversation), not the arrow keys.
 func (m *App) selectRailConversation(delta int) {
 	if len(m.conversations) == 0 {
 		return
@@ -254,15 +255,60 @@ func (m *App) selectRailConversation(delta int) {
 	if m.convSel >= len(m.conversations) {
 		m.convSel = len(m.conversations) - 1
 	}
+	m.railFollowSelection()
 }
 
-// railVisibleRows is the number of list rows visible in the rail.
+// railFollowSelection scrolls the rail so the highlighted conversation stays
+// inside the window the rail actually renders.
+//
+// Without this the selection index moved but convScroll stayed put, so on a
+// list longer than the window the highlight walked off the bottom and the
+// rail looked frozen — the operator's "the conversation changes, but the
+// highlight on the current conversation in the list does not".
+func (m *App) railFollowSelection() {
+	rows := m.railVisibleRows()
+	if rows < 1 {
+		rows = 1
+	}
+	if m.convSel < m.convScroll {
+		m.convScroll = m.convSel
+	}
+	if m.convSel >= m.convScroll+rows {
+		m.convScroll = m.convSel - rows + 1
+	}
+	maxOff := len(m.conversations) - rows
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if m.convScroll > maxOff {
+		m.convScroll = maxOff
+	}
+	if m.convScroll < 0 {
+		m.convScroll = 0
+	}
+}
+
+// openSelectedRailConversation opens the highlighted rail conversation — the
+// Enter/Space gesture on the Ask tab (the operator's "space or enter
+// selects"). No-op when the list is empty.
+func (m *App) openSelectedRailConversation() tea.Cmd {
+	if len(m.conversations) == 0 {
+		return nil
+	}
+	return m.openRailConversation(m.convSel)
+}
+
+// railVisibleRows is the number of CONVERSATION rows the rail actually
+// renders. rightRailView lays out `rows < h-5`: the panel's two border rows,
+// the title row, and the one-row "n-m/total" footer. The scroll-follow and
+// the wheel clamp both use this, so the visible window and the scroll maths
+// cannot disagree (they did: this used to claim h-2 rows the rail never drew).
 func (m *App) railVisibleRows() int {
 	h := m.contentHeight() + m.dock.Lines()
-	if h-2 < 1 {
+	if h-5 < 1 {
 		return 1
 	}
-	return h - 2
+	return h - 5
 }
 
 // truncateRight truncates s to width w cells, appending an ellipsis.

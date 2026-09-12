@@ -262,6 +262,21 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, cmd
 		}
 	}
+	// Ask rail SELECTION: while the conversations rail is up and the composer
+	// is empty, Enter/Space open the highlighted conversation (the operator's
+	// "I should be able to move up/down with arrow keys and space or enter
+	// selects"). This is deliberately BEFORE the tab-menu activation below:
+	// on Ask the rail is the list in focus, so Enter must select the
+	// conversation rather than pop the New/Conversations menu. The menu is
+	// still reachable from every other tab (and here whenever the rail is
+	// hidden — the launch page shows no list).
+	if isKey && m.TabMenu() == nil && m.active == TabAsk && m.railVisible() &&
+		strings.TrimSpace(m.dock.Value()) == "" &&
+		(k.String() == "enter" || k.String() == " " || k.String() == "space") {
+		cmd := m.openSelectedRailConversation()
+		m.footer.StreamStatus = m.streamStatus()
+		return m, cmd
+	}
 	// Tab submenu ACTIVATION (Phase 3 finding 3): Enter or Space on the
 	// active tab opens its dropdown. Enter with an empty composer is a
 	// no-op today (blank enter never sends), so the shell can claim it
