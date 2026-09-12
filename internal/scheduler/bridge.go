@@ -276,6 +276,27 @@ type SendTurnMessageWithAttachments interface {
 	SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []ChatAttachment) error
 }
 
+// ConversationHistoryPurger is the OPTIONAL durable-history capability for the
+// Ask chat path, mirroring the SendTurnMessageWithAttachments pattern.
+//
+// A sessionless adapter (native / "orchicon") owns a persisted history
+// artifact per conversation that NOTHING else reclaims — the native bridge
+// writes one JSON file per session and the conversation row is its only other
+// trace — so deleting a conversation must purge it or the artifact accumulates
+// forever. A session-ful adapter (opencode) keeps its history inside its own
+// serve and has nothing to purge, so it simply does not implement this.
+//
+// The conversation-delete path type-asserts it and skips when absent: never a
+// panic, never a hard failure of the delete RPC. Implementations MUST be
+// idempotent — purging an unknown or never-created conversation is a
+// successful no-op.
+type ConversationHistoryPurger interface {
+	// PurgeConversationHistory discards a conversation's durable session
+	// history (in-memory and persisted). sessionID may be empty: an adapter
+	// that keys history by conversation id must still resolve the artifact.
+	PurgeConversationHistory(ctx context.Context, conversationID, sessionID string) error
+}
+
 // ChatAttachment is one inline attachment on an Ask turn (name, mime type,
 // raw bytes) — the adapter-neutral shape of the chat attachment input
 // (count/size caps are validated server-side at dispatch).

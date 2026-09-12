@@ -545,3 +545,38 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 	}
 	return r, nil
 }
+
+// ClearUsageSessionIDs de-links usage records from a deleted Ask
+// conversation by clearing their session_id.
+//
+// The records themselves are KEPT. They are the tenant's real spend ledger —
+// Cost Explorer and Telemetry roll up from this table — so deleting them would
+// retroactively rewrite historical cost (a deleted conversation's spend would
+// silently vanish from reports). Clearing the linkage drops the only pointer
+// to the deleted conversation while preserving the money, and it is
+// space-neutral: an in-place UPDATE, no rows added or removed.
+//
+// ids are every identifier an Ask turn may have been attributed under: the
+// conversation id (the canonical Ask attribution — recordTurnUsage passes
+// convID as SessionID) plus the conversation's session id (defensive: a
+// session-ful adapter could attribute by session). Empty ids are ignored, so a
+// legacy conversation with no session id still de-links by conversation id.
+// Returns the number of rows de-linked.
+func ClearUsageSessionIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids ...string) (int64, error) {
+	clean := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			clean = append(clean, id)
+		}
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	const q = `UPDATE usage_records SET session_id = ''
+	            WHERE tenant_id = $1 AND session_id <> '' AND session_id = ANY($2)`
+	tag, err := tx.Exec(ctx, q, tenantID, clean)
+	if err != nil {
+		return 0, fmt.Errorf("db: clear usage session ids: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

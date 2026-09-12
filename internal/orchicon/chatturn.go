@@ -23,6 +23,7 @@ import (
 // dropped).
 var _ scheduler.ChatTurnClient = (*NativeBridge)(nil)
 var _ scheduler.SendTurnMessageWithAttachments = (*NativeBridge)(nil)
+var _ scheduler.ConversationHistoryPurger = (*NativeBridge)(nil)
 
 // Attachment caps mirror the server-side turn validation
 // (startConversationTurnOpts): the bridge enforces them too so direct
@@ -203,6 +204,44 @@ func (b *NativeBridge) CreateConversationSession(ctx context.Context, conversati
 	}
 	b.mu.Unlock()
 	return sid, nil
+}
+
+// PurgeConversationHistory implements scheduler.ConversationHistoryPurger:
+// it discards a deleted conversation's durable Ask history — the in-memory
+// map entry AND the persisted JSON file — because nothing else reclaims them.
+// The native adapter is sessionless, so the history file is the only on-disk
+// artifact of a conversation; without this, every deleted conversation leaked
+// its file forever (observed: 19 conversation files totalling 19MB, several of
+// them multi-MB).
+//
+// Idempotent: a missing map entry or missing file is a successful no-op. The
+// caller treats any error as advisory (logged, never failing the delete RPC),
+// since the durable DB record is already gone by the time this runs.
+func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationID, sessionID string) error {
+	sid := sessionID
+	if sid == "" && conversationID != "" {
+		// Sessionless adapters mint their own synthetic id; resolve it so a
+		// conversation row without a persisted session id still purges.
+		sid = scheduler.NativeSessionIDPrefix + conversationID
+	}
+	if sid == "" {
+		return nil
+	}
+	b.mu.Lock()
+	delete(b.chatHistory, sid)
+	dir := b.askHistoryDir
+	b.mu.Unlock()
+	if dir == "" {
+		return nil // memory-only history: nothing persisted to reclaim
+	}
+	path := filepath.Join(dir, askHistoryFilename(sid)+".json")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("orchicon bridge: purge ask history %s: %w", path, err)
+	}
+	// Sweep the atomic-write temp file too: a crash mid-persist can leave it
+	// behind, and a deleted conversation must leave nothing on disk.
+	_ = os.Remove(path + ".tmp")
+	return nil
 }
 
 // Subscribe implements scheduler.ChatTurnClient: it returns a fresh buffered
