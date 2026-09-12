@@ -2042,10 +2042,15 @@ func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		// Create EMPTY, then send once through the stream below. Passing
+		// InitialMessage AND then sending persisted the operator's first message
+		// TWICE and started two turns (the operator's "it sent two messages
+		// instead of one on the first message"). This mirrors the GUI, which
+		// calls createConversation({mode}) with no initialMessage and then
+		// sendStreaming(conv.id, text) — see ask-orchicon.tsx.
 		resp, err := cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
-			InitialMessage: text,
-			ModelRef:       model,
-			Mode:           mode,
+			ModelRef: model,
+			Mode:     mode,
 		}))
 		if err != nil {
 			return chat.ErrMsg{Where: "create conversation", Err: err}
