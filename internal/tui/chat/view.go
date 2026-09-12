@@ -47,6 +47,12 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 	return b.String()
 }
 
+// chatBandGap is the number of BLANK rows emitted after each message band, so
+// the two speakers read as separate blocks of text rather than one continuous
+// fill (the operator's "there should be a visible gap between user messages and
+// model messages ... just enough to really show a gap"). Tune here.
+const chatBandGap = 3
+
 // renderChatMessage renders one message as a FULL-WIDTH background band: every
 // line is padded to the pane's width and painted with the speaker's fill, so
 // the band runs from the left edge of the conversation pane to its right edge
@@ -86,6 +92,11 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 			row = " " + l + strings.Repeat(" ", pad) + " "
 		}
 		out.WriteString(style.Render(row))
+		out.WriteString("\n")
+	}
+	// Separate this band from the next with BLANK rows (the pane's own
+	// background), so consecutive messages read as distinct blocks.
+	for i := 0; i < chatBandGap; i++ {
 		out.WriteString("\n")
 	}
 	return out.String()

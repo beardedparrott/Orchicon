@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -31,11 +32,17 @@ func (s *stubAsk) ListConversations(context.Context, *connect.Request[apiv1.List
 	}), nil
 }
 
+// ListMessages mirrors the REAL server contract: db.ListMessages orders by
+// created_at DESC, so a page arrives NEWEST-FIRST (m2 before m1). An earlier
+// version of this stub returned them oldest-first, which hid the TUI's missing
+// reversal — the transcript rendered inverted in the real client while the stub
+// test passed.
 func (s *stubAsk) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
+	base := time.Unix(1_700_000_000, 0)
 	return connect.NewResponse(&apiv1.ListMessagesResponse{
 		Messages: []*apiv1.ChatMessage{
-			{Id: "m1", Role: "user", Content: "hi"},
-			{Id: "m2", Role: "assistant", Content: "hello"},
+			{Id: "m2", Role: "assistant", Content: "hello", CreatedAt: timestamppb.New(base.Add(2 * time.Second))},
+			{Id: "m1", Role: "user", Content: "hi", CreatedAt: timestamppb.New(base.Add(1 * time.Second))},
 		},
 	}), nil
 }
@@ -220,7 +227,10 @@ func TestOpenConversationTranscript(t *testing.T) {
 		t.Fatalf("transcript err: %s", tm.Err)
 	}
 	if len(tm.Items) != 2 || tm.Items[0].Kind != KindUser || tm.Items[1].Kind != KindText {
-		t.Fatalf("items = %+v", tm.Items)
+		t.Fatalf("the transcript must be CHRONOLOGICAL (operator's message first), got %+v", tm.Items)
+	}
+	if tm.Items[0].Text != "hi" || tm.Items[1].Text != "hello" {
+		t.Fatalf("reversal lost: %q then %q", tm.Items[0].Text, tm.Items[1].Text)
 	}
 }
 

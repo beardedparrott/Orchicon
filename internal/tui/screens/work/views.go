@@ -18,25 +18,23 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// viewMode selects the work-items pane's display grouping.
+// The Work Items views are TREE and ARCHIVE. A Board was removed: a
+// status-grouped Kanban does not read as a list in a single-column terminal
+// pane (every "column" became a header row), so it was a second, worse copy of
+// the same data. Only ReorderWorkItems mutates sequence order.
 type viewMode string
 
 const (
 	viewTree    viewMode = "tree"
-	viewBoard   viewMode = "board"
 	viewArchive viewMode = "archive"
 )
 
-// next cycles tree → board → archive → tree.
+// next cycles tree → archive → tree.
 func (v viewMode) next() viewMode {
-	switch v {
-	case viewTree:
-		return viewBoard
-	case viewBoard:
+	if v == viewTree {
 		return viewArchive
-	default:
-		return viewTree
 	}
+	return viewTree
 }
 
 // kindBadge is the row's kind badge, rendered from the item's real kind
@@ -140,57 +138,6 @@ func sortSiblings(items []*apiv1.WorkItem) {
 	})
 }
 
-// boardOrder is the Kanban column order (the lifecycle, then the
-// system-managed states).
-var boardOrder = []apiv1.WorkItemStatus{
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_READY,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_ASSIGNED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SUCCEEDED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_FAILED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED,
-}
-
-// boardRows groups the items by their real status field. Every column is
-// emitted with its count (an empty column still shows, so the board is a
-// stable map of the lifecycle rather than a shrinking list).
-func boardRows(items []*apiv1.WorkItem) []kit2.Item {
-	byStatus := map[apiv1.WorkItemStatus][]*apiv1.WorkItem{}
-	for _, w := range items {
-		byStatus[w.GetStatus()] = append(byStatus[w.GetStatus()], w)
-	}
-	seen := map[apiv1.WorkItemStatus]bool{}
-	var out []kit2.Item
-	emit := func(st apiv1.WorkItemStatus) {
-		seen[st] = true
-		group := byStatus[st]
-		sortSiblings(group)
-		out = append(out, kit2.Item{ID: "col:" + statusPill(st), Title: "── " + statusPill(st) + fmt.Sprintf(" (%d)", len(group))})
-		for _, w := range group {
-			out = append(out, kit2.Item{ID: w.GetId(), Title: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(), Meta: workItemMeta(w)})
-		}
-	}
-	for _, st := range boardOrder {
-		emit(st)
-	}
-	// Any status outside the canonical column order still gets a column.
-	var extra []apiv1.WorkItemStatus
-	for st := range byStatus {
-		if !seen[st] {
-			extra = append(extra, st)
-		}
-	}
-	sort.Slice(extra, func(i, j int) bool { return extra[i].String() < extra[j].String() })
-	for _, st := range extra {
-		emit(st)
-	}
-	return out
-}
-
 // archiveRows lists archived items with the status they will be restored to
 // (archived_from_status) — the archive view's whole point.
 func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
@@ -213,14 +160,10 @@ func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
 
 // rowsFor maps a page of work items into the rows of the selected view.
 func rowsFor(view viewMode, items []*apiv1.WorkItem) []kit2.Item {
-	switch view {
-	case viewBoard:
-		return boardRows(items)
-	case viewArchive:
+	if view == viewArchive {
 		return archiveRows(items)
-	default:
-		return treeRows(items)
 	}
+	return treeRows(items)
 }
 
 // descendants returns the ids of every transitive child of id.

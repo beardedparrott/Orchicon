@@ -630,10 +630,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.switchView(viewTree), true
 		}
-	case "B":
-		if src == srcWorkItems {
-			return m.switchView(viewBoard), true
-		}
 	case "Z":
 		if src == srcWorkItems {
 			return m.switchView(viewArchive), true
@@ -645,11 +641,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.toggleAllTreeNodes(), true
 		}
 	case "J":
-		if src == srcWorkItems && m.ViewMode() != viewBoard {
+		if src == srcWorkItems {
 			return m.reorderChildren(1), true
 		}
 	case "K":
-		if src == srcWorkItems && m.ViewMode() != viewBoard {
+		if src == srcWorkItems {
 			return m.reorderChildren(-1), true
 		}
 	case "y", "W", "a", "R", "x":
@@ -739,7 +735,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · e: edit · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/B/Z: tree/board/archive · o: collapse/expand · O: all")
+		return theme.HintText.Render("n: new · e: edit · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
 	}
 }
 

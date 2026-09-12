@@ -373,22 +373,45 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 		if err != nil {
 			return TranscriptMsg{ConvID: id, Err: err.Error()}
 		}
-		// ListMessages returns oldest-first already (created_at asc); the
-		// GUI hook reverses defensively — keep a stable same-order read.
-		items := make([]ChatItem, 0, len(resp.Msg.GetMessages()))
-		for _, m := range resp.Msg.GetMessages() {
-			kind := KindText
-			switch strings.ToLower(m.GetRole()) {
-			case "user":
-				kind = KindUser
-			case "error":
-				kind = KindError
-			}
-			at := m.GetCreatedAt().GetSeconds() * 1000
-			items = append(items, ChatItem{Kind: kind, Text: m.GetContent(), At: at, Key: "m-" + m.GetId()})
-		}
-		return TranscriptMsg{ConvID: id, Items: GroupByPhase(items)}
+		// The page arrives NEWEST-first (see conversationItems) — it is reversed
+		// there, together with the millisecond timestamps.
+		return TranscriptMsg{ConvID: id, Items: GroupByPhase(conversationItems(resp.Msg.GetMessages()))}
 	}
+}
+
+// conversationItems converts a ListMessages page into transcript items in
+// CHRONOLOGICAL (oldest-first) order.
+//
+// The server returns messages NEWEST-first — db.ListMessages orders by
+// created_at DESC and askorchicon.Service passes those rows straight through —
+// so the page MUST be reversed here. The GUI does exactly this
+// (frontend/src/api/askOrchicon.ts: "(res.messages ?? []).reverse()"); the TUI
+// skipped it and rendered the whole transcript INVERTED, putting the model's
+// reply above the operator's message.
+//
+// Timestamps are taken at MILLISECOND precision. created_at is truncated to
+// whole seconds by GetSeconds(), which tied messages written in the same second
+// together and left a stable sort unable to separate them — so reversal here is
+// load-bearing, not merely cosmetic.
+func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
+	items := make([]ChatItem, 0, len(msgs))
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		kind := KindText
+		switch strings.ToLower(m.GetRole()) {
+		case "user":
+			kind = KindUser
+		case "error":
+			kind = KindError
+		}
+		items = append(items, ChatItem{
+			Kind: kind,
+			Text: m.GetContent(),
+			At:   m.GetCreatedAt().AsTime().UnixMilli(),
+			Key:  "m-" + m.GetId(),
+		})
+	}
+	return items
 }
 
 // Send dispatches a turn: InterjectConversationTurn when the

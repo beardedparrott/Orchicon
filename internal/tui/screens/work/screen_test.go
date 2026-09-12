@@ -828,34 +828,43 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	}
 }
 
-func TestBoardViewGroupsByStatus(t *testing.T) {
+// The Board view was REMOVED: a status-grouped Kanban does not read as a list
+// in a single-column terminal pane. The cycle is now tree -> archive, and the
+// retired 'B' chord must do nothing at all.
+func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
-
-	load(t, m, srcWorkItems) // tree
-	press(t, m, "B")         // board — a display grouping, no write
 	load(t, m, srcWorkItems)
 
+	if m.ViewMode() != viewTree {
+		t.Fatalf("the view opens as tree, got %q", m.ViewMode())
+	}
+	// 'B' is retired: no view change, and the tree still renders.
+	press(t, m, "B")
+	if m.ViewMode() != viewTree {
+		t.Fatalf("'B' must no longer switch views, got %q", m.ViewMode())
+	}
 	rows := itemsOf(m, srcWorkItems)
-	if !hasTitle(rows, "── pending (2)") {
-		t.Fatalf("board must group by status: %v", titles(rows))
+	if hasTitle(rows, "── pending (2)") {
+		t.Fatalf("a status column must not render: %v", titles(rows))
 	}
-	if !hasTitle(rows, "── running (1)") || !hasTitle(rows, "── succeeded (1)") {
-		t.Fatalf("board columns missing: %v", titles(rows))
+	if !hasTitle(rows, "[epic] Epic E") {
+		t.Fatalf("the tree must still render: %v", titles(rows))
 	}
-	// Every item sits under its own status column.
-	var seen []string
-	for _, r := range rows {
-		if strings.HasPrefix(r.Title, "── ") {
-			seen = append(seen, r.Title)
-		}
+
+	// 'v' cycles tree -> archive -> tree.
+	press(t, m, "v")
+	if m.ViewMode() != viewArchive {
+		t.Fatalf("v must cycle to archive, got %q", m.ViewMode())
 	}
-	if len(seen) < 3 || !strings.HasPrefix(seen[0], "── pending") {
-		t.Fatalf("board column order = %v", seen)
+	press(t, m, "v")
+	if m.ViewMode() != viewTree {
+		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
 	}
-	// The display grouping NEVER mutates the sequence.
+
+	// Display switch never mutates or writes.
 	if len(p.reorders) != 0 {
 		t.Fatalf("switching views must not call ReorderWorkItems: %+v", p.reorders)
 	}
