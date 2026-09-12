@@ -111,6 +111,8 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
+	// ...and a clickable collapse/expand-all control next to it (Tree view only).
+	m.syncRowActions()
 	m.bar = kit2.NewActionBar()
 	m.build = kit2.NewStream("build log", 80, 20)
 	// The inline detail editor reports its outcome here (the modal path did
@@ -411,7 +413,29 @@ func (m *Model) switchView(v viewMode) tea.Cmd {
 	m.view = v
 	m.viewMu.Unlock()
 	m.notice = "work items: " + string(v) + " view"
+	m.syncRowActions()
 	return m.Refresh(srcWorkItems)
+}
+
+// syncRowActions (re)installs the pane's clickable controls. The tree's
+// collapse/expand-all only means something in the Tree view, so the flat views
+// carry no button rather than a dead one.
+func (m *Model) syncRowActions() {
+	if m.ViewMode() != viewTree {
+		m.Base.SetRowActions(srcWorkItems, nil)
+		return
+	}
+	m.Base.SetRowActions(srcWorkItems, []kit2.RowAction{{
+		// A STATE-reporting label: the button says what pressing it will do.
+		Label: func() string {
+			t := m.Base.ActiveTable()
+			if t == nil || t.AllExpanded() {
+				return "collapse all"
+			}
+			return "expand all"
+		},
+		Do: func() { m.toggleAllTreeNodes() },
+	}})
 }
 
 // ---------------- update ----------------
@@ -801,7 +825,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
+		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the button) · enter: detail")
 	}
 }
 

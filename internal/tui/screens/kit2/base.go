@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
@@ -38,15 +39,36 @@ type source struct {
 	err   string
 	// filterable draws the search row above this source's list ('/' focuses it).
 	filterable bool
+	// rowActions are the CLICKABLE controls rendered on that same top row (the
+	// tree's collapse/expand-all), right-aligned.
+	rowActions []RowAction
 }
 
-// filterRows is the number of rows the filter box occupies above the table's
-// own content (0 when the source is not filterable).
-func (s *source) filterRows() int {
-	if s.filterable {
+// topRows is the number of rows this source draws above the table's own rows
+// (the search / controls row).
+func (s *source) topRows() int {
+	if s.filterable || len(s.rowActions) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// RowAction is one clickable control on a pane's top row.
+//
+// Label is a func so a control can report STATE at render time ("collapse all"
+// vs "expand all") without the screen having to re-register it on every
+// change.
+type RowAction struct {
+	Label func() string
+	Do    func()
+}
+
+// actionHit records where a RowAction was drawn, so a click can be hit-tested
+// against what is actually on screen (recomputed on every render).
+type actionHit struct {
+	src    string
+	i      int
+	x0, x1 int // columns INSIDE the panel border
 }
 
 type fetchedMsg struct {
@@ -102,6 +124,10 @@ type Base struct {
 	// filtering is true while the operator is TYPING into the focused source's
 	// filter box (the search row above the list).
 	filtering bool
+
+	// actionHits is recomputed on every render (see filterLine) and consumed by
+	// the next click, so a control is hit-tested against what was DRAWN.
+	actionHits []actionHit
 
 	// Focus is the ONE rule for key ownership across this screen's regions.
 	Focus *Focus
@@ -399,6 +425,16 @@ func (b *Base) finishDetailEdit(submitted bool) {
 	b.editForm = nil
 	if b.OnEditDone != nil {
 		b.OnEditDone(submitted)
+	}
+}
+
+// SetRowActions installs the clickable controls drawn on a source's top row.
+func (b *Base) SetRowActions(src string, actions []RowAction) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.rowActions = actions
+			return
+		}
 	}
 }
 
@@ -747,6 +783,13 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 			return nil
 		}
 		s := b.sources[p]
+		// A click on a top-row control (the tree's collapse/expand-all) fires it.
+		if b.clickRowAction(p, msg.Y, msg.X) {
+			b.active = p
+			b.focusD = false
+			b.setFocusForPane()
+			return nil
+		}
 		row := msg.Y - b.tableTopRow()
 		// A click on a tree node's +/- marker toggles that node; any other click
 		// on the row selects it. Without this the marker was inert text and the
@@ -767,10 +810,16 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-// mouseRegion maps column x to a pane index (or the detail).
-// Shell chrome above the screen body: the centered tab bar (row 0), its
-// underline rule (row 1) and the one-row gap (row 2).
+// shellChromeRows is the number of terminal rows the SHELL draws above a
+// screen's body: the centered tab bar (row 0), its underline rule (row 1) and
+// the one-row gap (row 2).
 const shellChromeRows = 3
+
+// ShellChromeRows exposes that offset. Mouse events arrive in TERMINAL-absolute
+// coordinates while a screen renders from its own row 0, so anything hit-testing
+// a click (or a test simulating one) must add this. It is part of the
+// coordinate contract, not an implementation detail.
+func ShellChromeRows() int { return shellChromeRows }
 
 // tableTopRow returns the number of terminal rows above the FIRST data row of
 // the focused source pane: the shell chrome, the panel's top border (the title
@@ -785,7 +834,7 @@ func (b *Base) tableTopRow() int {
 	head := 0
 	if b.active >= 0 && b.active < len(b.sources) {
 		t := b.sources[b.active].table
-		head = t.TitleRows() + t.HeaderRows() + b.sources[b.active].filterRows()
+		head = t.TitleRows() + t.HeaderRows() + b.sources[b.active].topRows()
 	}
 	return shellChromeRows + 1 + head
 }
@@ -894,41 +943,99 @@ func (b *Base) focusedPaneView(w, h int) string {
 		return NewPanel("", w, h).View()
 	}
 	s := b.sources[b.active]
-	s.table.Width, s.table.Height = w, h-s.filterRows()
+	s.table.Width, s.table.Height = w, h-s.topRows()
 	s.table.Focused = !b.focusD
 	// The panel border carries the title; the embedded table must not repeat it.
 	s.table.HideTitle = true
 	p := NewPanel(s.title, w, h)
 	p.Focused = s.table.Focused
 	content := s.table.View()
-	if s.filterable {
-		content = b.filterLine(s, w) + "\n" + content
+	if s.topRows() > 0 {
+		content = b.topLine(s, w) + "\n" + content
 	}
 	p.SetContent(content)
 	return p.View()
 }
 
-// filterLine renders the source's search row: the query, a caret while typing,
-// and how much of the list survives — so a narrowing filter is never silent
-// about what it hid.
-func (b *Base) filterLine(s *source, w int) string {
-	q := s.table.Filter
-	line := ""
-	if q == "" && !b.filtering {
-		line = "/ search" + strings.Repeat(" ", max(0, w-12)) + ""
-	} else {
-		label := "/ "
-		caret := ""
-		if b.filtering {
-			caret = "\u258f"
+// topLine renders the pane's top row: the search box (when the source is
+// filterable) on the left, and the clickable row actions on the right. As it
+// renders it records where each action landed, so the next click can be
+// hit-tested against what was actually drawn.
+func (b *Base) topLine(s *source, w int) string {
+	inner := max(0, w-2)
+	var left string
+	if s.filterable {
+		q := s.table.Filter
+		if q == "" && !b.filtering {
+			left = "/ search"
+		} else {
+			caret := ""
+			if b.filtering {
+				caret = "\u258f"
+			}
+			left = "/ " + q + caret
 		}
-		line = label + q + caret
+		if q != "" {
+			n, total := s.table.MatchCount()
+			left += "  " + strconv.Itoa(n) + "/" + strconv.Itoa(total)
+		}
 	}
-	if q != "" {
-		n, total := s.table.MatchCount()
-		line += "  " + strconv.Itoa(n) + "/" + strconv.Itoa(total)
+
+	// Lay the controls out from the right edge, recording each one's columns
+	// (relative to the row's first cell inside the panel border).
+	b.actionHits = b.actionHits[:0]
+	var labels []string
+	used := 0
+	for i := len(s.rowActions) - 1; i >= 0; i-- {
+		label := "[ " + s.rowActions[i].Label() + " ]"
+		end := inner - used - 1
+		start := end - lipgloss.Width(label) + 1
+		b.actionHits = append(b.actionHits, actionHit{src: s.name, i: i, x0: start, x1: end})
+		labels = append([]string{label}, labels...)
+		used += lipgloss.Width(label) + 1
 	}
-	return theme.HintText.Render(Pad(line, max(0, w-2)))
+	right := strings.Join(labels, " ")
+
+	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 {
+		pad = 1
+	}
+	return theme.HintText.Render(Pad(left+strings.Repeat(" ", pad)+right, inner))
+}
+
+// clickRowAction invokes the row control under (absoluteY, x) when the click
+// landed on one. sourcePaneX is the panel's left edge.
+func (b *Base) clickRowAction(p int, absoluteY, x int) bool {
+	head := 0
+	if b.active >= 0 && b.active < len(b.sources) {
+		t := b.sources[b.active].table
+		head = t.TitleRows() + t.HeaderRows()
+	}
+	topY := b.tableTopRow() - b.activePaneTopRows() - head
+	if absoluteY != topY {
+		return false
+	}
+	// The recorded x is inside the border, so shift by the border + pane offset.
+	for _, h := range b.actionHits {
+		if h.src != b.sources[p].name {
+			continue
+		}
+		if x-1 >= h.x0 && x-1 <= h.x1 {
+			if h.i >= 0 && h.i < len(b.sources[p].rowActions) {
+				b.sources[p].rowActions[h.i].Do()
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// activePaneTopRows is the focused source's top-row count.
+func (b *Base) activePaneTopRows() int {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return 0
+	}
+	return b.sources[b.active].topRows()
 }
 
 // detailPaneView renders the detail pane sized to exactly w×h. In inline-edit
