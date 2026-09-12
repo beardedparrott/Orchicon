@@ -12,7 +12,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, Heartbeat, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
 import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
@@ -948,6 +948,134 @@ export class InterjectConversationTurnRequest extends Message<InterjectConversat
 
   static equals(a: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined, b: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined): boolean {
     return proto3.util.equals(InterjectConversationTurnRequest, a, b);
+  }
+}
+
+/**
+ * CompactConversationRequest identifies the conversation to compact.
+ *
+ * @generated from message orchicon.api.v1.CompactConversationRequest
+ */
+export class CompactConversationRequest extends Message<CompactConversationRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * reason records WHY the compaction happened: "manual", "pressure", or
+   * "reactive". Free-form and advisory; recorded verbatim in the audit trail.
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<CompactConversationRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CompactConversationRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CompactConversationRequest | PlainMessage<CompactConversationRequest> | undefined, b: CompactConversationRequest | PlainMessage<CompactConversationRequest> | undefined): boolean {
+    return proto3.util.equals(CompactConversationRequest, a, b);
+  }
+}
+
+/**
+ * CompactConversationResponse reports the outcome of a compaction. It is a
+ * synchronous result (not a stream): compaction is a single bounded operation
+ * and the caller needs only the verdict plus the reason when it declined.
+ *
+ * @generated from message orchicon.api.v1.CompactConversationResponse
+ */
+export class CompactConversationResponse extends Message<CompactConversationResponse> {
+  /**
+   * compacted is false when nothing was done — an empty history, or a
+   * history already small enough that a lossy collapse would cost detail for
+   * no benefit. detail always says why.
+   *
+   * @generated from field: bool compacted = 1;
+   */
+  compacted = false;
+
+  /**
+   * detail is a one-line, user-facing explanation of the outcome (shown
+   * verbatim in the transcript marker and the composer notice).
+   *
+   * @generated from field: string detail = 2;
+   */
+  detail = "";
+
+  /**
+   * summary is the generated summary text that replaced the collapsed
+   * history. Empty when compacted is false.
+   *
+   * @generated from field: string summary = 3;
+   */
+  summary = "";
+
+  /**
+   * context_tokens_before / context_tokens_after are the conversation's
+   * prompt size around the compaction — MEASURED only. 0 means "unknown":
+   * this field is never populated from an estimate (an estimate is reported
+   * in detail instead), so a caller can trust a non-zero value as real.
+   *
+   * @generated from field: int64 context_tokens_before = 4;
+   */
+  contextTokensBefore = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 context_tokens_after = 5;
+   */
+  contextTokensAfter = protoInt64.zero;
+
+  constructor(data?: PartialMessage<CompactConversationResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CompactConversationResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "compacted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "context_tokens_before", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "context_tokens_after", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CompactConversationResponse | PlainMessage<CompactConversationResponse> | undefined, b: CompactConversationResponse | PlainMessage<CompactConversationResponse> | undefined): boolean {
+    return proto3.util.equals(CompactConversationResponse, a, b);
   }
 }
 

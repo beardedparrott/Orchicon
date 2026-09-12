@@ -97,6 +97,23 @@ service AskOrchiconService {
   // deliberate.
   rpc WatchTurnStream(WatchTurnStreamRequest) returns (stream ChatStreamResponse);
 
+  // CompactConversation compacts a conversation's accumulated context so a
+  // long-running session can keep going instead of failing on the model's
+  // context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+  // session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+  // adapter (native) reduces the history it would re-send and replaces it
+  // with a summary plus the most recent turns.
+  //
+  // This is the escape hatch for a conversation already past its window: the
+  // sessionless transport re-sends the full history every turn, so once the
+  // history exceeds the window EVERY subsequent send fails and the
+  // conversation is permanently wedged. Compaction is the only way back.
+  //
+  // reason is recorded for the audit trail and the transcript marker:
+  // "manual" (a user asked), "pressure" (the proactive window gate fired),
+  // or "reactive" (a provider context-limit error was caught).
+  rpc CompactConversation(CompactConversationRequest) returns (CompactConversationResponse);
+
   // Attachments.
 
   // UploadAttachment uploads a file attachment for use in a message.
@@ -241,6 +258,36 @@ message InterjectConversationTurnRequest {
   string conversation_id = 1;
   string message = 2;
   repeated AttachmentInput attachments = 3;
+}
+
+// CompactConversationRequest identifies the conversation to compact.
+message CompactConversationRequest {
+  string conversation_id = 1;
+  // reason records WHY the compaction happened: "manual", "pressure", or
+  // "reactive". Free-form and advisory; recorded verbatim in the audit trail.
+  string reason = 2;
+}
+
+// CompactConversationResponse reports the outcome of a compaction. It is a
+// synchronous result (not a stream): compaction is a single bounded operation
+// and the caller needs only the verdict plus the reason when it declined.
+message CompactConversationResponse {
+  // compacted is false when nothing was done — an empty history, or a
+  // history already small enough that a lossy collapse would cost detail for
+  // no benefit. detail always says why.
+  bool compacted = 1;
+  // detail is a one-line, user-facing explanation of the outcome (shown
+  // verbatim in the transcript marker and the composer notice).
+  string detail = 2;
+  // summary is the generated summary text that replaced the collapsed
+  // history. Empty when compacted is false.
+  string summary = 3;
+  // context_tokens_before / context_tokens_after are the conversation's
+  // prompt size around the compaction — MEASURED only. 0 means "unknown":
+  // this field is never populated from an estimate (an estimate is reported
+  // in detail instead), so a caller can trust a non-zero value as real.
+  int64 context_tokens_before = 4;
+  int64 context_tokens_after = 5;
 }
 
 // --- Attachments ---

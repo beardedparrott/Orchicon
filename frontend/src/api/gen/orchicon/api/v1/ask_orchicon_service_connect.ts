@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -187,6 +187,31 @@ export const AskOrchiconService = {
       I: WatchTurnStreamRequest,
       O: ChatStreamResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * CompactConversation compacts a conversation's accumulated context so a
+     * long-running session can keep going instead of failing on the model's
+     * context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+     * session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+     * adapter (native) reduces the history it would re-send and replaces it
+     * with a summary plus the most recent turns.
+     *
+     * This is the escape hatch for a conversation already past its window: the
+     * sessionless transport re-sends the full history every turn, so once the
+     * history exceeds the window EVERY subsequent send fails and the
+     * conversation is permanently wedged. Compaction is the only way back.
+     *
+     * reason is recorded for the audit trail and the transcript marker:
+     * "manual" (a user asked), "pressure" (the proactive window gate fired),
+     * or "reactive" (a provider context-limit error was caught).
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.CompactConversation
+     */
+    compactConversation: {
+      name: "CompactConversation",
+      I: CompactConversationRequest,
+      O: CompactConversationResponse,
+      kind: MethodKind.Unary,
     },
     /**
      * UploadAttachment uploads a file attachment for use in a message.
