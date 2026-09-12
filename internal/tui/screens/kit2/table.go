@@ -55,6 +55,12 @@ type Table struct {
 	// source title in their border, so an embedded table must not repeat it —
 	// the duplicate row also shifted every click hit-test by one.
 	HideTitle bool
+
+	// Filter narrows the visible rows (case-insensitive substring over the row's
+	// cells, meta and id). It is a DISPLAY concern exactly like the tree's open
+	// state: Rows keeps the FULL set, and Move/Click/counts all operate on the
+	// filtered view, so the operator navigates what they can actually see.
+	Filter string
 }
 
 // NewTable builds an empty table with columns.
@@ -329,6 +335,37 @@ func (t *Table) ExpandableCount() int {
 	return n
 }
 
+// SetFilter narrows the visible rows and re-clamps the window (a filter can
+// shrink the visible set under the cursor).
+func (t *Table) SetFilter(q string) {
+	t.Filter = q
+	t.clampOffset()
+}
+
+// matchesFilter reports whether a row satisfies the current filter (a
+// case-insensitive substring over its cells, meta and id). An empty filter
+// matches everything.
+func (t *Table) matchesFilter(r Row) bool {
+	q := strings.ToLower(strings.TrimSpace(t.Filter))
+	if q == "" {
+		return true
+	}
+	hay := strings.ToLower(strings.Join(r.Cells, " ") + " " + r.Meta + " " + r.ID)
+	return strings.Contains(hay, q)
+}
+
+// MatchCount reports how many rows pass the filter and how many exist — the
+// "n/m" the filter row shows, so a narrowing filter is never silent.
+func (t *Table) MatchCount() (int, int) {
+	n := 0
+	for _, r := range t.Rows {
+		if t.matchesFilter(r) {
+			n++
+		}
+	}
+	return n, len(t.Rows)
+}
+
 // VisibleRows returns the rows currently shown (tree-aware): a row is hidden
 // when ANY ancestor on its parent chain is collapsed — not merely when its
 // direct parent is. The direct-parent-only check left a collapsed node's
@@ -345,6 +382,9 @@ func (t *Table) VisibleRows() []Row {
 	out := make([]Row, 0, len(t.Rows))
 	for _, r := range t.Rows {
 		if hiddenUnderCollapsedAncestor(r, parent, open) {
+			continue
+		}
+		if !t.matchesFilter(r) {
 			continue
 		}
 		out = append(out, r)

@@ -102,8 +102,11 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.AddSource(srcImages, "Runtime Images", m.fetchImages)
 	m.SetDetail(m.detail)
 	m.Base.SetSourceEmpty(srcProjects, "no projects yet — press n to create one")
-	m.Base.SetSourceEmpty(srcWorkItems, "no work items in this view — press n to create one, v to switch Tree/Board/Archive")
+	m.Base.SetSourceEmpty(srcWorkItems, "no work items in this view — press n to create one, or / to search")
 	m.Base.SetSourceEmpty(srcImages, "no runtime images yet — press n to define one, b to build")
+	// The Work Items list carries a search row ('/'), per the operator's "search
+	// box at the top of the work items page for filter".
+	m.Base.EnableFilter(srcWorkItems)
 	m.bar = kit2.NewActionBar()
 	m.build = kit2.NewStream("build log", 80, 20)
 	// The inline detail editor reports its outcome here (the modal path did
@@ -163,7 +166,8 @@ func (m *Model) Init() tea.Cmd {
 // option lists asynchronously, and in that window a form is not yet open —
 // so without this the arrow keys reached the list behind the modal.
 func (m *Model) ClaimsKeys() bool {
-	return m.form != nil || m.Open != nil || m.formLoading || m.Base.EditingDetail()
+	return m.form != nil || m.Open != nil || m.formLoading ||
+		m.Base.EditingDetail() || m.Base.Filtering()
 }
 
 // ActiveForm returns the form currently open on this screen, whichever host it
@@ -507,6 +511,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.handleBuildChunk(msg)
 
 	case tea.KeyMsg:
+		// The search box (the operator typing into the filter row) owns every
+		// key first: it is a text input.
+		if m.Base.Filtering() {
+			if handled, cmd := m.Base.Update(msg); handled {
+				return m, cmd
+			}
+		}
 		// The INLINE detail editor (an item/project/image being edited in the
 		// details pane) owns every key first: it is the focused surface.
 		if m.Base.EditingDetail() {
@@ -666,6 +677,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.toggleAllTreeNodes(), true
 		}
+	case "/":
+		// Focus the search box at the top of the list. While it is focused Base
+		// owns every key (typing narrows the list; esc clears the query and
+		// leaves the box), so there is no esc case here to shadow it.
+		if m.Base.StartFilter() {
+			return nil, true
+		}
 	case "J":
 		if src == srcWorkItems {
 			return m.reorderChildren(1), true
@@ -765,7 +783,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
+		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
 	}
 }
 

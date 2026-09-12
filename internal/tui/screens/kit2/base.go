@@ -2,6 +2,7 @@ package kit2
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,17 @@ type source struct {
 	fetch Fetch
 	table *Table
 	err   string
+	// filterable draws the search row above this source's list ('/' focuses it).
+	filterable bool
+}
+
+// filterRows is the number of rows the filter box occupies above the table's
+// own content (0 when the source is not filterable).
+func (s *source) filterRows() int {
+	if s.filterable {
+		return 1
+	}
+	return 0
 }
 
 type fetchedMsg struct {
@@ -86,6 +98,10 @@ type Base struct {
 	noAutoDetail bool
 	heroTitle    string
 	heroBody     string
+
+	// filtering is true while the operator is TYPING into the focused source's
+	// filter box (the search row above the list).
+	filtering bool
 
 	// Focus is the ONE rule for key ownership across this screen's regions.
 	Focus *Focus
@@ -386,6 +402,57 @@ func (b *Base) finishDetailEdit(submitted bool) {
 	}
 }
 
+// EnableFilter marks a source as filterable: its pane draws a search row above
+// the list and '/' focuses it (the operator's "search box at the top of the
+// work items page").
+func (b *Base) EnableFilter(src string) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.filterable = true
+			return
+		}
+	}
+}
+
+// Filtering reports whether the operator is typing into the filter box.
+func (b *Base) Filtering() bool { return b.filtering }
+
+// filterTarget is the focused source's table when that source is filterable.
+func (b *Base) filterTarget() *Table {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return nil
+	}
+	s := b.sources[b.active]
+	if !s.filterable {
+		return nil
+	}
+	return s.table
+}
+
+// StartFilter focuses the search box of the focused source (no-op when that
+// source has none).
+func (b *Base) StartFilter() bool {
+	if b.filterTarget() == nil {
+		return false
+	}
+	b.filtering = true
+	b.focusD = false
+	b.setFocusForPane()
+	return true
+}
+
+// StopFilter leaves the search box, KEEPING the query (esc clears it instead),
+// so the operator can navigate the narrowed list.
+func (b *Base) StopFilter() { b.filtering = false }
+
+// ClearFilter drops the query and leaves the search box.
+func (b *Base) ClearFilter() {
+	if t := b.filterTarget(); t != nil {
+		t.SetFilter("")
+	}
+	b.filtering = false
+}
+
 // Mutate runs a mutation through the executor (reconciling this screen's
 // affected source). Direct-RPC fallback when no executor is installed.
 func (b *Base) Mutate(req mutate.Request) tea.Cmd {
@@ -527,6 +594,35 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			b.finishDetailEdit(true)
 		}
 		return true, cmd
+	}
+
+	// The filter box owns the keys while the operator is typing into it: it is a
+	// text input, so nothing may leak to the list or the shell ('q' would quit
+	// mid-search, 'n' would open a create modal).
+	if b.filtering {
+		t := b.filterTarget()
+		if t == nil {
+			b.filtering = false
+			return true, nil
+		}
+		switch msg.String() {
+		case "esc":
+			b.ClearFilter()
+			return true, nil
+		case "enter":
+			b.StopFilter()
+			return true, b.loadDetail()
+		case "backspace":
+			q := []rune(t.Filter)
+			if len(q) > 0 {
+				t.SetFilter(string(q[:len(q)-1]))
+			}
+			return true, nil
+		}
+		if len(msg.Runes) > 0 {
+			t.SetFilter(t.Filter + string(msg.Runes))
+		}
+		return true, nil
 	}
 
 	switch msg.String() {
@@ -689,7 +785,7 @@ func (b *Base) tableTopRow() int {
 	head := 0
 	if b.active >= 0 && b.active < len(b.sources) {
 		t := b.sources[b.active].table
-		head = t.TitleRows() + t.HeaderRows()
+		head = t.TitleRows() + t.HeaderRows() + b.sources[b.active].filterRows()
 	}
 	return shellChromeRows + 1 + head
 }
@@ -798,14 +894,41 @@ func (b *Base) focusedPaneView(w, h int) string {
 		return NewPanel("", w, h).View()
 	}
 	s := b.sources[b.active]
-	s.table.Width, s.table.Height = w, h
+	s.table.Width, s.table.Height = w, h-s.filterRows()
 	s.table.Focused = !b.focusD
 	// The panel border carries the title; the embedded table must not repeat it.
 	s.table.HideTitle = true
 	p := NewPanel(s.title, w, h)
 	p.Focused = s.table.Focused
-	p.SetContent(s.table.View())
+	content := s.table.View()
+	if s.filterable {
+		content = b.filterLine(s, w) + "\n" + content
+	}
+	p.SetContent(content)
 	return p.View()
+}
+
+// filterLine renders the source's search row: the query, a caret while typing,
+// and how much of the list survives — so a narrowing filter is never silent
+// about what it hid.
+func (b *Base) filterLine(s *source, w int) string {
+	q := s.table.Filter
+	line := ""
+	if q == "" && !b.filtering {
+		line = "/ search" + strings.Repeat(" ", max(0, w-12)) + ""
+	} else {
+		label := "/ "
+		caret := ""
+		if b.filtering {
+			caret = "\u258f"
+		}
+		line = label + q + caret
+	}
+	if q != "" {
+		n, total := s.table.MatchCount()
+		line += "  " + strconv.Itoa(n) + "/" + strconv.Itoa(total)
+	}
+	return theme.HintText.Render(Pad(line, max(0, w-2)))
 }
 
 // detailPaneView renders the detail pane sized to exactly w×h. In inline-edit
