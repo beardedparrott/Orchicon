@@ -176,3 +176,59 @@ func TestPaletteFamiliesPresent(t *testing.T) {
 		t.Errorf("registry has %d palettes, want the full family set (>= 20)", len(Names()))
 	}
 }
+
+// The operator's ask: the user's bubble must be OBVIOUSLY lighter than the
+// model's (the GUI's relationship), on every palette — not merely a different
+// token. Both fills must also keep the text readable and stay distinguishable
+// from the screen background.
+func TestBubbleContrast(t *testing.T) {
+	for _, name := range Names() {
+		Use(name)
+		th := Active()
+		bg := string(th.Bg)
+		user := BubbleUser.GetBackground()
+		model := BubbleModel.GetBackground()
+		if user == nil || model == nil {
+			t.Fatalf("%s: bubble fills are unset", name)
+		}
+		us, ms := colorHex(user), colorHex(model)
+		if us == "" || ms == "" {
+			t.Fatalf("%s: bubble fills are not concrete colours (%v / %v)", name, user, model)
+		}
+		if us == ms {
+			t.Fatalf("%s: user and model bubbles are the SAME colour (%s)", name, us)
+		}
+		// The two fills must be visibly separated from each other.
+		if r := contrastRatio(us, ms); r < 1.18 {
+			t.Errorf("%s: user(%s) vs model(%s) bubble contrast is %.2f — they read as the same bubble", name, us, ms, r)
+		}
+		// Each fill must be distinct from the screen background it sits on.
+		for label, c := range map[string]string{"user": us, "model": ms} {
+			if r := contrastRatio(c, bg); r < 1.04 {
+				t.Errorf("%s: the %s bubble (%s) is indistinguishable from the background (%s)", name, label, c, bg)
+			}
+		}
+		// Text must stay readable on BOTH fills.
+		for label, c := range map[string]string{"user": us, "model": ms} {
+			if r := contrastRatio(string(th.Text), c); r < 4.0 {
+				t.Errorf("%s: text on the %s bubble (%s) is %.2f:1 — unreadable", name, label, c, r)
+			}
+		}
+	}
+	Use(DefaultName)
+}
+
+// colorHex extracts the #rrggbb from a lipgloss colour.
+func colorHex(c lipgloss.TerminalColor) string {
+	if c == nil {
+		return ""
+	}
+	type stringer interface{ String() string }
+	if s, ok := c.(stringer); ok {
+		return s.String()
+	}
+	if s, ok := c.(lipgloss.Color); ok {
+		return string(s)
+	}
+	return ""
+}

@@ -297,6 +297,12 @@ var (
 	// shell paints, so nothing bleeds through from beneath alt-screen).
 	ScreenBg = lipgloss.NewStyle()
 
+	// Chat bubbles (bubble.go): the user's messages sit in a markedly
+	// different fill from the model's, derived per palette so the relationship
+	// holds on every theme.
+	BubbleUser  = lipgloss.NewStyle()
+	BubbleModel = lipgloss.NewStyle()
+
 	// SurfaceBg is the BACKGROUND-ONLY form of the surface token, for repairs
 	// that must re-assert a surface background without adding a border or
 	// padding. Never render content through it.
@@ -380,6 +386,13 @@ func buildStyles(t Theme) {
 
 	ScreenBg = lipgloss.NewStyle().Background(t.Bg)
 	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
+
+	// Bubbles: a clearly different fill for the operator's own messages vs the
+	// model's, with the bubble's own text colour (the plain text colour is
+	// chosen against the BACKGROUND, not against a lifted bubble).
+	bu, bm := bubbleFills(string(t.Bg), string(t.Accent))
+	BubbleUser = lipgloss.NewStyle().Background(lipgloss.Color(bu)).Foreground(bubbleText(bu, t))
+	BubbleModel = lipgloss.NewStyle().Background(lipgloss.Color(bm)).Foreground(bubbleText(bm, t))
 
 	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)

@@ -26,9 +26,9 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatBubble(it.Text, theme.SurfaceAlt, theme.Text, maxWidth, true))
+			b.WriteString(renderChatBubble(it.Text, theme.BubbleUser, maxWidth, true))
 		case KindText:
-			b.WriteString(renderChatBubble(it.Text, theme.Surface, theme.Text, maxWidth, false))
+			b.WriteString(renderChatBubble(it.Text, theme.BubbleModel, maxWidth, false))
 		case KindReasoning:
 			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
@@ -52,10 +52,11 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 // bubbleWidth (a fraction of the pane so the alignment reads), nudged to the
 // right or left edge of the pane.
 //
-// The bubble is composed with theme.Opaque so its background cannot leak onto
-// the row padding, and the alignment filler is plain spaces so the pane's own
-// background shows either side — no band across the pane.
-func renderChatBubble(text string, bg, fg lipgloss.TerminalColor, maxWidth int, right bool) string {
+// The fill is a theme.Bubble* style (see theme/bubble.go): the user's bubble is
+// markedly different from the model's on every palette, which is the operator's
+// ask. The alignment filler is plain spaces so the pane's own background shows
+// either side — no band across the pane.
+func renderChatBubble(text string, style lipgloss.Style, maxWidth int, right bool) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -74,11 +75,11 @@ func renderChatBubble(text string, bg, fg lipgloss.TerminalColor, maxWidth int, 
 	}
 
 	body := strings.Split(strings.TrimRight(wrapText(text, bubbleW-2), "\n"), "\n")
-	style := lipgloss.NewStyle().Background(bg).Foreground(fg).Padding(0, 1)
+	padded := style.Padding(0, 1)
 
 	rows := make([]string, 0, len(body)+1)
 	for _, l := range body {
-		rows = append(rows, style.Render(l))
+		rows = append(rows, padded.Render(l))
 	}
 	// A one-row blank gutter after each bubble separates turns.
 	var out strings.Builder
