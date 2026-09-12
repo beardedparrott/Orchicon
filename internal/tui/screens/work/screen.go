@@ -59,6 +59,8 @@ type Model struct {
 	// fetch closure, which runs off the update loop).
 	viewMu sync.Mutex
 	view   viewMode
+	// sort is the sibling DISPLAY order (the control next to the search box).
+	sort sortMode
 
 	// create-form option lists (loaded before the form opens).
 	projects  []projectOpt
@@ -105,7 +107,7 @@ type Model struct {
 // New builds the screen. The project-events subscription lives for the
 // screen's lifetime and is closed by Close (tab switch = unsubscribe).
 func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
-	m := &Model{cl: cl, reg: reg, tenantID: tenantID, view: viewTree}
+	m := &Model{cl: cl, reg: reg, tenantID: tenantID, view: viewTree, sort: sortSequence}
 	m.NameStr = "work"
 	m.AddSource(srcProjects, "Projects", m.fetchProjects)
 	m.AddSource(srcWorkItems, "Work Items", m.fetchWorkItems)
@@ -279,7 +281,7 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if err != nil {
 		return nil, "", err
 	}
-	return rowsFor(view, resp.Msg.GetWorkItems()), resp.Msg.GetNextPageToken(), nil
+	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
@@ -456,25 +458,45 @@ func (m *Model) switchView(v viewMode) tea.Cmd {
 	return m.Refresh(srcWorkItems)
 }
 
+// SortMode returns the work-items sibling display order.
+func (m *Model) SortMode() sortMode {
+	m.viewMu.Lock()
+	defer m.viewMu.Unlock()
+	return m.sort
+}
+
+// cycleSort advances the sort control and re-renders the list.
+func (m *Model) cycleSort() tea.Cmd {
+	m.viewMu.Lock()
+	m.sort = m.sort.next()
+	next := m.sort
+	m.viewMu.Unlock()
+	m.notice = "work items sorted by " + string(next) + " (sequence is the stored order that J/K edits)"
+	return m.Refresh(srcWorkItems)
+}
+
 // syncRowActions (re)installs the pane's clickable controls. The tree's
 // collapse/expand-all only means something in the Tree view, so the flat views
 // carry no button rather than a dead one.
 func (m *Model) syncRowActions() {
-	if m.ViewMode() != viewTree {
-		m.Base.SetRowActions(srcWorkItems, nil)
-		return
+	acts := []kit2.RowAction{{
+		// A STATE-reporting label: the control says what it will do / what is on.
+		Label: func() string { return m.SortMode().label() },
+		Do:    func() { m.cycleSort() },
+	}}
+	if m.ViewMode() == viewTree {
+		acts = append(acts, kit2.RowAction{
+			Label: func() string {
+				t := m.Base.ActiveTable()
+				if t == nil || t.AllExpanded() {
+					return "collapse all"
+				}
+				return "expand all"
+			},
+			Do: func() { m.toggleAllTreeNodes() },
+		})
 	}
-	m.Base.SetRowActions(srcWorkItems, []kit2.RowAction{{
-		// A STATE-reporting label: the button says what pressing it will do.
-		Label: func() string {
-			t := m.Base.ActiveTable()
-			if t == nil || t.AllExpanded() {
-				return "collapse all"
-			}
-			return "expand all"
-		},
-		Do: func() { m.toggleAllTreeNodes() },
-	}})
+	m.Base.SetRowActions(srcWorkItems, acts)
 }
 
 // ---------------- update ----------------
@@ -861,7 +883,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · J/K: reorder children · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the button) · enter: detail")
+		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · J/K: reorder CHILDREN (stored sequence) · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
 	}
 }
 

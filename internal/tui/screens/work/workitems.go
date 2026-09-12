@@ -659,7 +659,10 @@ func (m *Model) reorderChildren(delta int) tea.Cmd {
 			}
 			order := make([]*apiv1.WorkItem, 0, len(sibs.Msg.GetWorkItems()))
 			order = append(order, sibs.Msg.GetWorkItems()...)
-			sortSiblings(order)
+			// The swap is computed from the STORED sequence, never the display
+			// sort: reordering under a display view would send the wrong sibling
+			// list and silently scramble the real order.
+			sortSiblings(order, sortSequence)
 			ids := make([]string, 0, len(order))
 			from := -1
 			for i, s := range order {

@@ -17,7 +17,7 @@ func TestTreeRowsCarryTreeMetadata(t *testing.T) {
 	task := &apiv1.WorkItem{Id: "t", Title: "Task", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ParentId: "f"}
 	solo := &apiv1.WorkItem{Id: "s", Title: "Solo", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK}
 
-	rows := treeRows([]*apiv1.WorkItem{epic, feat, task, solo})
+	rows := treeRows([]*apiv1.WorkItem{epic, feat, task, solo}, sortSequence)
 	type meta struct {
 		depth  int
 		parent string

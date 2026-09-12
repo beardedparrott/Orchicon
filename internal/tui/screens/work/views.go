@@ -82,7 +82,7 @@ func rowTitle(w *apiv1.WorkItem) string {
 // treeRows walks the real parent links (WorkItem.parent_id) depth-first from
 // the roots, preserving sibling order (sort_order, then title). Orphans
 // (parent not in the page) are rendered as roots so no item is ever dropped.
-func treeRows(items []*apiv1.WorkItem) []kit2.Item {
+func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	byParent := map[string][]*apiv1.WorkItem{}
 	known := map[string]bool{}
 	for _, w := range items {
@@ -99,7 +99,7 @@ func treeRows(items []*apiv1.WorkItem) []kit2.Item {
 	var walk func(parent string, depth int)
 	walk = func(parent string, depth int) {
 		kids := byParent[parent]
-		sortSiblings(kids)
+		sortSiblings(kids, mode)
 		for _, w := range kids {
 			// The tree metadata is what makes the pane a REAL tree: Depth
 			// indents the row, Parent lets a collapse hide the subtree, and
@@ -119,15 +119,77 @@ func treeRows(items []*apiv1.WorkItem) []kit2.Item {
 	return out
 }
 
-// sortSiblings orders siblings by the sequence chain (sort_order, NULLs
-// last), then title — a stable DISPLAY order only.
-func sortSiblings(items []*apiv1.WorkItem) {
+// sortMode is the DISPLAY ordering of sibling work items — the control the
+// operator asked for next to the search box ("What does reorder actually do on
+// work items? I couldn't figure out what it was sorting by. Maybe we should
+// have some actual sort controls at the top near the search box?").
+type sortMode string
+
+const (
+	// sortSequence is the item's real sequence chain (sort_order, NULLs last,
+	// then title). This is the ONLY mode that reflects the stored order, which
+	// is what J/K (ReorderWorkItems) edits.
+	sortSequence sortMode = "sequence"
+	sortTitle    sortMode = "title"
+	sortStatus   sortMode = "status"
+	sortPriority sortMode = "priority"
+)
+
+// next cycles the sort control.
+func (s sortMode) next() sortMode {
+	switch s {
+	case sortSequence:
+		return sortTitle
+	case sortTitle:
+		return sortStatus
+	case sortStatus:
+		return sortPriority
+	default:
+		return sortSequence
+	}
+}
+
+// labels the sort control shows.
+func (s sortMode) label() string {
+	return "sort: " + string(s)
+}
+
+// sortSiblings orders siblings for DISPLAY by the selected mode. Only
+// sortSequence reflects the stored sequence; the others are views over the same
+// rows and never renumber anything (the sequence is only ever mutated by
+// ReorderWorkItems — see the invariant at the top of this file).
+func sortSiblings(items []*apiv1.WorkItem, mode sortMode) {
+	byTitle := func(a, b *apiv1.WorkItem) bool { return a.GetTitle() < b.GetTitle() }
+	switch mode {
+	case sortTitle:
+		sort.SliceStable(items, func(i, j int) bool { return byTitle(items[i], items[j]) })
+		return
+	case sortStatus:
+		sort.SliceStable(items, func(i, j int) bool {
+			a, b := items[i], items[j]
+			if statusPill(a.GetStatus()) != statusPill(b.GetStatus()) {
+				return statusPill(a.GetStatus()) < statusPill(b.GetStatus())
+			}
+			return byTitle(a, b)
+		})
+		return
+	case sortPriority:
+		sort.SliceStable(items, func(i, j int) bool {
+			a, b := items[i], items[j]
+			if a.GetPriority() != b.GetPriority() {
+				return a.GetPriority() > b.GetPriority() // higher priority first
+			}
+			return byTitle(a, b)
+		})
+		return
+	}
+	// sortSequence: the stored chain.
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
 		an, bn := a.SortOrder == 0, b.SortOrder == 0
 		switch {
 		case an && bn:
-			return a.GetTitle() < b.GetTitle()
+			return byTitle(a, b)
 		case an:
 			return false
 		case bn:
@@ -140,9 +202,9 @@ func sortSiblings(items []*apiv1.WorkItem) {
 
 // archiveRows lists archived items with the status they will be restored to
 // (archived_from_status) — the archive view's whole point.
-func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
+func archiveRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	sorted := append([]*apiv1.WorkItem{}, items...)
-	sortSiblings(sorted)
+	sortSiblings(sorted, mode)
 	out := make([]kit2.Item, 0, len(sorted))
 	for _, w := range sorted {
 		from := w.GetArchivedFromStatus()
@@ -159,11 +221,11 @@ func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
 }
 
 // rowsFor maps a page of work items into the rows of the selected view.
-func rowsFor(view viewMode, items []*apiv1.WorkItem) []kit2.Item {
+func rowsFor(view viewMode, items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	if view == viewArchive {
-		return archiveRows(items)
+		return archiveRows(items, mode)
 	}
-	return treeRows(items)
+	return treeRows(items, mode)
 }
 
 // descendants returns the ids of every transitive child of id.

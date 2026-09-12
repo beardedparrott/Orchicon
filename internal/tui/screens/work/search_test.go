@@ -129,3 +129,82 @@ func TestSearchAndTreeInteract(t *testing.T) {
 		t.Fatalf("collapsed+filtered rows = %d, want 1", got)
 	}
 }
+
+// The sort control orders SIBLINGS for display without touching the stored
+// sequence (the operator's "maybe we should have some actual sort controls at
+// the top near the search box?").
+func TestSortModesOrderSiblings(t *testing.T) {
+	mk := func(id, title, status string, prio int32) *apiv1.WorkItem {
+		return &apiv1.WorkItem{
+			Id: id, Title: title, Priority: prio,
+			Kind:   apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+			Status: statusFromName(status),
+		}
+	}
+	items := func() []*apiv1.WorkItem {
+		return []*apiv1.WorkItem{
+			mk("c", "charlie", "running", 1),
+			mk("a", "alpha", "pending", 9),
+			mk("b", "bravo", "blocked", 5),
+		}
+	}
+
+	// by title
+	titles := func(mode sortMode) []string {
+		it := items()
+		sortSiblings(it, mode)
+		out := make([]string, 0, len(it))
+		for _, w := range it {
+			out = append(out, w.GetTitle())
+		}
+		return out
+	}
+
+	if got := strings.Join(titles(sortTitle), ","); got != "alpha,bravo,charlie" {
+		t.Fatalf("sort by title = %s", got)
+	}
+	if got := strings.Join(titles(sortPriority), ","); got != "alpha,bravo,charlie" {
+		t.Fatalf("sort by priority (highest first: 9,5,1) = %s", got)
+	}
+	// Status sorts by the rendered pill, then title. The expectation is derived
+	// from the pills themselves so it cannot drift from the vocabulary.
+	{
+		it := items()
+		sortSiblings(it, sortStatus)
+		var got []string
+		for _, w := range it {
+			got = append(got, statusPill(w.GetStatus())+":"+w.GetTitle())
+		}
+		for i := 1; i < len(it); i++ {
+			pa, pb := statusPill(it[i-1].GetStatus()), statusPill(it[i].GetStatus())
+			if pa > pb || (pa == pb && it[i-1].GetTitle() > it[i].GetTitle()) {
+				t.Fatalf("status sort is not ordered by pill then title: %v", got)
+			}
+		}
+	}
+}
+
+// The control cycles through the modes and comes back to the stored sequence.
+func TestSortControlCycles(t *testing.T) {
+	m := treePlane(t)
+	if got := m.SortMode(); got != sortSequence {
+		t.Fatalf("default sort = %q, want sequence", got)
+	}
+	seen := map[sortMode]bool{m.SortMode(): true}
+	for i := 0; i < 4; i++ {
+		press(t, m, "O") // unrelated control must not change the sort
+		m.cycleSort()
+		seen[m.SortMode()] = true
+	}
+	if len(seen) != 4 {
+		t.Fatalf("the control must reach all four modes, saw %d", len(seen))
+	}
+	// After four advances it is back to the sequence.
+	if got := m.SortMode(); got != sortSequence {
+		t.Fatalf("four advances must return to sequence, got %q", got)
+	}
+	// The control is rendered on the pane's top row with its current mode.
+	if v := m.View(); !strings.Contains(v, "sort: ") {
+		t.Fatalf("the sort control must render:\n%s", v)
+	}
+}
