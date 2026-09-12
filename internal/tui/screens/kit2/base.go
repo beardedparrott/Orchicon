@@ -98,6 +98,13 @@ type Base struct {
 
 	// OnDialog runs when the open Dialog resolves ("" = dismissed).
 	OnDialog func(choice string) tea.Cmd
+
+	// OnActivate, when set, handles Enter/Space on the selected row (list
+	// focus). It reports whether it handled the activation: false falls through
+	// to the default (focus the detail), true means the screen took it — which
+	// lets a screen make activation do the natural thing for the selection (the
+	// Themes pane APPLIES the highlighted palette).
+	OnActivate func() (handled bool, cmd tea.Cmd)
 }
 
 // AddSource registers a fetchable list pane.
@@ -469,7 +476,15 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		b.focusD = false
 		b.setFocusForPane()
 		return true, nil
-	case "enter", "tab":
+	case "enter", "tab", " ", "space":
+		// Activate the selected row. A screen may install OnActivate to make
+		// that do something concrete (the Themes pane applies the palette);
+		// otherwise activation opens the row's detail.
+		if b.OnActivate != nil {
+			if handled, cmd := b.OnActivate(); handled {
+				return true, cmd
+			}
+		}
 		b.focusD = !b.focusD
 		if b.focusD {
 			b.Focus.Set("detail")

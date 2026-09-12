@@ -139,12 +139,23 @@ func (m *App) MenuClick(x, y int) bool {
 // the active tab (always from content focus; from the composer only when
 // the buffer is empty, so a real message keeps Enter as send), or Space
 // under the same rule.
+// menuActivationKey reports whether k should open the active tab's dropdown.
+//
+// ONLY from the composer, and only when the buffer is empty. It must never
+// fire while the CONTENT has focus: Enter/Space there belong to the screen —
+// selecting a row, opening its detail, running its row action. Claiming them
+// from content focus is what made the operator unable to select anything in a
+// pane ("hitting enter or spacebar is just opening up the tab menu and not
+// selecting anything").
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
+	if m.chatFocus != focusComposer {
+		return false
+	}
 	switch k.String() {
 	case "enter":
-		return m.chatFocus == focusContent || strings.TrimSpace(m.dock.Value()) == ""
+		return strings.TrimSpace(m.dock.Value()) == ""
 	case " ", "space":
-		return m.chatFocus == focusContent || m.dock.Value() == ""
+		return m.dock.Value() == ""
 	}
 	return false
 }

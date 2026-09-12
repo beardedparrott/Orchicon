@@ -157,6 +157,26 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.bar = kit2.NewActionBar()
 	// Every write goes through the ONE mutation executor.
 	m.SetExecutor(&mutate.Executor{Sink: m})
+	// Enter/Space on a row does the natural thing for the focused pane: on
+	// Themes it APPLIES the highlighted palette (the selection IS the intent —
+	// matching the GUI, where clicking a theme switches to it), elsewhere it
+	// opens the row's detail.
+	m.OnActivate = func() (bool, tea.Cmd) {
+		if m.ActiveSourceName() != "themes" {
+			return false, nil // not ours: fall through to the default detail focus
+		}
+		item, ok := m.ActiveItem()
+		if !ok {
+			return false, nil
+		}
+		if item.ID == theme.Active().Name {
+			m.Notice("theme " + item.ID + " is already active")
+			return true, nil
+		}
+		m.applyTheme(item.ID)
+		m.Notice("theme: " + item.ID)
+		return true, nil
+	}
 
 	m.rpcAdminProbe = func(ctx context.Context) error {
 		if m.cl == nil || m.cl.Auth == nil {
