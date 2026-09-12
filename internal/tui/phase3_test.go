@@ -99,7 +99,13 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	if m.MenuOpenID() != "" {
 		t.Fatalf("enter must select + close the dropdown (menuOpen=%q)", m.MenuOpenID())
 	}
-	if s := m.screens[m.active]; s != nil {
+	// A VERB row (Ask's New/Conversations) runs its action; a source row focuses
+	// its source. Assert whichever contract applies to the row we picked.
+	if want.Action != nil {
+		if m.active == TabAsk && want.Cmd == "conversations" && !m.railVisible() {
+			t.Fatal("selecting Conversations must switch Ask to its conversation view (rail visible)")
+		}
+	} else if s := m.screens[m.active]; s != nil {
 		if ar, ok := s.(interface{ ActiveSourceName() string }); ok && ar.ActiveSourceName() != want.Source {
 			t.Fatalf("selected entry must navigate: active source %q, want %q", ar.ActiveSourceName(), want.Source)
 		}

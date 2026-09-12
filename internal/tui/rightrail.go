@@ -50,14 +50,18 @@ const railTopRow = tabBarRows + 1
 // exactly ONE conversation list (the old duplicate drew three columns).
 // railVisible reports whether the Ask right rail should be rendered.
 //
-// Always on for Ask EXCEPT in the launch layout: the operator wants the first
-// screen to be just the brand + composer (no conversations list), and the list
-// appears once a session starts.
+// Drawn when Ask is showing the conversation view: while a session is open
+// (continuing it), or when the operator explicitly chose Conversations from
+// the tab's menu. The launch page ("New") deliberately shows no list — the
+// operator asked for a clean first screen.
 func (m *App) railVisible() bool {
 	if m.active != TabAsk {
 		return false
 	}
-	return !m.welcomeMode()
+	if m.chatConvID != "" {
+		return true // continuing a session
+	}
+	return m.askMode == askConversations
 }
 
 // toggleRightRail collapses/expands the Ask conversations rail (ctrl+r).

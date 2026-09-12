@@ -150,6 +150,7 @@ type App struct {
 	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
 	// via ctrl+r toggle and a mouse click on the rail header. State persists
 	// for the session. The diff pane is the LEFT rail; this is the RIGHT rail.
+	askMode       askMode // Ask's presentation: launch page vs conversations
 	conversations []chat.Conversation
 	convRailOpen  bool
 	convSel       int
@@ -378,7 +379,26 @@ func (m *App) drainStaged() tea.Cmd {
 // next composer send creates a fresh conversation (the GUI's New chat).
 // The transcript starts EMPTY (the detail pane is cleared and the stream
 // for the new conversation has no lines yet).
+// showAskConversations switches Ask to its conversation view: the transcript
+// pane plus the conversations rail on the right, so the operator can continue a
+// previous session. This is the Ask tab's "Conversations" menu row.
+func (m *App) showAskConversations() {
+	m.askMode = askConversations
+	if m.active != TabAsk {
+		m.SwitchTo(TabAsk)
+	}
+	m.EnsureSubscriptions(TabAsk)
+	m.refreshLayout()
+	// The rail only loads when it is shown, so the first time it appears it may
+	// never have been fetched (or may have failed) — fetch it now. Never a
+	// silent empty rail.
+	if m.convErr != "" || !m.convLoaded {
+		m.pendingRailCmd = m.reloadConversations()
+	}
+}
+
 func (m *App) newChat() {
+	m.askMode = askNew
 	m.chatConvID = ""
 	if m.chat != nil {
 		m.chat.SetActive("")
@@ -847,6 +867,7 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	if m.chatConvID == id {
 		return nil
 	}
+	m.askMode = askConversations
 	m.chatConvID = id
 	m.chat.SetActive(id)
 	return m.chat.OpenConversation(id)
@@ -1195,9 +1216,28 @@ func (m App) baseView(w, h int) string {
 	return fillView(strings.Join(rows, "\n"), w, h)
 }
 
+// askMode is the Ask tab's presentation.
+//
+// Ask is the only tab whose dropdown is a pair of VERBS rather than a list of
+// sources, because its list (conversations) lives in the right rail:
+//
+//	askNew         — the launch page: the centered composer, no rail. This is
+//	                 what orch shows on start.
+//	askConversations — the conversation view: the transcript pane with the
+//	                 conversations rail on the right, for continuing sessions.
+//
+// Opening or creating a conversation implies askConversations, so a send from
+// the launch page lands in the conversation view naturally.
+type askMode int
+
+const (
+	askNew askMode = iota
+	askConversations
+)
+
 // welcomeMode reports whether to render the centered launch layout: the Ask
-// tab, with no conversation open yet. Once the operator opens or creates a
-// conversation the normal transcript layout takes over.
+// tab showing "New" with no conversation open. Choosing Conversations (or
+// opening one) leaves it.
 func (m App) welcomeMode() bool {
 	if m.active != TabAsk || m.chatConvID != "" {
 		return false
@@ -1207,7 +1247,7 @@ func (m App) welcomeMode() bool {
 			return false
 		}
 	}
-	return true
+	return m.askMode != askConversations
 }
 
 // brandGlyphs is a 5-row block font. EVERY glyph is EXACTLY brandGlyphW cells

@@ -525,6 +525,7 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
 	case chatConvCreatedMsg:
+		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
 		m.chat.SetActive(msg.convID)
 		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}

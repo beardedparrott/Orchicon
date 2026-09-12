@@ -26,6 +26,9 @@ type TabMenuEntry struct {
 	Cmd    string // nav command word ("work-items")
 	Label  string // human title ("Work Items")
 	Source string // screenkit source name ("" = tab-level)
+	// Action is carried for verb rows (Ask's New / Conversations); nil for
+	// source rows, which focus their source instead.
+	Action func(m *App) tea.Cmd
 }
 
 // TabMenu is the dropdown for one tab.
@@ -53,7 +56,7 @@ func (m *App) TabMenu() *TabMenu {
 func (m *App) openTabMenu(id TabID) {
 	tm := &TabMenu{}
 	for _, e := range m.navEntries(id) {
-		tm.Entries = append(tm.Entries, TabMenuEntry{Cmd: e.Cmd, Label: e.Label, Source: e.Source})
+		tm.Entries = append(tm.Entries, TabMenuEntry{Cmd: e.Cmd, Label: e.Label, Source: e.Source, Action: e.Action})
 	}
 	tm.Sel = 0
 	m.menus[id] = tm
@@ -91,6 +94,11 @@ func (m *App) MenuSelect() {
 	}
 	entry := tm.Entries[tm.Sel]
 	m.closeTabMenu()
+	// A verb row runs its action (Ask's New / Conversations).
+	if entry.Action != nil {
+		entry.Action(m)
+		return
+	}
 	if entry.Source == "" {
 		return // tab-level row: the tab is already active
 	}

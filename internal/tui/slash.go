@@ -98,6 +98,13 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			Usage: "/" + e.Cmd + e.ArgsHint,
 			Desc:  "open " + e.Label,
 			Run: func(m *App, args []string) tea.Cmd {
+				// A VERB row (Ask's New / Conversations) runs its action instead of
+				// focusing a source — otherwise /conversations would switch tabs
+				// and focus a source the Ask screen never renders (its list is the
+				// right rail).
+				if eCopy.Action != nil {
+					return eCopy.Action(m)
+				}
 				m.SwitchTo(eCopy.Tab)
 				m.EnsureSubscriptions(eCopy.Tab)
 				if eCopy.Source != "" {
