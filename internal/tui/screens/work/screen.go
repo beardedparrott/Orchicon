@@ -106,6 +106,15 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.Base.SetSourceEmpty(srcImages, "no runtime images yet — press n to define one, b to build")
 	m.bar = kit2.NewActionBar()
 	m.build = kit2.NewStream("build log", 80, 20)
+	// The inline detail editor reports its outcome here (the modal path did
+	// this inline in Update; the editor lives in kit2.Base now).
+	m.Base.SetOnEditDone(func(submitted bool) {
+		if submitted {
+			m.notice = "saved (" + m.formMode + ")"
+			return
+		}
+		m.notice = "cancelled"
+	})
 	m.Base.SetStatuses([]screenkit.StatusMsg{
 		{Name: "project-events", Status: "idle"},
 	})
@@ -144,19 +153,28 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.Load(), m.reg.WaitStatus("project-events"))
 }
 
-// ClaimsKeys reports whether the screen owns every key right now (an open
-// form, a confirmation dialog, or a modal that is still being PREPARED). The
-// shell consults it before its own routes so a typed character is never
-// stolen ('q' would quit, space would open the tab menu, '/' the palette).
+// ClaimsKeys reports whether the screen owns every key right now (a modal
+// form, an inline detail editor, a confirmation dialog, or a modal that is
+// still being PREPARED). The shell consults it before its own routes so a
+// typed character is never stolen ('q' would quit, space would open the tab
+// menu, '/' the palette).
 //
 // formLoading participates on purpose: the create/edit forms fetch their
 // option lists asynchronously, and in that window a form is not yet open —
 // so without this the arrow keys reached the list behind the modal.
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil || m.formLoading }
+func (m *Model) ClaimsKeys() bool {
+	return m.form != nil || m.Open != nil || m.formLoading || m.Base.EditingDetail()
+}
 
-// ActiveForm returns the open form (nil when closed) — tests and the shell
-// read the in-progress input through it.
-func (m *Model) ActiveForm() *kit2.Form { return m.form }
+// ActiveForm returns the form currently open on this screen, whichever host it
+// is drawn in — the modal form (creates) or the inline detail-pane editor
+// (edits). Tests and the shell read the in-progress input through it.
+func (m *Model) ActiveForm() *kit2.Form {
+	if m.form != nil {
+		return m.form
+	}
+	return m.Base.DetailForm()
+}
 
 // DialogOpen reports whether a confirmation dialog is up.
 func (m *Model) DialogOpen() bool { return m.Open != nil }
@@ -424,13 +442,14 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.projects, m.workflows = msg.projects, msg.workflows
 			m.form = m.newItemCreateForm()
 		case formEditItem:
-			m.form = m.newItemEditForm(msg.item)
+			// Edit in the DETAILS PANE, not a modal (the operator's ask).
+			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
 		case formStatusItem:
-			m.form = m.newItemStatusForm(msg.item)
+			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
 		case formAssignItem:
-			m.form = m.newItemAssignForm(msg.item)
+			m.Base.BeginDetailEdit("Assign worker", m.newItemAssignForm(msg.item))
 		case formScheduleItem:
-			m.form = m.newItemScheduleForm(msg.item)
+			m.Base.BeginDetailEdit("Schedule", m.newItemScheduleForm(msg.item))
 		}
 		m.formMode, m.formID = msg.mode, msg.item.GetId()
 		m.notice = ""
@@ -446,9 +465,9 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		case formCreateProject:
 			m.form = m.newProjectCreateForm()
 		case formEditProject:
-			m.form = m.newProjectEditForm(msg.project)
+			m.Base.BeginDetailEdit("Edit project", m.newProjectEditForm(msg.project))
 		case formProjectDir:
-			m.form = m.newProjectDirForm(msg.project)
+			m.Base.BeginDetailEdit("Project directory", m.newProjectDirForm(msg.project))
 		}
 		m.formMode, m.formID = msg.mode, msg.project.GetId()
 		m.notice = ""
@@ -464,7 +483,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		case formCreateImage:
 			m.form = m.newImageCreateForm()
 		case formEditImage:
-			m.form = m.newImageEditForm(msg.image)
+			m.Base.BeginDetailEdit("Edit runtime image", m.newImageEditForm(msg.image))
 		}
 		m.formMode, m.formID = msg.mode, msg.image.GetId()
 		m.notice = ""
@@ -488,7 +507,14 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.handleBuildChunk(msg)
 
 	case tea.KeyMsg:
-		// The open form owns every key while it is up (esc closes it; enter
+		// The INLINE detail editor (an item/project/image being edited in the
+		// details pane) owns every key first: it is the focused surface.
+		if m.Base.EditingDetail() {
+			if handled, cmd := m.Base.Update(msg); handled {
+				return m, cmd
+			}
+		}
+		// The open modal form owns every key while it is up (esc closes it; enter
 		// on the last field submits through the form's own validation).
 		if m.form != nil {
 			if msg.String() == "esc" {
@@ -735,11 +761,11 @@ func (m *Model) toggleAllTreeNodes() tea.Cmd {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
-		return theme.HintText.Render("n: new project · e: edit (name/goals/dir) · d: set+create project dir · enter: detail · ←/→: pane")
+		return theme.HintText.Render("n: new project · e: edit in the details pane (name/goals/dir) · d: set+create project dir · enter: detail · ←/→: pane")
 	case srcImages:
-		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete (confirm) · enter: detail")
+		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · e: edit · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
+		return theme.HintText.Render("n: new · e: edit in the details pane · s: status/priority · t: schedule · w: assign · W: unassign · y: auto-start · J/K: reorder · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all")
 	}
 }
 

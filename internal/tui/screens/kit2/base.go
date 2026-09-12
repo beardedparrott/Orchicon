@@ -9,6 +9,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // Screen is the contract every area screen implements (alias of the
@@ -64,6 +65,13 @@ type Base struct {
 	active  int
 	detail  screenkit.Detail
 	focusD  bool
+
+	// editForm, when non-nil, replaces the detail pane's body with a typed
+	// form: the screen's INLINE EDIT mode. Keys route to it while it is up.
+	editForm  *Form
+	editTitle string
+	// OnEditDone is notified once when the inline editor closes.
+	OnEditDone func(submitted bool)
 
 	width, height int
 	detailFn      DetailFn
@@ -343,6 +351,41 @@ func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 // SetExecutor installs the single mutation executor (feedback + reconcile).
 func (b *Base) SetExecutor(e *mutate.Executor) { b.Exec = e }
 
+// SetOnEditDone registers the callback notified once when the inline
+// detail-pane editor closes (submitted=true on save, false on cancel). A
+// screen uses it for its status notice.
+func (b *Base) SetOnEditDone(fn func(submitted bool)) { b.OnEditDone = fn }
+
+// BeginDetailEdit installs an inline editor in the DETAIL pane and moves focus
+// there, so an entity is edited in place rather than in a modal box — the
+// operator's "edit it in the details pane as opposed to some small work item
+// edit modal that pops up. That is more natural and honestly much more
+// usable."
+//
+// The form is the same typed Form the modals use (caret editing, field
+// navigation, validation, typed submit); only its HOST changes.
+func (b *Base) BeginDetailEdit(title string, f *Form) {
+	b.editForm, b.editTitle = f, title
+	b.focusD = true
+	if b.Focus != nil {
+		b.Focus.Set("detail")
+	}
+}
+
+// EditingDetail reports whether the detail pane is in inline-edit mode.
+func (b *Base) EditingDetail() bool { return b.editForm != nil }
+
+// DetailForm exposes the open inline editor (nil when not editing).
+func (b *Base) DetailForm() *Form { return b.editForm }
+
+// finishDetailEdit closes the inline editor and reports the outcome once.
+func (b *Base) finishDetailEdit(submitted bool) {
+	b.editForm = nil
+	if b.OnEditDone != nil {
+		b.OnEditDone(submitted)
+	}
+}
+
 // Mutate runs a mutation through the executor (reconciling this screen's
 // affected source). Direct-RPC fallback when no executor is installed.
 func (b *Base) Mutate(req mutate.Request) tea.Cmd {
@@ -461,6 +504,29 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, b.OnDialog(choice)
 		}
 		return true, nil
+	}
+
+	// The inline detail editor owns EVERY key while it is up: it is the focused
+	// surface, so a keystroke can never leak to the list behind it or to the
+	// shell's chords ('q' would quit mid-edit).
+	if b.editForm != nil {
+		f := b.editForm
+		switch msg.String() {
+		case "esc":
+			b.finishDetailEdit(false)
+			return true, nil
+		case "ctrl+s":
+			cmd, _ := f.Submit()
+			if f.Submitted {
+				b.finishDetailEdit(true)
+			}
+			return true, cmd
+		}
+		cmd, _ := f.HandleKey(msg)
+		if f.Submitted {
+			b.finishDetailEdit(true)
+		}
+		return true, cmd
 	}
 
 	switch msg.String() {
@@ -742,12 +808,25 @@ func (b *Base) focusedPaneView(w, h int) string {
 	return p.View()
 }
 
-// detailPaneView renders the detail pane sized to exactly w×h.
+// detailPaneView renders the detail pane sized to exactly w×h. In inline-edit
+// mode the pane hosts the typed form in place of the read-only detail, so the
+// operator edits the entity where they were already reading it.
 func (b *Base) detailPaneView(w, h int) string {
 	b.detail.Width, b.detail.Height = w, h
-	p := NewPanel("Detail", w, h)
+	title, content := "Detail", b.detail.View()
+	if b.editForm != nil {
+		title = b.editTitle
+		if title == "" {
+			title = "Edit"
+		}
+		// One border cell each side plus a little slack; the form windows its
+		// values to this width so the caret is always on screen.
+		b.editForm.Width = w - 4
+		content = b.editForm.View() + "\n" + theme.HintText.Render("ctrl+s: save · esc: cancel")
+	}
+	p := NewPanel(title, w, h)
 	p.Focused = b.focusD
-	p.SetContent(b.detail.View())
+	p.SetContent(content)
 	return p.View()
 }
 
