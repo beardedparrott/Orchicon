@@ -25,6 +25,14 @@ const (
 	KYAML        Kind = "yaml"
 	KCheckbox    Kind = "checkbox"
 	KNumber      Kind = "number"
+	// KPicker is a reference-to-another-entity field: instead of typing an ID
+	// (which no human knows) the operator types and the matching options are
+	// listed as they go, so the choice is MADE from the list. The operator:
+	// "The Parent work item requires an ID. There is no way a human is going to
+	// know this ... if you type a letter another box comes up similar to the
+	// slash command that has all work items that can be selected. Same should
+	// go for workflows and runtime images as well."
+	KPicker Kind = "picker"
 )
 
 // Option is one select choice.
@@ -70,6 +78,12 @@ type Form struct {
 	// anything": no way to correct mid-string and no way to clear a field.
 	pos map[string]int
 
+	// The open KPicker list: which field it belongs to, the query the operator
+	// is typing, and the highlighted option.
+	pickerField string
+	pickerQuery string
+	pickerSel   int
+
 	// OnSubmit is invoked by Submit with a copy of the collected values. It
 	// is where the screen wires the mutation executor; the returned cmd (the
 	// mutation's async RPC) is handed back to the bubbletea update loop.
@@ -111,6 +125,134 @@ func (f *Form) CurrentName() string {
 		return c.Name
 	}
 	return ""
+}
+
+// pickerRows is how many option rows an open picker shows at once.
+const pickerRows = 8
+
+// pickerOptions is the options matching the operator's query, so the list
+// narrows as they type (matching the label OR the value/id).
+func (f *Form) pickerOptions(s *FieldSpec) []Option {
+	q := strings.ToLower(strings.TrimSpace(f.pickerQuery))
+	out := make([]Option, 0, len(s.Options))
+	for _, o := range s.Options {
+		if q == "" ||
+			strings.Contains(strings.ToLower(o.Label), q) ||
+			strings.Contains(strings.ToLower(o.Value), q) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+func (f *Form) pickerOpen(s *FieldSpec) {
+	f.pickerField, f.pickerQuery, f.pickerSel = s.Name, "", 0
+}
+
+func (f *Form) pickerClose() {
+	f.pickerField, f.pickerQuery, f.pickerSel = "", "", 0
+}
+
+// pickerMove moves the option highlight within the FILTERED list.
+func (f *Form) pickerMove(delta int) {
+	n := len(f.pickerOptions(f.current()))
+	if n == 0 {
+		return
+	}
+	f.pickerSel += delta
+	if f.pickerSel < 0 {
+		f.pickerSel = 0
+	}
+	if f.pickerSel >= n {
+		f.pickerSel = n - 1
+	}
+}
+
+// pickerChoose commits the highlighted option and closes the list. The VALUE is
+// the option's ID — the operator never had to know it or type it.
+func (f *Form) pickerChoose(s *FieldSpec) {
+	opts := f.pickerOptions(s)
+	if len(opts) == 0 {
+		return
+	}
+	sel := f.pickerSel
+	if sel < 0 || sel >= len(opts) {
+		sel = 0
+	}
+	f.Values[s.Name] = opts[sel].Value
+	f.setCaret(s.Name, len([]rune(opts[sel].Value)))
+	f.pickerClose()
+}
+
+// pickerKey handles a key aimed at a focused KPicker. handled=false falls
+// through to the ordinary field handling (so up/down still walk FIELDS while
+// the list is closed, and tab still leaves the field).
+func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
+	open := f.pickerField == s.Name
+	switch k.String() {
+	case "enter":
+		if open {
+			f.pickerChoose(s)
+		} else {
+			f.pickerOpen(s)
+		}
+		return nil, true
+	case " ", "space":
+		if !open {
+			f.pickerOpen(s)
+			return nil, true
+		}
+		// While the list is open a space is part of the QUERY ("sweeper
+		// retry"), not a commit.
+		f.pickerQuery += " "
+		f.pickerSel = 0
+		return nil, true
+	case "up":
+		if open {
+			f.pickerMove(-1)
+			return nil, true
+		}
+		return nil, false
+	case "down":
+		if open {
+			f.pickerMove(1)
+			return nil, true
+		}
+		return nil, false
+	case "esc":
+		if open {
+			f.pickerClose()
+			return nil, true
+		}
+		return nil, false // the caller closes the form
+	case "backspace":
+		if open {
+			q := []rune(f.pickerQuery)
+			if len(q) > 0 {
+				f.pickerQuery = string(q[:len(q)-1])
+				f.pickerSel = 0
+			}
+			return nil, true
+		}
+		return nil, false
+	case "tab", "shift+tab":
+		// Leaving the field closes the list.
+		if open {
+			f.pickerClose()
+		}
+		return nil, false
+	}
+	if len(k.Runes) > 0 {
+		// Typing OPENS the list and filters it — the gesture the operator asked
+		// for ("if you type a letter another box comes up").
+		if !open {
+			f.pickerOpen(s)
+		}
+		f.pickerQuery += string(k.Runes)
+		f.pickerSel = 0
+		return nil, true
+	}
+	return nil, false
 }
 
 // Set assigns a field value (used by tests and programmatic prefill). The caret
@@ -241,6 +383,11 @@ func inOptions(spec FieldSpec, v string) bool {
 // list instead of moving through the field values").
 func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	s := f.current()
+	if s != nil && s.Kind == KPicker {
+		if cmd, handled := f.pickerKey(s, k); handled {
+			return cmd, true
+		}
+	}
 	switch k.String() {
 	case "tab":
 		f.Next()
@@ -500,6 +647,18 @@ func (f *Form) display(s FieldSpec) string {
 			}
 		}
 		return v
+	case KPicker:
+		// Show the CHOSEN option's label — never the raw id the operator
+		// cannot be expected to know.
+		for _, o := range s.Options {
+			if o.Value == v {
+				if o.Label != "" {
+					return o.Label
+				}
+				return o.Value
+			}
+		}
+		return v
 	default:
 		if v == "" && f.Focused && f.current() != nil && f.current().Name == s.Name {
 			return s.Placeholder
@@ -555,6 +714,37 @@ func (f *Form) valueWithCaret(name string, avail int) string {
 	return string(shown[:idx]) + caretRune + string(shown[idx:])
 }
 
+// writePickerList renders an open picker's matches (windowed around the
+// highlight) plus the gesture hint.
+func (f *Form) writePickerList(b *strings.Builder, s *FieldSpec, width int) {
+	opts := f.pickerOptions(s)
+	if len(opts) == 0 {
+		b.WriteString(theme.HintText.Render(Pad("    (no matches)", width)) + "\n")
+		return
+	}
+	start := 0
+	if f.pickerSel >= pickerRows {
+		start = f.pickerSel - pickerRows + 1
+	}
+	end := start + pickerRows
+	if end > len(opts) {
+		end = len(opts)
+	}
+	for j := start; j < end; j++ {
+		mark := "    "
+		if j == f.pickerSel {
+			mark = "  ▸ "
+		}
+		line := mark + opts[j].Label
+		if j == f.pickerSel {
+			b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
+		} else {
+			b.WriteString(theme.ListItem.Render(line) + "\n")
+		}
+	}
+	b.WriteString(theme.HintText.Render(Pad("    ↑/↓ pick · enter select · esc close", width)) + "\n")
+}
+
 // View renders the form body.
 func (f *Form) View() string {
 	// A form rendered without an explicit width still needs a sane one: Pad
@@ -584,7 +774,16 @@ func (f *Form) View() string {
 		}
 		prefix := cursor + label + ": "
 		var line string
-		if focused && f.editable(s.Kind) && width > 0 {
+		switch {
+		case focused && s.Kind == KPicker:
+			// While the list is open the field shows the QUERY being typed;
+			// closed it shows the choice that was made.
+			if f.pickerField == s.Name {
+				line = prefix + f.pickerQuery + "\u258f"
+			} else {
+				line = prefix + f.display(s)
+			}
+		case focused && f.editable(s.Kind) && width > 0:
 			// An editable field shows a CARET and horizontally windows its
 			// value, so the character being edited is always on screen. The
 			// append-only editor it replaced silently pushed every keystroke
@@ -594,7 +793,7 @@ func (f *Form) View() string {
 				avail = 8
 			}
 			line = prefix + f.valueWithCaret(s.Name, avail)
-		} else {
+		default:
 			val := f.display(s)
 			line = prefix + val
 			if s.Kind == KSecret && val != "" {
@@ -610,6 +809,12 @@ func (f *Form) View() string {
 		if err := f.Errors[s.Name]; err != "" {
 			b.WriteString(theme.ErrorText.Render("    ✗ " + err))
 			b.WriteString("\n")
+		}
+		// An open picker lists its matches directly under the field, so the
+		// operator SEES the choices while typing (the operator's "another box
+		// comes up similar to the slash command").
+		if s.Kind == KPicker && f.pickerField == s.Name {
+			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
 	b.WriteString(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: submit · esc: cancel"))

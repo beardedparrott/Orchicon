@@ -52,7 +52,12 @@ type itemFormMsg struct {
 	item      *apiv1.WorkItem
 	projects  []projectOpt
 	workflows []workflowOpt
-	err       error
+	// parents / images are the KPicker option lists: the work items that can be
+	// a parent and the runtime images that can be selected (as options, never
+	// as ids the operator would have to know).
+	parents []kit2.Option
+	images  []kit2.Option
+	err     error
 }
 
 // kindOptions is the create form's kind vocabulary (max 4 levels; the
@@ -173,6 +178,29 @@ func (m *Model) prepCreateItem() tea.Cmd {
 				msg.workflows = append(msg.workflows, workflowOpt{ID: w.GetId(), Name: w.GetName()})
 			}
 		}
+		// The parent picker lists the real work items, so a parent is CHOSEN by
+		// name instead of typed as an id.
+		if ir, err := cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+			PageSize:        200,
+			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+		})); err == nil {
+			msg.parents = append(msg.parents, kit2.Option{Value: "", Label: "— none (top level) —"})
+			for _, w := range ir.Msg.GetWorkItems() {
+				msg.parents = append(msg.parents, kit2.Option{
+					Value: w.GetId(),
+					Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
+				})
+			}
+		}
+		// The runtime-image picker lists the real images (value = the tag the
+		// request carries).
+		if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+			msg.images = append(msg.images, kit2.Option{Value: "", Label: "— none (base image) —"})
+			for _, img := range lr.Msg.GetRuntimeImages() {
+				msg.images = append(msg.images, kit2.Option{Value: img.GetTag(), Label: img.GetName() + " (" + img.GetTag() + ")"})
+			}
+		}
 		return msg
 	}
 }
@@ -194,8 +222,46 @@ func (m *Model) prepEditItem(mode string) tea.Cmd {
 		if err != nil {
 			return itemFormMsg{mode: mode, err: err}
 		}
-		return itemFormMsg{mode: mode, item: resp.Msg.GetWorkItem()}
+		msg := itemFormMsg{mode: mode, item: resp.Msg.GetWorkItem()}
+		// The edit form's pickers need the same option lists as the create form.
+		if wr, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{PageSize: 100})); err == nil {
+			for _, w := range wr.Msg.GetWorkflows() {
+				msg.workflows = append(msg.workflows, workflowOpt{ID: w.GetId(), Name: w.GetName()})
+			}
+		}
+		if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+			msg.images = append(msg.images, kit2.Option{Value: "", Label: "— none (base image) —"})
+			for _, img := range lr.Msg.GetRuntimeImages() {
+				msg.images = append(msg.images, kit2.Option{Value: img.GetTag(), Label: img.GetName() + " (" + img.GetTag() + ")"})
+			}
+		}
+		return msg
 	}
+}
+
+// workflowPickerOpts is the workflow picker's option list ("none" first).
+func (m *Model) workflowPickerOpts() []kit2.Option {
+	opts := []kit2.Option{{Value: "", Label: "— none —"}}
+	for _, w := range m.workflows {
+		opts = append(opts, kit2.Option{Value: w.ID, Label: w.Name})
+	}
+	return opts
+}
+
+// pickerOptsWithCurrent guarantees the option list contains the item's CURRENT
+// value, so editing an entity never silently drops a reference the fetched list
+// does not know about (a workflow or image that has since been deleted).
+// prefix names what the synthetic option is when its label is not human.
+func pickerOptsWithCurrent(opts []kit2.Option, cur, prefix string) []kit2.Option {
+	if cur == "" {
+		return opts
+	}
+	for _, o := range opts {
+		if o.Value == cur {
+			return opts
+		}
+	}
+	return append([]kit2.Option{{Value: cur, Label: prefix + cur + " (current)"}}, opts...)
 }
 
 // newItemCreateForm builds the typed create form.
@@ -212,14 +278,14 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "add retry to the sweeper"},
 		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: projOpts[0].Value},
 		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Options: kindOptions(), Initial: "task"},
-		kit2.FieldSpec{Name: "parent", Label: "Parent id", Kind: kit2.KText, Placeholder: "empty = top level (epic)"},
+		kit2.FieldSpec{Name: "parent", Label: "Parent", Kind: kit2.KPicker, Options: m.parents, Placeholder: "type to search work items"},
 		kit2.FieldSpec{Name: "description", Label: "Description", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "acceptance", Label: "Acceptance criteria", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "priority", Label: "Priority", Kind: kit2.KNumber, Initial: "0", Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "budgets", Label: "Budgets", Kind: kit2.KJSON, Placeholder: `{"tokens":100000}`, Validate: validateJSON},
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: "0", Validate: validateNonNegativeInt},
-		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KSelect, Options: wfOpts, Initial: ""},
-		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KText, Placeholder: "empty = base image"},
+		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker, Options: wfOpts, Initial: ""},
+		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker, Options: m.images, Placeholder: "type to search images"},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
@@ -247,8 +313,10 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "priority", Label: "Priority", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetPriority())), Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "budgets", Label: "Budgets", Kind: kit2.KJSON, Initial: w.GetBudgets(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetContextWindow())), Validate: validateNonNegativeInt},
-		kit2.FieldSpec{Name: "workflow", Label: "Workflow id", Kind: kit2.KText, Initial: w.GetWorkflowId()},
-		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KText, Initial: w.GetRuntimeImage()},
+		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker,
+			Options: pickerOptsWithCurrent(m.workflowPickerOpts(), w.GetWorkflowId(), "workflow ")},
+		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
+			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image ")},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
 		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KText, Initial: rfc3339OrEmpty(w.GetScheduledStartAt()), Validate: validateRFC3339},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},

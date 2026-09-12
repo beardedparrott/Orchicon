@@ -63,6 +63,10 @@ type Model struct {
 	// create-form option lists (loaded before the form opens).
 	projects  []projectOpt
 	workflows []workflowOpt
+	// parents / images back the KPicker fields (parent work item, runtime
+	// image): references chosen from a filtered list rather than typed ids.
+	parents []kit2.Option
+	images  []kit2.Option
 
 	// form is the open typed form (nil = closed).
 	form     *kit2.Form
@@ -437,13 +441,27 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
+		// Only replace a list the message actually carries: the edit path
+		// fetches the item plus its pickers, and must not clobber the project
+		// list the create form told us about.
+		if len(msg.projects) > 0 {
+			m.projects = msg.projects
+		}
+		if len(msg.workflows) > 0 {
+			m.workflows = msg.workflows
+		}
+		if len(msg.parents) > 0 {
+			m.parents = msg.parents
+		}
+		if len(msg.images) > 0 {
+			m.images = msg.images
+		}
 		switch msg.mode {
 		case formCreateItem:
 			if len(msg.projects) == 0 {
 				m.notice = "no projects yet — a work item belongs to a project"
 				return m, nil
 			}
-			m.projects, m.workflows = msg.projects, msg.workflows
 			m.form = m.newItemCreateForm()
 		case formEditItem:
 			// Edit in the DETAILS PANE, not a modal (the operator's ask).
