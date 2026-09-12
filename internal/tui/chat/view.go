@@ -16,19 +16,19 @@ import (
 // unlimited). Grouping is the caller's concern (GroupByPhase /
 // MergeSessionItems); this renders what it is given.
 //
-// Chat layout matches the GUI: the operator's messages are RIGHT-aligned in a
-// shaded bubble, the model's are LEFT-aligned in a slightly different shade,
-// so a turn reads as a conversation (operator request: "put the users
-// messages and the models messages inside a shaded bubble", user on the
-// right).
+// The two speakers are distinguished by TEXT COLOUR, not by a filled bubble:
+// the operator's messages are right-aligned and carry the palette's accent, the
+// model's are left-aligned in the plain text colour. A filled background made
+// prose harder to read (operator feedback) and the colour relationship is
+// contrast-gated per theme.
 func RenderItems(items []ChatItem, maxWidth int) string {
 	var b strings.Builder
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatBubble(it.Text, theme.BubbleUser, maxWidth, true))
+			b.WriteString(renderChatMessage(it.Text, theme.ChatUserText, maxWidth, true))
 		case KindText:
-			b.WriteString(renderChatBubble(it.Text, theme.BubbleModel, maxWidth, false))
+			b.WriteString(renderChatMessage(it.Text, theme.ChatModelText, maxWidth, false))
 		case KindReasoning:
 			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
@@ -48,15 +48,15 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 	return b.String()
 }
 
-// renderChatBubble renders one message as a shaded bubble with padding, at
-// bubbleWidth (a fraction of the pane so the alignment reads), nudged to the
-// right or left edge of the pane.
+// renderChatMessage renders one message as wrapped, COLOUR-CODED lines, nudged
+// to the right or left edge of the pane so the two speakers read as a
+// conversation.
 //
-// The fill is a theme.Bubble* style (see theme/bubble.go): the user's bubble is
-// markedly different from the model's on every palette, which is the operator's
-// ask. The alignment filler is plain spaces so the pane's own background shows
-// either side — no band across the pane.
-func renderChatBubble(text string, style lipgloss.Style, maxWidth int, right bool) string {
+// No background fill: the operator found a filled bubble harder to read than
+// plain coloured text, and the colour pairing is contrast-gated per theme
+// (TestChatTextContrast). The alignment filler is unstyled so the pane's own
+// background shows through.
+func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -64,37 +64,33 @@ func renderChatBubble(text string, style lipgloss.Style, maxWidth int, right boo
 	if pane <= 0 {
 		pane = 80
 	}
-	// Bubbles take at most ~72% of the pane, so the two sides stay visually
+	// Messages take at most ~3/4 of the pane, so the two sides stay visually
 	// distinct even on a long message.
-	bubbleW := pane * 3 / 4
-	if bubbleW > pane-4 {
-		bubbleW = pane - 4
+	msgW := pane * 3 / 4
+	if msgW > pane-4 {
+		msgW = pane - 4
 	}
-	if bubbleW < 12 {
-		bubbleW = pane
+	if msgW < 12 {
+		msgW = pane
 	}
 
-	body := strings.Split(strings.TrimRight(wrapText(text, bubbleW-2), "\n"), "\n")
-	padded := style.Padding(0, 1)
+	body := strings.Split(strings.TrimRight(wrapText(text, msgW), "\n"), "\n")
 
-	rows := make([]string, 0, len(body)+1)
-	for _, l := range body {
-		rows = append(rows, padded.Render(l))
-	}
-	// A one-row blank gutter after each bubble separates turns.
 	var out strings.Builder
-	for _, r := range rows {
-		pad := pane - lipgloss.Width(r)
+	for _, l := range body {
+		row := style.Render(l)
+		pad := pane - lipgloss.Width(row)
 		if pad < 0 {
 			pad = 0
 		}
 		if right {
-			out.WriteString(strings.Repeat(" ", pad) + r)
+			out.WriteString(strings.Repeat(" ", pad) + row)
 		} else {
-			out.WriteString(r)
+			out.WriteString(row)
 		}
 		out.WriteString("\n")
 	}
+	// A one-row gutter after each message separates turns.
 	out.WriteString("\n")
 	return out.String()
 }

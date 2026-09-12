@@ -6,45 +6,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// relLuminance is the WCAG relative luminance of a #rrggbb colour.
-func relLuminance(hex string) float64 {
-	if len(hex) != 7 || hex[0] != '#' {
-		return -1
-	}
-	parse := func(s string) float64 {
-		var v float64
-		for _, c := range s {
-			v *= 16
-			switch {
-			case c >= '0' && c <= '9':
-				v += float64(c - '0')
-			case c >= 'a' && c <= 'f':
-				v += float64(c-'a') + 10
-			case c >= 'A' && c <= 'F':
-				v += float64(c-'A') + 10
-			}
-		}
-		return v
-	}
-	lin := func(c float64) float64 {
-		c /= 255
-		if c <= 0.03928 {
-			return c / 12.92
-		}
-		return ((c + 0.055) / 1.055) * ((c + 0.055) / 1.055) * 1.055
-	}
-	return 0.2126*lin(parse(hex[1:3])) + 0.7152*lin(parse(hex[3:5])) + 0.0722*lin(parse(hex[5:7]))
-}
-
-// contrastRatio is the WCAG contrast ratio between two #rrggbb colours.
-func contrastRatio(a, b string) float64 {
-	la, lb := relLuminance(a), relLuminance(b)
-	if la < lb {
-		la, lb = lb, la
-	}
-	return (la + 0.05) / (lb + 0.05)
-}
-
 // Regression for the operator's "the light theme was abysmal — I couldn't see
 // anything". The GUI's border tokens are tasteful hairlines in a browser, but in
 // a TUI the border is the ONLY thing separating panes AND carries each panel's
@@ -231,4 +192,37 @@ func colorHex(c lipgloss.TerminalColor) string {
 		return string(s)
 	}
 	return ""
+}
+
+// The chat view distinguishes the two speakers by TEXT COLOUR (the operator
+// rejected a filled bubble as harder to read). That only works if both colours
+// stay readable on EVERY palette and are visibly different from each other —
+// so both properties are gated here rather than assumed.
+func TestChatTextContrast(t *testing.T) {
+	for _, name := range Names() {
+		Use(name)
+		th := Active()
+		bg := string(th.Bg)
+
+		user := colorHex(ChatUserText.GetForeground())
+		model := colorHex(ChatModelText.GetForeground())
+		if user == "" || model == "" {
+			t.Fatalf("%s: chat text colours are unset", name)
+		}
+		if user == model {
+			t.Fatalf("%s: both speakers use the same colour (%s)", name, user)
+		}
+		// Both must be readable against the background the pane paints.
+		if r := contrastRatio(user, bg); r < 4.0 {
+			t.Errorf("%s: the operator's message colour (%s) is %.2f:1 on the background — hard to read", name, user, r)
+		}
+		if r := contrastRatio(model, bg); r < 4.5 {
+			t.Errorf("%s: the model's message colour (%s) is %.2f:1 on the background — hard to read", name, model, r)
+		}
+		// And they must be separable from each other, not just from the page.
+		if r := contrastRatio(user, model); r < 1.4 {
+			t.Errorf("%s: user (%s) and model (%s) colours are only %.2f apart — the speakers blur together", name, user, model, r)
+		}
+	}
+	Use(DefaultName)
 }

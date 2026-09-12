@@ -297,11 +297,19 @@ var (
 	// shell paints, so nothing bleeds through from beneath alt-screen).
 	ScreenBg = lipgloss.NewStyle()
 
-	// Chat bubbles (bubble.go): the user's messages sit in a markedly
-	// different fill from the model's, derived per palette so the relationship
-	// holds on every theme.
+	// Chat bubble fills (bubble.go): derived per palette. NOTE the chat view no
+	// longer uses these — the operator found a filled background harder to read
+	// than plain coloured text ("the bubble idea is bad … it makes it hard to
+	// read the text"), so the fills are kept only for callers that want a shaded
+	// block (the diff/artifact rows) and the chat uses the TEXT colours below.
 	BubbleUser  = lipgloss.NewStyle()
 	BubbleModel = lipgloss.NewStyle()
+
+	// Chat text colours: the two speakers are distinguished by COLOUR, not by a
+	// background, and both are contrast-gated against the screen background for
+	// every palette (TestChatTextContrast).
+	ChatUserText  = lipgloss.NewStyle()
+	ChatModelText = lipgloss.NewStyle()
 
 	// SurfaceBg is the BACKGROUND-ONLY form of the surface token, for repairs
 	// that must re-assert a surface background without adding a border or
@@ -393,6 +401,16 @@ func buildStyles(t Theme) {
 	bu, bm := bubbleFills(string(t.Bg), string(t.Accent))
 	BubbleUser = lipgloss.NewStyle().Background(lipgloss.Color(bu)).Foreground(bubbleText(bu, t))
 	BubbleModel = lipgloss.NewStyle().Background(lipgloss.Color(bm)).Foreground(bubbleText(bm, t))
+
+	// Chat text: the operator's own messages carry the family ACCENT and the
+	// model's the plain text colour. The accent is adjusted to BODY-TEXT contrast
+	// (ensureContrast) because an accent is normally chosen for fills and borders,
+	// where 3:1 suffices — on several light palettes the raw accent sat at ~3.1:1
+	// and chat prose became hard to read.
+	ChatUserText = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ensureContrast(string(t.Accent), string(t.Bg), 4.5))).
+		Bold(true)
+	ChatModelText = lipgloss.NewStyle().Foreground(t.Text)
 
 	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
