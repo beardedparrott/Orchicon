@@ -265,6 +265,33 @@ func (t *Table) Toggle() bool {
 	return true
 }
 
+// ToggleAt toggles the tree node whose +/- marker sits at pane-relative column
+// x on body row `row` (0 = the first visible body line). It reports whether a
+// marker was hit, so the caller can fall through to a plain selection.
+//
+// The pane draws a 1-cell border, so a row's text starts at column 1: the
+// marker of a depth-d row occupies columns (1 + 2*depth) and (1 + 2*depth + 1)
+// ('+'/'-' plus the space after it). This is what makes the operator's
+// "clicking the minus sign" collapse the parent instead of merely selecting
+// the row.
+func (t *Table) ToggleAt(row, x int) bool {
+	vis := t.VisibleRows()
+	idx := t.Offset + row
+	if row < 0 || idx < 0 || idx >= len(vis) {
+		return false
+	}
+	r := vis[idx]
+	if !r.Expand {
+		return false
+	}
+	markerX := 1 + 2*r.Depth
+	if x < markerX || x > markerX+1 {
+		return false
+	}
+	t.setCursorToID(r.ID)
+	return t.Toggle()
+}
+
 // ExpandAll opens (or closes) every expandable node in one gesture — the
 // operator's "overall collapse and expand". It reports how many nodes CHANGED,
 // so a caller can tell a no-op on a flat list from a real toggle.

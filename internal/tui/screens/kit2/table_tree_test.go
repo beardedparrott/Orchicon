@@ -159,3 +159,37 @@ func TestTableClickRespectsCollapsedRows(t *testing.T) {
 		t.Fatalf("cursor = %q, want c", got)
 	}
 }
+
+// Marker hit-testing: a click on a parent's +/- toggles it, a click elsewhere
+// on the row selects (ToggleAt returns false so the caller falls through), and
+// a leaf's gutter is inert.
+func TestTableToggleAtMarker(t *testing.T) {
+	tbl := NewTable("t", Column{Title: ""})
+	tbl.Width, tbl.Height = 80, 20
+	tbl.SetItems(treeFixture(), "")
+
+	// The epic is a depth-0 parent: its marker sits at columns 1..2.
+	if !tbl.ToggleAt(0, 1) {
+		t.Fatal("a click on the root parent's marker must toggle it")
+	}
+	if tbl.Rows[0].Open {
+		t.Fatal("the root node must now be collapsed")
+	}
+	// After collapsing the epic only the epic and the solo root remain visible;
+	// a click below them is out of range.
+	if tbl.ToggleAt(5, 1) {
+		t.Fatal("a click past the last visible row must not toggle anything")
+	}
+	// A click to the RIGHT of the marker selects rather than toggles: ToggleAt
+	// reports false so the caller falls through to Click.
+	tbl.ExpandAll(true)
+	if tbl.ToggleAt(0, 30) {
+		t.Fatal("a click away from the marker must not toggle")
+	}
+	// The gutter of a LEAF is inert.
+	for i, r := range tbl.VisibleRows() {
+		if r.ID == "s" && tbl.ToggleAt(i, 1) {
+			t.Fatal("a leaf has no marker to toggle")
+		}
+	}
+}

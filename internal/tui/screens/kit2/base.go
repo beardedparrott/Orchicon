@@ -586,6 +586,15 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		s := b.sources[p]
 		row := msg.Y - b.tableTopRow()
+		// A click on a tree node's +/- marker toggles that node; any other click
+		// on the row selects it. Without this the marker was inert text and the
+		// operator had to hunt for a key.
+		if row >= 0 && s.table.ToggleAt(row, msg.X) {
+			b.active = p
+			b.focusD = false
+			b.setFocusForPane()
+			return nil
+		}
 		if row >= 0 && s.table.Click(row) {
 			b.active = p
 			b.focusD = false
