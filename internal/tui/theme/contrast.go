@@ -1,13 +1,16 @@
 package theme
 
-// contrast.go — runtime contrast helpers.
+// contrast.go — the WCAG contrast primitives the theme gates measure with.
 //
-// These live in the package (not only in tests) because palette derivation needs
-// them at BUILD time: an accent is chosen for borders and fills, where roughly
-// 3:1 suffices, but chat PROSE needs body-text contrast. On several light
-// palettes the raw accent sat near 3.1:1 against the background, so the accent
-// is shifted toward the palette's text until it clears the prose floor
-// (ensureContrast) rather than being hard-coded per theme.
+// They live in the package (not only in the tests) so every palette gate —
+// TestBubbleContrast, TestSelectionFillCarriesWhiteText, the pane-structure and
+// border gates — measures relative luminance and contrast ratio with ONE
+// implementation rather than each re-deriving it.
+//
+// (The chat transcript no longer needs an `ensureContrast` shift: the two
+// speakers are separated by full-width background BANDS whose fills are
+// contrast-gated by TestBubbleContrast, so there is no per-glyph colour to
+// nudge into range.)
 
 // relLuminance is the WCAG relative luminance of a #rrggbb colour.
 func relLuminance(hex string) float64 {
@@ -32,24 +35,4 @@ func contrastRatio(a, b string) float64 {
 		la, lb = lb, la
 	}
 	return (la + 0.05) / (lb + 0.05)
-}
-
-// ensureContrast shifts want toward the palette's text colour until it reaches
-// target contrast on bg. The text colour is already chosen against the
-// background, so the blend always converges.
-func ensureContrast(want, bg string, target float64) string {
-	cur := want
-	for i := 0; i < 8; i++ {
-		if contrastRatio(cur, bg) >= target {
-			return cur
-		}
-		// Toward white on a dark page, toward black on a light one — i.e. away
-		// from the background, which is what raises contrast in either mode.
-		dir := "#ffffff"
-		if relLuminance(bg) >= 0.5 {
-			dir = "#000000"
-		}
-		cur = hexBlend(cur, dir, 0.25)
-	}
-	return cur
 }

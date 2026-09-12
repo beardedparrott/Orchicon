@@ -16,19 +16,18 @@ import (
 // unlimited). Grouping is the caller's concern (GroupByPhase /
 // MergeSessionItems); this renders what it is given.
 //
-// The two speakers are distinguished by TEXT COLOUR, not by a filled bubble:
-// the operator's messages are right-aligned and carry the palette's accent, the
-// model's are left-aligned in the plain text colour. A filled background made
-// prose harder to read (operator feedback) and the colour relationship is
-// contrast-gated per theme.
+// The two speakers are separated by a FULL-WIDTH background band: the
+// operator's messages are right-aligned on the lighter fill, the model's
+// left-aligned on the darker one. The fills are derived per palette and gated
+// by TestBubbleContrast (separation + legibility on every palette).
 func RenderItems(items []ChatItem, maxWidth int) string {
 	var b strings.Builder
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatMessage(it.Text, theme.ChatUserText, maxWidth, true))
+			b.WriteString(renderChatMessage(it.Text, theme.BubbleUser, maxWidth, true))
 		case KindText:
-			b.WriteString(renderChatMessage(it.Text, theme.ChatModelText, maxWidth, false))
+			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false))
 		case KindReasoning:
 			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
@@ -48,14 +47,17 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 	return b.String()
 }
 
-// renderChatMessage renders one message as wrapped, COLOUR-CODED lines, nudged
-// to the right or left edge of the pane so the two speakers read as a
-// conversation.
+// renderChatMessage renders one message as a FULL-WIDTH background band: every
+// line is padded to the pane's width and painted with the speaker's fill, so
+// the band runs from the left edge of the conversation pane to its right edge
+// (the operator's "a whole background color change behind the entire block of
+// text ... from beginning to end of the width of the conversation for each
+// section ... a lighter or darker color"). The operator's messages sit at the
+// RIGHT of their band, the model's at the LEFT.
 //
-// No background fill: the operator found a filled bubble harder to read than
-// plain coloured text, and the colour pairing is contrast-gated per theme
-// (TestChatTextContrast). The alignment filler is unstyled so the pane's own
-// background shows through.
+// The padding is rendered INSIDE the style, which is the whole point: filling
+// only the text and leaving the margin unstyled is what made an earlier
+// attempt read as "just different colored text" rather than a block.
 func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -64,34 +66,28 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	if pane <= 0 {
 		pane = 80
 	}
-	// Messages take at most ~3/4 of the pane, so the two sides stay visually
-	// distinct even on a long message.
-	msgW := pane * 3 / 4
-	if msgW > pane-4 {
-		msgW = pane - 4
+	// One cell of padding inside the band on each side.
+	inner := pane - 2
+	if inner < 8 {
+		inner = pane
 	}
-	if msgW < 12 {
-		msgW = pane
-	}
-
-	body := strings.Split(strings.TrimRight(wrapText(text, msgW), "\n"), "\n")
+	body := strings.Split(strings.TrimRight(wrapText(text, inner), "\n"), "\n")
 
 	var out strings.Builder
 	for _, l := range body {
-		row := style.Render(l)
-		pad := pane - lipgloss.Width(row)
+		pad := inner - lipgloss.Width(l)
 		if pad < 0 {
 			pad = 0
 		}
+		var row string
 		if right {
-			out.WriteString(strings.Repeat(" ", pad) + row)
+			row = " " + strings.Repeat(" ", pad) + l + " "
 		} else {
-			out.WriteString(row)
+			row = " " + l + strings.Repeat(" ", pad) + " "
 		}
+		out.WriteString(style.Render(row))
 		out.WriteString("\n")
 	}
-	// A one-row gutter after each message separates turns.
-	out.WriteString("\n")
 	return out.String()
 }
 

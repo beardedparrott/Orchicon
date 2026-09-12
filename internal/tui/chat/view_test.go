@@ -69,3 +69,40 @@ func TestRenderEmptyItems(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The operator's ask: each message is a FULL-WIDTH background band (user
+// lighter, model darker) that runs from the left edge of the pane to its right
+// edge — not a tint on the glyphs. Every rendered line of a message must
+// therefore fill the whole pane.
+func TestChatMessagesRenderFullWidthBands(t *testing.T) {
+	const pane = 60
+	out := RenderItems([]ChatItem{
+		{Kind: KindUser, Text: "mine", Key: "u1"},
+		{Kind: KindText, Text: "theirs", Key: "t1"},
+	}, pane)
+
+	var userLine, modelLine string
+	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		switch {
+		case strings.Contains(l, "mine"):
+			userLine = l
+		case strings.Contains(l, "theirs"):
+			modelLine = l
+		}
+	}
+	if userLine == "" || modelLine == "" {
+		t.Fatalf("both bands must render:\n%q", out)
+	}
+	// FULL width: the band spans the whole pane, not just the text.
+	for name, l := range map[string]string{"user": userLine, "model": modelLine} {
+		if n := len([]rune(l)); n != pane {
+			t.Fatalf("%s band is %d cells wide, want the full pane (%d): %q", name, n, pane, l)
+		}
+	}
+	// The operator's band sits at the right of its block, the model's at the left.
+	ui := len(userLine) - len(strings.TrimLeft(userLine, " "))
+	mi := len(modelLine) - len(strings.TrimLeft(modelLine, " "))
+	if ui <= mi {
+		t.Fatalf("the operator's band must sit further right (user %d, model %d)\n%q", ui, mi, out)
+	}
+}

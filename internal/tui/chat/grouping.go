@@ -217,8 +217,20 @@ func MergeSessionItems(history, live []ChatItem) []ChatItem {
 		}
 	}
 	merged := append(append([]ChatItem{}, history...), fresh...)
-	sort.SliceStable(merged, func(a, b int) bool {
-		return itemAt(merged[a]) < itemAt(merged[b])
-	})
+	SortChronologically(merged)
 	return GroupByPhase(merged)
+}
+
+// SortChronologically orders items oldest-first by their effective timestamp
+// (a tool item timestamps through its tool). The sort is STABLE, so rows that
+// share a timestamp keep their input order.
+//
+// Callers MERGE two streams that each arrive in order — durable history and a
+// live buffer — and concatenating them puts every live row at the END, which
+// renders a just-sent user message BELOW the model's reply. Sorting the
+// combined list restores true chronological order whatever the source.
+func SortChronologically(items []ChatItem) {
+	sort.SliceStable(items, func(a, b int) bool {
+		return itemAt(items[a]) < itemAt(items[b])
+	})
 }

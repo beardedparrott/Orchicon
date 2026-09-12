@@ -251,3 +251,17 @@ func TestGroupByPhaseIdempotent(t *testing.T) {
 		t.Fatalf("again = %+v", again)
 	}
 }
+
+// SortChronologically orders by effective timestamp, so a tool item (which
+// timestamps through its tool, not its own At) still lands in its real place.
+func TestSortChronologically(t *testing.T) {
+	items := []ChatItem{
+		{Kind: KindText, Text: "b", At: 2000},
+		{Kind: KindUser, Text: "a", At: 1000},
+		{Kind: KindTool, Tool: &ParsedTool{ToolName: "bash", At: 1500}},
+	}
+	SortChronologically(items)
+	if items[0].Text != "a" || items[1].Kind != KindTool || items[2].Text != "b" {
+		t.Fatalf("order = %q/%s/%q, want user a, tool, text b", items[0].Text, items[1].Kind, items[2].Text)
+	}
+}

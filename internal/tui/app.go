@@ -1763,7 +1763,15 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 		}
 		kept = append(kept, it)
 	}
-	s.items[convID] = append(append([]chat.ChatItem{}, history...), kept...)
+	// INTERLEAVE by timestamp — never "history then live". Appending the live
+	// buffer after the durable transcript put every live row at the BOTTOM, so
+	// a just-sent user message rendered BELOW the model's reply (the
+	// operator's "user messages are printing AFTER the model's messages").
+	// Any live row the dedupe above does not drop has to land in its real
+	// chronological place.
+	merged := append(append([]chat.ChatItem{}, history...), kept...)
+	chat.SortChronologically(merged)
+	s.items[convID] = merged
 	s.mu.Unlock()
 }
 

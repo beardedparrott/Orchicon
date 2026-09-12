@@ -194,35 +194,7 @@ func colorHex(c lipgloss.TerminalColor) string {
 	return ""
 }
 
-// The chat view distinguishes the two speakers by TEXT COLOUR (the operator
-// rejected a filled bubble as harder to read). That only works if both colours
-// stay readable on EVERY palette and are visibly different from each other —
-// so both properties are gated here rather than assumed.
-func TestChatTextContrast(t *testing.T) {
-	for _, name := range Names() {
-		Use(name)
-		th := Active()
-		bg := string(th.Bg)
-
-		user := colorHex(ChatUserText.GetForeground())
-		model := colorHex(ChatModelText.GetForeground())
-		if user == "" || model == "" {
-			t.Fatalf("%s: chat text colours are unset", name)
-		}
-		if user == model {
-			t.Fatalf("%s: both speakers use the same colour (%s)", name, user)
-		}
-		// Both must be readable against the background the pane paints.
-		if r := contrastRatio(user, bg); r < 4.0 {
-			t.Errorf("%s: the operator's message colour (%s) is %.2f:1 on the background — hard to read", name, user, r)
-		}
-		if r := contrastRatio(model, bg); r < 4.5 {
-			t.Errorf("%s: the model's message colour (%s) is %.2f:1 on the background — hard to read", name, model, r)
-		}
-		// And they must be separable from each other, not just from the page.
-		if r := contrastRatio(user, model); r < 1.4 {
-			t.Errorf("%s: user (%s) and model (%s) colours are only %.2f apart — the speakers blur together", name, user, model, r)
-		}
-	}
-	Use(DefaultName)
-}
+// The two speakers are separated by a full-width background BAND (user lighter,
+// model darker) rather than by text colour, so the pairing is the bubble fills'
+// problem and is gated by TestBubbleContrast. There is deliberately no
+// text-colour gate here: tinting only the glyphs was rejected by the operator.
