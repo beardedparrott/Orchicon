@@ -88,3 +88,46 @@ func TestThemesDiffer(t *testing.T) {
 		t.Error("dark theme body text is too low-contrast")
 	}
 }
+
+// Every registered theme must be selectable, uniquely named, non-empty, and
+// must actually re-derive the styles (a theme that renders identically to the
+// previous one is a silent failure).
+func TestRegistryIsUsable(t *testing.T) {
+	names := Names()
+	if len(names) < 2 {
+		t.Fatalf("registry has %d themes, want at least 2", len(names))
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if n == "" {
+			t.Fatal("a theme has an empty name")
+		}
+		if seen[n] {
+			t.Fatalf("duplicate theme name %q in the registry", n)
+		}
+		seen[n] = true
+		if Lookup(n) == nil {
+			t.Fatalf("Lookup(%q) = nil but Names() lists it", n)
+		}
+		if !Use(n) {
+			t.Fatalf("Use(%q) failed", n)
+		}
+		if Active().Name != n {
+			t.Fatalf("Use(%q) left active = %q", n, Active().Name)
+		}
+		// The derived styles must carry the palette's colours.
+		if got := string(Dark.Bg); n == Dark.Name && string(Active().Bg) != got {
+			t.Fatalf("%s: active Bg = %q, want %q", n, Active().Bg, got)
+		}
+		if ScreenBg.Render("x") == "" {
+			t.Fatalf("%s: ScreenBg renders nothing — the background is unset", n)
+		}
+	}
+	if Lookup("definitely-not-a-theme") != nil {
+		t.Fatal("Lookup must return nil for an unknown name")
+	}
+	if Use("definitely-not-a-theme") {
+		t.Fatal("Use must reject an unknown name")
+	}
+	Use(DefaultName)
+}

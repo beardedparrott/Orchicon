@@ -155,10 +155,58 @@ var Light = Theme{
 	Busy:         lipgloss.Color("#0e7490"),
 }
 
-// registry is the selectable theme set (/theme + config).
-var registry = map[string]*Theme{
-	Dark.Name:  &Dark,
-	Light.Name: &Light,
+// GruvboxDark is a TUI-native palette (Morhetz's Gruvbox, dark). Terminal
+// themes are chosen HERE rather than derived from the GUI: the palette is
+// validated by theme/contrast_test.go, which the GUI tokens cannot satisfy as
+// written (their borders are browser hairlines).
+var GruvboxDark = Theme{
+	Name:         "gruvbox-dark",
+	Bg:           lipgloss.Color("#282828"),
+	Surface:      lipgloss.Color("#3c3836"),
+	SurfaceAlt:   lipgloss.Color("#504945"),
+	Border:       lipgloss.Color("#7c6f64"),
+	BorderFaint:  lipgloss.Color("#665c54"),
+	Text:         lipgloss.Color("#ebdbb2"),
+	TextDim:      lipgloss.Color("#bdae93"),
+	TextFaint:    lipgloss.Color("#a89984"),
+	Accent:       lipgloss.Color("#83a598"),
+	AccentCyan:   lipgloss.Color("#8ec07c"),
+	AccentIndigo: lipgloss.Color("#d3869b"),
+	OK:           lipgloss.Color("#b8bb26"),
+	Warn:         lipgloss.Color("#fabd2f"),
+	Err:          lipgloss.Color("#fb4934"),
+	Busy:         lipgloss.Color("#83a598"),
+}
+
+// GruvboxLight is the light variant of the same palette.
+var GruvboxLight = Theme{
+	Name:         "gruvbox-light",
+	Bg:           lipgloss.Color("#fbf1c7"),
+	Surface:      lipgloss.Color("#f9f5d7"),
+	SurfaceAlt:   lipgloss.Color("#ebdbb2"),
+	Border:       lipgloss.Color("#a89984"),
+	BorderFaint:  lipgloss.Color("#bdae93"),
+	Text:         lipgloss.Color("#3c3836"),
+	TextDim:      lipgloss.Color("#7c6f64"),
+	TextFaint:    lipgloss.Color("#928374"),
+	Accent:       lipgloss.Color("#076678"),
+	AccentCyan:   lipgloss.Color("#427b58"),
+	AccentIndigo: lipgloss.Color("#8f3f71"),
+	OK:           lipgloss.Color("#79740e"),
+	Warn:         lipgloss.Color("#b57614"),
+	Err:          lipgloss.Color("#9d0006"),
+	Busy:         lipgloss.Color("#076678"),
+}
+
+// registry is the selectable theme set, in /theme listing order. It is
+// TUI-OWNED: these palettes are chosen for terminal contrast and are NOT a
+// copy of the GUI's CSS tokens (bar dark/light, which are ported and then
+// adjusted where a browser hairline would vanish on a terminal — see Light).
+var registry = []*Theme{
+	&Dark,
+	&Light,
+	&GruvboxDark,
+	&GruvboxLight,
 }
 
 var active = &Dark
@@ -166,19 +214,35 @@ var active = &Dark
 // Active returns the active palette.
 func Active() *Theme { return active }
 
-// Names lists the selectable themes.
-func Names() []string { return []string{Dark.Name, Light.Name} }
+// Names lists the selectable themes in registry (listing) order.
+func Names() []string {
+	out := make([]string, 0, len(registry))
+	for _, t := range registry {
+		out = append(out, t.Name)
+	}
+	return out
+}
 
 // Use switches the active theme and re-derives every named style.
 // Returns false for an unknown name (no change).
 func Use(name string) bool {
-	t, ok := registry[name]
-	if !ok {
+	t := Lookup(name)
+	if t == nil {
 		return false
 	}
 	active = t
 	buildStyles(*t)
 	return true
+}
+
+// Lookup resolves a theme name (nil when unknown).
+func Lookup(name string) *Theme {
+	for _, t := range registry {
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
 }
 
 // DefaultName is the launch default (config omits theme → dark).

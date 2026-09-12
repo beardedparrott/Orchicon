@@ -410,6 +410,10 @@ func runContextCmd(m *App, args []string) tea.Cmd {
 // runThemeCmd switches the TUI theme ("/theme" lists, "/theme <name>"
 // switches + persists to the profile). Persisting keeps the selection
 // across launches; the profile is saved best-effort at the config path.
+// runThemeCmd switches the TUI theme. The palette set is TUI-OWNED (see
+// internal/tui/theme) and validated for terminal contrast: dark (default),
+// light, gruvbox-dark, gruvbox-light. "/theme" lists them; "/theme <name>"
+// switches and persists the choice to the profile.
 func runThemeCmd(m *App, args []string) tea.Cmd {
 	if len(args) == 0 {
 		names := make([]string, 0, len(m.themes))
@@ -420,7 +424,7 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 			}
 			names = append(names, marker+" "+n)
 		}
-		m.dock.SetNotice("themes: " + strings.Join(names, " · ") + "  (/theme <name> switches)")
+		m.dock.SetNotice("themes (TUI palettes): " + strings.Join(names, " · ") + "  (/theme <name> switches)")
 		return nil
 	}
 	name := args[0]

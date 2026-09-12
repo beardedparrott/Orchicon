@@ -128,11 +128,22 @@ func TestThemeCommand(t *testing.T) {
 	}
 }
 
-// TestThemeRegistryAndConfig pins the theme registry: exactly the GUI
-// palette set (dark default + light), selected via config profile.Theme.
+// TestThemeRegistryAndConfig pins the theme registry: the TUI-owned palette set
+// (dark default + light + the gruvbox pair), selectable via config
+// profile.Theme. Themes are TUI palettes validated for terminal contrast, not a
+// copy of the GUI's CSS tokens.
 func TestThemeRegistryAndConfig(t *testing.T) {
-	if theme.Names() == nil || len(theme.Names()) != 2 {
-		t.Fatalf("theme names = %v, want [dark light]", theme.Names())
+	names := theme.Names()
+	if len(names) < 2 {
+		t.Fatalf("theme names = %v, want at least dark+light", names)
+	}
+	if names[0] != "dark" {
+		t.Fatalf("first listed theme = %q, want dark (the default)", names[0])
+	}
+	for _, want := range []string{"dark", "light"} {
+		if theme.Lookup(want) == nil {
+			t.Errorf("theme %q must be registered", want)
+		}
 	}
 	if theme.DefaultName != "dark" {
 		t.Fatalf("default theme = %q, want dark", theme.DefaultName)

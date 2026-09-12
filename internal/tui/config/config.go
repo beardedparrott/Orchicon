@@ -29,24 +29,27 @@ const (
 
 // Profile is one instance connection.
 type Profile struct {
-	Name               string     `toml:"-"`
-	URL                string     // base URL, e.g. https://orch.example.com
-	AuthMethod         AuthMethod // apikey | password
-	Token              string     // API key (oc_…) or access token from local-login
-	Username           string     // password mode only; the password is never stored
+	Name       string     `toml:"-"`
+	URL        string     // base URL, e.g. https://orch.example.com
+	AuthMethod AuthMethod // apikey | password
+	Token      string     // API key (oc_…) or access token from local-login
+	Username   string     // password mode only; the password is never stored
 	// RefreshToken is password mode's refresh token from the HttpOnly
 	// orchicon_refresh Set-Cookie on local-login (24h TTL). Enables the
 	// client's auto-refresh of the 900s access token.
 	RefreshToken       string
-	InsecureSkipVerify bool       // TLS skip-verify for self-signed dev instances
+	InsecureSkipVerify bool // TLS skip-verify for self-signed dev instances
 	// Newline is the chat dock's newline-insertion chord: alt+enter
 	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty
 	// keyboard protocol support, so Shift+Enter cannot be enabled
 	// programmatically; CSI-u shift+enter is accepted when the terminal
 	// emits it anyway.
 	Newline string
-	// Theme selects the TUI palette: "dark" (default) | "light". The
-	// GUI's HSL design tokens are the source of truth (internal/tui/theme).
+	// Theme selects the TUI palette. The TUI owns its palette set (see
+	// internal/tui/theme): dark (default), light, gruvbox-dark, gruvbox-light.
+	// These are chosen and validated for TERMINAL contrast — not copied from
+	// the GUI's CSS tokens, whose borders are hairlines that vanish on a
+	// terminal. /theme lists the installed set.
 	Theme string
 }
 
