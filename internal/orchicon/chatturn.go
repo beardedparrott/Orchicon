@@ -408,12 +408,20 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	turnCtx, cancel := context.WithCancel(ctx)
 	// Start the stream SYNCHRONOUSLY so a pre-stream failure surfaces as a
 	// send-accept failure (the collector fails the turn) rather than a
-	// dropped first delta (D4).
-	stream, err := prov.StreamTurn(turnCtx, req)
+	// dropped first delta (D4). A provider context-window overflow is the one
+	// failure with a deterministic remedy: reduce the replayed history and
+	// retry (askreduce.go). Without that, a long conversation is permanently
+	// wedged — every subsequent turn re-sends the same oversized history and
+	// 400s (observed live on a 1574-message Ask session at ~1.02M tokens).
+	stream, err := b.startTurnWithContextRecovery(turnCtx, prov, &req, sessionID)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("orchicon bridge: start Ask turn: %w", err)
 	}
+	// A reduction (when one happened) replaced the replayed history. Drain
+	// against what the provider actually ACCEPTED, so the session's working
+	// context matches the prompt it saw.
+	history = req.Messages
 
 	// Drain the stream on a goroutine, mapping events onto the bus.
 	b.mu.Lock()
