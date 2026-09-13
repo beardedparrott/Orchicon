@@ -33,6 +33,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
@@ -75,6 +76,14 @@ type Model struct {
 
 	bar  *kit2.ActionBar
 	form *kit2.Form
+
+	// modelPicker is the open three-tier MODEL picker (adapter → provider →
+	// model, with search). It is the SCREEN's modal, layered ABOVE m.form:
+	// the model choice needs its own room (three tiers, a search box and a
+	// list) and a form field cannot host mouse-driven tier navigation.
+	modelPicker *kit2.ModelPicker
+	// modelField names the form field a committed ref is written back to.
+	modelField string
 
 	w, h int
 
@@ -123,6 +132,13 @@ type Model struct {
 	rpcCreateSecret       func(ctx context.Context, r *apiv1.CreateSecretRequest) error
 	rpcUpdateSecret       func(ctx context.Context, r *apiv1.UpdateSecretRequest) error
 	rpcDeleteSecret       func(ctx context.Context, id string) error
+
+	// Model-picker loads (model_picker.go). Thunks for the same reason as the
+	// rest: a test asserts the per-adapter branch and the payload without a live
+	// plane.
+	rpcModelKinds     func(ctx context.Context) ([]string, []string, error)
+	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
+	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
 }
 
 // New builds the screen.
@@ -371,6 +387,10 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		_, err := m.cl.Secrets.DeleteSecret(ctx, connect.NewRequest(&apiv1.DeleteSecretRequest{Id: id}))
 		return err
 	}
+	// The model picker's per-adapter loads (model_picker.go).
+	m.rpcModelKinds = m.defaultModelKinds
+	m.rpcModelProviders = m.defaultModelProviders
+	m.rpcModelModels = m.defaultModelModels
 	return m
 }
 
@@ -388,6 +408,11 @@ func (m *Model) Close() { m.reg.CloseAll() }
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h
 	m.Base.SetSize(w, h)
+	// The picker derives its centered box from the screen size, so a resize
+	// must reach it or its mouse mapping drifts from what is drawn.
+	if m.modelPicker != nil {
+		m.modelPicker.SetScreen(w, h)
+	}
 }
 
 func (m *Model) Init() tea.Cmd { return m.Load() }
@@ -398,7 +423,9 @@ func (m *Model) bodyHeight() int { return m.h }
 // ClaimsKeys reports whether the screen owns the keyboard: while a form or a
 // Confirm dialog is open the shell hands over every key verbatim, so a secret
 // value or a URL containing q / d / / is never eaten by a global chord.
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
+func (m *Model) ClaimsKeys() bool {
+	return m.form != nil || m.Open != nil || m.modelPicker != nil
+}
 
 // --- mutation sink (dock feedback) --------------------------------------
 
@@ -1353,8 +1380,12 @@ func (m *Model) settingsForm() *kit2.Form {
 		return strconv.Itoa(int(v))
 	}
 	f := kit2.NewForm("Edit tenant settings",
-		kit2.FieldSpec{Name: "default_worker_model", Label: "Default worker model", Kind: kit2.KText, Initial: s.GetDefaultWorkerModel(), Validate: validModelRef, Placeholder: "provider/model"},
-		kit2.FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: kit2.KText, Initial: s.GetDefaultAskOrchiconModel(), Validate: validModelRef, Placeholder: "provider/model"},
+		// Model refs are CHOSEN, not typed: a kit2.KModel field opens the
+		// three-tier ModelPicker (adapter → provider → model) and then DISPLAYS
+		// the committed ref. The validator stays as the backstop for a stored
+		// value the picker did not produce.
+		kit2.FieldSpec{Name: "default_worker_model", Label: "Default worker model", Kind: kit2.KModel, Initial: s.GetDefaultWorkerModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
+		kit2.FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: kit2.KModel, Initial: s.GetDefaultAskOrchiconModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "max_concurrent_runs", Label: "Max concurrent runs", Kind: kit2.KNumber, Initial: i32(s.GetMaxConcurrentRuns())},
 		kit2.FieldSpec{Name: "stall_no_progress_window_seconds", Label: "Stall no-progress window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoProgressWindowSeconds())},
 		kit2.FieldSpec{Name: "stall_no_file_diff_window_seconds", Label: "Stall no-diff window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoFileDiffWindowSeconds())},
@@ -1377,6 +1408,9 @@ func (m *Model) settingsForm() *kit2.Form {
 	)
 	f.Focused = true
 	f.Width = 70
+	// A model field opens the SCREEN's modal picker (enter/space), seeded from
+	// the field's current ref.
+	f.OnOpenModelPicker = m.openModelPicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		out := &apiv1.TenantSettings{}
 		out.DefaultWorkerModel = v["default_worker_model"]
@@ -1683,6 +1717,26 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.HandleMutation(msg)
 	}
 
+	// The MODEL PICKER is a modal layered ABOVE the form that opened it: while it
+	// is up it owns every key and the mouse, so a keystroke aimed at the picker
+	// can never act on the form underneath it.
+	if mp := m.modelPicker; mp != nil {
+		switch msg := msg.(type) {
+		case modelKindsMsg:
+			return m, m.applyModelKinds(msg)
+		case modelProvidersMsg:
+			return m, m.applyModelProviders(msg)
+		case modelModelsMsg:
+			return m, m.applyModelModels(msg)
+		case tea.KeyMsg:
+			_, cmd := mp.HandleKey(msg)
+			return m, cmd
+		case tea.MouseMsg:
+			_, cmd := mp.HandleMouse(msg)
+			return m, cmd
+		}
+	}
+
 	// The open form owns every key (modal, layered over the focus ring).
 	if m.formOpen() {
 		if k, ok := msg.(tea.KeyMsg); ok {
@@ -1766,6 +1820,13 @@ func (m *Model) View() string {
 		box := m.Open.Box(min(60, m.w-4), 9)
 		out = kit2.Center(kit2.FitLines(out, m.w, m.h), box, m.w, m.h)
 	}
+	// The model picker is spliced LAST so it layers ABOVE the form that opened
+	// it. It is re-sized here from the same w×h Center() uses, so its mouse
+	// hit-testing addresses the box that was actually drawn.
+	if m.modelPicker != nil {
+		m.modelPicker.SetScreen(m.w, m.h)
+		out = kit2.Center(kit2.FitLines(out, m.w, m.h), m.modelPicker.View(), m.w, m.h)
+	}
 	if m.w > 0 && m.h > 0 {
 		return kit2.FitLines(out, m.w, m.h)
 	}
@@ -1830,7 +1891,15 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 
 // --- helpers ------------------------------------------------------------
 
-// validModelRef validates a model reference ("provider/model") before submit.
+// validModelRef validates a model reference against the PINNED grammar
+// (internal/adapter.ParseModelRef) — the same parser the server validates with,
+// so the TUI can never accept a ref the plane would reject, or reject one it
+// would accept.
+//
+// This replaced a hand-rolled SplitN("/", 2) splitter that disagreed with the
+// grammar in BOTH directions: it accepted malformed 4-segment junk ("a/b/c/d"
+// split as "a" + "b/c/d" and passed) and rejected a legal 1-segment bare model
+// id, which the grammar explicitly allows.
 func validModelRef(v string) error {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -1839,9 +1908,8 @@ func validModelRef(v string) error {
 	if strings.ContainsAny(v, " \t") {
 		return errors.New("model ref must not contain spaces")
 	}
-	parts := strings.SplitN(v, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return errors.New("expected provider/model (e.g. ollama/llama3)")
+	if _, err := adapter.ParseModelRef(v, nil); err != nil {
+		return err
 	}
 	return nil
 }

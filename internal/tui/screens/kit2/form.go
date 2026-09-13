@@ -33,6 +33,14 @@ const (
 	// slash command that has all work items that can be selected. Same should
 	// go for workflows and runtime images as well."
 	KPicker Kind = "picker"
+	// KModel is a model_ref field. The concrete choice is made in the dedicated
+	// modal ModelPicker (adapter → provider → model, with search) rather than
+	// typed, because no human knows a model ref by heart — the operator's "when
+	// you enter the field, this one deserves its own modal popup". The field
+	// itself is read-only and DISPLAYS the committed adapter/provider/model ref
+	// (the operator's "the text it displays after the model is selected is the
+	// adapter/provider/model name").
+	KModel Kind = "model"
 )
 
 // Option is one select choice.
@@ -93,6 +101,13 @@ type Form struct {
 	// — e.g. the work-item Kind follows the chosen Parent, so the form can
 	// never offer a combination the server rejects.
 	OnChange func(name, value string)
+
+	// OnOpenModelPicker is invoked when the operator ACTIVATES a KModel field
+	// (enter or space). The host opens its ModelPicker seeded with the field's
+	// current ref and writes the committed ref back with Set. The picker is the
+	// SCREEN's, so it can be layered over either a modal form or the inline
+	// detail editor.
+	OnOpenModelPicker func(name, current string) tea.Cmd
 
 	// OnSubmit is invoked by Submit with a copy of the collected values. It
 	// is where the screen wires the mutation executor; the returned cmd (the
@@ -413,6 +428,18 @@ func inOptions(spec FieldSpec, v string) bool {
 // list instead of moving through the field values").
 func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	s := f.current()
+	// A model field is a REFERENCE, not text: enter/space opens the host's model
+	// picker instead of advancing or editing (there is nothing a human could
+	// usefully type into it).
+	if s != nil && s.Kind == KModel {
+		switch k.String() {
+		case "enter", " ", "space":
+			if f.OnOpenModelPicker != nil {
+				return f.OnOpenModelPicker(s.Name, f.Values[s.Name]), true
+			}
+			return nil, true
+		}
+	}
 	if s != nil && s.Kind == KPicker {
 		if cmd, handled := f.pickerKey(s, k); handled {
 			return cmd, true
@@ -704,6 +731,17 @@ func (f *Form) display(s FieldSpec) string {
 			}
 		}
 		return v
+	case KModel:
+		// Show the committed adapter/provider/model ref; when unset, always show
+		// the affordance (not only while focused) so a blank model row reads as
+		// "unset — go choose one" rather than "not applicable".
+		if v == "" {
+			if s.Placeholder != "" {
+				return s.Placeholder
+			}
+			return "— none —"
+		}
+		return v
 	default:
 		if v == "" && f.Focused && f.current() != nil && f.current().Name == s.Name {
 			return s.Placeholder
@@ -846,6 +884,15 @@ func (f *Form) View() string {
 			line = prefix + val
 			if s.Kind == KSecret && val != "" {
 				line += theme.HintText.Render("  (hidden)")
+			}
+			if s.Kind == KModel && focused {
+				// The field names the modal that sets it, so the enter gesture is
+				// discoverable from the field itself.
+				hint := "  enter: choose model"
+				if f.Values[s.Name] != "" {
+					hint = "  enter: change model"
+				}
+				line += theme.HintText.Render(hint)
 			}
 		}
 		if i == f.Cursor && f.Focused {

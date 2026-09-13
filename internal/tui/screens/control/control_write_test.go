@@ -117,13 +117,16 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 		t.Fatal("an open form must claim keys")
 	}
 
-	// Invalid model ref → rejected inline, no RPC.
-	m.form.Set("default_worker_model", "notamodel")
+	// A MALFORMED model ref (an empty segment) → rejected inline, no RPC.
+	// The ref must be genuinely malformed: a BARE model id like "llama3" is
+	// legal under the pinned grammar (the adapter segment defaults), which the
+	// old hand-rolled splitter wrongly rejected.
+	m.form.Set("default_worker_model", "/llama3")
 	if _, err := m.form.Submit(); err == nil {
-		t.Fatal("invalid model ref must be rejected before submit")
+		t.Fatal("a malformed model ref must be rejected before submit")
 	}
 	if m.form.Errors["default_worker_model"] == "" {
-		t.Fatal("the invalid model ref must carry an inline field error")
+		t.Fatal("the malformed model ref must carry an inline field error")
 	}
 	if !strings.Contains(m.View(), "✗") {
 		t.Fatal("the inline error is not rendered")
@@ -131,6 +134,21 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	if got != nil {
 		t.Fatal("the RPC fired despite the validation error")
 	}
+
+	// A BARE model id is legal (the grammar's 1-segment form) and must NOT be
+	// rejected — the old splitter did, which is the bug this change fixes.
+	m.form.Set("default_worker_model", "llama3")
+	bareCmd, bareErr := m.form.Submit()
+	if bareErr != nil {
+		t.Fatalf("a bare model id must be accepted by the pinned grammar: %v", bareErr)
+	}
+	if res := runCmd(t, bareCmd); res.Err != nil {
+		t.Fatalf("bare-model save failed: %v", res.Err)
+	}
+	if got == nil || got.GetDefaultWorkerModel() != "llama3" {
+		t.Fatal("a bare model id must reach UpdateSettings")
+	}
+	got = nil
 
 	// Valid values → the RPC fires with the edited fields.
 	m.form.Set("default_worker_model", "ollama/llama3")
@@ -164,18 +182,30 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	}
 }
 
-// A malformed model ref (no provider prefix) is rejected too, while an empty
-// value (leave unchanged) is accepted.
+// validModelRef delegates to the PINNED grammar (adapter.ParseModelRef), so the
+// TUI accepts exactly what the plane accepts. The legal shapes below are the
+// ones the old hand-rolled SplitN("/", 2) splitter got WRONG: it rejected a
+// bare model id (legal) and accepted malformed multi-segment junk.
 func TestModelRefValidation(t *testing.T) {
-	if err := validModelRef("ollama/llama3"); err != nil {
-		t.Fatalf("valid ref rejected: %v", err)
+	for _, ok := range []string{
+		// 1 segment: a bare model id (the adapter segment defaults).
+		"llama3",
+		// 2 segments: the legacy provider/model form.
+		"ollama/llama3",
+		// 3 segments: canonical adapter/provider/model.
+		"opencode/anthropic/claude-sonnet-4",
+		// 4 segments: the model segment is the VERBATIM remainder (ADR-0003).
+		"orchicon/commandcode/deepseek/deepseek-v4-flash",
+		// Empty means "leave unchanged".
+		"",
+	} {
+		if err := validModelRef(ok); err != nil {
+			t.Fatalf("legal ref %q rejected: %v", ok, err)
+		}
 	}
-	if err := validModelRef(""); err != nil {
-		t.Fatalf("empty ref (unchanged) rejected: %v", err)
-	}
-	for _, bad := range []string{"llama3", "ollama/", "/llama3", "ollama llama3"} {
+	for _, bad := range []string{"ollama/", "/llama3", "ollama//llama3/x", "ollama llama3"} {
 		if err := validModelRef(bad); err == nil {
-			t.Fatalf("bad ref %q accepted", bad)
+			t.Fatalf("malformed ref %q accepted", bad)
 		}
 	}
 }

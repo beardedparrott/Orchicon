@@ -33,6 +33,7 @@ import (
 const (
 	srcExecutions = "executions"
 	srcRuns       = "runs"
+	srcWorkers    = "workers"
 )
 
 // cancelReason is the audit reason recorded on a TUI-initiated cancel.
@@ -44,12 +45,15 @@ const (
 	keyInterject     = "i"
 	keyRetryRun      = "t"
 	keyForceProgress = "p"
+	keySetModel      = "m"
 )
 
 // ClaimsKeys reports whether the screen owns every key right now (an open
 // interjection form or the confirm dialog). The shell consults it before its
 // own routes so a typed character is never stolen.
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
+func (m *Model) ClaimsKeys() bool {
+	return m.form != nil || m.Open != nil || m.modelPicker != nil
+}
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
@@ -115,6 +119,15 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		return acts
+
+	case srcWorkers:
+		// A worker's model is pinned by a human and is a CHOICE from a list, not
+		// text, so the action OPENS the picker (handleActionKey) rather than
+		// running directly.
+		return []kit2.Action{{
+			Label: "set model", Key: keySetModel, Source: srcWorkers,
+			Do: func(context.Context) error { return errNeedForm("set model") },
+		}}
 	}
 	return nil
 }
@@ -131,6 +144,16 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			return m.refuse("interjection needs a LIVE (running) execution — this one is not running"), true
 		}
 		return m.beginInterject(it.ID), true
+	}
+	if kstr == keySetModel {
+		if m.ActiveSourceName() != srcWorkers {
+			return m.refuse("setting a model applies to a worker — focus the Workers pane"), true
+		}
+		it, ok := m.ActiveItem()
+		if !ok {
+			return m.refuse("select a worker to set its model"), true
+		}
+		return m.beginSetModel(it.ID), true
 	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
@@ -173,6 +196,12 @@ func (m *Model) unavailableReason(key string) string {
 			return ""
 		}
 		return "execution " + it.ID + " is not live (" + strings.ToLower(it.Meta) + ") — there is nothing to cancel or interject into"
+	case srcWorkers:
+		it, ok := m.ActiveItem()
+		if !ok {
+			return "select a worker to set its model"
+		}
+		return "set the model for worker " + it.ID + " (m)"
 	}
 	return ""
 }
@@ -295,6 +324,8 @@ func (m *Model) HintLine() string {
 		return theme.HintText.Render("c: cancel (confirm) · i: interject · enter: live session · ←/→: pane · f: more pages · r: refresh")
 	case srcRuns:
 		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
+	case srcWorkers:
+		return theme.HintText.Render("m: set worker model (adapter → provider → model) · enter: versions + detail · r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
 }

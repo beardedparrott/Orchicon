@@ -10,6 +10,7 @@ package execution
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,6 +43,24 @@ type Model struct {
 	pending *kit2.Action
 	bar     *kit2.ActionBar
 	notice  string
+
+	// modelPicker is the open worker-model picker (adapter → provider → model,
+	// with search). A model_ref is CHOSEN, never typed, so it gets its own modal.
+	modelPicker *kit2.ModelPicker
+	// modelPickerWorker is the worker the open picker writes to.
+	modelPickerWorker string
+	// workerModel caches each worker's ACTIVE model_ref — the workers list
+	// already carries it (WorkerListItem.active_model_ref), so the picker seeds
+	// without another round trip. Written by the fetch goroutine and read from
+	// Update, hence the mutex.
+	workerMu    sync.Mutex
+	workerModel map[string]string
+
+	// Model-picker loads: thunks so a test drives the cascade without a plane.
+	rpcModelKinds     func(ctx context.Context) ([]string, []string, error)
+	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
+	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
+	rpcSetWorkerModel func(ctx context.Context, workerID, ref string) error
 }
 
 // New builds the screen. Execution events stream live; workflow events
@@ -57,6 +76,12 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.SetOnDetail(m.onDetail)
 	m.Base.SetSourceEmpty("workflows", "no workflows yet — define one to run, or to bind a recurring item to")
 	m.bar = kit2.NewActionBar()
+	m.workerModel = map[string]string{}
+	// The model picker's per-adapter loads (model_picker.go).
+	m.rpcModelKinds = m.defaultModelKinds
+	m.rpcModelProviders = m.defaultModelProviders
+	m.rpcModelModels = m.defaultModelModels
+	m.rpcSetWorkerModel = m.defaultSetWorkerModel
 	m.Base.SetStatuses([]screenkit.StatusMsg{
 		{Name: "execution-events", Status: "idle"},
 		{Name: "workflow-events", Status: "idle"},
@@ -91,6 +116,11 @@ func (m *Model) Close() {
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h
 	m.Base.SetSize(w, h)
+	// The picker derives its centered box from the screen size, so a resize must
+	// reach it or its mouse mapping drifts from what is drawn.
+	if m.modelPicker != nil {
+		m.modelPicker.SetScreen(w, h)
+	}
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -125,15 +155,34 @@ func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit
 	if err != nil {
 		return nil, "", err
 	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Workers))
-	for _, w := range resp.Msg.Workers {
+	// WorkerListItem carries the ACTIVE version's model_ref, so the model picker
+	// can seed without a second round trip. `workers` is the deprecated
+	// projection kept for wire-compat; `items` is the real payload.
+	items := make([]screenkit.Item, 0, len(resp.Msg.GetItems()))
+	models := make(map[string]string, len(resp.Msg.GetItems()))
+	add := func(id, name, status string, version int32, modelRef string) {
+		models[id] = modelRef
 		items = append(items, screenkit.Item{
-			ID:    w.GetId(),
-			Title: w.GetName(),
-			Meta:  strings.ToLower(w.GetStatus().String()) + " v" + screenkit.FmtInt(int(w.GetCurrentVersion())),
+			ID:    id,
+			Title: name,
+			Meta:  status + " v" + screenkit.FmtInt(int(version)),
 		})
 	}
-	return items, resp.Msg.NextPageToken, nil
+	for _, it := range resp.Msg.GetItems() {
+		w := it.GetWorker()
+		add(w.GetId(), w.GetName(), strings.ToLower(w.GetStatus().String()), w.GetCurrentVersion(), it.GetActiveModelRef())
+	}
+	if len(items) == 0 {
+		// An older plane may populate only the deprecated field: fall back so the
+		// pane is never empty.
+		for _, w := range resp.Msg.GetWorkers() {
+			add(w.GetId(), w.GetName(), strings.ToLower(w.GetStatus().String()), w.GetCurrentVersion(), "")
+		}
+	}
+	m.workerMu.Lock()
+	m.workerModel = models
+	m.workerMu.Unlock()
+	return items, resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
@@ -288,6 +337,25 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 }
 
 func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
+	// The MODEL PICKER is a modal layered ABOVE everything else on this screen:
+	// while it is up it owns every key and the mouse, and load results route to it.
+	if mp := m.modelPicker; mp != nil {
+		switch msg := msg.(type) {
+		case modelKindsMsg:
+			return m, m.applyModelKinds(msg)
+		case modelProvidersMsg:
+			return m, m.applyModelProviders(msg)
+		case modelModelsMsg:
+			return m, m.applyModelModels(msg)
+		case tea.KeyMsg:
+			_, cmd := mp.HandleKey(msg)
+			return m, cmd
+		case tea.MouseMsg:
+			_, cmd := mp.HandleMouse(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
@@ -368,6 +436,11 @@ func (m *Model) View() string {
 		} else if m.Open != nil {
 			box := m.Open.Box(minInt(72, m.w-4), minInt(12, m.h-2))
 			body = kit2.Center(body, box, m.w, m.h)
+		}
+		// The worker-model picker is spliced LAST so it layers above the form.
+		if m.modelPicker != nil {
+			m.modelPicker.SetScreen(m.w, m.h)
+			body = kit2.Center(body, m.modelPicker.View(), m.w, m.h)
 		}
 		// The hint line is rendered by the shell (HintLine()), never
 		// appended here — the screen must fill EXACTLY the content region.
