@@ -740,7 +740,7 @@ type OpenCodeModel struct {
 	Name       string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`                               // display name, e.g. "Claude Sonnet 4"
 	Family     string                 `protobuf:"bytes,4,opt,name=family,proto3" json:"family,omitempty"`                           // model family for grouping
 	Status     string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`                           // "active", "deprecated", etc.
-	ModelRef   string                 `protobuf:"bytes,6,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`       // full ref for dispatch: "provider/id"
+	ModelRef   string                 `protobuf:"bytes,6,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`       // LEGACY 2-segment "provider/id" projection (ADR-0003). The canonical dispatch identity is adapter/provider/model — consumers form it by combining this with an adapter segment; never treat this as the whole ref.
 	// Cost per million tokens (docs/05 §9).
 	Cost *ModelCost `protobuf:"bytes,7,opt,name=cost,proto3" json:"cost,omitempty"`
 	// Context / token limits.

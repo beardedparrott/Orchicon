@@ -100,6 +100,8 @@ message CreateWorkerRequest {
   string purpose = 5;
   // First-version snapshot fields (docs/05 §3):
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   string model_ref = 7;
   string system_prompt = 8; // Markdown + template variables (docs/05 §11)
   string context_sources = 9; // JSON
@@ -227,9 +229,10 @@ message ListWorkersRequest {
 message WorkerListItem {
   Worker worker = 1;
   // active_model_ref is the model_ref of the active version
-  // (worker_versions.model_ref) — matches the ModelPicker provider/id
-  // format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
-  // worker has no versions yet.
+  // (worker_versions.model_ref) — canonical adapter/provider/model
+  // (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
+  // VERBATIM as stored (a legacy ref keeps its legacy form until it is
+  // re-saved). Empty when the worker has no versions yet.
   string active_model_ref = 2;
   WorkerVersionStatus active_version_status = 3;
   // active_adapter is the parsed adapter segment of active_model_ref
@@ -267,6 +270,8 @@ message UpdateWorkerVersionRequest {
   string version_id = 2;
   // Fields to update (only draft versions):
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;
@@ -300,6 +305,8 @@ message CreateWorkerVersionRequest {
   string worker_id = 1;
   // Optional fields to override from the source version.
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;
@@ -361,7 +368,7 @@ message GetEditLockResponse {
 // batch.
 message BulkUpdateWorkerModelRequest {
   repeated string worker_ids = 1; // max 100
-  string model_ref = 2; // provider/id, e.g. "anthropic/claude-sonnet-4"
+  string model_ref = 2; // canonical adapter/provider/model, e.g. "orchicon/anthropic/claude-sonnet-4" (a legacy 1/2-segment ref is accepted and infers adapter "opencode")
 }
 
 message BulkUpdateWorkerModelResponse {

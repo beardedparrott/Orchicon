@@ -85,24 +85,26 @@ func (BulkUpdateWorkerModelSkipReason) EnumDescriptor() ([]byte, []int) {
 }
 
 type CreateWorkerRequest struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	TenantId            string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name                string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Slug                string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
-	Description         string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"` // Markdown
-	Purpose             string                 `protobuf:"bytes,5,opt,name=purpose,proto3" json:"purpose,omitempty"`
-	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
-	SystemPrompt        string                 `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11)
-	ContextSources      string                 `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON
-	Permissions         string                 `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON
-	GatedTools          string                 `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3" json:"gated_tools,omitempty"`                // JSON
-	BudgetOverrides     string                 `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3" json:"budget_overrides,omitempty"` // JSON
-	ExecutionPolicyRef  string                 `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3" json:"execution_policy_ref,omitempty"`
-	ConcurrencyLimit    int32                  `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3" json:"concurrency_limit,omitempty"`
-	RecoveryWorkflowRef string                 `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3" json:"recovery_workflow_ref,omitempty"`
-	Labels              string                 `protobuf:"bytes,16,opt,name=labels,proto3" json:"labels,omitempty"` // JSON
-	VersionNote         string                 `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
-	RequestId           string                 `protobuf:"bytes,18,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TenantId    string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Slug        string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
+	Description string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"` // Markdown
+	Purpose     string                 `protobuf:"bytes,5,opt,name=purpose,proto3" json:"purpose,omitempty"`
+	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
+	ModelRef            string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
+	SystemPrompt        string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11)
+	ContextSources      string `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON
+	Permissions         string `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON
+	GatedTools          string `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3" json:"gated_tools,omitempty"`                // JSON
+	BudgetOverrides     string `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3" json:"budget_overrides,omitempty"` // JSON
+	ExecutionPolicyRef  string `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3" json:"execution_policy_ref,omitempty"`
+	ConcurrencyLimit    int32  `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3" json:"concurrency_limit,omitempty"`
+	RecoveryWorkflowRef string `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3" json:"recovery_workflow_ref,omitempty"`
+	Labels              string `protobuf:"bytes,16,opt,name=labels,proto3" json:"labels,omitempty"` // JSON
+	VersionNote         string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
+	RequestId           string `protobuf:"bytes,18,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
 	// Structured prompt fields — when any is set they become the version's
 	// source of truth (system_prompt is then composed server-side).
 	Role     string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`
@@ -1300,9 +1302,10 @@ type WorkerListItem struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Worker *Worker                `protobuf:"bytes,1,opt,name=worker,proto3" json:"worker,omitempty"`
 	// active_model_ref is the model_ref of the active version
-	// (worker_versions.model_ref) — matches the ModelPicker provider/id
-	// format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
-	// worker has no versions yet.
+	// (worker_versions.model_ref) — canonical adapter/provider/model
+	// (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
+	// VERBATIM as stored (a legacy ref keeps its legacy form until it is
+	// re-saved). Empty when the worker has no versions yet.
 	ActiveModelRef      string              `protobuf:"bytes,2,opt,name=active_model_ref,json=activeModelRef,proto3" json:"active_model_ref,omitempty"`
 	ActiveVersionStatus WorkerVersionStatus `protobuf:"varint,3,opt,name=active_version_status,json=activeVersionStatus,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"active_version_status,omitempty"`
 	// active_adapter is the parsed adapter segment of active_model_ref
@@ -1626,20 +1629,22 @@ func (x *GetWorkerVersionResponse) GetVersion() *WorkerVersion {
 }
 
 type UpdateWorkerVersionRequest struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId            string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	VersionId           string                 `protobuf:"bytes,2,opt,name=version_id,json=versionId,proto3" json:"version_id,omitempty"`
-	ModelRef            *string                `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
-	SystemPrompt        *string                `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
-	ContextSources      *string                `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3,oneof" json:"context_sources,omitempty"`
-	Permissions         *string                `protobuf:"bytes,10,opt,name=permissions,proto3,oneof" json:"permissions,omitempty"`
-	GatedTools          *string                `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3,oneof" json:"gated_tools,omitempty"`
-	BudgetOverrides     *string                `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3,oneof" json:"budget_overrides,omitempty"`
-	ExecutionPolicyRef  *string                `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3,oneof" json:"execution_policy_ref,omitempty"`
-	ConcurrencyLimit    *int32                 `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3,oneof" json:"concurrency_limit,omitempty"`
-	RecoveryWorkflowRef *string                `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
-	Labels              *string                `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
-	VersionNote         *string                `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId  string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	VersionId string                 `protobuf:"bytes,2,opt,name=version_id,json=versionId,proto3" json:"version_id,omitempty"`
+	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
+	ModelRef            *string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
+	SystemPrompt        *string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
+	ContextSources      *string `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3,oneof" json:"context_sources,omitempty"`
+	Permissions         *string `protobuf:"bytes,10,opt,name=permissions,proto3,oneof" json:"permissions,omitempty"`
+	GatedTools          *string `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3,oneof" json:"gated_tools,omitempty"`
+	BudgetOverrides     *string `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3,oneof" json:"budget_overrides,omitempty"`
+	ExecutionPolicyRef  *string `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3,oneof" json:"execution_policy_ref,omitempty"`
+	ConcurrencyLimit    *int32  `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3,oneof" json:"concurrency_limit,omitempty"`
+	RecoveryWorkflowRef *string `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
+	Labels              *string `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
+	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
 	// Structured prompt fields; when any is set the version's system_prompt
 	// is recomposed server-side from the four fields.
 	Role     *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
@@ -1857,19 +1862,21 @@ func (x *UpdateWorkerVersionResponse) GetVersion() *WorkerVersion {
 }
 
 type CreateWorkerVersionRequest struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId            string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	ModelRef            *string                `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
-	SystemPrompt        *string                `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
-	ContextSources      *string                `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3,oneof" json:"context_sources,omitempty"`
-	Permissions         *string                `protobuf:"bytes,10,opt,name=permissions,proto3,oneof" json:"permissions,omitempty"`
-	GatedTools          *string                `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3,oneof" json:"gated_tools,omitempty"`
-	BudgetOverrides     *string                `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3,oneof" json:"budget_overrides,omitempty"`
-	ExecutionPolicyRef  *string                `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3,oneof" json:"execution_policy_ref,omitempty"`
-	ConcurrencyLimit    *int32                 `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3,oneof" json:"concurrency_limit,omitempty"`
-	RecoveryWorkflowRef *string                `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
-	Labels              *string                `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
-	VersionNote         *string                `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
+	ModelRef            *string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
+	SystemPrompt        *string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
+	ContextSources      *string `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3,oneof" json:"context_sources,omitempty"`
+	Permissions         *string `protobuf:"bytes,10,opt,name=permissions,proto3,oneof" json:"permissions,omitempty"`
+	GatedTools          *string `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3,oneof" json:"gated_tools,omitempty"`
+	BudgetOverrides     *string `protobuf:"bytes,12,opt,name=budget_overrides,json=budgetOverrides,proto3,oneof" json:"budget_overrides,omitempty"`
+	ExecutionPolicyRef  *string `protobuf:"bytes,13,opt,name=execution_policy_ref,json=executionPolicyRef,proto3,oneof" json:"execution_policy_ref,omitempty"`
+	ConcurrencyLimit    *int32  `protobuf:"varint,14,opt,name=concurrency_limit,json=concurrencyLimit,proto3,oneof" json:"concurrency_limit,omitempty"`
+	RecoveryWorkflowRef *string `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
+	Labels              *string `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
+	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
 	// Structured prompt fields; when any is set the version's system_prompt
 	// is recomposed server-side from the four fields.
 	Role     *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
@@ -2367,7 +2374,7 @@ func (x *GetEditLockResponse) GetLock() *EditLock {
 type BulkUpdateWorkerModelRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkerIds     []string               `protobuf:"bytes,1,rep,name=worker_ids,json=workerIds,proto3" json:"worker_ids,omitempty"` // max 100
-	ModelRef      string                 `protobuf:"bytes,2,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`    // provider/id, e.g. "anthropic/claude-sonnet-4"
+	ModelRef      string                 `protobuf:"bytes,2,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`    // canonical adapter/provider/model, e.g. "orchicon/anthropic/claude-sonnet-4" (a legacy 1/2-segment ref is accepted and infers adapter "opencode")
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

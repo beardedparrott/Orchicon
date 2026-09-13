@@ -86,6 +86,9 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   purpose = "";
 
   /**
+   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * legacy 1/2-segment ref is accepted and infers adapter "opencode".
+   *
    * @generated from field: string model_ref = 7;
    */
   modelRef = "";
@@ -1100,9 +1103,10 @@ export class WorkerListItem extends Message<WorkerListItem> {
 
   /**
    * active_model_ref is the model_ref of the active version
-   * (worker_versions.model_ref) — matches the ModelPicker provider/id
-   * format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
-   * worker has no versions yet.
+   * (worker_versions.model_ref) — canonical adapter/provider/model
+   * (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
+   * VERBATIM as stored (a legacy ref keeps its legacy form until it is
+   * re-saved). Empty when the worker has no versions yet.
    *
    * @generated from field: string active_model_ref = 2;
    */
@@ -1380,6 +1384,9 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
   versionId = "";
 
   /**
+   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * legacy 1/2-segment ref is accepted and infers adapter "opencode".
+   *
    * @generated from field: optional string model_ref = 7;
    */
   modelRef?: string;
@@ -1560,6 +1567,9 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
   workerId = "";
 
   /**
+   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * legacy 1/2-segment ref is accepted and infers adapter "opencode".
+   *
    * @generated from field: optional string model_ref = 7;
    */
   modelRef?: string;
@@ -1987,7 +1997,7 @@ export class BulkUpdateWorkerModelRequest extends Message<BulkUpdateWorkerModelR
   workerIds: string[] = [];
 
   /**
-   * provider/id, e.g. "anthropic/claude-sonnet-4"
+   * canonical adapter/provider/model, e.g. "orchicon/anthropic/claude-sonnet-4" (a legacy 1/2-segment ref is accepted and infers adapter "opencode")
    *
    * @generated from field: string model_ref = 2;
    */

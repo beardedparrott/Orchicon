@@ -50,8 +50,8 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/workers` | Workers | **exists** | Control | Control list + detail. |
-| `/workers/$id` | Worker detail | **exists** | Control | Detail fields + version list (`ListWorkerVersions`). **Mutations (child):** edit header (`UpdateWorker`), edit version draft (`UpdateWorkerVersion`), publish/deprecate (`PublishWorkerVersion`/`DeprecateWorker`), set active (`SetActiveWorkerVersion`). |
+| `/workers` | Workers | **exists** (read-write) | Execution | `Workers` source + detail (`ListWorkers` / `GetWorker`). **Mutations:** `m` sets the selected worker's model through the three-tier picker (`BulkUpdateWorkerModel`) — see **Model picker** below. |
+| `/workers/$id` | Worker detail | **exists** | Execution | Detail fields + version list (`ListWorkerVersions`), each version carrying its `model_ref`. **Mutations:** `m` sets the model (`BulkUpdateWorkerModel` — landed). **Children:** edit header (`UpdateWorker`), edit version draft (`UpdateWorkerVersion`), publish/deprecate (`PublishWorkerVersion`/`DeprecateWorker`), set active (`SetActiveWorkerVersion`). |
 | `/workers/new` | Register worker | **missing** | — | **Child:** worker registration form (mutation). |
 | `/workflows` | Workflows | **exists** | Automation | List + detail. |
 | `/workflows/$id` | Workflow detail | **exists** | Automation | Detail + version trail. **Mutations (child):** `CreateWorkflow`, edit steps (`UpdateWorkflowVersion`), `PublishWorkflow`, `DeprecateWorkflow`, `CreateWorkflowVersion`. |
@@ -87,7 +87,7 @@ whole areas to "use the web GUI".
 |---|---|---|---|---|
 | `/webhooks` | Webhooks | **exists** (read-write) | Control | `Webhooks` source + detail (`ListSubscriptions`). Create/edit/delete subscription through the form + Confirm-gated actions (`CreateSubscription` / `UpdateSubscription` / `DeleteSubscription`), `TestSubscription`, and the deliveries log (`ListDeliveries`) rendered in the detail body. |
 | `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
-| `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; model refs are validated inline (provider/model) before submit. |
+| `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
@@ -99,13 +99,13 @@ replaced by real TUI surfaces on the Control screen:
 - **Providers** → `Providers` source + detail (`ProviderService.ListProviders`).
 - **Webhooks** → `Webhooks` source + detail (`WebhookService.ListSubscriptions`).
 - **Settings** → `Settings` source + detail (`SettingsService.GetSettings`).
-- **Runtime Images / Secrets / MCP / Workers** — already real Control sources.
+- **Runtime Images / Secrets / MCP** — already real Control sources. (Workers live on the Execution tab, matching the GUI nav-config group placement.)
 
 ## Control write parity (this run)
 
 The Control screen is now read-WRITE for every surface the GUI mutates:
 
-- **Settings** — view all + edit/save (`UpdateSettings`), model refs validated inline.
+- **Settings** — view all + edit/save (`UpdateSettings`); the two model refs are CHOSEN from the three-tier picker and validated against the pinned grammar.
 - **Webhooks** — create/edit/delete subscription + test + deliveries view.
 - **Adapters** — `RuntimeAdapterService` client wired, source + detail + enable/disable.
 - **MCP servers** — create/edit/delete, enabled toggle, credential store/clear via the secret
@@ -145,6 +145,59 @@ The Work tab is now read-WRITE for every Work surface the GUI mutates:
 
 Budgets / context-window / apt-packages / toolchains / env are JSON — the `Form`'s `json` field
 type validates them before submit.
+
+## Model picker (this run)
+
+A `model_ref` is a reference no operator can be expected to type, so every model
+field CHOOSES one from a three-tier control (adapter → provider → searchable
+model) in its own modal. It is no longer a text field anywhere.
+
+One shared widget (`kit2.ModelPicker`, a screen-owned modal that claims the
+keyboard and the mouse while open) plus one shared data cascade
+(`internal/tui/modelpick`) serve every screen, so all three surfaces behave
+identically:
+
+- **Adapter tier** — the Dispatcher's registered kinds (`AIGatewayService.ListAdapterKinds`).
+  The native `orchicon` kind is listed FIRST and seeds a fresh selection (ADR-0005 D5).
+- **Provider tier** — under the native kind, the merged Providers view
+  (`ProviderService.ListProviders`: ENABLED only, tenant customs badged) — exactly what
+  Settings → Adapters edits. Under every other kind, its adapter-scoped gateway set
+  (`AIGatewayService.ListProviders`).
+- **Model tier** — under the native kind, the providers SOURCING view
+  (`ProviderService.ListProviderModels`: vendored catalog ⊕ probe ⊕ manual). Under every
+  other kind, opencode-CLI discovery (`AIGatewayService.ListOpenCodeModels`). Hidden models
+  are dropped; a model missing a context hint stays SELECTABLE and is ANNOTATED (ADR-0006 D8).
+
+Switching adapter RESETS the provider and model tiers — a selection is never
+carried across adapters (ADR-0004 stale-selection guard). The committed value is
+the canonical 3-segment ref (`adapter/provider/model`, ADR-0003), written
+verbatim with the model segment's internal slashes preserved, and the field then
+DISPLAYS that ref. Keyboard (tab / arrows / enter / space / esc) and mouse (wheel
+scroll + click on a chip or a model row) are both first-class.
+
+Landed surfaces:
+
+- **Tenant Settings** — `default_worker_model` and `default_ask_orchicon_model` (`e` on the
+  Settings pane). These replaced plain-text fields, and their validator now delegates to the
+  pinned grammar (`adapter.ParseModelRef`) instead of a hand-rolled `SplitN("/", 2)` splitter
+  that accepted malformed 4-segment junk AND rejected a legal 1-segment bare model id.
+- **Workers** — `m` on the Workers pane sets the selected worker's model via
+  `BulkUpdateWorkerModel` (sets `model_ref` and republishes the affected version IN PLACE;
+  the version number does not advance). The picker seeds from
+  `WorkerListItem.active_model_ref`, so opening it costs no extra round trip, and a per-worker
+  skip (deprecated / retired / no published version / not found) is reported as a FAILURE
+  rather than swallowed.
+
+Two things this deliberately does NOT do:
+
+- It does not reintroduce a worker-level `runtime_ref`. That field is RETIRED (ADR-0005
+  amendment 2026-09-04) precisely because two independently-settable sources of adapter truth
+  caused live misroutes (a stale `runtime_ref` won over the picked ref) and black holes (a
+  runtime IMAGE TAG stored where dispatch read an ADAPTER KIND). The ref's adapter segment is
+  the single source of truth for the whole dispatch path.
+- It never assigns a model to a WORK ITEM. `WorkItem` has no model field at all
+  (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
+  assigned to (`assigned_worker_ref`).
 
 ## Recomputed child work items
 

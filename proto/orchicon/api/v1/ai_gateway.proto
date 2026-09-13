@@ -123,7 +123,7 @@ message OpenCodeModel {
   string name = 3;           // display name, e.g. "Claude Sonnet 4"
   string family = 4;         // model family for grouping
   string status = 5;         // "active", "deprecated", etc.
-  string model_ref = 6;      // full ref for dispatch: "provider/id"
+  string model_ref = 6;      // LEGACY 2-segment "provider/id" projection (ADR-0003). The canonical dispatch identity is adapter/provider/model — consumers form it by combining this with an adapter segment; never treat this as the whole ref.
 
   // Cost per million tokens (docs/05 §9).
   ModelCost cost = 7;
