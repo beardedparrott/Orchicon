@@ -8,7 +8,41 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 # --- Paths -----------------------------------------------------------------
+# Go: prefer the PROJECT-LOCAL toolchain (.dev/tools) when it is provisioned.
+# It lives inside the repo — NOT /tmp, which the container wipes on restart (its
+# tmpfs) — so it survives, and using it needs no shell PATH setup. Falls back to
+# a PATH `go` everywhere else (CI, fresh clones), so this is a no-op for anyone
+# who has not run the project's tool bootstrap. Same prefer-local-else-PATH shape
+# as BUF_BIN below.
+#
+# The GOPATH/GOCACHE/GOTMPDIR exports are not tidiness: with no GOPATH, go
+# defaults to $HOME/go, and a root-owned $HOME fails outright with
+# "mkdir /home/<user>/go: permission denied". Strict `?=` keeps an explicitly
+# exported value winning.
+#
+# .dev/tools/go is the project's own Go, matching go.mod's requirement (verified
+# 1.26.4). GOTOOLCHAIN stays `auto`, so a future go.mod bump resolves the newer
+# toolchain from GOPATH without touching this file. `make toolchain` prints both.
+DEV_TOOLS   := $(CURDIR)/.dev/tools
+DEV_GO      := $(DEV_TOOLS)/go/bin/go
+ifeq ($(wildcard $(DEV_GO)),)
 GO          := go
+else
+GO          := $(DEV_GO)
+GOPATH      ?= $(DEV_TOOLS)/gopath
+export GOPATH
+GOCACHE     ?= $(DEV_TOOLS)/gocache
+export GOCACHE
+GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
+export GOTMPDIR
+# PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
+# they must resolve the SAME toolchain rather than whatever the shell happens to
+# have. Deliberately NOT adding .dev/tools/bin — `buf`/`atlas` resolve through
+# BUF_BIN's own prefer-bin-then-PATH rule, and shadowing them here would change
+# which codegen toolchain runs.
+PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
+export PATH
+endif
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
@@ -44,6 +78,17 @@ help: ## Show available targets
 BUF_VERSION := 1.72.0
 BUF_SHA256  := a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
 BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
+
+.PHONY: toolchain
+toolchain: ## Show the Go toolchain + env this Makefile will build with
+	@echo "GO       = $(GO)"
+	@echo "GOPATH   = $(GOPATH)"
+	@echo "GOCACHE  = $(GOCACHE)"
+	@echo "GOTMPDIR = $(GOTMPDIR)"
+	@echo "--- the go command ---"
+	@$(GO) version
+	@echo "--- the toolchain a BUILD uses (go.mod: $(shell sed -n 's/^go //p' go.mod)) ---"
+	@$(GO) env GOTOOLCHAIN
 
 .PHONY: tools
 tools: ## Install pinned buf v$(BUF_VERSION) into bin/ (SHA256-verified)
