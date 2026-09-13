@@ -117,6 +117,22 @@ func TestReconcileGitConfirmedAndCorrective(t *testing.T) {
 // git shell-out, no store touch.
 func TestReconcileGitNonRepoNoOp(t *testing.T) {
 	dir := t.TempDir()
+	// The fixture must be GENUINELY outside a git repository, and t.TempDir()
+	// does NOT guarantee that: it follows GOTMPDIR, and the documented dev setup
+	// exports GOTMPDIR=$PWD/.gotmp — INSIDE this repo. Git then discovers the
+	// enclosing repo from the fixture, the reconcile legitimately finds changes
+	// (including the repo's untracked files), and this test fails for a reason
+	// that has nothing to do with the behavior under test.
+	//
+	// GIT_CEILING_DIRECTORIES tells git not to search for a repository above the
+	// fixture, so the "non-repo" premise holds wherever the temp dir happens to
+	// live. It is read by the git subprocess reconcile.go shells out to.
+	//
+	// The ceiling is the fixture's PARENT: git never excludes the directory it
+	// was pointed at (`git -C dir` makes dir effectively the cwd), so listing
+	// dir itself is a no-op — verified: ceiling=dir still reports a work tree,
+	// ceiling=dir's parent reports "not a git repository".
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	store := &fakeReconcileStore{}
 	if err := ReconcileGit(context.Background(), store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", nil); err != nil {
 		t.Fatalf("non-repo reconcile should be a no-op, got %v", err)
