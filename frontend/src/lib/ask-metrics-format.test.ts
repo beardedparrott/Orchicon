@@ -9,6 +9,7 @@ import {
   fmtCtx,
   fmtTokens,
   formatAskMetricsLine,
+  formatAskMetricsStats,
   summarizeAskMetrics,
 } from "@/lib/ask-metrics-format";
 
@@ -101,5 +102,34 @@ describe("formatAskMetricsLine", () => {
 
   it("is empty with no model and no usage", () => {
     expect(formatAskMetricsLine(summarizeAskMetrics([], "", 0))).toBe("");
+  });
+});
+
+describe("formatAskMetricsStats", () => {
+  // The composer renders the model as a clickable CHIP and these numbers as
+  // plain text beside it, so the stats half must contain no model at all.
+  it("omits the model (it is rendered as a chip, not text)", () => {
+    const s = formatAskMetricsStats(
+      summarizeAskMetrics(
+        [usage({ promptTokens: 10n, completionTokens: 10n, totalTokens: 20n, cacheReadTokens: 0n, costUsd: 0.5 })],
+        "orchicon/anthropic/claude-sonnet-4",
+        1000,
+      ),
+    );
+    expect(s).not.toContain("orchicon/anthropic/claude-sonnet-4");
+    expect(s).toContain("ctx ");
+    expect(s).toContain("20 tok");
+    expect(s).toContain("$0.5000");
+  });
+
+  it("is empty until usage lands", () => {
+    expect(formatAskMetricsStats(summarizeAskMetrics([], "a/b/c", 0))).toBe("");
+  });
+
+  // line == model + stats, so the chip tooltip still reads as one sentence.
+  it("composes back into the flat line", () => {
+    const m = summarizeAskMetrics([usage({ promptTokens: 10n, totalTokens: 10n, costUsd: 1 })], "x/y/z", 100);
+    const stats = formatAskMetricsStats(m);
+    expect(formatAskMetricsLine(m)).toBe(`x/y/z · ${stats}`);
   });
 });

@@ -25,6 +25,7 @@ import { Link } from "@tanstack/react-router";
 import { Route as rootRoute } from "@/routes/__root";
 
 import { useQueryClient } from "@tanstack/react-query";
+import { AskModelChip } from "@/components/AskModelChip";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/ui/mode-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
@@ -38,6 +39,7 @@ import {
   useGetConversation,
   useAbortConversationTurn,
   useSetConversationMode,
+  useSetConversationModel,
   useCompactConversation,
   askKeys,
 } from "@/api/askOrchicon";
@@ -184,6 +186,14 @@ function AskOrchiconPage() {
   const [localMode, setLocalMode] = useState<ConversationMode>(
     ConversationMode.BRAINSTORM,
   );
+
+  // The model a NOT-YET-CREATED conversation will be created with. The chat box
+  // shows an "Ask Orchicon Anything..." hero before any conversation exists, and
+  // the operator must be able to choose the model THERE too — so with no
+  // conversation open the choice is held here and handed to createConversation,
+  // rather than being lost (there is no conversation row to write it to yet).
+  // Once a conversation exists it is retargeted directly and this is unused.
+  const [pendingModel, setPendingModel] = useState("");
 
   // Live streaming state keyed by conversation id.
   const [streams, setStreams] = useState<Record<string, ConvStream>>({});
@@ -379,6 +389,7 @@ function AskOrchiconPage() {
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
+  const setConvModel = useSetConversationModel();
   const compactConv = useCompactConversation();
   const qc = useQueryClient();
 
@@ -395,6 +406,35 @@ function AskOrchiconPage() {
   );
   const isUsingFallbackModel =
     !activeConv?.modelRef && !settings?.defaultAskOrchiconModel;
+
+  // The model the composer's chip reports: the open conversation's effective
+  // model, or — on the hero — the pending choice for the conversation about to
+  // be created.
+  const askModel = activeConvId ? effectiveModel : pendingModel || effectiveModel;
+
+  // Choosing a model in the composer's picker. With a conversation OPEN it
+  // retargets THAT conversation (SetConversationModel — applies from the next
+  // message). On the hero there is no conversation row yet, so the choice is
+  // held for the create.
+  const handleAskModelChange = useCallback(
+    (ref: string) => {
+      if (!ref) return;
+      if (!activeConvId) {
+        setPendingModel(ref);
+        toast.success("Model set for the new conversation", { title: "Ask model" });
+        return;
+      }
+      setConvModel.mutate(
+        { id: activeConvId, modelRef: ref },
+        {
+          onSuccess: () =>
+            toast.success("Model set for this conversation", { title: "Ask model" }),
+          onError: () => toast.error("Failed to change the model", { title: "Error" }),
+        },
+      );
+    },
+    [activeConvId, setConvModel, toast],
+  );
 
   // Sync local mode from active conversation when it loads.
   useEffect(() => {
@@ -1156,8 +1196,15 @@ function AskOrchiconPage() {
                   try {
                     const conv = await createConv.mutateAsync({
                       mode: localMode,
+                      // The model chosen on the hero, if any — this is what makes
+                      // the chip work before a conversation exists.
+                      modelRef: pendingModel,
                     });
                     if (conv?.id) {
+                      // Consumed by THIS conversation; a later new chat starts
+                      // from the tenant default again rather than silently
+                      // inheriting a one-off choice.
+                      setPendingModel("");
                       setActiveConvId(conv.id);
                       const ok = await sendStreaming(conv.id, text, attachments);
                       if (!ok) {
@@ -1178,7 +1225,8 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
-                modelRef={effectiveModel}
+                modelRef={askModel}
+                onModelChange={handleAskModelChange}
               />
             </div>
             </div>
@@ -1395,7 +1443,8 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
-                modelRef={effectiveModel}
+                modelRef={askModel}
+                onModelChange={handleAskModelChange}
                 restoreDraft={restoreDraft}
                 onCompact={handleCompactConversation}
               />
@@ -1703,6 +1752,7 @@ function ChatInputField({
   onModeChange,
   convId,
   modelRef = "",
+  onModelChange,
   restoreDraft,
   onCompact,
 }: {
@@ -1716,6 +1766,10 @@ function ChatInputField({
   // modelRef is the model answering this conversation. The session stat strip
   // reports it alongside the context / tokens / cache / cost numbers.
   modelRef?: string;
+  // onModelChange retargets the model. The PARENT decides the meaning: with a
+  // conversation open it writes that conversation, and on the hero (no
+  // conversation yet) it holds the choice for the create.
+  onModelChange?: (ref: string) => void;
   // When the parent detects a reply failure (a turn that was acked but whose
   // reply errored), it signals this with the sent text so the composer puts
   // it back in the box. Null/absent = nothing to restore.
@@ -1737,7 +1791,7 @@ function ChatInputField({
   // The session stat strip (ask model · context · tokens · cache · cost). It
   // re-reads when a turn COMPLETES — a finished turn is exactly when new usage
   // lands — and when the conversation changes.
-  const { line: metricsLine } = useAskMetricsLive(convId, modelRef, isStreaming);
+  const { line: metricsLine, stats: statsLine } = useAskMetricsLive(convId, modelRef, isStreaming);
 
   // On a reply failure the parent signals the text to put back in the box.
   // No sessionStorage draft persistence — the box is cleared on send and the
@@ -2285,15 +2339,20 @@ function ChatInputField({
             )}
           </div>
           <div className="flex items-center gap-2 min-w-0">
-            {/* The session stats: right-aligned, immediately BEFORE the mode
-                dropdown (the operator's placement ask). Truncated rather than
-                wrapped so the toolbar stays a single row on a narrow box. */}
-            {metricsLine && (
+            {/* The session stat strip: the ask model as a CLICKABLE chip (it
+                opens the model picker), then the numeric stats. Right-aligned
+                and immediately BEFORE the mode dropdown (the operator's
+                placement ask). The numbers hide first on a narrow box — the chip
+                is the CONTROL and must survive. */}
+            {modelRef && (
+              <AskModelChip model={modelRef} onModelChange={onModelChange} />
+            )}
+            {statsLine && (
               <span
-                className="truncate font-mono text-[11px] text-muted-foreground"
+                className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline"
                 title={metricsLine}
               >
-                {metricsLine}
+                {statsLine}
               </span>
             )}
             {onModeChange && (

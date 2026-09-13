@@ -162,3 +162,24 @@ export function useSetConversationMode() {
     },
   });
 }
+
+// useSetConversationModel retargets an OPEN conversation's model (ADR-0004
+// picker → SetConversationModel). The change applies from the NEXT message.
+export function useSetConversationModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; modelRef: string }) => {
+      const res = await askOrchiconClient.setConversationModel({
+        id: opts.id,
+        modelRef: opts.modelRef,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      // The conversation row carries the new model_ref, and the composer's stat
+      // strip reads it back off that row — so both keys must refresh.
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}

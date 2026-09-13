@@ -79,16 +79,31 @@ export function fmtCtx(used: number, window: number): string {
   return window > 0 ? `${fmtTokens(used)}/${fmtTokens(window)}` : fmtTokens(used);
 }
 
-/** formatAskMetricsLine renders the strip; "" when there is nothing to say. */
-export function formatAskMetricsLine(m: AskMetrics): string {
-  if (!m.model && !m.have) return "";
+/**
+ * formatAskMetricsStats renders the NUMERIC half of the strip (context, tokens,
+ * cache, cost) with no model — the composer renders the model as a clickable
+ * chip and these as plain text beside it. "" when no usage has landed.
+ */
+export function formatAskMetricsStats(m: AskMetrics): string {
+  if (!m.have) return "";
   const segs: string[] = [];
-  if (m.model) segs.push(m.model);
-  if (!m.have) return segs.join(" · ");
   segs.push(`ctx ${fmtCtx(m.ctxUsed, m.ctxWindow)}`);
   segs.push(`${fmtTokens(m.tokens)} tok`);
   const ratio = cacheHitRatio(m.cacheRead, m.prompt);
   if (ratio) segs.push(`cache ${ratio} (${fmtTokens(m.cacheRead)})`);
   segs.push(`$${m.costUsd.toFixed(4)}`);
+  return segs.join(" · ");
+}
+
+/**
+ * formatAskMetricsLine renders the whole strip as one flat string (model · the
+ * stats); "" when there is nothing to say. Used for the chip's tooltip.
+ */
+export function formatAskMetricsLine(m: AskMetrics): string {
+  if (!m.model && !m.have) return "";
+  const segs: string[] = [];
+  if (m.model) segs.push(m.model);
+  const stats = formatAskMetricsStats(m);
+  if (stats) segs.push(stats);
   return segs.join(" · ");
 }

@@ -16,7 +16,7 @@ import { aiGatewayClient } from "@/api/clients";
 import { useListOpenCodeModels } from "@/api/aigateway";
 import { useProviderModels } from "@/api/providers";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
-import { formatAskMetricsLine, summarizeAskMetrics } from "@/lib/ask-metrics-format";
+import { formatAskMetricsLine, formatAskMetricsStats, summarizeAskMetrics } from "@/lib/ask-metrics-format";
 import { ORCHICON_ADAPTER_KIND, parseModelRef } from "@/lib/model-ref";
 
 // One place to import the shape and the formatters from.
@@ -76,7 +76,14 @@ export function useAskMetrics(convId: string | null | undefined, modelRef: strin
     () => summarizeAskMetrics(q.data ?? [], modelRef, ctxWindow),
     [q.data, modelRef, ctxWindow],
   );
-  return { metrics, line: formatAskMetricsLine(metrics), refetch: q.refetch };
+  return {
+    metrics,
+    line: formatAskMetricsLine(metrics),
+    // The numeric half, rendered beside the model CHIP (which is a control and
+    // therefore cannot live inside a flat string).
+    stats: formatAskMetricsStats(metrics),
+    refetch: q.refetch,
+  };
 }
 
 /**
@@ -91,7 +98,7 @@ export function useAskMetricsLive(
   modelRef: string,
   isStreaming: boolean,
 ) {
-  const { metrics, line, refetch } = useAskMetrics(convId, modelRef);
+  const { metrics, line, stats, refetch } = useAskMetrics(convId, modelRef);
   const wasStreaming = useRef(isStreaming);
   useEffect(() => {
     if (wasStreaming.current && !isStreaming) void refetch();
@@ -102,5 +109,5 @@ export function useAskMetricsLive(
     if (prevConv.current !== convId) void refetch();
     prevConv.current = convId;
   }, [convId, refetch]);
-  return { metrics, line };
+  return { metrics, line, stats };
 }

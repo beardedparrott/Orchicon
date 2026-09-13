@@ -192,6 +192,13 @@ Landed surfaces:
   falls back to the tenant default). With no conversation open the choice is recorded for the
   NEXT one, so the command is never a dead end. The composer is the shell rather than a screen,
   so the App hosts this copy of the picker and owns its keys and mouse while it is open.
+  The GUI matches: the model segment of the composer's stat strip is a CLICKABLE CHIP
+  (`components/AskModelChip.tsx`) that opens the same picker in a modal — a modal rather than
+  an inline dropdown because the composer sits at the bottom of the viewport and the picker's
+  panel opens downward. It works on the hero ("Ask Orchicon Anything...") too: with no
+  conversation yet the choice is held in `pendingModel` and passed to `createConversation`,
+  since there is no conversation row to write it to; it is cleared once the conversation is
+  created, so a later new chat starts from the tenant default rather than inheriting a one-off.
 
 ## Session stat strip (this run)
 
