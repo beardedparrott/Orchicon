@@ -78,6 +78,12 @@ message UsageRecord {
   int64 cache_read_tokens = 17;
   int64 cache_write_tokens = 18;
   int64 reasoning_tokens = 19;
+  // session_id is the Ask Orchicon conversation/session this usage belongs to
+  // (empty for worker executions, which attribute via execution_id). It is the
+  // linkage that lets a chat client read back its OWN session's tokens, cache
+  // and cost: GetUsage filters on it. Populated from the conversation id when
+  // the Ask chat path records usage (internal/askorchicon/chat.go).
+  string session_id = 20;
 }
 
 // CostSummary is a roll-up of cost + tokens over a time window, grouped

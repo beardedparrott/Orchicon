@@ -19,16 +19,16 @@ import (
 // tokens are a sub-bucket of CompletionTokens and are NOT additive to
 // TotalTokens.
 type UsageRecordRow struct {
-	ID               string
-	TenantID         string
-	ProjectID        string
-	TaskID           string
-	ExecutionID      string
-	WorkerID         string
+	ID          string
+	TenantID    string
+	ProjectID   string
+	TaskID      string
+	ExecutionID string
+	WorkerID    string
 	// AdapterKind is the adapter kind the usage came from (e.g. "opencode",
 	// or a custom adapter's kind for non-opencode Ask sessions). Empty for
 	// legacy rows written before the column existed.
-	AdapterKind      string
+	AdapterKind string
 	// SessionID is the Ask Orchicon conversation/session the usage belongs
 	// to (empty for worker executions, which attribute via ExecutionID).
 	SessionID        string
@@ -92,9 +92,13 @@ type ListUsageRecordsFilter struct {
 	ExecutionID string // optional
 	Provider    string // optional
 	Model       string // optional
-	StartTime   time.Time
-	EndTime     time.Time
-	PageSize    int32
+	// SessionID scopes the query to one Ask Orchicon conversation (the
+	// session_id column). Empty = unscoped, which is the worker-execution
+	// case (worker rows attribute via ExecutionID and leave session_id '').
+	SessionID string // optional
+	StartTime time.Time
+	EndTime   time.Time
+	PageSize  int32
 	// AfterID is the keyset cursor: the id of the last record on the
 	// previous page, used for composite (occurred_at, id) pagination.
 	AfterID string
@@ -110,7 +114,7 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		f.PageSize = 100
 	}
 	const q = `SELECT ur.id, ur.tenant_id, ur.project_id, ur.task_id, ur.execution_id, ur.worker_id,
-		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.cache_read_tokens,
+		ur.provider, ur.model, ur.session_id, ur.prompt_tokens, ur.completion_tokens, ur.cache_read_tokens,
 		ur.cache_write_tokens, ur.reasoning_tokens, ur.total_tokens,
 		ur.cost_usd, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
 		COALESCE(w.name, '') AS worker_name,
@@ -128,11 +132,12 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		  AND ($7::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $7::timestamptz)
 		  AND ($8::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $8::timestamptz)
 		  AND ($9 = '' OR (ur.occurred_at, ur.id) < (SELECT occurred_at, id FROM usage_records WHERE tenant_id = $1 AND id = $9))
+		  AND ($10 = '' OR ur.session_id = $10)
 		ORDER BY occurred_at DESC, id DESC
-		LIMIT $10`
+		LIMIT $11`
 	rows, err := tx.Query(ctx, q,
 		f.TenantID, f.ProjectID, f.TaskID, f.ExecutionID, f.Provider, f.Model,
-		f.StartTime, f.EndTime, f.AfterID, f.PageSize,
+		f.StartTime, f.EndTime, f.AfterID, f.SessionID, f.PageSize,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: list usage records: %w", err)
@@ -530,7 +535,7 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 	var occurredAt, createdAt pgtype.Timestamptz
 	if err := rows.Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.ExecutionID, &r.WorkerID,
-		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.CacheReadTokens,
+		&r.Provider, &r.Model, &r.SessionID, &r.PromptTokens, &r.CompletionTokens, &r.CacheReadTokens,
 		&r.CacheWriteTokens, &r.ReasoningTokens, &r.TotalTokens,
 		&r.CostUSD, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
 		&r.WorkerName, &r.TaskTitle,

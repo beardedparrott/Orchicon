@@ -392,6 +392,17 @@ export class UsageRecord extends Message<UsageRecord> {
    */
   reasoningTokens = protoInt64.zero;
 
+  /**
+   * session_id is the Ask Orchicon conversation/session this usage belongs to
+   * (empty for worker executions, which attribute via execution_id). It is the
+   * linkage that lets a chat client read back its OWN session's tokens, cache
+   * and cost: GetUsage filters on it. Populated from the conversation id when
+   * the Ask chat path records usage (internal/askorchicon/chat.go).
+   *
+   * @generated from field: string session_id = 20;
+   */
+  sessionId = "";
+
   constructor(data?: PartialMessage<UsageRecord>) {
     super();
     proto3.util.initPartial(data, this);
@@ -419,6 +430,7 @@ export class UsageRecord extends Message<UsageRecord> {
     { no: 17, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 18, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 19, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 20, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UsageRecord {

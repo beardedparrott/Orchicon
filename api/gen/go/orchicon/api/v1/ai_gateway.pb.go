@@ -377,8 +377,14 @@ type UsageRecord struct {
 	CacheReadTokens  int64                  `protobuf:"varint,17,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64                  `protobuf:"varint,18,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int64                  `protobuf:"varint,19,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// session_id is the Ask Orchicon conversation/session this usage belongs to
+	// (empty for worker executions, which attribute via execution_id). It is the
+	// linkage that lets a chat client read back its OWN session's tokens, cache
+	// and cost: GetUsage filters on it. Populated from the conversation id when
+	// the Ask chat path records usage (internal/askorchicon/chat.go).
+	SessionId     string `protobuf:"bytes,20,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UsageRecord) Reset() {
@@ -542,6 +548,13 @@ func (x *UsageRecord) GetReasoningTokens() int64 {
 		return x.ReasoningTokens
 	}
 	return 0
+}
+
+func (x *UsageRecord) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
@@ -1210,7 +1223,7 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x16\n" +
 	"\x06models\x18\x04 \x03(\tR\x06models\x12\x16\n" +
-	"\x06custom\x18\x05 \x01(\bR\x06custom\"\x9d\x05\n" +
+	"\x06custom\x18\x05 \x01(\bR\x06custom\"\xbc\x05\n" +
 	"\vUsageRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1235,7 +1248,9 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"task_title\x18\x10 \x01(\tR\ttaskTitle\x12*\n" +
 	"\x11cache_read_tokens\x18\x11 \x01(\x03R\x0fcacheReadTokens\x12,\n" +
 	"\x12cache_write_tokens\x18\x12 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
-	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\"\xd9\x05\n" +
+	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x14 \x01(\tR\tsessionId\"\xd9\x05\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +

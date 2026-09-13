@@ -67,6 +67,7 @@ func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 		WorkerId:         r.WorkerID,
 		Provider:         r.Provider,
 		Model:            r.Model,
+		SessionId:        r.SessionID,
 		PromptTokens:     r.PromptTokens,
 		CompletionTokens: r.CompletionTokens,
 		CacheReadTokens:  r.CacheReadTokens,

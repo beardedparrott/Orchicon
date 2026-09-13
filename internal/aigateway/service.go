@@ -227,6 +227,7 @@ func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUs
 		ExecutionID: req.Msg.ExecutionId,
 		Provider:    req.Msg.Provider,
 		Model:       req.Msg.Model,
+		SessionID:   req.Msg.SessionId,
 		StartTime:   tsToTime(req.Msg.Start),
 		EndTime:     tsToTime(req.Msg.End),
 		PageSize:    pageSize,
