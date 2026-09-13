@@ -109,7 +109,9 @@ func TestApplyMetricsInstallsAndDropsStale(t *testing.T) {
 		t.Fatal("a stale conversation's metrics were installed")
 	}
 
-	m.applyMetrics(metricsMsg{convID: "conv-2", m: sessionMetrics{have: true, model: "orchicon/anthropic/claude-sonnet-4"}})
+	m.applyMetrics(metricsMsg{convID: "conv-2", m: sessionMetrics{
+		have: true, model: "orchicon/anthropic/claude-sonnet-4", ctxWindow: 200000,
+	}})
 	if m.metrics.model != "orchicon/anthropic/claude-sonnet-4" {
 		t.Fatalf("metrics = %+v, want the current conversation's", m.metrics)
 	}
@@ -119,8 +121,38 @@ func TestApplyMetricsInstallsAndDropsStale(t *testing.T) {
 	if m.dock.Mode == "" {
 		t.Error("the composer's mode pill was not populated")
 	}
-	if m.ctxWindowFor != "orchicon/anthropic/claude-sonnet-4" {
-		t.Errorf("ctxWindowFor = %q, want the resolved model", m.ctxWindowFor)
+	if m.ctxWindowFor != "orchicon/anthropic/claude-sonnet-4" || m.ctxWindow != 200000 {
+		t.Errorf("ctxWindow = (%q, %d), want the RESOLVED window cached", m.ctxWindowFor, m.ctxWindow)
+	}
+}
+
+// An UNRESOLVED window (0) must not be cached as though it were resolved.
+//
+// 0 is ambiguous — it means "no context hint" AND "the lookup has not succeeded
+// yet" (most often because the read raced the provider list). Caching it as
+// resolved froze the missing limit onto the strip for the life of the
+// conversation: the composer rendered a bare "ctx 24K" with no window and never
+// retried. Leaving it uncached means the next refresh tries again.
+func TestUnresolvedContextWindowIsNotCached(t *testing.T) {
+	m := newTestApp()
+	m.chatConvID = "conv-1"
+	const model = "orchicon/opencode/muse-spark-1.3"
+
+	// First read: the window could not be resolved yet.
+	m.applyMetrics(metricsMsg{convID: "conv-1", m: sessionMetrics{have: true, model: model, ctxUsed: 24000}})
+	if m.ctxWindowFor != "" {
+		t.Fatalf("an unresolved window was cached as resolved (ctxWindowFor=%q)", m.ctxWindowFor)
+	}
+
+	// A later read resolves it, and NOW it is cached.
+	m.applyMetrics(metricsMsg{convID: "conv-1", m: sessionMetrics{
+		have: true, model: model, ctxUsed: 24000, ctxWindow: 200000,
+	}})
+	if m.ctxWindowFor != model || m.ctxWindow != 200000 {
+		t.Fatalf("the resolved window was not cached: (%q, %d)", m.ctxWindowFor, m.ctxWindow)
+	}
+	if got := m.metricsLine(); !strings.Contains(got, "200K") {
+		t.Errorf("the strip must show the limit once resolved:\n%s", got)
 	}
 }
 

@@ -214,7 +214,11 @@ func (m *App) refreshMetrics() tea.Cmd {
 	cachedWindow := int64(0)
 	needWindow := false
 	if model != "" {
-		if m.ctxWindowFor == model {
+		// Only a NON-ZERO window counts as resolved. Caching 0 treated "the read
+		// raced the provider list, which had not loaded yet" as "this model has no
+		// context window", so the lookup was never retried and the composer showed
+		// a bare token count with no limit for the life of the conversation.
+		if m.ctxWindowFor == model && m.ctxWindow > 0 {
 			cachedWindow = m.ctxWindow
 		} else {
 			needWindow = true
@@ -266,7 +270,14 @@ func (m *App) applyMetrics(msg metricsMsg) tea.Cmd {
 		return nil
 	}
 	m.metrics = msg.m
-	m.ctxWindowFor, m.ctxWindow = msg.m.model, msg.m.ctxWindow
+	if msg.m.ctxWindow > 0 {
+		m.ctxWindowFor, m.ctxWindow = msg.m.model, msg.m.ctxWindow
+	} else {
+		// 0 means UNRESOLVED, not "no window": leave it un-cached so the next
+		// refresh retries (the provider list may still be loading) instead of
+		// freezing a missing context limit onto the strip.
+		m.ctxWindowFor = ""
+	}
 	m.syncComposerStats()
 	return nil
 }

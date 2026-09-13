@@ -945,10 +945,11 @@ function AskOrchiconPage() {
   );
 
   // handleCompactConversation runs the /compact composer command. The server owns
-  // the policy (it may decline with a reason), so the outcome text is returned
-  // verbatim for the toast rather than being invented here.
+  // the policy (it may decline with a reason), so the outcome is passed back
+  // STRUCTURED rather than flattened to a string: `compacted` lets the caller
+  // render a decline as information instead of a success.
   const handleCompactConversation = useCallback(
-    async (conversationId: string): Promise<string> => {
+    async (conversationId: string): Promise<{ detail: string; compacted: boolean }> => {
       const res = await compactConv.mutateAsync(conversationId);
       // The server never estimates: a non-zero size is a real measurement, so a
       // zero is omitted rather than shown as "0 tokens".
@@ -956,7 +957,7 @@ function AskOrchiconPage() {
       const after = Number(res.contextTokensAfter ?? 0);
       const size = before > 0 ? ` (${before} → ${after} tokens)` : "";
       const verdict = res.detail || (res.compacted ? "conversation compacted" : "nothing to compact");
-      return `${verdict}${size}`;
+      return { detail: `${verdict}${size}`, compacted: res.compacted };
     },
     [compactConv],
   );
@@ -1776,9 +1777,10 @@ function ChatInputField({
   // it back in the box. Null/absent = nothing to restore.
   restoreDraft?: { convId: string; text: string; token: number } | null;
   // onCompact runs the /compact command (free context by compacting this
-  // conversation's history). It resolves to a human-readable outcome that the
-  // composer reports; the server owns the policy (it may decline).
-  onCompact?: (convId: string) => Promise<string>;
+  // conversation's history). It resolves to the OUTCOME: `compacted`
+  // distinguishes a real compaction from a server-side DECLINE (whose reason
+  // arrives in `detail`), so a decline is not dressed up as a success.
+  onCompact?: (convId: string) => Promise<{ detail: string; compacted: boolean }>;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1861,8 +1863,14 @@ function ChatInputField({
     if (!onCompact) return;
     setSending(true);
     try {
-      const detail = await onCompact(convId);
-      useToastStore.getState().push({ kind: "success", message: detail || "/compact complete" });
+      const res = await onCompact(convId);
+      // A DECLINE is not an achievement: the server reports compacted=false with
+      // its reason ("only N messages so far"), and rendering that as a green
+      // success toast reads as if something happened when nothing did.
+      useToastStore.getState().push({
+        kind: res.compacted ? "success" : "info",
+        message: res.detail || (res.compacted ? "conversation compacted" : "nothing to compact"),
+      });
     } catch (err) {
       useToastStore.getState().push({
         kind: "error",

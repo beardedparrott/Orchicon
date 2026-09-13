@@ -232,34 +232,67 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	return out
 }
 
-// ContextWindow resolves a model ref's context-window size (in tokens)
-// through the SAME per-adapter source the picker uses, so the number the
-// composer reports can never disagree with the window the picker annotates.
+// ContextWindow resolves a model ref's context-window size (in tokens).
 //
-// Returns 0 with a nil error when the ref or its window is simply unknown (a
-// model with no context hint, or a provider that cannot enumerate models):
-// the caller renders "unknown" rather than inventing a number. A non-nil error
-// means the lookup itself failed.
+// It consults BOTH per-adapter sources — preferring the ref's own adapter and
+// falling back to the other — because a model can be LISTED by the source that
+// does not carry its context hint while the other one does (the opencode
+// provider's native probe vs the opencode-CLI discovery), and the window is the
+// same number either way. Consulting only the ref's own adapter is why the
+// composer reported a bare occupancy with no limit.
+//
+// Returns 0 with a nil error when the window is genuinely unknown from both
+// sources (or the ref has no resolvable segments): callers render the bare
+// occupancy rather than inventing a denominator. 0 therefore means UNKNOWN —
+// callers must not cache it as though it were a resolved window.
 func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, error) {
 	kind, provider, model := SplitRef(ref)
 	if provider == "" || model == "" {
 		return 0, nil // a partial/legacy ref has no resolvable window
 	}
-	if kind == NativeAdapterKind {
-		if cl == nil || cl.Providers == nil {
-			return 0, errors.New("no provider client")
-		}
-		resp, err := cl.Providers.ListProviderModels(ctx, connect.NewRequest(&apiv1.ProviderModelsRequest{ProviderId: provider}))
-		if err != nil {
-			return 0, err
-		}
-		for _, m := range resp.Msg.GetModels() {
-			if m.GetId() == model {
-				return m.GetContext(), nil
-			}
-		}
-		return 0, nil
+	preferNative := kind == NativeAdapterKind
+	native := func() (int64, error) { return nativeModelContext(ctx, cl, provider, model) }
+	cli := func() (int64, error) { return cliModelContext(ctx, cl, kind, provider, model) }
+	first, second := native, cli
+	if !preferNative {
+		first, second = cli, native
 	}
+	// Any non-zero answer wins. An error from the preferred source is only
+	// reported when NEITHER source could answer, so a failing probe cannot hide a
+	// window the other source knows.
+	var firstErr error
+	if w, err := first(); w > 0 {
+		return w, nil
+	} else if err != nil {
+		firstErr = err
+	}
+	if w, err := second(); w > 0 {
+		return w, nil
+	} else if err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return 0, firstErr
+}
+
+// nativeModelContext reads the window from the providers sourcing view.
+func nativeModelContext(ctx context.Context, cl *client.Clients, provider, model string) (int64, error) {
+	if cl == nil || cl.Providers == nil {
+		return 0, errors.New("no provider client")
+	}
+	resp, err := cl.Providers.ListProviderModels(ctx, connect.NewRequest(&apiv1.ProviderModelsRequest{ProviderId: provider}))
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range resp.Msg.GetModels() {
+		if m.GetId() == model {
+			return m.GetContext(), nil
+		}
+	}
+	return 0, nil
+}
+
+// cliModelContext reads the window from opencode-CLI discovery.
+func cliModelContext(ctx context.Context, cl *client.Clients, kind, provider, model string) (int64, error) {
 	if cl == nil || cl.AIGateway == nil {
 		return 0, errors.New("no AI gateway client")
 	}

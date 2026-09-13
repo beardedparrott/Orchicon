@@ -48,21 +48,37 @@ export function useAskSessionMetrics(convId: string | null | undefined) {
  */
 export function useModelContextWindow(modelRef: string): number {
   const parsed = useMemo(() => parseModelRef(modelRef), [modelRef]);
-  const native = parsed?.adapter === ORCHICON_ADAPTER_KIND;
-  const hasProvider = !!parsed?.provider;
+  const providerId = parsed?.provider ?? "";
+  const hasProvider = providerId !== "";
 
-  const providerQ = useProviderModels(native && hasProvider ? parsed!.provider : "", native && hasProvider);
-  const cliQ = useListOpenCodeModels(parsed?.adapter, parsed?.provider, !native && hasProvider);
+  // BOTH sources are queried (not just the ref's own adapter): a model can be
+  // LISTED by the source that does not carry its context hint while the other
+  // one does — the opencode provider's native probe vs the opencode-CLI
+  // discovery — and the window is the same number either way. Gating the query
+  // on the adapter is why the composer strip showed a bare "ctx 24K" with no
+  // limit.
+  const providerQ = useProviderModels(providerId, hasProvider);
+  const cliQ = useListOpenCodeModels(parsed?.adapter, providerId, hasProvider);
 
   return useMemo(() => {
-    if (!parsed || !parsed.provider) return 0;
-    if (native) {
+    if (!parsed || !hasProvider) return 0;
+    // Native sourcing view: match on the model id.
+    const fromProvider = () => {
       const m = (providerQ.data?.models ?? []).find((x) => x.id === parsed.model);
       return Number(m?.context ?? 0) || 0;
-    }
-    const m = (cliQ.data ?? []).find((x) => x.id === parsed.model);
-    return Number(m?.limits?.context ?? 0) || 0;
-  }, [native, parsed, providerQ.data, cliQ.data]);
+    };
+    // CLI discovery: match on the bare id, or the legacy 2-segment modelRef.
+    const fromCli = () => {
+      const m = (cliQ.data ?? []).find(
+        (x) => x.id === parsed.model || x.modelRef === `${providerId}/${parsed.model}`,
+      );
+      return Number(m?.limits?.context ?? 0) || 0;
+    };
+    const native = parsed.adapter === ORCHICON_ADAPTER_KIND;
+    // Prefer the ref's own adapter, fall back to the other; 0 = unknown from
+    // both (the strip then omits the denominator rather than inventing one).
+    return native ? fromProvider() || fromCli() : fromCli() || fromProvider();
+  }, [parsed, hasProvider, providerId, providerQ.data, cliQ.data]);
 }
 
 /**
