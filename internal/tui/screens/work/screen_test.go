@@ -1053,15 +1053,31 @@ func TestScheduleWorkItem(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	run(t, m, press(t, m, "t"))
+	// Scheduling lives in the DETAILS pane now: 't' is gone and 'e' is the one
+	// way in, carrying the Scheduled-start picker with it.
+	m2 := newModel(t, p)
+	m2.SelectSource(srcWorkItems)
+	load(t, m2, srcWorkItems)
+	press(t, m2, "t")
+	if m2.form != nil || m2.Base.EditingDetail() {
+		t.Fatal("'t' must no longer open a schedule form")
+	}
+
+	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
 	if f == nil {
-		t.Fatal("t must open the schedule form")
+		t.Fatal("e must open the details editor")
+	}
+	if !f.FocusName("scheduled_start") {
+		t.Fatal("the editor must carry a scheduled-start field")
 	}
 	f.Set("scheduled_start", "2026-09-01T09:00:00Z")
 	f.Set("auto_start", "true")
-	run(t, m, submit(t, m, "auto_start"))
+	run(t, m, press(t, m, "ctrl+s"))
 
+	if len(p.updated) == 0 {
+		t.Fatal("saving the editor must send an update")
+	}
 	req := p.updated[len(p.updated)-1]
 	if req.GetScheduledStartAt() == nil || !req.GetAutoStartWorkflow() {
 		t.Fatalf("schedule request = %+v", req)

@@ -39,10 +39,9 @@ import (
 
 // form modes for the work-item surfaces.
 const (
-	formCreateItem   = "item-create"
-	formEditItem     = "item-edit"
-	formStatusItem   = "item-status"
-	formScheduleItem = "item-schedule"
+	formCreateItem = "item-create"
+	formEditItem   = "item-edit"
+	formStatusItem = "item-status"
 )
 
 // itemFormMsg lands the option lists (create) or the item being edited.
@@ -437,7 +436,8 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
 			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image ")},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
-		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KText, Initial: rfc3339OrEmpty(w.GetScheduledStartAt()), Validate: validateRFC3339},
+		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KPicker,
+			Options: pickerOptsWithCurrent(schedulePresets(), rfc3339OrEmpty(w.GetScheduledStartAt()), "")},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
 	)
 	m.wireItemForm(f, formEditItem, w.GetId())
@@ -455,40 +455,15 @@ func (m *Model) newItemStatusForm(w *apiv1.WorkItem) *kit2.Form {
 	return f
 }
 
-// newItemScheduleForm sets scheduled_start_at (the ScheduleWorkItem path: the
-// schedule is an UpdateWorkItem field, opt-in via auto_start_workflow).
-//
-// Auto-start is deliberately UNCHECKED by default and does not inherit the
-// item's stored value: enabling it starts the bound workflow the moment the
-// schedule fires, and the operator called having that on by default "dangerous".
-// It is now an explicit opt-in per scheduling action.
-//
-// The Quick pick fills the timestamp field with a concrete RFC3339 value; the
-// field stays editable for an exact time, so the picker assists rather than
-// replaces it.
-func (m *Model) newItemScheduleForm(w *apiv1.WorkItem) *kit2.Form {
-	f := kit2.NewForm("Schedule work item",
-		kit2.FieldSpec{Name: "quick", Label: "Quick pick", Kind: kit2.KPicker, Options: schedulePresets()},
-		kit2.FieldSpec{Name: "scheduled_start", Label: "Start at", Kind: kit2.KText, Required: true,
-			Initial: rfc3339OrEmpty(w.GetScheduledStartAt()), Placeholder: "2026-09-01T09:00:00Z", Validate: validateRFC3339},
-		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
-	)
-	f.OnChange = func(name, value string) {
-		if name == "quick" && value != "" {
-			f.Values["scheduled_start"] = value
-		}
-	}
-	m.wireItemForm(f, formScheduleItem, w.GetId())
-	return f
-}
-
 // schedulePresets are ready-made scheduled times, computed at form-build time so
 // each carries a concrete RFC3339 value. They cover the common cases without
-// asking anyone to hand-write a timestamp.
+// asking anyone to hand-write a timestamp. The Scheduled-start field in the
+// DETAILS pane is a picker over these — the operator's "when you select the
+// scheduled start, it pops up the picker for that".
 func schedulePresets() []kit2.Option {
 	now := time.Now().UTC()
 	return []kit2.Option{
-		{Value: "", Label: "— pick a time, or type one below —"},
+		{Value: "", Label: "— not scheduled —"},
 		{Value: now.Add(15 * time.Minute).Format(time.RFC3339), Label: "in 15 minutes"},
 		{Value: now.Add(time.Hour).Format(time.RFC3339), Label: "in 1 hour"},
 		{Value: now.Add(4 * time.Hour).Format(time.RFC3339), Label: "in 4 hours"},
@@ -595,23 +570,6 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			return m.Mutate(mutate.Request{
 				Name: name, Source: srcWorkItems,
 				Apply:    func() { m.setRowMeta(srcWorkItems, id, statusPill(status)) },
-				Rollback: func() { m.Refresh(srcWorkItems) },
-				Do: func(ctx context.Context) error {
-					_, err := m.cl.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(req))
-					return err
-				},
-			}), nil
-
-		case formScheduleItem:
-			auto := v["auto_start"] == "true"
-			req := &apiv1.UpdateWorkItemRequest{
-				Id:                id,
-				ScheduledStartAt:  tsOrNil(v["scheduled_start"]),
-				AutoStartWorkflow: &auto,
-			}
-			return m.Mutate(mutate.Request{
-				Name: "schedule work item", Source: srcWorkItems,
-				Apply:    func() { m.setRowMeta(srcWorkItems, id, "scheduled") },
 				Rollback: func() { m.Refresh(srcWorkItems) },
 				Do: func(ctx context.Context) error {
 					_, err := m.cl.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(req))

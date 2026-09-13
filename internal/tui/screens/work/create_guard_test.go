@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
 // The operator: "When I created a new work item (twice) and chose a parent, it
@@ -115,31 +116,46 @@ func TestCtrlSSavesAndEnterDoesNot(t *testing.T) {
 	}
 }
 
-// Scheduling: auto-start is OFF by default (the operator called the previous
-// default "dangerous"), and ready-made times fill the timestamp field.
-func TestScheduleDefaultsAutoStartOffAndOffersPresets(t *testing.T) {
+// Scheduling lives in the DETAILS pane: the Scheduled-start field IS a picker
+// over ready-made times, and auto-start is OFF by default (the operator called
+// the previous default "dangerous").
+func TestSchedulePickerLivesInTheDetailsEditor(t *testing.T) {
 	m := editPlane(t)
-	run(t, m, press(t, m, "t"))
+	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
 	if f == nil {
-		t.Fatal("t must open the schedule editor")
+		t.Fatal("e must open the details editor")
 	}
+	// Auto-start must not be pre-enabled.
 	if got := f.Values["auto_start"]; got == "true" {
 		t.Fatal("auto-start must not default to enabled")
 	}
-	if got := len(schedulePresets()); got < 3 {
-		t.Fatalf("expected ready-made times, got %d", got)
+	// The scheduled-start field is a PICKER carrying ready-made times.
+	var spec *kit2.FieldSpec
+	for i := range f.Specs {
+		if f.Specs[i].Name == "scheduled_start" {
+			spec = &f.Specs[i]
+		}
 	}
-	// Choosing a preset fills the timestamp field with a concrete value.
+	if spec == nil {
+		t.Fatal("the editor must carry a scheduled-start field")
+	}
+	if spec.Kind != kit2.KPicker {
+		t.Fatalf("scheduled start must be a picker, got %q", spec.Kind)
+	}
+	if len(spec.Options) < 3 {
+		t.Fatalf("expected ready-made times, got %d", len(spec.Options))
+	}
+	// Choosing a preset sets the timestamp the request will carry.
 	var preset string
-	for _, o := range schedulePresets() {
+	for _, o := range spec.Options {
 		if o.Value != "" {
 			preset = o.Value
 			break
 		}
 	}
-	f.Set("quick", preset)
+	f.Set("scheduled_start", preset)
 	if got := f.Values["scheduled_start"]; got != preset {
-		t.Fatalf("the quick pick must fill the timestamp: got %q, want %q", got, preset)
+		t.Fatalf("choosing a preset must set the timestamp: got %q, want %q", got, preset)
 	}
 }

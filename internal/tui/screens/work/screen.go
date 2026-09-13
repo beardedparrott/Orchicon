@@ -565,8 +565,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
 		case formStatusItem:
 			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
-		case formScheduleItem:
-			m.Base.BeginDetailEdit("Schedule", m.newItemScheduleForm(msg.item))
 		}
 		m.formMode, m.formID = msg.mode, msg.item.GetId()
 		m.notice = ""
@@ -760,10 +758,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.prepEditItem(formStatusItem), true
 		}
-	case "t":
-		if src == srcWorkItems {
-			return m.prepEditItem(formScheduleItem), true
-		}
 	case "b":
 		if src == srcImages {
 			return m.startBuild(), true
@@ -897,7 +891,7 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit in the details pane · s: status/priority · t: schedule · y: auto-start · +/-: move step up/down · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
+		return theme.HintText.Render("n: new · /: search · e: edit + schedule in the details pane · s: status/priority · y: auto-start · +/-: move step up/down · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
 	}
 }
 

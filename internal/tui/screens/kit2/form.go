@@ -832,14 +832,21 @@ func (f *Form) View() string {
 			}
 		}
 		if i == f.Cursor && f.Focused {
-			b.WriteString(theme.ListItemSelected.Render(Pad(line, width)))
+			for _, l := range wrapFormLine(line, width) {
+				b.WriteString(theme.ListItemSelected.Render(Pad(l, width)))
+				b.WriteString("\n")
+			}
 		} else {
-			b.WriteString(theme.ListItem.Render(line))
+			for _, l := range wrapFormLine(line, width) {
+				b.WriteString(theme.ListItem.Render(l))
+				b.WriteString("\n")
+			}
 		}
-		b.WriteString("\n")
 		if err := f.Errors[s.Name]; err != "" {
-			b.WriteString(theme.ErrorText.Render("    ✗ " + err))
-			b.WriteString("\n")
+			for _, l := range wrapFormLine("    ✗ "+err, width) {
+				b.WriteString(theme.ErrorText.Render(l))
+				b.WriteString("\n")
+			}
 		}
 		// An open picker lists its matches directly under the field, so the
 		// operator SEES the choices while typing (the operator's "another box
@@ -848,9 +855,56 @@ func (f *Form) View() string {
 			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
-	b.WriteString(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"))
+	// The hint row also wraps: the panel pads (and therefore TRUNCATES) every
+	// body line, so a long hint lost its tail — the operator's "the tool tips
+	// are being written off the screen and cut off".
+	for _, l := range wrapFormLine(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"), width) {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
 	if f.SubmitErr != "" {
-		b.WriteString("\n" + theme.ErrorText.Render("✗ "+f.SubmitErr))
+		for _, l := range wrapFormLine(theme.ErrorText.Render("✗ "+f.SubmitErr), width) {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// wrapFormLine breaks a rendered line so it fits `width` cells, wrapping at
+// word boundaries and indenting continuations to match the leading prefix. The
+// form's host pads (and truncates) each body line to the pane width, so a line
+// longer than the form was silently CUT — long labels, long values and the hint
+// row all lost their tails.
+func wrapFormLine(line string, width int) []string {
+	if width < 8 || lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	// The continuation indent mirrors the field's leading marker + label so a
+	// wrapped value reads as part of the same field.
+	indent := "    "
+	if i := strings.Index(line, ": "); i >= 0 && i < width/2 {
+		indent = strings.Repeat(" ", i+2)
+	}
+	words := strings.Fields(line)
+	if len(words) == 0 {
+		return []string{line}
+	}
+	out := make([]string, 0, 2)
+	cur := ""
+	for _, w := range words {
+		switch {
+		case cur == "":
+			cur = w
+		case lipgloss.Width(cur)+1+lipgloss.Width(w) <= width:
+			cur += " " + w
+		default:
+			out = append(out, cur)
+			cur = indent + w
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
 }

@@ -105,10 +105,11 @@ func TestDetailEditEscCancels(t *testing.T) {
 }
 
 // The other work-item edit gestures use the same host, so there is ONE
-// editing surface rather than a mix of modals. Assign is deliberately GONE:
-// a worker ref does not belong on a work item (workflows bind the work).
-func TestStatusAndScheduleEditInThePane(t *testing.T) {
-	for _, key := range []string{"s", "t"} {
+// editing surface rather than a mix of modals. Assign is deliberately GONE (a
+// worker ref does not belong on a work item), and scheduling moved INTO the
+// editor rather than keeping its own modal.
+func TestStatusEditUsesThePane(t *testing.T) {
+	for _, key := range []string{"s"} {
 		m := editPlane(t)
 		run(t, m, press(t, m, key))
 		if m.form != nil {
