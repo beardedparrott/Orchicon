@@ -31,8 +31,10 @@ import { ChevronDown } from "lucide-react";
 
 import { ModelPicker } from "@/components/ModelPicker";
 
-// PANEL_W is the preferred panel width; it shrinks on a narrow viewport.
-const PANEL_W = 460;
+// PANEL_W is the preferred panel width; it shrinks on a narrow viewport. Wider
+// than the app's other popovers because the picker renders three tiers (adapter
+// pills, provider pills, then model rows with name, id, cost and context).
+const PANEL_W = 540;
 const MARGIN = 8;
 
 export function AskModelChip({
@@ -166,10 +168,17 @@ export function AskModelChip({
             </div>
             {/* askMode flags adapters that are registered but cannot serve Ask
                 chat (ADR-0004 D1), so an unusable choice is flagged AT selection
-                rather than failing on the first message. */}
+                rather than failing on the first message.
+                `inline` renders the three tiers IN FLOW inside this panel. It is
+                REQUIRED here, not optional polish: the picker's default dropdown
+                is `position: absolute`, so it would contribute no height to this
+                panel and would paint OUTSIDE it — and its tiers only render while
+                `showDropdown` is set, which a panel-hosted input never triggers.
+                Without it the panel renders as an empty search box. */}
             <ModelPicker
               value={model}
               askMode
+              inline
               onChange={(ref) => {
                 onModelChange(ref);
                 setOpen(false);
