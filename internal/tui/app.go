@@ -230,14 +230,18 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	// Screens take tenantID="" for their streams: the plane resolves the
 	// tenant from the bearer credential (internal/project/service.go —
 	// StreamProjectEvents ignores req.TenantId), so orch never guesses one.
+	// The factory reads m.clients AT CALL TIME, not the cl captured here:
+	// /connect rebuilds the client set, and a factory closing over the ORIGINAL
+	// pointer handed every reconstructed screen a stale, unauthorised client —
+	// which is why reconnecting left the screens blank.
 	m.factories = map[TabID]func() Screen{
-		TabAsk:         func() Screen { return ask.New(cl, m.reg) },
-		TabOverview:    func() Screen { return overview.New(cl, m.reg, "") },
-		TabWork:        func() Screen { return work.New(cl, m.reg, "") },
-		TabExecution:   func() Screen { return execution.New(cl, m.reg, "") },
-		TabAutomation:  func() Screen { return automation.New(cl, m.reg, "") },
-		TabEnforcement: func() Screen { return enforcement.New(cl, m.reg, "") },
-		TabControl:     func() Screen { return control.New(cl, m.reg) },
+		TabAsk:         func() Screen { return ask.New(m.clients, m.reg) },
+		TabOverview:    func() Screen { return overview.New(m.clients, m.reg, "") },
+		TabWork:        func() Screen { return work.New(m.clients, m.reg, "") },
+		TabExecution:   func() Screen { return execution.New(m.clients, m.reg, "") },
+		TabAutomation:  func() Screen { return automation.New(m.clients, m.reg, "") },
+		TabEnforcement: func() Screen { return enforcement.New(m.clients, m.reg, "") },
+		TabControl:     func() Screen { return control.New(m.clients, m.reg) },
 	}
 	// The slash registry is generated from the screens' Sources() (the
 	// no-drift source of truth), so factories must exist before it builds.
@@ -1016,8 +1020,12 @@ func (m *App) navEntries(tab TabID) []NavEntry {
 	return out
 }
 
-// streamStatus derives the footer state from the active screen's
-// reported subscription statuses (worst wins).
+// streamStatus derives the footer state from the active screen's declared
+// subscriptions. The VALUE comes from the registry's latest report, not from
+// what the screen last received: a delivery can be routed to a different screen
+// than the one that armed the read, and the wake-up queue drops on overflow —
+// either way the screen's copy could freeze on an old value (the footer stuck on
+// "connecting…" for the rest of the session).
 func (m *App) streamStatus() streamStatusString {
 	s := m.screens[m.active]
 	if s == nil {
@@ -1029,8 +1037,12 @@ func (m *App) streamStatus() streamStatusString {
 	}
 	worst := openStatus
 	for _, st := range rp.ReportStatus() {
-		if statusRank(streamStatusString(st.Status)) > statusRank(worst) {
-			worst = streamStatusString(st.Status)
+		live := st.Status
+		if v := m.reg.LatestStatus(st.Name); v != "" {
+			live = v
+		}
+		if statusRank(streamStatusString(live)) > statusRank(worst) {
+			worst = streamStatusString(live)
 		}
 	}
 	return worst

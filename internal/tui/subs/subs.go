@@ -58,11 +58,21 @@ type Registry struct {
 	subs   []subHandle
 	chans  map[string]chan string
 	events map[string]chan struct{}
+	// latest is the MOST RECENT status per subscription name. It exists so a
+	// status can never be lost: the channels below are wake-ups and drop on
+	// overflow, and a delivery can be routed to a different screen than the one
+	// that armed it — either way the previous status could freeze forever (the
+	// footer stuck on "connecting"). Readers take the VALUE from here.
+	latest map[string]string
 }
 
 // NewRegistry builds an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{chans: map[string]chan string{}, events: map[string]chan struct{}{}}
+	return &Registry{
+		chans:  map[string]chan string{},
+		events: map[string]chan struct{}{},
+		latest: map[string]string{},
+	}
 }
 
 // subHandle is the minimum every registry member implements.
@@ -125,6 +135,7 @@ func (r *Registry) StatusChan(name string) <-chan string {
 func (r *Registry) notify(name string) func(stream.Status) {
 	return func(st stream.Status) {
 		r.mu.Lock()
+		r.latest[name] = string(st)
 		ch := r.chans[name]
 		r.mu.Unlock()
 		if ch == nil {
@@ -135,6 +146,16 @@ func (r *Registry) notify(name string) func(stream.Status) {
 		default:
 		}
 	}
+}
+
+// LatestStatus is the most recent status reported for a subscription name
+// ("" when the name has never reported). This is the authoritative value — the
+// footer reads it rather than trusting the last message a screen happened to
+// receive, which could be stale if a delivery was routed elsewhere.
+func (r *Registry) LatestStatus(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.latest[name]
 }
 
 // pokeEvent delivers one event-poke to the named channel (non-blocking,
@@ -376,6 +397,13 @@ func (r *Registry) WaitStatus(name string) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return StatusMsg{Name: name, Status: stream.Status(v)}
+		// Read the CURRENT value rather than the woken-up one: the wake-up queue
+		// drops on overflow, so an older status could arrive after a newer one was
+		// reported. The registry's latest is the truth.
+		st := stream.Status(r.LatestStatus(name))
+		if st == "" {
+			st = stream.Status(v)
+		}
+		return StatusMsg{Name: name, Status: st}
 	}
 }

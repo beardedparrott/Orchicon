@@ -122,3 +122,48 @@ func TestWorkItemsFetchSinglePage(t *testing.T) {
 		t.Fatalf("a short list must take one call, got %d", p.calls)
 	}
 }
+
+// The operator: "New work items (parents) are not showing up in the parent drop
+// down list on new work items."
+//
+// Same root cause as the list itself: the dropdown was built from ONE page while
+// the server orders NULL sort_order LAST, so a freshly created parent sat on a
+// later page and never appeared as a choice.
+func TestParentOptionsFollowPagination(t *testing.T) {
+	p := &pagedPlane{pageSize: 5}
+	for i := 0; i < 12; i++ {
+		p.items = append(p.items, &apiv1.WorkItem{
+			Id: "wi-" + string(rune('a'+i)), Title: "Parent " + string(rune('A'+i)),
+			Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC, ProjectId: "proj-1",
+		})
+	}
+	mux := http.NewServeMux()
+	mux.Handle(apiv1connect.NewWorkItemServiceHandler(p))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cl := client.New(client.Options{BaseURL: srv.URL})
+	opts, kinds, projects := loadParentOptions(context.Background(), cl)
+
+	// The "none" option plus EVERY item.
+	if len(opts) != 13 {
+		t.Fatalf("parent options = %d, want 13 (none + 12 items)", len(opts))
+	}
+	// The LAST item in server order (the newest) must be offered — it is the
+	// one that was missing.
+	last := p.items[len(p.items)-1]
+	if opts[len(opts)-1].Value != last.GetId() {
+		t.Fatalf("the last page's item must be offered, got %q", opts[len(opts)-1].Value)
+	}
+	// The kind and project maps must cover it too, or the form cannot derive
+	// the child kind or validate the project.
+	if kinds[last.GetId()] != apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC {
+		t.Fatalf("kind map missing the last item: %v", kinds[last.GetId()])
+	}
+	if projects[last.GetId()] != "proj-1" {
+		t.Fatalf("project map missing the last item: %q", projects[last.GetId()])
+	}
+	if p.calls < 3 {
+		t.Fatalf("expected at least 3 page calls, got %d", p.calls)
+	}
+}

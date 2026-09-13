@@ -65,18 +65,18 @@ type Result struct {
 
 // Model is the connection screen bubbletea model.
 type Model struct {
-	probes    ProbeFuncs
-	inputs    [fieldCount]textinput.Model
-	focus     int
-	authAPI   bool // true = API key, false = username+password
-	profile   *config.Profile
+	probes  ProbeFuncs
+	inputs  [fieldCount]textinput.Model
+	focus   int
+	authAPI bool // true = API key, false = username+password
+	profile *config.Profile
 	// storedRefresh carries the existing profile's refresh token through an
 	// edit (API-key switch clears it; password probe overwrites it).
 	storedRefresh string
 	// embedded marks the model as the SHELL's in-place /connect overlay:
 	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
 	// emitted on success — the shell polls Result() each Update.
-	embedded bool
+	embedded  bool
 	width     int
 	height    int
 	busy      bool

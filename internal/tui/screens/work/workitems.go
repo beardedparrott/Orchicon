@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
@@ -182,24 +183,10 @@ func (m *Model) prepCreateItem() tea.Cmd {
 			}
 		}
 		// The parent picker lists the real work items, so a parent is CHOSEN by
-		// name instead of typed as an id.
-		if ir, err := cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-			PageSize:        200,
-			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
-			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
-		})); err == nil {
-			msg.parents = append(msg.parents, kit2.Option{Value: "", Label: "— none (top level · epic) —"})
-			msg.parentKinds = map[string]apiv1.WorkItemKind{}
-			msg.parentProjects = map[string]string{}
-			for _, w := range ir.Msg.GetWorkItems() {
-				msg.parents = append(msg.parents, kit2.Option{
-					Value: w.GetId(),
-					Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
-				})
-				msg.parentKinds[w.GetId()] = w.GetKind()
-				msg.parentProjects[w.GetId()] = w.GetProjectId()
-			}
-		}
+		// name instead of typed as an id. It FOLLOWS PAGINATION like the list
+		// itself: a single page hid every item past the first — including the
+		// newly created parents the operator could not find in this dropdown.
+		msg.parents, msg.parentKinds, msg.parentProjects = loadParentOptions(ctx, cl)
 		// The runtime-image picker lists the real images (value = the tag the
 		// request carries).
 		if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
@@ -339,6 +326,45 @@ func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 		return fmt.Errorf("a %s must be deeper than its parent (the parent is a %s) — pick a deeper kind or a shallower parent", kind, kindBadge(pk))
 	}
 	return nil
+}
+
+// maxParentPages bounds the parent picker's pagination (the same shape as the
+// list's own: the dropdown must show EVERY item that can be a parent, and the
+// server orders NULL sort_order LAST, so a fresh item is only on a later page).
+const maxParentPages = 25
+
+// loadParentOptions fetches every work item that can be a parent, following
+// pagination, and returns the picker options plus the id→kind and id→project
+// maps the form needs to derive and validate the child kind.
+func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, map[string]apiv1.WorkItemKind, map[string]string) {
+	opts := []kit2.Option{{Value: "", Label: "— none (top level · epic) —"}}
+	kinds := map[string]apiv1.WorkItemKind{}
+	projects := map[string]string{}
+	token := ""
+	for page := 0; page < maxParentPages; page++ {
+		resp, err := cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+			PageSize:        200,
+			PageToken:       token,
+			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+		}))
+		if err != nil {
+			break // a partial list still beats no dropdown
+		}
+		for _, w := range resp.Msg.GetWorkItems() {
+			opts = append(opts, kit2.Option{
+				Value: w.GetId(),
+				Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
+			})
+			kinds[w.GetId()] = w.GetKind()
+			projects[w.GetId()] = w.GetProjectId()
+		}
+		token = resp.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+	return opts, kinds, projects
 }
 
 // newItemCreateForm builds the typed create form.
