@@ -232,49 +232,41 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	return out
 }
 
-// ContextWindow resolves a model ref's context-window size (in tokens).
+// ContextWindow resolves a model ref's context-window size (in tokens),
+// reading the source the ref's OWN adapter specifies:
 //
-// It consults BOTH per-adapter sources — preferring the ref's own adapter and
-// falling back to the other — because a model can be LISTED by the source that
-// does not carry its context hint while the other one does (the opencode
-// provider's native probe vs the opencode-CLI discovery), and the window is the
-// same number either way. Consulting only the ref's own adapter is why the
-// composer reported a bare occupancy with no limit.
+//   - the native `orchicon` kind reads the providers sourcing view
+//     (ProviderService.ListProviderModels → the native registry/sourcing
+//     substrate, which shells out to nothing);
+//   - every other kind reads opencode-CLI discovery.
 //
-// Returns 0 with a nil error when the window is genuinely unknown from both
-// sources (or the ref has no resolvable segments): callers render the bare
-// occupancy rather than inventing a denominator. 0 therefore means UNKNOWN —
-// callers must not cache it as though it were a resolved window.
+// The adapter segment is NEVER crossed. In particular an `orchicon` ref must NOT
+// fall back to the opencode CLI: the whole point of the native adapter is that
+// the product works WITHOUT opencode installed, so a cross-source fallback here
+// would make selecting `orchicon` silently invoke the opencode binary
+// (ListOpenCodeModels returns Unimplemented when no discoverer is configured) —
+// the exact dependency the native adapter exists to remove. An adapter whose
+// model list legitimately IS the CLI (a legacy `opencode/...` ref) still reads
+// the CLI, because for THAT adapter the CLI is the authority.
+//
+// Returns 0 with a nil error when the window is genuinely unknown from that
+// source (a model with no context hint, a provider that cannot enumerate models,
+// or a ref with no resolvable segments): callers render the bare occupancy
+// rather than inventing a denominator, and must NOT cache the 0 as though it
+// were a resolved window.
 func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, error) {
 	kind, provider, model := SplitRef(ref)
 	if provider == "" || model == "" {
 		return 0, nil // a partial/legacy ref has no resolvable window
 	}
-	preferNative := kind == NativeAdapterKind
-	native := func() (int64, error) { return nativeModelContext(ctx, cl, provider, model) }
-	cli := func() (int64, error) { return cliModelContext(ctx, cl, kind, provider, model) }
-	first, second := native, cli
-	if !preferNative {
-		first, second = cli, native
+	if kind == NativeAdapterKind {
+		return nativeModelContext(ctx, cl, provider, model)
 	}
-	// Any non-zero answer wins. An error from the preferred source is only
-	// reported when NEITHER source could answer, so a failing probe cannot hide a
-	// window the other source knows.
-	var firstErr error
-	if w, err := first(); w > 0 {
-		return w, nil
-	} else if err != nil {
-		firstErr = err
-	}
-	if w, err := second(); w > 0 {
-		return w, nil
-	} else if err != nil && firstErr == nil {
-		firstErr = err
-	}
-	return 0, firstErr
+	return cliModelContext(ctx, cl, kind, provider, model)
 }
 
-// nativeModelContext reads the window from the providers sourcing view.
+// nativeModelContext reads the window from the providers sourcing view (the
+// native substrate — no opencode binary involved).
 func nativeModelContext(ctx context.Context, cl *client.Clients, provider, model string) (int64, error) {
 	if cl == nil || cl.Providers == nil {
 		return 0, errors.New("no provider client")

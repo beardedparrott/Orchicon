@@ -48,37 +48,32 @@ export function useAskSessionMetrics(convId: string | null | undefined) {
  */
 export function useModelContextWindow(modelRef: string): number {
   const parsed = useMemo(() => parseModelRef(modelRef), [modelRef]);
+  const native = parsed?.adapter === ORCHICON_ADAPTER_KIND;
   const providerId = parsed?.provider ?? "";
   const hasProvider = providerId !== "";
 
-  // BOTH sources are queried (not just the ref's own adapter): a model can be
-  // LISTED by the source that does not carry its context hint while the other
-  // one does — the opencode provider's native probe vs the opencode-CLI
-  // discovery — and the window is the same number either way. Gating the query
-  // on the adapter is why the composer strip showed a bare "ctx 24K" with no
-  // limit.
-  const providerQ = useProviderModels(providerId, hasProvider);
-  const cliQ = useListOpenCodeModels(parsed?.adapter, providerId, hasProvider);
+  // The adapter segment picks the source and is NEVER crossed. An `orchicon` ref
+  // reads the providers sourcing view (the native substrate); every other kind
+  // reads opencode-CLI discovery. An orchicon ref must NOT fall back to the CLI:
+  // the native adapter exists so the product works WITHOUT opencode installed,
+  // and ListOpenCodeModels fails outright when no discoverer is configured — so a
+  // cross-source fallback would quietly reintroduce that dependency.
+  const providerQ = useProviderModels(native && hasProvider ? providerId : "", native && hasProvider);
+  const cliQ = useListOpenCodeModels(parsed?.adapter, providerId, !native && hasProvider);
 
   return useMemo(() => {
     if (!parsed || !hasProvider) return 0;
-    // Native sourcing view: match on the model id.
-    const fromProvider = () => {
+    if (native) {
       const m = (providerQ.data?.models ?? []).find((x) => x.id === parsed.model);
       return Number(m?.context ?? 0) || 0;
-    };
-    // CLI discovery: match on the bare id, or the legacy 2-segment modelRef.
-    const fromCli = () => {
-      const m = (cliQ.data ?? []).find(
-        (x) => x.id === parsed.model || x.modelRef === `${providerId}/${parsed.model}`,
-      );
-      return Number(m?.limits?.context ?? 0) || 0;
-    };
-    const native = parsed.adapter === ORCHICON_ADAPTER_KIND;
-    // Prefer the ref's own adapter, fall back to the other; 0 = unknown from
-    // both (the strip then omits the denominator rather than inventing one).
-    return native ? fromProvider() || fromCli() : fromCli() || fromProvider();
-  }, [parsed, hasProvider, providerId, providerQ.data, cliQ.data]);
+    }
+    // CLI discovery is the authority for this adapter: match the bare id, or the
+    // legacy 2-segment modelRef.
+    const m = (cliQ.data ?? []).find(
+      (x) => x.id === parsed.model || x.modelRef === `${providerId}/${parsed.model}`,
+    );
+    return Number(m?.limits?.context ?? 0) || 0;
+  }, [native, parsed, hasProvider, providerId, providerQ.data, cliQ.data]);
 }
 
 /**
