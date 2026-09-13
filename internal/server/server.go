@@ -567,9 +567,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			// Adapter parity: the native in-process engine is the "orchicon"
-			// adapter kind.
-			AdapterKind:   "orchicon",
+			// AdapterKind/SessionID are carried through so ONE callback serves both
+			// shapes: a worker execution self-describes as "orchicon" with an empty
+			// SessionID, while an Ask turn carries the kind parsed from its
+			// model_ref plus the conversation id it is attributed to.
+			AdapterKind:   in.AdapterKind,
+			SessionID:     in.SessionID,
 			CorrelationID: in.CorrelationID,
 			TraceID:       in.TraceID,
 			WorkflowRunID: in.WorkflowRunID,

@@ -77,6 +77,9 @@ const (
 	// AskOrchiconServiceWatchTurnStreamProcedure is the fully-qualified name of the
 	// AskOrchiconService's WatchTurnStream RPC.
 	AskOrchiconServiceWatchTurnStreamProcedure = "/orchicon.api.v1.AskOrchiconService/WatchTurnStream"
+	// AskOrchiconServiceCompactConversationProcedure is the fully-qualified name of the
+	// AskOrchiconService's CompactConversation RPC.
+	AskOrchiconServiceCompactConversationProcedure = "/orchicon.api.v1.AskOrchiconService/CompactConversation"
 	// AskOrchiconServiceUploadAttachmentProcedure is the fully-qualified name of the
 	// AskOrchiconService's UploadAttachment RPC.
 	AskOrchiconServiceUploadAttachmentProcedure = "/orchicon.api.v1.AskOrchiconService/UploadAttachment"
@@ -168,6 +171,22 @@ type AskOrchiconServiceClient interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// CompactConversation compacts a conversation's accumulated context so a
+	// long-running session can keep going instead of failing on the model's
+	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+	// session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+	// adapter (native) reduces the history it would re-send and replaces it
+	// with a summary plus the most recent turns.
+	//
+	// This is the escape hatch for a conversation already past its window: the
+	// sessionless transport re-sends the full history every turn, so once the
+	// history exceeds the window EVERY subsequent send fails and the
+	// conversation is permanently wedged. Compaction is the only way back.
+	//
+	// reason is recorded for the audit trail and the transcript marker:
+	// "manual" (a user asked), "pressure" (the proactive window gate fired),
+	// or "reactive" (a provider context-limit error was caught).
+	CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -264,6 +283,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
 			connect.WithClientOptions(opts...),
 		),
+		compactConversation: connect.NewClient[v1.CompactConversationRequest, v1.CompactConversationResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceCompactConversationProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("CompactConversation")),
+			connect.WithClientOptions(opts...),
+		),
 		uploadAttachment: connect.NewClient[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceUploadAttachmentProcedure,
@@ -305,6 +330,7 @@ type askOrchiconServiceClient struct {
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
 	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
+	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
 	updateAgentConfig         *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
@@ -369,6 +395,11 @@ func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context
 // WatchTurnStream calls orchicon.api.v1.AskOrchiconService.WatchTurnStream.
 func (c *askOrchiconServiceClient) WatchTurnStream(ctx context.Context, req *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
 	return c.watchTurnStream.CallServerStream(ctx, req)
+}
+
+// CompactConversation calls orchicon.api.v1.AskOrchiconService.CompactConversation.
+func (c *askOrchiconServiceClient) CompactConversation(ctx context.Context, req *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {
+	return c.compactConversation.CallUnary(ctx, req)
 }
 
 // UploadAttachment calls orchicon.api.v1.AskOrchiconService.UploadAttachment.
@@ -468,6 +499,22 @@ type AskOrchiconServiceHandler interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// CompactConversation compacts a conversation's accumulated context so a
+	// long-running session can keep going instead of failing on the model's
+	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+	// session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+	// adapter (native) reduces the history it would re-send and replaces it
+	// with a summary plus the most recent turns.
+	//
+	// This is the escape hatch for a conversation already past its window: the
+	// sessionless transport re-sends the full history every turn, so once the
+	// history exceeds the window EVERY subsequent send fails and the
+	// conversation is permanently wedged. Compaction is the only way back.
+	//
+	// reason is recorded for the audit trail and the transcript marker:
+	// "manual" (a user asked), "pressure" (the proactive window gate fired),
+	// or "reactive" (a provider context-limit error was caught).
+	CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -560,6 +607,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceCompactConversationHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceCompactConversationProcedure,
+		svc.CompactConversation,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("CompactConversation")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceUploadAttachmentHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceUploadAttachmentProcedure,
 		svc.UploadAttachment,
@@ -610,6 +663,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceWatchTurnStreamProcedure:
 			askOrchiconServiceWatchTurnStreamHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceCompactConversationProcedure:
+			askOrchiconServiceCompactConversationHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
 			askOrchiconServiceUploadAttachmentHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceGetAgentConfigProcedure:
@@ -673,6 +728,10 @@ func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.
 
 func (UnimplementedAskOrchiconServiceHandler) WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.WatchTurnStream is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.CompactConversation is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -168,9 +169,13 @@ type ConversationCreatedMsg struct {
 // ConversationMutatedMsg reports the outcome of a conversation write
 // (rename / delete / mode change) so the shell can reconcile the rail.
 type ConversationMutatedMsg struct {
-	Op  string // "rename" | "delete" | "mode"
+	Op  string // "rename" | "delete" | "mode" | "compact"
 	ID  string
 	Err string
+	// Detail is the outcome text for ops that report one (compact): a one-line,
+	// user-facing explanation shown verbatim, including WHY compaction declined
+	// and the measured context size around it when the server reported one.
+	Detail string
 }
 
 // StreamDoneMsg marks the goroutine forwarding loop ended (exported —
@@ -304,6 +309,75 @@ func (c *Controller) RenameConversation(id, title string) tea.Cmd {
 		}
 		return ConversationMutatedMsg{Op: "rename", ID: id}
 	}
+}
+
+// CanCompact reports whether the conversation may be compacted right now.
+// Empty string means yes; otherwise it returns the operator-facing reason it
+// must not.
+//
+// The one refusal: a turn is in flight. Compaction rewrites the very history the
+// running turn is generating from, so compacting underneath it would corrupt an
+// answer in progress. This lives on the controller (not the slash command) so the
+// policy is testable and any future caller inherits it.
+func (c *Controller) CanCompact(convID string) string {
+	if convID == "" {
+		return "no conversation open — /new or pick one from the rail"
+	}
+	if c.IsStreaming(convID) {
+		return "a turn is in flight — stop it (esc) before /compact (compaction rewrites the history the turn is using)"
+	}
+	return ""
+}
+
+// CompactConversation compacts the conversation's accumulated context
+// (CompactConversation) so a long session can continue inside the model's
+// context window. The server owns the policy: it declines (compacted=false with
+// a reason in Detail) when the conversation is too short to be worth a lossy
+// collapse, and returns the MEASURED context sizes when it did compact. This is
+// a synchronous RPC — compaction is one bounded operation, so there is no stream
+// and no turn is dispatched.
+func (c *Controller) CompactConversation(id string) tea.Cmd {
+	return func() tea.Msg {
+		// Compaction may run a summarize model turn, so the deadline is
+		// deliberately generous (the same 2-minute class as a summarize call)
+		// rather than the 20s used by the pure-CRUD conversation writes.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		resp, err := c.cl.Ask.CompactConversation(ctx, connect.NewRequest(&apiv1.CompactConversationRequest{
+			ConversationId: id,
+			Reason:         "manual",
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "compact", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{
+			Op:     "compact",
+			ID:     id,
+			Detail: compactionDetail(resp.Msg),
+		}
+	}
+}
+
+// compactionDetail renders a CompactConversationResponse for the dock notice:
+// the server's own detail line, plus the measured context sizes when it reported
+// them (0 means "unknown" and is omitted rather than shown as zero — the server
+// never estimates, so a zero here would read as a real measurement of nothing).
+func compactionDetail(r *apiv1.CompactConversationResponse) string {
+	if r == nil {
+		return ""
+	}
+	detail := r.GetDetail()
+	if detail == "" {
+		if r.GetCompacted() {
+			detail = "conversation compacted"
+		} else {
+			detail = "nothing to compact"
+		}
+	}
+	if r.GetContextTokensBefore() > 0 {
+		detail += fmt.Sprintf(" (%d → %d tokens)", r.GetContextTokensBefore(), r.GetContextTokensAfter())
+	}
+	return detail
 }
 
 // DeleteConversation deletes a conversation and all its messages.

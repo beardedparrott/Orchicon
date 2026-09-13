@@ -83,6 +83,24 @@ export function useUpdateConversationTitle() {
   });
 }
 
+export function useCompactConversation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      // A synchronous RPC: compaction is one bounded operation, so there is no
+      // stream and no turn. It may run a summarize model call server-side, which
+      // is why the caller must not treat this as an instant write.
+      return await askOrchiconClient.compactConversation({ conversationId, reason: "manual" });
+    },
+    onSuccess: (_res, conversationId) => {
+      // The server rewrote the conversation's history (the summary is a new
+      // message), so both the transcript and the conversation list are stale.
+      qc.invalidateQueries({ queryKey: askKeys.messages(conversationId) });
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+    },
+  });
+}
+
 export function useListMessages(conversationId: string, opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: askKeys.messages(conversationId),

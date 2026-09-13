@@ -191,7 +191,7 @@ func (h *HostServe) kill() {
 func (h *HostServe) serveConfig() string {
 	cfg := BuildConfigContent(ConfigOptions{
 		AgentName:    workerAgent,
-		AgentPrompt:  workerAgentPrompt,
+		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
 		ModelRef:     "",
 		TenantID:     serveTenantID(),

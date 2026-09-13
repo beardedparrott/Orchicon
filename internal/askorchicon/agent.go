@@ -60,6 +60,23 @@ You help the user create and build — software, designs, architectures, workflo
 7. When a request touches Orchicon data (projects, work items, workers, workflows, runs, executions, policies, approvals, recoveries, settings, usage), use the orchicon_* tools listed below — they are the only way to reach the platform, and the system executes them for real. Confirm before running mutating tools.
 `)
 
+	// 1a. Session contract — added because Ask conversations were being told, in
+	// effect, that they were budgeted workers: the serve-baked agent shell (
+	// opencode sessionToolShell) leaked a worker identity and tool-call-economy
+	// rules into EVERY session on the serve, and Ask selects no agent so it
+	// inherited that default. Models duly reported being "almost at my budget"
+	// in a session that has no budget at all. The shell is neutral now; this
+	// states the truth POSITIVELY so the model never has to infer a quota.
+	// Guarded by TestAskPromptDeclaresNoExecutionBudget.
+	b.WriteString(`
+## Session contract
+This is a LIVE CONVERSATION, not a budgeted worker execution.
+- There is NO tool-call, token, cost, or turn budget on this session, and no quota is closing.
+- Never report being "near a budget" or running low on calls/tokens: no such budget exists here. Use as many tool calls as the work genuinely needs.
+- The only bound is a generous time limit on a single long-running turn: a turn that runs far too long ends. Nothing counts your tool calls.
+- Still work deliberately — batch independent operations into one call, and avoid re-reading what is already in context — because that is better practice here, not because a quota is closing.
+`)
+
 	// 1b. Capability & routing — added per operator directive 2026-09-09.
 	// The persona must state truthfully that Ask Orchicon CAN make changes
 	// directly when the user wishes, without blanket impossibility claims,

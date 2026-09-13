@@ -276,6 +276,72 @@ type SendTurnMessageWithAttachments interface {
 	SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []ChatAttachment) error
 }
 
+// ConversationHistoryPurger is the OPTIONAL durable-history capability for the
+// Ask chat path, mirroring the SendTurnMessageWithAttachments pattern.
+//
+// A sessionless adapter (native / "orchicon") owns a persisted history
+// artifact per conversation that NOTHING else reclaims — the native bridge
+// writes one JSON file per session and the conversation row is its only other
+// trace — so deleting a conversation must purge it or the artifact accumulates
+// forever. A session-ful adapter (opencode) keeps its history inside its own
+// serve and has nothing to purge, so it simply does not implement this.
+//
+// The conversation-delete path type-asserts it and skips when absent: never a
+// panic, never a hard failure of the delete RPC. Implementations MUST be
+// idempotent — purging an unknown or never-created conversation is a
+// successful no-op.
+type ConversationHistoryPurger interface {
+	// PurgeConversationHistory discards a conversation's durable session
+	// history (in-memory and persisted). sessionID may be empty: an adapter
+	// that keys history by conversation id must still resolve the artifact.
+	PurgeConversationHistory(ctx context.Context, conversationID, sessionID string) error
+}
+
+// ChatCompaction is the outcome of compacting an Ask conversation's context.
+type ChatCompaction struct {
+	// Compacted is false when nothing was done — an empty history, or a
+	// history already small enough that a lossy collapse would cost detail for
+	// no benefit. Detail always says why.
+	Compacted bool
+	// Detail is a one-line, user-facing explanation of the outcome.
+	Detail string
+	// Summary is the summary text that replaced the collapsed history. Empty
+	// when Compacted is false.
+	Summary string
+	// TokensBefore / TokensAfter are the conversation's MEASURED prompt size
+	// around the compaction. 0 means unknown — never an estimate, so a caller
+	// may trust a non-zero value as real.
+	TokensBefore int64
+	TokensAfter  int64
+}
+
+// CompactConversationOpts identifies the conversation to compact.
+type CompactConversationOpts struct {
+	ConversationID string
+	// SessionID is the conversation's session on its adapter. Empty is legal:
+	// a sessionless adapter derives its synthetic id from the conversation id.
+	SessionID string
+	ModelRef  string
+	// Reason is why compaction was requested: "manual", "pressure", or
+	// "reactive". Recorded verbatim in the audit trail.
+	Reason string
+}
+
+// ChatCompactor is the OPTIONAL context-compaction capability for the Ask chat
+// path, mirroring the SendTurnMessageWithAttachments pattern.
+//
+// It exists because the two adapter shapes need fundamentally different work. A
+// session-FUL adapter (opencode) asks its own serve to summarize the session in
+// place — the same call the worker compaction gate makes. A SESSIONLESS adapter
+// (native) owns the history it re-sends every turn and must rewrite it itself,
+// and may be asked to do so when the history ALREADY exceeds the window.
+//
+// An adapter that cannot compact simply does not implement this; the RPC
+// returns an actionable error rather than silently declining.
+type ChatCompactor interface {
+	CompactConversationSession(ctx context.Context, opts CompactConversationOpts) (ChatCompaction, error)
+}
+
 // ChatAttachment is one inline attachment on an Ask turn (name, mime type,
 // raw bytes) — the adapter-neutral shape of the chat attachment input
 // (count/size caps are validated server-side at dispatch).
@@ -425,6 +491,18 @@ type UsageRecord struct {
 	CorrelationID    string
 	TraceID          string
 	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
+	// AdapterKind tags the adapter that drove the model call (persisted as
+	// usage_records.adapter_kind). The native worker path sets "orchicon"; the
+	// Ask path sets the kind parsed from the conversation's model_ref, so a
+	// non-native ref attributes to the adapter that actually served it.
+	AdapterKind string
+	// SessionID carries the Ask Orchicon conversation id for Ask attribution —
+	// a chat turn has no execution/task/project row to attribute through.
+	// Empty for worker executions (which use ExecutionID/TaskID). It is also
+	// the field the conversation delete path CLEARS rather than deletes:
+	// usage_records is the tenant's spend ledger, so de-linking keeps historical
+	// cost intact (db.ClearUsageSessionIDs).
+	SessionID string
 }
 
 // UsageRecorderFunc records a usage sample. Decoupled from the

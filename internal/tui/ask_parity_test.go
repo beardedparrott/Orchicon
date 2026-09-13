@@ -38,6 +38,20 @@ type stubAskParity struct {
 
 	modeID  string
 	modeSet apiv1.ConversationMode
+
+	compactedID     string
+	compactedReason string
+	compactResp     *apiv1.CompactConversationResponse
+}
+
+func (s *stubAskParity) CompactConversation(_ context.Context, req *connect.Request[apiv1.CompactConversationRequest]) (*connect.Response[apiv1.CompactConversationResponse], error) {
+	s.compactedID = req.Msg.GetConversationId()
+	s.compactedReason = req.Msg.GetReason()
+	resp := s.compactResp
+	if resp == nil {
+		resp = &apiv1.CompactConversationResponse{Compacted: true, Detail: "compacted 40 messages into 1 summary + 6 recent messages"}
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (s *stubAskParity) ListConversations(context.Context, *connect.Request[apiv1.ListConversationsRequest]) (*connect.Response[apiv1.ListConversationsResponse], error) {
@@ -177,10 +191,86 @@ func TestRenameAndDeleteRPCAndRailReconcile(t *testing.T) {
 	}
 }
 
+// /compact issues CompactConversation with reason "manual" for the open
+// conversation, and surfaces the server's own detail line (including WHY it
+// declined) rather than inventing one.
+func TestCompactCommandIssuesManualRPC(t *testing.T) {
+	m, stub := newAskApp(t)
+	m.chatConvID = "c1"
+	stub.compactResp = &apiv1.CompactConversationResponse{
+		Compacted:           true,
+		Detail:              "compacted 40 messages into 1 summary + 6 recent messages",
+		ContextTokensBefore: 1_016_584,
+		ContextTokensAfter:  61_200,
+	}
+
+	handled, cmd := m.dispatchSlash("/compact")
+	if !handled {
+		t.Fatal("/compact must be handled, not sent as a chat message")
+	}
+	if cmd == nil {
+		t.Fatal("/compact must issue a write when a conversation is open")
+	}
+	msg, ok := cmd().(chat.ConversationMutatedMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want chat.ConversationMutatedMsg", cmd())
+	}
+	if msg.Op != "compact" {
+		t.Errorf("op = %q, want compact", msg.Op)
+	}
+	if msg.Err != "" {
+		t.Fatalf("unexpected error: %s", msg.Err)
+	}
+	if stub.compactedID != "c1" {
+		t.Errorf("compacted conversation = %q, want c1", stub.compactedID)
+	}
+	// A hand-issued compaction is "manual" — the server records the reason in
+	// the audit trail, so a wrong reason would misreport who compacted what.
+	if stub.compactedReason != "manual" {
+		t.Errorf("reason = %q, want manual", stub.compactedReason)
+	}
+	// The MEASURED sizes are surfaced (they are never estimates).
+	if !strings.Contains(msg.Detail, "1,016,584") && !strings.Contains(msg.Detail, "1016584") {
+		t.Errorf("detail must carry the measured before/after sizes, got %q", msg.Detail)
+	}
+	if !strings.Contains(msg.Detail, "compacted 40 messages") {
+		t.Errorf("detail must carry the server's own explanation, got %q", msg.Detail)
+	}
+}
+
+// A DECLINED compaction is not an error: the server's reason must reach the
+// operator verbatim, because "nothing to compact" and "I compacted it" look
+// identical otherwise.
+func TestCompactCommandReportsDecline(t *testing.T) {
+	m, stub := newAskApp(t)
+	m.chatConvID = "c1"
+	stub.compactResp = &apiv1.CompactConversationResponse{
+		Compacted: false,
+		Detail:    "nothing to compact — only 4 messages so far",
+	}
+	handled, cmd := m.dispatchSlash("/compact")
+	if !handled || cmd == nil {
+		t.Fatal("/compact must dispatch")
+	}
+	msg := cmd().(chat.ConversationMutatedMsg)
+	if msg.Err != "" {
+		t.Fatalf("a decline is not an error: %s", msg.Err)
+	}
+	if !strings.Contains(msg.Detail, "only 4 messages") {
+		t.Errorf("the decline reason must be surfaced verbatim, got %q", msg.Detail)
+	}
+}
+
+// NOTE: the mid-turn refusal is asserted in the chat package
+// (TestCanCompactRefusesWhileStreaming), where a live turn slot can be created
+// through the controller's own send path. From this package the slot's state is
+// not settable, and testing it here would mean asserting the guard's absence
+// rather than its behaviour.
+
 // Commands that need an open conversation refuse loudly instead of guessing.
 func TestConversationCommandsRefuseWithoutOpenConversation(t *testing.T) {
 	m, _ := newAskApp(t)
-	for _, c := range []string{"/rename x", "/delete"} {
+	for _, c := range []string{"/rename x", "/delete", "/compact"} {
 		handled, cmd := m.dispatchSlash(c)
 		if !handled || cmd != nil {
 			t.Fatalf("%s without an open conversation must refuse (got handled=%v cmd=%v)", c, handled, cmd)

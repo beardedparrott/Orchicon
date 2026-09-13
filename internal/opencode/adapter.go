@@ -297,7 +297,7 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
-		AgentPrompt:  workerAgentPrompt,
+		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
 		ModelRef:     "",
 		SkipUserMCP:  true,
@@ -487,35 +487,43 @@ func (a *Adapter) SetFileEditHook(fn FileEditHookFunc) { a.fileEdits = fn }
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
 
-// workerAgentPrompt is the MINIMAL system prompt registered for the
-// orchicon-worker agent. It deliberately carries ONLY a tool inventory and
-// tool-call discipline — the worker's actual identity/task/context rides
-// Orchicon's own per-message `system` field. The point is to REPLACE
-// opencode's large built-in `build` agent prompt (which the default agent
-// would otherwise inject into every turn) with this short shell, cutting
-// per-turn tokens. The tool list restores the "which tool fits which job"
-// guidance opencode's build prompt previously supplied, without its
-// verbosity.
-const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
-	"File access tools (use these for all reading, searching, and writing):\n" +
+// sessionToolShell is the MINIMAL, session-kind-NEUTRAL system prompt registered
+// for the serve's default agent. It deliberately carries ONLY a tool inventory —
+// which tool fits which job — because its purpose is to REPLACE opencode's large
+// built-in `build` agent prompt (a big per-turn token win), not to state an
+// identity, a budget, or a quota discipline.
+//
+// It is shared by EVERY session on the serve: worker executions AND Ask
+// Orchicon conversations. That is exactly why nothing identity- or budget-shaped
+// belongs here. This shell previously opened with "You are an autonomous coding
+// agent.", asserted the granular tools were "disabled", and closed with
+// tool-call-economy rules ("every extra tool call re-sends the whole
+// conversation", "prefer the fewest tool calls that complete the task"). Ask
+// conversations select no agent, so they inherit the serve default — meaning a
+// live conversation was told it was an autonomous coding agent spending a
+// per-call budget, and it duly reported being "almost at my budget" in a session
+// that has no budget at all (Ask carries no budget ladder, no gates and no
+// warning injections; those are worker-only).
+//
+// The worker identity and the tool-economy discipline live where ONLY an
+// execution sees them: db.WorkerIdentityPreamble + db.efficiencyBlock in the
+// worker's composite per-message prompt, and batchToolsDiscipline for
+// composite-tool runs. A worker loses nothing by this shell going neutral; a
+// conversation stops being told it is a worker.
+const sessionToolShell = "File access tools:\n" +
 	"- `batch_read` — read several files or a whole directory in ONE call\n" +
 	"- `batch_grep` — search several patterns across the tree in ONE call\n" +
 	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n" +
-	"- `read` / `grep` / `write` / `edit` — single-file wrappers over the batch engine (one-op convenience; prefer the batch tools for independent operations)\n" +
+	"- `read` / `grep` / `write` / `edit` — single-file wrappers over the same batch engine (one-op convenience)\n" +
 	"- `list` — enumerate a directory's entries (the `ls` equivalent of glob)\n\n" +
 	"Other tools:\n" +
-	"- `glob` — find files by pattern\n" +
+	"- `glob` — find files by pattern (use it to find paths, never to read)\n" +
 	"- `bash` — run a shell command in the project\n" +
-	"- `todowrite` — maintain the live task-progress list (emit it every turn); `todoread` re-syncs it\n" +
+	"- `todowrite` / `todoread` — maintain and re-read a task-progress list\n" +
 	"- `webfetch` — fetch web content from a URL\n" +
 	"- `websearch` — search the web (use only if needed)\n" +
 	"- `skill` — load a skill's instructions\n" +
-	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools.\n\n" +
-	"Discipline — read carefully:\n" +
-	"- Do NOT use `read`, `grep`, `write`, or `edit` for file access; they are disabled in favor of the batch tools. Use `glob` only to find paths, never to read.\n" +
-	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n" +
-	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
-	"- Prefer the fewest tool calls that complete the task."
+	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools."
 
 // runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
 // own executable in every runtime container (internal/runtime/daemon.go).

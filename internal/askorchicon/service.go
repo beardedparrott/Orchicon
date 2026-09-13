@@ -537,20 +537,51 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if err := db.DeleteConversation(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// De-link usage attributed to this conversation — deliberately NOT delete
+	// it. usage_records is the tenant's real spend ledger (Cost Explorer and
+	// Telemetry roll up from it), so removing these rows would retroactively
+	// rewrite historical cost: a deleted conversation's spend would silently
+	// vanish from reports. Clearing session_id removes the only pointer to the
+	// deleted conversation while preserving the money, and is space-neutral
+	// (an in-place UPDATE). In-tx, so a rollback can never leave a
+	// half-applied de-link.
+	delinkedUsage, err := db.ClearUsageSessionIDs(ctx, ttx.Tx, tenantID, req.Msg.Id, conv.SessionID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	auditAfter, err := json.Marshal(map[string]any{
+		"delinked_usage_records": delinkedUsage,
+		"session_id":             conv.SessionID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.deleted", "conversation", req.Msg.Id,
-		nil, nil); err != nil {
+		nil, auditAfter); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Best-effort abort of the conversation's opencode session. There is no
-	// delete-session API on the serve; abort cancels any running turn while
-	// keeping the session, and is safe to ignore on error (the durable
-	// record is already gone; the serve will reclaim the session eventually).
-	if conv.SessionID != "" {
-		if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+	// Best-effort teardown on the conversation's resolved adapter: abort the
+	// live session/turn, then purge any durable session history the adapter
+	// owns. There is no delete-session API on the opencode serve; abort
+	// cancels any running turn while keeping the session, and is safe to
+	// ignore on error (the durable record is already gone; the serve will
+	// reclaim the session eventually). The native adapter instead holds a
+	// persisted JSON history file per session — the only on-disk artifact of a
+	// conversation — which nothing else reclaims, so it must be purged here.
+	// Both steps are advisory: a failure is logged, never surfaced as an RPC
+	// error, because the durable DB record is already committed as deleted.
+	if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+		if conv.SessionID != "" {
 			_ = client.AbortConversationSession(ctx, conv.SessionID)
+		}
+		if purger, ok := client.(scheduler.ConversationHistoryPurger); ok {
+			if err := purger.PurgeConversationHistory(ctx, req.Msg.Id, conv.SessionID); err != nil {
+				s.log.Warn("ask orchicon: purge conversation history failed",
+					"conversation", req.Msg.Id, "error", err)
+			}
 		}
 	}
 	// Cancel any in-flight collector for this conversation so it finalizes

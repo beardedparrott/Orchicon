@@ -3,7 +3,9 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -209,9 +211,51 @@ func (a *ClientSessionAdapter) Subscribe(ctx context.Context, conversationID str
 	return ad, nil
 }
 
+// CompactConversationSession implements scheduler.ChatCompactor for a plain
+// host-serve client (the nil-dispatcher fallback).
+func (a *ClientSessionAdapter) CompactConversationSession(ctx context.Context, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
+	return compactOnServe(ctx, a.sc, opts)
+}
+
+// CompactConversationSession implements scheduler.ChatCompactor: the serve owns
+// this conversation's session, so compaction is a summarize of that session in
+// place — exactly the call the worker compaction gate makes (see
+// session_run.doCompact). Unlike the native adapter there is no history to
+// reduce first: opencode's own summarize handles the session it holds.
+func (a *Adapter) CompactConversationSession(ctx context.Context, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
+	return compactOnServe(ctx, a.hostServeClient(), opts)
+}
+
+// compactOnServe is the shared opencode compaction path.
+func compactOnServe(ctx context.Context, c *SessionClient, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
+	if c == nil {
+		return scheduler.ChatCompaction{}, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	}
+	if opts.SessionID == "" {
+		// opencode is session-FUL: without the session there is nothing to
+		// summarize, and summarizing a fabricated id would be a silent no-op.
+		return scheduler.ChatCompaction{}, errors.New("opencode: conversation compaction requires the conversation's session id")
+	}
+	providerID, model, ok := adapter.SplitForServe(opts.ModelRef)
+	if !ok || providerID == "" || model == "" {
+		return scheduler.ChatCompaction{}, fmt.Errorf("opencode: model ref %q has no provider/model to summarize with", opts.ModelRef)
+	}
+	if err := c.Compact(ctx, opts.SessionID, providerID, model); err != nil {
+		return scheduler.ChatCompaction{}, err
+	}
+	// The serve reports no token counts back, so the measured token fields stay
+	// 0 (unknown) rather than being filled with a guess.
+	return scheduler.ChatCompaction{
+		Compacted: true,
+		Detail:    "summarized the session in place on the opencode serve",
+	}, nil
+}
+
 // Compile-time assertions for the plain-client adapter.
 var _ scheduler.ChatTurnClient = (*ClientSessionAdapter)(nil)
 var _ scheduler.SendTurnMessageWithAttachments = (*ClientSessionAdapter)(nil)
+var _ scheduler.ChatCompactor = (*ClientSessionAdapter)(nil)
+var _ scheduler.ChatCompactor = (*Adapter)(nil)
 
 // NewSessionBusFromSub wraps an opencode BusSub as a scheduler.SessionBus,
 // classifying every raw bus event onto the scheduler-neutral SessionEvent
