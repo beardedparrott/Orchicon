@@ -674,11 +674,15 @@ func (m *App) closeDiffPane() {
 // reflowForDiff was unified into refreshLayout (Phase 2a): one layout
 // applier for window resize, rail toggles, and diff-pane toggles.
 func (m *App) refreshLayout() {
-	if s := m.screens[m.active]; s != nil && m.width > 0 {
-		s.SetSize(m.contentWidth(), m.screenRows())
-	}
+	// The DOCK WIDTH comes first: the composer's height (dock.Lines) depends on
+	// how its hint wraps at that width, and the screens are sized from the rows
+	// the dock leaves. Sizing the screen first measured the dock at its previous
+	// width, so a hint that gained a row pushed the screen out of its budget.
 	if m.width > 0 {
 		m.dock.Width = m.contentWidth()
+	}
+	if s := m.screens[m.active]; s != nil && m.width > 0 {
+		s.SetSize(m.contentWidth(), m.screenRows())
 	}
 	if m.diffPane != nil {
 		m.diffPane.SetSize(DiffPaneWidth, m.screenRows()+m.dock.Lines()+m.panelRows())
@@ -744,7 +748,13 @@ func (m *App) refreshComposerHint() {
 			ctx = ansi.Strip(strings.TrimSpace(h.HintLine()))
 		}
 	}
+	before := m.dock.Lines()
 	m.dock.SetContext(ctx)
+	// A longer hint can gain a row, which changes the rows the dock leaves for
+	// the screen — re-apply the layout so the screen still fills its budget.
+	if m.dock.Lines() != before {
+		m.refreshLayout()
+	}
 }
 
 func (m *App) updateContextChip() {

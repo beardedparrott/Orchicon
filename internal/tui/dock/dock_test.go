@@ -291,3 +291,45 @@ func TestMultiLineSendPreservesNewlines(t *testing.T) {
 		t.Fatalf("multi-line send = %q, want %q", got, "a\nb")
 	}
 }
+
+// The operator: "the main tooltip in the composer is going off the screen as
+// well. We need a similar wrap there."
+//
+// The affordance row WRAPS instead of truncating, and the box's row count grows
+// with it — but only up to maxHintRows, because the composer's height comes out
+// of the screen's budget. The reserved rows and the drawn rows must agree.
+func TestComposerHintWrapsAndStaysWithinItsCap(t *testing.T) {
+	m := New()
+	m.Width = 60
+	// Enough rows that the real per-screen hint fits at a normal width without
+	// an ellipsis (three is what the composer can afford out of the screen's
+	// budget), but a hard cap so a runaway hint can never eat the content region.
+	m.SetContext("x: one · y: two · z: three · a: four · b: five · c: six · d: seven · e: eight · f: nine · g: ten · h: eleven · i: twelve · j: thirteen · k: fourteen · l: fifteen")
+
+	rows := m.Lines()
+	if rows != len(strings.Split(m.View(), "\n")) {
+		t.Fatalf("Lines()=%d but the box renders %d rows", rows, len(strings.Split(m.View(), "\n")))
+	}
+	// The hint must have wrapped (it cannot fit on one 60-cell line)...
+	if m.HintRows() < 2 {
+		t.Fatalf("a long hint must wrap, HintRows=%d", m.HintRows())
+	}
+	// ...but never beyond the cap that keeps the layout stable.
+	if m.HintRows() > maxHintRows {
+		t.Fatalf("the hint must be capped at %d rows, got %d", maxHintRows, m.HintRows())
+	}
+	// And it must say it was cut rather than silently dropping shortcuts.
+	if !strings.Contains(m.View(), "…") {
+		t.Fatalf("a capped hint must be marked with an ellipsis:\n%s", m.View())
+	}
+}
+
+// A short hint stays on one row (the cap must not add rows gratuitously).
+func TestComposerHintShortStaysSingleRow(t *testing.T) {
+	m := New()
+	m.Width = 200
+	m.SetContext("n: new")
+	if got := m.HintRows(); got != 1 {
+		t.Fatalf("a short hint must occupy one row, got %d", got)
+	}
+}

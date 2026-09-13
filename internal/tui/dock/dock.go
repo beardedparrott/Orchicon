@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -256,16 +257,58 @@ func (m *Model) InputRows() int {
 	return n
 }
 
-// Lines returns the rows the dock needs: the box's top+bottom border, the
-// input rows (InputRows), the persistent affordance row, and the chip /
-// notice strips when present. The shell reserves exactly this many rows
-// (app.contentHeight) and normalizes the block to it (normalizeBlockKeepTail).
-func (m *Model) Lines() int {
-	h := 2 + m.InputRows() + 1
-	if m.Chip != "" {
-		h++
+// maxHintRows caps the wrapped affordance row. The hint is context-driven (it
+// carries the active screen's shortcuts), so it can be very long — without a
+// cap the composer would grow a row at a time and eat the content region, which
+// is exactly what the layout test caught. Three rows is what the composer can
+// afford out of the screen's budget; anything beyond is marked with an ellipsis
+// rather than silently dropped, and "?" opens the full key list.
+const maxHintRows = 3
+
+// hintLines is the affordance row's final rows: the segment-aware wrap, capped
+// at maxHintRows with a trailing ellipsis. HintRows and View both use it so the
+// reserved row count and the drawn rows can never disagree.
+func (m *Model) hintLines() []string {
+	lines := kit2.WrapHint(m.Hint(), m.boxInner())
+	if len(lines) == 0 {
+		return []string{""}
 	}
-	if m.Err != "" || m.Notice != "" {
+	if len(lines) > maxHintRows {
+		lines = lines[:maxHintRows]
+		lines[maxHintRows-1] = strings.TrimRight(lines[maxHintRows-1], " ") + " …"
+	}
+	return lines
+}
+
+// HintRows is how many rows the affordance hint occupies at the current width
+// (see hintLines).
+func (m *Model) HintRows() int { return len(m.hintLines()) }
+
+// NoticeRows is how many rows the notice/error strip occupies at the current
+// width (0 when there is none).
+func (m *Model) NoticeRows() int {
+	msg := m.Err
+	if msg == "" {
+		msg = m.Notice
+	}
+	if msg == "" {
+		return 0
+	}
+	n := len(kit2.WrapHint(msg, m.boxInner()))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// Lines returns the rows the dock needs: the box's top+bottom border, the input
+// rows (InputRows), the affordance row (HintRows — more than one when it wraps)
+// and the chip / notice strips when present. The shell reserves exactly this many
+// rows (app.contentHeight) and normalizes the block to it
+// (normalizeBlockKeepTail).
+func (m *Model) Lines() int {
+	h := 2 + m.InputRows() + m.HintRows() + m.NoticeRows()
+	if m.Chip != "" {
 		h++
 	}
 	return h
@@ -431,11 +474,19 @@ func (m *Model) View() string {
 		rows = append(rows, "  "+l)
 	}
 	if m.Err != "" {
-		rows = append(rows, theme.ErrorText.Render(fit(m.Err, inner)))
+		for _, l := range kit2.WrapHint(m.Err, inner) {
+			rows = append(rows, theme.ErrorText.Render(l))
+		}
 	} else if m.Notice != "" {
-		rows = append(rows, theme.HintText.Render(fit(m.Notice, inner)))
+		for _, l := range kit2.WrapHint(m.Notice, inner) {
+			rows = append(rows, theme.HintText.Render(l))
+		}
 	}
-	rows = append(rows, theme.HintText.Render(fit(m.Hint(), inner)))
+	// The affordance row WRAPS (capped) rather than truncating, so the important
+	// shortcuts stay readable on a narrow composer.
+	for _, l := range m.hintLines() {
+		rows = append(rows, theme.HintText.Render(fit(l, inner)))
+	}
 
 	// The box's own background must survive the inner rows' resets: the rows
 	// carry styled spans (prompt, hint, the textarea's own cursor styling),

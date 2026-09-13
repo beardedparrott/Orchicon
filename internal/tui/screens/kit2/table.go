@@ -345,6 +345,15 @@ func (t *Table) ExpandableCount() int {
 	return n
 }
 
+// ResetCursor parks the cursor BEFORE the first row, so the next SetItems (a
+// reload with no surviving selection) starts at the TOP rather than restoring
+// the previous row. The sort control uses it: after re-ordering, the operator
+// wants to read the list from the top, not have the view jump to wherever the
+// old selection landed.
+func (t *Table) ResetCursor() {
+	t.Cursor, t.Offset = -1, 0
+}
+
 // SetFilter narrows the visible rows and re-clamps the window (a filter can
 // shrink the visible set under the cursor).
 func (t *Table) SetFilter(q string) {

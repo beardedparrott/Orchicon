@@ -164,12 +164,15 @@ var paletteSpecs = []paletteSpec{
 	{name: "slate", dark: true, bgH: 215, bgS: 12, bgL: 10, accentH: 215, accentS: 25, accentL: 62, textH: 215, textS: 15, textL: 95},
 
 	// Screen-phosphor pair (the operator's "amber on black and a green on black
-	// kind of like fallout inspired"): near-pure black backgrounds with almost no
-	// hue tint, and a saturated single-hue accent/text so the whole surface reads
-	// as one glowing CRT. The background stays at bgL 2-3 because a CRT's
-	// "black" is very dark — the tint lives in the glow, not the page.
-	{name: "crt-amber", dark: true, bgH: 36, bgS: 12, bgL: 3, accentH: 36, accentS: 100, accentL: 55, textH: 36, textS: 90, textL: 88},
-	{name: "crt-green", dark: true, bgH: 120, bgS: 12, bgL: 3, accentH: 120, accentS: 95, accentL: 50, textH: 120, textS: 80, textL: 85},
+	// kind of like fallout inspired"). The reference is a CRT terminal: a
+	// genuinely BLACK screen (no tint to speak of) with a single saturated
+	// phosphor that glows — the classic amber is ~#ffb000 and the green ~#41ff00,
+	// both at HIGH saturation and MID lightness. An earlier pass pushed the text
+	// toward near-white, which is what made it read as "a dark theme with a warm
+	// accent" rather than a glowing screen; the phosphor stays saturated here and
+	// only its lightness rises.
+	{name: "crt-amber", dark: true, bgH: 36, bgS: 45, bgL: 1, accentH: 40, accentS: 100, accentL: 50, textH: 40, textS: 100, textL: 60},
+	{name: "crt-green", dark: true, bgH: 120, bgS: 45, bgL: 1, accentH: 105, accentS: 100, accentL: 50, textH: 105, textS: 100, textL: 56},
 
 	// Light: near-white tinted backgrounds, near-black text.
 	{name: "lumen", dark: false, bgH: 210, bgS: 40, bgL: 98, accentH: 199, accentS: 89, accentL: 36, textH: 222, textS: 47, textL: 11},

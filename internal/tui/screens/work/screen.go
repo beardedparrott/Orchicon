@@ -195,22 +195,43 @@ func (m *Model) ClaimsKeys() bool {
 // workSink adapts the screen to mutate.Sink. It is an adapter rather than
 // methods on Model because Model already has a `Notice() string` accessor the
 // shell reads; the Sink needs `Notice(msg string)`.
+//
+// EVERY outcome goes to the SHELL's dock as well as the screen's notice line,
+// and that is not cosmetic: the screen's notice is appended to the body and
+// then cut off by FitLines whenever the panes fill the height, so a successful
+// create reported NOTHING the operator could see — which read as "new work
+// items don't seem to be actually saving". The dock renders inside the composer
+// box, which is never truncated.
 type workSink struct{ m *Model }
 
+func (s workSink) dock() (dockSink, bool) {
+	d, ok := s.m.Shell().(dockSink)
+	return d, ok
+}
+
 // Progress reports a mutation starting.
-func (s workSink) Progress(msg string) { s.m.notice = msg }
+func (s workSink) Progress(msg string) {
+	s.m.notice = msg
+	if d, ok := s.dock(); ok {
+		d.DockNotice(msg)
+	}
+}
 
 // Notice reports a successful mutation.
-func (s workSink) Notice(msg string) { s.m.notice = msg }
+func (s workSink) Notice(msg string) {
+	s.m.notice = msg
+	if d, ok := s.dock(); ok {
+		d.DockNotice(msg)
+	}
+}
 
 // Fail surfaces a FAILED mutation. It is deliberately loud: a rejected write
 // must never look like nothing happened, which is exactly how a server-side
 // rejection ("a task must have a parent; only epics can be top-level") read as
-// an item that vanished. The message also goes to the shell's dock error strip
-// so it is visible even when the screen's notice line is elsewhere.
+// an item that vanished.
 func (s workSink) Fail(msg string) {
 	s.m.notice = "✗ " + msg
-	if d, ok := s.m.Shell().(dockSink); ok {
+	if d, ok := s.dock(); ok {
 		d.DockError(msg)
 	}
 }
@@ -479,6 +500,13 @@ func (m *Model) cycleSort() tea.Cmd {
 	m.sort = m.sort.next()
 	next := m.sort
 	m.viewMu.Unlock()
+	// Re-ordering the list parks the cursor so the reload starts at the TOP.
+	// Without this the cursor was restored to the old row's NEW position and the
+	// window scrolled to keep it visible — the operator's "sort is working but
+	// jumping to the bottom of the screen".
+	if t := m.Base.ActiveTable(); t != nil {
+		t.ResetCursor()
+	}
 	m.notice = "sorted by " + string(next) + " (sequence = the run order; +/- changes it)"
 	return m.Refresh(srcWorkItems)
 }
@@ -887,11 +915,11 @@ func (m *Model) toggleAllTreeNodes() tea.Cmd {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
-		return theme.HintText.Render("n: new project · e: edit in the details pane (name/goals/dir) · d: set+create project dir · enter: detail · ←/→: pane")
+		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · enter: detail · ←/→: pane")
 	case srcImages:
-		return theme.HintText.Render("n: new image · e: edit spec in the details pane · b: build (live logs) · x: delete (confirm) · enter: detail")
+		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit + schedule in the details pane · s: status/priority · y: auto-start · +/-: move step up/down · a: archive · x: delete · v/T/Z: tree/archive · o: collapse/expand · O: all (or the buttons) · enter: detail")
+		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · a: archive · x: delete · v/T/Z: view · o/O: collapse · enter: detail")
 	}
 }
 

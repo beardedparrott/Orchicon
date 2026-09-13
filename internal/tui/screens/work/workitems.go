@@ -525,8 +525,15 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				Name: name, Source: srcWorkItems,
 				Rollback: func() { m.Refresh(srcWorkItems) },
 				Do: func(ctx context.Context) error {
-					_, err := m.cl.WorkItems.CreateWorkItem(ctx, connect.NewRequest(req))
-					return err
+					resp, err := m.cl.WorkItems.CreateWorkItem(ctx, connect.NewRequest(req))
+					if err != nil {
+						return err
+					}
+					// Focus the new item as soon as the reload lands, so it is on screen
+					// and selected instead of appearing somewhere below the fold while
+					// the cursor stays on the previously selected row.
+					m.Base.SelectWhenLoaded(srcWorkItems, resp.Msg.GetWorkItem().GetId())
+					return nil
 				},
 			}), nil
 

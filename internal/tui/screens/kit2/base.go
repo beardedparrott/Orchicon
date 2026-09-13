@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -126,6 +127,13 @@ type Base struct {
 	// filtering is true while the operator is TYPING into the focused source's
 	// filter box (the search row above the list).
 	filtering bool
+
+	// pendingSelect names a row to focus as soon as it APPEARS in a source —
+	// used after a create, so the new entity is selected and visible instead of
+	// silently landing below the fold while the cursor stays where it was.
+	// Guarded because the mutation's Do runs off the update loop.
+	pendingMu     sync.Mutex
+	pendingSelect map[string]string
 
 	// actionHits is recomputed on every render (see filterLine) and consumed by
 	// the next click, so a control is hit-tested against what was DRAWN.
@@ -561,6 +569,8 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			} else {
 				s.table.SetItems(msg.items, msg.next)
 			}
+			// A freshly created entity is focused the moment it appears.
+			b.focusPending(s.name, s.table)
 			s.table.Loading = false
 			if b.noAutoDetail {
 				return true, nil
@@ -745,6 +755,41 @@ func (b *Base) curTable() *Table {
 		return &Table{}
 	}
 	return b.sources[b.active].table
+}
+
+// SelectWhenLoaded asks the next load of a source to focus the row with id.
+// Safe to call off the update loop (a mutation's Do runs in its own
+// goroutine).
+func (b *Base) SelectWhenLoaded(src, id string) {
+	if id == "" {
+		return
+	}
+	b.pendingMu.Lock()
+	if b.pendingSelect == nil {
+		b.pendingSelect = map[string]string{}
+	}
+	b.pendingSelect[src] = id
+	b.pendingMu.Unlock()
+}
+
+// focusPending applies (and clears) a pending selection for a source once its
+// rows have landed. A row that is not present yet stays pending for the next
+// load rather than being dropped.
+func (b *Base) focusPending(src string, t *Table) {
+	b.pendingMu.Lock()
+	id := b.pendingSelect[src]
+	b.pendingMu.Unlock()
+	if id == "" {
+		return
+	}
+	if t.visIndexOf(id) < 0 { // hidden or absent: keep waiting
+		return
+	}
+	t.setCursorToID(id)
+	t.clampOffset()
+	b.pendingMu.Lock()
+	delete(b.pendingSelect, src)
+	b.pendingMu.Unlock()
 }
 
 // ActiveTable exposes the focused source's table to the owning screen (the
@@ -1127,6 +1172,10 @@ func (b *Base) LoadItems(source string, items []Item, next string) bool {
 		s.table.SetItems(items, next)
 		s.table.Err = ""
 		s.err = ""
+		// A pending selection (a just-created entity) is applied here too: this
+		// is the synchronous load path, so a caller that is not the shell's
+		// fetch command still focuses the new row.
+		b.focusPending(s.name, s.table)
 		return true
 	}
 	return false

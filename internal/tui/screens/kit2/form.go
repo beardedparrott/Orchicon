@@ -855,10 +855,11 @@ func (f *Form) View() string {
 			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
-	// The hint row also wraps: the panel pads (and therefore TRUNCATES) every
-	// body line, so a long hint lost its tail — the operator's "the tool tips
-	// are being written off the screen and cut off".
-	for _, l := range wrapFormLine(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"), width) {
+	// The hint row wraps at its " · " boundaries so a KEY and its meaning stay
+	// together — the operator's "it is wrapping the tool title and shortcut on
+	// separate lines, it should keep those together". A plain word wrap broke
+	// "↑/↓ or tab: field" mid-phrase.
+	for _, l := range wrapHint(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"), width) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
@@ -870,6 +871,62 @@ func (f *Form) View() string {
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
+
+// wrapHint breaks a " · "-separated hint into lines that fit `width` cells
+// WITHOUT splitting a segment: "ctrl+s: save · esc: cancel" becomes its own
+// line rather than "ctrl+s:" / "save · esc:" / "cancel". A single segment that
+// cannot fit is wrapped by words as a last resort. Shared with the composer,
+// which previously truncated the same hint.
+func wrapHint(line string, width int) []string {
+	if width < 8 || lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	segs := strings.Split(line, " · ")
+	out := make([]string, 0, len(segs))
+	cur := ""
+	for i, seg := range segs {
+		piece := seg
+		if i > 0 {
+			piece = "· " + seg
+		}
+		switch {
+		case cur == "":
+			cur = piece
+		case lipgloss.Width(cur)+1+lipgloss.Width(piece) <= width:
+			cur += " " + piece
+		default:
+			out = append(out, cur)
+			cur = piece
+		}
+		// A segment too long for a line on its own falls back to a word wrap.
+		for lipgloss.Width(cur) > width {
+			words := strings.SplitAfter(cur, " ")
+			filled := ""
+			rest := ""
+			for _, w := range words {
+				if rest != "" || lipgloss.Width(filled)+lipgloss.Width(w) > width {
+					rest += w
+					continue
+				}
+				filled += w
+			}
+			if filled == "" {
+				break
+			}
+			out = append(out, strings.TrimRight(filled, " "))
+			cur = strings.TrimLeft(rest, " ")
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// WrapHint is the exported form of the segment-aware hint wrap, so the composer
+// (a different package) wraps its affordance row the same way instead of
+// truncating it.
+func WrapHint(line string, width int) []string { return wrapHint(line, width) }
 
 // wrapFormLine breaks a rendered line so it fits `width` cells, wrapping at
 // word boundaries and indenting continuations to match the leading prefix. The
