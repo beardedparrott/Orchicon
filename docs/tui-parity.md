@@ -22,7 +22,7 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, ask-model picker (`/model` → `model_ref` at create), mode (`/mode` → `SetConversationMode`), attachments explicitly refused (`/attach`). |
+| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, mode (`/mode` → `SetConversationMode`; a bare `/mode` reports the current persona), attachments explicitly refused (`/attach`). **Model:** `/models` opens the three-tier picker and sets the OPEN conversation's `model_ref` (`SetConversationModel` — see **Model picker** below); `/model <ref>` still sets the ref a NEW conversation is created with. **Stat strip:** the composer's bottom-right row reports the ask model, context occupancy, token total, cache-hit ratio and session cost (see **Session stat strip** below). |
 
 ## Overview
 
@@ -187,6 +187,46 @@ Landed surfaces:
   `WorkerListItem.active_model_ref`, so opening it costs no extra round trip, and a per-worker
   skip (deprecated / retired / no published version / not found) is reported as a FAILURE
   rather than swallowed.
+- **Ask Orchicon** — `/models` sets the OPEN conversation's `model_ref` through the new
+  `SetConversationModel` RPC (an empty ref CLEARS the per-conversation override, so the chat
+  falls back to the tenant default). With no conversation open the choice is recorded for the
+  NEXT one, so the command is never a dead end. The composer is the shell rather than a screen,
+  so the App hosts this copy of the picker and owns its keys and mouse while it is open.
+
+## Session stat strip (this run)
+
+The Ask composer's bottom-right row reports the live session, in both clients:
+
+    <ask model> · ctx 124K/200K · 1.2M tok · cache 78% (940K) · $1.2345   [brainstorm]
+
+- **Ask model** — the open conversation's `model_ref`, else the tenant default/fallback.
+- **Context** — occupancy against the model's window. Occupancy is the LATEST usage record's
+  input side (prompt + cache reads + cache writes): the SUM across turns is not the context
+  size. The window comes from the same per-adapter source the picker annotates, and is
+  omitted (never fabricated) when unknown.
+- **Tokens** — the session total.
+- **Cache** — the hit RATIO with the cached token count. The ratio is
+  `cache_read / (cache_read + uncached input)` — the two halves the recorder stores
+  separately — and is omitted rather than shown as a meaningless 0% when there is no input.
+- **Cost** — the session's recorded cost.
+- **Mode** — the persona pill sits immediately to the right of the stats (the GUI's dropdown
+  is in the same place, which is why the stats precede it).
+
+Where the numbers come from: the Ask turn path ALREADY recorded per-session usage
+(`chat.go` passes the conversation id as `SessionID`), but nothing could read it back.
+`usage_records.session_id` was written and not selected, `UsageRecord` had no session field,
+and `GetUsageRequest` had no session filter. This run closes that loop (see the usage commit),
+and both clients read `GetUsage{session_id}` — no client recomputes pricing or token counts
+from messages; the recorded row is the authority.
+
+Live update: the TUI re-reads on conversation open/switch, on a model change, and on every
+`StreamDoneMsg` (a finished turn is when new usage lands); the GUI refetches on the same
+turn-completion edge and on conversation switch. A read for a conversation the operator has
+left is dropped, and a FAILED read keeps the last good numbers rather than blanking the strip.
+
+The mode pill is display + `/mode` rather than a clickable dropdown because only ONE persona
+exists today (`brainstorm`); a single-option popup would be a control that cannot change
+anything. Adding a second mode should add the popup with it.
 
 Two things this deliberately does NOT do:
 
