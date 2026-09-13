@@ -163,6 +163,14 @@ var paletteSpecs = []paletteSpec{
 	{name: "crimson", dark: true, bgH: 0, bgS: 25, bgL: 8, accentH: 0, accentS: 75, accentL: 58, textH: 0, textS: 20, textL: 96},
 	{name: "slate", dark: true, bgH: 215, bgS: 12, bgL: 10, accentH: 215, accentS: 25, accentL: 62, textH: 215, textS: 15, textL: 95},
 
+	// Screen-phosphor pair (the operator's "amber on black and a green on black
+	// kind of like fallout inspired"): near-pure black backgrounds with almost no
+	// hue tint, and a saturated single-hue accent/text so the whole surface reads
+	// as one glowing CRT. The background stays at bgL 2-3 because a CRT's
+	// "black" is very dark — the tint lives in the glow, not the page.
+	{name: "crt-amber", dark: true, bgH: 36, bgS: 12, bgL: 3, accentH: 36, accentS: 100, accentL: 55, textH: 36, textS: 90, textL: 88},
+	{name: "crt-green", dark: true, bgH: 120, bgS: 12, bgL: 3, accentH: 120, accentS: 95, accentL: 50, textH: 120, textS: 80, textL: 85},
+
 	// Light: near-white tinted backgrounds, near-black text.
 	{name: "lumen", dark: false, bgH: 210, bgS: 40, bgL: 98, accentH: 199, accentS: 89, accentL: 36, textH: 222, textS: 47, textL: 11},
 	{name: "ember-light", dark: false, bgH: 20, bgS: 100, bgL: 98, accentH: 350, accentS: 89, accentL: 42, textH: 222, textS: 47, textL: 11},
@@ -184,6 +192,22 @@ var derivedThemes = func() []*Theme {
 	}
 	return out
 }()
+
+// IsDark reports whether a palette is a dark one. It reads the DERIVED spec
+// (the palette's own declared mode) and falls back to the background's
+// luminance for the hand-written palettes (dark, light, gruvbox-*). The Themes
+// pane uses it to group the picker into dark and light sections.
+func IsDark(name string) bool {
+	for _, s := range paletteSpecs {
+		if s.name == name {
+			return s.dark
+		}
+	}
+	if t := Lookup(name); t != nil {
+		return isDarkHex(string(t.Bg))
+	}
+	return true
+}
 
 // lookupDerived resolves a derived palette by name.
 func lookupDerived(name string) *Theme {

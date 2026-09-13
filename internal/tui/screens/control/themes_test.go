@@ -22,8 +22,25 @@ func TestThemesPaneListsPalettes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchThemes: %v", err)
 	}
-	if len(items) != len(theme.Names()) {
-		t.Fatalf("themes pane lists %d palettes, want %d", len(items), len(theme.Names()))
+	// Every palette is listed, plus the two section headings (DARK / LIGHT).
+	var palettes int
+	for _, it := range items {
+		if it.ID != "" {
+			palettes++
+		}
+	}
+	if palettes != len(theme.Names()) {
+		t.Fatalf("themes pane lists %d palettes, want %d", palettes, len(theme.Names()))
+	}
+	// The list is separated into dark and light sections, in that order.
+	var heads []string
+	for _, it := range items {
+		if it.ID == "" {
+			heads = append(heads, it.Title)
+		}
+	}
+	if strings.Join(heads, ",") != "DARK,LIGHT" {
+		t.Fatalf("expected DARK then LIGHT headings, got %v", heads)
 	}
 	var active int
 	for _, it := range items {

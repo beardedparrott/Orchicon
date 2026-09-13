@@ -169,6 +169,11 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		if !ok {
 			return false, nil
 		}
+		if item.ID == "" {
+			// A section heading (DARK / LIGHT) is not a theme: activating it must
+			// do nothing rather than look like a broken apply.
+			return true, nil
+		}
 		if item.ID == theme.Active().Name {
 			m.Notice("theme " + item.ID + " is already active")
 			return true, nil
@@ -554,20 +559,43 @@ func (m *Model) fetchAdapters(ctx context.Context, pageToken string) ([]kit2.Ite
 	return items, "", nil
 }
 
-// fetchThemes lists the TUI's OWN palette set (internal/tui/theme). Themes are
-// a TUI concern: the palettes are chosen and contrast-validated for terminals
-// rather than ported from the GUI's CSS tokens.
+// fetchThemes lists the TUI's OWN palette set (internal/tui/theme), GROUPED into
+// dark and light sections — the operator's "Themes should be separated by light
+// and dark themes (two sections but same screen)". The palettes are chosen and
+// contrast-validated for terminals rather than ported from the GUI's CSS tokens.
+//
+// A section row carries an EMPTY id, so selecting one is inert: applying a theme
+// only ever resolves a real palette name (applyTheme refuses an empty or unknown
+// name), so a heading can never be mistaken for a theme.
 func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	active := theme.Active().Name
 	names := theme.Names()
-	items := make([]kit2.Item, 0, len(names))
+
+	var dark, light []string
 	for _, name := range names {
-		meta := "available"
-		if name == active {
-			meta = "active"
+		if theme.IsDark(name) {
+			dark = append(dark, name)
+		} else {
+			light = append(light, name)
 		}
-		items = append(items, kit2.Item{ID: name, Title: name, Meta: meta})
 	}
+
+	items := make([]kit2.Item, 0, len(names)+2)
+	emit := func(heading string, group []string) {
+		if len(group) == 0 {
+			return
+		}
+		items = append(items, kit2.Item{ID: "", Title: heading, Meta: screenkit.FmtInt(len(group))})
+		for _, name := range group {
+			meta := "available"
+			if name == active {
+				meta = "active"
+			}
+			items = append(items, kit2.Item{ID: name, Title: name, Meta: meta})
+		}
+	}
+	emit("DARK", dark)
+	emit("LIGHT", light)
 	return items, "", nil
 }
 
@@ -825,8 +853,13 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 
 	case "themes":
 		// Themes is a TUI-owned surface: no RPC, the palette set lives in
-		// internal/tui/theme. The detail names the active theme and the action
-		// that applies the selected one.
+		// internal/tui/theme. A section heading has no detail of its own.
+		if id == "" {
+			return "Themes", []screenkit.Field{
+				{Key: "sections", Value: "DARK then LIGHT — pick a palette under either"},
+				{Key: "apply", Value: "enter/a: apply the highlighted palette & save"},
+			}, "", nil
+		}
 		active := theme.Active().Name
 		state := "available"
 		if id == active {
