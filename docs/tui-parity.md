@@ -22,7 +22,7 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, mode (`/mode` → `SetConversationMode`; a bare `/mode` reports the current persona), attachments explicitly refused (`/attach`). **Model:** `/models` opens the three-tier picker and sets the OPEN conversation's `model_ref` (`SetConversationModel` — see **Model picker** below); `/model <ref>` still sets the ref a NEW conversation is created with. **Stat strip:** the composer's bottom-right row reports the ask model, context occupancy, token total, cache-hit ratio and session cost (see **Session stat strip** below). |
+| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, mode (`/mode` → `SetConversationMode`; a bare `/mode` reports the current persona), attachments explicitly refused (`/attach`). **Compact** — the composer's `Compact` button runs `/compact` (the same single implementation the typed command calls, so the guards cannot drift); disabled, with the reason on the control, when there is no conversation or a turn is in flight. **Model:** `/models` opens the three-tier picker and sets the OPEN conversation's `model_ref` (`SetConversationModel` — see **Model picker** below); `/model <ref>` still sets the ref a NEW conversation is created with. **Stat strip:** the composer's bottom-right row reports the ask model, context occupancy, token total, cache-hit ratio and session cost (see **Session stat strip** below). |
 
 ## Overview
 
@@ -250,6 +250,38 @@ Two things this deliberately does NOT do:
 - It never assigns a model to a WORK ITEM. `WorkItem` has no model field at all
   (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
   assigned to (`assigned_worker_ref`).
+
+## Slash commands in the GUI (deliberate difference)
+
+The GUI has **no slash palette**, and that is a decision rather than a gap. The TUI is
+keyboard-first and carries ~15 commands, so a palette earns its keystrokes there. The GUI is
+mouse-first and already has a NATIVE control for every per-conversation command:
+
+| TUI command | GUI control |
+|---|---|
+| `/new` | the sidebar `+` "New Chat" |
+| `/rename`, `/delete` | the sidebar row actions |
+| `/mode` | the mode dropdown (`ModeToggle`) |
+| `/models`, `/model` | the composer's model chip |
+| `/attach` | the paperclip |
+| `/diff` | the diff-sidebar toggle |
+| `/connect`, `/theme` | Settings |
+| `/compact` | the composer's `Compact` button |
+| `/help`, `/quit`, `/reconnect` | n/a — browser / UI semantics |
+
+So a palette would mean re-implementing controls that already exist, for one command that did
+not have one. `Compact` was that command, and it now has a button.
+
+What IS built is the PARSER (`lib/composer-command.ts`), kept deliberately because it mirrors
+`internal/tui/slash.go` `ParseSlash` — the two frontdoors must agree on what a command IS.
+Typed `/compact` therefore still works, and shares ONE implementation with the button so the
+guards cannot drift (the same discipline as the TUI's single command path). An unrecognized
+`/word` falls through to CHAT rather than being swallowed: the server is the authority on what
+a message is, and silently eating the operator's text would lose it.
+
+One genuine parity gap remains, recorded rather than hidden: **`/context`** (viewing and
+pinning the injected context preamble) has no GUI surface at all. That is a missing feature,
+not a missing control.
 
 ## Recomputed child work items
 

@@ -5,6 +5,7 @@ import {
   Trash2,
   Paperclip,
   Mic,
+  Minimize2,
   Square,
   RefreshCw,
   Brain,
@@ -1834,6 +1835,55 @@ function ChatInputField({
 
   const [pendingReads, setPendingReads] = useState(0);
 
+  // runCompact frees this conversation's context (the /compact action). ONE
+  // implementation, shared by the typed command and the toolbar button, so the
+  // two can never drift on the guards — the same reason the TUI keeps a single
+  // command path.
+  //
+  // It deliberately does NOT touch the composer text: the typed path clears the
+  // box itself (the command text was consumed), while the button must never wipe
+  // a draft the operator is in the middle of writing.
+  const runCompact = useCallback(async () => {
+    if (!convId) {
+      useToastStore.getState().push({ kind: "error", message: "No conversation open — send a message first." });
+      return;
+    }
+    // Refuse mid-turn: compaction rewrites the history the running turn is
+    // generating from, so doing it underneath a live answer would corrupt it.
+    // (The TUI refuses identically — CanCompact.)
+    if (isStreaming) {
+      useToastStore.getState().push({
+        kind: "error",
+        message: "A turn is in flight — stop it before /compact (compaction rewrites the history the turn is using).",
+      });
+      return;
+    }
+    if (!onCompact) return;
+    setSending(true);
+    try {
+      const detail = await onCompact(convId);
+      useToastStore.getState().push({ kind: "success", message: detail || "/compact complete" });
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        message: `/compact failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setSending(false);
+    }
+  }, [convId, isStreaming, onCompact]);
+
+  // Why compaction is unavailable right now ("" = available). Surfacing the
+  // reason on the control BEFORE the click beats a toast AFTER it — these are
+  // the same two conditions runCompact refuses on.
+  const compactBlocked = !convId
+    ? "Open a conversation first"
+    : isStreaming
+      ? "A turn is in flight — stop it before compacting"
+      : sending
+        ? "Working…"
+        : "";
+
   const handleSubmit = useCallback(async () => {
     // The sending lock only guards a double-click on a FRESH send. While a
     // turn is streaming, `sending` stays true for the whole turn (onSend
@@ -1858,33 +1908,7 @@ function ChatInputField({
     if (cmd && cmd.name === COMPACT_COMMAND) {
       setText("");
       if (inputRef.current) inputRef.current.style.height = "auto";
-      if (!convId) {
-        useToastStore.getState().push({ kind: "error", message: "No conversation open — send a message first." });
-        return;
-      }
-      // Refuse mid-turn: compaction rewrites the history the running turn is
-      // generating from, so doing it underneath a live answer would corrupt it.
-      // (The TUI refuses identically — CanCompact.)
-      if (isStreaming) {
-        useToastStore.getState().push({
-          kind: "error",
-          message: "A turn is in flight — stop it before /compact (compaction rewrites the history the turn is using).",
-        });
-        return;
-      }
-      if (!onCompact) return;
-      setSending(true);
-      try {
-        const detail = await onCompact(convId);
-        useToastStore.getState().push({ kind: "success", message: detail || "/compact complete" });
-      } catch (err) {
-        useToastStore.getState().push({
-          kind: "error",
-          message: `/compact failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      } finally {
-        setSending(false);
-      }
+      await runCompact();
       return;
     }
 
@@ -1908,7 +1932,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend, pendingReads, isStreaming, convId, onCompact]);
+  }, [sending, text, attachments, onSend, pendingReads, isStreaming, convId, onCompact, runCompact]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -2335,6 +2359,29 @@ function ChatInputField({
                 title={pendingReads > 0 ? `Loading ${pendingReads} file(s)...` : undefined}
               >
                 Send
+              </Button>
+            )}
+            {/* Compact belongs with the ACTIONS (left), not the conversation
+                state (right): the right group already carries the model, the
+                session stats and the mode. Disabled — with the reason on the
+                control — when there is nothing to compact or a turn is live,
+                which is exactly when the typed command would refuse. */}
+            {onCompact && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void runCompact()}
+                disabled={compactBlocked !== ""}
+                title={
+                  compactBlocked ||
+                  "Compact this conversation — frees context; the server decides if it can"
+                }
+                aria-label="Compact conversation"
+                data-testid="ask-compact"
+              >
+                <Minimize2 aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
+                Compact
               </Button>
             )}
           </div>
