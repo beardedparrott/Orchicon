@@ -259,16 +259,19 @@ func TestSlideOutPanelMinimiseButtonCollapses(t *testing.T) {
 	}
 }
 
-// On the Ask LAUNCH PAGE a click in the composer is only a request to place the
-// CURSOR: it must not slide a conversation on screen.
+// On the Ask tab a click in the composer is only a request to place the CURSOR:
+// it must not slide a conversation on screen — on the launch page OR with a
+// conversation already open.
 //
 // The operator: "Clicking into the text box on first load opens up a full
 // conversation. I don't want that. Clicking into the composer on that first load
-// should just focus the cursor into the chat so I can send a new message."
+// should just focus the cursor into the chat so I can send a new message." —
+// reported again while a conversation was open, which is why the suppression is
+// scoped to the whole Ask tab rather than only the launch page.
 //
-// The strip's behaviour on OTHER screens is a separate, deliberate intent and is
-// pinned by TestSlideOutPanelOpensOnComposerClick above — this test pins the
-// launch-page exception, not a removal of that feature.
+// The strip's behaviour on OTHER tabs is a separate, deliberate intent and stays
+// pinned by TestSlideOutPanelOpensOnComposerClick — this pins the Ask-tab
+// exception, not a removal of that feature.
 func TestComposerClickDoesNotOpenAConversationOnLaunchPage(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})

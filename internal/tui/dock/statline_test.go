@@ -96,3 +96,52 @@ func TestStatRowWithoutAModePill(t *testing.T) {
 		t.Fatalf("StatsRows = %d, want 1", m.StatsRows())
 	}
 }
+
+// The stat row is split — model LEFT, stats + pill right — because a long model
+// ref prefixed to the right-aligned numbers pushed the tail off the pane edge
+// (the operator's "the context is off the screen").
+func TestStatRowSplitsModelFromTheStats(t *testing.T) {
+	m := New()
+	m.Width = 100
+	m.Model = "orchicon/opencode/muse-spark-1.3-contributor-free"
+	m.Stats = "ctx 25K/1.0M · 26K tok · cache 2% (113) · $0.0000"
+	m.Mode = "brainstorm"
+
+	v := ansi.Strip(m.View())
+	var row string
+	for _, l := range strings.Split(v, "\n") {
+		if strings.Contains(l, "[brainstorm]") {
+			row = l
+		}
+	}
+	if row == "" {
+		t.Fatalf("no stat row rendered:\n%s", v)
+	}
+	// The model is on the LEFT, the numbers + pill on the RIGHT.
+	if strings.Index(row, "muse-spark") > strings.Index(row, "ctx ") {
+		t.Errorf("the model must lead the row (left), got:\n%s", row)
+	}
+	// Every number survives — the point of the split.
+	for _, want := range []string{"ctx 25K/1.0M", "26K tok", "cache 2%", "(113)", "$0.0000"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the stat row must keep %q, got:\n%s", want, row)
+		}
+	}
+}
+
+// The NUMBERS outrank the model name: on a row too narrow for both, the model is
+// dropped rather than the cost being clipped off the edge.
+func TestStatRowDropsTheModelBeforeTheNumbers(t *testing.T) {
+	m := New()
+	m.Width = 52
+	m.Model = "orchicon/opencode/muse-spark-1.3-contributor-free"
+	m.Stats = "ctx 25K/1.0M · 26K tok · $0.0000"
+
+	v := ansi.Strip(m.View())
+	if !strings.Contains(v, "$0.0000") {
+		t.Fatalf("the cost must survive a tight row:\n%s", v)
+	}
+	if strings.Contains(v, "contributor-free") {
+		t.Fatalf("a model ref too long for the room must be dropped, not clipped into the numbers:\n%s", v)
+	}
+}

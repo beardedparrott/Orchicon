@@ -557,7 +557,14 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			// shows WHERE a send will land instead of the message going
 			// somewhere off-screen (TestSlideOutPanelOpensOnComposerClick) —
 			// and on Ask with a session open it is how you continue it.
-			if !m.welcomeMode() {
+			// On the ASK TAB the transcript pane IS the destination, so the strip is
+			// redundant — and on the launch page it put a whole conversation on
+			// screen from a click meant only to place the cursor ("clicking into the
+			// text box on first load opens up a full conversation. I don't want
+			// that."). Every OTHER tab keeps the delivered behaviour, where the
+			// strip shows WHERE a send will land
+			// (TestSlideOutPanelOpensOnComposerClick).
+			if m.active != TabAsk {
 				m.openPanel()
 			}
 			m.footer.ComposerFocus = true

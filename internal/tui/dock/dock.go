@@ -83,6 +83,12 @@ type Model struct {
 	// (the stats sit BEFORE it). Both are set by the shell.
 	Stats string
 	Mode  string
+	// Model is the ask model ref, rendered LEFT-aligned on the same stat row.
+	// It is deliberately NOT part of Stats: prefixing the ref to the right-aligned
+	// numbers made the row longer than the pane, so the tail (cost, and part of
+	// the cache figure) was clipped off the edge. Keeping the ref at the left
+	// mirrors the GUI, where the model is its own chip beside the stats.
+	Model string
 
 	// sendRequest is a non-nil callback when Enter produced a send; the
 	// shell checks+clears it after Update (avoids channel plumbing).
@@ -334,22 +340,20 @@ func (m *Model) Lines() int {
 // StatsRows is 1 when there is a stat strip / mode pill to draw, else 0. The
 // shell reserves exactly this many rows, so the box can never overflow.
 func (m *Model) StatsRows() int {
-	if m.Stats == "" && m.Mode == "" {
+	if m.Stats == "" && m.Mode == "" && m.Model == "" {
 		return 0
 	}
 	return 1
 }
 
-// statLine renders the bottom stat row: the session stats, then the mode pill
-// right-aligned against the box edge. The mode pill is the CONTROL, so if the
-// row is too narrow the stats are trimmed first and the pill always survives.
+// statLine renders the bottom stat row: the ask model on the LEFT, and the stats
+// followed by the mode pill right-aligned against the box edge. The pill is the
+// CONTROL and the numbers are what the operator watches, so when the row is tight
+// the MODEL ref is sacrificed first.
 func (m *Model) statLine(inner int) string {
 	mode := ""
 	if m.Mode != "" {
 		mode = "[" + m.Mode + "]"
-	}
-	if m.Stats == "" && mode == "" {
-		return ""
 	}
 	right := m.Stats
 	if mode != "" {
@@ -358,23 +362,45 @@ func (m *Model) statLine(inner int) string {
 		}
 		right += mode
 	}
+	if right == "" && m.Model == "" {
+		return ""
+	}
+	// Keep the right-hand group whole where the pane allows: trim the STATS first,
+	// never the pill.
 	if lipgloss.Width(right) > inner {
-		switch {
-		case mode == "":
-			right = ansi.Truncate(right, inner, "…")
-		default:
-			avail := inner - lipgloss.Width(mode) - 2
-			if avail < 4 {
-				avail = 4
-			}
-			right = ansi.Truncate(m.Stats, avail, "…") + "  " + mode
+		avail := inner - lipgloss.Width(mode) - 2
+		if avail < 4 {
+			avail = 4
+		}
+		right = ansi.Truncate(m.Stats, avail, "…")
+		if mode != "" {
+			right += "  " + mode
 		}
 	}
-	pad := inner - lipgloss.Width(right)
+	// Then the model ref: truncate it, and drop it entirely if even that will not
+	// fit — the numbers must never be pushed off the edge to make room for a name.
+	left := m.Model
+	if room := inner - lipgloss.Width(right) - 2; lipgloss.Width(left) > room {
+		if room >= 10 {
+			left = ansi.Truncate(left, room, "…")
+		} else {
+			left = ""
+		}
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right) > inner {
+		left = ""
+	}
+	// The row must never exceed `inner`: Pad TRUNCATES, so an overlong line loses
+	// its tail — which is how the pill's closing "] " disappeared. Guarantee the
+	// sum fits, then pad the gap (0 is a valid pad for an exact fit).
+	if lipgloss.Width(right) > inner {
+		right = ansi.Truncate(right, inner, "…")
+	}
+	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0
 	}
-	return theme.ListMeta.Render(strings.Repeat(" ", pad) + right)
+	return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
 }
 
 // Focus / Blur move keyboard focus into/out of the composer.
@@ -601,7 +627,14 @@ func (m *Model) View() string {
 // to it).
 func (m *Model) inputLines() []string {
 	n := m.InputRows()
-	src := strings.Split(m.styledTa().View(), "\n")
+	// Read the textarea DIRECTLY — do NOT re-style per render. styledTa()
+	// re-points bubbles' unexported style pointer by calling Focus()/Blur(), and
+	// each of those returns a cursor.BlinkCmd() that CANCELS the in-flight blink
+	// and bumps its tag. Called from here it ran on every render, so it killed
+	// each pending tick and the caret never animated ("no blinking cursor").
+	// m.ta's style pointer is already correct between renders — themeStyles/
+	// ApplyTheme and Focus/Blur each re-point it — so the render path only reads.
+	src := strings.Split(m.ta.View(), "\n")
 	if len(src) > n {
 		src = src[:n]
 	}

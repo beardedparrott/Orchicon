@@ -284,8 +284,39 @@ func (m *App) applyMetrics(msg metricsMsg) tea.Cmd {
 
 // syncComposerStats pushes the stat strip and the mode pill into the composer.
 func (m *App) syncComposerStats() {
-	m.dock.Stats = m.metricsLine()
+	// The MODEL goes in its own field (rendered left) rather than being prefixed
+	// to the stats: a long ref pushed the right-aligned numbers past the pane
+	// edge and clipped the cost.
+	m.dock.Model = m.metricsModel()
+	m.dock.Stats = m.metricsStats()
 	m.dock.Mode = m.currentModeLabel()
+}
+
+// metricsModel is the ask model ref for the strip's left side ("" when unknown).
+func (m *App) metricsModel() string {
+	if m.chatConvID == "" {
+		return ""
+	}
+	return m.metrics.model
+}
+
+// metricsStats is the NUMERIC half of the strip (no model) — the right side.
+func (m *App) metricsStats() string {
+	if m.chatConvID == "" {
+		return ""
+	}
+	mx := m.metrics
+	if !mx.have {
+		return ""
+	}
+	segs := make([]string, 0, 4)
+	segs = append(segs, "ctx "+fmtCtx(mx.ctxUsed, mx.ctxWindow))
+	segs = append(segs, modelpick.FmtTokens(mx.tokens)+" tok")
+	if ratio, ok := cacheHitRatio(mx.cacheRead, mx.prompt); ok {
+		segs = append(segs, "cache "+ratio+" ("+modelpick.FmtTokens(mx.cacheRead)+")")
+	}
+	segs = append(segs, fmtCost(mx.costUSD))
+	return strings.Join(segs, " · ")
 }
 
 // metricsLine renders the composer's bottom-right stat strip: the ask model,
