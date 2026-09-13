@@ -72,7 +72,13 @@ func (m *Model) EnsureSubscriptions() {
 }
 
 // Close unsubscribes (tab switch = unsubscribe).
-func (m *Model) Close() { m.reg.CloseAll() }
+// Close unsubscribes and drops the handle: CloseAll tears down the SHARED
+// registry, and EnsureSubscriptions guards on the handle being nil, so a stale
+// one would leave this screen stream-less after its first visit.
+func (m *Model) Close() {
+	m.reg.CloseAll()
+	m.sub = nil
+}
 
 func (m *Model) SetSize(w, h int) { m.Base.SetSize(w, h) }
 

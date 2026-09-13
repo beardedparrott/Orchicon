@@ -166,12 +166,26 @@ func (r *Registry) EventPokeChan(name string) <-chan struct{} {
 	return ch
 }
 
+// guard reports a missing API client for a stream. A nil service client would
+// otherwise PANIC inside the subscription goroutine (dialing dereferences it),
+// which takes the whole TUI down — a misconfigured or partially-built client set
+// must degrade to a reported stream error and a reconnect, never a crash.
+func guard(ok bool, what string) error {
+	if !ok {
+		return fmt.Errorf("tui: no API client for %s", what)
+	}
+	return nil
+}
+
 // ProjectEvents subscribes to StreamProjectEvents for the tenant.
 func (r *Registry) ProjectEvents(cl *client.Clients, tenantID string) *stream.Sub[*apiv1.StreamProjectEventsResponse] {
 	name := "project-events"
 	cfg := stream.Config[*apiv1.StreamProjectEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamProjectEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Projects != nil, "project events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamProjectEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -200,6 +214,9 @@ func (r *Registry) ExecutionEvents(cl *client.Clients, tenantID string) *stream.
 	cfg := stream.Config[*apiv1.StreamExecutionEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamExecutionEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Executions != nil, "execution events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamExecutionEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -228,6 +245,9 @@ func (r *Registry) WorkflowEvents(cl *client.Clients, tenantID string) *stream.S
 	cfg := stream.Config[*apiv1.StreamWorkflowEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamWorkflowEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Workflows != nil, "workflow events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamWorkflowEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -254,6 +274,9 @@ func (r *Registry) RecoveryEvents(cl *client.Clients, tenantID string) *stream.S
 	cfg := stream.Config[*apiv1.StreamRecoveryEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamRecoveryEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Recovery != nil, "recovery events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamRecoveryEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -282,6 +305,9 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 	cfg := stream.Config[*apiv1.StreamTelemetryResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamTelemetryResponse, error), error) {
+			if err := guard(cl != nil && cl.Telemetry != nil, "telemetry"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamTelemetryRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -317,6 +343,9 @@ func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID st
 	cfg := stream.Config[*apiv1.StreamFileEditsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamFileEditsResponse, error), error) {
+			if err := guard(cl != nil && cl.FileEdits != nil, "file edits"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamFileEditsRequest{TenantId: tenantID, OwnerKind: ownerKind, OwnerId: ownerID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence

@@ -79,7 +79,14 @@ func (m *Model) EnsureSubscriptions() {
 }
 
 // Close unsubscribes (tab switch = unsubscribe).
-func (m *Model) Close() { m.reg.CloseAll() }
+// Close unsubscribes (tab switch = unsubscribe). The handles are dropped too:
+// CloseAll tears down the SHARED registry, and EnsureSubscriptions guards on
+// these being nil — a stale handle meant the streams were never recreated after
+// the first visit (no events, and a footer frozen on the last status).
+func (m *Model) Close() {
+	m.reg.CloseAll()
+	m.sub, m.wfSub = nil, nil
+}
 
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h

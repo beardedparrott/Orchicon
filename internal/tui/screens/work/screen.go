@@ -164,6 +164,13 @@ func (m *Model) Close() {
 		m.buildCancel = nil
 	}
 	m.reg.CloseAll()
+	// CloseAll tears down EVERY subscription in the SHARED registry, so the
+	// screen must drop its own handle too. EnsureSubscriptions guards on that
+	// handle being nil, so a stale non-nil one meant the stream was never
+	// recreated after the first visit: no further events arrived AND the footer
+	// stayed frozen at the last status — the operator's "the connection status
+	// is CONSTANTLY saying disconnected or reconnecting".
+	m.sub = nil
 }
 
 func (m *Model) SetSize(w, h int) {
@@ -291,21 +298,38 @@ func (m *Model) fetchProjects(ctx context.Context, pageToken string) ([]kit2.Ite
 	return items, resp.Msg.NextPageToken, nil
 }
 
-// fetchWorkItems renders the active work-items page through the selected
-// display grouping (tree / board / archive).
+// maxItemPages bounds the work-items pagination. The list follows the RPC's
+// pages rather than taking only the first one: the server orders items
+// `sort_order NULLS LAST, created_at` and a freshly created TUI item has NO
+// sort_order, so it sorts to the very END — beyond page 1 on any tenant with a
+// few hundred items, which is exactly why created items were visible in the GUI
+// (project-scoped, a shorter page) and invisible here even after a restart.
+const maxItemPages = 25
+
+// fetchWorkItems renders the work-items set through the selected display
+// grouping (tree / archive), following pagination so the set is COMPLETE.
 func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	view := m.ViewMode()
-	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-		PageSize:        200,
-		PageToken:       pageToken,
-		IncludeArchived: view == viewArchive,
-		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
-		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
-	}))
-	if err != nil {
-		return nil, "", err
+	token := pageToken
+	all := make([]*apiv1.WorkItem, 0, 256)
+	for page := 0; page < maxItemPages; page++ {
+		resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+			PageSize:        200,
+			PageToken:       token,
+			IncludeArchived: view == viewArchive,
+			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+		}))
+		if err != nil {
+			return nil, "", err
+		}
+		all = append(all, resp.Msg.GetWorkItems()...)
+		token = resp.Msg.GetNextPageToken()
+		if token == "" {
+			break
+		}
 	}
-	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
+	return rowsFor(view, all, m.SortMode()), token, nil
 }
 
 func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
