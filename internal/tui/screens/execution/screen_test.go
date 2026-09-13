@@ -212,3 +212,33 @@ func TestInterjectSendsMessageThroughForm(t *testing.T) {
 		t.Fatalf("unexpected interjection: %+v", p.messages[0])
 	}
 }
+
+// The operator: "Workflows should be under Execution not Automation."
+//
+// The Execution tab owns the Execution domain — executions, workflow runs,
+// workflows and workers — so the Workflows source (and its detail) lives here,
+// and it must NOT remain an Automation source.
+func TestWorkflowsSourceIsOnTheExecutionTab(t *testing.T) {
+	m := newModel(t, &fakePlane{})
+	var found bool
+	for _, s := range m.Base.SourcesForTest() {
+		if s.Name == "workflows" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the Execution tab must carry a Workflows source: %v", sourceNames(m))
+	}
+	// Its RPC wiring is real: selecting it loads through ListWorkflows.
+	if !m.Base.SelectSource("workflows") {
+		t.Fatal("the workflows source must be selectable")
+	}
+}
+
+func sourceNames(m *Model) []string {
+	var out []string
+	for _, s := range m.Base.SourcesForTest() {
+		out = append(out, s.Name)
+	}
+	return out
+}

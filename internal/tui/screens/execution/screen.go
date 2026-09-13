@@ -1,6 +1,10 @@
-// Package execution implements the Execution screen: executions +
-// workflow runs (read-only) with the live StreamExecutionEvents
-// subscription — the first consumer of the useStream-mirroring engine.
+// Package execution implements the Execution screen: executions, workflow runs,
+// WORKFLOWS and workers, with the live StreamExecutionEvents subscription — the
+// first consumer of the useStream-mirroring engine.
+//
+// Workflows live here, not under Automation: they are part of the Execution
+// domain (the operator's "Workflows should be under Execution not Automation").
+// Automation keeps the recurring items that BIND a workflow.
 package execution
 
 import (
@@ -27,6 +31,7 @@ type Model struct {
 	reg         *subs.Registry
 	tenantID    string // "" lets the plane resolve it from the credential
 	sub         *stream.Sub[*apiv1.StreamExecutionEventsResponse]
+	wfSub       *stream.Sub[*apiv1.StreamWorkflowEventsResponse]
 	reconnected bool
 
 	w, h int
@@ -46,23 +51,30 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.NameStr = "execution"
 	m.AddSource("executions", "Executions", m.fetchExecutions)
 	m.AddSource("runs", "Workflow Runs", m.fetchRuns)
+	m.AddSource("workflows", "Workflows", m.fetchWorkflows)
 	m.AddSource("workers", "Workers", m.fetchWorkers)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
+	m.Base.SetSourceEmpty("workflows", "no workflows yet — define one to run, or to bind a recurring item to")
 	m.bar = kit2.NewActionBar()
 	m.Base.SetStatuses([]screenkit.StatusMsg{
 		{Name: "execution-events", Status: "idle"},
+		{Name: "workflow-events", Status: "idle"},
 	})
 	return m
 }
 
 func (m *Model) Name() string { return "execution" }
 
-// EnsureSubscriptions starts the execution-events live stream once
-// (idempotent; the shell calls it on every switch to this tab).
+// EnsureSubscriptions starts the live streams once (idempotent; the shell calls
+// it on every switch to this tab). Workflow events moved here with the Workflows
+// source, so the two share one screen.
 func (m *Model) EnsureSubscriptions() {
 	if m.sub == nil {
 		m.sub = m.reg.ExecutionEvents(m.cl, m.tenantID)
+	}
+	if m.wfSub == nil {
+		m.wfSub = m.reg.WorkflowEvents(m.cl, m.tenantID)
 	}
 }
 
@@ -75,7 +87,7 @@ func (m *Model) SetSize(w, h int) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.Load(), m.reg.WaitStatus("execution-events"), m.reg.WaitEventPoke("execution-events"))
+	return tea.Batch(m.Load(), m.reg.WaitStatus("execution-events"), m.reg.WaitStatus("workflow-events"), m.reg.WaitEventPoke("execution-events"))
 }
 
 func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
@@ -136,8 +148,58 @@ func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.It
 	return items, resp.Msg.NextPageToken, nil
 }
 
+func (m *Model) fetchWorkflows(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
+	resp, err := m.cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{
+		PageSize:  100,
+		PageToken: pageToken,
+	}))
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]screenkit.Item, 0, len(resp.Msg.Workflows))
+	for _, w := range resp.Msg.Workflows {
+		items = append(items, screenkit.Item{
+			ID:    w.GetId(),
+			Title: w.GetName(),
+			Meta:  strings.ToLower(w.GetStatus().String()),
+		})
+	}
+	return items, resp.Msg.NextPageToken, nil
+}
+
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
+	case "workflows":
+		// Workflows are an Execution-domain surface (the operator's "Workflows
+		// should be under Execution not Automation"). Detail mirrors the one
+		// Automation used to render, including the version trail.
+		resp, err := m.cl.Workflows.GetWorkflow(ctx, connect.NewRequest(&apiv1.GetWorkflowRequest{Id: id}))
+		if err != nil {
+			return "", nil, "", err
+		}
+		w := resp.Msg.GetWorkflow()
+		fields := []screenkit.Field{
+			{Key: "id", Value: w.GetId()},
+			{Key: "name", Value: w.GetName()},
+			{Key: "status", Value: strings.ToLower(w.GetStatus().String())},
+			{Key: "type", Value: w.GetType()},
+			{Key: "project", Value: w.GetProjectId()},
+			{Key: "current ver", Value: screenkit.FmtInt(int(w.GetCurrentVersion()))},
+			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
+			{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
+		}
+		var body string
+		if vr, err := m.cl.Workflows.ListWorkflowVersions(ctx, connect.NewRequest(&apiv1.ListWorkflowVersionsRequest{WorkflowId: id})); err == nil {
+			var b strings.Builder
+			for _, v := range vr.Msg.GetVersions() {
+				b.WriteString("v" + screenkit.FmtInt(int(v.GetVersion())) + "  " +
+					strings.ToLower(v.GetStatus().String()) + "  " +
+					v.GetVersionNote() + "\n")
+			}
+			body = strings.TrimRight(b.String(), "\n")
+		}
+		return "Workflow: " + w.GetName(), fields, body, nil
+
 	case "workers":
 		// Workers belong to the Execution domain (GUI nav-config groups
 		// Workers with Workflows/Executions/Schedules/Recovery).
@@ -236,7 +298,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 
 	case subs.StatusMsg:
 		m.Base.SetStatus(msg.Name, string(msg.Status))
-		cmd := m.reg.WaitStatus("execution-events")
+		// Re-arm the channel that actually reported: two streams feed this
+		// screen now (execution events and workflow events), and re-arming only
+		// the first would strand the other's status.
+		cmd := m.reg.WaitStatus(msg.Name)
+		if msg.Name != "execution-events" {
+			return m, cmd
+		}
 		if msg.Status == "open" && m.reconnected {
 			// reconnect gap: refetch lists (invalidate-on-reconnect)
 			return m, tea.Batch(cmd, m.Load(), m.requestSessionRefresh())

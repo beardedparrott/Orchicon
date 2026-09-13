@@ -85,31 +85,26 @@ type Model struct {
 func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m := &Model{cl: cl, reg: reg, tenantID: tenantID}
 	m.NameStr = "automation"
-	m.AddSource(srcWorkflows, "Workflows", m.fetchWorkflows)
+	// Workflows are NOT a source here: they belong to the Execution domain (the
+	// operator's "Workflows should be under Execution not Automation"). Automation
+	// keeps the recurring items that BIND a workflow — its create form still
+	// fetches workflow options for the binding field.
 	m.AddSource(srcSchedules, "Recurring Items", m.fetchSchedules)
 	m.AddSource(srcIdeas, "Idea Cloud", m.fetchIdeas)
 	m.AddSource(srcRejected, "Rejected Ideas", m.fetchRejected)
 	m.SetDetail(m.detail)
-	m.Base.SetSourceEmpty(srcWorkflows, "no workflows yet — define one to bind a recurring item to")
 	m.Base.SetSourceEmpty(srcSchedules, "no recurring items yet — press n to create one")
 	m.Base.SetSourceEmpty(srcIdeas, "no ideas awaiting triage — automations whose outputs mode is 'idea' spawn them here")
 	m.Base.SetSourceEmpty(srcRejected, "no dismissed ideas — every dismissal is kept here as durable rejection history")
 	m.bar = kit2.NewActionBar()
-	m.Base.SetStatuses([]screenkit.StatusMsg{
-		{Name: "workflow-events", Status: "idle"},
-	})
 	return m
 }
 
 func (m *Model) Name() string { return "automation" }
 
-// EnsureSubscriptions starts the workflow-events live stream once
-// (idempotent; the shell calls it on every switch to this tab).
-func (m *Model) EnsureSubscriptions() {
-	if m.sub == nil {
-		m.sub = m.reg.WorkflowEvents(m.cl, m.tenantID)
-	}
-}
+// EnsureSubscriptions: automation has no live stream of its own. Workflow
+// events moved to Execution with the Workflows source.
+func (m *Model) EnsureSubscriptions() {}
 
 // Close unsubscribes (tab switch = unsubscribe).
 func (m *Model) Close() { m.reg.CloseAll() }
@@ -120,7 +115,7 @@ func (m *Model) SetSize(w, h int) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.Load(), m.reg.WaitStatus("workflow-events"))
+	return m.Load()
 }
 
 // ClaimsKeys reports whether the screen owns every key right now (an open

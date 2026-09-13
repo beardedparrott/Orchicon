@@ -809,12 +809,14 @@ func TestAutomationEmptyStates(t *testing.T) {
 	// The screen renders TWO panes (the focused source + detail), so each
 	// source's empty state is asserted by focusing it — the same way an
 	// operator reaches it (left/right).
+	//
+	// Workflows are NOT here any more: they moved to the Execution tab, which
+	// owns the Execution domain (executions, runs, workflows, workers).
 	m := newModelWith(t, newPlane(), nil)
-	for _, src := range []string{"workflows", "schedules", "ideas", "rejected"} {
+	for _, src := range []string{"schedules", "ideas", "rejected"} {
 		load(t, m, src)
 	}
 	for _, tc := range []struct{ src, want string }{
-		{"workflows", "no workflows yet"},
 		{"schedules", "no recurring items yet"},
 		{"ideas", "no ideas awaiting triage"},
 		{"rejected", "no dismissed ideas"},
@@ -825,6 +827,10 @@ func TestAutomationEmptyStates(t *testing.T) {
 		if view := m.View(); !strings.Contains(view, tc.want) {
 			t.Errorf("focused pane %q missing its empty state: %q", tc.src, tc.want)
 		}
+	}
+	// Workflows must NOT be an Automation source any more.
+	if m.SelectSource("workflows") {
+		t.Fatal("workflows must not be an Automation source (it moved to Execution)")
 	}
 }
 
