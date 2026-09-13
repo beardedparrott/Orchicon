@@ -644,6 +644,61 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
+// SetConversationModel retargets a conversation's model_ref. The ref is
+// validated against the pinned grammar (and the Ask-capability guard) before
+// the write, so a conversation can never hold a ref that cannot serve Ask. An
+// empty ref is legal: it CLEARS the per-conversation override so the tenant
+// default applies.
+func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request[apiv1.SetConversationModelRequest]) (*connect.Response[apiv1.SetConversationModelResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ref := strings.TrimSpace(req.Msg.ModelRef)
+	// Empty clears the override; anything else must be a ref Ask can serve.
+	// validateModelRef applies both the pinned grammar AND the Ask-capability
+	// guard, and deliberately leaves an UNKNOWN adapter to dispatch-time
+	// resolution (which surfaces the actionable "register an adapter" error).
+	if err := s.validateModelRef(ref); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateConversationModel(ctx, ttx.Tx, tenantID, req.Msg.Id, ref)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// The adapter kind is what the dispatcher resolves on, so it belongs in the
+	// audit row: a model change can silently move a conversation between
+	// adapters, and that is exactly the kind of change an operator needs to be
+	// able to reconstruct later.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.model_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{
+			"model_ref": ref,
+			"adapter":   adapter.AdapterKind(ref),
+		})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.model_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
+	return connect.NewResponse(&apiv1.SetConversationModelResponse{
+		Conversation: conversationRowToProto(row, count, preview, st),
+	}), nil
+}
+
 // --- Messages ---
 
 func (s *Service) ListMessages(ctx context.Context, req *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {

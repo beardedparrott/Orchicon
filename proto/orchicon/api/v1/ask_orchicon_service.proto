@@ -39,6 +39,15 @@ service AskOrchiconService {
   // with no session change or serve restart.
   rpc SetConversationMode(SetConversationModeRequest) returns (SetConversationModeResponse);
 
+  // SetConversationModel retargets a conversation's model_ref. The change
+  // applies from the NEXT message on; when it changes the ADAPTER segment the
+  // bridge is re-resolved for subsequent turns (the serve session is
+  // re-established against the new adapter). An EMPTY ref clears the override,
+  // so the conversation falls back to the tenant default
+  // (default_ask_orchicon_model). This is what lets an operator retarget an
+  // already-open chat instead of starting a new one.
+  rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
+
   // Messages.
 
   // ListMessages returns messages for a conversation, ordered by
@@ -158,6 +167,18 @@ message SetConversationModeRequest {
 }
 
 message SetConversationModeResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationModelRequest {
+  string id = 1;
+  // model_ref is canonical adapter/provider/model (ADR-0003); a legacy
+  // 1/2-segment ref is accepted and infers adapter "opencode". Empty clears
+  // the per-conversation override so the tenant default applies.
+  string model_ref = 2;
+}
+
+message SetConversationModelResponse {
   Conversation conversation = 1;
 }
 

@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationModelRequest, SetConversationModelResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -91,6 +91,23 @@ export const AskOrchiconService = {
       name: "SetConversationMode",
       I: SetConversationModeRequest,
       O: SetConversationModeResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationModel retargets a conversation's model_ref. The change
+     * applies from the NEXT message on; when it changes the ADAPTER segment the
+     * bridge is re-resolved for subsequent turns (the serve session is
+     * re-established against the new adapter). An EMPTY ref clears the override,
+     * so the conversation falls back to the tenant default
+     * (default_ask_orchicon_model). This is what lets an operator retarget an
+     * already-open chat instead of starting a new one.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationModel
+     */
+    setConversationModel: {
+      name: "SetConversationModel",
+      I: SetConversationModelRequest,
+      O: SetConversationModelResponse,
       kind: MethodKind.Unary,
     },
     /**

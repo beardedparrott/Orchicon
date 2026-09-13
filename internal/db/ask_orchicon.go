@@ -27,17 +27,17 @@ type ConversationRow struct {
 
 // MessageRow is the in-memory representation of an ask_orchicon_messages row.
 type MessageRow struct {
-	ID              string
-	TenantID        string
-	ConversationID  string
-	Role            string
-	Content         string
-	ToolCalls       []byte
-	ToolResults     []byte
-	Attachments     []byte
-	Metadata        []byte
-	Reasoning       []string
-	CreatedAt       time.Time
+	ID             string
+	TenantID       string
+	ConversationID string
+	Role           string
+	Content        string
+	ToolCalls      []byte
+	ToolResults    []byte
+	Attachments    []byte
+	Metadata       []byte
+	Reasoning      []string
+	CreatedAt      time.Time
 }
 
 // AgentConfigRow is the in-memory representation of an ask_orchicon_agent_config row.
@@ -151,6 +151,25 @@ func UpdateConversationMode(ctx context.Context, tx pgx.Tx, tenantID, id, mode s
 	row, err := tx.Query(ctx, q, tenantID, id, mode)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation mode: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationModel persists a conversation's model_ref override. An
+// empty modelRef clears the override (the conversation then resolves the
+// tenant default at dispatch). Mirrors UpdateConversationMode's RETURNING
+// contract so the caller can echo the updated row.
+func UpdateConversationModel(ctx context.Context, tx pgx.Tx, tenantID, id, modelRef string) (ConversationRow, error) {
+	const q = `UPDATE ask_orchicon_conversations SET model_ref = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+	row, err := tx.Query(ctx, q, tenantID, id, modelRef)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: update conversation model: %w", err)
 	}
 	defer row.Close()
 	if row.Next() {
