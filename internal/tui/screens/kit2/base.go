@@ -57,10 +57,12 @@ func (s *source) topRows() int {
 //
 // Label is a func so a control can report STATE at render time ("collapse all"
 // vs "expand all") without the screen having to re-register it on every
-// change.
+// change. Do RETURNS a tea.Cmd because most controls need to re-fetch: a
+// control that only mutated state and dropped its command looked inert — which
+// is exactly why cycling the sort changed the label but not the list.
 type RowAction struct {
 	Label func() string
-	Do    func()
+	Do    func() tea.Cmd
 }
 
 // actionHit records where a RowAction was drawn, so a click can be hit-tested
@@ -428,6 +430,15 @@ func (b *Base) finishDetailEdit(submitted bool) {
 	}
 }
 
+// ActiveTableActions exposes the focused source's top-row controls (tests and
+// the shell read them).
+func (b *Base) ActiveTableActions() []RowAction {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return nil
+	}
+	return b.sources[b.active].rowActions
+}
+
 // SetRowActions installs the clickable controls drawn on a source's top row.
 func (b *Base) SetRowActions(src string, actions []RowAction) {
 	for _, s := range b.sources {
@@ -783,12 +794,13 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 			return nil
 		}
 		s := b.sources[p]
-		// A click on a top-row control (the tree's collapse/expand-all) fires it.
-		if b.clickRowAction(p, msg.Y, msg.X) {
+		// A click on a top-row control (the tree's collapse/expand-all, the sort
+		// control) fires it and forwards its command.
+		if hit, cmd := b.clickRowAction(p, msg.Y, msg.X); hit {
 			b.active = p
 			b.focusD = false
 			b.setFocusForPane()
-			return nil
+			return cmd
 		}
 		row := msg.Y - b.tableTopRow()
 		// A click on a tree node's +/- marker toggles that node; any other click
@@ -1004,8 +1016,9 @@ func (b *Base) topLine(s *source, w int) string {
 }
 
 // clickRowAction invokes the row control under (absoluteY, x) when the click
-// landed on one. sourcePaneX is the panel's left edge.
-func (b *Base) clickRowAction(p int, absoluteY, x int) bool {
+// landed on one, returning the control's command so its effect can be
+// reconciled.
+func (b *Base) clickRowAction(p int, absoluteY, x int) (bool, tea.Cmd) {
 	head := 0
 	if b.active >= 0 && b.active < len(b.sources) {
 		t := b.sources[b.active].table
@@ -1013,7 +1026,7 @@ func (b *Base) clickRowAction(p int, absoluteY, x int) bool {
 	}
 	topY := b.tableTopRow() - b.activePaneTopRows() - head
 	if absoluteY != topY {
-		return false
+		return false, nil
 	}
 	// The recorded x is inside the border, so shift by the border + pane offset.
 	for _, h := range b.actionHits {
@@ -1022,12 +1035,11 @@ func (b *Base) clickRowAction(p int, absoluteY, x int) bool {
 		}
 		if x-1 >= h.x0 && x-1 <= h.x1 {
 			if h.i >= 0 && h.i < len(b.sources[p].rowActions) {
-				b.sources[p].rowActions[h.i].Do()
-				return true
+				return true, b.sources[p].rowActions[h.i].Do()
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // activePaneTopRows is the focused source's top-row count.

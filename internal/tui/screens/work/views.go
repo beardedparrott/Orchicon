@@ -83,14 +83,17 @@ func rowTitle(w *apiv1.WorkItem) string {
 // treeRows walks the real parent links (WorkItem.parent_id) depth-first from
 // the roots, preserving sibling order (sort_order, then title). Orphans
 // (parent not in the page) are rendered as roots so no item is ever dropped.
-// stepNumber prefixes a row with its position in the STORED sequence, so an
-// execution order is visible in the list itself. Only a sibling GROUP of two or
-// more is numbered (a lone child has no order to show), and the number always
-// reflects the stored sequence even when the DISPLAY sort is something else —
-// so a list sorted by title shows the steps out of order, which is exactly the
-// distinction between "how it is displayed" and "the order it runs in".
-func stepNumber(seqIndex map[string]int, groupSize int, id string) string {
-	if groupSize < 2 {
+// stepNumber prefixes a row with its RUN position within its sibling sequence,
+// so an execution order is visible in the list itself.
+//
+// Only a sibling GROUP of two or more is numbered, and only when the row is a
+// CHILD (depth > 0): a top-level item is nobody's step, so numbering the roots
+// implied a run order across epics that does not exist — and the operator
+// rightly called that dangerous ("we can't sequentially kick off epics can
+// we?"). The number is always the STORED sequence (the order the reconciler
+// arms), never the display order.
+func stepNumber(seqIndex map[string]int, groupSize, depth int, id string) string {
+	if depth == 0 || groupSize < 2 {
 		return ""
 	}
 	n, ok := seqIndex[id]
@@ -133,7 +136,7 @@ func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 			// HasChildren decides whether the row draws a +/- toggle.
 			out = append(out, kit2.Item{
 				ID:          w.GetId(),
-				Title:       stepNumber(seqIndex, len(kids), w.GetId()) + rowTitle(w),
+				Title:       stepNumber(seqIndex, len(kids), depth, w.GetId()) + rowTitle(w),
 				Meta:        workItemMeta(w),
 				Depth:       depth,
 				Parent:      parent,

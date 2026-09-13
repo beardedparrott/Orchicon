@@ -72,7 +72,13 @@ func NewTable(title string, cols ...Column) *Table {
 // metadata on an item (Depth/Parent/HasChildren) is carried onto the row, so
 // a fresh tree renders FULLY EXPANDED and collapsing is always an explicit
 // operator action.
+//
+// The CURSOR IS PRESERVED by id when the selected row survives the reload.
+// Reseating it at the top on every refresh threw the operator's selection away
+// after each mutation — the reported "+/- moves it properly but then jumps your
+// focus up to the parent". A genuinely new list still starts at the top.
 func (t *Table) SetItems(items []screenkit.Item, next string) {
+	prev := t.SelectedID()
 	rows := make([]Row, 0, len(items))
 	for _, it := range items {
 		rows = append(rows, Row{
@@ -88,6 +94,10 @@ func (t *Table) SetItems(items []screenkit.Item, next string) {
 	t.Rows = rows
 	t.NextPageToken = next
 	t.Cursor, t.Offset = 0, 0
+	if prev != "" {
+		t.setCursorToID(prev)
+		t.clampOffset()
+	}
 }
 
 // SetRows replaces the rows.

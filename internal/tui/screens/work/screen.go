@@ -470,13 +470,16 @@ func (m *Model) SortMode() sortMode {
 	return m.sort
 }
 
-// cycleSort advances the sort control and re-renders the list.
+// cycleSort advances the sort control and RE-FETCHES so the new order is
+// actually applied — the bug the operator hit ("it goes through the different
+// orderings but it doesn't actually apply the sort") was that the control's
+// command was dropped.
 func (m *Model) cycleSort() tea.Cmd {
 	m.viewMu.Lock()
 	m.sort = m.sort.next()
 	next := m.sort
 	m.viewMu.Unlock()
-	m.notice = "work items sorted by " + string(next) + " (sequence is the stored order that J/K edits)"
+	m.notice = "sorted by " + string(next) + " (sequence = the run order; +/- changes it)"
 	return m.Refresh(srcWorkItems)
 }
 
@@ -485,9 +488,9 @@ func (m *Model) cycleSort() tea.Cmd {
 // carry no button rather than a dead one.
 func (m *Model) syncRowActions() {
 	acts := []kit2.RowAction{{
-		// A STATE-reporting label: the control says what it will do / what is on.
+		// A STATE-reporting label: the control says what is on.
 		Label: func() string { return m.SortMode().label() },
-		Do:    func() { m.cycleSort() },
+		Do:    func() tea.Cmd { return m.cycleSort() },
 	}}
 	if m.ViewMode() == viewTree {
 		acts = append(acts, kit2.RowAction{
@@ -498,7 +501,7 @@ func (m *Model) syncRowActions() {
 				}
 				return "expand all"
 			},
-			Do: func() { m.toggleAllTreeNodes() },
+			Do: func() tea.Cmd { return m.toggleAllTreeNodes() },
 		})
 	}
 	m.Base.SetRowActions(srcWorkItems, acts)

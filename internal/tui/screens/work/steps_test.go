@@ -46,6 +46,24 @@ func TestTreeRowsShowStepNumbers(t *testing.T) {
 	if got := byID["wi-c"]; !strings.HasPrefix(got, "3. ") {
 		t.Fatalf("the third step must be numbered 3: %q", got)
 	}
+	// Only a CHILD is a step. Top-level items are not steps of anything, so they
+	// carry no number — the operator's "why do epics have numbers on them? We
+	// can't sequentially kick off epics can we? I think that is dangerous".
+	for _, root := range []string{"wi-epic", "wi-lone"} {
+		if got := byID[root]; strings.Contains(got, ". ") {
+			t.Fatalf("a top-level item must NOT be numbered: %q", got)
+		}
+	}
+	// ...while its children ARE, by run order.
+	if got := byID["wi-b"]; !strings.HasPrefix(got, "1. ") {
+		t.Fatalf("the first step must be numbered 1: %q", got)
+	}
+	if got := byID["wi-a"]; !strings.HasPrefix(got, "2. ") {
+		t.Fatalf("the second step must be numbered 2: %q", got)
+	}
+	if got := byID["wi-c"]; !strings.HasPrefix(got, "3. ") {
+		t.Fatalf("the third step must be numbered 3: %q", got)
+	}
 	// A lone child has no order to show.
 	if got := byID["wi-only-kid"]; strings.Contains(got, ". ") {
 		t.Fatalf("a lone child must not be numbered: %q", got)
@@ -60,11 +78,6 @@ func TestTreeRowsShowStepNumbers(t *testing.T) {
 	}
 	if strings.Join(steps, "") != "123" {
 		t.Fatalf("the sequence view must list the epic's steps in order, got %v", steps)
-	}
-	// The ROOTS are siblings too, so they carry their own numbering — the top
-	// level is a sequence as much as any other sibling group.
-	if got := byID["wi-epic"]; !strings.HasPrefix(got, "1. ") {
-		t.Fatalf("the first root must be numbered: %q", got)
 	}
 }
 
