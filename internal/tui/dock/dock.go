@@ -76,6 +76,14 @@ type Model struct {
 	// guidance always names what the current page can do.
 	Context string
 
+	// Stats is the session stat strip (ask model · context · tokens · cache ·
+	// cost), rendered RIGHT-ALIGNED on the box's bottom row — the operator's
+	// "bottom right corner of the chat box". Mode is the persona pill rendered
+	// immediately to its right, mirroring where the GUI puts its mode dropdown
+	// (the stats sit BEFORE it). Both are set by the shell.
+	Stats string
+	Mode  string
+
 	// sendRequest is a non-nil callback when Enter produced a send; the
 	// shell checks+clears it after Update (avoids channel plumbing).
 	sendRequest string
@@ -311,7 +319,54 @@ func (m *Model) Lines() int {
 	if m.Chip != "" {
 		h++
 	}
+	h += m.StatsRows()
 	return h
+}
+
+// StatsRows is 1 when there is a stat strip / mode pill to draw, else 0. The
+// shell reserves exactly this many rows, so the box can never overflow.
+func (m *Model) StatsRows() int {
+	if m.Stats == "" && m.Mode == "" {
+		return 0
+	}
+	return 1
+}
+
+// statLine renders the bottom stat row: the session stats, then the mode pill
+// right-aligned against the box edge. The mode pill is the CONTROL, so if the
+// row is too narrow the stats are trimmed first and the pill always survives.
+func (m *Model) statLine(inner int) string {
+	mode := ""
+	if m.Mode != "" {
+		mode = "[" + m.Mode + "]"
+	}
+	if m.Stats == "" && mode == "" {
+		return ""
+	}
+	right := m.Stats
+	if mode != "" {
+		if right != "" {
+			right += "  "
+		}
+		right += mode
+	}
+	if lipgloss.Width(right) > inner {
+		switch {
+		case mode == "":
+			right = ansi.Truncate(right, inner, "…")
+		default:
+			avail := inner - lipgloss.Width(mode) - 2
+			if avail < 4 {
+				avail = 4
+			}
+			right = ansi.Truncate(m.Stats, avail, "…") + "  " + mode
+		}
+	}
+	pad := inner - lipgloss.Width(right)
+	if pad < 0 {
+		pad = 0
+	}
+	return theme.ListMeta.Render(strings.Repeat(" ", pad) + right)
 }
 
 // Focus / Blur move keyboard focus into/out of the composer.
@@ -486,6 +541,11 @@ func (m *Model) View() string {
 	// shortcuts stay readable on a narrow composer.
 	for _, l := range m.hintLines() {
 		rows = append(rows, theme.HintText.Render(fit(l, inner)))
+	}
+	// The stat row sits BELOW the affordance row, flush against the box's
+	// bottom edge and right-aligned: the stats then the mode pill.
+	if sl := m.statLine(inner); sl != "" {
+		rows = append(rows, sl)
 	}
 
 	// The box's own background must survive the inner rows' resets: the rows

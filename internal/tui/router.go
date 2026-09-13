@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/modelpick"
 )
 
 // chatWakeMsg is declared in app.go (package-level message type).
@@ -221,6 +222,25 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			m.help.open = false
 		}
 		return m, nil // overlay swallows keys
+	}
+	// The /models picker overlay owns EVERY key and the mouse while it is open:
+	// it is layered above the composer, so a keystroke aimed at the picker can
+	// never reach the composer or a screen, and its load results route to it.
+	if m.modelPicker != nil {
+		switch msg := msg.(type) {
+		case modelpick.KindsMsg:
+			return m, m.applyModelKinds(msg)
+		case modelpick.ProvidersMsg:
+			return m, m.applyModelProviders(msg)
+		case modelpick.ModelsMsg:
+			return m, m.applyModelModels(msg)
+		case tea.KeyMsg:
+			_, cmd := m.modelPicker.HandleKey(msg)
+			return m, cmd
+		case tea.MouseMsg:
+			_, cmd := m.modelPicker.HandleMouse(msg)
+			return m, cmd
+		}
 	}
 	// /connect in-place overlay owns ALL messages while open (never quits):
 	// keys drive the embedded connection form; the async probe's start/done
@@ -588,6 +608,8 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
+	case metricsMsg:
+		return m.applyMetrics(msg)
 	case chatConvCreatedMsg:
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID

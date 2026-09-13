@@ -232,6 +232,53 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	return out
 }
 
+// ContextWindow resolves a model ref's context-window size (in tokens)
+// through the SAME per-adapter source the picker uses, so the number the
+// composer reports can never disagree with the window the picker annotates.
+//
+// Returns 0 with a nil error when the ref or its window is simply unknown (a
+// model with no context hint, or a provider that cannot enumerate models):
+// the caller renders "unknown" rather than inventing a number. A non-nil error
+// means the lookup itself failed.
+func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, error) {
+	kind, provider, model := SplitRef(ref)
+	if provider == "" || model == "" {
+		return 0, nil // a partial/legacy ref has no resolvable window
+	}
+	if kind == NativeAdapterKind {
+		if cl == nil || cl.Providers == nil {
+			return 0, errors.New("no provider client")
+		}
+		resp, err := cl.Providers.ListProviderModels(ctx, connect.NewRequest(&apiv1.ProviderModelsRequest{ProviderId: provider}))
+		if err != nil {
+			return 0, err
+		}
+		for _, m := range resp.Msg.GetModels() {
+			if m.GetId() == model {
+				return m.GetContext(), nil
+			}
+		}
+		return 0, nil
+	}
+	if cl == nil || cl.AIGateway == nil {
+		return 0, errors.New("no AI gateway client")
+	}
+	providerFilter, adapterKind := provider, kind
+	resp, err := cl.AIGateway.ListOpenCodeModels(ctx, connect.NewRequest(&apiv1.ListOpenCodeModelsRequest{
+		Provider: &providerFilter,
+		Adapter:  &adapterKind,
+	}))
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range resp.Msg.GetModels() {
+		if m.GetId() == model {
+			return m.GetLimits().GetContext(), nil
+		}
+	}
+	return 0, nil
+}
+
 // --- display helpers --------------------------------------------------------
 
 // ModelMeta is a model row's dim right-hand context: the context window the

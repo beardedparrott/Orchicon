@@ -336,6 +336,26 @@ func (c *Controller) SetConversationMode(id string, mode apiv1.ConversationMode)
 	}
 }
 
+// SetConversationModel retargets an OPEN conversation's model_ref
+// (SetConversationModel). The change applies from the NEXT message; an empty
+// ref CLEARS the per-conversation override so the tenant default applies.
+// This is the /models write path — it is what lets the operator retarget a
+// chat in place instead of abandoning it for a new one.
+func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.SetConversationModel(ctx, connect.NewRequest(&apiv1.SetConversationModelRequest{
+			Id:       id,
+			ModelRef: modelRef,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "model", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "model", ID: id}
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {

@@ -272,10 +272,24 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
-		Name: "/mode", Usage: "/mode <brainstorm>",
-		Desc:    "set the conversation mode/persona (SetConversationMode)",
-		MinArgs: 1,
+		Name: "/models", Usage: "/models",
+		Desc: "choose the Ask model (adapter → provider → model); sets it on the open conversation",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.openModelsPicker()
+		},
+	})
+	add(SlashCommand{
+		Name: "/mode", Usage: "/mode [brainstorm]",
+		Desc:    "set the conversation mode/persona (SetConversationMode); no argument reports the current one",
+		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
+			if len(args) == 0 {
+				// The composer's stat row carries the mode pill (the TUI's
+				// counterpart to the GUI's dropdown), so a bare /mode REPORTS
+				// rather than acting blind.
+				m.dock.SetNotice("mode: " + m.currentModeLabel() + "  (known: brainstorm — /mode brainstorm to set)")
+				return nil
+			}
 			mode, ok := chat.ParseMode(args[0])
 			if !ok {
 				m.dock.SetError("unknown mode " + args[0] + " — known: brainstorm")

@@ -131,8 +131,20 @@ type App struct {
 	navReg             []NavEntry
 	themes             []string
 	reconnectRequested bool
-	chatConvID         string                     // active conversation ("" = none yet)
-	execSessions       map[string][]chat.ChatItem // execution id → durable session items
+	chatConvID         string // active conversation ("" = none yet)
+
+	// modelPicker is the /models modal (nil = closed). The composer lives on the
+	// App (not on a screen), so the SHELL hosts this picker and owns its keys and
+	// mouse while it is open — the same kit2.ModelPicker the screens use.
+	modelPicker *kit2.ModelPicker
+	// metrics is the open conversation's usage roll-up feeding the composer's
+	// stat strip. ctxWindowFor/ctxWindow cache the resolved context window per
+	// model ref: the window costs a provider round trip and changes only when
+	// the model does.
+	metrics      sessionMetrics
+	ctxWindowFor string
+	ctxWindow    int64
+	execSessions map[string][]chat.ChatItem // execution id → durable session items
 
 	// Transcript Stream widgets (kit2): one per conversation. Live chunks
 	// APPEND (preserving the operator's scroll offset; following the tail
@@ -933,7 +945,9 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	m.askMode = askConversations
 	m.chatConvID = id
 	m.chat.SetActive(id)
-	return m.chat.OpenConversation(id)
+	// A conversation switch changes whose usage the strip reports, so re-read it
+	// (the previous conversation's numbers must never linger under a new chat).
+	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics())
 }
 
 // onExecutionSessionLoaded paints the merged session view into the
@@ -1269,6 +1283,13 @@ func (m App) View() string {
 		base = m.paletteComposerView(base)
 	}
 	base = m.composeView(base)
+	// The /models picker is spliced LAST (above every other layer). Its origin is
+	// recomputed from the same w×h the overlay uses, so a click addresses the box
+	// that was actually drawn.
+	if m.modelPicker != nil {
+		m.modelPicker.SetScreen(w, h)
+		base = m.overlayCentered(base, m.modelPicker.View())
+	}
 	return fillView(base, w, h)
 }
 
@@ -2043,6 +2064,12 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 			}
 		}
 	}
+	if msg.Op == "model" {
+		// The model changed: drop the cached window so it is re-resolved for the
+		// NEW ref, and re-read the strip (the ref it displays just changed).
+		m.ctxWindowFor = ""
+		return tea.Batch(m.reloadConversations(), m.refreshMetrics())
+	}
 	return m.reloadConversations()
 }
 
@@ -2051,7 +2078,9 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 // the final persisted transcript (completion authority).
 func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	m.chat.EndStream(msg.ConvID)
-	return m.chat.Poll(msg.ConvID)
+	// A finished turn is when new usage lands, so this is the LIVE update: the
+	// stat strip re-reads the session's tokens / cache / cost and refreshes.
+	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics())
 }
 
 // setChatError maps a chat failure to the dock error strip (401 gets
