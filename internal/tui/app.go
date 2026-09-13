@@ -106,9 +106,12 @@ type App struct {
 	width      int
 	height     int
 	footer     footerModel
-	help       helpModel
-	routes     []KeyRoute
-	quitting   bool
+	// lastStreamErr is the last stream error already surfaced in the dock, so
+	// the same failure is not re-reported on every status update.
+	lastStreamErr string
+	help          helpModel
+	routes        []KeyRoute
+	quitting      bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
 	dock            dock.Model
@@ -1018,6 +1021,37 @@ func (m *App) navEntries(tab TabID) []NavEntry {
 		}
 	}
 	return out
+}
+
+// refreshStreamStatus updates the footer AND surfaces the underlying reason a
+// stream is down, once per distinct message. Without this a dead endpoint (or a
+// rejected subscription) produced a bare "connecting…" that could never be
+// diagnosed from inside the UI.
+func (m *App) refreshStreamStatus() {
+	m.footer.StreamStatus = m.streamStatus()
+	m.surfaceStreamError()
+}
+
+// surfaceStreamError pushes the active screen's stream error into the dock's
+// error strip whenever the footer is not "open", so the operator reads the
+// actual reason (e.g. "connection refused") instead of guessing.
+func (m *App) surfaceStreamError() {
+	if m.footer.StreamStatus == openStatus {
+		return
+	}
+	rp, ok := m.screens[m.active].(screenkit.StatusReporter)
+	if !ok {
+		return
+	}
+	for _, st := range rp.ReportStatus() {
+		errText := m.reg.LatestError(st.Name)
+		if errText == "" || errText == m.lastStreamErr {
+			continue
+		}
+		m.lastStreamErr = errText
+		m.dock.SetError(st.Name + ": " + errText)
+		return
+	}
 }
 
 // streamStatus derives the footer state from the active screen's declared

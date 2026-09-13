@@ -64,14 +64,18 @@ type Registry struct {
 	// that armed it — either way the previous status could freeze forever (the
 	// footer stuck on "connecting"). Readers take the VALUE from here.
 	latest map[string]string
+	// latestErr is the most recent dial/stream ERROR per subscription name, so
+	// the shell can say WHY a stream is not up (see LatestError).
+	latestErr map[string]string
 }
 
 // NewRegistry builds an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		chans:  map[string]chan string{},
-		events: map[string]chan struct{}{},
-		latest: map[string]string{},
+		chans:     map[string]chan string{},
+		events:    map[string]chan struct{}{},
+		latest:    map[string]string{},
+		latestErr: map[string]string{},
 	}
 }
 
@@ -148,6 +152,27 @@ func (r *Registry) notify(name string) func(stream.Status) {
 	}
 }
 
+// LatestError is the most recent error reported for a subscription name (""
+// when it has none). The shell surfaces it so a failing stream explains itself
+// instead of showing a bare "connecting…".
+func (r *Registry) LatestError(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.latestErr[name]
+}
+
+// notifyErr records a stream's last error (see Registry.latestErr).
+func (r *Registry) notifyErr(name string) func(error) {
+	return func(err error) {
+		if err == nil {
+			return
+		}
+		r.mu.Lock()
+		r.latestErr[name] = err.Error()
+		r.mu.Unlock()
+	}
+}
+
 // LatestStatus is the most recent status reported for a subscription name
 // ("" when the name has never reported). This is the authoritative value — the
 // footer reads it rather than trusting the last message a screen happened to
@@ -221,8 +246,8 @@ func (r *Registry) ProjectEvents(cl *client.Clients, tenantID string) *stream.Su
 		GetSequence: func(m *apiv1.StreamProjectEventsResponse) int64 {
 			return m.GetSequence()
 		},
-		OnStatus: r.notify(name),
-		OnEvent:  func(*apiv1.StreamProjectEventsResponse) {},
+		OnStatus: r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamProjectEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -250,7 +275,7 @@ func (r *Registry) ExecutionEvents(cl *client.Clients, tenantID string) *stream.
 		},
 		GetEventID:  func(m *apiv1.StreamExecutionEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamExecutionEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
 		OnEvent: func(*apiv1.StreamExecutionEventsResponse) {
 			r.pokeEvent(name)(nil)
 		},
@@ -281,8 +306,8 @@ func (r *Registry) WorkflowEvents(cl *client.Clients, tenantID string) *stream.S
 		},
 		GetEventID:  func(m *apiv1.StreamWorkflowEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamWorkflowEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamWorkflowEventsResponse) {},
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamWorkflowEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -310,8 +335,8 @@ func (r *Registry) RecoveryEvents(cl *client.Clients, tenantID string) *stream.S
 		},
 		GetEventID:  func(m *apiv1.StreamRecoveryEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamRecoveryEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamRecoveryEventsResponse) {},
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamRecoveryEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -343,8 +368,8 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 			return fmt.Sprintf("telemetry:%d", m.Sequence)
 		},
 		GetSequence: func(m *apiv1.StreamTelemetryResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamTelemetryResponse) { r.pokeEvent(name)(nil) },
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamTelemetryResponse) { r.pokeEvent(name)(nil) },
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -379,8 +404,8 @@ func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID st
 		},
 		GetEventID:  func(m *apiv1.StreamFileEditsResponse) string { return m.GetEventId() },
 		GetSequence: func(m *apiv1.StreamFileEditsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamFileEditsResponse) { r.pokeEvent(name)(nil) },
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamFileEditsResponse) { r.pokeEvent(name)(nil) },
 	}
 	sub := stream.New(cfg)
 	r.add(sub)

@@ -463,7 +463,8 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image ")},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
 		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KPicker,
-			Options: pickerOptsWithCurrent(schedulePresets(), rfc3339OrEmpty(w.GetScheduledStartAt()), "")},
+			Options:  pickerOptsWithCurrent(schedulePresets(), rfc3339OrEmpty(w.GetScheduledStartAt()), ""),
+			Validate: validateOptionalRFC3339},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
 	)
 	m.wireItemForm(f, formEditItem, w.GetId())
@@ -481,26 +482,66 @@ func (m *Model) newItemStatusForm(w *apiv1.WorkItem) *kit2.Form {
 	return f
 }
 
-// schedulePresets are ready-made scheduled times, computed at form-build time so
-// each carries a concrete RFC3339 value. They cover the common cases without
-// asking anyone to hand-write a timestamp. The Scheduled-start field in the
-// DETAILS pane is a picker over these — the operator's "when you select the
-// scheduled start, it pops up the picker for that".
+// schedulePresets are ready-made scheduled times. Each label carries BOTH the
+// plain-English name AND the exact timestamp, because the field's committed
+// display is its label — so choosing "in 1 hour" also PRINTS the full date and
+// time it resolves to (the operator's "once selected, it should print out the
+// full start date/time"). The list is deliberately fine-grained at the near end,
+// where scheduling usually happens.
 func schedulePresets() []kit2.Option {
 	now := time.Now().UTC()
-	return []kit2.Option{
-		{Value: "", Label: "— not scheduled —"},
-		{Value: now.Add(15 * time.Minute).Format(time.RFC3339), Label: "in 15 minutes"},
-		{Value: now.Add(time.Hour).Format(time.RFC3339), Label: "in 1 hour"},
-		{Value: now.Add(4 * time.Hour).Format(time.RFC3339), Label: "in 4 hours"},
-		{Value: tomorrowAt9(now).Format(time.RFC3339), Label: "tomorrow 09:00 UTC"},
-		{Value: nextMondayAt9(now).Format(time.RFC3339), Label: "next Monday 09:00 UTC"},
+	labels := []struct {
+		at   time.Time
+		name string
+	}{
+		{now.Add(15 * time.Minute), "in 15 minutes"},
+		{now.Add(30 * time.Minute), "in 30 minutes"},
+		{now.Add(time.Hour), "in 1 hour"},
+		{now.Add(2 * time.Hour), "in 2 hours"},
+		{now.Add(4 * time.Hour), "in 4 hours"},
+		{todayAt(now, 18), "today 18:00"},
+		{tomorrowAt9(now), "tomorrow 09:00"},
+		{tomorrowAt(now, 18), "tomorrow 18:00"},
+		{nextMondayAt9(now), "next Monday 09:00"},
+		{now.AddDate(0, 0, 7), "in 1 week"},
 	}
+	opts := make([]kit2.Option, 0, len(labels)+1)
+	opts = append(opts, kit2.Option{Value: "", Label: "— not scheduled —"})
+	for _, l := range labels {
+		at := l.at.Truncate(time.Minute).UTC()
+		// Only offer times still in the FUTURE: a preset computed late in the day
+		// for "today 18:00" would otherwise be a time in the past.
+		if !at.After(now) {
+			continue
+		}
+		rfc := at.Format(time.RFC3339)
+		opts = append(opts, kit2.Option{Value: rfc, Label: l.name + " — " + rfc})
+	}
+	return opts
+}
+
+func todayAt(now time.Time, hour int) time.Time {
+	y, m, d := now.Date()
+	return time.Date(y, m, d, hour, 0, 0, 0, time.UTC)
+}
+
+func tomorrowAt(now time.Time, hour int) time.Time {
+	y, m, d := now.AddDate(0, 0, 1).Date()
+	return time.Date(y, m, d, hour, 0, 0, 0, time.UTC)
 }
 
 func tomorrowAt9(now time.Time) time.Time {
 	y, m, d := now.AddDate(0, 0, 1).Date()
 	return time.Date(y, m, d, 9, 0, 0, 0, time.UTC)
+}
+
+// validateOptionalRFC3339 accepts an empty value (not scheduled) or a valid
+// RFC3339 timestamp — the validator for a field the operator can also TYPE into.
+func validateOptionalRFC3339(v string) error {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return validateRFC3339(v)
 }
 
 func nextMondayAt9(now time.Time) time.Time {

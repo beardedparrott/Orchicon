@@ -259,7 +259,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// instead of falling through to focus toggling — no focus trap).
 	if isKey && m.TabMenu() != nil {
 		if handled, cmd := m.menuHandleKey(k); handled {
-			m.footer.StreamStatus = m.streamStatus()
+			m.refreshStreamStatus()
 			return m, cmd
 		}
 	}
@@ -275,7 +275,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		strings.TrimSpace(m.dock.Value()) == "" &&
 		(k.String() == "enter" || k.String() == " " || k.String() == "space") {
 		cmd := m.openSelectedRailConversation()
-		m.footer.StreamStatus = m.streamStatus()
+		m.refreshStreamStatus()
 		return m, cmd
 	}
 	// Tab submenu ACTIVATION (Phase 3 finding 3): Enter or Space on the
@@ -284,7 +284,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// there too; with text in the composer Enter still means send.
 	if isKey && m.TabMenu() == nil && m.menuActivationKey(k) {
 		m.openTabMenu(m.active)
-		m.footer.StreamStatus = m.streamStatus()
+		m.refreshStreamStatus()
 		return m, nil
 	}
 	// Composer '/' palette: while open, palette keys own the message
@@ -295,7 +295,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if m.palette.PaletteOpen() && isKey {
 		handled, cmd := m.paletteHandleKey(k)
 		if handled {
-			m.footer.StreamStatus = m.streamStatus()
+			m.refreshStreamStatus()
 			return m, cmd
 		}
 	} else if isKey && m.chatFocus == focusComposer && k.String() == "/" {
@@ -305,7 +305,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		// palette used to swallow the query and the bar stayed empty).
 		_, cmd := m.dock.Update(k)
 		m.openPalette()
-		m.footer.StreamStatus = m.streamStatus()
+		m.refreshStreamStatus()
 		return m, cmd
 	}
 	// Composer focus (the launch default): KEY messages go to the dock
@@ -339,7 +339,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					} else {
 						m.scrollActiveDetail(d)
 					}
-					m.footer.StreamStatus = m.streamStatus()
+					m.refreshStreamStatus()
 					return m, nil
 				}
 			}
@@ -354,7 +354,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					// selected (the operator's ctrl+z).
 					if m.panelVisible() {
 						m.escalateToConversation()
-						m.footer.StreamStatus = m.streamStatus()
+						m.refreshStreamStatus()
 						return m, nil
 					}
 				case "ctrl+g", "esc":
@@ -366,11 +366,11 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					if consumed {
 						if m.panelVisible() {
 							m.closePanel()
-							m.footer.StreamStatus = m.streamStatus()
+							m.refreshStreamStatus()
 							return m, nil
 						}
 						m.setFocus(focusContent)
-						m.footer.StreamStatus = m.streamStatus()
+						m.refreshStreamStatus()
 						return m, nil
 					}
 				default:
@@ -385,14 +385,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					if text := m.dock.SendRequest(); text != "" {
 						cmd = m.sendFromComposer(text)
 					}
-					m.footer.StreamStatus = m.streamStatus()
+					m.refreshStreamStatus()
 					return m, cmd
 				}
 			}
 		}
 	}
 	if cmd := m.appMsg(msg); cmd != nil {
-		m.footer.StreamStatus = m.streamStatus()
+		m.refreshStreamStatus()
 		return m, cmd
 	}
 	for _, r := range m.routes {
@@ -400,7 +400,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			continue
 		}
 		if r.Handle(m, msg) {
-			m.footer.StreamStatus = m.streamStatus()
+			m.refreshStreamStatus()
 			if m.quitting {
 				// The quit route only flips the flag (KeyRoute.Handle
 				// cannot carry a Cmd); emit tea.Quit here so the program
@@ -536,7 +536,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 	}
 	if cmd := m.appMsg(mo); cmd != nil {
-		m.footer.StreamStatus = m.streamStatus()
+		m.refreshStreamStatus()
 		return m, cmd
 	}
 	for _, r := range m.routes {
@@ -544,7 +544,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			continue
 		}
 		if r.Handle(m, mo) {
-			m.footer.StreamStatus = m.streamStatus()
+			m.refreshStreamStatus()
 			if c := m.drainStaged(); c != nil {
 				return m, c
 			}

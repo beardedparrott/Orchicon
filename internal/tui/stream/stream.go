@@ -58,6 +58,12 @@ type Config[Resp any] struct {
 	OnEvent func(Resp)
 	// OnStatus is called on every status transition (footer subscription).
 	OnStatus func(Status)
+	// OnError is called with the underlying dial/stream error whenever one is
+	// recorded. Without it a failing subscription reports only a status, so the
+	// operator sees "connecting…" forever with no reason — which is exactly how
+	// a DEAD ENDPOINT (nothing listening on the configured URL) read as a
+	// mysterious eternal connect.
+	OnError func(error)
 	// MaxEvents ring size (drop-oldest), default DefaultMaxEvents.
 	MaxEvents int
 	// MaxBackoff caps the reconnect delay, default DefaultMaxBackoff.
@@ -254,9 +260,7 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 
 	recv, err := s.Open(ctx, from)
 	if err != nil {
-		s.mu.Lock()
-		s.err = err
-		s.mu.Unlock()
+		s.setErr(err)
 		s.setStatus(StatusError)
 		return
 	}
@@ -271,9 +275,7 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 			if ctx.Err() != nil {
 				return // closed — do not schedule reconnect
 			}
-			s.mu.Lock()
-			s.err = err
-			s.mu.Unlock()
+			s.setErr(err)
 			if errors.Is(err, io.EOF) {
 				// Stream ended normally (server closed): the hook sets
 				// status "closed" then schedules a reconnect anyway.
@@ -284,6 +286,17 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 			return
 		}
 		s.pushEvent(resp)
+	}
+}
+
+// setErr records the subscription's last error and forwards it to OnError.
+func (s *Sub[Resp]) setErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	hook := s.OnError
+	s.mu.Unlock()
+	if hook != nil && err != nil {
+		hook(err)
 	}
 }
 

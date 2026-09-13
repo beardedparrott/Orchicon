@@ -205,7 +205,21 @@ func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
 	switch k.String() {
 	case "enter":
 		if open {
-			f.pickerChoose(s)
+			opts := f.pickerOptions(s)
+			if len(opts) == 0 && strings.TrimSpace(f.pickerQuery) != "" {
+				// FREE-FORM: the operator typed an exact value that matches no
+				// preset. Commit it, so a value can be CUSTOMIZED — with the
+				// field's own validator reporting a malformed one.
+				v := strings.TrimSpace(f.pickerQuery)
+				f.Values[s.Name] = v
+				f.setCaret(s.Name, len([]rune(v)))
+				if f.OnChange != nil {
+					f.OnChange(s.Name, v)
+				}
+				f.pickerClose()
+			} else {
+				f.pickerChoose(s)
+			}
 		} else {
 			f.pickerOpen(s)
 		}
@@ -750,7 +764,10 @@ func (f *Form) valueWithCaret(name string, avail int) string {
 func (f *Form) writePickerList(b *strings.Builder, s *FieldSpec, width int) {
 	opts := f.pickerOptions(s)
 	if len(opts) == 0 {
-		b.WriteString(theme.HintText.Render(Pad("    (no matches)", width)) + "\n")
+		// Nothing matches, but the typed text can still be COMMITTED as a custom
+		// value (enter), so the row explains that instead of dead-ending.
+		b.WriteString(theme.HintText.Render(Pad("    (no match — enter uses \""+strings.TrimSpace(f.pickerQuery)+"\")", width)) + "\n")
+		b.WriteString(theme.HintText.Render(Pad("    ↑/↓ pick · enter select · esc close", width)) + "\n")
 		return
 	}
 	start := 0

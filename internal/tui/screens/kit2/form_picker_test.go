@@ -126,3 +126,66 @@ func TestPickerCanChooseNone(t *testing.T) {
 		t.Fatalf("choosing none must clear the reference, got %q", got)
 	}
 }
+
+// The operator wants a picker value to be CUSTOMIZABLE, not only selectable:
+// typing a value that matches no option and pressing enter commits the typed
+// text as the value (the field's own validator then judges it).
+func TestPickerAcceptsACustomValue(t *testing.T) {
+	f := NewForm("Schedule",
+		FieldSpec{Name: "at", Label: "Start", Kind: KPicker, Options: []Option{
+			{Value: "2026-09-13T09:00:00Z", Label: "tomorrow 09:00 — 2026-09-13T09:00:00Z"},
+		}, Validate: func(s string) error {
+			if s == "" {
+				return nil
+			}
+			if !strings.Contains(s, "T") || !strings.HasSuffix(s, "Z") {
+				return errCustomNotATime
+			}
+			return nil
+		}},
+	)
+	f.Width = 70
+	f.Focused = true
+	f.FocusName("at")
+
+	// A typed value matching no preset is committed on enter.
+	for _, r := range "2026-12-25T08:30:00Z" {
+		pressKey(f, keyRune(string(r)))
+	}
+	if f.pickerField == "" {
+		t.Fatal("typing must open the picker")
+	}
+	pressKey(f, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := f.Values["at"]; got != "2026-12-25T08:30:00Z" {
+		t.Fatalf("a custom value must be committed, got %q", got)
+	}
+	if f.pickerField != "" {
+		t.Fatal("committing must close the picker")
+	}
+	if !f.Validate() {
+		t.Fatalf("a well-formed custom value must validate: %v", f.Errors)
+	}
+
+	// A malformed custom value is committed but FAILS validation, so the form
+	// reports it instead of sending it.
+	f2 := NewForm("Schedule", f.Specs...)
+	f2.Width = 70
+	f2.Focused = true
+	f2.FocusName("at")
+	for _, r := range "whenever" {
+		pressKey(f2, keyRune(string(r)))
+	}
+	pressKey(f2, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := f2.Values["at"]; got != "whenever" {
+		t.Fatalf("the typed value must be committed, got %q", got)
+	}
+	if f2.Validate() || f2.Errors["at"] == "" {
+		t.Fatal("a malformed custom value must fail validation with a message")
+	}
+}
+
+var errCustomNotATime = errNotATime{}
+
+type errNotATime struct{}
+
+func (errNotATime) Error() string { return "not a timestamp" }
