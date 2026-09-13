@@ -333,3 +333,27 @@ func TestComposerHintShortStaysSingleRow(t *testing.T) {
 		t.Fatalf("a short hint must occupy one row, got %d", got)
 	}
 }
+
+// The caret must ANIMATE while the composer holds focus, so the operator can see
+// where their keystrokes will land: "the cursor should blink when in the composer
+// and focus is active so people know they truly have focus there."
+//
+// bubbles animates the caret from a command returned by the cursor's own Focus(),
+// which the dock used to DISCARD (`_ = m.ta.Focus()`). With the loop never started
+// no tick could arrive, so the caret sat solid — the fix is to capture that command
+// on focus and dispatch it.
+//
+// NOTE on what is NOT tested here: the tick that CONTINUES the loop is a
+// cursor.BlinkMsg that bubbles matches against the private id/blinkTag its own
+// cursor emitted ("we're choosy about whether to accept blinkMsgs"). A fabricated
+// tick is therefore always rejected, so a unit test cannot represent it; the dock
+// forwards every non-key message to the textarea, which is what makes the real
+// loop work.
+func TestComposerStartsWithTheCaretBlink(t *testing.T) {
+	m := New()
+	m.Focus()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("the caret blink loop was never started — the cursor cannot animate")
+	}
+}

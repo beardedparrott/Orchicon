@@ -90,6 +90,14 @@ type Model struct {
 	// lastSent is the text of the most recent send: the draft source for
 	// RestoreDraft (a failed send puts the message back in the box).
 	lastSent string
+
+	// blinkStart is the textarea's focus command, captured when the dock takes
+	// focus. It STARTS the caret's blink loop, so it must reach the runtime —
+	// discarding it (as `_ = m.ta.Focus()` did) left the caret frozen solid and
+	// the operator unable to tell the composer held focus. It is handed out
+	// with the next Update (see the defer there) rather than returned from
+	// Focus, so the focus path needs no command plumbing.
+	blinkStart tea.Cmd
 }
 
 // New builds the dock.
@@ -372,7 +380,20 @@ func (m *Model) statLine(inner int) string {
 // Focus / Blur move keyboard focus into/out of the composer.
 func (m *Model) Focus() {
 	m.Focused = true
-	_ = m.ta.Focus()
+	// Capture — do not discard — the command that starts the caret's blink
+	// loop. Update hands it to the runtime with the next message.
+	m.blinkStart = m.ta.Focus()
+}
+
+// TakeBlinkStart hands out (once) the command that starts the caret's blink loop,
+// captured when the dock took focus. Focus paths call this so the caret animates
+// from the moment the composer holds focus, rather than waiting for the operator's
+// first keystroke; Update also drains it (see the defer there) as a safety net for
+// any path that forgets.
+func (m *Model) TakeBlinkStart() tea.Cmd {
+	c := m.blinkStart
+	m.blinkStart = nil
+	return c
 }
 
 // Blur releases focus (content pane keeps editing keys).
@@ -395,7 +416,14 @@ func (m *Model) resizeTa() {
 
 // Update handles composer keys. Returns (consumed, cmd): consumed=false
 // means the shell should fall through (only when unfocused).
-func (m *Model) Update(msg tea.Msg) (bool, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
+	// The caret's blink loop starts from the command captured when focus was
+	// taken, and it has to be dispatched with WHATEVER this message produces.
+	// A deferred batch guarantees that no early return below can drop it.
+	if start := m.blinkStart; start != nil {
+		m.blinkStart = nil
+		defer func() { cmd = tea.Batch(start, cmd) }()
+	}
 	if !m.Focused {
 		// Even unfocused, a paste must not leak to the screen: capture it
 		// into the buffer so nothing is lost (focus first).
@@ -443,7 +471,15 @@ func (m *Model) Update(msg tea.Msg) (bool, tea.Cmd) {
 			return true, cmd
 		}
 	}
-	return true, nil
+	// A NON-key message (notably the textarea's cursor BlinkMsg) must still
+	// reach the textarea. Swallowing it froze the caret solid while the box
+	// held focus, so the operator had no way to tell where their keystrokes
+	// would land — "the cursor should blink when in the composer and focus is
+	// active so people know they truly have focus there."
+	ta, cmd := m.ta.Update(msg)
+	m.ta = ta
+	m.resizeTa()
+	return true, cmd
 }
 
 // pasteCmd inserts the pasted block verbatim (multi-line pastes render

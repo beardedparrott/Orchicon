@@ -258,3 +258,38 @@ func TestSlideOutPanelMinimiseButtonCollapses(t *testing.T) {
 		t.Fatal("clicking [minimize] must collapse the strip")
 	}
 }
+
+// On the Ask LAUNCH PAGE a click in the composer is only a request to place the
+// CURSOR: it must not slide a conversation on screen.
+//
+// The operator: "Clicking into the text box on first load opens up a full
+// conversation. I don't want that. Clicking into the composer on that first load
+// should just focus the cursor into the chat so I can send a new message."
+//
+// The strip's behaviour on OTHER screens is a separate, deliberate intent and is
+// pinned by TestSlideOutPanelOpensOnComposerClick above — this test pins the
+// launch-page exception, not a removal of that feature.
+func TestComposerClickDoesNotOpenAConversationOnLaunchPage(t *testing.T) {
+	m := newTestApp()
+	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.SwitchTo(TabAsk)
+	if !m.welcomeMode() {
+		t.Fatal("precondition: the Ask launch page (hero, no conversation)")
+	}
+
+	nm, _ := m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: 20, Y: m.height - 2,
+	})
+	m = nm
+
+	if m.panelVisible() {
+		t.Fatal("a click to place the cursor must not slide the conversation strip out on the launch page")
+	}
+	if m.chatConvID != "" {
+		t.Fatalf("the click opened conversation %q — it must only focus the composer", m.chatConvID)
+	}
+	if m.chatFocus != focusComposer {
+		t.Fatal("the click must still focus the composer")
+	}
+}

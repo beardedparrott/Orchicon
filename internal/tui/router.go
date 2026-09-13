@@ -546,9 +546,26 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 		if !inDiffRail && m.inDockRows(mo.Y) {
 			m.setFocus(focusComposer)
-			m.openPanel()
+			// Focusing the composer must NOT open the conversation strip from
+			// the Ask LAUNCH PAGE. There, a click meant only to place the
+			// CURSOR slid a full conversation on screen — "clicking into the
+			// text box on first load opens up a full conversation. I don't
+			// want that."
+			//
+			// The strip keeps its delivered behaviour everywhere else, which
+			// is a different and deliberate intent: on a non-Ask screen it
+			// shows WHERE a send will land instead of the message going
+			// somewhere off-screen (TestSlideOutPanelOpensOnComposerClick) —
+			// and on Ask with a session open it is how you continue it.
+			if !m.welcomeMode() {
+				m.openPanel()
+			}
 			m.footer.ComposerFocus = true
-			return m, nil
+			// Dispatch the caret's blink starter so the caret animates as soon as
+			// the box holds focus — the operator's "the cursor should blink when in
+			// the composer and focus is active so people know they truly have
+			// focus there."
+			return m, m.dock.TakeBlinkStart()
 		}
 		if !inDiffRail && mo.Y > tabBarRows {
 			m.setFocus(focusContent)
