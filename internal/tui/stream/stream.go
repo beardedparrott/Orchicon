@@ -37,6 +37,10 @@ const (
 	// Backoff base: delay = base * 2^(attempt-1) + jitter(0..500ms).
 	BackoffBase   = 1 * time.Second
 	BackoffJitter = 500 * time.Millisecond
+	// DialWindow is the default for Config.DialWindow — long enough that an
+	// immediate RPC rejection (unimplemented, unauthenticated, refused) wins the
+	// race, short enough that a healthy quiet stream reads as connected.
+	DefaultDialWindow = 2 * time.Second
 )
 
 // Config is the subscription template passed to New. It is lock-free;
@@ -56,6 +60,21 @@ type Config[Resp any] struct {
 	Filter func(Resp) bool
 	// OnEvent is called for each kept event (cache invalidation hook).
 	OnEvent func(Resp)
+	// DialWindow is how long a dial may stay IN FLIGHT before the subscription
+	// reports itself open anyway.
+	//
+	// It exists because of a real property of the streaming client: a
+	// SERVER-streaming call is dispatched through duplexHTTPCall.sendUnary, which
+	// makes the request SYNCHRONOUSLY and therefore does not return until the
+	// response HEADERS arrive — and a Connect server only flushes those on its
+	// first message. A subscription whose server stays quiet (project events fire
+	// only when something changes) therefore blocked inside Open indefinitely, so
+	// the footer showed "connecting…" forever with no error and no retry, even
+	// though the connection was perfectly healthy. Once a dial has been in flight
+	// this long without failing, the transport has accepted it, so the honest
+	// status is "open"; a later failure still flips to error as usual.
+	// Default DefaultDialWindow.
+	DialWindow time.Duration
 	// OnStatus is called on every status transition (footer subscription).
 	OnStatus func(Status)
 	// OnError is called with the underlying dial/stream error whenever one is
@@ -108,6 +127,9 @@ func New[Resp any](cfg Config[Resp]) *Sub[Resp] {
 	}
 	if cfg.BackoffBase <= 0 {
 		cfg.BackoffBase = BackoffBase
+	}
+	if cfg.DialWindow <= 0 {
+		cfg.DialWindow = DefaultDialWindow
 	}
 	s := &Sub[Resp]{Config: cfg}
 	s.seen = map[string]struct{}{}
@@ -258,17 +280,58 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 	s.mu.Unlock()
 	s.setStatus(st)
 
-	recv, err := s.Open(ctx, from)
-	if err != nil {
-		s.setErr(err)
-		s.setStatus(StatusError)
+	// The dial runs in a goroutine because Open can legitimately block: for a
+	// server-streaming call the client makes the request SYNCHRONOUSLY and waits
+	// for response headers, which a Connect server flushes only on its FIRST
+	// message. A quiet stream would otherwise pin the status at "connecting"
+	// forever — no error, no retry, no explanation.
+	type dialResult struct {
+		recv func() (Resp, error)
+		err  error
+	}
+	dialed := make(chan dialResult, 1)
+	go func() {
+		recv, err := s.Open(ctx, from)
+		dialed <- dialResult{recv: recv, err: err}
+	}()
+
+	// markOpen records that the transport accepted the request.
+	markOpen := func() {
+		s.setStatus(StatusOpen)
+		s.mu.Lock()
+		s.attempt = 0
+		s.err = nil
+		s.mu.Unlock()
+	}
+
+	var recv func() (Resp, error)
+	select {
+	case r := <-dialed:
+		if r.err != nil {
+			s.setErr(r.err)
+			s.setStatus(StatusError)
+			return
+		}
+		recv = r.recv
+		markOpen()
+	case <-time.After(s.DialWindow):
+		// Still in flight and not failing: the connection is established, the
+		// server simply has not sent its first message yet.
+		markOpen()
+		select {
+		case r := <-dialed:
+			if r.err != nil {
+				s.setErr(r.err)
+				s.setStatus(StatusError)
+				return
+			}
+			recv = r.recv
+		case <-ctx.Done():
+			return
+		}
+	case <-ctx.Done():
 		return
 	}
-	s.setStatus(StatusOpen) // hook: setStatus("open") + reset attempt AFTER the request resolves
-	s.mu.Lock()
-	s.attempt = 0
-	s.err = nil
-	s.mu.Unlock()
 	for {
 		resp, err := recv()
 		if err != nil {
