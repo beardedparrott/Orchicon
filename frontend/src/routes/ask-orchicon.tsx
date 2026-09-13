@@ -27,6 +27,7 @@ import { Route as rootRoute } from "@/routes/__root";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
 import {
   useListConversations,
@@ -1156,6 +1157,8 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                convId={activeConvId}
+                modelRef={effectiveModel}
               />
             </div>
             </div>
@@ -1372,6 +1375,7 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
+                modelRef={effectiveModel}
                 restoreDraft={restoreDraft}
               />
             </div>
@@ -1673,6 +1677,7 @@ function ChatInputField({
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
   convId,
+  modelRef = "",
   restoreDraft,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
@@ -1682,6 +1687,9 @@ function ChatInputField({
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
   convId?: string | null;
+  // modelRef is the model answering this conversation. The session stat strip
+  // reports it alongside the context / tokens / cache / cost numbers.
+  modelRef?: string;
   // When the parent detects a reply failure (a turn that was acked but whose
   // reply errored), it signals this with the sent text so the composer puts
   // it back in the box. Null/absent = nothing to restore.
@@ -1695,6 +1703,11 @@ function ChatInputField({
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // The session stat strip (ask model · context · tokens · cache · cost). It
+  // re-reads when a turn COMPLETES — a finished turn is exactly when new usage
+  // lands — and when the conversation changes.
+  const { line: metricsLine } = useAskMetricsLive(convId, modelRef, isStreaming);
 
   // On a reply failure the parent signals the text to put back in the box.
   // No sessionStorage draft persistence — the box is cleared on send and the
@@ -2201,7 +2214,18 @@ function ChatInputField({
               </Button>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* The session stats: right-aligned, immediately BEFORE the mode
+                dropdown (the operator's placement ask). Truncated rather than
+                wrapped so the toolbar stays a single row on a narrow box. */}
+            {metricsLine && (
+              <span
+                className="truncate font-mono text-[11px] text-muted-foreground"
+                title={metricsLine}
+              >
+                {metricsLine}
+              </span>
+            )}
             {onModeChange && (
               <ModeToggle
                 mode={mode}
