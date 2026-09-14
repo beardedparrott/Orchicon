@@ -904,6 +904,19 @@ func (b *Base) tableTopRow() int {
 // more than one source — clicking the detail pane mapped to a source that was
 // not on screen, which is why clicking one thing selected another.
 func (b *Base) mouseRegion(x int) (int, bool) {
+	// HideSources draws the DETAIL PANE ONLY (see View), so every column belongs
+	// to the detail — there is no source pane on screen to click.
+	//
+	// Without this the hit-test kept the two-pane assumption and a click in the
+	// left half resolved to "the focused source pane", so Base.mouse ran
+	// table.Click(row) against an INVISIBLE table and selected whatever row sat
+	// at that screen Y. On the Ask tab that table is the conversations list, so
+	// any click in the content region silently OPENED a conversation — the
+	// operator's "clicking into the front page loads a conversation", which
+	// picked an arbitrary old conversation rather than doing nothing.
+	if b.HideSources {
+		return -1, true
+	}
 	if len(b.sources) == 0 || b.width < 1 {
 		return 0, true
 	}

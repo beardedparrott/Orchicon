@@ -377,3 +377,46 @@ func TestAllWidgetsRenderAtFloorSizes(t *testing.T) {
 		dims(t, "dialog", d.Box(min(w, 60), 10), min(w, 60), 10)
 	}
 }
+
+// Regression: with HideSources the detail pane fills the region, so a click in
+// the LEFT half must not select a row in the (invisible) source table.
+//
+// View() renders the detail only, but mouseRegion kept a two-pane split, so any
+// left-half click resolved to "the focused source pane", ran table.Click(row)
+// against a table nobody can see, and called loadDetail. On the Ask tab that
+// table is the conversations list — so clicking the launch page silently OPENED
+// an arbitrary old conversation instead of doing nothing.
+func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
+	b := &Base{}
+	b.AddSource("conversations", "Conversations", nil)
+	b.SetSize(120, 40)
+	b.LoadItems("conversations", []Item{
+		{ID: "conv-1", Title: "hello"},
+		{ID: "conv-2", Title: "second"},
+	}, "")
+	b.HideSources = true
+
+	// The precise contract: every column belongs to the detail.
+	for _, x := range []int{0, 10, 40} {
+		if idx, isDetail := b.mouseRegion(x); idx != -1 || !isDetail {
+			t.Fatalf("x=%d resolved to (idx=%d, detail=%v); with sources hidden it must be the detail",
+				x, idx, isDetail)
+		}
+	}
+
+	// And behaviourally, at a Y that REALLY maps onto a row (the earlier version
+	// of this test clicked a row index outside the table, so it passed even with
+	// the bug present).
+	before := b.ActiveTable().SelectedID()
+	clickY := b.tableTopRow() // the first data row
+	if clickY >= b.height {
+		t.Fatalf("fixture: click row %d is off-screen (height %d)", clickY, b.height)
+	}
+	b.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: 10, Y: clickY,
+	})
+	if got := b.ActiveTable().SelectedID(); got != before {
+		t.Fatalf("a click on the launch page selected %q in an INVISIBLE table (was %q)", got, before)
+	}
+}
