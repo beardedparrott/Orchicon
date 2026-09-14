@@ -57,6 +57,39 @@ func isHostSuiteTool(name string) bool {
 	return false
 }
 
+// askToolNamePrefix is the MCP-style prefix the ASK SYSTEM PROMPT teaches the
+// model to use. BuildSystemPrompt says the product tools are "named
+// `orchicon_<tool>`" and renders every enumerated bullet as `orchicon_%s`
+// (agent.go, chat.go) — matching the stdio MCP server's naming on the opencode
+// path, where the prefix IS the real name.
+//
+// The NATIVE path does not work that way: this registry is keyed by BARE name
+// ("list_projects", "create_work_item", …; verified 0 of 81 entries carry the
+// prefix) and the wire definitions AskToolDefs sends are bare too. Nothing
+// normalised between the two, so a model that followed the prompt could not call
+// a single product tool:
+//
+//	ask tool "orchicon_list_projects" is not registered
+//
+// It presented as intermittent because the conversation HISTORY carried past
+// successful calls as in-context examples that overrode the prompt's wording.
+// When compaction collapsed that history the examples were gone, leaving only
+// the prompt's prefixed form — which the dispatcher rejected outright. So the
+// trigger was compaction, but the defect is this naming divergence.
+const askToolNamePrefix = "orchicon_"
+
+// normalizeAskToolName maps a model-emitted tool name onto its registry key,
+// tolerating the MCP-style prefix the prompt advertises.
+//
+// Normalising HERE rather than in the prompt is deliberate: the prefix is the
+// documented MCP naming and is the REAL name on the opencode host, so rewriting
+// the prompt would misdescribe that path. Accepting both forms also rescues any
+// conversation whose history already contains prefixed calls — and makes the
+// tool surface immune to prompt/registry drift in either direction.
+func normalizeAskToolName(name string) string {
+	return strings.TrimPrefix(name, askToolNamePrefix)
+}
+
 // NativeAskTools exposes this service's product tool registry PLUS the
 // native file/shell suite as the provider-substrate Ask tool surface
 // (orchicon.AskToolProvider) so native Ask turns can query, read, and act
@@ -197,6 +230,11 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	if a.service == nil {
 		return "", fmt.Errorf("ask tools unavailable")
 	}
+	// Tolerate the MCP-style prefix the system prompt advertises BEFORE any name
+	// comparison below (see askToolNamePrefix): the model is told
+	// `orchicon_list_projects` while the registry is keyed `list_projects`, so
+	// without this every product-tool call fails as "not registered".
+	name = normalizeAskToolName(name)
 	// The boundary probe: names the project_dir the suite is scoped to.
 	if name == askFileRootToolName {
 		root, err := askFileRootResolve(ctx, a.service.pool)
