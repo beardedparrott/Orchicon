@@ -2040,6 +2040,20 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	return m.onChatWake()
 }
 
+// conversationByID returns the conversations-rail row for id, when the shell
+// holds one. It is the freshest conversation metadata available to the shell: the
+// rail is reloaded after every send, so its row carries the title and message
+// count that a detail pane's one-shot GetConversation may have read before they
+// existed.
+func (m *App) conversationByID(id string) (chat.Conversation, bool) {
+	for _, c := range m.conversations {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return chat.Conversation{}, false
+}
+
 // onChatWake repaints the open ask-conversation detail pane with the
 // merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
 // conversation detail's fields render from the last GetConversation —
@@ -2068,10 +2082,15 @@ func (m *App) onChatWake() tea.Cmd {
 		return nil // detail pane is showing something else
 	}
 	if askS, ok := s.(interface {
-		RenderTranscript([]chat.ChatItem) (title string, fields []screenkit.Field)
+		RenderTranscript([]chat.ChatItem, chat.Conversation, bool) (title string, fields []screenkit.Field)
 	}); ok {
 		items := m.chatStore.snapshot(m.chatConvID)
-		title, fields := askS.RenderTranscript(items)
+		// The rail's row for this conversation is the freshest header data the
+		// shell holds: it is reloaded after every send, and it carries the title
+		// and the message count, which the screen's cached GetConversation can
+		// predate for a brand-new conversation.
+		live, haveLive := m.conversationByID(m.chatConvID)
+		title, fields := askS.RenderTranscript(items, live, haveLive)
 		w := s.(interface{ DetailWidth() int }).DetailWidth()
 		// The transcript renders through the kit2 Stream widget: an
 		// extension of the previous render APPENDS (the operator's scroll

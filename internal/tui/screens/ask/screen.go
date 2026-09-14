@@ -194,8 +194,10 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 //
 // Only the BODY belongs to the shell (see detail()). The header comes from the
 // meta this screen already fetched, so the shell does not downgrade the pane to a
-// two-field summary the moment it repaints.
-func (m *Model) RenderTranscript(items []chat.ChatItem) (string, []screenkit.Field) {
+// two-field summary the moment it repaints — with the live conversations-list row
+// overlaid on top of it, because that cached fetch can predate the conversation's
+// title and its first message (see the staleness comment in the body).
+func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, liveOK bool) (string, []screenkit.Field) {
 	m.metaMu.Lock()
 	title, fields := m.metaTitle, append([]screenkit.Field{}, m.metaFields...)
 	m.metaMu.Unlock()
@@ -203,7 +205,41 @@ func (m *Model) RenderTranscript(items []chat.ChatItem) (string, []screenkit.Fie
 		// The meta has not landed yet (the pane was opened without a detail round
 		// trip): say something honest rather than nothing.
 		id := m.Base.DetailID()
-		return "Conversation: " + id, []screenkit.Field{{Key: "id", Value: id}}
+		title, fields = "Conversation: "+id, []screenkit.Field{{Key: "id", Value: id}}
 	}
+	if !liveOK {
+		return title, fields
+	}
+	// The cached header must not go STALE.
+	//
+	// detail() caches what GetConversation returned at the instant the pane opened,
+	// and for a BRAND-NEW conversation that fetch races its own first turn: it reads
+	// title='' and count=0 BEFORE the title is assigned and before any message is
+	// written, and nothing ever re-reads it — so the pane kept reporting "title —"
+	// and "messages 0" for a conversation that plainly had both, while the rail (a
+	// fresh ListConversations) showed the real title beside it.
+	//
+	// The shell reloads the conversations list after every send, and since
+	// db.ListConversations now carries message_count that row is authoritative for
+	// both values. Overlaying it costs no RPC and cannot lag: the same list the rail
+	// renders is the one the header reports.
+	if live.Title != "" {
+		title = "Conversation: " + live.Title
+		fields = setFieldValue(fields, "title", live.Title)
+	}
+	fields = setFieldValue(fields, "messages", screenkit.FmtInt(int(live.MessageN)))
 	return title, fields
+}
+
+// setFieldValue replaces an existing field's value, appending when the key is
+// absent — a header built without meta (the pre-meta fallback) still reports the
+// live values instead of carrying only an id.
+func setFieldValue(fields []screenkit.Field, key, value string) []screenkit.Field {
+	for i := range fields {
+		if fields[i].Key == key {
+			fields[i].Value = value
+			return fields
+		}
+	}
+	return append(fields, screenkit.Field{Key: key, Value: value})
 }

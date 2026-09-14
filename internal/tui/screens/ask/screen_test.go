@@ -97,7 +97,7 @@ func TestRenderTranscriptServesTheCachedHeader(t *testing.T) {
 	m := New(nil, nil)
 
 	// Before the meta lands: honest, not blank.
-	title, fields := m.RenderTranscript(nil)
+	title, fields := m.RenderTranscript(nil, chat.Conversation{}, false)
 	if !strings.Contains(title, "Conversation") || len(fields) == 0 {
 		t.Fatalf("pre-meta RenderTranscript = (%q, %v), want a readable fallback", title, fields)
 	}
@@ -107,11 +107,61 @@ func TestRenderTranscriptServesTheCachedHeader(t *testing.T) {
 		{Key: "id", Value: "c1"},
 		{Key: "model", Value: "orchicon/deepseek/deepseek-flash"},
 	}
-	title, fields = m.RenderTranscript([]chat.ChatItem{{Kind: chat.KindText, Text: "hi"}})
+	title, fields = m.RenderTranscript([]chat.ChatItem{{Kind: chat.KindText, Text: "hi"}}, chat.Conversation{}, false)
 	if title != "Conversation: hello" {
 		t.Errorf("title = %q, want the cached one", title)
 	}
 	if len(fields) != 2 || fields[1].Key != "model" {
 		t.Errorf("fields = %v, want the cached rich header", fields)
+	}
+}
+
+// The cached header must not go STALE.
+//
+// detail() caches what its one-shot GetConversation returned at the instant the
+// pane opened. For a brand-new conversation that is before the title is assigned
+// and before the first message is written, and nothing re-reads it — so the pane
+// reported "title —" and "messages 0" for a conversation that plainly had both,
+// while the conversations rail showed the real title right beside it. The shell's
+// live list row (reloaded after every send) must win.
+func TestRenderTranscriptOverlaysTheLiveConversation(t *testing.T) {
+	m := New(nil, nil)
+	// The stale cache: what a too-early GetConversation returns.
+	m.metaTitle = "Conversation: older"
+	m.metaFields = []screenkit.Field{
+		{Key: "id", Value: "c1"},
+		{Key: "title", Value: "older"},
+		{Key: "messages", Value: "0"},
+		{Key: "model", Value: "orchicon/deepseek/deepseek-flash"},
+	}
+
+	title, fields := m.RenderTranscript(nil, chat.Conversation{ID: "c1", Title: "test", MessageN: 2}, true)
+	if title != "Conversation: test" {
+		t.Errorf("title = %q, want the live title", title)
+	}
+	got := map[string]string{}
+	for _, f := range fields {
+		got[f.Key] = f.Value
+	}
+	if got["messages"] != "2" {
+		t.Errorf("messages = %q, want the live count 2 (the stale cache said 0)", got["messages"])
+	}
+	if got["title"] != "test" {
+		t.Errorf("title field = %q, want the live title", got["title"])
+	}
+	// Fields the live row does NOT carry survive the overlay.
+	if got["model"] != "orchicon/deepseek/deepseek-flash" {
+		t.Errorf("model = %q, want the cached model preserved", got["model"])
+	}
+
+	// A live row with no title yet must leave the cached title alone rather than
+	// blanking the pane.
+	if t2, _ := m.RenderTranscript(nil, chat.Conversation{ID: "c1", MessageN: 3}, true); t2 != "Conversation: older" {
+		t.Errorf("title = %q, want the cached title when the live row has none", t2)
+	}
+
+	// With no live row, the cached header is served untouched.
+	if _, f := m.RenderTranscript(nil, chat.Conversation{}, false); len(f) != 4 {
+		t.Errorf("fields = %v, want the 4 cached fields when there is no live row", f)
 	}
 }
