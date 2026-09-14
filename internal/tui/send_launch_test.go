@@ -141,3 +141,31 @@ func TestEnterOnAnEmptyComposerDoesNotCreate(t *testing.T) {
 		t.Fatalf("an empty Enter created %d conversations, want 0", plane.created)
 	}
 }
+
+// The same send must work when the terminal spells Enter as LF.
+//
+// bubbletea reports CR (0x0D) as KeyEnter and LF (0x0A) as KeyCtrlJ — different
+// KeyTypes. Some terminals and PTY configurations send LF, and with only the
+// KeyEnter branch those terminals pressed Enter and got NOTHING at all. This
+// drives the full shell path (composer -> dispatch -> create) with an LF Enter.
+func TestLaunchPageLFEnterCreatesTheConversation(t *testing.T) {
+	if tea.KeyEnter == tea.KeyCtrlJ {
+		t.Fatal("fixture: KeyEnter and KeyCtrlJ are the same KeyType — vacuous test")
+	}
+	m, plane := sendApp(t)
+	m = typeInto(t, m, "test")
+
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // LF
+	m = nm.(*App)
+	if cmd == nil {
+		t.Fatal("LF-Enter produced NO command — an LF-sending terminal cannot send at all")
+	}
+	m = runCmd(t, m, cmd)
+
+	if plane.created != 1 {
+		t.Fatalf("CreateConversation called %d times via LF-Enter, want exactly 1", plane.created)
+	}
+	if m.chatConvID != "new-conv" {
+		t.Fatalf("chatConvID = %q, want the created conversation", m.chatConvID)
+	}
+}

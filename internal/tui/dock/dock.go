@@ -468,25 +468,25 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// one KeyMsg with embedded newlines — render verbatim, never
 			// send. textarea inserts it as-is.
 			return true, m.pasteCmd(k)
-		case k.Type == tea.KeyEnter && k.Alt:
+		case enterKey(k) && k.Alt:
 			if m.Newlines == NewlineAltEnter || m.Newlines == NewlineBoth {
 				m.insertNewline("alt+enter")
 				return true, nil
 			}
 			return true, m.requestSend()
-		case k.Type == tea.KeyEnter:
+		case enterKey(k):
 			// NOTHING here may silently swallow a send. The composer's own hint
 			// documents the contract as "enter send · alt+enter newline", so any
 			// Enter variant that is not an explicitly configured newline chord
 			// SENDS.
 			//
-			// A "shift+enter inserts a newline" convenience used to live here. It
-			// was undocumented in that hint, and a terminal that reports a plain
-			// Enter as shift+enter (CSI-u / kitty / modifyOtherKeys) therefore made
-			// Enter insert an invisible newline and never send — the operator's
-			// "I type a message and hit enter and nothing happens", with the text
-			// still sitting in the box. "Enter does nothing" is a far worse failure
-			// than losing an undocumented newline gesture, so it sends now.
+			// Two real cases made Enter appear dead, and both are gone:
+			//  1. a "shift+enter inserts a newline" convenience that the hint
+			//     never documented; a terminal reporting a plain Enter that way
+			//     inserted an invisible newline;
+			//  2. Enter arriving as LF rather than CR (see enterKey) — which
+			//     matched NO branch here and no keymap in the textarea, so the key
+			//     did nothing whatsoever.
 			if m.leadingBackslash() && (m.Newlines == NewlineBackslashEnter || m.Newlines == NewlineBoth) {
 				// A trailing lone backslash + Enter = newline (the escape
 				// hatch); strip the backslash and wrap.
@@ -522,6 +522,30 @@ func (m *Model) pasteCmd(k tea.KeyMsg) tea.Cmd {
 	m.ta = ta
 	m.resizeTa()
 	return cmd
+}
+
+// enterKey reports whether a key IS the Enter key, whichever byte the terminal
+// sends for it.
+//
+// Enter does not always arrive as KeyEnter. Most terminals send CR (0x0D), which
+// bubbletea reports as KeyEnter — but some terminals and PTY configurations send
+// LF (0x0A) instead, and bubbletea reports THAT as KeyCtrlJ (keyLF), which is a
+// DIFFERENT KeyType. Nothing in this composer handled ctrl+j and nothing in the
+// textarea bound it either, so on such a terminal pressing Enter did literally
+// NOTHING: no send, no newline, no reaction at all — the operator's "enter is not
+// doing anything at all".
+//
+// The documented contract is "enter send", so both spellings of the key send.
+// Treating ctrl+j as Enter costs nothing real: it is unbound and undocumented here,
+// and "my Enter key does nothing" is a far worse failure than losing a chord
+// nobody can invoke through the UI. (KeyCtrlM is the same value as KeyEnter, so the
+// first case already covers it.)
+func enterKey(k tea.KeyMsg) bool {
+	switch k.Type {
+	case tea.KeyEnter, tea.KeyCtrlJ:
+		return true
+	}
+	return false
 }
 
 // insertNewline appends a newline instead of sending, and SAYS SO.

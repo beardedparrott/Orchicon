@@ -422,3 +422,39 @@ func TestAltEnterInsertsANewlineAndReportsIt(t *testing.T) {
 		t.Errorf("notice = %q, want it to name the chord that fired", m.Notice)
 	}
 }
+
+// Enter must send whichever byte the terminal sends for it.
+//
+// bubbletea has TWO spellings for this key: CR (0x0D) → KeyEnter, and LF (0x0A)
+// → KeyCtrlJ (keyLF), a DIFFERENT KeyType. Most terminals send CR, but some
+// terminals and PTY configurations send LF — and with only the KeyEnter branch
+// such a terminal pressed Enter and got NOTHING at all: no send, no newline, no
+// reaction, because ctrl+j matched no branch here and no textarea keymap. That is
+// the operator's "enter is not doing anything at all".
+func TestLFEnterSends(t *testing.T) {
+	if tea.KeyEnter == tea.KeyCtrlJ {
+		t.Fatal("fixture: KeyEnter and KeyCtrlJ are the same KeyType — this test would be vacuous")
+	}
+	m := New()
+	m.Focus()
+	m.SetValue("hello")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // LF, how some terminals spell Enter
+	if got := m.SendRequest(); got != "hello" {
+		t.Fatalf("LF-Enter produced send %q, want the text — an LF-sending terminal must still be able to send", got)
+	}
+}
+
+// Alt+Enter must insert a newline in EITHER spelling too, so the configured chord
+// behaves the same on both kinds of terminal.
+func TestLFAltEnterInsertsANewline(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("line one")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ, Alt: true})
+	if got := m.SendRequest(); got != "" {
+		t.Fatalf("LF alt+enter sent %q — it is the configured NEWLINE chord", got)
+	}
+	if !strings.Contains(m.Value(), "\n") {
+		t.Fatalf("LF alt+enter did not insert a newline: %q", m.Value())
+	}
+}
