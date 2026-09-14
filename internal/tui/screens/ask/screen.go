@@ -6,6 +6,7 @@ package ask
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,6 +25,18 @@ type Model struct {
 	kit2.Base
 	cl  *client.Clients
 	reg *subs.Registry
+
+	// metaTitle/metaFields are the conversation header this screen fetched
+	// (GetConversation). The SHELL owns the transcript body — it is the one
+	// renderer that sees live chunks and preserves the operator's scroll — so the
+	// screen caches the RICH header here for RenderTranscript to serve back,
+	// instead of a second renderer painting its own copy of the transcript.
+	//
+	// metaMu: detail() runs off the update loop (a RequestDetail command) while
+	// RenderTranscript runs on it.
+	metaMu     sync.Mutex
+	metaTitle  string
+	metaFields []screenkit.Field
 }
 
 // The centered empty state (GUI parity): Ask lands on a fresh
@@ -100,23 +113,21 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		{Key: "created", Value: screenkit.FmtTime(c.GetCreatedAt())},
 		{Key: "updated", Value: screenkit.FmtTime(c.GetUpdatedAt())},
 	}
-	// Transcript trails in the body (ListMessages).
-	var body strings.Builder
-	if mr, err := m.cl.Ask.ListMessages(ctx, connect.NewRequest(&apiv1.ListMessagesRequest{
-		ConversationId: id,
-		PageSize:       100,
-	})); err == nil {
-		for _, msg := range mr.Msg.GetMessages() {
-			role := strings.ToUpper(msg.GetRole())
-			body.WriteString(theme.ListTitle.Render(role) + "\n")
-			content := msg.GetContent()
-			if len(content) > 2000 {
-				content = content[:2000] + " …"
-			}
-			body.WriteString(content + "\n\n")
-		}
-	}
-	return "Conversation: " + c.GetTitle(), fields, strings.TrimRight(body.String(), "\n"), nil
+	// The transcript BODY is deliberately NOT built here. The shell renders it
+	// (onChatWake -> chat.RenderItems through the kit2 Stream), because that is the
+	// only renderer that sees live chunks and preserves the operator's scroll
+	// offset. This function used to build a second, competing copy from
+	// ListMessages — and, because the server returns that page NEWEST-FIRST (see
+	// db.ListMessages' ORDER BY created_at DESC), that copy was INVERTED: the
+	// model's reply printed ABOVE the operator's message, and a long reply pushed
+	// the message out of the visible area entirely (the operator's "my initial user
+	// message is still not showing up"). Sibling conversationItems had been fixed
+	// for exactly this ordering; this path had not. Rather than fix the duplicate,
+	// delete it: one transcript, one renderer.
+	m.metaMu.Lock()
+	m.metaTitle, m.metaFields = "Conversation: "+c.GetTitle(), fields
+	m.metaMu.Unlock()
+	return "Conversation: " + c.GetTitle(), fields, "", nil
 }
 
 func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
@@ -179,22 +190,20 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	return nil
 }
 
-// RenderTranscript renders the merged transcript for the open
-// conversation (shell-side repaint): returns the detail title + fields
-// from the cached conversation meta.
+// RenderTranscript returns the detail title + fields for the shell's repaint.
+//
+// Only the BODY belongs to the shell (see detail()). The header comes from the
+// meta this screen already fetched, so the shell does not downgrade the pane to a
+// two-field summary the moment it repaints.
 func (m *Model) RenderTranscript(items []chat.ChatItem) (string, []screenkit.Field) {
-	id := m.Base.DetailID()
-	title := "Conversation: " + id
-	fields := []screenkit.Field{
-		{Key: "id", Value: id},
-		{Key: "messages", Value: screenkit.FmtInt(len(items))},
-	}
-	if it, ok := m.Base.SourceItem("conversations", id); ok {
-		title = "Conversation: " + it.Title
-		fields = append(fields,
-			screenkit.Field{Key: "title", Value: it.Title},
-			screenkit.Field{Key: "meta", Value: it.Meta},
-		)
+	m.metaMu.Lock()
+	title, fields := m.metaTitle, append([]screenkit.Field{}, m.metaFields...)
+	m.metaMu.Unlock()
+	if title == "" {
+		// The meta has not landed yet (the pane was opened without a detail round
+		// trip): say something honest rather than nothing.
+		id := m.Base.DetailID()
+		return "Conversation: " + id, []screenkit.Field{{Key: "id", Value: id}}
 	}
 	return title, fields
 }
