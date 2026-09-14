@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
+	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -279,17 +280,35 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
 			{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
 		}
-		var body string
+		// The FLOW first — what a run would actually execute, computed from
+		// depends_on — then the version trail. Before this the pane showed only
+		// header fields and the trail, so the steps were invisible in the TUI
+		// entirely: you could not see what a workflow DOES without opening the GUI.
+		var body strings.Builder
 		if vr, err := m.cl.Workflows.ListWorkflowVersions(ctx, connect.NewRequest(&apiv1.ListWorkflowVersionsRequest{WorkflowId: id})); err == nil {
-			var b strings.Builder
-			for _, v := range vr.Msg.GetVersions() {
-				b.WriteString("v" + screenkit.FmtInt(int(v.GetVersion())) + "  " +
+			versions := vr.Msg.GetVersions()
+			if v := pickFlowVersion(versions); v != nil {
+				shown := "draft"
+				if v.GetStatus() == apiv1.WorkflowVersionStatus_WORKFLOW_VERSION_STATUS_PUBLISHED {
+					shown = "published"
+				}
+				n := flowStepCount(v.GetSteps())
+				body.WriteString(theme.ListTitle.Render(fmt.Sprintf("FLOW  v%d %s · %d steps", v.GetVersion(), shown, n)) + "\n")
+				if flow := renderWorkflowFlow(v.GetSteps(), m.w); flow != "" {
+					body.WriteString(flow + "\n")
+				} else {
+					body.WriteString(theme.HintText.Render("  no steps in this version") + "\n")
+				}
+				body.WriteString("\n")
+			}
+			body.WriteString(theme.ListTitle.Render("VERSIONS") + "\n")
+			for _, v := range versions {
+				body.WriteString("  v" + screenkit.FmtInt(int(v.GetVersion())) + "  " +
 					strings.ToLower(v.GetStatus().String()) + "  " +
 					v.GetVersionNote() + "\n")
 			}
-			body = strings.TrimRight(b.String(), "\n")
 		}
-		return "Workflow: " + w.GetName(), fields, body, nil
+		return "Workflow: " + w.GetName(), fields, strings.TrimRight(body.String(), "\n"), nil
 
 	case "workers":
 		// Workers belong to the Execution domain (GUI nav-config groups
