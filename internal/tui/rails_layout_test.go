@@ -187,3 +187,65 @@ func TestSlashDiffTogglesLeftRailFromComposer(t *testing.T) {
 		t.Fatal("/diff must close the rail again (toggle)")
 	}
 }
+
+// The content width must FOLLOW the conversations rail, not merely a resize.
+//
+// railVisible() depends on SHELL STATE (askMode / chatConvID), so the rail
+// appearing shrinks the content area by ConversationsRailWidth with no
+// WindowSizeMsg to drive refreshLayout(). The dock then kept its pre-rail width
+// and baseView's normalizeBlock TRUNCATED its right edge — silently cutting off
+// everything right-aligned:
+//
+//   - the composer's context/token/cache stat strip and the mode pill, at the
+//     bottom right (the operator's "the context information and model picker on
+//     the bottom right are off the screen and I can't see it");
+//   - the operator's OWN message bubbles — user messages are right-aligned, so a
+//     just-sent message was missing from a transcript that plainly contained it
+//     while the left-aligned reply rendered normally.
+//
+// The existing frame tests could not see this: every row is still EXACTLY w
+// cells wide, because truncation preserves the frame contract.
+func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
+	const w, h = 200, 50
+
+	// The launch page shows no conversations rail, so content == full width.
+	m, _ := sendApp(t)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = nm.(*App)
+	if m.railVisible() {
+		t.Fatal("fixture: the launch page must not show the conversations rail")
+	}
+	if m.dock.Width != w {
+		t.Fatalf("launch page: dock.Width = %d, want the full width %d", m.dock.Width, w)
+	}
+
+	// The rail comes up through STATE, exactly as the create path brings it up.
+	nm, _ = m.Update(chatConvCreatedMsg{convID: "c1", text: "test"})
+	m = nm.(*App)
+	if !m.railVisible() {
+		t.Fatal("a session must bring the conversations rail up")
+	}
+	want := w - ConversationsRailWidth
+	if m.contentWidth() != want {
+		t.Fatalf("contentWidth() = %d, want %d", m.contentWidth(), want)
+	}
+	if m.dock.Width != want {
+		t.Fatalf("dock.Width = %d with the rail up, want %d — a stale width is truncated at render time, cutting off right-aligned content (the stat strip, the operator's own bubbles)",
+			m.dock.Width, want)
+	}
+	railLines(t, m, w, h)
+
+	// And back the other way: a new chat drops the session and the rail with it.
+	// newChat() runs inside dispatch in the real shell, so the layout is corrected
+	// on that same Update; here it is called directly, so feed one message to
+	// exercise that pass.
+	m.newChat()
+	if m.railVisible() {
+		t.Fatal("/new must return to the launch page with no rail")
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = nm.(*App)
+	if m.dock.Width != w {
+		t.Fatalf("dock.Width = %d after the rail went away, want the full width %d", m.dock.Width, w)
+	}
+}

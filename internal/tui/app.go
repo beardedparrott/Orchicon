@@ -690,10 +690,41 @@ func (m *App) closeDiffPane() {
 	m.refreshLayout()
 }
 
-// reflowForDiff re-applies the current layout to the screen and dock given
-// whether the diff pane is open (the pane consumes DiffPaneWidth columns).
-// Called after toggling the pane, so the content reflows without waiting for
-// the next terminal resize.
+// syncLayoutWidth re-applies the layout when the CONTENT WIDTH changed since it
+// was last applied.
+//
+// The width is not a pure function of a terminal resize: contentWidth() subtracts
+// ConversationsRailWidth whenever railVisible() is true, and railVisible() depends
+// on SHELL STATE (askMode / chatConvID). So the conversations rail APPEARING — the
+// launch page becoming the conversation view, or the rail being toggled — changes
+// the content width with no WindowSizeMsg to drive refreshLayout().
+//
+// The dock and the screen then keep the pre-rail (wider) width, and baseView's
+// normalizeBlock TRUNCATES their right edge down to the real width. That silently
+// cuts off everything RIGHT-ALIGNED:
+//
+//   - the composer's stat strip — the context/token/cache figures and the mode
+//     pill live at the bottom-RIGHT ("the context information and model picker on
+//     the bottom right are off the screen and I can't see it");
+//   - the operator's OWN message bubbles, which are right-aligned — so a just-sent
+//     message was missing from a transcript that plainly CONTAINED it, while the
+//     left-aligned reply rendered normally;
+//   - and it sliced long LEFT-aligned lines mid-sentence, because the renderer had
+//     wrapped them to a pane wider than the one they were finally drawn in.
+//
+// Checks the applied width rather than a change counter, so it is self-correcting:
+// every path that alters rail visibility is covered without each such path having
+// to remember to re-layout, and once corrected the check is a no-op.
+func (m *App) syncLayoutWidth() {
+	if m.width <= 0 {
+		return
+	}
+	if m.dock.Width == m.contentWidth() {
+		return
+	}
+	m.refreshLayout()
+}
+
 // reflowForDiff was unified into refreshLayout (Phase 2a): one layout
 // applier for window resize, rail toggles, and diff-pane toggles.
 func (m *App) refreshLayout() {
@@ -1166,6 +1197,12 @@ func (m *App) fetchAskDefaultModel() tea.Cmd {
 // flush here.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.dispatch(msg)
+	// The CONTENT WIDTH is not a pure function of a resize: railVisible()
+	// depends on STATE (askMode / chatConvID), so the conversations rail
+	// appearing shrinks the content area by ConversationsRailWidth with no
+	// WindowSizeMsg to trigger refreshLayout(). Re-apply the layout whenever the
+	// width it implies has changed — see syncLayoutWidth.
+	next.syncLayoutWidth()
 	// The composer's caret BLINK STARTER (captured when the dock took focus) has
 	// to reach the runtime, and focus is taken from several places — ctrl+g, a
 	// click, keyboard navigation — most of which return their own command or nil.
