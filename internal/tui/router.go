@@ -269,17 +269,47 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		return m, cmd
 	}
 	k, isKey := msg.(tea.KeyMsg)
-	if isKey && m.chatFocus == focusComposer && k.String() == "ctrl+c" {
-		// hard escape: quit always works, even mid-composition
-		m.quitting = true
-		return m, tea.Quit
+	// Focus chords come FIRST, as hard escapes alongside ctrl+c — and BEFORE the
+	// screen-claims check below.
+	//
+	// They have to: a screen that claims every key (an open form, a latched search
+	// box) is claiming TEXT INPUT, and that must never capture the chord that
+	// returns the operator to the composer. The gate below used to swallow them,
+	// which is exactly the operator's "hitting ctrl+g to get focus to the composer
+	// is spotty and usually doesn't work. It will still try and recognize letters
+	// being pushed to perform actions as opposed to truly dropping into the
+	// composer to type" — with a claim latched, ctrl+g was handed to the screen
+	// and the composer was never focused, so the next letters ran screen actions.
+	if isKey {
+		switch k.String() {
+		case "ctrl+c":
+			if m.chatFocus == focusComposer {
+				// hard escape: quit always works, even mid-composition
+				m.quitting = true
+				return m, tea.Quit
+			}
+		case "ctrl+g":
+			// Focus the composer from ANY state, and LEAVE whatever holds the keys:
+			// an open form/modal and a latched search box are both dismissed, so
+			// the next keystroke is typing rather than an action. The search QUERY
+			// is kept (StopFilter, not ClearFilter) — the operator asked to go type,
+			// not to throw their search away, and it is still there on return.
+			if m.screens[m.active] != nil {
+				if cl, ok := m.screens[m.active].(interface{ DropKeyClaim() }); ok {
+					cl.DropKeyClaim()
+				}
+			}
+			m.setFocus(focusComposer)
+			m.refreshStreamStatus()
+			return m, nil
+		}
 	}
 	// Screen-owned input mode: a screen with an open form/modal claims EVERY
-	// key (bar the hard ctrl+c escape above), so typed characters are never
+	// key (bar the hard chords handled above), so typed characters are never
 	// intercepted by shell routes — 'q' would quit, space opens the tab menu,
 	// '/' opens the palette, 'd' the diff rail. Screens opt in through the
 	// optional ClaimsKeys hook (automation's recurring-item form).
-	if isKey && k.String() != "ctrl+c" {
+	if isKey {
 		if ks, ok := m.screens[m.active].(interface{ ClaimsKeys() bool }); ok && ks.ClaimsKeys() {
 			return m.passToScreen(msg)
 		}
@@ -657,9 +687,10 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatCmdMsg:
 		return tea.Batch(msg.cmd, m.waitChat())
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+g" && m.chatFocus == focusContent {
-			m.setFocus(focusComposer)
-			m.openPanel()
+		if msg.String() == "ctrl+g" {
+			// Already handled as a hard chord in dispatch, BEFORE the screen-claims
+			// gate — an open form or a latched search box must never be able to
+			// swallow the chord that returns focus to the composer.
 			return nil
 		}
 		return nil

@@ -62,6 +62,12 @@ const (
 	keyDelete      = "x"
 )
 
+// DropKeyClaim releases the screen's key claim so the focus chord can return the
+// operator to the composer (see kit2.Base.DropKeyClaim) — without it an open
+// form would swallow ctrl+g and the next letters would run actions instead of
+// being typed.
+func (m *Model) DropKeyClaim() { m.Base.DropKeyClaim() }
+
 // ClaimsKeys reports whether the screen owns every key right now (an open
 // interjection form, the confirm dialog, or the inline detail editor). The shell
 // consults it before its own routes so a typed character is never stolen.

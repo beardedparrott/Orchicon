@@ -495,6 +495,28 @@ func (b *Base) filterTarget() *Table {
 	return s.table
 }
 
+// DropKeyClaim releases every reason this screen claims the keyboard, so a
+// focus chord (ctrl+g) can hand control back to the composer.
+//
+// It exists because a claim is a LATCH: the search box stays focused until it is
+// explicitly left, and while it is up the screen consumes every key. Without a
+// way to drop it, the chord that is supposed to return the operator to the
+// composer was itself swallowed — and the letters they typed next ran screen
+// actions instead of inserting text.
+//
+// It deliberately does NOT discard the operator's work: the search QUERY is kept
+// (StopFilter, not ClearFilter) so returning to the list finds it narrowed
+// exactly as they left it. The inline editor is closed, since an edit in progress
+// cannot stay open on an unfocused screen.
+func (b *Base) DropKeyClaim() {
+	if b.filtering {
+		b.StopFilter()
+	}
+	if b.editForm != nil {
+		b.finishDetailEdit(false)
+	}
+}
+
 // StartFilter focuses the search box of the focused source (no-op when that
 // source has none).
 func (b *Base) StartFilter() bool {

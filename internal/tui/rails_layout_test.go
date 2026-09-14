@@ -13,6 +13,7 @@ package tui
 // is the single conversation list. These tests pin that contract.
 
 import (
+	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"strings"
 	"testing"
 
@@ -307,5 +308,72 @@ func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
 	})
 	if m.convSel == railSel && len(m.conversations) > 1 {
 		t.Fatal("the rail must keep the wheel in its own columns")
+	}
+}
+
+// ctrl+g must reach the composer from ANY state, including one where the screen
+// has latched a key claim.
+//
+// The operator: "when I am in work item view, hitting ctrl+g to get focus to the
+// composer is spotty and usually doesn't work. It will still try and recognize
+// letters being pushed to perform actions as opposed to truly dropping into the
+// composer to type."
+//
+// Both halves were real. The screen-claims gate ran BEFORE the composer branch, so
+// a latched claim (the search box, a form being prepared) swallowed ctrl+g — and
+// because the claim was never dropped, the next letters were routed to the SCREEN
+// as actions. Ctrl+g is now a hard chord in dispatch, ahead of that gate, and it
+// drops the claim so the following keystroke is typing.
+func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
+	m := newTestApp()
+	m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+
+	ws := m.screens[TabWork].(*work.Model)
+	if !ws.Base.SelectSource("workitems") {
+		t.Fatal("fixture: could not focus the work-items source")
+	}
+	// The latch: the operator opened the search box and moved on without closing
+	// it. This is the state that made the chord "usually" fail.
+	if !ws.Base.StartFilter() {
+		t.Fatal("fixture: work-items is not filterable")
+	}
+	if !ws.ClaimsKeys() {
+		t.Fatal("fixture: the screen must be claiming keys for this to be the real case")
+	}
+	m.setFocus(focusContent)
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = nm.(*App)
+
+	if m.chatFocus != focusComposer {
+		t.Fatal("ctrl+g did not focus the composer while the screen held a key claim")
+	}
+	if ws.ClaimsKeys() {
+		t.Fatal("ctrl+g must DROP the screen's key claim — otherwise the next letters run actions")
+	}
+	// The search the operator had typed is preserved, not thrown away, and the box
+	// is left so the composer owns the keys.
+	if ws.Base.Filtering() {
+		t.Fatal("the search box must be left, so the composer owns the keys")
+	}
+
+	// And typing now lands in the composer rather than triggering a screen action.
+	//
+	// The probe is a letter that is a SCREEN ACTION when the list owns the keys,
+	// and plain text when the composer does — 'n' opens the create form on the Work
+	// tab. ('q' would be a bad probe: it is deliberately in composerBypassKeys so
+	// quit always works while composing.)
+	m.setFocus(focusComposer)
+	beforeLen := len(m.dock.Value())
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = nm.(*App)
+	if len(m.dock.Value()) <= beforeLen {
+		t.Fatalf("composer value = %q, want the typed letter appended — a screen action took it instead", m.dock.Value())
+	}
+	if ws.ClaimsKeys() {
+		t.Fatal("typing into the composer must not re-claim the screen's keys")
 	}
 }

@@ -185,6 +185,17 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.Load(), m.reg.WaitStatus("project-events"))
 }
 
+// DropKeyClaim releases the screen's key claim so the focus chord can return the
+// operator to the composer (see kit2.Base.DropKeyClaim). It clears the two
+// LATCHED reasons — a form still being PREPARED and the search box — and closes
+// the inline editor. A confirm dialog is deliberately left alone: that is a modal
+// decision the operator must resolve, and silently dismissing it on a focus
+// chord would be worse than the chord not working.
+func (m *Model) DropKeyClaim() {
+	m.formLoading = false
+	m.Base.DropKeyClaim()
+}
+
 // ClaimsKeys reports whether the screen owns every key right now (a modal
 // form, an inline detail editor, a confirmation dialog, or a modal that is
 // still being PREPARED). The shell consults it before its own routes so a
