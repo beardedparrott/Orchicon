@@ -185,3 +185,62 @@ func TestThemePersistsWithoutAProfile(t *testing.T) {
 		t.Fatalf("legacy per-profile theme lost: %+v", p)
 	}
 }
+
+// ORCHICON_CONFIG_DIR relocates the config, so a machine whose $HOME is not
+// writable can still persist anything at all.
+//
+// The default path is $HOME/.orchicon/config. In the dev container $HOME is
+// ROOT-OWNED, so the directory cannot be created and EVERY save fails — profile,
+// token, theme, newline mode — which is why themes stopped surviving rebuilds.
+// The TUI already reports the failure ("this run only — cannot write <path>"),
+// but reporting is not fixing: this variable is the way to say where the config
+// may live. It must be a directory the user owns AND that survives a container
+// restart (/tmp is a tmpfs the restart wipes).
+func TestDefaultPathHonoursEnvConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvConfigDir, dir)
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	if want := filepath.Join(dir, FileName); got != want {
+		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+	// And a save round-trip through that path actually persists.
+	cfg, err := Load(got)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]*Profile{}
+	}
+	cfg.Active = "default"
+	cfg.Profiles["default"] = &Profile{Name: "default", Theme: "gruvbox-dark"}
+	if err := Save(got, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	back, err := Load(got)
+	if err != nil {
+		t.Fatalf("Load after save: %v", err)
+	}
+	if p := back.Profiles["default"]; p == nil || p.Theme != "gruvbox-dark" {
+		t.Fatalf("theme did not round-trip: %+v", p)
+	}
+}
+
+// Without the override the historical $HOME-derived path is unchanged, so this
+// is a no-op everywhere it is not needed.
+func TestDefaultPathFallsBackToHome(t *testing.T) {
+	t.Setenv(EnvConfigDir, "")
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir: %v", err)
+	}
+	if want := filepath.Join(home, DirName, FileName); got != want {
+		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
