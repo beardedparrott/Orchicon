@@ -48,8 +48,17 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	kind := adapter.AdapterKind(conv.ModelRef)
-	client, err := s.resolveChatClient(req.Msg.ConversationId, conv.ModelRef)
+	// Resolve the model the SAME way a TURN does, via modelRefOrFallback: a
+	// conversation created without its own model_ref runs on the tenant's
+	// DefaultAskOrchiconModel, and compaction must resolve the SAME adapter that
+	// answered the turns. Reading conv.ModelRef raw was an inconsistent chain:
+	// the turn fell back, compaction did not, so compacting any conversation with
+	// an empty model_ref failed outright with "no adapter kind specified (empty
+	// model_ref adapter segment) — cannot resolve a bridge" — precisely when the
+	// operator needs compaction most (a long conversation about to overflow).
+	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
+	kind := adapter.AdapterKind(modelRef)
+	client, err := s.resolveChatClient(req.Msg.ConversationId, modelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -65,7 +74,7 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 	res, err := compactor.CompactConversationSession(ctx, scheduler.CompactConversationOpts{
 		ConversationID: req.Msg.ConversationId,
 		SessionID:      conv.SessionID,
-		ModelRef:       conv.ModelRef,
+		ModelRef:       modelRef,
 		Reason:         req.Msg.Reason,
 	})
 	if err != nil {
