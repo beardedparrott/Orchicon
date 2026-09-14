@@ -91,15 +91,24 @@ type ModelPicker struct {
 	LoadAdapters  func() tea.Cmd
 	LoadProviders func(adapter string) tea.Cmd
 	LoadModels    func(adapter, provider string) tea.Cmd
-	// Commit is called with the finished adapter/provider/model ref; Cancel
-	// when the operator backs out. Both are invoked exactly once.
-	Commit func(ref string)
-	// CommitCmd, when set, runs when a MODEL is chosen and returns the command
-	// the host should execute (e.g. the write that persists the choice). It lets
-	// a screen ACT on a commit without giving kit2 an API dependency: the
-	// command flows straight out of HandleKey.
-	CommitCmd func(ref string) tea.Cmd
-	Cancel    func()
+	// done/committed record the modal's OUTCOME. The picker deliberately does
+	// NOT close itself through a host callback.
+	//
+	// Why: every host is a bubbletea model with VALUE-receiver Update methods
+	// (App.Update and the screens' Update all copy the model). A `Commit`/
+	// `Cancel` closure capturing `m` therefore captures the COPY that was live
+	// when the picker opened — and the runtime replaces that copy on the very
+	// next message, so the closure's `m.modelPicker = nil` mutated a model
+	// nobody renders any more. The modal then NEVER closed: enter and esc both
+	// appeared dead while the RPC still fired (the operator's "when hitting
+	// enter on deepseek-flash, the screen doesn't go away and I can't esc out of
+	// it either").
+	//
+	// The host must instead read Done/Committed in the SAME Update that handled
+	// the key, and clear its own field there — where its mutation lands on the
+	// copy the runtime keeps.
+	done      bool
+	committed bool
 
 	// screenW/screenH are the SCREEN content dimensions. The picker derives its
 	// centered box from them with the same arithmetic as Center(), so mouse
@@ -107,6 +116,14 @@ type ModelPicker struct {
 	// box; the picker must agree where it landed).
 	screenW, screenH int
 }
+
+// Done reports that the modal has finished and the host must CLOSE it (see the
+// done/committed field comment for why the host owns that).
+func (mp *ModelPicker) Done() bool { return mp.done }
+
+// Committed reports whether Done was reached by CHOOSING a model (true) or by
+// cancelling (false). Only meaningful once Done is true.
+func (mp *ModelPicker) Committed() bool { return mp.committed }
 
 // pickerHits records where each interactive row landed inside the box interior
 // (0-based rows and columns), so clicks hit-test against the real layout.
@@ -427,7 +444,8 @@ func (mp *ModelPicker) prevTier() { mp.tier = (mp.tier + 2) % 3 }
 func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 	switch k.String() {
 	case "esc":
-		mp.fireCancel()
+		mp.done = true
+		mp.committed = false
 		return true, nil
 	case "tab":
 		mp.nextTier()
@@ -508,12 +526,10 @@ func (mp *ModelPicker) choose() tea.Cmd {
 		opts := mp.filteredModels()
 		if i := mp.cursor[TierModel]; i >= 0 && i < len(opts) {
 			mp.model = opts[i].Value
-			var cmd tea.Cmd
-			if mp.CommitCmd != nil {
-				cmd = mp.CommitCmd(mp.Ref())
-			}
-			mp.fireCommit()
-			return cmd
+			// The host reads Done/Committed and applies the choice; no command is
+			// returned, so nothing depends on a callback surviving across models.
+			mp.done, mp.committed = true, true
+			return nil
 		}
 	}
 	return nil
@@ -526,18 +542,6 @@ func (mp *ModelPicker) resetLower() {
 	mp.providers, mp.providersFor = nil, ""
 	mp.models, mp.modelsFor = nil, ""
 	mp.cursor[TierProvider], mp.cursor[TierModel] = 0, 0
-}
-
-func (mp *ModelPicker) fireCommit() {
-	if mp.Commit != nil {
-		mp.Commit(mp.Ref())
-	}
-}
-
-func (mp *ModelPicker) fireCancel() {
-	if mp.Cancel != nil {
-		mp.Cancel()
-	}
 }
 
 // --- mouse ------------------------------------------------------------------

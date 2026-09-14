@@ -349,10 +349,10 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			return m, m.applyModelModels(msg)
 		case tea.KeyMsg:
 			_, cmd := mp.HandleKey(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, m.finishModelPicker(mp))
 		case tea.MouseMsg:
 			_, cmd := mp.HandleMouse(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, m.finishModelPicker(mp))
 		}
 	}
 

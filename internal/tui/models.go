@@ -60,13 +60,35 @@ func (m *App) openModelsPicker() tea.Cmd {
 	mp.LoadProviders = m.loadModelProviders
 	mp.LoadModels = m.loadModelModels
 	m.modelPicker = mp
-	mp.Commit = func(string) { m.modelPicker = nil }
-	// The commit both closes the modal and issues the WRITE, so the chosen ref
-	// is persisted without kit2 knowing anything about conversations.
-	mp.CommitCmd = func(ref string) tea.Cmd { return m.commitAskModel(ref) }
-	mp.Cancel = func() { m.modelPicker = nil }
+	// No Commit/Cancel callbacks: the shell closes the modal itself once the
+	// picker reports Done (finishAskModelPicker, called from the picker's key and
+	// mouse handling in router.go).
 	kind, provider, model := modelpick.SplitRef(m.currentAskModel())
 	return mp.Open(kind, provider, model)
+}
+
+// finishAskModelPicker closes the /models modal when the picker reports it is
+// DONE, applying the choice. The SHELL owns the close.
+//
+// Handing the picker a `Commit`/`Cancel` callback cannot work here: App keeps
+// value-receiver tea.Model methods, so each Update runs on a fresh COPY and a
+// closure captured when the modal opened points at a copy the runtime has
+// already discarded. Its `m.modelPicker = nil` mutated nothing that renders,
+// so the modal stayed up forever — enter and esc both looked dead (the
+// operator's "when hitting enter on deepseek-flash, the screen doesn't go away
+// and I can't esc out of it either"), while the model write still fired
+// in the background. Reading the outcome in the SAME Update that handled the
+// key puts the mutation on the copy the runtime keeps.
+func (m *App) finishAskModelPicker() tea.Cmd {
+	if m.modelPicker == nil || !m.modelPicker.Done() {
+		return nil
+	}
+	ref, committed := m.modelPicker.Ref(), m.modelPicker.Committed()
+	m.modelPicker = nil
+	if !committed {
+		return nil
+	}
+	return m.commitAskModel(ref)
 }
 
 // commitAskModel writes the chosen ref. With a conversation OPEN it retargets

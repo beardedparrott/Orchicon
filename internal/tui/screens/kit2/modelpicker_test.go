@@ -33,20 +33,22 @@ func (l *mpLoads) count(k string) int {
 	return n
 }
 
-// mpFixture builds a picker with recording hooks.
-func mpFixture(t *testing.T) (*ModelPicker, *mpLoads, *string, *bool) {
+// mpOutcome reads the modal's result the way a HOST does: Done gates everything,
+// and only a commit carries a ref to apply.
+func mpOutcome(mp *ModelPicker) (string, bool, bool) {
+	return mp.Ref(), mp.Committed(), mp.Done()
+}
+
+// mpFixture builds a picker and its recording load hooks.
+func mpFixture(t *testing.T) (*ModelPicker, *mpLoads) {
 	t.Helper()
 	mp := NewModelPicker("Select model")
 	mp.PreferredAdapter = "orchicon"
 	loads := &mpLoads{}
-	committed := ""
-	cancelled := false
-	mp.Commit = func(ref string) { committed = ref }
-	mp.Cancel = func() { cancelled = true }
 	mp.LoadAdapters = func() tea.Cmd { loads.add("adapters"); return nil }
 	mp.LoadProviders = func(a string) tea.Cmd { loads.add("providers:" + a); return nil }
 	mp.LoadModels = func(a, p string) tea.Cmd { loads.add("models:" + a + "/" + p); return nil }
-	return mp, loads, &committed, &cancelled
+	return mp, loads
 }
 
 // mpPress drives the picker with one key.
@@ -65,7 +67,7 @@ func mpEnter(mp *ModelPicker) tea.Cmd { return mpPress(mp, tea.KeyMsg{Type: tea.
 // So the walk is three deliberate steps and the committed value is the full
 // three-segment ref.
 func TestModelPickerWalksTheThreeTiersAndCommitsTheRef(t *testing.T) {
-	mp, loads, committed, _ := mpFixture(t)
+	mp, loads := mpFixture(t)
 
 	// Nothing can be listed before the tier that scopes everything.
 	mp.Open("", "", "")
@@ -110,18 +112,18 @@ func TestModelPickerWalksTheThreeTiersAndCommitsTheRef(t *testing.T) {
 
 	// Enter on the model commits the full ref — the "name" the field displays.
 	mpEnter(mp)
-	if *committed != "orchicon/anthropic/claude-sonnet-4" {
-		t.Fatalf("committed ref = %q, want the full adapter/provider/model", *committed)
+	if mp.Ref() != "orchicon/anthropic/claude-sonnet-4" {
+		t.Fatalf("Ref() = %q, want the full adapter/provider/model", mp.Ref())
 	}
-	if mp.Ref() != *committed {
-		t.Fatalf("Ref() = %q, want it to match the committed ref %q", mp.Ref(), *committed)
+	if !mp.Done() || !mp.Committed() {
+		t.Fatalf("choosing the model must report Done+Committed to its host (done=%v committed=%v)", mp.Done(), mp.Committed())
 	}
 }
 
 // The preferred adapter is listed first even when the Dispatcher reports it
 // later — the operator's "select orchicon (first in the list)".
 func TestModelPickerListsThePreferredAdapterFirst(t *testing.T) {
-	mp, _, _, _ := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.SetAdapters([]string{"opencode", "orchicon"}, nil)
 	if len(mp.adapters) != 2 || mp.adapters[0] != "orchicon" || mp.adapters[1] != "opencode" {
 		t.Fatalf("adapters = %v, want orchicon first then opencode", mp.adapters)
@@ -189,7 +191,7 @@ func TestModelPickerRefCollapsesEmptySegments(t *testing.T) {
 
 // Backspace shortens the query and an empty result set is honest about it.
 func TestModelPickerSearchNarrowsTheModelTier(t *testing.T) {
-	mp, _, committed, _ := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.SetAdapters([]string{"orchicon"}, nil)
 	mp.Open("orchicon", "anthropic", "")
 	mp.SetProviders("orchicon", []PickerOption{{Value: "anthropic"}})
@@ -208,12 +210,12 @@ func TestModelPickerSearchNarrowsTheModelTier(t *testing.T) {
 		t.Fatalf("filtered = %d models, want 1", got)
 	}
 	mpEnter(mp)
-	if *committed != "orchicon/anthropic/claude-opus-4" {
-		t.Fatalf("committed %q, want the narrowed match", *committed)
+	if mp.Ref() != "orchicon/anthropic/claude-opus-4" {
+		t.Fatalf("Ref() = %q, want the narrowed match", mp.Ref())
 	}
 
 	// A query matching nothing yields an empty list (never a silent whole-list).
-	mp2, _, _, _ := mpFixture(t)
+	mp2, _ := mpFixture(t)
 	mp2.Open("orchicon", "anthropic", "")
 	mp2.SetModels("orchicon", "anthropic", []PickerOption{{Value: "gpt-5"}}, false)
 	mp2.SetProviders("orchicon", []PickerOption{{Value: "anthropic"}})
@@ -233,7 +235,7 @@ func TestModelPickerSearchNarrowsTheModelTier(t *testing.T) {
 // Sync is idempotent: a scope already loaded (or in flight) is never re-fetched
 // — without this every keypress would fire another RPC.
 func TestModelPickerSyncIsIdempotent(t *testing.T) {
-	mp, loads, _, _ := mpFixture(t)
+	mp, loads := mpFixture(t)
 	mp.Open("", "", "")
 	mp.Sync()
 	mp.Sync()
@@ -267,7 +269,7 @@ func TestModelPickerSyncIsIdempotent(t *testing.T) {
 
 // A load landing for a scope the operator has already left is DROPPED.
 func TestModelPickerDropsAStaleLoad(t *testing.T) {
-	mp, _, _, _ := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.SetAdapters([]string{"orchicon", "opencode"}, nil) // defaults to orchicon
 	mp.SetProviders("opencode", []PickerOption{{Value: "someone-else"}})
 	if len(mp.providers) != 0 {
@@ -281,20 +283,20 @@ func TestModelPickerDropsAStaleLoad(t *testing.T) {
 
 // esc backs out without committing.
 func TestModelPickerEscCancels(t *testing.T) {
-	mp, _, committed, cancelled := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.Open("orchicon", "anthropic", "")
 	mpPress(mp, tea.KeyMsg{Type: tea.KeyEsc})
-	if !*cancelled {
-		t.Fatal("esc must cancel")
+	if !mp.Done() {
+		t.Fatal("esc must report Done, or the host cannot dismiss the modal")
 	}
-	if *committed != "" {
-		t.Fatalf("esc must not commit, got %q", *committed)
+	if mp.Committed() {
+		t.Fatal("esc must not commit")
 	}
 }
 
 // A failed load is surfaced (never a silently blank list) and 'r' retries.
 func TestModelPickerSurfacesALoadFailureAndRetries(t *testing.T) {
-	mp, loads, _, _ := mpFixture(t)
+	mp, loads := mpFixture(t)
 	mp.Open("", "", "")
 	mp.SetLoadErr("model discovery is not configured")
 	if mp.err == "" {
@@ -310,7 +312,7 @@ func TestModelPickerSurfacesALoadFailureAndRetries(t *testing.T) {
 // The mouse is a first-class path: clicking a model ROW commits it, addressed
 // against the SAME geometry the box was rendered at.
 func TestModelPickerMouseClickCommitsAModel(t *testing.T) {
-	mp, _, committed, _ := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.SetScreen(100, 30)
 	mp.SetAdapters([]string{"orchicon"}, nil)
 	mp.Open("orchicon", "anthropic", "")
@@ -333,12 +335,15 @@ func TestModelPickerMouseClickCommitsAModel(t *testing.T) {
 	if !handled {
 		t.Fatal("a click inside the picker must be handled")
 	}
-	if *committed != "orchicon/anthropic/claude-opus-4" {
-		t.Fatalf("clicking a model row committed %q, want that row's model", *committed)
+	if mp.Ref() != "orchicon/anthropic/claude-opus-4" {
+		t.Fatalf("clicking a model row chose %q, want that row's model", mp.Ref())
+	}
+	if !mp.Done() || !mp.Committed() {
+		t.Fatal("a model click must report Done+Committed so the host closes and writes")
 	}
 
 	// A click OUTSIDE the box is not ours (the host must still receive it).
-	mp2, _, _, _ := mpFixture(t)
+	mp2, _ := mpFixture(t)
 	mp2.SetScreen(100, 30)
 	if handled, _ := mp2.HandleMouse(tea.MouseMsg{
 		X: 0, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
@@ -350,7 +355,7 @@ func TestModelPickerMouseClickCommitsAModel(t *testing.T) {
 // The rendered box is a readable modal: every tier is labelled, the model list
 // is present, and the key contract is stated.
 func TestModelPickerViewRendersTheTiersAndTheKeyContract(t *testing.T) {
-	mp, _, _, _ := mpFixture(t)
+	mp, _ := mpFixture(t)
 	mp.SetScreen(100, 30)
 	mp.SetAdapters([]string{"opencode", "orchicon"}, []string{"orchicon"})
 	mp.Open("orchicon", "anthropic", "claude-sonnet-4")
@@ -428,32 +433,37 @@ func TestFormModelFieldShowsTheAffordanceWhenUnset(t *testing.T) {
 	}
 }
 
-// CommitCmd lets a screen ACT on a commit (e.g. persist the chosen model)
-// while the picker itself stays API-free: the command it returns flows straight
-// out of HandleKey.
-func TestModelPickerCommitCmdFlowsOutOfHandleKey(t *testing.T) {
-	mp, _, committed, _ := mpFixture(t)
-	ran := false
-	mp.CommitCmd = func(ref string) tea.Cmd {
-		return func() tea.Msg {
-			ran = true
-			return nil
-		}
-	}
+// The modal reports its OUTCOME to the host instead of closing itself through a
+// callback. Both entry points are pinned here: enter on a model commits, esc
+// cancels, and each one flips Done so the host can close the modal.
+//
+// This is the regression test for the modal that could not be dismissed. The
+// picker used to call a `Commit`/`Cancel` closure that set the host's
+// `modelPicker = nil`. Every host is a bubbletea model with value-receiver
+// Update methods, so the closure captured the copy that was live when the modal
+// opened — and the runtime replaces that copy on the next message. The closure's
+// assignment therefore mutated a discarded model: enter and esc both appeared
+// dead, with the modal stuck on screen forever.
+func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
+	mp, _ := mpFixture(t)
 	mp.Open("orchicon", "anthropic", "")
 	mp.SetProviders("orchicon", []PickerOption{{Value: "anthropic"}})
 	mp.SetModels("orchicon", "anthropic", []PickerOption{{Value: "claude-sonnet-4"}}, false)
 	mp.tier = TierModel
 
-	cmd := mpEnter(mp)
-	if *committed != "orchicon/anthropic/claude-sonnet-4" {
-		t.Fatalf("Commit must still fire alongside CommitCmd, got %q", *committed)
+	if mp.Done() {
+		t.Fatal("a freshly opened picker must not report Done")
 	}
-	if cmd == nil {
-		t.Fatal("CommitCmd's command must flow out of HandleKey")
+	mpEnter(mp)
+	if !mp.Done() {
+		t.Fatal("choosing a model must report Done so the host can close the modal")
 	}
-	cmd()
-	if !ran {
-		t.Fatal("the returned command was not the CommitCmd's")
+	if !mp.Committed() {
+		t.Fatal("choosing a model must report Committed")
 	}
+	if ref, _, _ := mpOutcome(mp); ref != "orchicon/anthropic/claude-sonnet-4" {
+		t.Fatalf("Ref = %q, want the chosen model", ref)
+	}
+	// esc is covered by TestModelPickerEscCancels; this one pins the COMMIT
+	// outcome, which is what a host turns into a write.
 }

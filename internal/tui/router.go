@@ -237,10 +237,11 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, m.applyModelModels(msg)
 		case tea.KeyMsg:
 			_, cmd := m.modelPicker.HandleKey(msg)
-			return m, cmd
+			// The SHELL closes the modal (see finishAskModelPicker).
+			return m, tea.Batch(cmd, m.finishAskModelPicker())
 		case tea.MouseMsg:
 			_, cmd := m.modelPicker.HandleMouse(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, m.finishAskModelPicker())
 		}
 	}
 	// /connect in-place overlay owns ALL messages while open (never quits):

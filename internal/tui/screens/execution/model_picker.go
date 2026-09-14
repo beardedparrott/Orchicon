@@ -49,14 +49,26 @@ func (m *Model) beginSetModel(workerID string) tea.Cmd {
 	mp.LoadModels = m.loadModelModels
 	m.modelPicker = mp
 	m.modelPickerWorker = workerID
-	// The commit both closes the modal and queues the WRITE: CommitCmd's command
-	// flows out of the picker's key handling, so the chosen ref is persisted
-	// without kit2 knowing anything about workers.
-	mp.Commit = func(string) { m.modelPicker = nil }
-	mp.CommitCmd = func(ref string) tea.Cmd { return m.setWorkerModel(workerID, ref) }
-	mp.Cancel = func() { m.modelPicker = nil }
+	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update
+	// once the picker reports Done (finishModelPicker) — a callback capturing `m`
+	// would mutate a copy bubbletea has already replaced.
 	kind, provider, model := modelpick.SplitRef(current)
 	return mp.Open(kind, provider, model)
+}
+
+// finishModelPicker applies the picker's outcome and closes it. The SCREEN must
+// do this, in the same Update that handled the key — see kit2.ModelPicker.Done.
+func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
+	if !mp.Done() {
+		return nil
+	}
+	ref, committed := mp.Ref(), mp.Committed()
+	workerID := m.modelPickerWorker
+	m.modelPicker = nil
+	if !committed {
+		return nil
+	}
+	return m.setWorkerModel(workerID, ref)
 }
 
 // applyModelKinds pushes the adapter kinds into the picker and continues the

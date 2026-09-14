@@ -38,16 +38,33 @@ func (m *Model) openModelPicker(field, current string) tea.Cmd {
 	mp.LoadModels = m.loadModelModels
 	m.modelPicker = mp
 	m.modelField = field
-	mp.Commit = func(ref string) {
-		if m.form != nil {
-			m.form.Set(m.modelField, ref)
-		}
-		m.Notice("model set to " + ref)
-		m.modelPicker = nil
-	}
-	mp.Cancel = func() { m.modelPicker = nil }
+	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update
+	// once the picker reports Done (finishModelPicker). A callback capturing `m`
+	// would mutate the copy bubbletea has already replaced, so the modal could
+	// never close from enter or esc.
 	kind, provider, model := modelpick.SplitRef(current)
 	return mp.Open(kind, provider, model)
+}
+
+// finishModelPicker applies the picker's outcome and closes it. The SCREEN must
+// do this, in the same Update that handled the key — see kit2.ModelPicker.Done.
+func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
+	if !mp.Done() {
+		return nil
+	}
+	ref, committed := mp.Ref(), mp.Committed()
+	m.modelPicker = nil
+	if !committed {
+		return nil
+	}
+	// Write the ref back into the field that opened the picker, so it then
+	// DISPLAYS adapter/provider/model — the operator's "the text it displays
+	// after the model is selected is the adapter/provider/model name".
+	if m.form != nil {
+		m.form.Set(m.modelField, ref)
+	}
+	m.Notice("model set to " + ref)
+	return nil
 }
 
 // applyModelKinds pushes the adapter kinds into the picker and lets the cascade
