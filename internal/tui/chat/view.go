@@ -25,9 +25,9 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatMessage(it.Text, theme.BubbleUser, maxWidth, true))
+			b.WriteString(renderChatMessage(it.Text, theme.BubbleUser, maxWidth, true, userBandLabel))
 		case KindText:
-			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false))
+			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false, ""))
 		case KindReasoning:
 			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
@@ -53,6 +53,16 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 // model messages ... just enough to really show a gap"). Tune here.
 const chatBandGap = 3
 
+// userBandLabel names the operator's own messages at the band's left edge.
+//
+// It is not decoration. The operator's bands are right-aligned on a full-width
+// fill, and when one appeared to be missing there was no way to tell "the
+// message was never rendered" from "it rendered and was overlooked" — which is
+// exactly the ambiguity that kept this open. Naming the speaker makes the band
+// unmistakable, and the label's presence or absence now answers the question
+// directly.
+const userBandLabel = "You"
+
 // renderChatMessage renders one message as a FULL-WIDTH background band: every
 // line is padded to the pane's width and painted with the speaker's fill, so
 // the band runs from the left edge of the conversation pane to its right edge
@@ -64,7 +74,7 @@ const chatBandGap = 3
 // The padding is rendered INSIDE the style, which is the whole point: filling
 // only the text and leaving the margin unstyled is what made an earlier
 // attempt read as "just different colored text" rather than a block.
-func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool) string {
+func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool, label string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -80,15 +90,27 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	body := strings.Split(strings.TrimRight(wrapText(text, inner), "\n"), "\n")
 
 	var out strings.Builder
-	for _, l := range body {
+	for i, l := range body {
 		pad := inner - lipgloss.Width(l)
 		if pad < 0 {
 			pad = 0
 		}
 		var row string
-		if right {
+		switch {
+		case i == 0 && label != "":
+			// Label at the band's LEFT edge, text at the RIGHT: the speaker is
+			// named and the alignment still reads as the operator's side. A
+			// right-aligned band with no label is genuinely easy to miss — and
+			// when a message looked absent the only way to tell "not rendered"
+			// from "rendered and overlooked" was to be told which it was.
+			gap := pad - lipgloss.Width(label)
+			if gap < 1 {
+				gap = 1
+			}
+			row = " " + label + strings.Repeat(" ", gap) + l + " "
+		case right:
 			row = " " + strings.Repeat(" ", pad) + l + " "
-		} else {
+		default:
 			row = " " + l + strings.Repeat(" ", pad) + " "
 		}
 		out.WriteString(style.Render(row))

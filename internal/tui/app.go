@@ -1860,7 +1860,10 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	if m.convScroll > len(m.conversations) {
 		m.convScroll = 0
 	}
-	return nil
+	// The detail header reads its title + message count out of THIS list, so a
+	// refresh has to repaint the open pane or the new values sit unrendered
+	// until the next unrelated wake.
+	return m.onChatWake()
 }
 
 // reloadConversations re-fetches the conversations rail from the live API
@@ -2239,14 +2242,23 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 	return m.reloadConversations()
 }
 
-// onStreamDone resolves a finished turn: the slot clears (future sends
-// go out as fresh ChatStreams, not interjections) and the poll fetches
-// the final persisted transcript (completion authority).
+// onStreamDone resolves a finished turn: the durable transcript is re-read (the
+// completion authority), the header is refreshed, and the stat strip updates.
 func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	m.chat.EndStream(msg.ConvID)
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.
-	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics())
+	//
+	// The conversations RAIL is refreshed for the same reason, and it is what
+	// repairs the Detail header: that header overlays the rail's row (title +
+	// message count), and for a brand-new conversation the pane's one-shot
+	// GetConversation ran BEFORE the first send had named the conversation and
+	// written any message — so it reported "title —" and "messages 0" until the
+	// rail caught up. Without this the header could stay stale for the whole
+	// turn, showing a blank title and a zero count beside a transcript that
+	// plainly had content (the operator's screenshot: "messages 0" next to a
+	// populated transcript).
+	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations())
 }
 
 // setChatError maps a chat failure to the dock error strip (401 gets
@@ -2327,7 +2339,21 @@ func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
 // sends the message into it (GUI CreateConversation pattern).
 func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	cl := m.clients
-	model := m.chat.PendingModel()
+	// SEED the model on create, never leave it empty.
+	//
+	// This used `m.chat.PendingModel()`, which is empty unless the operator ran
+	// /models — so a conversation created straight from the New page stored an
+	// EMPTY model_ref. The composer's context window resolves from the ref
+	// (currentAskModel → the model's live metadata), so an empty ref meant no
+	// denominator until the operator picked a model by hand: "It seems I must
+	// first do a /models in new mode before I will see the actual 1 million
+	// context."
+	//
+	// currentAskModel already walks the documented chain — the open
+	// conversation's ref, else the pending selection, else the TENANT DEFAULT —
+	// so a send from the New page now binds the tenant's default Ask model to the
+	// new conversation and the strip is correct from the first render.
+	model := m.currentAskModel()
 	mode := m.chat.PendingMode()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

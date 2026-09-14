@@ -44,13 +44,22 @@ func TestUserBubbleRightAlignedModelLeftAligned(t *testing.T) {
 	if user == "" || model == "" {
 		t.Fatalf("both bubbles must render:\n%s", out)
 	}
-	userIndent := len(user) - len(strings.TrimLeft(user, " "))
-	modelIndent := len(model) - len(strings.TrimLeft(model, " "))
-	if userIndent <= modelIndent {
-		t.Fatalf("user bubble must be further right than the model's (user %d, model %d):\n%s", userIndent, modelIndent, out)
+	// Measure the TEXT's position, not the line's first glyph: the operator's
+	// band now carries a left-edge speaker label, so the first non-space column
+	// is the label rather than the message.
+	userAt, modelAt := strings.Index(user, "mine"), strings.Index(model, "theirs")
+	if userAt <= modelAt {
+		t.Fatalf("the operator's text must sit further right than the model's (user %d, model %d):\n%s", userAt, modelAt, out)
 	}
-	if userIndent == 0 {
+	if userAt == 0 {
 		t.Fatalf("user bubble is not right-aligned:\n%q", user)
+	}
+	// The speaker label rides the operator's band and not the model's.
+	if !strings.Contains(user, userBandLabel) {
+		t.Fatalf("the operator's band must be labelled %q:\n%q", userBandLabel, user)
+	}
+	if strings.Contains(model, userBandLabel) {
+		t.Fatalf("the model's band must not carry the operator's label:\n%q", model)
 	}
 }
 
@@ -99,11 +108,13 @@ func TestChatMessagesRenderFullWidthBands(t *testing.T) {
 			t.Fatalf("%s band is %d cells wide, want the full pane (%d): %q", name, n, pane, l)
 		}
 	}
-	// The operator's band sits at the right of its block, the model's at the left.
-	ui := len(userLine) - len(strings.TrimLeft(userLine, " "))
-	mi := len(modelLine) - len(strings.TrimLeft(modelLine, " "))
+	// The operator's TEXT sits at the right of its band, the model's at the left.
+	// Measured on the text itself: the operator's band carries a left-edge speaker
+	// label, so the line's first non-space column is the label, not the message.
+	ui := strings.Index(userLine, "mine")
+	mi := strings.Index(modelLine, "theirs")
 	if ui <= mi {
-		t.Fatalf("the operator's band must sit further right (user %d, model %d)\n%q", ui, mi, out)
+		t.Fatalf("the operator's text must sit further right (user %d, model %d)\n%q", ui, mi, out)
 	}
 
 	// And the bands must be SEPARATED: blank rows between them, so the two
