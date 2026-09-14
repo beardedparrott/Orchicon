@@ -77,10 +77,23 @@ type Config struct {
 const (
 	DirName  = ".orchicon"
 	FileName = "config"
+	// EnvConfigDir overrides the config DIRECTORY. It exists because the
+	// default is derived from $HOME, and a $HOME that is not writable (a
+	// root-owned home, a read-only mount, a launcher with an ephemeral HOME)
+	// makes EVERY save fail — profile, token, theme, newline mode. The TUI
+	// reports that failure, but reporting is not fixing: the operator needs a
+	// way to say where the config may live. Set it to a directory this user
+	// owns and it survives rebuilds and container restarts ($HOME/.orchicon
+	// may not exist at all, and /tmp is a tmpfs that a restart wipes).
+	EnvConfigDir = "ORCHICON_CONFIG_DIR"
 )
 
-// DefaultPath returns ~/.orchicon/config.
+// DefaultPath returns $ORCHICON_CONFIG_DIR/config when that variable is set,
+// otherwise ~/.orchicon/config.
 func DefaultPath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv(EnvConfigDir)); dir != "" {
+		return filepath.Join(dir, FileName), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)

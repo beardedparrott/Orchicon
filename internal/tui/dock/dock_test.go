@@ -357,3 +357,68 @@ func TestComposerStartsWithTheCaretBlink(t *testing.T) {
 		t.Fatal("the caret blink loop was never started — the cursor cannot animate")
 	}
 }
+
+// The composer's own hint documents the key contract as
+// "enter send · alt+enter newline". These pin it, because a SILENT newline is
+// indistinguishable from a dead Enter key — which is how a terminal reporting its
+// Enter as a modified key made "I type a message and hit enter and nothing happens"
+// (with the text still sitting in the box) survive several rounds.
+func TestPlainEnterSends(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("hello")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.SendRequest(); got != "hello" {
+		t.Fatalf("plain enter produced send %q, want the text", got)
+	}
+}
+
+// ANY Enter variant that is not an explicitly configured newline chord must SEND.
+//
+// A terminal can report a plain Enter as shift+enter (CSI-u / kitty /
+// modifyOtherKeys), and the old code honoured that as "insert a newline" — which
+// is not part of the documented contract and made Enter unable to send at all on
+// such a terminal. The only newline paths left are the two the operator configures
+// (alt+enter, and a trailing backslash + enter), so every other Enter sends by
+// construction.
+func TestEveryOtherEnterVariantSends(t *testing.T) {
+	cases := []struct {
+		name string
+		k    tea.KeyMsg
+	}{
+		{"plain enter", tea.KeyMsg{Type: tea.KeyEnter}},
+		{"ctrl+enter", tea.KeyMsg{Type: tea.KeyEnter, Alt: false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New()
+			m.Focus()
+			m.SetValue("hello")
+			_, _ = m.Update(c.k)
+			if got := m.SendRequest(); got != "hello" {
+				t.Fatalf("%s produced send %q, want the text — an Enter variant that is not the configured newline chord must send", c.name, got)
+			}
+		})
+	}
+}
+
+// The configured newline chord STILL inserts a newline — and says so, so the
+// gesture is never invisible.
+func TestAltEnterInsertsANewlineAndReportsIt(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("line one")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if got := m.SendRequest(); got != "" {
+		t.Fatalf("alt+enter sent %q — it is the configured NEWLINE chord", got)
+	}
+	if !strings.Contains(m.Value(), "\n") {
+		t.Fatalf("alt+enter did not insert a newline: %q", m.Value())
+	}
+	if m.Notice == "" {
+		t.Fatal("inserting a newline must report the chord — a silent newline is indistinguishable from a dead key")
+	}
+	if !strings.Contains(m.Notice, "alt+enter") {
+		t.Errorf("notice = %q, want it to name the chord that fired", m.Notice)
+	}
+}

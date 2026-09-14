@@ -470,23 +470,29 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			return true, m.pasteCmd(k)
 		case k.Type == tea.KeyEnter && k.Alt:
 			if m.Newlines == NewlineAltEnter || m.Newlines == NewlineBoth {
-				m.insertNewline()
+				m.insertNewline("alt+enter")
 				return true, nil
 			}
 			return true, m.requestSend()
 		case k.Type == tea.KeyEnter:
-			// CSI-u shift+enter arrives as "shift+enter" on v1.3.10 when
-			// the terminal emits \x1b[13;2u.
-			if k.String() == "shift+enter" {
-				m.insertNewline()
-				return true, nil
-			}
+			// NOTHING here may silently swallow a send. The composer's own hint
+			// documents the contract as "enter send · alt+enter newline", so any
+			// Enter variant that is not an explicitly configured newline chord
+			// SENDS.
+			//
+			// A "shift+enter inserts a newline" convenience used to live here. It
+			// was undocumented in that hint, and a terminal that reports a plain
+			// Enter as shift+enter (CSI-u / kitty / modifyOtherKeys) therefore made
+			// Enter insert an invisible newline and never send — the operator's
+			// "I type a message and hit enter and nothing happens", with the text
+			// still sitting in the box. "Enter does nothing" is a far worse failure
+			// than losing an undocumented newline gesture, so it sends now.
 			if m.leadingBackslash() && (m.Newlines == NewlineBackslashEnter || m.Newlines == NewlineBoth) {
 				// A trailing lone backslash + Enter = newline (the escape
 				// hatch); strip the backslash and wrap.
 				v := m.ta.Value()
 				m.ta.SetValue(strings.TrimSuffix(v, "\\"))
-				m.insertNewline()
+				m.insertNewline("\\+enter")
 				return true, nil
 			}
 			return true, m.requestSend()
@@ -518,10 +524,20 @@ func (m *Model) pasteCmd(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-func (m *Model) insertNewline() {
+// insertNewline appends a newline instead of sending, and SAYS SO.
+//
+// The notice is not decoration: an Enter that produces neither a send nor a
+// visible change is indistinguishable from a dead key, which is exactly how a
+// terminal reporting its Enter as a modified key hid this for several rounds. The
+// chord that fired is named, so the next occurrence is diagnosable from the UI.
+func (m *Model) insertNewline(chord string) {
 	ta, _ := m.ta.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: false})
 	m.ta = ta
 	m.resizeTa()
+	if chord == "" {
+		chord = "newline chord"
+	}
+	m.Notice = "newline inserted (" + chord + ") — enter sends"
 }
 
 // leadingBackslash reports whether the buffer ends with a lone "\"
