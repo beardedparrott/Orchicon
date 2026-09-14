@@ -135,27 +135,31 @@ func (m *App) MenuClick(x, y int) bool {
 	return true
 }
 
-// menuActivationKey reports whether k is the submenu-open key: Enter on
-// the active tab (always from content focus; from the composer only when
-// the buffer is empty, so a real message keeps Enter as send), or Space
-// under the same rule.
 // menuActivationKey reports whether k should open the active tab's dropdown.
 //
-// ONLY from the composer, and only when the buffer is empty. It must never
-// fire while the CONTENT has focus: Enter/Space there belong to the screen —
+// FROM CONTENT FOCUS, DOWN drops the menu down. The operator's ask: "tab goes
+// through the different menus now, but what key actually drops the menu down to
+// the submenu? My suggestion would be the down arrow."
+//
+// Enter/Space stay off-limits from CONTENT focus: they belong to the screen —
 // selecting a row, opening its detail, running its row action. Claiming them
-// from content focus is what made the operator unable to select anything in a
-// pane ("hitting enter or spacebar is just opening up the tab menu and not
-// selecting anything").
+// there is what made the operator unable to select anything in a pane ("hitting
+// enter or spacebar is just opening up the tab menu and not selecting anything").
+// Down is the key the dropdown was missing: it is the direction it opens, and
+// with content focused at the top of a list the vertical keys had nothing to do.
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	if m.chatFocus != focusComposer {
-		return false
+		return k.String() == "down"
 	}
 	switch k.String() {
 	case "enter":
 		return strings.TrimSpace(m.dock.Value()) == ""
 	case " ", "space":
 		return m.dock.Value() == ""
+	case "down":
+		// The composer's own vertical keys do nothing with an empty buffer, so the
+		// same gesture works from the composer too — one key, both focus states.
+		return strings.TrimSpace(m.dock.Value()) == ""
 	}
 	return false
 }

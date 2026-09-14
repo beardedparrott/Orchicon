@@ -75,6 +75,12 @@ func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
+// ModalFormOpen reports a form drawn as its own centred WINDOW — the one state
+// where Tab belongs to the form (field advance) rather than to the shell's tab
+// ring. An INLINE details-pane editor deliberately does not count: the arrows
+// already move between its fields, so Tab stays navigation there.
+func (m *Model) ModalFormOpen() bool { return m.form != nil || m.modelPicker != nil }
+
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
 func (m *Model) ActiveForm() *kit2.Form { return m.form }
@@ -141,13 +147,15 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		return acts
 
 	case srcWorkers:
-		// A worker's model is pinned by a human and is a CHOICE from a list, not
-		// text, so the action OPENS the picker (handleActionKey) rather than
-		// running directly.
-		//
 		// Item 6: the full CRUD surface. Form-opening actions carry a Do that
 		// refuses by name (handleActionKey opens the form first, so it is never
 		// reached); only the direct writes appear in the footer as runnable.
+		//
+		// There is deliberately NO "set model" action. The operator: "the edit page
+		// of a worker should also have the model selector. No need to have a
+		// separate 'm' option to set models that way." The model is a field on the
+		// edit form (and on the version editor and the create form), so a separate
+		// chord was a second, competing path to the same field.
 		id, name := item.ID, item.Title
 		status := workerStatusOf(item.Meta)
 		acts := []kit2.Action{
@@ -157,8 +165,6 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do: func(context.Context) error { return errNeedForm("edit worker") }},
 			{Label: "edit version", Key: keyEditVersion, Source: srcWorkers,
 				Do: func(context.Context) error { return errNeedForm("edit version") }},
-			{Label: "set model", Key: keySetModel, Source: srcWorkers,
-				Do: func(context.Context) error { return errNeedForm("set model") }},
 		}
 		if status != "retired" {
 			// publish names the version it will ship (handleActionKey loads the
@@ -236,14 +242,9 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		return m.beginInterject(it.ID), true
 	}
 	if kstr == keySetModel {
-		if m.ActiveSourceName() != srcWorkers {
-			return m.refuse("setting a model applies to a worker — focus the Workers pane"), true
-		}
-		it, ok := m.ActiveItem()
-		if !ok {
-			return m.refuse("select a worker to set its model"), true
-		}
-		return m.beginSetModel(it.ID), true
+		// The chord is gone (the model is a form field now), but a conversation —
+		// or a muscle memory — may still send it. Explain rather than no-op.
+		return m.refuse("the model is a field on the Edit form (e) and the version editor (V) — open one and choose it there"), true
 	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
@@ -423,7 +424,7 @@ func (m *Model) HintLine() string {
 		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
 	case srcWorkers:
 		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
-			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") + " m: set model " + theme.DetailKey.Render("·") +
+			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +
 			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
 			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
 	}

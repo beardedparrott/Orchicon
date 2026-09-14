@@ -124,6 +124,11 @@ func (m *Model) Init() tea.Cmd {
 // the tab menu, '/' the palette).
 func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
 
+// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
+// state where Tab belongs to the form (field advance) rather than to the shell's
+// tab ring. See router.go's tab chord.
+func (m *Model) ModalFormOpen() bool { return m.form != nil }
+
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
 func (m *Model) ActiveForm() *kit2.Form { return m.form }

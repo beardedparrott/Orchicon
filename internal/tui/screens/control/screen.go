@@ -427,6 +427,11 @@ func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.modelPicker != nil
 }
 
+// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
+// state where Tab belongs to the form (field advance) rather than to the shell's
+// tab ring. See router.go's tab chord.
+func (m *Model) ModalFormOpen() bool { return m.form != nil || m.modelPicker != nil }
+
 // --- mutation sink (dock feedback) --------------------------------------
 
 // Progress reports a running mutation in the always-present dock.

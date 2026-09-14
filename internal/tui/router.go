@@ -293,6 +293,28 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			}
+		case "tab":
+			// TAB yields to a WINDOWED MODAL FORM, and only to that.
+			//
+			// The operator: "when inside an edit form, I feel this should be the one
+			// place where tab should overwrite the tabbing through menus option.
+			// Moving up and down with the arrow keys are fine, but I can definitely
+			// see people hitting tab and then being ripped away from the item they
+			// were editing."
+			//
+			// The test is ModalFormOpen, NOT ClaimsKeys: a CLAIM is broad (a search
+			// box, a form still being prepared, an inline details-pane editor) and
+			// yielding Tab to all of it is what made the ring stop at Work. A form
+			// drawn as its own centred WINDOW is the one state where Tab is
+			// unambiguously the form's field-advance and leaving would lose work.
+			// Inline editors do NOT take Tab — the arrows already move between their
+			// fields, so Tab stays navigation there.
+			if fs, ok := m.screens[m.active].(interface{ ModalFormOpen() bool }); ok && fs.ModalFormOpen() {
+				return m.passToScreen(msg)
+			}
+			m.tabRingNext()
+			m.refreshStreamStatus()
+			return m, nil
 		case "ctrl+g":
 			// Focus the composer from ANY state, and LEAVE whatever holds the keys:
 			// an open form/modal and a latched search box are both dismissed, so
@@ -305,20 +327,6 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				}
 			}
 			m.setFocus(focusComposer)
-			m.refreshStreamStatus()
-			return m, nil
-		case "tab":
-			// TAB is also a hard chord, ahead of the claims gate.
-			//
-			// A screen that claims keys is claiming TEXT INPUT; the tab ring is
-			// NAVIGATION, and "when tabbing through the main top menu, the tab now
-			// just simply stops at Work and doesn't move to Execution" is what
-			// happens when a screen's claim eats it. That claim is often incidental
-			// (a search box left focused, a form still being prepared), so the
-			// operator's route between areas must not depend on none of them being
-			// set. It was only reachable before because no screen consumed Tab
-			// itself — now none can, at any claim state.
-			m.tabRingNext()
 			m.refreshStreamStatus()
 			return m, nil
 		}

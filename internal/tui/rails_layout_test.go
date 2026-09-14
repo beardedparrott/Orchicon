@@ -13,6 +13,7 @@ package tui
 // is the single conversation list. These tests pin that contract.
 
 import (
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"strings"
 	"testing"
@@ -413,5 +414,76 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 	m = nm.(*App)
 	if m.active != TabExecution {
 		t.Fatalf("tab left the active tab at %q, want execution — the ring must advance through a screen claim", m.active)
+	}
+}
+
+// Down drops the tab's submenu open from CONTENT focus.
+//
+// "Tab goes through the different menus now, but what key actually drops the menu
+// down to the submenu? My suggestion would be the down arrow." Enter/Space cannot
+// be it — from content focus they belong to the screen (selecting a row, opening
+// its detail), and claiming them is what once made the operator unable to select
+// anything in a pane. Down is free there.
+func TestDownArrowOpensTheTabSubmenuFromContentFocus(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	m.setFocus(focusContent)
+	if m.TabMenu() != nil {
+		t.Fatal("fixture: no menu should be open yet")
+	}
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(*App)
+	if m.TabMenu() == nil {
+		t.Fatal("down from content focus must open the tab's dropdown")
+	}
+}
+
+// Tab yields to a WINDOWED MODAL FORM — and ONLY to that.
+//
+// "When inside an edit form, I feel this should be the one place where tab should
+// overwrite the tabbing through menus option. Moving up and down with the arrow
+// keys are fine, but I can definitely see people hitting tab and then being ripped
+// away from the item they were editing."
+//
+// The complement matters as much: an INLINE details-pane editor and a latched
+// search box must NOT take Tab, because yielding to every claim is what made the
+// ring stop at Work.
+func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	m.setFocus(focusContent)
+	ws := m.screens[TabWork].(*work.Model)
+
+	// An INLINE details-pane editor: Tab must still advance the ring.
+	ws.Base.BeginDetailEdit("Edit work item", kit2.NewForm("Edit work item",
+		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText}))
+	if !ws.Base.EditingDetail() {
+		t.Fatal("fixture: expected an inline editor")
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.active != TabExecution {
+		t.Fatalf("tab with an INLINE editor left the active tab at %q, want execution — inline editors must not take Tab", m.active)
 	}
 }

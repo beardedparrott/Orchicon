@@ -321,10 +321,14 @@ func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
 	if !hasModelField(vf) || vf.OnOpenModelPicker == nil {
 		t.Fatal("the version editor must offer a model field wired to the picker")
 	}
-	// The header editor must NOT: UpdateWorkerRequest carries no model, so a field
-	// there could only be a lie about what the save does.
-	if hf := m.editWorkerForm(w); hasModelField(hf) {
-		t.Fatal("the header editor must not offer a model field — its RPC takes none")
+	// The header editor HOLDS the model field too. It persists through
+	// BulkUpdateWorkerModel rather than UpdateWorker (which carries no model) — the
+	// documented edit-then-republish primitive, so one call serves a draft AND a
+	// published worker. The operator: "the edit page of a worker should also have
+	// the model selector ... It works on new versions, it should work on editing
+	// current versions as well."
+	if hf := m.editWorkerForm(w); !hasModelField(hf) || hf.OnOpenModelPicker == nil {
+		t.Fatal("the header editor must offer a model field wired to the picker")
 	}
 
 	// Choosing a model writes it into the field (not through a competing write).

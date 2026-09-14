@@ -172,33 +172,90 @@ func (m *Model) createWorkerForm() *kit2.Form {
 	return f
 }
 
-// editWorkerForm edits the worker HEADER. Only name/description/purpose are
-// header-editable on a published worker (the proto says so); role_ref is
-// deliberately absent — it is a role ID, and offering a free-text box for an ID
-// nobody knows is how you get a broken binding. The GUI's role picker is a
-// separate piece of work.
+// editWorkerForm edits the worker HEADER — and its model.
+//
+// The model field is here because the operator asked for it directly: "the edit
+// page of a worker should also have the model selector. No need to have a
+// separate 'm' option to set models that way. It works on new versions, it should
+// work on editing current versions as well."
+//
+// It persists through BulkUpdateWorkerModel, NOT through UpdateWorker — and that
+// is the correct primitive rather than a workaround. UpdateWorkerRequest carries
+// no model at all, and a PUBLISHED version is immutable, so a version edit could
+// not change a live worker's model either. BulkUpdateWorkerModel is documented as
+// exactly this operation:
+//
+//	sets model_ref on each requested Worker and publishes the affected version in
+//	a single round trip … The version number does NOT advance — existing draft →
+//	edited in place; latest published → reverted to draft → edited → republished.
+//
+// So one call serves every lifecycle state, which is why the field can sit on the
+// header editor and mean the same thing whatever the worker's status.
 func (m *Model) editWorkerForm(w *apiv1.Worker) *kit2.Form {
+	activeRef := m.workerModelRef(w.GetId())
 	f := kit2.NewForm("Edit worker: "+w.GetName(),
 		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Initial: w.GetName()},
 		kit2.FieldSpec{Name: "purpose", Label: "Purpose", Kind: kit2.KText, Initial: w.GetPurpose()},
 		kit2.FieldSpec{Name: "description", Label: "Description (markdown)", Kind: kit2.KTextArea, Initial: w.GetDescription()},
+		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: activeRef,
+			Placeholder: "— none — (enter to choose a model)"},
 	)
 	f.Focused = true
 	f.Width = 70
-	id := w.GetId()
+	f.OnOpenModelPicker = m.openFormModelPicker
+	id, original := w.GetId(), activeRef
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		req := &apiv1.UpdateWorkerRequest{
-			Id:          id,
-			Name:        strings.TrimSpace(v["name"]),
-			Purpose:     strings.TrimSpace(v["purpose"]),
-			Description: v["description"],
+		ref := strings.TrimSpace(v["model_ref"])
+		name, purpose, desc := strings.TrimSpace(v["name"]), strings.TrimSpace(v["purpose"]), v["description"]
+		// Two writes when the model changed. They stay separate because they ARE
+		// separate operations with separate RPCs; sequencing them means the header
+		// save cannot be lost to a model failure, and vice versa.
+		reqs := make([]mutate.Request, 0, 2)
+		if name != w.GetName() || purpose != w.GetPurpose() || desc != w.GetDescription() {
+			reqs = append(reqs, mutate.Request{
+				Name: "update worker " + id, Source: srcWorkers,
+				Do: func(ctx context.Context) error {
+					return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{
+						Id: id, Name: name, Purpose: purpose, Description: desc,
+					})
+				},
+			})
 		}
-		return m.Mutate(mutate.Request{
-			Name: "update worker " + id, Source: srcWorkers,
-			Do: func(ctx context.Context) error { return m.rpcUpdateWorker(ctx, req) },
-		}), nil
+		if ref != original {
+			reqs = append(reqs, mutate.Request{
+				Name: "set model on " + id, Source: srcWorkers,
+				Do: func(ctx context.Context) error {
+					return m.setWorkerModelRef(ctx, id, ref)
+				},
+			})
+		}
+		if len(reqs) == 0 {
+			return nil, errors.New("nothing changed")
+		}
+		cmds := make([]tea.Cmd, 0, len(reqs))
+		for _, r := range reqs {
+			cmds = append(cmds, m.Mutate(r))
+		}
+		return tea.Batch(cmds...), nil
 	}
 	return f
+}
+
+// workerModelRef returns the worker's cached ACTIVE model_ref (the workers list
+// already carries it), or "" when the cache has no entry.
+func (m *Model) workerModelRef(id string) string {
+	m.workerMu.Lock()
+	defer m.workerMu.Unlock()
+	return m.workerModel[id]
+}
+
+// setWorkerModelRef is the model write as a plain error (the form path), sharing
+// defaultSetWorkerModel's semantics.
+func (m *Model) setWorkerModelRef(ctx context.Context, workerID, ref string) error {
+	if m.rpcSetWorkerModel == nil {
+		return errors.New("no worker client")
+	}
+	return m.rpcSetWorkerModel(ctx, workerID, ref)
 }
 
 // editWorkerVersionForm is the version editor: the prompt fields and the

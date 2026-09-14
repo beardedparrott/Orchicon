@@ -194,69 +194,77 @@ func TestWorkerModelPickerOwnsTheKeyboard(t *testing.T) {
 
 // The "m" chord is guarded: it applies to the Workers pane and needs a selected
 // worker — never a silent no-op.
-func TestWorkerModelKeyIsGuarded(t *testing.T) {
+func TestWorkerModelKeyIsGoneAndExplainsItself(t *testing.T) {
 	m, _, _ := newPickerExec(t)
 
-	// Off the workers pane.
+	// The chord is gone (the model is a form field now). It must still ANSWER,
+	// rather than no-op, because a conversation or a muscle memory may send it.
 	m.SelectSource(srcExecutions)
 	m.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "running"}}, "")
 	if _, handled := m.handleActionKey(keySetModel); !handled {
-		t.Fatal("m must be handled (with a refusal) off the workers pane")
+		t.Fatal("m must still be handled, so it can explain itself")
 	}
 	if m.modelPicker != nil {
-		t.Fatal("no picker off the workers pane")
+		t.Fatal("the removed chord must not open the picker")
 	}
-	if !strings.Contains(m.notice, "Workers pane") {
-		t.Fatalf("notice = %q, want a refusal naming the Workers pane", m.notice)
+	if !strings.Contains(m.notice, "Edit form") {
+		t.Fatalf("notice = %q, want it to name the form that holds the model", m.notice)
 	}
 
-	// On the workers pane with no selection.
 	m.SelectSource(srcWorkers)
 	m.notice = ""
 	if _, handled := m.handleActionKey(keySetModel); !handled {
-		t.Fatal("m must be handled on the workers pane")
+		t.Fatal("m must be handled on the workers pane too")
 	}
 	if m.modelPicker != nil {
-		t.Fatal("no picker without a selected worker")
+		t.Fatal("the removed chord must not open the picker")
 	}
-	if !strings.Contains(m.notice, "select a worker") {
-		t.Fatalf("notice = %q, want a refusal to select a worker", m.notice)
+	if !strings.Contains(m.notice, "version editor") {
+		t.Fatalf("notice = %q, want it to name the version editor too", m.notice)
 	}
 }
 
-// With a worker selected, "m" opens the picker for THAT worker.
-func TestWorkerModelKeyOpensThePickerForTheSelectedWorker(t *testing.T) {
+// The model is set through the FORM now: choosing it fills the field, and the
+// form's own submit performs the write.
+func TestWorkerModelIsSetThroughTheFormField(t *testing.T) {
 	m, _, writes := newPickerExec(t)
-	m.LoadItems(srcWorkers, []kit2.Item{{ID: "w-7", Title: "sweeper", Meta: "published v2"}}, "")
 	m.SelectSource(srcWorkers)
+	m.workerMu.Lock()
+	m.workerModel["w-7"] = "orchicon/anthropic/seed"
+	m.workerMu.Unlock()
 
-	if _, handled := m.handleActionKey(keySetModel); !handled {
-		t.Fatal("m must be handled")
-	}
-	if m.modelPicker == nil {
-		t.Fatal("m must open the model picker for the selected worker")
-	}
-	if m.modelPickerWorker != "w-7" {
-		t.Fatalf("picker target = %q, want w-7", m.modelPickerWorker)
+	m.Base.BeginDetailEdit("Edit worker", m.editWorkerForm(&apiv1.Worker{Id: "w-7", Name: "sweeper"}))
+	if got := m.Base.DetailForm().Values["model_ref"]; got != "orchicon/anthropic/seed" {
+		t.Fatalf("model field seeded with %q, want the worker's active ref", got)
 	}
 	if len(*writes) != 0 {
-		t.Fatal("opening the picker must not write anything")
+		t.Fatal("opening the form must not write anything")
 	}
-	// The pane advertises the gesture. (The hint now also carries the Item 6
-	// CRUD chords, so this asserts the MODEL gesture specifically rather than the
-	// whole line.)
-	if h := m.HintLine(); !strings.Contains(h, "m: set model") {
-		t.Fatalf("the workers hint must advertise the set-model gesture, got %q", h)
+
+	// A picker opened FROM the form writes back into the field, not through a
+	// competing RPC — the form's submit is the single writer.
+	m.openFormModelPicker("model_ref", "orchicon/anthropic/seed")
+	m.modelPicker.SetAdapters([]string{"orchicon"}, nil)
+	m.modelPicker.SetProviders("orchicon", []kit2.PickerOption{{Value: "anthropic"}})
+	m.modelPicker.SetModels("orchicon", "anthropic", []kit2.PickerOption{{Value: "claude-sonnet-4"}}, false)
+	m.modelPicker.HandleKey(kmsg("enter"))
+	m.finishModelPicker(m.modelPicker)
+	if got := m.Base.DetailForm().Values["model_ref"]; got != "orchicon/anthropic/claude-sonnet-4" {
+		t.Fatalf("model_ref = %q, want the chosen ref in the FIELD", got)
 	}
-	// The row action is offered for the selection.
-	found := false
+	if len(*writes) != 0 {
+		t.Fatalf("choosing must not write on its own — the form's submit does, got %v", *writes)
+	}
+
+	// The hint points at the forms that carry the field.
+	if h := m.HintLine(); !strings.Contains(h, "edit") || !strings.Contains(h, "version") {
+		t.Fatalf("the workers hint must point at the forms that carry the model, got %q", h)
+	}
+	// And the standalone row action is gone.
 	for _, a := range m.actionsForSelection() {
 		if a.Key == keySetModel {
-			found = true
+			t.Fatal("the standalone set-model action must be gone — the model lives on the forms")
 		}
-	}
-	if !found {
-		t.Fatal("the workers pane must offer the set-model action")
 	}
 }
 
