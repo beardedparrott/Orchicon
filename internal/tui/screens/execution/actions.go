@@ -63,10 +63,10 @@ const (
 )
 
 // ClaimsKeys reports whether the screen owns every key right now (an open
-// interjection form or the confirm dialog). The shell consults it before its
-// own routes so a typed character is never stolen.
+// interjection form, the confirm dialog, or the inline detail editor). The shell
+// consults it before its own routes so a typed character is never stolen.
 func (m *Model) ClaimsKeys() bool {
-	return m.form != nil || m.Open != nil || m.modelPicker != nil
+	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
@@ -199,7 +199,10 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	if m.ActiveSourceName() == srcWorkers {
 		switch kstr {
 		case keyNewWorker:
-			m.form = m.createWorkerForm()
+			// Item 3: worker editing happens IN THE DETAILS PANE, like work items —
+			// not in a modal. A modal covers the list and the detail it is editing;
+			// the pane keeps both visible and is the established pattern on Work.
+			m.Base.BeginDetailEdit("New worker", m.createWorkerForm())
 			m.notice = ""
 			return nil, true
 		case keyEditWorker, keyEditVersion, keyPublish, keySetActive:

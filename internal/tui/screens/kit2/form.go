@@ -109,6 +109,16 @@ type Form struct {
 	// detail editor.
 	OnOpenModelPicker func(name, current string) tea.Cmd
 
+	// expanded is the field currently rendered WIDE, toggled with ctrl+e.
+	//
+	// A long free-text field (description, behavior, a prompt) is otherwise
+	// edited one horizontally-windowed line at a time, so the operator can see
+	// only a slice of what they are writing — "we need a way to expand out fields
+	// like description, Behavior, etc. so we can see more of it when we are typing
+	// in our changes". Expanded, the field's value wraps and grows in place, under
+	// the same field, so everything else stays where it was.
+	expanded string
+
 	// OnSubmit is invoked by Submit with a copy of the collected values. It
 	// is where the screen wires the mutation executor; the returned cmd (the
 	// mutation's async RPC) is handed back to the bubbletea update loop.
@@ -448,6 +458,18 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	switch k.String() {
 	case "tab":
 		f.Next()
+		return nil, true
+	case "ctrl+e":
+		// Expand / collapse the focused field. Only free-text multi-line kinds
+		// benefit: a one-line value cannot use the extra rows.
+		if s == nil || !f.expandable(s.Kind) {
+			return nil, true
+		}
+		if f.expanded == s.Name {
+			f.expanded = ""
+		} else {
+			f.expanded = s.Name
+		}
 		return nil, true
 	case "shift+tab":
 		f.Prev()
@@ -861,6 +883,16 @@ func (f *Form) View() string {
 		prefix := cursor + label + ": "
 		var line string
 		switch {
+		case focused && f.expanded == s.Name && f.expandable(s.Kind):
+			// EXPANDED: the value wraps across as many rows as it needs, so the
+			// operator reads the whole thing instead of one windowed slice.
+			for _, l := range f.expandedBody(s.Name, width-lipgloss.Width(prefix)) {
+				line = prefix + l
+				b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
+				prefix = strings.Repeat(" ", lipgloss.Width(prefix))
+			}
+			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+": (expanded — ctrl+e to collapse)", width)) + "\n")
+			continue
 		case focused && s.Kind == KPicker:
 			// While the list is open the field shows the QUERY being typed;
 			// closed it shows the choice that was made.
@@ -991,6 +1023,38 @@ func wrapHint(line string, width int) []string {
 // (a different package) wraps its affordance row the same way instead of
 // truncating it.
 func WrapHint(line string, width int) []string { return wrapHint(line, width) }
+
+// expandable reports whether a field kind benefits from the expanded editor:
+// free-text multi-line values, which are otherwise edited one horizontally
+// windowed line at a time.
+func (f *Form) expandable(k Kind) bool {
+	switch k {
+	case KTextArea, KJSON, KYAML:
+		return true
+	}
+	return false
+}
+
+// Expanded reports the field currently rendered wide ("" = none).
+func (f *Form) Expanded() string { return f.expanded }
+
+// expandedBody renders the focused field's value WRAPPED across as many rows as
+// it needs, with a caret at the edit position.
+//
+// This is the whole point of the expand toggle: the normal row is one
+// horizontally-windowed line, so a description or a prompt is only ever visible
+// a slice at a time. Wrapped, the operator reads what they are writing.
+func (f *Form) expandedBody(name string, width int) []string {
+	val := f.Values[name]
+	pos := f.caret(name)
+	runes := []rune(val)
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	const caretRune = "\u258f" // ▏
+	withCaret := string(runes[:pos]) + caretRune + string(runes[pos:])
+	return wrapFormLine(withCaret, width)
+}
 
 // wrapFormLine breaks a rendered line so it fits `width` cells, wrapping at
 // word boundaries and indenting continuations to match the leading prefix. The

@@ -84,9 +84,20 @@ func TestBaseKeysAndMouseAgreeOnRegion(t *testing.T) {
 	b := &Base{}
 	b.AddSource("workers", "Workers", nil)
 	b.SetSize(80, 24)
-	b.updateKey(t, "tab")
+
+	// TAB must NOT toggle the pane: it used to share the enter/space case, which
+	// made it a list↔detail focus toggle that the SCREEN consumed — so the shell's
+	// tab-bar ring never saw the key. On the Work tab the operator's report was
+	// "the tabbing between the left and right pane breaks the tab path in the top
+	// of the tab menu and grabs focus". Tab is now left alone for the global ring.
+	if handled, _ := b.updateKeyHandled(t, "tab"); handled {
+		t.Fatal("tab must fall through to the shell's focus ring, not be consumed by the pane")
+	}
+
+	// ENTER still toggles list↔detail (activation is the pane's job).
+	b.updateKey(t, "enter")
 	if b.FocusedRegion() != "detail" {
-		t.Fatalf("tab: region %q, want detail", b.FocusedRegion())
+		t.Fatalf("enter: region %q, want detail", b.FocusedRegion())
 	}
 	b.updateKey(t, "shift+tab")
 	if b.FocusedRegion() != "workers" {
@@ -109,6 +120,21 @@ func (b *Base) updateKey(t *testing.T, key string) {
 		k = tea.KeyMsg{Type: tea.KeyShiftTab}
 	}
 	b.Update(k)
+}
+
+// updateKeyHandled feeds one key and reports whether the Base CONSUMED it.
+func (b *Base) updateKeyHandled(t *testing.T, key string) (bool, tea.Cmd) {
+	t.Helper()
+	k := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+	switch key {
+	case "tab":
+		k = tea.KeyMsg{Type: tea.KeyTab}
+	case "enter":
+		k = tea.KeyMsg{Type: tea.KeyEnter}
+	case "shift+tab":
+		k = tea.KeyMsg{Type: tea.KeyShiftTab}
+	}
+	return b.Update(k)
 }
 
 // --- Dialog: overlay never breaks the h×w viewport contract -------------
@@ -446,5 +472,83 @@ func TestDetailWidthMatchesTheRenderedPaneWhenSourcesAreHidden(t *testing.T) {
 	p.SetContent("x")
 	if got, want := p.innerW(), b.DetailWidth(); got != want {
 		t.Fatalf("panel innerW = %d but DetailWidth = %d — the wrap width and the pane disagree", got, want)
+	}
+}
+
+// ctrl+e expands the focused free-text field so its value WRAPS instead of being
+// edited one horizontally-windowed line at a time.
+//
+// The operator: "we need a way to expand out fields like description, Behavior,
+// etc. so we can see more of it when we are typing in our changes." A windowed
+// line shows a slice; expanded shows what they are writing.
+func TestExpandedFieldWrapsItsWholeValue(t *testing.T) {
+	long := strings.Repeat("word ", 40) // far wider than the form
+	f := &Form{
+		Specs: []FieldSpec{
+			{Name: "title", Label: "Title", Kind: KText},
+			{Name: "behavior", Label: "Behavior", Kind: KTextArea, Initial: long},
+		},
+		Values:  map[string]string{"title": "t", "behavior": long},
+		Focused: true,
+		Width:   60,
+		pos:     map[string]int{},
+	}
+	// Focus the textarea and expand it.
+	f.Cursor = 1
+	if cmd, _ := f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE}); cmd != nil {
+		t.Fatal("expanding needs no command")
+	}
+	if f.Expanded() != "behavior" {
+		t.Fatalf("Expanded() = %q, want the focused field", f.Expanded())
+	}
+
+	collapsed := f.View()
+	rows := 0
+	for _, l := range strings.Split(collapsed, "\n") {
+		if strings.Contains(l, "word") {
+			rows++
+		}
+	}
+	if rows < 2 {
+		t.Fatalf("expanded field rendered %d value rows, want it wrapped across several:\n%s", rows, collapsed)
+	}
+	// The hint names the way back, so the mode is never a trap.
+	if !strings.Contains(collapsed, "ctrl+e to collapse") {
+		t.Fatalf("expanded view must name the collapse gesture:\n%s", collapsed)
+	}
+
+	// ctrl+e again collapses it.
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if f.Expanded() != "" {
+		t.Fatalf("Expanded() = %q, want collapsed", f.Expanded())
+	}
+
+	// A one-line kind is not expandable (extra rows would be useless).
+	f.Cursor = 0
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if f.Expanded() != "" {
+		t.Fatalf("a KText field must not expand, got %q", f.Expanded())
+	}
+}
+
+// Expanding must not disturb any other field's value.
+func TestExpandingAFieldDoesNotDisturbOthers(t *testing.T) {
+	f := &Form{
+		Specs: []FieldSpec{
+			{Name: "a", Label: "A", Kind: KTextArea, Initial: "alpha"},
+			{Name: "b", Label: "B", Kind: KTextArea, Initial: "beta"},
+		},
+		Values:  map[string]string{"a": "alpha", "b": "beta"},
+		Focused: true,
+		Width:   60,
+		pos:     map[string]int{},
+	}
+	f.Cursor = 0
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if v := f.Values["b"]; v != "beta" {
+		t.Fatalf("b = %q, want it untouched", v)
+	}
+	if v := f.Values["a"]; v != "alpha" {
+		t.Fatalf("a = %q, want it untouched", v)
 	}
 }

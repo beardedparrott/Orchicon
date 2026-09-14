@@ -26,6 +26,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/modelpick"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
@@ -92,14 +93,14 @@ func (m *Model) openWorkerOpForm(msg workerDetailMsg) tea.Cmd {
 	}
 	switch op {
 	case opEditHeader:
-		m.form = m.editWorkerForm(msg.worker)
+		m.Base.BeginDetailEdit("Edit worker", m.editWorkerForm(msg.worker))
 		m.notice = ""
 	case opEditVersion:
 		f, err := m.editWorkerVersionForm(msg.worker, msg.versions)
 		if err != nil {
 			return m.refuse(err.Error())
 		}
-		m.form = f
+		m.Base.BeginDetailEdit("Edit version", f)
 		m.notice = ""
 	case opPublish:
 		draft := draftVersion(msg.versions)
@@ -107,14 +108,14 @@ func (m *Model) openWorkerOpForm(msg workerDetailMsg) tea.Cmd {
 			return m.refuse("publish applies to a worker with a DRAFT version — " + msg.workerID +
 				" has none; edit its version (V) to create one")
 		}
-		m.form = m.publishWorkerForm(msg.workerID, draft)
+		m.Base.BeginDetailEdit("Publish", m.publishWorkerForm(msg.workerID, draft))
 		m.notice = ""
 	case opSetActive:
 		published := publishedVersions(msg.versions)
 		if len(published) == 0 {
 			return m.refuse("no PUBLISHED version to activate on " + msg.workerID + " — publish one first (p)")
 		}
-		m.form = m.setActiveVersionForm(msg.workerID, published)
+		m.Base.BeginDetailEdit("Set active version", m.setActiveVersionForm(msg.workerID, published))
 		m.notice = ""
 	}
 	return nil
@@ -141,9 +142,16 @@ func (m *Model) createWorkerForm() *kit2.Form {
 			Placeholder: "the worker's identity statement — structured prompt fields compose into system_prompt"},
 		kit2.FieldSpec{Name: "skills", Label: "Skills (prompt)", Kind: kit2.KTextArea},
 		kit2.FieldSpec{Name: "behavior", Label: "Behavior (prompt)", Kind: kit2.KTextArea},
+		// model_ref lives on the VERSION (the ref is versioned state, ADR-0003), so
+		// the model is chosen here and on the version editor — never on the header
+		// (UpdateWorker takes no model). A REFERENCE, not text: activating the
+		// field opens the screen's model picker.
+		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel,
+			Placeholder: "— none — (enter to choose a model)"},
 	)
 	f.Focused = true
 	f.Width = 70
+	f.OnOpenModelPicker = m.openFormModelPicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		req := &apiv1.CreateWorkerRequest{
 			Name:        strings.TrimSpace(v["name"]),
@@ -152,8 +160,9 @@ func (m *Model) createWorkerForm() *kit2.Form {
 			Role:        v["role"],
 			Skills:      v["skills"],
 			Behavior:    v["behavior"],
-			// The model is a CHOICE made in the picker (m) after creation, so the
-			// created worker starts with no pinned model rather than a guessed one.
+			// The chosen ref travels with the first version, so the new worker is
+			// dispatchable rather than model-less.
+			ModelRef: strings.TrimSpace(v["model_ref"]),
 		}
 		return m.Mutate(mutate.Request{
 			Name: "create worker " + req.Name, Source: srcWorkers,
@@ -222,6 +231,10 @@ func (m *Model) editWorkerVersionForm(w *apiv1.Worker, versions []*apiv1.WorkerV
 		kit2.FieldSpec{Name: "skills", Label: "Skills", Kind: kit2.KTextArea, Initial: src.GetSkills()},
 		kit2.FieldSpec{Name: "behavior", Label: "Behavior", Kind: kit2.KTextArea, Initial: src.GetBehavior()},
 		kit2.FieldSpec{Name: "agents_md", Label: "AGENTS.md", Kind: kit2.KTextArea, Initial: src.GetAgentsMd()},
+		// The model is a VERSION field, so it is editable exactly where the rest of
+		// the version is (the GUI keeps it on workers_.$id.tsx too).
+		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: src.GetModelRef(),
+			Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "version_note", Label: "Version note", Kind: kit2.KText, Initial: src.GetVersionNote()},
 		kit2.FieldSpec{Name: "context_sources", Label: "Context sources (JSON)", Kind: kit2.KJSON, Initial: src.GetContextSources()},
 		kit2.FieldSpec{Name: "permissions", Label: "Permissions (JSON)", Kind: kit2.KJSON, Initial: src.GetPermissions()},
@@ -232,6 +245,7 @@ func (m *Model) editWorkerVersionForm(w *apiv1.Worker, versions []*apiv1.WorkerV
 	)
 	f.Focused = true
 	f.Width = 70
+	f.OnOpenModelPicker = m.openFormModelPicker
 	workerID, versionID := w.GetId(), src.GetId()
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		limit, err := submitInt(v["concurrency_limit"], "concurrency limit")
@@ -347,10 +361,11 @@ func newestVersion(vs []*apiv1.WorkerVersion) *apiv1.WorkerVersion {
 func setVersionFields(req *apiv1.CreateWorkerVersionRequest, v map[string]string, limit int32) {
 	role, skills, behavior, agents := v["role"], v["skills"], v["behavior"], v["agents_md"]
 	n, cs, perm := v["version_note"], v["context_sources"], v["permissions"]
-	gt, bo := v["gated_tools"], v["budget_overrides"]
+	gt, bo, mr := v["gated_tools"], v["budget_overrides"], strings.TrimSpace(v["model_ref"])
 	req.Role, req.Skills, req.Behavior, req.AgentsMd = &role, &skills, &behavior, &agents
 	req.VersionNote, req.ContextSources, req.Permissions = &n, &cs, &perm
 	req.GatedTools, req.BudgetOverrides = &gt, &bo
+	req.ModelRef = &mr
 	req.ConcurrencyLimit = &limit
 }
 
@@ -359,11 +374,28 @@ func setVersionFields(req *apiv1.CreateWorkerVersionRequest, v map[string]string
 func setVersionFieldsU(req *apiv1.UpdateWorkerVersionRequest, v map[string]string, limit int32) {
 	role, skills, behavior, agents := v["role"], v["skills"], v["behavior"], v["agents_md"]
 	n, cs, perm := v["version_note"], v["context_sources"], v["permissions"]
-	gt, bo := v["gated_tools"], v["budget_overrides"]
+	gt, bo, mr := v["gated_tools"], v["budget_overrides"], strings.TrimSpace(v["model_ref"])
 	req.Role, req.Skills, req.Behavior, req.AgentsMd = &role, &skills, &behavior, &agents
 	req.VersionNote, req.ContextSources, req.Permissions = &n, &cs, &perm
 	req.GatedTools, req.BudgetOverrides = &gt, &bo
+	req.ModelRef = &mr
 	req.ConcurrencyLimit = &limit
+}
+
+// openFormModelPicker opens the screen's model picker for a KModel field inside
+// an open form. The chosen ref is written back into that field when the picker
+// reports Done (see finishModelPicker).
+func (m *Model) openFormModelPicker(field, current string) tea.Cmd {
+	m.modelPickerField = field
+	mp := kit2.NewModelPicker("Select model")
+	mp.PreferredAdapter = modelpick.NativeAdapterKind
+	mp.SetScreen(m.w, m.h)
+	mp.LoadAdapters = m.loadModelKinds
+	mp.LoadProviders = m.loadModelProviders
+	mp.LoadModels = m.loadModelModels
+	m.modelPicker = mp
+	kind, provider, model := modelpick.SplitRef(current)
+	return mp.Open(kind, provider, model)
 }
 
 // submitInt parses a numeric field, tolerating an empty (cleared) value.

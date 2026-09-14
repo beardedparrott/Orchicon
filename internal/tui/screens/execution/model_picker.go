@@ -63,11 +63,24 @@ func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
 		return nil
 	}
 	ref, committed := mp.Ref(), mp.Committed()
-	workerID := m.modelPickerWorker
+	workerID, field := m.modelPickerWorker, m.modelPickerField
 	m.modelPicker = nil
+	m.modelPickerWorker, m.modelPickerField = "", ""
 	if !committed {
 		return nil
 	}
+	// A picker opened from a FORM FIELD writes the ref back into that field — the
+	// field is the version's model_ref, and the form's own submit persists it.
+	// Writing through rpcSetWorkerModel here as well would be a second, competing
+	// write for the same value.
+	if field != "" {
+		if f := m.Base.DetailForm(); f != nil {
+			f.Set(field, ref)
+		}
+		m.notice = "model chosen — ctrl+s saves the version"
+		return nil
+	}
+	_ = workerID
 	return m.setWorkerModel(workerID, ref)
 }
 

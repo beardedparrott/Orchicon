@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
 // crudExec builds an Execution screen with the worker CRUD loads and writes
@@ -65,6 +66,10 @@ func crudExec(t *testing.T, worker *apiv1.Worker, versions []*apiv1.WorkerVersio
 	return m, calls, writes
 }
 
+// detailForm is the INLINE editor's form (Item 3 moved the worker forms from a
+// modal into the details pane), or nil.
+func detailForm(m *Model) *kit2.Form { return m.Base.DetailForm() }
+
 func draftV(id string, n int32) *apiv1.WorkerVersion {
 	return &apiv1.WorkerVersion{Id: id, Version: n, Status: apiv1.WorkerVersionStatus_WORKER_VERSION_STATUS_DRAFT}
 }
@@ -96,13 +101,13 @@ func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 	}
 
 	// n needs no selection.
-	if _, handled := m.handleActionKey(keyNewWorker); !handled || m.form == nil {
+	if _, handled := m.handleActionKey(keyNewWorker); !handled || detailForm(m) == nil {
 		t.Fatal("n must open the create form")
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("create must not load a worker, got %v", *calls)
 	}
-	m.form = nil
+	m.Base.Update(kmsg("esc"))
 
 	// The row operations refuse with the reason when nothing is selected.
 	for _, k := range []string{keyEditWorker, keyEditVersion, keyPublish, keySetActive} {
@@ -110,7 +115,7 @@ func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 		if _, handled := m.handleActionKey(k); !handled {
 			t.Fatalf("chord %q must be handled in the Workers pane", k)
 		}
-		if m.form != nil {
+		if m.Base.DetailForm() != nil {
 			t.Fatalf("chord %q must not open a form with no selection", k)
 		}
 		if !strings.Contains(m.notice, "select a worker") {
@@ -194,13 +199,13 @@ func TestWorkerPublishRefusesWithoutADraft(t *testing.T) {
 	m2.workerOp, m2.workerOpID = opPublish, "w1"
 	m2.Update(workerDetailMsg{op: opPublish, workerID: "w1", worker: &apiv1.Worker{Id: "w1"},
 		versions: []*apiv1.WorkerVersion{draftV("v2", 2)}})
-	if m2.form == nil {
+	if detailForm(m2) == nil {
 		t.Fatal("publish with a draft must open the form")
 	}
-	if !strings.Contains(m2.form.Title, "Publish v2") {
-		t.Fatalf("title = %q, want it to name the version being published", m2.form.Title)
+	if !strings.Contains(detailForm(m2).Title, "Publish v2") {
+		t.Fatalf("title = %q, want it to name the version being published", detailForm(m2).Title)
 	}
-	cmd, _ := m2.form.OnSubmit(m2.form.Values, nil)
+	cmd, _ := detailForm(m2).OnSubmit(detailForm(m2).Values, nil)
 	runWrite(t, cmd)
 	if len(*writes) != 1 || (*writes)[0] != "publish" {
 		t.Fatalf("writes = %v, want [publish]", *writes)
@@ -213,12 +218,12 @@ func TestWorkerSetActiveOffersPublishedVersionsOnly(t *testing.T) {
 	m.workerOp, m.workerOpID = opSetActive, "w1"
 	m.Update(workerDetailMsg{op: opSetActive, workerID: "w1", worker: &apiv1.Worker{Id: "w1"},
 		versions: []*apiv1.WorkerVersion{pubV("v1", 1, "a/b/c"), pubV("v3", 3, "a/b/d"), draftV("v4", 4)}})
-	if m.form == nil {
+	if detailForm(m) == nil {
 		t.Fatal("set-active must open a form when a published version exists")
 	}
 	// The select lists the published versions only — never the draft.
 	var opts []string
-	for _, s := range m.form.Specs {
+	for _, s := range detailForm(m).Specs {
 		if s.Name == "version" {
 			for _, o := range s.Options {
 				opts = append(opts, o.Value)
@@ -228,7 +233,7 @@ func TestWorkerSetActiveOffersPublishedVersionsOnly(t *testing.T) {
 	if len(opts) != 2 || opts[0] != "1" || opts[1] != "3" {
 		t.Fatalf("options = %v, want the two published versions [1 3]", opts)
 	}
-	cmd, err := m.form.OnSubmit(m.form.Values, nil)
+	cmd, err := detailForm(m).OnSubmit(detailForm(m).Values, nil)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -242,7 +247,7 @@ func TestWorkerSetActiveOffersPublishedVersionsOnly(t *testing.T) {
 	m2.workerOp, m2.workerOpID = opSetActive, "w1"
 	m2.Update(workerDetailMsg{op: opSetActive, workerID: "w1", worker: &apiv1.Worker{Id: "w1"},
 		versions: []*apiv1.WorkerVersion{draftV("v1", 1)}})
-	if m2.form != nil {
+	if m2.Base.DetailForm() != nil {
 		t.Fatal("set-active with no published version must not open a form")
 	}
 	if !strings.Contains(m2.notice, "PUBLISHED") {
@@ -270,4 +275,83 @@ func TestWorkerChordsAvoidTheGlobalDiffKeys(t *testing.T) {
 			t.Fatalf("worker chord %q collides with the global diff-pane toggle", k)
 		}
 	}
+}
+
+// Item 3: worker editing happens in the DETAILS PANE, never a modal, and the
+// shell must be told the screen owns the keys while it is up.
+func TestWorkerFormsOpenInlineInTheDetailsPaneNotAModal(t *testing.T) {
+	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, nil)
+	if !m.Base.SelectSource(srcWorkers) {
+		t.Fatal("fixture: could not focus the Workers pane")
+	}
+	if _, handled := m.handleActionKey(keyNewWorker); !handled {
+		t.Fatal("n must be handled")
+	}
+	if m.form != nil {
+		t.Fatal("the worker form must NOT be a modal (Item 3)")
+	}
+	if !m.Base.EditingDetail() {
+		t.Fatal("the worker form must open in the DETAILS PANE")
+	}
+	if !m.ClaimsKeys() {
+		t.Fatal("while editing, the screen must claim the keys so chords cannot fire mid-edit")
+	}
+
+	// esc closes it and releases the keys.
+	m.Base.Update(kmsg("esc"))
+	if m.Base.EditingDetail() || m.ClaimsKeys() {
+		t.Fatal("esc must close the inline editor and release the keys")
+	}
+}
+
+// Item 2: the model is selectable in BOTH worker form modes. model_ref is a
+// VERSION field (ADR-0003), so it belongs on the create form and the version
+// editor — and on neither the header editor, whose RPC takes no model.
+func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
+	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, []*apiv1.WorkerVersion{draftV("v1", 1)})
+
+	if f := m.createWorkerForm(); f == nil || !hasModelField(f) || f.OnOpenModelPicker == nil {
+		t.Fatal("the create form must offer a model field wired to the picker")
+	}
+	w := &apiv1.Worker{Id: "w1", Name: "writer"}
+	vf, err := m.editWorkerVersionForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)})
+	if err != nil {
+		t.Fatalf("version editor: %v", err)
+	}
+	if !hasModelField(vf) || vf.OnOpenModelPicker == nil {
+		t.Fatal("the version editor must offer a model field wired to the picker")
+	}
+	// The header editor must NOT: UpdateWorkerRequest carries no model, so a field
+	// there could only be a lie about what the save does.
+	if hf := m.editWorkerForm(w); hasModelField(hf) {
+		t.Fatal("the header editor must not offer a model field — its RPC takes none")
+	}
+
+	// Choosing a model writes it into the field (not through a competing write).
+	// Seeding a full ref puts the picker on the MODEL tier, so one enter commits.
+	m.Base.BeginDetailEdit("New worker", m.createWorkerForm())
+	m.openFormModelPicker("model_ref", "orchicon/anthropic/seed")
+	m.modelPicker.SetAdapters([]string{"orchicon"}, nil)
+	m.modelPicker.SetProviders("orchicon", []kit2.PickerOption{{Value: "anthropic"}})
+	m.modelPicker.SetModels("orchicon", "anthropic", []kit2.PickerOption{{Value: "claude-sonnet-4"}}, false)
+	m.modelPicker.HandleKey(kmsg("enter"))
+	if !m.modelPicker.Done() {
+		t.Fatal("enter on the model tier must commit")
+	}
+	m.finishModelPicker(m.modelPicker)
+	if got := m.Base.DetailForm().Values["model_ref"]; got != "orchicon/anthropic/claude-sonnet-4" {
+		t.Fatalf("model_ref = %q, want the chosen ref written into the field", got)
+	}
+}
+
+func hasModelField(f *kit2.Form) bool {
+	if f == nil {
+		return false
+	}
+	for _, s := range f.Specs {
+		if s.Name == "model_ref" && s.Kind == kit2.KModel {
+			return true
+		}
+	}
+	return false
 }

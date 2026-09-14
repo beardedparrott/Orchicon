@@ -724,10 +724,19 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		b.focusD = false
 		b.setFocusForPane()
 		return true, nil
-	case "enter", "tab", " ", "space":
+	case "enter", " ", "space":
 		// Activate the selected row. A screen may install OnActivate to make
 		// that do something concrete (the Themes pane applies the palette);
 		// otherwise activation opens the row's detail.
+		//
+		// TAB is deliberately NOT here. It used to share this case, which made
+		// Tab a PANE-FOCUS TOGGLE (list ↔ detail) on every kit2 screen — so the
+		// screen consumed it and the shell's focus ring never saw the key. On the
+		// Work tab that read as "the tabbing between the left and right pane
+		// breaks the tab path in the top of the tab menu and grabs focus":
+		// pressing Tab moved focus into the pane instead of cycling the tab bar.
+		// Tab now falls through to the global focus ring (router.go), which is
+		// the only thing that should own it.
 		if b.OnActivate != nil {
 			if handled, cmd := b.OnActivate(); handled {
 				return true, cmd

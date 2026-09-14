@@ -49,6 +49,11 @@ type Model struct {
 	modelPicker *kit2.ModelPicker
 	// modelPickerWorker is the worker the open picker writes to.
 	modelPickerWorker string
+	// modelPickerField is the FORM FIELD the open picker writes back into, when it
+	// was opened from a KModel field inside a form (the worker create form and the
+	// version editor). Empty when the picker was opened from the row action (that
+	// one writes straight through rpcSetWorkerModel).
+	modelPickerField string
 	// workerOp / workerOpID remember which worker CRUD operation is waiting on a
 	// load, so its form opens when the data lands (and a late result for a worker
 	// the operator has left is dropped). See worker_forms.go.
