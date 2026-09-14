@@ -2181,6 +2181,12 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 // setChatError maps a chat failure to the dock error strip (401 gets
 // the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
+	// Settle the composer's send ack. The dock writes "sending …" the instant
+	// Enter fires, so every terminal outcome has to replace it — otherwise a
+	// FAILED send reads as one still in flight, forever (the operator's "it
+	// says sending but nothing ever opens"). The banner/error below IS the
+	// outcome, and it is set after this clear so it wins.
+	m.dock.SetNotice("")
 	// A failed send must not lose the operator's message: put the draft
 	// back in the composer (RestoreDraft never clobbers text typed since).
 	if chat.IsAuthExpired(err) {
@@ -2222,7 +2228,14 @@ func (m *App) setReauthBanner() {
 // authRetryInline reports whether the shell already renders the re-auth
 // retry state inline (a pane's fetch error the rail's own retry row).
 func (m *App) authRetryInline() bool {
-	if m.convErr != "" && isAuthErrText(m.convErr) {
+	// The rail's error only suppresses the shell banner while the rail is
+	// actually ON SCREEN. m.convErr is the CONVERSATIONS RAIL's load failure,
+	// and on the Ask launch page the rail is not rendered at all
+	// (railVisible() is false in welcome mode). Treating it as "the inline
+	// state IS the banner" therefore made the banner suppress ITSELF, and the
+	// operator got neither: an Enter that failed showed a stuck "sending …"
+	// ack with the draft restored into the box and no explanation anywhere.
+	if m.convErr != "" && isAuthErrText(m.convErr) && m.railVisible() {
 		return true
 	}
 	type authRetrier interface{ HasAuthRetry() bool }

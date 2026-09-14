@@ -157,7 +157,7 @@ func run(fl *flags) error {
 	}
 
 	if profile == nil || profile.Token == "" {
-		p, err := runConnection(path, profile)
+		p, err := runConnection(path, profile, "")
 		if err != nil {
 			return err
 		}
@@ -184,9 +184,10 @@ func run(fl *flags) error {
 		if !reconnect {
 			return err
 		}
-		// /connect: the shell exited for re-auth — reopen the connection
-		// screen (pre-filled with the current profile), then loop.
-		p, cerr := runConnection(path, profile)
+		// The shell exited for re-auth (/connect) — or the launch-time credential
+		// check rejected a stored session. Reopen the connection screen,
+		// pre-filled with the current profile and SAYING WHY, then loop.
+		p, cerr := runConnection(path, profile, reauthReason)
 		if cerr != nil {
 			return cerr
 		}
@@ -213,8 +214,15 @@ func applyFlags(p *config.Profile, fl *flags) {
 
 // runConnection shows the first-run screen; on success it persists the
 // profile (unless env-driven) and returns it.
-func runConnection(path string, existing *config.Profile) (*config.Profile, error) {
+// reauthReason is the WHY shown on the connection screen when the shell
+// bounces the operator back here: a stored session that cannot authenticate is
+// not a first run, and being asked for credentials with no explanation reads
+// as the tool having lost them for no reason.
+const reauthReason = "the saved session could not be authenticated — sign in again"
+
+func runConnection(path string, existing *config.Profile, reason string) (*config.Profile, error) {
 	m := connection.New(existing, connection.DefaultProbes())
+	m.SetReason(reason)
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := prog.Run()
 	if err != nil {
@@ -282,8 +290,25 @@ func runShell(profile *config.Profile) (bool, error) {
 		// the refresh interceptor is inert.
 		RefreshToken: profile.RefreshToken,
 	})
+	// Launch-time credential check.
+	//
+	// The operator's rule: user+password against the built-in IdP is the NORMAL
+	// way to use orch, so a session that has lost its credentials must ASK for
+	// them at launch rather than entering a shell that 401s silently on every
+	// send. This probe runs THROUGH the client's refresh interceptor (an expired
+	// access token with a working refresh token refreshes and retries here), so
+	// it only fires when the session genuinely cannot authenticate.
+	//
+	// Only Unauthenticated counts as a credential failure. PermissionDenied means
+	// the credential IS valid and the entitlement is not; bouncing that back to
+	// the connection screen would ask for credentials that are already correct
+	// and loop forever.
+	identity, probeErr := probeIdentity(cl)
+	if probeErr != nil && connect.CodeOf(probeErr) == connect.CodeUnauthenticated {
+		return true, nil // main reopens the connection screen, with a reason
+	}
 	app := tui.NewApp(cl, profile, serverVersion)
-	if identity := probeIdentity(cl); identity != "" {
+	if identity != "" {
 		app.SetIdentity(identity)
 	}
 	// Open on Ask (the GUI nav's first entry) instead of an empty shell;
@@ -304,10 +329,18 @@ func runShell(profile *config.Profile) (bool, error) {
 
 // probeIdentity resolves the footer identity display name (best effort:
 // admin-gated RPC — an empty string just hides the identity chip).
-func probeIdentity(cl *client.Clients) string {
+// probeIdentity makes one cheap AUTHENTICATED call and returns the caller's
+// display name. The error is returned rather than swallowed so the caller can
+// tell "this credential is dead" from "this instance is unreachable": the
+// first must ASK for credentials before entering the shell, the second must
+// still open the shell degraded (a stale config is non-blocking by design).
+func probeIdentity(cl *client.Clients) (string, error) {
 	resp, err := cl.Auth.ListIdentities(context.Background(), connect.NewRequest(&apiv1.ListIdentitiesRequest{PageSize: 1}))
-	if err != nil || resp == nil || len(resp.Msg.GetIdentities()) == 0 {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return resp.Msg.GetIdentities()[0].GetDisplayName()
+	if resp == nil || len(resp.Msg.GetIdentities()) == 0 {
+		return "", nil
+	}
+	return resp.Msg.GetIdentities()[0].GetDisplayName(), nil
 }

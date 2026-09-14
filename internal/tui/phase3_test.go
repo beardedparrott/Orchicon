@@ -320,10 +320,22 @@ func TestScreensFillContentRegion(t *testing.T) {
 }
 
 // TestAuthBannerRendersOnce pins finding 6: the re-auth banner is rendered
-// ONCE — when the pane/rail already carries the inline retry state, the
-// global dock banner is suppressed.
+// ONCE — where a surface already carries the inline retry state, the global
+// dock banner is suppressed rather than duplicated.
+//
+// The dedupe is only valid while that surface is ON SCREEN. The fixture must
+// therefore put the conversations rail UP: this test used to set convErr and
+// assert suppression while sitting on the launch page, where the rail is not
+// rendered at all (rightrail.go — railVisible is false in welcome mode). It was
+// pinning the defect. TestLaunchPageAuthFailureIsVisible covers that half.
 func TestAuthBannerRendersOnce(t *testing.T) {
 	m := phase3App(120, 40)
+	// The state the dedupe was written for: the rail is on screen, so its own
+	// retry row IS the banner.
+	m.askMode = askConversations
+	if !m.railVisible() {
+		t.Fatal("fixture: the conversations rail must be visible for the dedupe to apply")
+	}
 	m.convErr = "unauthenticated: bad token"
 	m.setChatError("send", &stubAuthErr{})
 	if m.dock.Err != "" {
@@ -340,6 +352,34 @@ func TestAuthBannerRendersOnce(t *testing.T) {
 	m.setChatErrorPlain("unauthenticated: bad token")
 	if got := strings.Count(lipglossStrip(m.View()), "needs re-authentication"); got > 1 {
 		t.Fatalf("re-auth copy rendered %d times in one frame, want at most 1", got)
+	}
+}
+
+// TestLaunchPageAuthFailureIsVisible pins the launch-page half of the same
+// finding: in welcome mode the conversations rail is NOT rendered, so its
+// convErr is not an inline retry state and must not suppress the banner. Before
+// this, a 401 on the first send from the launch page was reported NOWHERE — the
+// composer showed a stuck "sending …" ack, the draft reappeared in the box, and
+// no surface said why. That combination was read as "Enter does nothing".
+func TestLaunchPageAuthFailureIsVisible(t *testing.T) {
+	m := phase3App(120, 40)
+	if !m.welcomeMode() {
+		t.Fatal("fixture: expected the Ask launch page")
+	}
+	if m.railVisible() {
+		t.Fatal("fixture: the launch page must not draw the conversations rail")
+	}
+	// The rail's own startup load failed with the same 401 — the state that
+	// used to silence the banner on its own.
+	m.convErr = "unauthenticated: bad token"
+	m.dock.SetNotice("sending …") // the ack the composer writes when Enter fires
+	m.setChatError("send", &stubAuthErr{})
+
+	if !strings.Contains(m.dock.Err, "/connect") {
+		t.Fatalf("a 401 on the launch page must be visible: dock.Err = %q", m.dock.Err)
+	}
+	if strings.Contains(m.dock.Notice, "sending") {
+		t.Fatalf("the send ack must settle on failure: dock.Notice = %q", m.dock.Notice)
 	}
 }
 

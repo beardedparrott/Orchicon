@@ -501,6 +501,11 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// Ack the send BEFORE it happens: sendFromComposer replaces this with
 			// the outcome (context injected, an RPC error, or the conversation
 			// opening), so it can never linger as a false promise.
+			//
+			// An EMPTY buffer never reaches here by design: the shell claims
+			// Enter-with-an-empty-composer to open the active tab's menu
+			// (menuActivationKey, shell.go), so this branch only ever runs with
+			// something to send.
 			m.Notice = "sending …"
 			return true, m.requestSend()
 		default:

@@ -130,8 +130,9 @@ func TestLaunchPageEnterCreatesTheConversation(t *testing.T) {
 	}
 }
 
-// An empty composer must not create anything on Enter (it is a no-op, not a
-// blank conversation).
+// An empty composer must not create anything on Enter: the shell claims
+// Enter-with-an-empty-composer to open the active tab's menu
+// (menuActivationKey), so it never reaches the composer's send branch at all.
 func TestEnterOnAnEmptyComposerDoesNotCreate(t *testing.T) {
 	m, plane := sendApp(t)
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -139,6 +140,9 @@ func TestEnterOnAnEmptyComposerDoesNotCreate(t *testing.T) {
 	m = runCmd(t, m, cmd)
 	if plane.created != 0 {
 		t.Fatalf("an empty Enter created %d conversations, want 0", plane.created)
+	}
+	if m.dock.Notice != "" {
+		t.Fatalf("an empty Enter must not ack a send: notice = %q", m.dock.Notice)
 	}
 }
 

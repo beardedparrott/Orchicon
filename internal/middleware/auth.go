@@ -32,8 +32,8 @@ var publicPaths = map[string]bool{
 	"/auth/local-login": true,
 	// Self-service account creation (embedded IdP): happens before a
 	// session exists, exactly like local-login.
-	"/auth/signup":    true,
-	"/auth/refresh":   true,
+	"/auth/signup":  true,
+	"/auth/refresh": true,
 	// /auth/logout is credential-free by design (cookie-based): it can only
 	// end the caller's own browser session, and requiring a bearer token
 	// here would 401 the sign-out request before the refresh cookie is
@@ -77,7 +77,13 @@ func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolv
 		if err == nil && cred != "" {
 			ident, rerr := resolveCredential(r.Context(), issuer, resolver, cred)
 			if rerr != nil {
-				log.Debug("auth: resolve credential failed", "error", rerr)
+				// WARN, not Debug. A rejected credential is security-relevant, and
+				// it leaves no other trace to investigate with: the 401 is written
+				// before any handler runs, so nothing is audited, and production
+				// runs the logger at LevelInfo — so a Debug line here was never
+				// emitted at all. "The client does nothing and I cannot tell why"
+				// was unfalsifiable from the outside.
+				log.Warn("auth: resolve credential failed", "error", rerr, "path", r.URL.Path)
 				writeUnauthenticated(w, "invalid or expired token")
 				return
 			}

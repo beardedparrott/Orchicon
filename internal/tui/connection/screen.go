@@ -76,16 +76,27 @@ type Model struct {
 	// embedded marks the model as the SHELL's in-place /connect overlay:
 	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
 	// emitted on success — the shell polls Result() each Update.
-	embedded  bool
-	width     int
-	height    int
-	busy      bool
-	errMsg    string
-	info      string
+	embedded bool
+	width    int
+	height   int
+	busy     bool
+	errMsg   string
+	info     string
+	// reason is the WHY of this screen: set by the shell when it bounces the
+	// operator here because the stored session could not be authenticated.
+	// Unlike info (which each probe cycle clears), it persists until the
+	// operator signs in or cancels.
+	reason    string
 	saveErr   string
 	insecure  bool
 	connected *Result // set when the probe succeeded (read by cmd/orch)
 }
+
+// SetReason seeds the persistent "why am I being asked" line. A shell that
+// bounced here — /connect, or the launch-time credential check rejecting a
+// dead session — calls this so the operator is asked to sign in WITH A REASON
+// instead of out of nowhere.
+func (m *Model) SetReason(s string) { m.reason = s }
 
 // New creates the connection screen. profile may be nil (first run) or a
 // partially-filled profile (e.g. env URL without token).
@@ -430,6 +441,9 @@ func (m Model) View() string {
 	}
 	b.WriteString(theme.DetailKey.Render("Skip TLS verify (ctrl+s): ") + theme.DetailValue.Render(insecure) + "\n")
 
+	if m.reason != "" {
+		b.WriteString("\n" + theme.HintText.Render(m.reason) + "\n")
+	}
 	if m.info != "" {
 		b.WriteString("\n" + theme.StatusBusy.Render(m.info) + "\n")
 	}
