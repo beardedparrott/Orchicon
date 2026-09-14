@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // panelApp builds an app on a NON-Ask tab with the composer focused, which is
@@ -294,5 +295,95 @@ func TestComposerClickDoesNotOpenAConversationOnLaunchPage(t *testing.T) {
 	}
 	if m.chatFocus != focusComposer {
 		t.Fatal("the click must still focus the composer")
+	}
+}
+
+// The composer must be RENDERED at the width it is laid out to.
+//
+// baseView lays the dock into contentWidth() (which shrinks when the right rail
+// appears) but dock.Width is assigned in refreshLayout, which does not re-run on
+// that change. The stale, wider value made the composer build its rows for more
+// columns than it was given, and normalizeBlock trimmed the TAIL of every row —
+// so the stat row's numbers and the mode pill were cut off (the operator's "the
+// context is off the screen").
+func TestComposerRendersAtItsLaidOutWidth(t *testing.T) {
+	m := panelApp(t)
+	m.active = TabAsk
+	// Open a conversation through the REAL path: that is what reveals the right
+	// rail and therefore shrinks contentWidth(). Setting chatConvID directly
+	// would skip the re-layout and hide the bug.
+	m.chatConvID = ""
+	m.OpenAskConversation("conv-1")
+	if !m.railVisible() {
+		t.Fatal("precondition: the rail is visible with a conversation open")
+	}
+	m.metrics = sessionMetrics{have: true, model: "orchicon/deepseek/deepseek-flash"}
+	m.syncComposerStats()
+
+	v := ansi.Strip(m.View())
+	// The right edge of the stat row must survive: the cost and the mode pill.
+	for _, want := range []string{"ctx ", "$0.0000", "[brainstorm]"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the stat row lost %q — the composer was rendered wider than its slot (dock.Width=%d, contentWidth=%d)",
+				want, m.dock.Width, m.contentWidth())
+		}
+	}
+	if m.dock.Width != m.contentWidth() {
+		t.Errorf("dock.Width=%d but the body lays out to %d: the composer will be truncated",
+			m.dock.Width, m.contentWidth())
+	}
+}
+
+// ctrl+g must START the caret blink, not just move focus.
+//
+// The route returns nil, so the blink starter captured by dock.Focus() had to be
+// drained centrally (App.Update). Without that the loop never ran and the caret
+// sat solid — the operator's "it only blinks if I type something then backspace
+// it to nothing".
+func TestCtrlGStartsTheCaretBlink(t *testing.T) {
+	m := panelApp(t)
+	m.setFocus(focusContent)
+	// Update, not dispatch: the drain lives at the single entry point the
+	// runtime drives, which is what must hand the command out.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	nm, ok := next.(*App)
+	if !ok {
+		t.Fatalf("Update returned %T, want *App", next)
+	}
+	if nm.chatFocus != focusComposer {
+		t.Fatal("ctrl+g must focus the composer")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+g returned no command — the caret blink loop can never start")
+	}
+}
+
+// On the launch page the composer is CENTERED, so it is not in the dock rows and
+// a click used to fall through to "focus the content" — the composer looked
+// focused but typing did nothing (the operator's "it is almost like there is a
+// blocker there"). There is nothing else to click on that page.
+func TestLaunchPageClickFocusesTheComposer(t *testing.T) {
+	m := newTestApp()
+	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
+	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.SwitchTo(TabAsk)
+	if !m.welcomeMode() {
+		t.Fatal("precondition: the Ask launch page")
+	}
+	m.setFocus(focusContent)
+
+	nm, cmd := m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: 40, Y: m.height / 2, // the centred composer
+	})
+	m = nm
+	if m.chatFocus != focusComposer {
+		t.Fatal("a click on the launch page must focus the composer so typing works")
+	}
+	if m.panelVisible() {
+		t.Fatal("and it must not slide a conversation out")
+	}
+	if cmd == nil {
+		t.Error("the click should also start the caret blink")
 	}
 }

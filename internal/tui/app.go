@@ -949,6 +949,14 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	m.askMode = askConversations
 	m.chatConvID = id
 	m.chat.SetActive(id)
+	// The right rail appears with a conversation, which SHRINKS contentWidth()
+	// — and every pane's width is assigned from it in refreshLayout, which is
+	// only otherwise run on a window resize. Without re-laying-out here the dock
+	// kept the pre-rail width: it built its rows for more columns than the body
+	// gave it, normalizeBlock trimmed the TAIL of each row, and the stat row's
+	// numbers and the mode pill were cut off (the operator's "the context is off
+	// the screen").
+	m.refreshLayout()
 	// A conversation switch changes whose usage the strip reports, so re-read it
 	// (the previous conversation's numbers must never linger under a new chat).
 	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics())
@@ -1158,6 +1166,21 @@ func (m *App) fetchAskDefaultModel() tea.Cmd {
 // flush here.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.dispatch(msg)
+	// The composer's caret BLINK STARTER (captured when the dock took focus) has
+	// to reach the runtime, and focus is taken from several places — ctrl+g, a
+	// click, keyboard navigation — most of which return their own command or nil.
+	// Draining it here, once, after every dispatch, is the only place that covers
+	// all of them: without it the blink loop was never started, so the caret sat
+	// solid until a keypress happened to change the cursor position and bubbles
+	// started the loop itself (the operator's "it only blinks if I type something
+	// then backspace it to nothing").
+	if b := next.dock.TakeBlinkStart(); b != nil {
+		if cmd == nil {
+			cmd = b
+		} else {
+			cmd = tea.Batch(cmd, b)
+		}
+	}
 	if staged := next.drainStaged(); staged != nil {
 		if cmd == nil {
 			return next, staged

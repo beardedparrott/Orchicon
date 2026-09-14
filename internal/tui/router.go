@@ -553,6 +553,23 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 				return m, nil // consumed: never focus the composer through the strip
 			}
 		}
+		if !inDiffRail && m.welcomeMode() && mo.Y > tabBarRows && mo.Y < m.height-1 {
+			// The LAUNCH PAGE's composer is CENTERED in the viewport
+			// (centeredWelcomeView), not pinned in the dock rows — so inDockRows
+			// does not recognise it and a click fell through to "focus the
+			// content", leaving the composer focused but unable to type (the
+			// operator's "it doesn't actually allow me to type. Only hitting
+			// ctrl+g does that. It is almost like there is a blocker there").
+			//
+			// On this page there is nothing else to click: no rail (railVisible is
+			// false with no conversation and askMode == askNew), no source panes
+			// (the Ask screen sets HideSources), no list. The brand and tagline are
+			// inert text. So any click in the content region means "put me in the
+			// composer", which is exactly what the operator asked for.
+			m.setFocus(focusComposer)
+			m.footer.ComposerFocus = true
+			return m, m.dock.TakeBlinkStart()
+		}
 		if !inDiffRail && m.inDockRows(mo.Y) {
 			m.setFocus(focusComposer)
 			// Focusing the composer must NOT open the conversation strip from

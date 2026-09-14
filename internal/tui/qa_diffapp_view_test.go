@@ -63,14 +63,33 @@ func qaApp(t *testing.T) (*App, *httptest.Server) {
 
 // openPaneViaD presses D and consumes the fetch cmd (bubbletea runs Cmds
 // off-loop), returning the updated App.
+//
+// A cmd may be a tea.Batch (the shell batches any staged command with the
+// dispatch's own — e.g. the composer's caret-blink starter), and bubbletea
+// expands a BatchMsg into its members before delivering them. The helper
+// mirrors that: it runs each member and feeds each resulting message back in.
 func openPaneViaD(m *App) *App {
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
 	m = nm.(*App)
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			nm2, _ := m.Update(msg)
-			m = nm2.(*App)
+	if cmd == nil {
+		return m
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if c == nil {
+				continue
+			}
+			if sub := c(); sub != nil {
+				nm2, _ := m.Update(sub)
+				m = nm2.(*App)
+			}
 		}
+	case nil:
+		// nothing to deliver
+	default:
+		nm2, _ := m.Update(msg)
+		m = nm2.(*App)
 	}
 	return m
 }
