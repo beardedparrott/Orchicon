@@ -122,6 +122,14 @@ func (s *Stream) View() string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
+// Overflowing reports whether the stream's content is taller than the rows it
+// can show, i.e. whether scrolling is meaningful at all. Callers use it to
+// decide whether to surface the scroll position: with no overflow there is
+// nothing hidden, and a scroll affordance would be noise.
+func (s *Stream) Overflowing() bool {
+	return len(s.Lines) > s.innerH()
+}
+
 // ScrollLabel renders a "n-m/total" indicator (and a follow marker).
 func (s *Stream) ScrollLabel() string {
 	top := s.Offset + 1

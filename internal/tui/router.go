@@ -522,6 +522,29 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, nil
 		}
 	}
+	// CONTENT-REGION WHEEL: scroll the Ask transcript.
+	//
+	// The wheel was handled ONLY for the conversations rail (above), so on the
+	// Ask tab the transcript could not be scrolled at all — the rail claims the
+	// wheel (its own column) AND the keyboard (with an empty composer the
+	// vertical keys move the rail SELECTION, and railVisible() is true whenever a
+	// conversation is open). Nothing was left for the transcript.
+	//
+	// That is not cosmetic: the transcript follows the TAIL, so once a reply is
+	// taller than the pane the operator's own message scrolls off the top with no
+	// way back to it and no indication it exists — reported as "I still do not
+	// see my initial test user message" and "any additional user messages show
+	// up, but that initial message does not", because only the first message was
+	// outside the visible window.
+	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
+		delta := -3
+		if mo.Button == tea.MouseButtonWheelDown {
+			delta = 3
+		}
+		m.ScrollTranscript(delta)
+		m.onChatWake() // keep the scroll indicator honest
+		return m, nil
+	}
 	// Composer row: a click anywhere in the dock block FOCUSES the composer
 	// (operator finding 7 — mouse must genuinely focus the input, not only
 	// rely on the launch default). The diff rail owns clicks in its own

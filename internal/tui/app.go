@@ -2103,6 +2103,21 @@ func (m *App) onChatWake() tea.Cmd {
 		} else {
 			str.Notice = ""
 		}
+		// Surface the scroll position when the transcript is taller than the pane.
+		//
+		// The transcript follows the TAIL, so a reply longer than the pane scrolls
+		// the operator's own earlier messages out of view. Nothing on screen said
+		// the transcript was scrolled, and on the Ask tab the rail owned both the
+		// wheel and the keyboard — so a message that was merely OFF-SCREEN read as
+		// a message that was never stored (the operator's "I still do not see my
+		// initial test user message", while the header reported the right count).
+		//
+		// The label names the visible window and the total, so "4-23/35" says
+		// plainly that 22 lines sit above. Same field shape the Work screen's
+		// build log already uses.
+		if str.Overflowing() {
+			fields = append(fields, screenkit.Field{Key: "scroll", Value: str.ScrollLabel()})
+		}
 		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil

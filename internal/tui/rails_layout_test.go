@@ -249,3 +249,63 @@ func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
 		t.Fatalf("dock.Width = %d after the rail went away, want the full width %d", m.dock.Width, w)
 	}
 }
+
+// The transcript must be SCROLLABLE, and the operator must be told when it is
+// scrolled.
+//
+// The transcript follows the tail, so a reply taller than the pane pushes the
+// operator's own earlier messages off the top. The wheel was handled ONLY for
+// the conversations rail, and on the Ask tab the rail also owns the keyboard
+// (with an empty composer the vertical keys move the rail SELECTION, and
+// railVisible() is true whenever a conversation is open) — so nothing was left
+// for the transcript. A message that was merely off-screen therefore read as a
+// message that was never stored: "I still do not see my initial test user
+// message", while the conversation header showed the correct message count.
+func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
+	const w, h = 120, 42
+	m, _ := sendApp(t)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = nm.(*App)
+	m.askMode = askConversations
+	m.chatConvID = "conv-scroll"
+
+	// A transcript far taller than the pane: this is what a paragraph-sized
+	// reply produces (the live case measured ~35 rendered rows in a ~20-row
+	// viewport).
+	lines := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		lines = append(lines, "line "+strings.Repeat("x", 20))
+	}
+	str := m.transcriptStream(m.chatConvID, 86, 20)
+	str.SetLines(lines)
+	if !str.Overflowing() {
+		t.Fatal("fixture: the transcript must overflow the pane")
+	}
+	if !str.AtBottom() {
+		t.Fatal("fixture: SetLines re-pins to the tail")
+	}
+	if lbl := str.ScrollLabel(); !strings.Contains(lbl, "/60") {
+		t.Fatalf("ScrollLabel = %q, want it to name the total so hidden content above is discoverable", lbl)
+	}
+
+	// The wheel in the CONTENT region (left of the conversations rail) must move
+	// the transcript, not the rail.
+	before := str.Offset
+	_, _ = m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp,
+		X: 20, Y: 10,
+	})
+	if str.Offset >= before {
+		t.Fatalf("wheel-up over the content region left the transcript at offset %d (was %d) — the operator cannot reach their own earlier messages", str.Offset, before)
+	}
+
+	// And the wheel still belongs to the RAIL in the rail's own columns.
+	railSel := m.convSel
+	_, _ = m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown,
+		X: w - 2, Y: 10,
+	})
+	if m.convSel == railSel && len(m.conversations) > 1 {
+		t.Fatal("the rail must keep the wheel in its own columns")
+	}
+}
