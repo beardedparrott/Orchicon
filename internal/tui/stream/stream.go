@@ -41,6 +41,13 @@ const (
 	// immediate RPC rejection (unimplemented, unauthenticated, refused) wins the
 	// race, short enough that a healthy quiet stream reads as connected.
 	DefaultDialWindow = 2 * time.Second
+	// closeGrace bounds how long Close waits for the loop goroutine to exit.
+	//
+	// Cancelling unblocks a real transport promptly, so a healthy Close returns
+	// immediately and never reaches this; the grace only matters when the loop is
+	// stuck in a call that ignores cancellation, where waiting longer cannot help
+	// and would freeze the caller (Close runs on every tab switch).
+	closeGrace = 500 * time.Millisecond
 )
 
 // Config is the subscription template passed to New. It is lock-free;
@@ -205,7 +212,30 @@ func (s *Sub[Resp]) Close() {
 	if cancel != nil {
 		cancel()
 	}
-	s.wg.Wait()
+	// A BOUNDED wait. An unbounded wg.Wait() here is a UI freeze waiting to
+	// happen: Close runs on EVERY tab switch (the shell's CloseAll), while the loop
+	// goroutine can be blocked inside a recv() that does not observe cancellation —
+	// a wedged transport, or a stub whose recv never returns. When that happens the
+	// Wait never completes and the caller hangs forever.
+	//
+	// This is not hypothetical: the stream suite HUNG for the full 10m test timeout
+	// (rather than failing) because TestOpenWhileTheDialIsStillInFlight races
+	// connect()'s `<-dialed` against `<-ctx.Done()`, and whenever the dial won the
+	// loop sat in an uninterruptible recv() while Close waited on it — which blocked
+	// `make rebuild-dev` outright.
+	//
+	// The goroutine exits as soon as its blocking call returns (cancelling the
+	// request does unblock a real transport), and if it never does, leaking one
+	// goroutine is strictly better than freezing the UI.
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeGrace):
+	}
 }
 
 // wake pokes the loop's select so a pending backoff timer is abandoned

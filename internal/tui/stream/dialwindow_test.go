@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -97,5 +98,55 @@ func TestDialErrorIsForwardedToOnError(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the dial error must be forwarded to OnError")
+	}
+}
+
+// Close must not wait forever for a recv() that ignores cancellation.
+//
+// Close runs on EVERY tab switch, so an unbounded wait there is a UI freeze, not
+// just a test problem. This is the exact shape that hung the suite for the full 10m
+// timeout (blocking `make rebuild-dev`): the loop sits in an uninterruptible recv()
+// and wg.Wait() never returns.
+func TestCloseIsBoundedWhenRecvIgnoresCancellation(t *testing.T) {
+	sub := New(Config[string]{
+		Name: "wedged",
+		Open: func(_ context.Context, _ int64) (func() (string, error), error) {
+			// A transport that never returns and never observes ctx.
+			return func() (string, error) { select {} }, nil
+		},
+		DialWindow: 10 * time.Millisecond,
+	})
+	// Let the loop actually enter recv() (past the DialWindow).
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		sub.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// bounded — correct
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked on a recv() that ignores cancellation — a tab switch would freeze the UI forever")
+	}
+}
+
+// A NORMAL Close (the loop exits on cancel) must still return promptly, so the bound
+// never becomes the common path.
+func TestCloseReturnsPromptlyOnAHealthyStream(t *testing.T) {
+	sub := New(Config[string]{
+		Name: "healthy",
+		Open: func(_ context.Context, _ int64) (func() (string, error), error) {
+			return func() (string, error) { return "", io.EOF }, nil
+		},
+		DialWindow: 10 * time.Millisecond,
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	start := time.Now()
+	sub.Close()
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("a healthy Close took %v — the grace period must not be the normal path", elapsed)
 	}
 }
