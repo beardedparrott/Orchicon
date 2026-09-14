@@ -633,10 +633,7 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRe
 			u.OutputTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == 0 {
 			return
 		}
-		// Remember the REAL prompt size: this is the numerator of the proactive
-		// context-pressure gate (askpressure.go), so it must be the provider's
-		// own number and never a character-count estimate.
-		b.recordAskPromptTokens(sessionID, u.InputTokens)
+		b.recordAskPromptTokens(sessionID, promptOccupancy(u))
 		// context.WithoutCancel: this is real usage that has already been paid
 		// for, so a turn that ends (or is aborted) mid-record must not lose it.
 		_ = b.usageRecorder(context.WithoutCancel(ctx), scheduler.UsageRecord{
