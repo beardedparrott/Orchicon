@@ -154,16 +154,6 @@ func run(fl *flags) error {
 	}
 	if profile != nil {
 		applyFlags(profile, fl)
-		// The TUI palette preference lives at the config's top level so it
-		// survives without a saved profile (env-driven sessions and first runs
-		// never write one). The explicit env override wins, so a theme can be
-		// pinned where the config is not persisted.
-		if cfg != nil && cfg.Theme != "" {
-			profile.Theme = cfg.Theme
-		}
-		if envTheme := strings.TrimSpace(os.Getenv(config.EnvTheme)); envTheme != "" {
-			profile.Theme = envTheme
-		}
 	}
 
 	if profile == nil || profile.Token == "" {
@@ -173,6 +163,22 @@ func run(fl *flags) error {
 		}
 		profile = p
 	}
+	// Apply the stored palette preference to the FINAL profile, AFTER the
+	// connection branch.
+	//
+	// It used to be applied BEFORE that branch, to the pre-connection profile —
+	// which the branch then REPLACED with the profile the connection screen built.
+	// Any launch that passed through that screen (first run, or an env-driven
+	// launch with no token in the env: notably the orch-dev/orch-prod launchers,
+	// which preset ORCHICON_URL) therefore lost its saved theme for the entire
+	// session even though the config still held it. Applying it here cannot be
+	// undone by anything downstream.
+	//
+	// The preference lives at the config's TOP LEVEL so it survives without a
+	// saved profile (env-driven sessions and first runs never write one).
+	// ORCHICON_THEME wins over the file, so a palette can be pinned where the
+	// config is not persisted.
+	applyStoredTheme(profile, cfg)
 	for {
 		reconnect, err := runShell(profile)
 		if !reconnect {
@@ -232,6 +238,23 @@ func runConnection(path string, existing *config.Profile) (*config.Profile, erro
 		}
 	}
 	return res.Profile, nil
+}
+
+// applyStoredTheme resolves the TUI palette preference onto the profile that will
+// actually be used: the config's top-level theme, overridden by ORCHICON_THEME.
+// It is applied to the FINAL profile (after any connection-screen rebuild), because
+// the connection screen returns a freshly built profile and anything set before it
+// is discarded.
+func applyStoredTheme(p *config.Profile, cfg *config.Config) {
+	if p == nil {
+		return
+	}
+	if cfg != nil && cfg.Theme != "" {
+		p.Theme = cfg.Theme
+	}
+	if envTheme := strings.TrimSpace(os.Getenv(config.EnvTheme)); envTheme != "" {
+		p.Theme = envTheme
+	}
 }
 
 // runShell probes /versionz, builds the client set, and runs the app

@@ -233,6 +233,18 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 	if m.profile != nil && m.profile.Name != "" && m.profile.Name != "default" {
 		name = m.profile.Name
 	}
+	// DISPLAY PREFERENCES are not credentials and must survive this rebuild. The
+	// original profile carried them and this function returns a FRESH struct, so
+	// omitting them DROPPED them: a saved palette was lost for the whole session
+	// (and, because the rebuilt profile is what gets re-saved, the theme was
+	// scrubbed from the config too). `Newline` had the same defect — an operator's
+	// configured newline chord silently reverted to the default. Credentials are
+	// deliberately NOT carried by default (token/username/refresh come from the
+	// form), which is why this is an explicit list and not a struct copy.
+	themeName, newlineMode := "", ""
+	if m.profile != nil {
+		themeName, newlineMode = m.profile.Theme, m.profile.Newline
+	}
 	return &config.Profile{
 		Name:               name,
 		URL:                url_,
@@ -241,6 +253,8 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 		Username:           user,
 		RefreshToken:       refresh,
 		InsecureSkipVerify: m.insecure,
+		Newline:            newlineMode,
+		Theme:              themeName,
 	}
 }
 
