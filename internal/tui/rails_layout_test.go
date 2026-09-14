@@ -377,3 +377,41 @@ func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
 		t.Fatal("typing into the composer must not re-claim the screen's keys")
 	}
 }
+
+// Tab must advance the focus ring even while the active screen claims the keys.
+//
+// "When tabbing through the main top menu, the tab now just simply stops at Work
+// and doesn't move to Execution in the menu system." The cause is the same
+// latched screen claim that swallowed ctrl+g: the claims gate runs before the
+// routes, so a screen holding a text input (the Work search box, a form being
+// prepared) ate Tab and the ring never advanced. That claim is usually
+// incidental, so the route between areas cannot depend on it being clear.
+func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	m.setFocus(focusContent)
+
+	ws := m.screens[TabWork].(*work.Model)
+	if !ws.Base.SelectSource("workitems") || !ws.Base.StartFilter() {
+		t.Fatal("fixture: need the Work search box latched")
+	}
+	if !ws.ClaimsKeys() {
+		t.Fatal("fixture: the screen must be claiming keys")
+	}
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.active != TabExecution {
+		t.Fatalf("tab left the active tab at %q, want execution — the ring must advance through a screen claim", m.active)
+	}
+}

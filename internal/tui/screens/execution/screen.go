@@ -434,6 +434,21 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// The inline DETAILS-PANE editor owns every key while it is up — it is the
+		// focused surface. This must come FIRST, ahead of the write chords:
+		// handleActionKey answers esc / up / down (unavailableReason explains why a
+		// chord has nothing to run on) and therefore SWALLOWED them, so an inline
+		// worker form could not move between fields with the arrows and could not
+		// be cancelled with esc — "when editing a worker, I can't use the arrow
+		// keys to move between the different fields and it will not let me hit ESC
+		// to cancel out of editing the item", and the same for the new-worker
+		// form. kit2.Base owns the editor's keys (field navigation, validation,
+		// ctrl+s submit, esc cancel), so it must see them.
+		if m.Base.EditingDetail() {
+			if handled, cmd := m.Base.Update(msg); handled {
+				return m, cmd
+			}
+		}
 		// The interjection form owns every key while it is up.
 		if m.form != nil {
 			if msg.String() == "esc" {

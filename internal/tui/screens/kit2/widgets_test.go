@@ -552,3 +552,44 @@ func TestExpandingAFieldDoesNotDisturbOthers(t *testing.T) {
 		t.Fatalf("a = %q, want it untouched", v)
 	}
 }
+
+// The cursor must step over EVERY visible row, including a second row that
+// shares the first one's id.
+//
+// Every cursor operation used to route through the row's ID (cursorVis →
+// setCursorToID), and that round trip is not injective: visIndexOf returns the
+// FIRST match and setCursorToID seats the cursor on the FIRST match. So a step
+// ONTO a duplicated id landed back on its twin and the cursor FROZE — the
+// operator's "if you move the arrow key down to one of them, it highlights both
+// work items and then will not let you continue to hit the down key to move past
+// them". Distinct work items legitimately share a TITLE (3 items titled "test"
+// in the live tenant), and the fetch layer can emit rows that collide by id, so
+// movement must not depend on ID uniqueness.
+func TestCursorStepsPastDuplicatedRowIDs(t *testing.T) {
+	tb := &Table{Width: 40, Height: 20}
+	tb.SetItems([]Item{
+		{ID: "a", Title: "first"},
+		{ID: "b", Title: "dup"},
+		{ID: "b", Title: "dup"}, // the twin
+		{ID: "c", Title: "after"},
+	}, "")
+
+	var visited []string
+	for i := 0; i < 3; i++ {
+		tb.Move(1)
+		visited = append(visited, tb.Selected().Cells[0])
+	}
+	if tb.Cursor != 3 {
+		t.Fatalf("cursor = %d after three steps, want 3 (the row after the twins); visited %v", tb.Cursor, visited)
+	}
+	if got := tb.Selected().Cells[0]; got != "after" {
+		t.Fatalf("selected = %q, want the row past the duplicates", got)
+	}
+	// And the cursor can come back without getting stuck on the twins either.
+	for i := 0; i < 3; i++ {
+		tb.Move(-1)
+	}
+	if tb.Cursor != 0 {
+		t.Fatalf("cursor = %d after stepping back, want 0", tb.Cursor)
+	}
+}

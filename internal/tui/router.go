@@ -55,6 +55,11 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			// tab's content; each further Tab advances to the next tab's
 			// content; after Control it wraps back to the composer. Left /
 			// right still switch tabs directly (content focus).
+			//
+			// NOTE: dispatch handles `tab` as a HARD CHORD before the
+			// screen-claims gate, so this route is the fallback — it is kept so
+			// the ring is still reachable if that gate is ever reordered. Do not
+			// remove it without moving the chord deliberately.
 			Name: "focus ring", Keys: "tab", Scope: "global",
 			Match: func(msg tea.Msg) bool {
 				k, ok := msg.(tea.KeyMsg)
@@ -300,6 +305,20 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				}
 			}
 			m.setFocus(focusComposer)
+			m.refreshStreamStatus()
+			return m, nil
+		case "tab":
+			// TAB is also a hard chord, ahead of the claims gate.
+			//
+			// A screen that claims keys is claiming TEXT INPUT; the tab ring is
+			// NAVIGATION, and "when tabbing through the main top menu, the tab now
+			// just simply stops at Work and doesn't move to Execution" is what
+			// happens when a screen's claim eats it. That claim is often incidental
+			// (a search box left focused, a form still being prepared), so the
+			// operator's route between areas must not depend on none of them being
+			// set. It was only reachable before because no screen consumed Tab
+			// itself — now none can, at any claim state.
+			m.tabRingNext()
 			m.refreshStreamStatus()
 			return m, nil
 		}

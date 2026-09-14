@@ -142,31 +142,85 @@ func (t *Table) visibleRows() int {
 // never land on a row hidden inside a collapsed node. The cursor indexes Rows
 // while visibility is decided by the tree's open/collapsed state, so the two
 // are mapped through VisibleRows rather than assumed to agree.
+//
+// It steps over visible INDICES, never through the row's ID. The ID round trip
+// it used to do (cursorVis → setCursorToID) is not injective when two rows share
+// an ID: visIndexOf returns the FIRST match and setCursorToID seats the cursor on
+// the FIRST match, so a step ONTO the second occurrence landed back on the first
+// and the cursor froze — the operator's "if you move the arrow key down to one of
+// them, it highlights both work items and then will not let you continue to hit
+// the down key to move past them". Distinct work items legitimately share a
+// title, and the fetch layer keys rows by ID, so this had to stop depending on
+// ID uniqueness to move.
 func (t *Table) Move(delta int) {
-	vis := t.VisibleRows()
-	if len(vis) == 0 {
+	idxs := t.visibleIndices()
+	if len(idxs) == 0 {
 		return
 	}
-	pos := t.cursorVis()
+	pos := -1
+	for i, ri := range idxs {
+		if ri == t.Cursor {
+			pos = i
+			break
+		}
+	}
 	if pos < 0 {
-		// The cursor sat inside a subtree that is now collapsed — re-seat it
-		// on the first visible row rather than drifting to a hidden one.
+		// The cursor sat inside a subtree that is now collapsed — re-seat it on
+		// the first visible row rather than drifting to a hidden one.
+		pos = 0
+	} else {
+		pos += delta
+	}
+	if pos < 0 {
 		pos = 0
 	}
-	pos += delta
-	if pos < 0 {
-		pos = 0
+	if pos >= len(idxs) {
+		pos = len(idxs) - 1
 	}
-	if pos >= len(vis) {
-		pos = len(vis) - 1
-	}
-	t.setCursorToID(vis[pos].ID)
+	t.Cursor = idxs[pos]
 	t.clampOffset()
 }
 
-// cursorVis is the cursor row's position within VisibleRows (-1 when the
-// cursor row is hidden inside a collapsed ancestor).
-func (t *Table) cursorVis() int { return t.visIndexOf(t.SelectedID()) }
+// visibleIndices returns the Rows indices of the visible rows, in order. It is
+// VisibleRows' index twin: the same filter and collapse rules, but it reports
+// positions instead of copies, so a caller can address a SPECIFIC occurrence of a
+// duplicated id.
+func (t *Table) visibleIndices() []int {
+	open := map[string]bool{}
+	parent := make(map[string]string, len(t.Rows))
+	for _, r := range t.Rows {
+		if r.Expand {
+			open[r.ID] = r.Open
+		}
+		parent[r.ID] = r.Parent
+	}
+	out := make([]int, 0, len(t.Rows))
+	for i, r := range t.Rows {
+		if hiddenUnderCollapsedAncestor(r, parent, open) {
+			continue
+		}
+		if !t.matchesFilter(r) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// cursorVis is the cursor row's position within VisibleRows (-1 when the cursor
+// row is hidden inside a collapsed ancestor).
+//
+// Computed from the cursor INDEX, not from the selected row's ID: with two rows
+// sharing an id, an ID lookup always resolves to the first one and the cursor
+// could never be told apart from its twin.
+func (t *Table) cursorVis() int {
+	for i, ri := range t.visibleIndices() {
+		if ri == t.Cursor {
+			return i
+		}
+	}
+	return -1
+}
 
 // visIndexOf is the position of the row with id within VisibleRows (-1 when
 // hidden or absent).

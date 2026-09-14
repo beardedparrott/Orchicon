@@ -355,3 +355,46 @@ func hasModelField(f *kit2.Form) bool {
 	}
 	return false
 }
+
+// The inline worker forms must own their keys: arrows move between FIELDS and esc
+// cancels.
+//
+// "When editing a worker, I can't use the arrow keys to move between the different
+// fields and it will not let me hit ESC to cancel out of editing the item" and
+// "New worker form is the same way." The screen's write chords ran BEFORE the
+// inline editor, and handleActionKey answers esc/up/down (it explains why a chord
+// has nothing to run on), so it swallowed them before kit2.Base could move the
+// cursor or close the editor.
+func TestInlineWorkerFormOwnsArrowsAndEsc(t *testing.T) {
+	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, nil)
+	if !m.Base.SelectSource(srcWorkers) {
+		t.Fatal("fixture: could not focus the Workers pane")
+	}
+	if _, handled := m.handleActionKey(keyNewWorker); !handled {
+		t.Fatal("n must open the create form")
+	}
+	f := detailForm(m)
+	if f == nil {
+		t.Fatal("the create form must be open in the details pane")
+	}
+	start := f.Cursor
+
+	// The screen must hand the key to the editor rather than to a write chord.
+	_, cmd := m.Update(kmsg("down"))
+	if cmd != nil {
+		_ = cmd
+	}
+	if detailForm(m).Cursor == start {
+		t.Fatalf("down did not move between fields (cursor stuck at %d) — a write chord swallowed it", start)
+	}
+	_, _ = m.Update(kmsg("up"))
+	if detailForm(m).Cursor != start {
+		t.Fatalf("up did not move back to field %d", start)
+	}
+
+	// esc cancels the edit outright.
+	_, _ = m.Update(kmsg("esc"))
+	if m.Base.EditingDetail() {
+		t.Fatal("esc did not cancel the inline editor — a write chord swallowed it")
+	}
+}

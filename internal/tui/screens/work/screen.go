@@ -622,7 +622,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 				m.notice = "no projects yet — a work item belongs to a project"
 				return m, nil
 			}
-			m.form = m.newItemCreateForm()
+			// Item 5: CREATE in the DETAILS PANE too, matching the worker forms and
+			// the edit path below. The operator: "if we are going to make new worker
+			// go into the detail pane for editing (which I do like), then we should
+			// mimic that for work items because work items still uses a popup
+			// modal." Both halves of the work-item flow now share one host, so the
+			// keys, the validation and the submit path cannot diverge between them.
+			m.Base.BeginDetailEdit("New work item", m.newItemCreateForm())
 		case formEditItem:
 			// Edit in the DETAILS PANE, not a modal (the operator's ask).
 			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
@@ -641,7 +647,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 		switch msg.mode {
 		case formCreateProject:
-			m.form = m.newProjectCreateForm()
+			// Same as create-item: the pane, not a modal.
+			m.Base.BeginDetailEdit("New project", m.newProjectCreateForm())
 		case formEditProject:
 			m.Base.BeginDetailEdit("Edit project", m.newProjectEditForm(msg.project))
 		case formProjectDir:
