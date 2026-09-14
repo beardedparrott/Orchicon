@@ -673,6 +673,9 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatConvCreatedMsg:
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
+		// The send landed: clear the composer's "sending …" ack (set by the dock
+		// when Enter fired) so it cannot linger as a stale promise.
+		m.dock.SetNotice("")
 		m.chat.SetActive(msg.convID)
 		// Optimistic echo of the operator's own message. The existing-conversation
 		// path appends this; the create path did not, so the FIRST send from any

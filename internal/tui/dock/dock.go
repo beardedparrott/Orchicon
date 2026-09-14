@@ -480,13 +480,16 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// Enter variant that is not an explicitly configured newline chord
 			// SENDS.
 			//
-			// Two real cases made Enter appear dead, and both are gone:
-			//  1. a "shift+enter inserts a newline" convenience that the hint
-			//     never documented; a terminal reporting a plain Enter that way
-			//     inserted an invisible newline;
-			//  2. Enter arriving as LF rather than CR (see enterKey) — which
-			//     matched NO branch here and no keymap in the textarea, so the key
-			//     did nothing whatsoever.
+			// Three real cases made Enter appear dead, and two are fixed:
+			//  1. a "shift+enter inserts a newline" convenience the hint never
+			//     documented (removed);
+			//  2. Enter arriving as LF rather than CR — a different KeyType that
+			//     matched no branch here and no textarea keymap (handled by
+			//     enterKey).
+			// The notice below is the third: it makes "did the send branch run at
+			// all" observable from the UI. A key that produces neither a send nor
+			// a visible change is indistinguishable from a dead key, which is
+			// exactly how this took several rounds to pin down.
 			if m.leadingBackslash() && (m.Newlines == NewlineBackslashEnter || m.Newlines == NewlineBoth) {
 				// A trailing lone backslash + Enter = newline (the escape
 				// hatch); strip the backslash and wrap.
@@ -495,6 +498,10 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 				m.insertNewline("\\+enter")
 				return true, nil
 			}
+			// Ack the send BEFORE it happens: sendFromComposer replaces this with
+			// the outcome (context injected, an RPC error, or the conversation
+			// opening), so it can never linger as a false promise.
+			m.Notice = "sending …"
 			return true, m.requestSend()
 		default:
 			ta, cmd := m.ta.Update(msg)
