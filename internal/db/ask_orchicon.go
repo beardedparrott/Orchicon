@@ -23,6 +23,10 @@ type ConversationRow struct {
 	Mode      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// MessageCount is populated by the LIST query only (ListConversations); the
+	// single-row queries leave it 0 because their callers compute the count
+	// separately via CountConversationMessages. See scanConversationWithCount.
+	MessageCount int
 }
 
 // MessageRow is the in-memory representation of an ask_orchicon_messages row.
@@ -94,17 +98,27 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	var rows []ConversationRow
 	var q string
 	var args []any
+	// message_count is part of the LIST shape (scanConversationWithCount). It is
+	// a correlated COUNT so one query serves the whole page: both the rail and
+	// the conversation detail display a per-conversation message count, and
+	// without it ListConversations reported 0 for EVERY row while
+	// GetConversation reported the real number — the same conversation rendered
+	// as "0 msgs" in one place and "messages 2" in another. The predicate
+	// mirrors CountConversationMessages exactly so the two cannot disagree.
+	const listCols = `SELECT c.id, c.tenant_id, c.title, c.model_ref, c.session_id, c.mode,
+			c.created_at, c.updated_at,
+			(SELECT COUNT(*) FROM ask_orchicon_messages m
+			  WHERE m.tenant_id = c.tenant_id AND m.conversation_id = c.id)
+		FROM ask_orchicon_conversations c`
 	if afterID != "" {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
-			FROM ask_orchicon_conversations
-			WHERE tenant_id = $1 AND updated_at < (SELECT updated_at FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2)
-			ORDER BY updated_at DESC LIMIT $3`
+		q = listCols + `
+			WHERE c.tenant_id = $1 AND c.updated_at < (SELECT p.updated_at FROM ask_orchicon_conversations p WHERE p.tenant_id = $1 AND p.id = $2)
+			ORDER BY c.updated_at DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
-			FROM ask_orchicon_conversations
-			WHERE tenant_id = $1
-			ORDER BY updated_at DESC LIMIT $2`
+		q = listCols + `
+			WHERE c.tenant_id = $1
+			ORDER BY c.updated_at DESC LIMIT $2`
 		args = []any{tenantID, limit}
 	}
 	iter, err := tx.Query(ctx, q, args...)
@@ -113,7 +127,7 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	}
 	defer iter.Close()
 	for iter.Next() {
-		r, err := scanConversation(iter)
+		r, err := scanConversationWithCount(iter)
 		if err != nil {
 			return nil, err
 		}
@@ -409,6 +423,19 @@ func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
 	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
+	}
+	return r, nil
+}
+
+// scanConversationWithCount scans the LIST shape: scanConversation's columns plus
+// the trailing per-conversation message count. It is separate from
+// scanConversation because only ListConversations selects that column — the
+// single-row Get/Update queries keep their own 8-column shape.
+func scanConversationWithCount(row pgx.Rows) (ConversationRow, error) {
+	var r ConversationRow
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode,
+		&r.CreatedAt, &r.UpdatedAt, &r.MessageCount); err != nil {
+		return ConversationRow{}, fmt.Errorf("db: scan conversation with count: %w", err)
 	}
 	return r, nil
 }

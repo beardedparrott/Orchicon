@@ -391,7 +391,7 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID, stallWindow)))
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, r.MessageCount, preview, s.turnStatus(r.ID, stallWindow)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
