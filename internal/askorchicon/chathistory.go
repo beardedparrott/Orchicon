@@ -31,10 +31,21 @@ const (
 	// silently losing that the call happened.
 	abortedToolResultOutput = "tool call aborted — the turn ended before this tool returned a result"
 
-	// The two provider rejection shapes from the operator report, matched as
+	// The provider rejection shapes from the operator reports, matched as
 	// substrings of a provider error body.
+	//
+	// The first two are the ORIGINAL bug — an assistant tool_calls message
+	// replayed without its results ("BUG: Ask Orchicon model switch fails").
 	danglingToolCallNoOutputMarker   = "no tool output found for function call"
 	danglingToolCallUnansweredMarker = "must be followed by tool messages responding to each"
+
+	// The MIRROR shape, from the compact-button regression on Ask conversation
+	// 01M2C8VXFQY5ZE26PYBSNKA2CA: an ORPHANED tool result — a `tool` message
+	// whose preceding assistant `tool_calls` message was cropped away when
+	// compaction cut a tool round in half. It must classify here too, or the
+	// poisoned session is never dropped and the conversation stays wedged on
+	// every send.
+	danglingToolCallOrphanedResultMarker = "must be a response to a preceding message with"
 )
 
 // askToolCallJSON / askToolResultJSON mirror the tool_calls / tool_results
@@ -133,17 +144,19 @@ func sanitizeHistoryRows(history []db.MessageRow) []db.MessageRow {
 	return out
 }
 
-// isDanglingToolCallProviderError reports whether a provider error text is the
-// dangling-tool-call rejection (either of the two shapes the operator hit).
-// It drives the repair path: the poisoned session is dropped so the next send
-// dispatches on a fresh, sanitized session instead of replaying it forever.
+// isDanglingToolCallProviderError reports whether a provider error text is a
+// rejected tool-pairing shape — any of the three the operators have hit: an
+// unanswered call, and its mirror, an orphaned result. It drives the repair
+// path: the poisoned session is dropped so the next send dispatches on a fresh,
+// sanitized session instead of replaying it forever.
 func isDanglingToolCallProviderError(text string) bool {
 	if text == "" {
 		return false
 	}
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, danglingToolCallNoOutputMarker) ||
-		strings.Contains(lower, danglingToolCallUnansweredMarker)
+		strings.Contains(lower, danglingToolCallUnansweredMarker) ||
+		strings.Contains(lower, danglingToolCallOrphanedResultMarker)
 }
 
 // sessionCreatedUnderDifferentModel reports whether the conversation's stored

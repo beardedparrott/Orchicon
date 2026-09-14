@@ -775,15 +775,32 @@ func hasDanglingToolCalls(messages []Message) bool {
 }
 
 // sanitizeChatHistory returns a copy of the provider-bound history in which
-// every assistant tool use is paired with a tool result: a call whose result is
-// missing gets an explicit aborted result (so the model still learns the call
-// happened and did not return), and a call with no id — which can never be
-// matched to a result — is dropped, along with the assistant message when
-// nothing else in it remains. This is the REPLAY-BOUNDARY invariant for the
-// native Ask transport, whose history is re-sent in full on every turn (D2):
-// whatever the session accumulated (an interrupted turn, a tool that never
-// returned, a switch to a different model), what leaves for the provider is
+// every tool call and every tool result is PAIRED — in BOTH directions. This is
+// the REPLAY-BOUNDARY invariant for the native Ask transport, whose history is
+// re-sent in full on every turn (D2): whatever the session accumulated (an
+// interrupted turn, a tool that never returned, a switch to a different model,
+// a compaction that cut a tool round in half), what leaves for the provider is
 // always well-formed.
+//
+// Forward (assistant → tool): a call whose result is missing gets an explicit
+// aborted result (so the model still learns the call happened and did not
+// return), and a call with no id — which can never be matched to a result — is
+// dropped, along with the assistant message when nothing else in it remains.
+//
+// Backward (tool → assistant): a tool result whose call was never DECLARED by a
+// preceding assistant message is dropped, along with the tool message when
+// nothing else in it remains. That is the shape which wedges a conversation
+// outright, because no repair can invent a call for it, and providers reject
+// the whole request:
+//
+//	Messages with role 'tool' must be a response to a preceding message with
+//	'tool_calls'
+//
+// Observed live after a compaction kept the last askCompactTailMessages messages
+// verbatim and the cut fell inside a tool round: the kept tail began on a tool
+// result whose assistant tool use had been collapsed away, so every subsequent
+// send 400'd. Dropping the orphan here heals such a session on its NEXT turn,
+// because dispatchTurnMessage persists the repaired history back onto it.
 func sanitizeChatHistory(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
@@ -801,7 +818,31 @@ func sanitizeChatHistory(messages []Message) []Message {
 	}
 
 	out := make([]Message, 0, len(messages))
+	// declared is the set of call ids an assistant message has ALREADY declared
+	// at this point in the walk. A tool result may only answer a call that
+	// PRECEDES it — the backward half of the invariant.
+	declared := map[string]bool{}
 	for _, m := range messages {
+		if m.Role == RoleTool {
+			kept := make([]Content, 0, len(m.Content))
+			for _, c := range m.Content {
+				// A tool-role message carries tool results. A stray non-result
+				// part has no valid provider shape here, and a result whose call no
+				// preceding assistant message declares is the ORPHAN shape
+				// providers reject ("Messages with role 'tool' must be a response
+				// to a preceding message with 'tool_calls'"). Both are dropped.
+				if c.ToolResult == nil || c.ToolResult.ToolCallID == "" || !declared[c.ToolResult.ToolCallID] {
+					continue
+				}
+				kept = append(kept, c)
+			}
+			if len(kept) == 0 {
+				// Every result in it is orphaned: the message itself goes away.
+				continue
+			}
+			out = append(out, Message{Role: RoleTool, Content: kept})
+			continue
+		}
 		if m.Role != RoleAssistant {
 			out = append(out, m)
 			continue
@@ -824,6 +865,7 @@ func sanitizeChatHistory(messages []Message) []Message {
 				continue
 			}
 			seen[id] = true
+			declared[id] = true
 			content = append(content, c)
 			if !answered[id] {
 				missing = append(missing, id)
