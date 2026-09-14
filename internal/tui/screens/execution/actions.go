@@ -40,12 +40,26 @@ const (
 const cancelReason = "cancelled from the orch TUI"
 
 // Write chords (matched by name in handleActionKey).
+//
+// The worker CRUD chords deliberately AVOID d/D: the shell's global routes run
+// BEFORE the screen sees a key, and d/D is the diff-pane toggle there — so a
+// "deprecate" on D could never fire while the content pane has focus. `u` (for
+// unpublish) carries it instead, and the pair is documented in HintLine.
 const (
 	keyCancel        = "c"
 	keyInterject     = "i"
 	keyRetryRun      = "t"
 	keyForceProgress = "p"
 	keySetModel      = "m"
+	// Worker CRUD (Item 6). Each opens a form or a confirm; none writes from
+	// Update directly.
+	keyNewWorker   = "n"
+	keyEditWorker  = "e"
+	keyEditVersion = "V"
+	keyPublish     = "p"
+	keySetActive   = "a"
+	keyDeprecate   = "u"
+	keyDelete      = "x"
 )
 
 // ClaimsKeys reports whether the screen owns every key right now (an open
@@ -124,10 +138,53 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		// A worker's model is pinned by a human and is a CHOICE from a list, not
 		// text, so the action OPENS the picker (handleActionKey) rather than
 		// running directly.
-		return []kit2.Action{{
-			Label: "set model", Key: keySetModel, Source: srcWorkers,
-			Do: func(context.Context) error { return errNeedForm("set model") },
-		}}
+		//
+		// Item 6: the full CRUD surface. Form-opening actions carry a Do that
+		// refuses by name (handleActionKey opens the form first, so it is never
+		// reached); only the direct writes appear in the footer as runnable.
+		id, name := item.ID, item.Title
+		status := workerStatusOf(item.Meta)
+		acts := []kit2.Action{
+			{Label: "new worker", Key: keyNewWorker, Source: srcWorkers,
+				Do: func(context.Context) error { return errNeedForm("new worker") }},
+			{Label: "edit", Key: keyEditWorker, Source: srcWorkers,
+				Do: func(context.Context) error { return errNeedForm("edit worker") }},
+			{Label: "edit version", Key: keyEditVersion, Source: srcWorkers,
+				Do: func(context.Context) error { return errNeedForm("edit version") }},
+			{Label: "set model", Key: keySetModel, Source: srcWorkers,
+				Do: func(context.Context) error { return errNeedForm("set model") }},
+		}
+		if status != "retired" {
+			// publish names the version it will ship (handleActionKey loads the
+			// trail first and refuses when there is no draft), so the operator is
+			// never guessing what a publish does.
+			acts = append(acts,
+				kit2.Action{Label: "publish", Key: keyPublish, Source: srcWorkers,
+					Do: func(context.Context) error { return errNeedForm("publish") }},
+				kit2.Action{Label: "set active version", Key: keySetActive, Source: srcWorkers,
+					Do: func(context.Context) error { return errNeedForm("set active version") }},
+			)
+		}
+		if status == "published" {
+			acts = append(acts, kit2.Action{
+				Label: "deprecate", Key: keyDeprecate, Danger: true, Source: srcWorkers,
+				Confirm: "Deprecate worker " + name + "?\n" +
+					"New executions stop being dispatched to it. Its versions stay readable and " +
+					"publishing again reverses this.",
+				Do: func(ctx context.Context) error { return m.rpcDeprecateWorker(ctx, id) },
+			})
+		}
+		if status != "retired" {
+			acts = append(acts, kit2.Action{
+				Label: "delete", Key: keyDelete, Danger: true, Source: srcWorkers,
+				Confirm: "Delete worker " + name + "?\n" +
+					"This removes the worker AND every version of it, and cannot be undone.",
+				Apply:    func() { m.Base.RemoveRow(srcWorkers, id) },
+				Rollback: func() { m.Refresh(srcWorkers) },
+				Do:       func(ctx context.Context) error { return m.rpcDeleteWorker(ctx, id) },
+			})
+		}
+		return acts
 	}
 	return nil
 }
@@ -135,6 +192,30 @@ func (m *Model) actionsForSelection() []kit2.Action {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// Worker CRUD chords open FORMS (or start a load that opens one), so they are
+	// dispatched before the generic action lookup — but ONLY while the Workers
+	// pane is focused. That scoping matters: `p` is also force-progress on a run,
+	// and an unscoped switch would hijack it and refuse with a worker message.
+	if m.ActiveSourceName() == srcWorkers {
+		switch kstr {
+		case keyNewWorker:
+			m.form = m.createWorkerForm()
+			m.notice = ""
+			return nil, true
+		case keyEditWorker, keyEditVersion, keyPublish, keySetActive:
+			it, ok := m.ActiveItem()
+			if !ok {
+				return m.refuse("select a worker first"), true
+			}
+			op := map[string]workerOp{
+				keyEditWorker:  opEditHeader,
+				keyEditVersion: opEditVersion,
+				keyPublish:     opPublish,
+				keySetActive:   opSetActive,
+			}[kstr]
+			return m.beginWorkerOp(it.ID, op), true
+		}
+	}
 	if kstr == keyInterject {
 		if m.ActiveSourceName() != srcExecutions {
 			return m.refuse("interjection applies to a running execution — focus the Executions pane"), true
@@ -199,9 +280,16 @@ func (m *Model) unavailableReason(key string) string {
 	case srcWorkers:
 		it, ok := m.ActiveItem()
 		if !ok {
-			return "select a worker to set its model"
+			return "select a worker first"
 		}
-		return "set the model for worker " + it.ID + " (m)"
+		status := workerStatusOf(it.Meta)
+		switch key {
+		case keyDeprecate:
+			return "deprecate applies to a PUBLISHED worker — " + it.Title + " is " + status
+		case keyDelete:
+			return "delete (x) removes " + it.Title + " and all of its versions"
+		}
+		return "worker " + it.Title + " (" + status + ")"
 	}
 	return ""
 }
@@ -325,7 +413,10 @@ func (m *Model) HintLine() string {
 	case srcRuns:
 		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
 	case srcWorkers:
-		return theme.HintText.Render("m: set worker model (adapter → provider → model) · enter: versions + detail · r: refresh")
+		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
+			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") + " m: set model " + theme.DetailKey.Render("·") +
+			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
+			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
 }

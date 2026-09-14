@@ -49,6 +49,11 @@ type Model struct {
 	modelPicker *kit2.ModelPicker
 	// modelPickerWorker is the worker the open picker writes to.
 	modelPickerWorker string
+	// workerOp / workerOpID remember which worker CRUD operation is waiting on a
+	// load, so its form opens when the data lands (and a late result for a worker
+	// the operator has left is dropped). See worker_forms.go.
+	workerOp   workerOp
+	workerOpID string
 	// workerModel caches each worker's ACTIVE model_ref — the workers list
 	// already carries it (WorkerListItem.active_model_ref), so the picker seeds
 	// without another round trip. Written by the fetch goroutine and read from
@@ -61,6 +66,21 @@ type Model struct {
 	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
 	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
 	rpcSetWorkerModel func(ctx context.Context, workerID, ref string) error
+	// Worker CRUD loads: thunks for the same reason (worker_forms.go) — the
+	// interactive operations need the worker's CURRENT state before they can
+	// seed a form or decide whether they apply.
+	rpcGetWorker          func(ctx context.Context, id string) (*apiv1.Worker, error)
+	rpcListWorkerVersions func(ctx context.Context, id string) ([]*apiv1.WorkerVersion, error)
+	// Worker CRUD writes: thunks so a test asserts WHICH write fired without a
+	// plane, mirroring rpcSetWorkerModel.
+	rpcCreateWorker             func(ctx context.Context, req *apiv1.CreateWorkerRequest) error
+	rpcUpdateWorker             func(ctx context.Context, req *apiv1.UpdateWorkerRequest) error
+	rpcDeleteWorker             func(ctx context.Context, id string) error
+	rpcPublishWorkerVersion     func(ctx context.Context, req *apiv1.PublishWorkerVersionRequest) error
+	rpcDeprecateWorker          func(ctx context.Context, id string) error
+	rpcSetActiveWorkerVersion   func(ctx context.Context, workerID string, version int32) error
+	rpcUpdateWorkerVersion      func(ctx context.Context, req *apiv1.UpdateWorkerVersionRequest) error
+	rpcCreateWorkerVersionWrite func(ctx context.Context, req *apiv1.CreateWorkerVersionRequest) error
 }
 
 // New builds the screen. Execution events stream live; workflow events
@@ -82,6 +102,16 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcModelProviders = m.defaultModelProviders
 	m.rpcModelModels = m.defaultModelModels
 	m.rpcSetWorkerModel = m.defaultSetWorkerModel
+	m.rpcGetWorker = m.defaultGetWorker
+	m.rpcListWorkerVersions = m.defaultListWorkerVersions
+	m.rpcCreateWorker = m.defaultCreateWorker
+	m.rpcUpdateWorker = m.defaultUpdateWorker
+	m.rpcDeleteWorker = m.defaultDeleteWorker
+	m.rpcPublishWorkerVersion = m.defaultPublishWorkerVersion
+	m.rpcDeprecateWorker = m.defaultDeprecateWorker
+	m.rpcSetActiveWorkerVersion = m.defaultSetActiveWorkerVersion
+	m.rpcUpdateWorkerVersion = m.defaultUpdateWorkerVersion
+	m.rpcCreateWorkerVersionWrite = m.defaultCreateWorkerVersion
 	m.Base.SetStatuses([]screenkit.StatusMsg{
 		{Name: "execution-events", Status: "idle"},
 		{Name: "workflow-events", Status: "idle"},
@@ -360,6 +390,11 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
+
+	case workerDetailMsg:
+		// A worker CRUD chord's load finished: open the form it was waiting for
+		// (or refuse, naming the reason). See worker_forms.go.
+		return m, m.openWorkerOpForm(msg)
 
 	case subs.EventPokeMsg:
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == "executions" && m.Base.DetailID() != "" {

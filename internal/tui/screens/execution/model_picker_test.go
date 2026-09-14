@@ -242,9 +242,11 @@ func TestWorkerModelKeyOpensThePickerForTheSelectedWorker(t *testing.T) {
 	if len(*writes) != 0 {
 		t.Fatal("opening the picker must not write anything")
 	}
-	// The pane advertises the gesture.
-	if h := m.HintLine(); !strings.Contains(h, "set worker model") {
-		t.Fatalf("the workers hint must advertise the gesture, got %q", h)
+	// The pane advertises the gesture. (The hint now also carries the Item 6
+	// CRUD chords, so this asserts the MODEL gesture specifically rather than the
+	// whole line.)
+	if h := m.HintLine(); !strings.Contains(h, "m: set model") {
+		t.Fatalf("the workers hint must advertise the set-model gesture, got %q", h)
 	}
 	// The row action is offered for the selection.
 	found := false
