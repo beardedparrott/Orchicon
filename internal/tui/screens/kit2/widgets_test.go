@@ -420,3 +420,31 @@ func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
 		t.Fatalf("a click on the launch page selected %q in an INVISIBLE table (was %q)", got, before)
 	}
 }
+
+// DetailWidth must agree with the pane the detail is actually drawn in, the
+// moment the layout is applied — not one render later.
+//
+// HideSources renders the detail at the FULL width, while SetSize used to store
+// the SPLIT width and leave the correction to the next render. Callers use
+// DetailWidth() as their WRAP width, so until that render ran the content was
+// laid out for a different pane than it was drawn in: a wrap width wider than
+// the pane gets truncated at the right edge (cutting a right-aligned line — an
+// operator's own chat message — down to its leading whitespace), and a narrower
+// one wastes the pane.
+func TestDetailWidthMatchesTheRenderedPaneWhenSourcesAreHidden(t *testing.T) {
+	b := &Base{HideSources: true}
+	b.width, b.height = 80, 20
+	b.AddSource("conversations", "Conversations", func(ctx context.Context, page string) ([]Item, string, error) {
+		return nil, "", nil
+	})
+	b.SetSize(80, 20)
+	if got := b.DetailWidth(); got != 78 {
+		t.Fatalf("DetailWidth = %d, want 78 (the full-width pane's inner width); a split width here is what truncated right-aligned content", got)
+	}
+	// And the rendered pane agrees.
+	p := NewPanel("Detail", b.width, b.height)
+	p.SetContent("x")
+	if got, want := p.innerW(), b.DetailWidth(); got != want {
+		t.Fatalf("panel innerW = %d but DetailWidth = %d — the wrap width and the pane disagree", got, want)
+	}
+}

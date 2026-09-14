@@ -231,7 +231,18 @@ func (b *Base) regionWidths() []int {
 // SetSize lays out the panes (equal split + detail).
 func (b *Base) SetSize(w, h int) {
 	b.width, b.height = w, h
-	if len(b.sources) == 0 {
+	// HideSources renders the DETAIL PANE ONLY, at the FULL width
+	// (View → detailPaneView(b.width, b.height)). The stored detail width must
+	// agree with that, because DetailWidth() is the WRAP width its callers lay
+	// their content out with (the Ask transcript in particular).
+	//
+	// It used to be assigned the SPLIT width here — a fraction of w — while the
+	// very next render silently overwrote it with the full width. Between those
+	// two moments DetailWidth() disagreed with the pane being drawn: wider and the
+	// right edge is TRUNCATED by the frame (which cuts a right-aligned operator
+	// message down to its leading whitespace, and slices long lines mid-sentence);
+	// narrower and the content is wrapped short of the pane it sits in.
+	if b.HideSources || len(b.sources) == 0 {
 		b.detail.Width, b.detail.Height = w, h
 		return
 	}
