@@ -6,6 +6,7 @@ import {
   Paperclip,
   Mic,
   Minimize2,
+  Loader2,
   Square,
   RefreshCw,
   Brain,
@@ -28,6 +29,7 @@ import { Route as rootRoute } from "@/routes/__root";
 import { useQueryClient } from "@tanstack/react-query";
 import { AskModelChip } from "@/components/AskModelChip";
 import { Button } from "@/components/ui/button";
+import { LiveDuration } from "@/components/ui/live-duration";
 import { ModeToggle } from "@/components/ui/mode-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
@@ -1449,6 +1451,7 @@ function AskOrchiconPage() {
                 onModelChange={handleAskModelChange}
                 restoreDraft={restoreDraft}
                 onCompact={handleCompactConversation}
+                compacting={compactConv.isPending}
               />
             </div>
           </div>
@@ -1757,6 +1760,7 @@ function ChatInputField({
   onModelChange,
   restoreDraft,
   onCompact,
+  compacting = false,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -1781,6 +1785,11 @@ function ChatInputField({
   // distinguishes a real compaction from a server-side DECLINE (whose reason
   // arrives in `detail`), so a decline is not dressed up as a success.
   onCompact?: (convId: string) => Promise<{ detail: string; compacted: boolean }>;
+  // compacting reports that a compaction is IN FLIGHT, so the control can show
+  // progress during the wait instead of sitting mute and greyed. The parent
+  // derives it from the mutation's OWN lifecycle (isPending), which settles
+  // with the request, rather than a flag this component must remember to clear.
+  compacting?: boolean;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1837,6 +1846,14 @@ function ChatInputField({
 
   const [pendingReads, setPendingReads] = useState(0);
 
+  // When the running compaction started (ms since epoch). The RPC is UNARY and
+  // server-side it runs a summarize MODEL CALL, so it can take tens of seconds
+  // and reports no intermediate progress at all. The control therefore shows an
+  // ELAPSED timer, not a percentage: elapsed time is the one progress fact the
+  // client actually has, and a fabricated progress bar would imply a
+  // measurement the server never sends.
+  const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
+
   // runCompact frees this conversation's context (the /compact action). ONE
   // implementation, shared by the typed command and the toolbar button, so the
   // two can never drift on the guards — the same reason the TUI keeps a single
@@ -1862,6 +1879,7 @@ function ChatInputField({
     }
     if (!onCompact) return;
     setSending(true);
+    setCompactStartedAt(Date.now());
     try {
       const res = await onCompact(convId);
       // A DECLINE is not an achievement: the server reports compacted=false with
@@ -1878,19 +1896,30 @@ function ChatInputField({
       });
     } finally {
       setSending(false);
+      setCompactStartedAt(null);
     }
   }, [convId, isStreaming, onCompact]);
 
   // Why compaction is unavailable right now ("" = available). Surfacing the
   // reason on the control BEFORE the click beats a toast AFTER it — these are
   // the same two conditions runCompact refuses on.
+  // A RUNNING compaction is deliberately NOT one of the refusal reasons. It used
+  // to report "Working…" here, which rendered as a dead greyed button: nothing
+  // moved, so the operator could not tell work from a hang until the completion
+  // toast appeared. While compacting, the control reports its own progress (see
+  // the button) instead of a refusal — the disabled state stays (a second fire
+  // would race the rewrite), but it is no longer mute.
   const compactBlocked = !convId
     ? "Open a conversation first"
     : isStreaming
       ? "A turn is in flight — stop it before compacting"
-      : sending
+      : !compacting && sending
         ? "Working…"
         : "";
+
+  // Disabled while compacting as well as when refused, so the in-flight state
+  // cannot double-fire — but it is the PROGRESS rendering that fills the wait.
+  const compactDisabled = compacting || compactBlocked !== "";
 
   const handleSubmit = useCallback(async () => {
     // The sending lock only guards a double-click on a FRESH send. While a
@@ -2373,23 +2402,56 @@ function ChatInputField({
                 state (right): the right group already carries the model, the
                 session stats and the mode. Disabled — with the reason on the
                 control — when there is nothing to compact or a turn is live,
-                which is exactly when the typed command would refuse. */}
+                which is exactly when the typed command would refuse.
+                While it RUNS the control must read as alive, not dead: the
+                shared disabled style dims to 50% opacity, which is exactly what
+                made a long compaction look like a broken button, so the busy
+                state restores full opacity and tints the label. cn is
+                tailwind-merge, so disabled:opacity-100 supersedes the base
+                disabled:opacity-50 rather than stacking with it. */}
             {onCompact && (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => void runCompact()}
-                disabled={compactBlocked !== ""}
+                disabled={compactDisabled}
                 title={
-                  compactBlocked ||
-                  "Compact this conversation — frees context; the server decides if it can"
+                  compacting
+                    ? "Compacting… the server is summarizing this conversation (it runs a model call, so this can take a while)"
+                    : compactBlocked ||
+                      "Compact this conversation — frees context; the server decides if it can"
                 }
                 aria-label="Compact conversation"
+                aria-busy={compacting}
                 data-testid="ask-compact"
+                data-compacting={compacting ? "true" : "false"}
+                className={
+                  compacting
+                    ? "disabled:opacity-100 text-cyan-600 dark:text-cyan-400"
+                    : undefined
+                }
               >
-                <Minimize2 aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
-                Compact
+                {compacting ? (
+                  <>
+                    <Loader2
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 mr-1 animate-spin"
+                    />
+                    Compacting
+                    {compactStartedAt !== null && (
+                      <LiveDuration
+                        startedAt={compactStartedAt}
+                        className="ml-1 font-mono text-xs text-muted-foreground"
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Minimize2 aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
+                    Compact
+                  </>
+                )}
               </Button>
             )}
           </div>
