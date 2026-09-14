@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -257,6 +258,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	}
 	if mo, ok := msg.(tea.MouseMsg); ok {
 		return m.dispatchMouse(mo)
+	}
+	// The composer's caret animates from cursor.BlinkMsg ticks, which are NOT key
+	// messages — and the dock is only ever handed keys (three call sites, all
+	// tea.KeyMsg). Without this the tick reached the shell and was dropped, so the
+	// caret never blinked no matter what the dock did with it.
+	if bm, ok := msg.(cursor.BlinkMsg); ok {
+		_, cmd := m.dock.Update(bm)
+		return m, cmd
 	}
 	k, isKey := msg.(tea.KeyMsg)
 	if isKey && m.chatFocus == focusComposer && k.String() == "ctrl+c" {
@@ -632,6 +641,16 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
+	case askDefaultSettingsMsg:
+		// Store the tenant default; if a conversation is already open its strip may
+		// now be able to resolve a model (and therefore a context window) that it
+		// could not before, so re-read the metrics.
+		if msg.model != "" && msg.model != m.askDefaultModel {
+			m.askDefaultModel = msg.model
+			m.ctxWindowFor = ""
+			return m.refreshMetrics()
+		}
+		return nil
 	case metricsMsg:
 		return m.applyMetrics(msg)
 	case chatConvCreatedMsg:
@@ -647,6 +666,15 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 			Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
 		})
 		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
+		// Load the durable transcript and the session metrics EXPLICITLY.
+		//
+		// This cannot go through OpenAskConversation: that helper early-returns
+		// when the conversation is already active (`m.chatConvID == id`), and the
+		// handler above just set it — so the durable transcript and
+		// refreshMetrics were both skipped for a brand-new conversation. The
+		// transcript stayed optimistic-only and the stat strip stayed empty until
+		// the turn happened to end.
+		cmds = append(cmds, m.chat.OpenConversation(msg.convID), m.refreshMetrics())
 		// The new conversation has no detail open: without a RequestDetail
 		// the onChatWake DetailID()==chatConvID guard never passes and the
 		// fresh turn's chunks land in chatStore but never repaint (first

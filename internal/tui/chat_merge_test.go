@@ -98,3 +98,61 @@ func TestMergeHistoryDedupesWithContextPreamble(t *testing.T) {
 		t.Fatalf("kept user row = %q, want the durable text", got[0].Text)
 	}
 }
+
+// Regression: a durable poll that lands BEFORE the operator's message is visible
+// to it must not erase that message.
+//
+// replace() is the completion authority and swaps the store for the durable
+// transcript, which is right once the turn resolves. But the transcript load at
+// conversation CREATION races the turn that writes the user row, so an early —
+// legitimately EMPTY — fetch used to wipe the optimistic echo. The conversation
+// then rendered only the reply, and because the first-send path skipped its
+// durable reload the operator's opening message never came back: the reported
+// "it is still not showing the initial user message on a new conversation".
+//
+// The rule: an unmatched optimistic echo SURVIVES a replace, and the durable copy
+// supersedes it the moment the durable list actually contains it (exactly one copy
+// either way).
+func TestReplaceKeepsAnUnmatchedOptimisticEcho(t *testing.T) {
+	m := newTestApp()
+	const conv = "c1"
+	user := chat.ChatItem{Kind: chat.KindUser, Text: "test", Key: "draft-1", Live: true}
+	reply := chat.ChatItem{Kind: chat.KindText, Text: "reply", Key: "m-2", Live: true}
+
+	m.chatStore.append(conv, user)
+
+	// An early durable fetch that has not seen the user row yet.
+	m.chatStore.replace(conv, nil)
+	got := m.chatStore.snapshot(conv)
+	if len(got) != 1 || got[0].Text != "test" {
+		t.Fatalf("an early EMPTY poll wiped the just-sent message: %+v", got)
+	}
+
+	// The reply streams in.
+	m.chatStore.append(conv, reply)
+	if got := m.chatStore.snapshot(conv); len(got) != 2 {
+		t.Fatalf("store = %+v, want the user echo plus the reply", got)
+	}
+
+	// A poll that DOES contain the message supersedes the echo — one copy, not two.
+	m.chatStore.replace(conv, []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "test", Key: "m-1"},
+		{Kind: chat.KindText, Text: "reply", Key: "m-2"},
+	})
+	got = m.chatStore.snapshot(conv)
+	if len(got) != 2 {
+		t.Fatalf("store = %+v, want exactly two rows (no duplicate echo)", got)
+	}
+	users := 0
+	for _, it := range got {
+		if it.Kind == chat.KindUser {
+			users++
+			if !strings.HasPrefix(it.Key, "m-") {
+				t.Errorf("the surviving user row must be the DURABLE one, got key %q", it.Key)
+			}
+		}
+	}
+	if users != 1 {
+		t.Fatalf("found %d user rows, want exactly 1", users)
+	}
+}

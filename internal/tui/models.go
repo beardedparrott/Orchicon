@@ -84,11 +84,16 @@ func (m *App) commitAskModel(ref string) tea.Cmd {
 	return nil
 }
 
-// currentAskModel is the ref the composer reports and the picker seeds from:
-// the open conversation's, else the pending one a new conversation will use.
+// currentAskModel is the ref the composer reports and the picker seeds from,
+// following the GUI's chain: the open conversation's model_ref, else the pending
+// selection for a new chat, else the TENANT DEFAULT (settings).
+//
+// The tenant-default link was missing, so a conversation created without its own
+// model_ref reported no model — and because the context window resolves from the
+// ref, the strip showed a bare occupancy with no limit.
 func (m *App) currentAskModel() string {
 	if m.chat == nil {
-		return ""
+		return m.askDefaultModel
 	}
 	if m.chatConvID != "" {
 		for _, c := range m.chat.Conversations() {
@@ -97,7 +102,10 @@ func (m *App) currentAskModel() string {
 			}
 		}
 	}
-	return m.chat.PendingModel()
+	if pending := m.chat.PendingModel(); pending != "" {
+		return pending
+	}
+	return m.askDefaultModel
 }
 
 // currentModeLabel is the persona the composer reports (the GUI renders this

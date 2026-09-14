@@ -144,7 +144,11 @@ type App struct {
 	metrics      sessionMetrics
 	ctxWindowFor string
 	ctxWindow    int64
-	execSessions map[string][]chat.ChatItem // execution id → durable session items
+	// askDefaultModel is the tenant's DefaultAskOrchiconModel (settings). It is
+	// the LAST link in the composer's model chain after the conversation's own
+	// model_ref and a pending selection — the GUI's ordering.
+	askDefaultModel string
+	execSessions    map[string][]chat.ChatItem // execution id → durable session items
 
 	// Transcript Stream widgets (kit2): one per conversation. Live chunks
 	// APPEND (preserving the operator's scroll offset; following the tail
@@ -1102,11 +1106,42 @@ func (m *App) Init() tea.Cmd {
 	// The startup tab loads here; every other tab loads on first activation
 	// (ensureLoaded, called from SwitchTo).
 	m.ensureLoaded(m.active)
-	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations())
+	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.fetchAskDefaultModel())
 	if c := m.drainStaged(); c != nil {
 		cmds = append(cmds, c)
 	}
 	return tea.Batch(cmds...)
+}
+
+// askDefaultSettingsMsg carries the tenant's default Ask model — the fallback the
+// composer reports when the conversation itself has no model_ref.
+type askDefaultSettingsMsg struct {
+	model string
+	err   error
+}
+
+// fetchAskDefaultModel reads the tenant's DefaultAskOrchiconModel.
+//
+// The TUI previously never consulted it: the composer's model came only from the
+// active conversation's model_ref (then the pending one for a new chat), so a
+// conversation created WITHOUT a model_ref reported no model at all — and, since
+// the context window is resolved from that ref, the strip showed a bare
+// occupancy with no limit. The GUI has always used the full chain
+// (`conv.modelRef || settings.defaultAskOrchiconModel || fallback`); this mirrors it.
+func (m *App) fetchAskDefaultModel() tea.Cmd {
+	cl := m.clients
+	return func() tea.Msg {
+		if cl == nil || cl.Settings == nil {
+			return askDefaultSettingsMsg{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+		if err != nil {
+			return askDefaultSettingsMsg{err: err}
+		}
+		return askDefaultSettingsMsg{model: resp.Msg.GetSettings().GetDefaultAskOrchiconModel()}
+	}
 }
 
 // Update implements tea.Model (via the router dispatch).
@@ -1887,9 +1922,35 @@ func matchesAny(candidates []string, want string) bool {
 // replace swaps the conversation's items for the durable transcript —
 // the completion authority (GUI semantics: the poll replaces the live
 // buffer once the turn resolves, so nothing renders twice).
+//
+// EXCEPT: a live optimistic user echo (Key "draft-*") that the incoming durable
+// list does NOT yet contain is KEPT. A durable fetch can legitimately land before
+// the user's own row is visible to it — at conversation creation the transcript
+// load races the turn that writes the message — and a blind replace then wiped
+// the operator's just-sent text, leaving a conversation whose FIRST user message
+// never appeared while the reply streamed in normally (the operator's "it is
+// still not showing the initial user message on a new conversation"). The durable
+// copy supersedes the echo as soon as it actually contains it, so this preserves
+// exactly one copy.
 func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	s.mu.Lock()
-	s.items[convID] = append([]chat.ChatItem{}, items...)
+	live := s.items[convID]
+	var durableUser []string
+	for _, it := range items {
+		if it.Kind == chat.KindUser {
+			durableUser = append(durableUser, it.Text)
+		}
+	}
+	out := append([]chat.ChatItem{}, items...)
+	for _, it := range live {
+		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && !matchesAny(durableUser, it.Text) {
+			out = append(out, it) // the durable view has not caught up yet
+		}
+	}
+	if len(out) != len(items) {
+		chat.SortChronologically(out)
+	}
+	s.items[convID] = out
 	s.mu.Unlock()
 }
 
