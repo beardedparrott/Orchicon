@@ -94,6 +94,14 @@ func (m *App) MenuSelect() {
 	}
 	entry := tm.Entries[tm.Sel]
 	m.closeTabMenu()
+	// Selecting an entry HANDS THE ARROWS TO THE SCREEN.
+	//
+	// This is step 4 of the operator's model — "then down/arrow keys move through
+	// the pane items" — and without it the keys stayed wherever they were (the
+	// composer), because selecting a source is a screen-side change that never
+	// moved shell focus. Content focus is what makes the next arrow key reach the
+	// list the operator just chose.
+	m.setFocus(focusContent)
 	// A verb row runs its action (Ask's New / Conversations).
 	if entry.Action != nil {
 		entry.Action(m)
@@ -137,29 +145,34 @@ func (m *App) MenuClick(x, y int) bool {
 
 // menuActivationKey reports whether k should open the active tab's dropdown.
 //
-// FROM CONTENT FOCUS, DOWN drops the menu down. The operator's ask: "tab goes
-// through the different menus now, but what key actually drops the menu down to
-// the submenu? My suggestion would be the down arrow."
+// ONLY from the composer, and only with an empty buffer — so a real message keeps
+// Enter as send. That is the original Phase-3.5 gesture and it is kept.
 //
-// Enter/Space stay off-limits from CONTENT focus: they belong to the screen —
-// selecting a row, opening its detail, running its row action. Claiming them
-// there is what made the operator unable to select anything in a pane ("hitting
-// enter or spacebar is just opening up the tab menu and not selecting anything").
-// Down is the key the dropdown was missing: it is the direction it opens, and
-// with content focused at the top of a list the vertical keys had nothing to do.
+// CONTENT focus no longer opens the menu on any key. Down used to be bound here
+// and that was a mistake: the shell claimed it on every screen, so the vertical
+// keys could never reach a pane — "if you hit enter for example on 'Workers', the
+// arrow keys still move the submenu around instead of moving up and down on the
+// Workers", and "the default Projects view under Work captures the down arrows".
+// The operator's model is explicit:
+//
+//  1. Tab moves through the menu
+//  2. up/down move through the submenu
+//  3. Enter selects the submenu
+//  4. then the arrows move through the pane items
+//  5. Tab breaks that and moves through the menu again
+//
+// so TAB is what puts you in menu mode (see the tab chord in router.go) and the
+// menu being OPEN is the mode: while it is open up/down navigate it, and once it
+// closes the arrows belong to the screen.
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	if m.chatFocus != focusComposer {
-		return k.String() == "down"
+		return false
 	}
 	switch k.String() {
 	case "enter":
 		return strings.TrimSpace(m.dock.Value()) == ""
 	case " ", "space":
 		return m.dock.Value() == ""
-	case "down":
-		// The composer's own vertical keys do nothing with an empty buffer, so the
-		// same gesture works from the composer too — one key, both focus states.
-		return strings.TrimSpace(m.dock.Value()) == ""
 	}
 	return false
 }

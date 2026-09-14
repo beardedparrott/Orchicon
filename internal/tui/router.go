@@ -312,7 +312,32 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			if fs, ok := m.screens[m.active].(interface{ ModalFormOpen() bool }); ok && fs.ModalFormOpen() {
 				return m.passToScreen(msg)
 			}
+			// TAB is also the MENU gesture. The operator's model: "1. Tab moves
+			// through menu, 2. up/down arrow keys move through submenu, 3. Hitting
+			// enter selects submenu, 4. then down/arrow keys move through the pane
+			// items, 5. Tab breaks that and moves through submenu again."
+			//
+			// So one press does two things: advance the tab ring, and DROP THAT
+			// TAB'S SUBMENU OPEN — which is what gives steps 2 and 3 something to
+			// act on immediately. Landing back on the composer (the ring's last
+			// stop) closes it, because there is no submenu there. The menu being
+			// open IS the mode: open → up/down drive it; closed → arrows belong to
+			// the screen.
+			//
+			// tabRingNext's own first rule is "an open dropdown just closes" (one
+			// action per press). That is right for the CHORD-driven entry but wrong
+			// here: Tab is the operator's menu key, so while the menu is open Tab
+			// must ADVANCE to the next tab's menu rather than dismiss this one.
+			// Closing it first lets tabRingNext take its normal advance path.
+			if m.TabMenu() != nil {
+				m.closeTabMenu()
+			}
 			m.tabRingNext()
+			if m.chatFocus == focusContent {
+				m.openTabMenu(m.active)
+			} else {
+				m.closeTabMenu()
+			}
 			m.refreshStreamStatus()
 			return m, nil
 		case "ctrl+g":
@@ -424,7 +449,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 							m.selectRailConversation(5)
 						}
 					} else {
-						m.scrollActiveDetail(d)
+						// Any other screen: the vertical keys belong to the SCREEN, which
+						// decides for itself — its list moves the cursor, and its DETAIL
+						// scrolls once the detail holds focus. The shell scrolling the detail
+						// here instead is why the arrow keys never moved a list from the
+						// composer (the operator's "the default Projects view under Work
+						// captures the down arrows").
+						return m.passToScreen(msg)
 					}
 					m.refreshStreamStatus()
 					return m, nil
