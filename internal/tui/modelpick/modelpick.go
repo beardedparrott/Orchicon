@@ -206,7 +206,7 @@ func ModelOptionsNative(models []*apiv1.ProviderModel) []kit2.PickerOption {
 		out = append(out, kit2.PickerOption{
 			Value: mo.GetId(),
 			Label: mo.GetId(),
-			Meta:  ModelMeta(mo.GetContext(), mo.GetReasoning(), mo.GetWarnNoContext()),
+			Meta:  ModelMeta(mo.GetContext(), mo.GetReasoning(), mo.GetWarnNoContext(), mo.GetSource()),
 		})
 	}
 	return out
@@ -226,7 +226,7 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 		out = append(out, kit2.PickerOption{
 			Value: mo.GetId(),
 			Label: label,
-			Meta:  ModelMeta(ctxTokens, mo.GetCapabilities().GetReasoning(), ctxTokens <= 0),
+			Meta:  ModelMeta(ctxTokens, mo.GetCapabilities().GetReasoning(), ctxTokens <= 0, ""),
 		})
 	}
 	return out
@@ -307,11 +307,16 @@ func cliModelContext(ctx context.Context, cl *client.Clients, kind, provider, mo
 // --- display helpers --------------------------------------------------------
 
 // ModelMeta is a model row's dim right-hand context: the context window the
-// compaction math depends on, the reasoning flag, and the missing-context
-// warning (ADR-0006 D8: a model without a context hint stays SELECTABLE but is
-// annotated, never silently dropped).
-func ModelMeta(contextTokens int64, reasoning, warnNoContext bool) string {
-	parts := make([]string, 0, 3)
+// compaction math depends on, the reasoning flag, the missing-context warning
+// (ADR-0006 D8: a model without a context hint stays SELECTABLE but is
+// annotated, never silently dropped), and the ORIGIN of those numbers.
+//
+// Naming the origin is the point. A hand-authored snapshot and a maintained
+// registry both render as "1.0M ctx", which is exactly how a wrong value goes
+// unnoticed — the operator cannot tell a verified number from a typed one. With
+// the source shown, the claim is checkable.
+func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string) string {
+	parts := make([]string, 0, 4)
 	switch {
 	case contextTokens > 0:
 		parts = append(parts, FmtTokens(contextTokens)+" ctx")
@@ -321,7 +326,23 @@ func ModelMeta(contextTokens int64, reasoning, warnNoContext bool) string {
 	if reasoning {
 		parts = append(parts, "reasoning")
 	}
+	if short := shortSource(source); short != "" {
+		parts = append(parts, short)
+	}
 	return strings.Join(parts, " · ")
+}
+
+// shortSource renders a provenance for a picker row. The provider's own probe is
+// the unremarkable default (the provider answering for its own model) and gets no
+// annotation, so the row only grows when the number came from somewhere else.
+func shortSource(source string) string {
+	switch {
+	case source == "", source == "probe":
+		return ""
+	case strings.HasPrefix(source, "registry:"):
+		return strings.TrimPrefix(source, "registry:")
+	}
+	return source
 }
 
 // FmtTokens renders a token count compactly (200K, 1.0M).

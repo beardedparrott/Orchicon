@@ -33,9 +33,19 @@ type SourcingService struct {
 	// ProbeTTL is the /models probe cache TTL (default 5 min).
 	ProbeTTL time.Duration
 
+	// The live model-metadata registry (modelregistry.go). RegistryURL empty
+	// resolves ORCHICON_MODEL_REGISTRY_URL, then models.dev; RegistryDisabled
+	// turns it off. RegistryTTL overrides the revalidation interval. CacheDir is
+	// where the fetched body + its ETag are cached across restarts (empty
+	// resolves ORCHICON_DATA_DIR, then /var/lib/orchicon).
+	RegistryURL string
+	RegistryTTL time.Duration
+	CacheDir    string
+
 	mu       sync.Mutex
 	probeTTL time.Duration
 	cache    map[string]probeEntry // provider id → probed models
+	reg      registryCache         // live registry state (owns its own lock)
 }
 
 type probeEntry struct {
@@ -100,6 +110,21 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 			s.warn("sourcing: probe failed for provider %s — degraded, NO models served (no synthesized fallback); fix the endpoint/token or add manual entries", p.ID)
 		} else {
 			out = append(out, probed...)
+			// REGISTRY FIRST, catalog second. Trust order is
+			// probe > registry > vendored snapshot: the provider's own probe is the
+			// authority on its own models, a maintained registry beats an authored
+			// snapshot for the same field, and every helper below only fills what is
+			// still EMPTY — so a provider-reported value is never overwritten.
+			//
+			// One registry read serves the whole list (map lookups after that), and a
+			// disabled/unavailable registry yields nil so this is a no-op and the
+			// catalog below behaves exactly as it did before the registry existed.
+			regModels := s.registryModels(ctx)
+			for i := range out {
+				if rm, ok := registryLookup(regModels, p.ID, out[i].ID); ok {
+					applyRegistryMeta(&out[i], rm)
+				}
+			}
 			// Catalog = metadata enrichment by id match (context/output/
 			// tools/pricing), never new ids. GetModelForProvider is
 			// alias-aware: live ids that differ from catalog keys (e.g.
@@ -110,21 +135,35 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 				if !ok {
 					continue
 				}
+				used := false
 				if out[i].Context <= 0 && c.Context > 0 {
 					out[i].Context = c.Context
+					used = true
 				}
 				if out[i].MaxOutput <= 0 && c.MaxOutput > 0 {
 					out[i].MaxOutput = c.MaxOutput
+					used = true
 				}
 				if out[i].Tools == nil && c.Tools != nil {
 					t := *c.Tools
 					out[i].Tools = &t
+					used = true
 				}
 				if len(out[i].ReasoningEfforts) == 0 && len(c.ReasoningEfforts) > 0 {
 					out[i].ReasoningEfforts = c.ReasoningEfforts
+					used = true
 				}
 				if out[i].Pricing == nil && c.Pricing != nil {
 					out[i].Pricing = c.Pricing
+					used = true
+				}
+				// Provenance names the most-trusted EXTERNAL source that contributed,
+				// so a row reports where its numbers came from. The probe's own
+				// "probe" stamp is the unremarkable default and is only replaced when
+				// something external actually supplied a field — and never when the
+				// registry already claimed the row (it outranks the snapshot).
+				if used && (out[i].Provenance == "" || out[i].Provenance == "probe") {
+					out[i].Provenance = "catalog"
 				}
 			}
 		}

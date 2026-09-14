@@ -143,7 +143,7 @@ func TestModelMetaAndFmtTokens(t *testing.T) {
 		{empty: true},
 	}
 	for _, c := range cases {
-		got := ModelMeta(c.ctx, c.reason, c.warn)
+		got := ModelMeta(c.ctx, c.reason, c.warn, "")
 		if c.empty {
 			if got != "" {
 				t.Errorf("ModelMeta(zero) = %q, want empty (nothing to annotate)", got)
@@ -154,6 +154,34 @@ func TestModelMetaAndFmtTokens(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Errorf("ModelMeta(%d, %v, %v) = %q, want it to contain %q", c.ctx, c.reason, c.warn, got, want)
 			}
+		}
+	}
+}
+
+// The ORIGIN of a number must be visible, because "1.0M ctx" looks identical
+// whether it came from the provider, a maintained registry, or a hand-authored
+// snapshot — and being unable to tell those apart is exactly how a wrong value
+// goes unnoticed (the operator's "Do NOT hardcode values I tell you").
+func TestModelMetaNamesTheOriginOfTheNumber(t *testing.T) {
+	// The provider answering for its own model is the unremarkable default: no
+	// extra noise on the row.
+	for _, src := range []string{"", "probe"} {
+		if got := ModelMeta(1000000, false, false, src); strings.Contains(got, "models") || strings.Contains(got, "catalog") {
+			t.Errorf("ModelMeta(source=%q) = %q, want no origin annotation for a probe-sourced number", src, got)
+		}
+	}
+	// Anything else is named, short enough for a picker row.
+	for _, c := range []struct{ source, want string }{
+		{"registry:models.dev", "models.dev"},
+		{"catalog", "catalog"},
+		{"manual", "manual"},
+	} {
+		got := ModelMeta(1000000, false, false, c.source)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("ModelMeta(source=%q) = %q, want it to name %q", c.source, got, c.want)
+		}
+		if strings.Contains(got, "registry:") {
+			t.Errorf("ModelMeta(source=%q) = %q, want the scheme stripped for display", c.source, got)
 		}
 	}
 }
