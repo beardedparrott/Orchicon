@@ -77,6 +77,16 @@ type Model struct {
 	// seed a form or decide whether they apply.
 	rpcGetWorker          func(ctx context.Context, id string) (*apiv1.Worker, error)
 	rpcListWorkerVersions func(ctx context.Context, id string) ([]*apiv1.WorkerVersion, error)
+	// Workflow lifecycle loads (workflow_forms.go), same shape.
+	rpcGetWorkflow          func(ctx context.Context, id string) (*apiv1.Workflow, error)
+	rpcListWorkflowVersions func(ctx context.Context, id string) ([]*apiv1.WorkflowVersion, error)
+	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
+	// write fired without a plane.
+	rpcCreateWorkflow    func(ctx context.Context, req *apiv1.CreateWorkflowRequest) error
+	rpcUpdateWorkflow    func(ctx context.Context, id, name string) error
+	rpcPublishWorkflow   func(ctx context.Context, id, note string) error
+	rpcDeprecateWorkflow func(ctx context.Context, id string) error
+	rpcDeleteWorkflow    func(ctx context.Context, id string) error
 	// Worker CRUD writes: thunks so a test asserts WHICH write fired without a
 	// plane, mirroring rpcSetWorkerModel.
 	rpcCreateWorker             func(ctx context.Context, req *apiv1.CreateWorkerRequest) error
@@ -110,6 +120,13 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcSetWorkerModel = m.defaultSetWorkerModel
 	m.rpcGetWorker = m.defaultGetWorker
 	m.rpcListWorkerVersions = m.defaultListWorkerVersions
+	m.rpcGetWorkflow = m.defaultGetWorkflow
+	m.rpcListWorkflowVersions = m.defaultListWorkflowVersions
+	m.rpcCreateWorkflow = m.defaultCreateWorkflow
+	m.rpcUpdateWorkflow = m.defaultUpdateWorkflow
+	m.rpcPublishWorkflow = m.defaultPublishWorkflow
+	m.rpcDeprecateWorkflow = m.defaultDeprecateWorkflow
+	m.rpcDeleteWorkflow = m.defaultDeleteWorkflow
 	m.rpcCreateWorker = m.defaultCreateWorker
 	m.rpcUpdateWorker = m.defaultUpdateWorker
 	m.rpcDeleteWorker = m.defaultDeleteWorker
@@ -419,6 +436,10 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		// A worker CRUD chord's load finished: open the form it was waiting for
 		// (or refuse, naming the reason). See worker_forms.go.
 		return m, m.openWorkerOpForm(msg)
+
+	case workflowDetailMsg:
+		// The workflow equivalent (workflow_forms.go).
+		return m, m.openWorkflowOpForm(msg)
 
 	case subs.EventPokeMsg:
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == "executions" && m.Base.DetailID() != "" {

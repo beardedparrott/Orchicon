@@ -34,6 +34,7 @@ const (
 	srcExecutions = "executions"
 	srcRuns       = "runs"
 	srcWorkers    = "workers"
+	srcWorkflows  = "workflows"
 )
 
 // cancelReason is the audit reason recorded on a TUI-initiated cancel.
@@ -60,6 +61,15 @@ const (
 	keySetActive   = "a"
 	keyDeprecate   = "u"
 	keyDelete      = "x"
+	// Workflow lifecycle. The SAME chords reuse handles the same verbs on a
+	// different pane (n/e/p/u/x), and both sets are scoped to their own source —
+	// `p` is ALSO force-progress on a run, which is only safe because the
+	// workflow and worker form-openers dispatch solely while their pane has focus.
+	keyNewWorkflow    = "n"
+	keyEditWorkflow   = "e"
+	keyPublishWf      = "p"
+	keyDeprecateWf    = "u"
+	keyDeleteWorkflow = "x"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -197,6 +207,37 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		return acts
+	case srcWorkflows:
+		// The workflow lifecycle. Same shape as the Workers pane: form-opening
+		// actions carry a Do that refuses by name (handleActionKey opens the form
+		// first); the direct writes are confirm-gated.
+		id, name := item.ID, item.Title
+		status := workflowStatusOf(item.Meta)
+		acts := []kit2.Action{
+			{Label: "new workflow", Key: keyNewWorkflow, Source: srcWorkflows,
+				Do: func(context.Context) error { return errNeedForm("new workflow") }},
+			{Label: "edit", Key: keyEditWorkflow, Source: srcWorkflows,
+				Do: func(context.Context) error { return errNeedForm("edit workflow") }},
+			{Label: "publish", Key: keyPublishWf, Source: srcWorkflows,
+				Do: func(context.Context) error { return errNeedForm("publish") }},
+		}
+		if status == "published" {
+			acts = append(acts, kit2.Action{
+				Label: "deprecate", Key: keyDeprecateWf, Danger: true, Source: srcWorkflows,
+				Confirm: "Deprecate workflow " + name + "?\n" +
+					"New runs stop being started from it; its versions stay readable and publishing again reverses this.",
+				Do: func(ctx context.Context) error { return m.rpcDeprecateWorkflow(ctx, id) },
+			})
+		}
+		acts = append(acts, kit2.Action{
+			Label: "delete", Key: keyDeleteWorkflow, Danger: true, Source: srcWorkflows,
+			Confirm: "Delete workflow " + name + "?\n" +
+				"This removes the workflow and every version of it, and cannot be undone.",
+			Apply:    func() { m.Base.RemoveRow(srcWorkflows, id) },
+			Rollback: func() { m.Refresh(srcWorkflows) },
+			Do:       func(ctx context.Context) error { return m.rpcDeleteWorkflow(ctx, id) },
+		})
+		return acts
 	}
 	return nil
 }
@@ -204,6 +245,26 @@ func (m *Model) actionsForSelection() []kit2.Action {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// WORKFLOW lifecycle chords, scoped to the Workflows pane (see the key block
+	// above for why the scoping is load-bearing).
+	if m.ActiveSourceName() == srcWorkflows {
+		switch kstr {
+		case keyNewWorkflow:
+			m.Base.BeginDetailEdit("New workflow", m.createWorkflowForm())
+			m.notice = ""
+			return nil, true
+		case keyEditWorkflow, keyPublishWf:
+			it, ok := m.ActiveItem()
+			if !ok {
+				return m.refuse("select a workflow first"), true
+			}
+			op := opEditHeader
+			if kstr == keyPublishWf {
+				op = opPublish
+			}
+			return m.beginWorkflowOp(it.ID, op), true
+		}
+	}
 	// Worker CRUD chords open FORMS (or start a load that opens one), so they are
 	// dispatched before the generic action lookup — but ONLY while the Workers
 	// pane is focused. That scoping matters: `p` is also force-progress on a run,
@@ -427,6 +488,10 @@ func (m *Model) HintLine() string {
 			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +
 			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
 			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
+	case srcWorkflows:
+		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
+			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +
+			" x: delete " + theme.DetailKey.Render("·") + " enter: FLOW + versions · r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
 }
