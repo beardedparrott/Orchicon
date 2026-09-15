@@ -305,9 +305,13 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorkItem()
-		state := "paused"
+		// 'recurring' IS the pause flag — the same RecurringEnabled the edit form's
+		// "Enabled" checkbox and the row's p (pause/resume) both write. Say so on
+		// the pane, because "what is enabled in the edit menu? is that the same as
+		// pause?" is exactly the question a bare "active" invites.
+		state := "PAUSED — not firing (p resumes)"
 		if w.GetRecurringEnabled() {
-			state = "active"
+			state = "active — firing (p pauses)"
 		}
 		fields := []kit2.Field{
 			{Key: "id", Value: w.GetId()},
@@ -512,7 +516,7 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: inOptions(s.GetOutputsMode(), []string{"standard", "idea", "none"}, "standard")},
 		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Initial: s.GetWindowStart(), Placeholder: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Initial: s.GetWindowEnd(), Placeholder: "17:00", Validate: validateClock},
-		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
+		kit2.FieldSpec{Name: "enabled", Label: "Enabled (uncheck = PAUSED; same flag as p)", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	m.wireForm(f, formEdit, w.GetId())
 	return f

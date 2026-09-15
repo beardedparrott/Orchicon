@@ -585,7 +585,19 @@ func (b *Base) HandleMutation(res mutate.Result) tea.Cmd {
 	if e.Reconcile == nil {
 		e.Reconcile = func(src string) tea.Cmd { return b.Refresh(src) }
 	}
-	return e.Apply(res)
+	cmd := e.Apply(res)
+	// A successful mutation leaves the DETAIL pane STALE unless it is re-read.
+	//
+	// The pane is a snapshot of the selected row taken when it was selected, and a
+	// write changes that very row — pausing a recurring item flips the state the
+	// pane displays, a rename changes its title, a status change is a field on it.
+	// Reconcile only refreshes the LIST, and nothing re-selects the row, so the
+	// pane kept showing the pre-mutation values: reported as "hitting 'p' on a
+	// recurring item is not changing anything on the details pane".
+	if res.Err == nil && b.detailID != "" && b.detailFn != nil {
+		cmd = tea.Batch(cmd, b.loadDetail())
+	}
+	return cmd
 }
 
 // Update handles shared behavior: fetch results, keys, mouse.
