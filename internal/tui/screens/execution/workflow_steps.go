@@ -66,6 +66,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -338,103 +339,110 @@ func nextStepID(steps []flowStep) string {
 
 // --- forms ------------------------------------------------------------------
 
-// editStepForm edits an existing step. The branch FIELDS are only offered when the
-// kind is dual, which is the operator's "on loops, it should show a success/failure
-// when you add a step or edit the loop step".
+// editStepForm edits an existing step.
+//
+// EVERY KIND'S FIELDS ARE ALWAYS PRESENT, each gated by a Visible predicate on the form's
+// `kind` value. That is the whole mechanism behind the operator's report: "when editing a
+// current step and you change it from a worker task to an approval or loop, it should
+// automatically show the reviewer/success/loop fields based on the type that was selected
+// in the edit form. Currently they don't show up if it was a normal worker type
+// beforehand."
+//
+// They did not show up because the specs were appended CONDITIONALLY on the kind the form
+// was OPENED with — so choosing another kind revealed nothing, since the fields for it were
+// never in the form to begin with. Gating on a predicate instead makes the reveal live: the
+// form re-evaluates visibility on every key and every render, so the rows change the moment
+// the kind does.
+//
+// A hidden field is skipped by rendering, by Tab/arrow navigation and by validation, which
+// is what keeps a hidden Required field from blocking a save. Its VALUE is retained, so
+// toggling kinds back and forth does not discard what was typed — and the submit still
+// writes only the selected kind's keys, because configEdits reads by kind.
 func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	steps := m.flowStepsOf()
 	br := flowBranchOf(s)
 	if br == nil {
 		br = &flowBranches{}
 	}
+	// kindIs reports whether the form's CURRENT kind selection matches, so a field's
+	// visibility follows the operator's choice rather than the step's stored kind.
+	kindIs := func(kinds ...string) func(map[string]string) bool {
+		return func(v map[string]string) bool {
+			cur := v["kind"]
+			for _, k := range kinds {
+				if cur == k {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	targets := targetOptions(steps, s.ID)
 	specs := []kit2.FieldSpec{
 		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Initial: s.Name},
 		{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Initial: s.Kind, Options: stepKindOptions()},
-	}
-	// A worker id on the step is the TASK's dispatchee AND a worker-backed
-	// APPROVAL's approver (workflow_reconciler.go:2718), so both kinds get the field.
-	if s.Kind == "task" || s.Kind == "approval" {
-		refLabel := "Worker id (blank = none)"
-		if s.Kind == "approval" {
-			refLabel = "Worker id — the APPROVER (only used when Reviewer = worker)"
-		}
-		specs = append(specs,
-			kit2.FieldSpec{Name: "ref", Label: refLabel, Kind: kit2.KText, Initial: s.Ref,
-				Placeholder: "w_se_senior_software_engineer"},
-			kit2.FieldSpec{Name: "worker_version", Label: "Worker version (0 = latest)", Kind: kit2.KNumber,
-				Initial: fmt.Sprintf("%d", s.WorkerVer)},
-		)
-	}
-	// A TASK's config IS its recovery policy: strategy + max_attempts, the pair the
-	// reconciler consumes (workflow_reconciler.go:4659-4671).
-	if s.Kind == "task" {
-		recovery := parseRecoveryConfig(s.Config)
-		specs = append(specs,
-			kit2.FieldSpec{Name: "recovery_strategy", Label: "On failure (recovery strategy)", Kind: kit2.KSelect,
-				Initial: recovery.Strategy, Options: recoveryStrategyOptions()},
-			kit2.FieldSpec{Name: "recovery_max_attempts", Label: "Recovery: max attempts before the step fails", Kind: kit2.KNumber,
-				Initial: optIntString(recovery.MaxAttempts), Validate: validateNonNegativeInt,
-				Placeholder: "built-in 3 when blank"},
-		)
-	}
-	if s.Kind == "approval" {
-		specs = append(specs, kit2.FieldSpec{Name: "reviewer", Label: "Reviewer", Kind: kit2.KSelect,
+		// The worker ref is a LOOKUP, not an id to type — the operator's "we need to have
+		// a worker lookup as opposed to typing in an ID just like we do in work items".
+		// The VALUE is the worker id the wire needs; the LABEL is the name a human reads,
+		// exactly like the branch-target picker beside it. It serves a TASK's dispatchee
+		// AND a worker-backed APPROVAL's approver (workflow_reconciler.go:2718), which is
+		// why the label changes with the kind and the field is visible for both.
+		{Name: "ref", Label: "Worker", Kind: kit2.KPicker, Initial: s.Ref,
+			Options: m.flowWorkers, Placeholder: "type to search workers",
+			Visible: kindIs("task", "approval")},
+		{Name: "worker_version", Label: "Worker version (0 = latest)", Kind: kit2.KNumber,
+			Initial: fmt.Sprintf("%d", s.WorkerVer), Visible: kindIs("task")},
+		// A TASK's config IS its recovery policy: strategy + max_attempts, the pair the
+		// reconciler consumes (workflow_reconciler.go:4659-4671).
+		{Name: "recovery_strategy", Label: "On failure (recovery strategy)", Kind: kit2.KSelect,
+			Initial: parseRecoveryConfig(s.Config).Strategy, Options: recoveryStrategyOptions(),
+			Visible: kindIs("task")},
+		{Name: "recovery_max_attempts", Label: "Recovery: max attempts before the step fails", Kind: kit2.KNumber,
+			Initial: optIntString(parseRecoveryConfig(s.Config).MaxAttempts), Validate: validateNonNegativeInt,
+			Placeholder: "built-in 3 when blank", Visible: kindIs("task")},
+		{Name: "reviewer", Label: "Reviewer", Kind: kit2.KSelect,
 			Initial: orDefaultStr(br.Reviewer, "human"),
 			Options: []kit2.Option{
 				{Value: "human", Label: "human — blocks for a person"},
-				{Value: "worker", Label: "worker — dispatches the Worker id above (needs it set)"},
-			}})
+				{Value: "worker", Label: "worker — dispatches the Worker above (needs it set)"},
+			},
+			Visible: kindIs("approval")},
+		// FORWARD. Only where the kind's config struct actually HAS the key —
+		// approvalConfig has none, so an approval gets no SUCCESS → field, and the
+		// visibility follows stepKindHasSuccess.
+		{Name: "success_branch", Label: "SUCCESS → (step it continues to)", Kind: kit2.KPicker,
+			Initial: br.Success, Options: targets, Placeholder: "type to search this workflow's steps",
+			Visible: kindIs("loop_decision")},
+		// BACK — the rejection/failure path, which the reconciler really does follow.
+		{Name: "loop_branch", Label: "LOOP → (step it re-enters — BLANK = it does nothing)",
+			Kind: kit2.KPicker, Initial: br.Loop, Options: targets,
+			Placeholder: "type to search this workflow's steps",
+			Visible:     kindIs("approval", "loop_decision")},
+		{Name: "max_iterations", Label: "Max iterations/rejections before the run fails", Kind: kit2.KNumber,
+			Initial: fmt.Sprintf("%d", br.MaxIter), Validate: validatePositiveInt,
+			Visible: kindIs("approval", "loop_decision")},
+		// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig
+		// key, and an approval has no missing-verdict problem (an approval proceeds
+		// unless it is explicitly REJECTED, so no verdict means forward, not a wedge).
+		//
+		// max_reask sits beside it because the two answer the SAME question from opposite
+		// sides: the policy says what a missing verdict MEANS, and max_reask says how many
+		// times to ask before giving up on getting one. It is a real, honoured bound (the
+		// re-ask loop fails at `reaskCount >= cfg.MaxReask`), which is why it is offered
+		// where a dead knob (the removed retry_delay_seconds) is not.
+		//
+		// decision_field / success_value / failure_value are deliberately NOT offered: the
+		// verdict vocabulary is platform contract, see loopDecisionConfig.
+		{Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
+			Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
+			Placeholder: "reask (engine default)", Visible: kindIs("loop_decision")},
+		{Name: "max_reask", Label: "Max re-asks (when the reviewer gives no verdict)",
+			Kind: kit2.KNumber, Initial: maxReaskOf(s.Config), Validate: validatePositiveInt,
+			Placeholder: "engine default 3", Visible: kindIs("loop_decision")},
 	}
-	// FORWARD. Offered only where the kind's config struct actually has the key —
-	// approvalConfig has none, so an approval gets no SUCCESS → field.
-	if stepKindHasSuccess(s.Kind) {
-		specs = append(specs, kit2.FieldSpec{Name: "success_branch", Label: "SUCCESS → (step it continues to)", Kind: kit2.KPicker,
-			Initial: br.Success, Options: targetOptions(steps, s.ID), Placeholder: "type to search this workflow's steps"})
-	}
-	// BACK — the rejection/failure path, which the reconciler really does follow.
-	if stepKindHasLoop(s.Kind) {
-		loopLabel, iterLabel := "LOOP → (step it re-enters on failure)", "Max iterations before the loop fails"
-		if s.Kind == "approval" {
-			loopLabel = "LOOP → (step it re-enters on rejection — BLANK = a rejection does nothing)"
-			iterLabel = "Max rejections before the run fails"
-		}
-		specs = append(specs,
-			kit2.FieldSpec{Name: "loop_branch", Label: loopLabel, Kind: kit2.KPicker,
-				Initial: br.Loop, Options: targetOptions(steps, s.ID), Placeholder: "type to search this workflow's steps"},
-			kit2.FieldSpec{Name: "max_iterations", Label: iterLabel, Kind: kit2.KNumber,
-				Initial: fmt.Sprintf("%d", br.MaxIter), Validate: validatePositiveInt},
-		)
-	}
-	// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig
-	// key, and an approval has no missing-verdict problem (an approval proceeds
-	// unless it is explicitly REJECTED, so no verdict means forward, not a wedge).
-	//
-	// max_reask sits beside it because the two answer the SAME question from opposite
-	// sides, and only together are they honest: the policy says what a missing verdict
-	// MEANS, and max_reask says how many times to ask before giving up on getting one.
-	// It is a real, honoured bound (workflow_reconciler.go: the re-ask loop fails at
-	// `reaskCount >= cfg.MaxReask`), which is why it is offered where a dead knob
-	// (the removed retry_delay_seconds) is not.
-	//
-	// decision_field / success_value / failure_value are deliberately NOT offered. They
-	// are not configuration an operator may safely change: see the note on
-	// loopDecisionConfig in workflow_reconciler.go.
-	if s.Kind == "loop_decision" {
-		specs = append(specs,
-			kit2.FieldSpec{
-				Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
-				Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
-				Placeholder: "reask (engine default)"},
-			kit2.FieldSpec{
-				Name: "max_reask", Label: "Max re-asks (when the reviewer gives no verdict)",
-				Kind: kit2.KNumber, Initial: maxReaskOf(s.Config), Validate: validatePositiveInt,
-				Placeholder: "engine default 3"},
-		)
-	}
-	// There is NO raw JSON config box. Every key these kinds consume has a field
-	// above, and mergeStepConfig PRESERVES whatever the fields do not model — so the
-	// box never bought anything except a way to corrupt a config by hand: "it still
-	// just has me editing a JSON for the config".
+	// There is NO raw JSON config box. Every key these kinds consume has a field above, and
+	// mergeStepConfig PRESERVES whatever the fields do not model — so the box never bought
+	// anything except a way to corrupt a config by hand.
 
 	f := kit2.NewForm("Edit step: "+orDefaultStr(s.Name, s.ID), specs...)
 	f.Focused = true
@@ -486,33 +494,52 @@ func (m *Model) addStepForm() *kit2.Form {
 	if cur, ok := m.selectedFlowStep(); ok {
 		afterID = cur.ID
 	}
+	kindIs := func(kinds ...string) func(map[string]string) bool {
+		return func(v map[string]string) bool {
+			cur := v["kind"]
+			for _, k := range kinds {
+				if cur == k {
+					return true
+				}
+			}
+			return false
+		}
+	}
 	f := kit2.NewForm("Add step",
 		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true,
 			Placeholder: "QA Engineer"},
 		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Initial: "task", Options: stepKindOptions()},
 		kit2.FieldSpec{Name: "runs_after", Label: "Runs after (blank = starts the flow)", Kind: kit2.KPicker,
 			Initial: afterID, Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps"},
-		kit2.FieldSpec{Name: "ref", Label: "Worker id — worker steps, or a worker-backed approval", Kind: kit2.KText,
-			Placeholder: "w_se_qa_engineer"},
-		kit2.FieldSpec{Name: "recovery_strategy", Label: "On failure — worker steps", Kind: kit2.KSelect,
-			Initial: "retry", Options: recoveryStrategyOptions()},
-		kit2.FieldSpec{Name: "recovery_max_attempts", Label: "Recovery: max attempts — worker steps", Kind: kit2.KNumber,
-			Initial: "3", Validate: validateNonNegativeInt},
-		kit2.FieldSpec{Name: "reviewer", Label: "Reviewer — approval steps", Kind: kit2.KSelect, Initial: "human",
+		// The worker is CHOSEN, not typed — same lookup as the edit form, so a new step
+		// does not send the operator back to reading ids off the Workers pane.
+		kit2.FieldSpec{Name: "ref", Label: "Worker — worker steps, or a worker-backed approval",
+			Kind: kit2.KPicker, Options: m.flowWorkers, Placeholder: "type to search workers",
+			Visible: kindIs("task", "approval")},
+		kit2.FieldSpec{Name: "recovery_strategy", Label: "On failure", Kind: kit2.KSelect,
+			Initial: "retry", Options: recoveryStrategyOptions(), Visible: kindIs("task")},
+		kit2.FieldSpec{Name: "recovery_max_attempts", Label: "Recovery: max attempts", Kind: kit2.KNumber,
+			Initial: "3", Validate: validateNonNegativeInt, Visible: kindIs("task")},
+		kit2.FieldSpec{Name: "reviewer", Label: "Reviewer", Kind: kit2.KSelect, Initial: "human",
 			Options: []kit2.Option{
 				{Value: "human", Label: "human — blocks for a person"},
-				{Value: "worker", Label: "worker — dispatches the Worker id above"},
-			}},
-		kit2.FieldSpec{Name: "success_branch", Label: "SUCCESS → — loop steps", Kind: kit2.KPicker,
-			Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps"},
-		kit2.FieldSpec{Name: "loop_branch", Label: "LOOP → — approval + loop steps", Kind: kit2.KPicker,
-			Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps"},
-		kit2.FieldSpec{Name: "max_iterations", Label: "Max iterations/rejections — approval + loop", Kind: kit2.KNumber,
-			Validate: validatePositiveInt, Placeholder: "3"},
-		kit2.FieldSpec{Name: "on_missing_decision", Label: "On missing decision — loop steps", Kind: kit2.KSelect,
-			Initial: "reask", Options: missingDecisionOptions()},
-		kit2.FieldSpec{Name: "max_reask", Label: "Max re-asks — loop steps (no verdict to route on)", Kind: kit2.KNumber,
-			Initial: "3", Validate: validatePositiveInt},
+				{Value: "worker", Label: "worker — dispatches the Worker above"},
+			},
+			Visible: kindIs("approval")},
+		kit2.FieldSpec{Name: "success_branch", Label: "SUCCESS → (step it continues to)", Kind: kit2.KPicker,
+			Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps",
+			Visible: kindIs("loop_decision")},
+		kit2.FieldSpec{Name: "loop_branch", Label: "LOOP → (step it re-enters)", Kind: kit2.KPicker,
+			Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps",
+			Visible: kindIs("approval", "loop_decision")},
+		kit2.FieldSpec{Name: "max_iterations", Label: "Max iterations/rejections", Kind: kit2.KNumber,
+			Validate: validatePositiveInt, Placeholder: "3", Visible: kindIs("approval", "loop_decision")},
+		kit2.FieldSpec{Name: "on_missing_decision", Label: "On missing decision (no verdict to route on)",
+			Kind: kit2.KSelect, Initial: "reask", Options: missingDecisionOptions(),
+			Visible: kindIs("loop_decision")},
+		kit2.FieldSpec{Name: "max_reask", Label: "Max re-asks (when the reviewer gives no verdict)",
+			Kind: kit2.KNumber, Initial: "3", Validate: validatePositiveInt,
+			Visible: kindIs("loop_decision")},
 	)
 	f.Focused = true
 	f.Width = 70
@@ -829,6 +856,73 @@ func validateNonNegativeInt(s string) error {
 		}
 	}
 	return nil
+}
+
+// flowWorkersMsg carries the worker list that backs the step editor's worker picker.
+type flowWorkersMsg struct {
+	options []kit2.Option
+	err     error
+}
+
+// loadFlowWorkers fetches the worker list for the step editor's ref field.
+//
+// The operator: "we need to have a worker lookup as opposed to typing in an ID just like we
+// do in work items. We are already doing this for loop and success it seems." The ref WAS
+// the last id a human had to type; the branch targets are already pickers, so this closes
+// the gap.
+func (m *Model) loadFlowWorkers() tea.Cmd {
+	if m.rpcListWorkers == nil {
+		return nil
+	}
+	list := m.rpcListWorkers
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		ws, err := list(ctx)
+		if err != nil {
+			return flowWorkersMsg{err: err}
+		}
+		opts := make([]kit2.Option, 0, len(ws))
+		for _, w := range ws {
+			if w.GetId() == "" {
+				continue
+			}
+			label := w.GetName()
+			if label == "" {
+				label = w.GetId()
+			}
+			// The status distinguishes a worker you can bind (published) from one you
+			// cannot, without hiding the latter: an existing step may reference a
+			// deprecated worker, and the picker must still be able to SHOW what is
+			// stored.
+			label += "  (" + workerStatusLabel(w.GetStatus()) + ")"
+			opts = append(opts, kit2.Option{Value: w.GetId(), Label: label})
+		}
+		// Sorted by name: this is a list of people to choose from, not of ids.
+		sort.Slice(opts, func(i, j int) bool { return opts[i].Label < opts[j].Label })
+		return flowWorkersMsg{options: opts}
+	}
+}
+
+// workerStatusLabel renders a worker's lifecycle state as words an operator reads, rather
+// than as the raw proto enum ("worker_status_published" is a wire name, not UI copy).
+func workerStatusLabel(s apiv1.WorkerStatus) string {
+	t := strings.ToLower(strings.TrimPrefix(s.String(), "WORKER_STATUS_"))
+	if t == "" || t == "unspecified" {
+		return "unknown"
+	}
+	return t
+}
+
+func (m *Model) defaultListWorkers(ctx context.Context) ([]*apiv1.Worker, error) {
+	if m.cl == nil || m.cl.Workers == nil {
+		return nil, errors.New("no worker client")
+	}
+	resp, err := m.cl.Workers.ListWorkers(ctx, connect.NewRequest(&apiv1.ListWorkersRequest{PageSize: 200}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWorkers(), nil
 }
 
 // --- write ------------------------------------------------------------------

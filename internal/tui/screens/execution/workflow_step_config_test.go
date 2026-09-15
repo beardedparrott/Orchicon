@@ -45,6 +45,21 @@ func fieldsOf(f *kit2.Form) map[string]kit2.Kind {
 	return out
 }
 
+// visibleFieldsOf collects the field NAMES the form would actually DRAW for its current
+// values, asked of the FORM rather than re-derived here.
+//
+// That distinction matters: every kind's fields now exist in every step form, gated by a
+// Visible predicate, so a test that inspected Specs directly would be re-implementing the
+// visibility rule — and would keep passing even if rendering, navigation and validation
+// stopped honouring it. Asking the form is what makes the assertion mean something.
+func visibleFieldsOf(f *kit2.Form) map[string]bool {
+	out := map[string]bool{}
+	for _, name := range f.VisibleFieldNames() {
+		out[name] = true
+	}
+	return out
+}
+
 func hasField(f *kit2.Form, name string) bool {
 	for _, s := range f.Specs {
 		if s.Name == name {
@@ -91,6 +106,14 @@ func TestStepEditorOffersNoRawJSONConfigForAnyKind(t *testing.T) {
 
 // approvalConfig has no success_branch; loopDecisionConfig has both. The form must
 // agree with the reconciler rather than with a single "dual" flag.
+//
+// These assertions are about VISIBILITY, not presence, and that distinction is the whole
+// architecture: every kind's fields now exist in every step form, each gated by a Visible
+// predicate, so that changing the kind reveals the new kind's fields live (the operator's
+// "when editing a current step and you change it from a worker task to an approval or loop,
+// it should automatically show the reviewer/success/loop fields"). Asserting PRESENCE would
+// therefore now be asserting nothing — what must hold is that a kind's fields are the ones
+// the operator can actually SEE and reach.
 func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	const steps = `[{"id":"a","name":"A","kind":"task","ref":"w_x","depends_on":[]},
 	                {"id":"b","name":"B","kind":"approval","config":"{\"reviewer\":\"human\"}","depends_on":["a"]},
@@ -98,12 +121,11 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	                {"id":"d","name":"D","kind":"end","config":"{}","depends_on":["c"]}]`
 	m, _ := cfgEditorModel(t, steps)
 
-	task := fieldsOf(m.editStepForm(flowStep{ID: "a", Name: "A", Kind: "task", Ref: "w_x"}))
-	if _, ok := task["recovery_strategy"]; !ok {
-		t.Error("a task must expose its recovery strategy — that key IS its config")
-	}
-	if _, ok := task["recovery_max_attempts"]; !ok {
-		t.Error("a task must expose recovery max_attempts")
+	task := visibleFieldsOf(m.editStepForm(flowStep{ID: "a", Name: "A", Kind: "task", Ref: "w_x"}))
+	for _, want := range []string{"recovery_strategy", "recovery_max_attempts", "ref"} {
+		if _, ok := task[want]; !ok {
+			t.Errorf("a task must SHOW %q", want)
+		}
 	}
 	// There is NO delay field at all. The knob was REMOVED (it was parsed into
 	// stepRecoveryConfig and then read by nothing — execution dispatch has no deferral
@@ -118,45 +140,34 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 		t.Error("a task has no branch targets")
 	}
 
-	approval := fieldsOf(m.editStepForm(flowStep{ID: "b", Name: "B", Kind: "approval"}))
-	if _, ok := approval["reviewer"]; !ok {
-		t.Error("an approval must expose its reviewer")
-	}
-	if _, ok := approval["loop_branch"]; !ok {
-		t.Error("an approval loops back on rejection — it must expose a LOOP target")
+	approval := visibleFieldsOf(m.editStepForm(flowStep{ID: "b", Name: "B", Kind: "approval"}))
+	for _, want := range []string{"reviewer", "loop_branch", "ref"} {
+		if _, ok := approval[want]; !ok {
+			t.Errorf("an approval must SHOW %q", want)
+		}
 	}
 	if _, ok := approval["success_branch"]; ok {
-		t.Error("approvalConfig has NO success_branch field — offering one writes a key nothing reads")
+		t.Error("approvalConfig has NO success_branch field — showing one writes a key nothing reads")
 	}
 	// The approver's worker id lives on the step's ref, not in the config
-	// (workflow_reconciler.go:2718).
-	if _, ok := approval["ref"]; !ok {
-		t.Error("an approval must expose the approver worker — it is the step's ref")
-	}
+	// (workflow_reconciler.go:2718) — which is why the ref field is visible for an
+	// approval as well as a task.
 
-	loop := fieldsOf(m.editStepForm(flowStep{ID: "c", Name: "C", Kind: "loop_decision"}))
-	if _, ok := loop["loop_branch"]; !ok {
-		t.Error("a loop must expose its LOOP target")
+	loop := visibleFieldsOf(m.editStepForm(flowStep{ID: "c", Name: "C", Kind: "loop_decision"}))
+	for _, want := range []string{"loop_branch", "success_branch", "on_missing_decision", "max_reask"} {
+		if _, ok := loop[want]; !ok {
+			t.Errorf("a loop must SHOW %q", want)
+		}
 	}
-	if _, ok := loop["success_branch"]; !ok {
-		t.Error("a loop must expose its SUCCESS target")
-	}
-	// on_missing_decision is a loopDecisionConfig key, and it is the replacement for
-	// the engine's tenant-id hardcode — so a loop MUST be able to set it.
-	if _, ok := loop["on_missing_decision"]; !ok {
-		t.Error("a loop must expose on_missing_decision — it is how the operator says whether a missing verdict means re-ask, proceed, or fail")
-	}
-	// max_reask is a real, honoured bound (the re-ask loop fails at reaskCount >=
-	// cfg.MaxReask), and it is the other half of the same question, so it belongs
-	// beside the policy.
-	if _, ok := loop["max_reask"]; !ok {
-		t.Error("a loop must expose max_reask — it is the budget the missing-decision policy spends")
-	}
-	// THE PLATFORM CONTRACT MUST STAY OUT OF THE FORM. success_value/failure_value are
-	// what every seeded worker prompt emits (`ORCHICON WORKER SUMMARY: success`), and
-	// decision_field is not even consulted on the primary path. Exposing them would let
-	// an operator point a gate at a word no worker emits, making every verdict miss and
-	// every gate fail — silently, and only at run time.
+	// on_missing_decision is a loopDecisionConfig key and the replacement for the engine's
+	// tenant-id hardcode; max_reask is a real, honoured bound (the re-ask loop fails at
+	// reaskCount >= cfg.MaxReask) and the other half of the same question.
+	//
+	// THE PLATFORM CONTRACT MUST STAY OUT OF THE FORM. success_value/failure_value are what
+	// every seeded worker prompt emits (`ORCHICON WORKER SUMMARY: success`), and
+	// decision_field is not even consulted on the primary path. Exposing them would let an
+	// operator point a gate at a word no worker emits, making every verdict miss and every
+	// gate fail — silently, and only at run time.
 	for _, contract := range []string{"decision_field", "success_value", "failure_value"} {
 		if _, ok := loop[contract]; ok {
 			t.Errorf("%s is platform contract, not operator configuration — exposing it lets a gate be pointed at a verdict no worker emits", contract)
@@ -169,20 +180,28 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 		}
 	}
 
-	end := fieldsOf(m.editStepForm(flowStep{ID: "d", Name: "D", Kind: "end"}))
-	for _, unwanted := range []string{"recovery_strategy", "loop_branch", "success_branch", "reviewer"} {
+	end := visibleFieldsOf(m.editStepForm(flowStep{ID: "d", Name: "D", Kind: "end"}))
+	for _, unwanted := range []string{"recovery_strategy", "loop_branch", "success_branch", "reviewer", "ref"} {
 		if _, ok := end[unwanted]; ok {
-			t.Errorf("an end step carries no config — it must not expose %q", unwanted)
+			t.Errorf("an end step carries no config — it must not SHOW %q", unwanted)
 		}
 	}
-	// An approval has no missing-verdict problem (it proceeds unless explicitly
-	// REJECTED), and approvalConfig has no such key — so it must not be offered there
-	// any more than on a task.
+	// An approval has no missing-verdict problem (it proceeds unless explicitly REJECTED),
+	// and approvalConfig has no such key.
 	for _, kind := range []flowStep{{ID: "a", Name: "A", Kind: "task", Ref: "w_x"}, {ID: "b", Name: "B", Kind: "approval"}} {
 		for _, unwanted := range []string{"on_missing_decision", "max_reask"} {
-			if _, ok := fieldsOf(m.editStepForm(kind))[unwanted]; ok {
-				t.Errorf("kind %q must not expose %q — it is a loopDecisionConfig key", kind.Kind, unwanted)
+			if _, ok := visibleFieldsOf(m.editStepForm(kind))[unwanted]; ok {
+				t.Errorf("kind %q must not SHOW %q — it is a loopDecisionConfig key", kind.Kind, unwanted)
 			}
+		}
+	}
+
+	// And a PARALLEL step: it carries no config, and the picker-only kinds have no
+	// business showing a branch target.
+	par := visibleFieldsOf(m.editStepForm(flowStep{ID: "e", Name: "E", Kind: "parallel"}))
+	for _, unwanted := range []string{"loop_branch", "success_branch", "ref", "reviewer"} {
+		if _, ok := par[unwanted]; ok {
+			t.Errorf("a parallel step has no config — it must not SHOW %q", unwanted)
 		}
 	}
 }

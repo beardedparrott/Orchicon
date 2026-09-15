@@ -104,6 +104,10 @@ type Model struct {
 	// loads, so a new workflow opens straight into the mode — ready for its first step —
 	// instead of landing in a read-only view with nothing in it.
 	flowEditPending bool
+	// flowWorkers backs the step editor's worker LOOKUP: the operator picks a worker by
+	// name instead of typing an id, the way work items do. Loaded when the flow view
+	// opens, because a picker with no options is worse than a text box.
+	flowWorkers []kit2.Option
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -111,7 +115,10 @@ type Model struct {
 	stepWorkflowName string
 	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
 	// write fired without a plane.
-	rpcCreateWorkflow    func(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error)
+	rpcCreateWorkflow func(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error)
+	// rpcListWorkers backs the step editor's worker picker. A thunk for the same reason as
+	// the rest: a test asserts the picker's options without a plane.
+	rpcListWorkers       func(ctx context.Context) ([]*apiv1.Worker, error)
 	rpcUpdateWorkflow    func(ctx context.Context, id, name string) error
 	rpcPublishWorkflow   func(ctx context.Context, id, note string) error
 	rpcDeprecateWorkflow func(ctx context.Context, id string) error
@@ -154,6 +161,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcUpdateWorkflowVersion = m.defaultUpdateWorkflowVersion
 	m.rpcCreateWorkflowVersion = m.defaultCreateWorkflowVersion
 	m.rpcCreateWorkflow = m.defaultCreateWorkflow
+	m.rpcListWorkers = m.defaultListWorkers
 	m.rpcUpdateWorkflow = m.defaultUpdateWorkflow
 	m.rpcPublishWorkflow = m.defaultPublishWorkflow
 	m.rpcDeprecateWorkflow = m.defaultDeprecateWorkflow
@@ -477,6 +485,9 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		// this is the load a CREATE was waiting for, drop straight into the edit mode so
 		// the operator can add the first step.
 		cmd := m.enterStepEditor(msg.id, msg.name, msg.version)
+		// The worker list feeds the step editor's worker picker, so it loads with the
+		// editor rather than waiting for the operator to open a step form.
+		cmd = tea.Batch(cmd, m.loadFlowWorkers())
 		if m.flowEditPending {
 			m.flowEditPending = false
 			if c := m.beginFlowEdit(); c != nil {
@@ -484,6 +495,19 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			}
 		}
 		return m, cmd
+
+	case flowWorkersMsg:
+		// The picker's option list landed. A failed load leaves the previous list in place
+		// and says nothing to the operator: a worker lookup that cannot be populated must
+		// not turn opening a step into an error, and the ref field still accepts a typed id
+		// (KPicker commits its query as a custom value).
+		if msg.err == nil {
+			m.flowWorkers = msg.options
+			if m.flowEditing {
+				return m, m.paintFlow()
+			}
+		}
+		return m, nil
 
 	case subs.EventPokeMsg:
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == "executions" && m.Base.DetailID() != "" {

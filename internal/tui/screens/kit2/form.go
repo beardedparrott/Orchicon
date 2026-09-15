@@ -67,6 +67,21 @@ type FieldSpec struct {
 	Initial     string
 	// Validate returns a field error ("" = valid). It runs on submit.
 	Validate func(string) error
+	// Visible, when set, decides whether the field exists RIGHT NOW, given the form's
+	// current values. Nil means always visible.
+	//
+	// It exists for the case an operator hits constantly and no amount of rebuilding can
+	// cover: a field whose relevance depends on ANOTHER field. The step editor is the
+	// motivating one — "when editing a current step and you change it from a worker task to
+	// an approval or loop, it should automatically show the reviewer/success/loop fields
+	// based on the type that was selected". A form whose specs are fixed at build time can
+	// only ever show the fields of the kind it was OPENED with, so the fields for the newly
+	// chosen kind are simply absent.
+	//
+	// A hidden field is skipped by rendering, by field navigation (Tab/arrows) and by
+	// validation, so a hidden `Required` field cannot block a save. Its VALUE is kept, so
+	// toggling a kind back and forth does not discard what was typed.
+	Visible func(values map[string]string) bool
 }
 
 // Form is a typed, validated input collection that submits through the
@@ -428,18 +443,62 @@ func (f *Form) FocusName(name string) bool {
 }
 
 // Next / Prev move field focus (Tab / Shift+Tab).
-func (f *Form) Next() {
-	if len(f.Specs) == 0 {
+//
+// They step over INVISIBLE fields. A form that reveals fields per kind (see FieldSpec.
+// Visible) would otherwise park the cursor on a row that is not drawn — the operator types
+// into a field they cannot see.
+func (f *Form) Next() { f.step(1) }
+
+func (f *Form) Prev() { f.step(-1) }
+
+// step moves the cursor by delta, landing only on a visible field. With no visible field it
+// leaves the cursor where it is.
+func (f *Form) step(delta int) {
+	n := len(f.Specs)
+	if n == 0 {
 		return
 	}
-	f.Cursor = (f.Cursor + 1) % len(f.Specs)
+	for i := 1; i <= n; i++ {
+		idx := ((f.Cursor+delta*i)%n + n) % n
+		if f.visibleAt(idx) {
+			f.Cursor = idx
+			return
+		}
+	}
 }
 
-func (f *Form) Prev() {
-	if len(f.Specs) == 0 {
+// visibleAt reports whether the spec at index idx is currently visible.
+func (f *Form) visibleAt(idx int) bool {
+	if idx < 0 || idx >= len(f.Specs) {
+		return false
+	}
+	return f.fieldVisible(f.Specs[idx])
+}
+
+// fieldVisible evaluates a spec's Visible predicate against the CURRENT values.
+func (f *Form) fieldVisible(s FieldSpec) bool {
+	if s.Visible == nil {
+		return true
+	}
+	return s.Visible(f.Values)
+}
+
+// normalizeCursor moves the cursor off a field that has just become invisible — the state
+// a value change leaves behind (choosing "approval" in the kind select hides the worker
+// fields the cursor may be sitting on). It is idempotent and cheap, so it runs on every key
+// and before every render.
+func (f *Form) normalizeCursor() {
+	if f.visibleAt(f.Cursor) {
 		return
 	}
-	f.Cursor = (f.Cursor - 1 + len(f.Specs)) % len(f.Specs)
+	n := len(f.Specs)
+	for i := 1; i <= n; i++ {
+		idx := (f.Cursor + i) % n
+		if f.visibleAt(idx) {
+			f.Cursor = idx
+			return
+		}
+	}
 }
 
 // multibool: does a select field's value list contain v
@@ -461,6 +520,10 @@ func inOptions(spec FieldSpec, v string) bool {
 // scroll while it is up (the operator's "the arrow keys control the work item
 // list instead of moving through the field values").
 func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
+	// A value change may have hidden the field the cursor is on (choosing a new kind in
+	// the step editor hides the previous kind's fields), so normalise BEFORE reading the
+	// focused spec — otherwise every key below acts on an invisible row.
+	f.normalizeCursor()
 	s := f.current()
 	// A model field is a REFERENCE, not text: enter/space opens the host's model
 	// picker instead of advancing or editing (there is nothing a human could
@@ -694,6 +757,12 @@ func toggleBool(s string) string {
 func (f *Form) Validate() bool {
 	f.Errors = map[string]string{}
 	for _, s := range f.Specs {
+		// A HIDDEN field cannot be required: the operator cannot see or reach it, so
+		// failing the save on it would be unfixable from the form. This is what lets a
+		// shared field carry Required while its kind is not selected.
+		if !f.fieldVisible(s) {
+			continue
+		}
 		v := f.Values[s.Name]
 		switch s.Kind {
 		case KMultiSelect:
@@ -807,6 +876,40 @@ func (f *Form) Submit() (tea.Cmd, error) {
 	f.SubmitErr = ""
 	f.Submitted = true
 	return cmd, nil
+}
+
+// VisibleFieldNames lists the fields the form would actually DRAW for its current values,
+// in order.
+//
+// It is exported because it is the only honest way to assert "this kind exposes that field":
+// every kind's fields now exist in every step form, gated by a Visible predicate, so a test
+// that inspects Specs directly is re-implementing the visibility rule and would keep passing
+// even if rendering, navigation and validation stopped honouring it. Asking the FORM is what
+// makes the assertion mean something.
+func (f *Form) VisibleFieldNames() []string {
+	out := make([]string, 0, len(f.Specs))
+	for _, s := range f.Specs {
+		if f.fieldVisible(s) {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
+// NormalizeCursorForTest re-runs the cursor normalisation a value change triggers. The
+// real path calls it from HandleKey and View; a test that sets a value directly has to ask
+// for it explicitly, because it is bypassing the key handling that would have done it.
+func (f *Form) NormalizeCursorForTest() { f.normalizeCursor() }
+
+// DisplayForTest renders a single field the way View would, so a test can assert that a
+// stored id shows as its human label rather than as a bare id.
+func (f *Form) DisplayForTest(name string) string {
+	for _, s := range f.Specs {
+		if s.Name == name {
+			return f.display(s)
+		}
+	}
+	return ""
 }
 
 // display renders a field's value for the view. A secret field NEVER
@@ -991,6 +1094,9 @@ func (f *Form) writePickerList(b *strings.Builder, s *FieldSpec, width int) {
 
 // View renders the form body.
 func (f *Form) View() string {
+	// Keep the cursor on a visible field even if a value changed outside HandleKey (a
+	// programmatic Set, a test): rendering must never highlight a row it does not draw.
+	f.normalizeCursor()
 	// A form rendered without an explicit width still needs a sane one: Pad
 	// truncates to it, so width 0 erased every line (the Work screen's forms
 	// never set it) and windowing needs it to keep the caret visible.
@@ -1004,6 +1110,12 @@ func (f *Form) View() string {
 		b.WriteString("\n")
 	}
 	for i, s := range f.Specs {
+		if !f.fieldVisible(s) {
+			// A field that does not apply to the current selection is not drawn at all: the
+			// step editor reveals a kind's own fields, and a grayed-out or empty row would
+			// suggest the operator has something to fill in.
+			continue
+		}
 		label := s.Label
 		if label == "" {
 			label = s.Name

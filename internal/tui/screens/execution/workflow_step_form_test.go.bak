@@ -1,0 +1,293 @@
+package execution
+
+// workflow_step_form_test.go — the step editor's FORM SHAPE.
+//
+// Two operator reports about the same form:
+//
+//  1. "In workflow edit mode, we need to have a worker lookup as opposed to typing in an
+//     ID just like we do in work items. We are already doing this for loop and success it
+//     seems."
+//
+//  2. "When editing a current step and you change it from a worker task to an approval or
+//     loop, it should automatically show the reviewer/success/loop fields based on the type
+//     that was selected in the edit form. Currently they don't show up if it was a normal
+//     worker type beforehand."
+//
+// (2) is a form-SHAPE defect, not a rendering one: the KIND-specific specs used to be
+// appended conditionally on the kind the form was OPENED with, so choosing a different kind
+// revealed nothing — the fields for it did not exist in the form at all. Every kind's
+// fields are now present, each with a Visible predicate, which is what makes the change
+// live.
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+)
+
+// formForStep builds the edit form for a step, with the worker list pre-seeded the way the
+// flow view seeds it.
+func formForStep(t *testing.T, s flowStep) *kit2.Form {
+	t.Helper()
+	m, _ := cfgEditorModel(t, `[{"id":"a","name":"A","kind":"task","ref":"w_x","depends_on":[]},
+	                           {"id":"b","name":"B","kind":"end","config":"{}","depends_on":["a"]}]`)
+	m.flowWorkers = []kit2.Option{
+		{Value: "w_x", Label: "Senior Software Engineer"},
+		{Value: "w_y", Label: "QA Engineer"},
+	}
+	return m.editStepForm(s)
+}
+
+// visibleLabels lists the labels of the fields the form would actually DRAW.
+func visibleLabels(f *kit2.Form) []string {
+	var out []string
+	for _, s := range f.Specs {
+		if s.Visible != nil && !s.Visible(f.Values) {
+			continue
+		}
+		l := s.Label
+		if l == "" {
+			l = s.Name
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+func hasVisibleLabel(f *kit2.Form, substr string) bool {
+	for _, l := range visibleLabels(f) {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// THE OPERATOR'S SECOND ASK, directly: changing the kind reveals the new kind's fields.
+func TestChangingKindRevealsTheNewKindsFields(t *testing.T) {
+	f := formForStep(t, flowStep{ID: "a", Name: "Step", Kind: "task", Ref: "w_x"})
+
+	// Open as a TASK.
+	if !hasVisibleLabel(f, "On failure") {
+		t.Error("a task step must show its recovery fields")
+	}
+	if hasVisibleLabel(f, "Reviewer") {
+		t.Error("a task must not show a reviewer field")
+	}
+	if hasVisibleLabel(f, "SUCCESS") || hasVisibleLabel(f, "LOOP") {
+		t.Error("a task has no branch targets")
+	}
+
+	// Change the kind to APPROVAL **in the form** — the operator's exact action.
+	f.Set("kind", "approval")
+	f.normalizeCursorForTest()
+	if !hasVisibleLabel(f, "Reviewer") {
+		t.Error("changing the kind to approval did not reveal the REVIEWER field — the " +
+			"operator's report")
+	}
+	if !hasVisibleLabel(f, "LOOP") {
+		t.Error("an approval loops back on rejection — the LOOP field must appear")
+	}
+	if hasVisibleLabel(f, "On failure") {
+		t.Error("the task's recovery fields must DISAPPEAR for an approval")
+	}
+	if hasVisibleLabel(f, "SUCCESS") {
+		t.Error("approvalConfig has no success_branch — a SUCCESS field must not appear")
+	}
+
+	// And to a LOOP.
+	f.Set("kind", "loop_decision")
+	f.normalizeCursorForTest()
+	for _, want := range []string{"SUCCESS", "LOOP", "On missing decision", "Max re-asks"} {
+		if !hasVisibleLabel(f, want) {
+			t.Errorf("changing the kind to loop did not reveal %q", want)
+		}
+	}
+	if hasVisibleLabel(f, "Reviewer") {
+		t.Error("a loop has no reviewer")
+	}
+	if hasVisibleLabel(f, "On failure") {
+		t.Error("a loop does not carry a task's recovery fields")
+	}
+
+	// Back to a task: the fields come back.
+	f.Set("kind", "task")
+	f.normalizeCursorForTest()
+	if !hasVisibleLabel(f, "On failure") {
+		t.Error("changing back to a task must restore its fields")
+	}
+}
+
+// The worker ref is a LOOKUP, not an id to type.
+func TestWorkerRefIsAPickerWithWorkerOptions(t *testing.T) {
+	f := formForStep(t, flowStep{ID: "a", Name: "Step", Kind: "task", Ref: "w_x"})
+	var ref *kit2.FieldSpec
+	for i := range f.Specs {
+		if f.Specs[i].Name == "ref" {
+			ref = &f.Specs[i]
+		}
+	}
+	if ref == nil {
+		t.Fatal("the step form has no worker ref field")
+	}
+	if ref.Kind != kit2.KPicker {
+		t.Fatalf("the worker ref is %q — it must be a KPicker so the operator picks a worker "+
+			"rather than typing an id, as work items do", ref.Kind)
+	}
+	if len(ref.Options) < 2 {
+		t.Fatalf("the picker has %d options — it needs the worker list", len(ref.Options))
+	}
+	// The VALUE is the worker ID (what the wire needs); the LABEL is the name a human
+	// reads. Same split as the model picker and the branch-target picker.
+	if ref.Options[0].Value != "w_x" || ref.Options[0].Label != "Senior Software Engineer" {
+		t.Errorf("option = %+v, want the id as the value and the name as the label", ref.Options[0])
+	}
+	// A stored ref reads as its NAME, not as a bare id.
+	if got := f.DisplayForTest("ref"); got != "Senior Software Engineer" {
+		t.Errorf("the field displays %q, want the worker's name", got)
+	}
+}
+
+// A worker-backed approval needs the approver, so the ref field must be reachable there too
+// — and be a picker there as well.
+func TestApprovalWorkerRefIsAlsoAPicker(t *testing.T) {
+	f := formForStep(t, flowStep{ID: "a", Name: "A", Kind: "approval", Config: `{"reviewer":"worker"}`})
+	if !hasVisibleLabel(f, "APPROVER") {
+		t.Error("a worker-backed approval must show the approver field")
+	}
+	for i := range f.Specs {
+		if f.Specs[i].Name == "ref" && f.Specs[i].Kind != kit2.KPicker {
+			t.Errorf("the approval's approver ref is %q, want a picker", f.Specs[i].Kind)
+		}
+	}
+	// A HUMAN approval has no worker to choose: the approver field is there but the
+	// honest label says when it is used.
+	f.Set("reviewer", "human")
+	f.normalizeCursorForTest()
+	if !hasVisibleLabel(f, "APPROVER") {
+		t.Error("the approver field is hidden for a human approval — the label explains its use, " +
+			"so it should stay visible rather than vanish")
+	}
+}
+
+// The cursor must never sit on a field that is not drawn — otherwise the operator types
+// into a row they cannot see.
+func TestCursorSkipsFieldsHiddenByAKindChange(t *testing.T) {
+	f := formForStep(t, flowStep{ID: "a", Name: "Step", Kind: "task", Ref: "w_x"})
+	// Park the cursor on a task-only field, then change the kind so it disappears.
+	if !f.FocusName("recovery_strategy") {
+		t.Fatal("fixture: could not focus recovery_strategy")
+	}
+	f.Set("kind", "approval")
+	f.normalizeCursorForTest()
+	cur := f.Specs[f.Cursor]
+	if cur.Visible != nil && !cur.Visible(f.Values) {
+		t.Fatalf("the cursor stayed on the hidden field %q", cur.Name)
+	}
+	// Tab now steps only over VISIBLE fields, and eventually wraps to the same field.
+	start := f.Cursor
+	for i := 0; i < len(f.Specs); i++ {
+		f.Next()
+		if s := f.Specs[f.Cursor]; s.Visible != nil && !s.Visible(f.Values) {
+			t.Fatalf("Tab landed on the hidden field %q", s.Name)
+		}
+	}
+	if f.Cursor != start {
+		t.Errorf("a full cycle did not return to the starting field (%d -> %d)", start, f.Cursor)
+	}
+}
+
+// A hidden field must not be able to block a save, even though it is Required for its own
+// kind. Name is required for every kind, so this uses the approver: a worker-backed approval
+// requires a ref, and switching to human makes that requirement inapplicable.
+func TestHiddenRequiredFieldDoesNotBlockSubmit(t *testing.T) {
+	f := formForStep(t, flowStep{ID: "a", Name: "Step", Kind: "task", Ref: "w_x"})
+	f.Set("name", "Renamed")
+	if ok := f.Validate(); !ok {
+		t.Fatalf("a healthy task form failed validation: %v", f.Errors)
+	}
+	// Switch to a loop: the task's fields vanish, and the loop's own requirement (a LOOP
+	// target + iterations) applies instead.
+	f.Set("kind", "loop_decision")
+	f.normalizeCursorForTest()
+	f.Set("loop_branch", "b")
+	f.Set("max_iterations", "3")
+	if ok := f.Validate(); !ok {
+		t.Fatalf("the loop form failed validation on fields it does not show: %v", f.Errors)
+	}
+	// And the SUBMIT writes only the loop's keys — the task's recovery values are still in
+	// the map but configEdits reads by kind, so they cannot leak into the config.
+	m, saved := cfgEditorModel(t, `[{"id":"a","name":"Step","kind":"task","ref":"w_x","config":"{\"recovery\":{\"strategy\":\"stop\",\"max_attempts\":2}}","depends_on":[]},
+	                               {"id":"b","name":"B","kind":"end","config":"{}","depends_on":["a"]}]`)
+	form := m.editStepForm(m.rawFlowSteps()[0])
+	form.Set("kind", "loop_decision")
+	form.normalizeCursorForTest()
+	form.Set("loop_branch", "b")
+	form.Set("max_iterations", "3")
+	cmd, err := form.OnSubmit(form.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	runWrite(t, cmd)
+	cfg := parseFlowSteps((*saved)[0])[0].Config
+	if strings.Contains(cfg, "recovery") {
+		t.Errorf("the task's recovery config survived a change to a loop kind: %s", cfg)
+	}
+	if !strings.Contains(cfg, `"loop_branch":"b"`) {
+		t.Errorf("the loop's config was not written: %s", cfg)
+	}
+}
+
+// The worker list is fetched when the flow editor opens, so the picker has options before
+// the operator asks for them.
+func TestFlowWorkerListIsLoadedWithTheEditor(t *testing.T) {
+	m := newModel(t, &fakePlane{})
+	if m.flowWorkers != nil {
+		t.Fatal("fixture: the worker list should start empty")
+	}
+	cmd := m.loadFlowWorkers()
+	if cmd == nil {
+		t.Fatal("entering the flow view must kick off the worker-list load")
+	}
+	msg := cmd()
+	workers, ok := msg.(flowWorkersMsg)
+	if !ok {
+		t.Fatalf("the load produced %T, want flowWorkersMsg", msg)
+	}
+	if workers.err != nil {
+		t.Fatalf("load failed: %v", workers.err)
+	}
+	m.Update(workers)
+	if len(m.flowWorkers) != 2 {
+		t.Fatalf("flowWorkers = %d options, want 2 (the fake plane's workers)", len(m.flowWorkers))
+	}
+	// Names, sorted, so the picker reads like a list of people rather than of ids.
+	if m.flowWorkers[0].Label == "" || m.flowWorkers[0].Value == "" {
+		t.Errorf("option = %+v, want a label AND the id", m.flowWorkers[0])
+	}
+}
+
+// rpcListWorkers is a thunk so a test can drive the load without a plane.
+func TestFlowWorkerLoadUsesTheThunk(t *testing.T) {
+	m := newModel(t, &fakePlane{})
+	m.rpcListWorkers = func(context.Context) ([]*apiv1.Worker, error) {
+		return []*apiv1.Worker{
+			{Id: "w_2", Name: "Zeta", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED},
+			{Id: "w_1", Name: "Alpha", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED},
+		}, nil
+	}
+	msg := m.loadFlowWorkers()().(flowWorkersMsg)
+	if msg.err != nil {
+		t.Fatalf("load failed: %v", msg.err)
+	}
+	m.Update(msg)
+	if len(m.flowWorkers) != 2 {
+		t.Fatalf("options = %d, want 2", len(m.flowWorkers))
+	}
+	if m.flowWorkers[0].Label != "Alpha" {
+		t.Errorf("options are not sorted by name: %+v", m.flowWorkers)
+	}
+}
