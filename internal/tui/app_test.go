@@ -96,21 +96,35 @@ func keyFor(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
-func TestArrowTabCycling(t *testing.T) {
+// LEFT/RIGHT must NOT rotate the tab bar.
+//
+// They used to (a global route, which ran before the screen), which made it
+// impossible to move focus between the two panes below the tab bar — the
+// operator's "left+right should not be moving the tab menu at the top nor should
+// it be rotating through the different screens ... it should move between the two
+// panes below the menus". The tab bar keeps Tab/Shift+Tab and the ctrl chords.
+func TestArrowsDoNotCycleTabs(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
+	m.RegisterScreen(TabExecution, &stubScreen{id: "execution"})
+	m.SwitchTo(TabWork)
 	if m.ActiveTab() != TabWork {
 		t.Fatalf("initial tab = %q", m.ActiveTab())
 	}
-	// Arrow tab cycling is a structural chord — it works even while the
-	// composer is focused (the Phase-2a launch default).
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if got := nm.(*App).ActiveTab(); got != TabExecution {
-		t.Fatalf("right from work = %q, want execution", got)
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyRight}, {Type: tea.KeyLeft}} {
+		nm, _ := m.Update(k)
+		if got := nm.(*App).ActiveTab(); got != TabWork {
+			t.Fatalf("arrow key moved the tab bar to %q — arrows must stay on the panes", got)
+		}
 	}
-	nm, _ = nm.(*App).Update(tea.KeyMsg{Type: tea.KeyLeft})
+	// Tab still walks the ring, so the tab bar is not stranded.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if got := nm.(*App).ActiveTab(); got != TabWork {
-		t.Fatalf("left back = %q, want work", got)
+		t.Fatalf("the first tab lands on the CURRENT tab's bar, got %q", got)
+	}
+	nm, _ = nm.(*App).Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got := nm.(*App).ActiveTab(); got != TabExecution {
+		t.Fatalf("a second tab must advance to execution, got %q", got)
 	}
 }
 

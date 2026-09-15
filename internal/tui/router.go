@@ -77,17 +77,11 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 			Handle: func(m *App, _ tea.Msg) bool { m.tabRingPrev(); return true },
 		},
-		{
-			// Left / right switch tabs directly (content focus).
-			Name: "next tab", Keys: "right", Scope: "global",
-			Match:  keyMatcher("right"),
-			Handle: func(m *App, _ tea.Msg) bool { m.NextTab(); return true },
-		},
-		{
-			Name: "previous tab", Keys: "left", Scope: "global",
-			Match:  keyMatcher("left"),
-			Handle: func(m *App, _ tea.Msg) bool { m.PrevTab(); return true },
-		},
+		// LEFT/RIGHT are NOT tab-chord routes. They used to rotate the whole tab bar,
+		// which made it impossible to move focus between the two panes below it —
+		// the operator's "left+right should move between the two panes". They now
+		// reach the SCREEN (kit2.Base), which moves focus between its list and its
+		// detail. The tab bar keeps Tab/Shift+Tab (and the ctrl chords).
 		{
 			Name: "toggle conversations rail", Keys: "ctrl+r", Scope: "global",
 			Match: keyMatcher("ctrl+r"),
@@ -193,9 +187,10 @@ var composerBypassKeys = map[string]bool{
 	"ctrl+o": true, "ctrl+v": true, "ctrl+w": true, "ctrl+e": true,
 	"ctrl+a": true, "ctrl+f": true, "ctrl+t": true,
 	"ctrl+r": true, "ctrl+c": true, "ctrl+d": true, "q": true,
-	// Arrow tab cycling + tab key: structural chrome (the tab bar is the
-	// shell's spine — arrows must switch tabs while composing).
-	"right": true, "left": true, "tab": true, "shift+tab": true,
+	// TAB is structural chrome (the tab bar is the shell's spine). LEFT/RIGHT are
+	// deliberately NOT here: in a text box they are cursor movement, which is what
+	// the operator expects from a composer.
+	"tab": true, "shift+tab": true,
 }
 
 // dispatch evaluates the route chain. With the composer ALWAYS focused

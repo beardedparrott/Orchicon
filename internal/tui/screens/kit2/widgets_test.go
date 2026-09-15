@@ -94,14 +94,32 @@ func TestBaseKeysAndMouseAgreeOnRegion(t *testing.T) {
 		t.Fatal("tab must fall through to the shell's focus ring, not be consumed by the pane")
 	}
 
+	// SHIFT+TAB must ALSO fall through. It used to cycle this screen's region ring
+	// in reverse, which consumed it on every kit2 screen — so the tab bar could not
+	// be walked backwards from any pane ("Projects screen is stealing shift+tab").
+	if handled, _ := b.updateKeyHandled(t, "shift+tab"); handled {
+		t.Fatal("shift+tab must fall through to the shell's reverse focus ring")
+	}
+
+	// LEFT/RIGHT move focus BETWEEN THE TWO PANES — not the tab bar, and no longer
+	// source cycling (that is h/l now).
+	b.updateKey(t, "right")
+	if b.FocusedRegion() != "detail" {
+		t.Fatalf("right: region %q, want detail — arrows move between the panes", b.FocusedRegion())
+	}
+	b.updateKey(t, "left")
+	if b.FocusedRegion() != "workers" {
+		t.Fatalf("left: region %q, want workers — arrows move between the panes", b.FocusedRegion())
+	}
+
 	// ENTER still toggles list↔detail (activation is the pane's job).
 	b.updateKey(t, "enter")
 	if b.FocusedRegion() != "detail" {
 		t.Fatalf("enter: region %q, want detail", b.FocusedRegion())
 	}
-	b.updateKey(t, "shift+tab")
+	b.updateKey(t, "enter")
 	if b.FocusedRegion() != "workers" {
-		t.Fatalf("shift+tab: region %q, want workers", b.FocusedRegion())
+		t.Fatalf("enter back: region %q, want workers", b.FocusedRegion())
 	}
 	// Mouse into the detail column focuses detail (same identity).
 	b.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 79, Y: 5})

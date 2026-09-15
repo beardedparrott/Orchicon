@@ -754,10 +754,25 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, b.loadDetail()
 		}
 		return true, nil
-	case "left", "h":
+	case "left":
+		// LEFT/RIGHT move focus BETWEEN THE TWO PANES below the tab bar: left takes
+		// the source list for the submenu the operator selected, right takes the
+		// detail. They used to rotate the whole tab bar (a global route, which ran
+		// before the screen) — "left+right should not be moving the tab menu at the
+		// top nor should it be rotating through the different screens".
+		b.focusD = false
+		b.setFocusForPane()
+		return true, nil
+	case "right":
+		b.focusD = true
+		if b.Focus != nil {
+			b.Focus.Set("detail")
+		}
+		return true, nil
+	case "h":
 		b.cycleSource(-1)
 		return true, b.loadDetail()
-	case "right", "l":
+	case "l":
 		b.cycleSource(1)
 		return true, b.loadDetail()
 	case "f":
@@ -793,12 +808,11 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			b.setFocusForPane()
 		}
 		return true, nil
-	case "shift+tab":
-		// Shared focus model: Shift+Tab cycles the region ring in reverse
-		// and the detail/pane parity follows — key and mouse agree.
-		b.Focus.Prev()
-		b.focusD = b.Focus.Current() == "detail"
-		return true, nil
+	// Shift+Tab is deliberately NOT handled here. It used to cycle this screen's
+	// region ring in reverse, which CONSUMED the key on every kit2 screen — so
+	// walking the tab bar backwards was impossible from any pane, reported as
+	// "Projects screen is stealing shift+tab". It now falls through to the
+	// shell's reverse focus ring (router.go), the only thing that should own it.
 	case "o":
 		// expand/collapse a tree node (selectable Table/tree).
 		if !b.focusD && b.curTable().Toggle() {
