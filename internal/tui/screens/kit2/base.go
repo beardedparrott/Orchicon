@@ -937,6 +937,25 @@ func (b *Base) MarkedIDs() []string {
 	return t.MarkedIDs()
 }
 
+// BulkThreshold is how many marked rows make a BULK selection.
+//
+// It lives here, in ONE place, so every screen that offers bulk actions applies the same rule
+// rather than each restating "more than one" (the operator's ask was a consistent way to handle
+// bulk operations on all forms).
+const BulkThreshold = 2
+
+// BulkIDs returns the marked ids when they constitute a BULK SELECTION, and nil otherwise.
+//
+// One marked row is NOT bulk: it is the row the cursor is on, and offering "archive 1 item"
+// beside "archive" would be a slower way to do the same thing.
+func (b *Base) BulkIDs() []string {
+	ids := b.MarkedIDs()
+	if len(ids) < BulkThreshold {
+		return nil
+	}
+	return ids
+}
+
 // MarkCount is how many rows are marked in the focused source.
 func (b *Base) MarkCount() int {
 	t := b.curTable()

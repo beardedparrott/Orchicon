@@ -76,6 +76,13 @@ func (n *runNames) stale() bool {
 	return len(n.workflows) == 0 && len(n.items) == 0 || time.Since(n.loadedAt) > nameIndexTTL
 }
 
+// ensure loads the name index if it is stale, for callers that need names before rendering.
+func (n *runNames) ensure(ctx context.Context, m *Model) {
+	if n.stale() {
+		m.loadRunNames(ctx)
+	}
+}
+
 // load fills the index, best effort.
 //
 // An error is NOT propagated to the caller's fetch: a worker-independent name lookup must

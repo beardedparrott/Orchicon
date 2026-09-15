@@ -36,6 +36,10 @@ const (
 	srcRuns       = "runs"
 	srcWorkers    = "workers"
 	srcWorkflows  = "workflows"
+	// srcSchedules is the Schedules pane: upcoming / running / finished, cycled with `v`. The
+	// operator: "I noticed I don't see any 'Schedules' section in the TUI under Executions. We
+	// need to implement this in the TUI."
+	srcSchedules = "schedules"
 )
 
 // cancelReason is the audit reason recorded on a TUI-initiated cancel.
@@ -93,6 +97,14 @@ const (
 	// Retained so the flow cursor keys read the same as before.
 	keyStepUp   = "up"
 	keyStepDown = "down"
+	// SCHEDULES chords. `v` cycles the view, exactly as it does on the Work Items pane
+	// (tree/archive), so one pane has one way to change what it is showing. `g` is the
+	// operator's "key that takes you to the workflow run", and `x` is the delete — whose
+	// MEANING is per-view (cancel an upcoming/running schedule, or remove the schedule from a
+	// finished row's item), matching the GUI's two different buttons.
+	keySchedView   = "v"
+	keyGoToRun     = "g"
+	keySchedDelete = "x"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -128,6 +140,14 @@ func (m *Model) Notice() string { return m.notice }
 // actionsForSelection builds the entity-bound actions for the focused row.
 // An action that does not apply to the row's state is simply absent.
 func (m *Model) actionsForSelection() []kit2.Action {
+	// The SHARED bulk rule comes first, for the source that offers bulk actions: more than one
+	// marked row means the operator is operating on a SELECTION, not on the row the cursor is
+	// on, so the single-row actions are replaced rather than mixed with it.
+	if m.ActiveSourceName() == srcSchedules {
+		if ids := m.Base.BulkIDs(); len(ids) > 0 {
+			return m.scheduleDeleteActions(ids)
+		}
+	}
 	item, ok := m.ActiveItem()
 	if !ok {
 		return nil
@@ -179,6 +199,11 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		return acts
+
+	case srcSchedules:
+		// The single-row delete. The BULK case is handled before the switch, because a
+		// selection replaces the cursor-row actions rather than joining them.
+		return m.scheduleDeleteActions([]string{item.ID})
 
 	case srcWorkers:
 		// Item 6: the full CRUD surface. Form-opening actions carry a Do that
@@ -434,6 +459,14 @@ func (m *Model) confirmRemoveStep(id, name, desc string) tea.Cmd {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// The SCHEDULES pane's own chords (view cycle, jump to the run) run first, scoped to its
+	// pane: `v` and `g` mean nothing elsewhere on this screen, and scoping keeps a future
+	// binding elsewhere from silently stealing them here.
+	if m.ActiveSourceName() == srcSchedules {
+		if cmd, handled := m.handleSchedulesKeys(kstr); handled {
+			return cmd, true
+		}
+	}
 	// The STEP editor owns the chords while a workflow's flow view is open.
 	if m.ActiveSourceName() == srcWorkflows {
 		if cmd, handled := m.handleFlowKeys(kstr); handled {
@@ -576,6 +609,23 @@ func (m *Model) unavailableReason(key string) string {
 			return "interjection needs a LIVE (running) execution — " + it.ID + " is " + strings.ToLower(it.Meta)
 		}
 		return ""
+
+	case srcSchedules:
+		// The ONE write chord on this pane is the delete, and its applicability is
+		// view-dependent: a finished row may have no bound work item, so there is nothing to
+		// remove a schedule from.
+		if key != keySchedDelete {
+			return ""
+		}
+		it, ok := m.ActiveItem()
+		if !ok {
+			return ""
+		}
+		if m.sched.view() == schedFinished && m.sched.itemFor(it.ID) == "" {
+			return "this run has no bound work item, so it has no schedule to remove"
+		}
+		return ""
+
 	case srcWorkers:
 		it, ok := m.ActiveItem()
 		if !ok {
@@ -723,6 +773,9 @@ func (m *Model) HintLine() string {
 		return theme.HintText.Render("c: cancel (confirm) · i: interject · enter: live session · ←/→: pane · f: more pages · r: refresh")
 	case srcRuns:
 		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
+	case srcSchedules:
+		return m.scheduleHint()
+
 	case srcWorkers:
 		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
 			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +

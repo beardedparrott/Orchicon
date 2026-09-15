@@ -42,6 +42,46 @@ type fakePlane struct {
 	failWorkItemList  error
 	workflowListCalls int
 	itemListCalls     int
+
+	// --- work-item writes (the Schedules pane's cancel / remove-schedule) ---
+	//
+	// Recorded rather than faked at the HTTP level so a test can assert WHICH write went out —
+	// the two views issue different ones, and the whole point of the delete is that difference.
+	deleted       []string
+	updated       []*apiv1.UpdateWorkItemRequest
+	deleteItemErr error
+	workItem      *apiv1.WorkItem
+}
+
+func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.GetWorkItemRequest]) (*connect.Response[apiv1.GetWorkItemResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.workItem != nil && p.workItem.GetId() == req.Msg.GetId() {
+		return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: p.workItem}), nil
+	}
+	for _, it := range p.items {
+		if it.GetId() == req.Msg.GetId() {
+			return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: it}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
+}
+
+func (p *fakePlane) DeleteWorkItem(_ context.Context, req *connect.Request[apiv1.DeleteWorkItemRequest]) (*connect.Response[apiv1.DeleteWorkItemResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.deleted = append(p.deleted, req.Msg.GetId())
+	if p.deleteItemErr != nil {
+		return nil, p.deleteItemErr
+	}
+	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{}), nil
+}
+
+func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1.UpdateWorkItemRequest]) (*connect.Response[apiv1.UpdateWorkItemResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.updated = append(p.updated, req.Msg)
+	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: &apiv1.WorkItem{Id: req.Msg.GetId()}}), nil
 }
 
 func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
@@ -75,14 +115,27 @@ func (p *fakePlane) GetWorkflowRun(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: r}), nil
 }
 
-func (p *fakePlane) ListWorkItems(context.Context, *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
+func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.itemListCalls++
 	if p.failWorkItemList != nil {
 		return nil, p.failWorkItemList
 	}
-	return connect.NewResponse(&apiv1.ListWorkItemsResponse{WorkItems: p.items}), nil
+	// HONOUR THE STATUS FILTER, as the plane does. A fake that ignores it would let a broken
+	// fetch pass: the upcoming view's whole behaviour is that it asks for SCHEDULED, so the
+	// fixture must be able to tell the difference.
+	if req.Msg.Status == nil {
+		return connect.NewResponse(&apiv1.ListWorkItemsResponse{WorkItems: p.items}), nil
+	}
+	want := req.Msg.GetStatus()
+	out := make([]*apiv1.WorkItem, 0, len(p.items))
+	for _, it := range p.items {
+		if it.GetStatus() == want {
+			out = append(out, it)
+		}
+	}
+	return connect.NewResponse(&apiv1.ListWorkItemsResponse{WorkItems: out}), nil
 }
 
 func (p *fakePlane) CancelExecution(_ context.Context, req *connect.Request[apiv1.CancelExecutionRequest]) (*connect.Response[apiv1.CancelExecutionResponse], error) {

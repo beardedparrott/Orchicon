@@ -112,6 +112,9 @@ type Model struct {
 	// names an operator reads — the proto has no name fields, so the client resolves them.
 	// Shared by the runs LIST and the run DETAIL (names.go).
 	runNames runNames
+	// sched is the Schedules pane's state: which lens it is showing, and the row → run
+	// bindings the `g` jump needs (schedules.go).
+	sched schedState
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -146,6 +149,10 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.NameStr = "execution"
 	m.AddSource("executions", "Executions", m.fetchExecutions)
 	m.AddSource("runs", "Workflow Runs", m.fetchRuns)
+	// Schedules sits beside the runs: it is the same subject seen through three lenses (queued /
+	// in flight / already run), and the operator asked for it "under Executions".
+	m.AddSource(srcSchedules, "Schedules", m.fetchSchedules)
+	m.Base.SetSourceEmpty(srcSchedules, "nothing scheduled here — v switches to running / finished")
 	m.AddSource("workflows", "Workflows", m.fetchWorkflows)
 	m.AddSource("workers", "Workers", m.fetchWorkers)
 	m.SetDetail(m.detail)
@@ -405,6 +412,29 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			}
 		}
 		return "Worker: " + w.GetName(), fields, strings.TrimRight(body.String(), "\n"), nil
+	case "schedules":
+		// The row is a WORK ITEM in the upcoming/running views and a RUN in the finished view,
+		// so the detail dispatches on the view rather than guessing from the id.
+		if m.sched.view() == schedFinished {
+			m.runNames.ensure(ctx, m)
+			resp, err := m.cl.Workflows.GetWorkflowRun(ctx, connect.NewRequest(&apiv1.GetWorkflowRunRequest{Id: id}))
+			if err != nil {
+				return "", nil, "", err
+			}
+			r := resp.Msg.GetRun()
+			fields := []screenkit.Field{
+				{Key: "run", Value: r.GetId()},
+				{Key: "status", Value: strings.ToLower(strings.TrimPrefix(r.GetStatus().String(), "WORKFLOW_RUN_STATUS_"))},
+				{Key: "workflow", Value: m.runsWorkflowField(r)},
+				{Key: "work item", Value: m.runsWorkItemField(r)},
+				{Key: "started", Value: screenkit.FmtTime(r.GetStartedAt())},
+				{Key: "ended", Value: screenkit.FmtTime(r.GetEndedAt())},
+				{Key: "actions", Value: "x: remove schedule · g: go to the run"},
+			}
+			return "Finished run " + r.GetId(), fields, "", nil
+		}
+		return m.scheduleItemDetail(ctx, id)
+
 	case "executions":
 		resp, err := m.cl.Executions.GetExecution(ctx, connect.NewRequest(&apiv1.GetExecutionRequest{Id: id}))
 		if err != nil {
