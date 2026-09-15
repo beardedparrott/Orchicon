@@ -1020,3 +1020,159 @@ func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
 		t.Fatalf("days = %v, want the stored selection pre-filled — otherwise saving clears it", got)
 	}
 }
+
+// ---------- bulk idea triage ----------
+
+// 'A' accepts EVERY idea the list is showing. Triage is the reason the cloud
+// exists, and a run that spawned eight ideas should not ask for eight keystrokes
+// and eight confirmations.
+func TestAcceptAllIdeasPromotesEveryListed(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	p.seedIdea("idea-3", "Add sweeper metrics", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-c")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+	if got := len(itemsOf(m, "ideas")); got != 3 {
+		t.Fatalf("fixture: %d ideas listed, want 3", got)
+	}
+
+	// Accept takes no confirmation: promoting is reversible (a promoted item is a
+	// normal pending work item, editable like any other).
+	run(t, m, press(t, m, "A"))
+
+	if len(p.promoted) != 3 {
+		t.Fatalf("PromoteIdea calls = %v, want all three listed ideas", p.promoted)
+	}
+	for _, id := range []string{"idea-1", "idea-2", "idea-3"} {
+		if st := p.itemStatus(id); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING {
+			t.Errorf("%s status = %v, want pending after accept", id, st)
+		}
+	}
+	if !strings.Contains(m.notice, "accepted 3") {
+		t.Fatalf("notice = %q, want it to report all three accepted", m.notice)
+	}
+	// The cloud is empty afterwards.
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 0 {
+		t.Fatalf("ideas still listed after accept-all: %d", len(itemsOf(m, "ideas")))
+	}
+}
+
+// 'R' rejects every listed idea, but it is CONFIRMED: a dismissal is durable
+// rejection history that the automation's dedupe gate reads, so it is not done by
+// accident.
+func TestRejectAllIdeasIsConfirmed(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("reject-all must be confirmed — a dismissal is durable rejection history")
+	}
+	if m.Open == nil || !m.Open.Danger {
+		t.Error("reject-all is a destructive action and must present as danger")
+	}
+	// Nothing has happened yet.
+	if len(p.dismissd) != 0 {
+		t.Fatalf("DismissIdea ran before confirmation: %v", p.dismissd)
+	}
+
+	run(t, m, press(t, m, "enter"))
+	if len(p.dismissd) != 2 {
+		t.Fatalf("DismissIdea calls = %v, want both listed ideas", p.dismissd)
+	}
+	for _, id := range []string{"idea-1", "idea-2"} {
+		if st := p.itemStatus(id); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+			t.Errorf("%s status = %v, want cancelled after reject", id, st)
+		}
+	}
+	// Both land in the REJECTED section (what the dedupe gate reads).
+	load(t, m, "rejected")
+	if got := len(itemsOf(m, "rejected")); got != 2 {
+		t.Fatalf("rejected history has %d entries, want 2", got)
+	}
+}
+
+// Cancelling the confirmation leaves every idea ALONE — the rows must come back,
+// because the removal was optimistic.
+func TestRejectAllIdeasCancelledChangesNothing(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("fixture: no confirmation")
+	}
+	press(t, m, "esc")
+	if len(p.dismissd) != 0 {
+		t.Fatalf("a cancelled reject-all still dismissed: %v", p.dismissd)
+	}
+	if st := p.itemStatus("idea-1"); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
+		t.Fatalf("idea status = %v, want it untouched (IDEA)", st)
+	}
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 1 {
+		t.Fatal("the idea must still be listed after cancelling")
+	}
+}
+
+// A PARTIAL failure is reported per-idea. This is the case a single batched RPC
+// would hide, and the one that matters: the operator has to know WHICH ideas are
+// still awaiting a decision.
+func TestBulkAcceptReportsPerIdeaFailure(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	// Make ONE of them fail, the way a server-side refusal would. The others go
+	// through the PLANE, so the test exercises a real partial success rather than a
+	// no-op that silently leaves every idea where it was.
+	m.rpcPromote = func(ctx context.Context, id string) error {
+		if id == "idea-2" {
+			return errors.New("refused")
+		}
+		_, err := p.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: id}))
+		return err
+	}
+	run(t, m, press(t, m, "A"))
+
+	if !strings.Contains(m.notice, "1 of 2") || !strings.Contains(m.notice, "still listed") {
+		t.Fatalf("notice = %q, want it to report 1 of 2 with the failure still listed", m.notice)
+	}
+	// The reload puts the FAILED row back: the optimistic removal is only safe
+	// because the durable truth is the server's list.
+	load(t, m, "ideas")
+	if got := itemsOf(m, "ideas"); len(got) != 1 || got[0].ID != "idea-2" {
+		t.Fatalf("ideas after a partial failure = %+v, want only idea-2 back", got)
+	}
+}
+
+// With nothing awaiting triage, the bulk keys SAY so rather than no-op.
+func TestBulkIdeaDecisionOnAnEmptyCloudRefuses(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 0 {
+		t.Fatal("fixture: expected an empty Idea Cloud")
+	}
+	press(t, m, "A")
+	if !strings.Contains(m.notice, "no ideas") {
+		t.Fatalf("notice = %q, want it to say there is nothing to triage", m.notice)
+	}
+}
