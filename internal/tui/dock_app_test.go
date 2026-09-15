@@ -145,7 +145,14 @@ func TestNavCommandParity(t *testing.T) {
 		// arg jumps
 		"/wi", "/exec", "/run", "/worker",
 		// remaining screen sources
-		"/projects", "/conversations", "/schedules", "/decisions",
+		//
+		// NOTE: there is deliberately NO "/decisions". The Decisions pane was removed — it had no
+		// GUI counterpart and was cruft from the initial TUI (see the enforcement package docs).
+		// Because the slash registry is GENERATED from the screens' Sources(), removing the
+		// source removed the command: this list is the parity check between the two, so dropping
+		// the entry here is the change, not a workaround. A decision record is still rendered
+		// where it belongs, as policy context on an approval.
+		"/projects", "/conversations", "/schedules",
 		// Overview domain (Dashboard / Telemetry / Cost Explorer + /usage)
 		"/dashboard", "/telemetry", "/cost-explorer", "/usage",
 		// system

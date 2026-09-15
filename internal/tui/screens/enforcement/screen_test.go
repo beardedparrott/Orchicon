@@ -446,205 +446,23 @@ func TestApprovalWriteDisabledWhileInFlight(t *testing.T) {
 	}
 }
 
-// TestPolicyCreateEditPublishVersions is acceptance criterion 2: create,
-// edit, publish, list versions and inspect a version body — every RPC
-// asserted, the Rego body sent whole.
-func TestPolicyCreateEditPublishVersions(t *testing.T) {
-	const draftRego = "package orchicon.policy.pol1\n\nimport future.keywords\n\nallow {\n  input.action == \"merge\"\n  not input.draft\n}\n"
-	const publishedRego = "package orchicon.policy.pol1\n\nallow = false\n"
-	f := &fakePlane{
-		policies: []*apiv1.Policy{{Id: "pol-1", Name: "gate", Status: apiv1.PolicyStatus_POLICY_STATUS_PUBLISHED, CurrentVersion: 2}},
-		versions: []*apiv1.PolicyVersion{
-			{PolicyId: "pol-1", Version: 3, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_DRAFT, RegoModule: draftRego, Effect: apiv1.PolicyEffect_POLICY_EFFECT_DENY, DecisionPoint: apiv1.DecisionPoint_DECISION_POINT_APPROVAL, Scope: apiv1.PolicyScope_POLICY_SCOPE_TENANT, Query: "data.orchicon.policy.pol1.allow", VersionNote: "tighten"},
-			{PolicyId: "pol-1", Version: 2, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_PUBLISHED, RegoModule: publishedRego},
-			{PolicyId: "pol-1", Version: 1, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_SUPERSEDED, RegoModule: publishedRego},
-		},
-	}
-	m, sh := newHarness(t, f)
-	m.SelectSource("policies")
-	loadAll(t, m)
-
-	// --- create -----------------------------------------------------------
-	m.Update(typeKey("n"))
-	if m.ov == nil || m.ov.action != "policy-create" {
-		t.Fatalf("n must open the create form, got %+v", m.ov)
-	}
-	m.ov.setValue("name", "merge-gate")
-	m.ov.setValue("decision_point", "admission")
-	m.ov.setValue("scope", "project")
-	m.ov.setValue("scope_ref", "prj-1")
-	m.ov.setValue("effect", "require_approval")
-	m.ov.setValue("query", "data.orchicon.policy.mergegate.allow")
-	m.ov.setValue("rego_module", draftRego)
-	_, cmd := m.Update(ctrlSKey())
-	runCmd(t, m, cmd)
-
-	if len(f.createReqs) != 1 {
-		t.Fatalf("CreatePolicy calls = %d, want 1", len(f.createReqs))
-	}
-	got := f.createReqs[0]
-	if got.GetName() != "merge-gate" ||
-		got.GetDecisionPoint() != apiv1.DecisionPoint_DECISION_POINT_ADMISSION ||
-		got.GetScope() != apiv1.PolicyScope_POLICY_SCOPE_PROJECT ||
-		got.GetScopeRef() != "prj-1" ||
-		got.GetEffect() != apiv1.PolicyEffect_POLICY_EFFECT_REQUIRE_APPROVAL ||
-		got.GetQuery() != "data.orchicon.policy.mergegate.allow" {
-		t.Fatalf("CreatePolicy request = %+v", got)
-	}
-	if got.GetRegoModule() != draftRego {
-		t.Fatalf("the Rego body must be sent WHOLE (no truncation):\n%q", got.GetRegoModule())
-	}
-	if !strings.Contains(sh.notice, "create policy merge-gate") {
-		t.Fatalf("dock notice = %q", sh.notice)
-	}
-	// Reconciliation: the new policy is in the list.
-	if _, ok := m.Base.SourceItem("policies", "pol-new"); !ok {
-		t.Fatal("the policies list must reconcile after CreatePolicy")
-	}
-
-	// --- edit (draft prefill) --------------------------------------------
-	m.Base.SelectItem("policies", "pol-1")
-	if _, cmd := m.Update(typeKey("e")); cmd == nil {
-		t.Fatal("e must fetch the draft version to prefill the editor")
-	} else {
-		runCmd(t, m, cmd)
-	}
-	if m.ov == nil || m.ov.action != "policy-edit" {
-		t.Fatalf("e must open the edit form, got %+v", m.ov)
-	}
-	if m.ov.value("rego_module") != draftRego {
-		t.Fatalf("the editor must prefill the DRAFT rego verbatim, got %q", m.ov.value("rego_module"))
-	}
-	if m.ov.value("decision_point") != "approval" || m.ov.value("effect") != "deny" {
-		t.Fatalf("the editor must prefill the enums, got %q / %q", m.ov.value("decision_point"), m.ov.value("effect"))
-	}
-	edited := draftRego + "\nbudget_ok { input.budget < 1000 }\n"
-	m.ov.setValue("rego_module", edited)
-	_, cmd = m.Update(ctrlSKey())
-	runCmd(t, m, cmd)
-	if len(f.updateReqs) != 1 {
-		t.Fatalf("UpdatePolicyVersion calls = %d, want 1", len(f.updateReqs))
-	}
-	if u := f.updateReqs[0]; u.GetPolicyId() != "pol-1" || u.GetRegoModule() != edited {
-		t.Fatalf("UpdatePolicyVersion request = %+v", u)
-	}
-
-	// --- publish (Confirm) ------------------------------------------------
-	m.Update(typeKey("p"))
-	if m.ov == nil || m.ov.kind != ovConfirm {
-		t.Fatalf("p must open a Confirm overlay, got %+v", m.ov)
-	}
-	m.Update(typeKey("n")) // cancel must not write
-	if len(f.publishReqs) != 0 {
-		t.Fatal("cancelling the Confirm must not publish")
-	}
-	m.Update(typeKey("p"))
-	_, cmd = m.Update(typeKey("y"))
-	runCmd(t, m, cmd)
-	if len(f.publishReqs) != 1 || f.publishReqs[0].GetPolicyId() != "pol-1" {
-		t.Fatalf("PublishPolicy calls = %+v", f.publishReqs)
-	}
-
-	// --- list versions + inspect a body -----------------------------------
-	m.Base.SelectItem("policies", "pol-1")
-	_, cmd = m.Update(typeKey("v"))
-	runCmd(t, m, cmd)
-	if m.ov == nil || m.ov.kind != ovPicker || m.ov.action != "policy-versions" {
-		t.Fatalf("v must open the versions picker, got %+v", m.ov)
-	}
-	if len(m.ov.items) != 3 {
-		t.Fatalf("the picker must list every version, got %d", len(m.ov.items))
-	}
-	if f.versionLists < 2 {
-		t.Fatalf("ListPolicyVersions calls = %d, want the versions listed", f.versionLists)
-	}
-	// Row 0 is the draft (v3) — inspect it; the body is the rego verbatim.
-	m.Update(enterKey())
-	if m.ov == nil || m.ov.kind != ovViewer {
-		t.Fatalf("enter must open the version body viewer, got %+v", m.ov)
-	}
-	if !strings.Contains(m.ov.body, "budget_ok { input.budget < 1000 }") || !strings.Contains(m.ov.body, "package orchicon.policy.pol1") {
-		t.Fatalf("the inspector must show the version's rego body verbatim:\n%s", m.ov.body)
-	}
-	m.Update(escKey())
-	if m.ov != nil {
-		t.Fatal("esc must close the viewer")
-	}
-}
-
-// TestVersionsPickerRowsAreSelectable pins that a version row other than the
-// first is inspectable (the picker cursor really moves).
-func TestVersionsPickerRowsAreSelectable(t *testing.T) {
-	const v2Rego = "package p\nallow { false }\n"
-	f := &fakePlane{
-		policies: []*apiv1.Policy{{Id: "pol-1", Name: "gate"}},
-		versions: []*apiv1.PolicyVersion{
-			{PolicyId: "pol-1", Version: 2, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_PUBLISHED, RegoModule: v2Rego},
-			{PolicyId: "pol-1", Version: 1, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_SUPERSEDED, RegoModule: "package p\nallow { true }\n"},
-		},
-	}
-	m, _ := newHarness(t, f)
-	m.SelectSource("policies")
-	loadAll(t, m)
-	_, cmd := m.Update(typeKey("v"))
-	runCmd(t, m, cmd)
-	m.Update(downKey())
-	m.Update(enterKey())
-	if m.ov == nil || m.ov.kind != ovViewer {
-		t.Fatalf("expected a viewer, got %+v", m.ov)
-	}
-	if !strings.Contains(m.ov.body, "allow { true }") {
-		t.Fatalf("row 1 (v1) body must be shown, got:\n%s", m.ov.body)
-	}
-}
-
-// TestRefusalsSurfaceVerbatimInDock is acceptance criterion 4: a plane
-// refusal reaches the dock verbatim — never a silent no-op — for both a
-// policy create and an approval decision.
+// TestRefusalsSurfaceVerbatimInDock is acceptance criterion 4: a plane refusal reaches the
+// dock verbatim — never a silent no-op.
+//
+// The POLICY half of this test went with the policy editor (policies are "coming soon", so
+// there is no create to refuse). The property is still covered by the approval path, which is
+// the surface the operator actually uses.
 func TestRefusalsSurfaceVerbatimInDock(t *testing.T) {
-	const planeMsg = "policy denied: rego compile failed at line 3: unexpected token"
 	f := &fakePlane{
-		policies:   []*apiv1.Policy{{Id: "pol-1", Name: "gate"}},
-		versions:   []*apiv1.PolicyVersion{{PolicyId: "pol-1", Version: 1, Status: apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_DRAFT, RegoModule: "package p\n"}},
 		approvals:  []*apiv1.ApprovalItem{sampleApproval("sr-1")},
-		createErr:  connect.NewError(connect.CodeInvalidArgument, errors.New(planeMsg)),
 		approveErr: connect.NewError(connect.CodePermissionDenied, errors.New("policy requires a higher role to approve this step")),
 	}
 	m, sh := newHarness(t, f)
 
-	// policy create refusal
-	m.SelectSource("policies")
-	loadAll(t, m)
-	m.Update(typeKey("n"))
-	m.ov.setValue("name", "bad")
-	m.ov.setValue("decision_point", "admission")
-	m.ov.setValue("effect", "deny")
-	m.ov.setValue("rego_module", "package p\n!boom\n")
-	_, cmd := m.Update(ctrlSKey())
-	runCmd(t, m, cmd)
-	if !strings.Contains(sh.err, planeMsg) {
-		t.Fatalf("the plane's refusal must reach the dock verbatim, got %q", sh.err)
-	}
-	if m.inFlight != "" {
-		t.Fatalf("the in-flight guard must clear on refusal (inFlight=%q)", m.inFlight)
-	}
-	if m.lastErr == "" {
-		t.Fatal("the refusal must also be visible in the screen")
-	}
-	// Retryable: the operator can open the form again.
-	m.Update(typeKey("n"))
-	if m.ov == nil {
-		t.Fatal("a refused write must leave the action usable again")
-	}
-	m.Update(escKey())
-
-	// approval refusal
-	f.createErr = nil
 	m.SelectSource("approvals")
 	loadAll(t, m)
-	sh.err = ""
 	m.Update(typeKey("a"))
-	_, cmd = m.Update(typeKey("yes please"))
+	_, cmd := m.Update(typeKey("yes please"))
 	_, cmd = m.Update(enterKey())
 	runCmd(t, m, cmd)
 	if !strings.Contains(sh.err, "policy requires a higher role to approve this step") {
@@ -653,9 +471,77 @@ func TestRefusalsSurfaceVerbatimInDock(t *testing.T) {
 	if len(f.approveReqs) != 1 {
 		t.Fatalf("ApproveStep calls = %d, want 1", len(f.approveReqs))
 	}
+	if m.inFlight != "" {
+		t.Fatalf("the in-flight guard must clear on refusal (inFlight=%q)", m.inFlight)
+	}
+	if m.lastErr == "" {
+		t.Fatal("the refusal must also be visible in the screen")
+	}
 	// The refused step is STILL pending (no silent resolution).
 	if _, ok := m.Base.SourceItem("approvals", "sr-1"); !ok {
 		t.Fatal("a refused approval must keep the step pending")
+	}
+}
+
+// The POLICIES pane is a "coming soon" placeholder: it must list nothing, bind no chords and
+// SAY why. The operator: "I would like both the TUI and the GUI to just say 'Coming
+// soon...' for now."
+func TestPoliciesPaneIsAComingSoonPlaceholder(t *testing.T) {
+	// The plane HAS policies — the pane must still show none, because the surface is not
+	// wired up. That is the difference between "empty" and "not available".
+	f := &fakePlane{
+		policies: []*apiv1.Policy{{Id: "pol-1", Name: "gate", Status: apiv1.PolicyStatus_POLICY_STATUS_PUBLISHED, CurrentVersion: 2}},
+	}
+	m, _ := newHarness(t, f)
+	m.SelectSource("policies")
+	loadAll(t, m)
+
+	if _, ok := m.Base.SourceItem("policies", "pol-1"); ok {
+		t.Fatal("the policies pane listed a policy — it must list none while coming soon")
+	}
+	if got := m.View(); !strings.Contains(got, ComingSoonText) {
+		t.Errorf("the policies pane does not say %q:\n%s", ComingSoonText, got)
+	}
+	// NO chord may open a form: `n` used to be "new policy".
+	for _, k := range []string{"n", "e", "p", "v"} {
+		m.Update(typeKey(k))
+		if m.ov != nil {
+			t.Fatalf("%q opened an overlay (%+v) on the coming-soon policies pane", k, m.ov)
+		}
+	}
+	// And the hint says so rather than advertising chords that do nothing.
+	if got := m.View(); !strings.Contains(got, ComingSoonText) {
+		t.Errorf("the hint line does not say %q", ComingSoonText)
+	}
+}
+
+// DECISIONS was cruft with no GUI counterpart and must be gone as a SOURCE. Its data is still
+// rendered where it belongs — as policy context on an approval — which this pins so the
+// removal cannot quietly take the useful half with it.
+func TestDecisionsHasNoStandalonePane(t *testing.T) {
+	f := &fakePlane{
+		approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1")},
+		decisions: []*apiv1.PolicyDecision{{
+			Id: "dec-1", DecisionPoint: "approval", Effect: apiv1.PolicyEffect_POLICY_EFFECT_REQUIRE_APPROVAL,
+			PolicyId: "pol-1", PolicyVersion: 1,
+		}},
+	}
+	m, _ := newHarness(t, f)
+
+	for _, src := range m.Base.SourcesForTest() {
+		if src.Name == "decisions" {
+			t.Fatal("the Decisions pane still exists — it has no GUI counterpart and was cruft")
+		}
+	}
+
+	// The USEFUL half survives: the approvals detail still renders the decisions recorded
+	// against the step run.
+	m.SelectSource("approvals")
+	loadAll(t, m)
+	m.Base.SelectItem("approvals", "sr-1")
+	loadAll(t, m)
+	if out := m.View(); !strings.Contains(out, "policy context") {
+		t.Errorf("the approvals detail lost its policy context when Decisions was removed:\n%s", out)
 	}
 }
 
@@ -799,60 +685,56 @@ func TestRecoveryUnavailableActionIsNeverSilent(t *testing.T) {
 	}
 }
 
-// TestPolicyEnumValidationRefusesLocally pins that a bad enum never reaches
-// the plane and is surfaced (never a silent no-op).
-func TestPolicyEnumValidationRefusesLocally(t *testing.T) {
-	f := &fakePlane{}
-	m, sh := newHarness(t, f)
-	m.SelectSource("policies")
-	loadAll(t, m)
-	m.Update(typeKey("n"))
-	m.ov.setValue("name", "x")
-	m.ov.setValue("decision_point", "nonsense")
-	m.ov.setValue("effect", "deny")
-	m.ov.setValue("rego_module", "package p\n")
-	_, cmd := m.Update(ctrlSKey())
-	runCmd(t, m, cmd)
-	if len(f.createReqs) != 0 {
-		t.Fatal("an unparseable decision point must not be sent")
-	}
-	if sh.err == "" || !strings.Contains(sh.err, "unknown decision point") {
-		t.Fatalf("dock error = %q, want the validation refusal", sh.err)
-	}
-}
-
-// TestFormTypingSurvivesGlobalChords pins ClaimsKeys: while a form is open the
-// screen claims every key, so a Rego body containing the global chords
-// (q / d / y / ?) is typed verbatim.
+// TestFormTypingSurvivesGlobalChords pins ClaimsKeys: while a form is open the screen claims
+// every key, so a rejection reason containing the global chords (q / d / y / ?) is typed
+// verbatim rather than firing a chord. Driven through the APPROVAL reject form — the form the
+// operator actually has (the policy editor's Rego body went with the policy surface).
 func TestFormTypingSurvivesGlobalChords(t *testing.T) {
-	f := &fakePlane{}
+	f := &fakePlane{approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1")}}
 	m, _ := newHarness(t, f)
-	m.SelectSource("policies")
+	m.SelectSource("approvals")
 	loadAll(t, m)
 	if m.ClaimsKeys() {
 		t.Fatal("no overlay → no claim")
 	}
-	m.Update(typeKey("n"))
+	// `x` is reject: its reason is REQUIRED, so the form is the one that matters here.
+	m.Update(typeKey("x"))
+	if m.ov == nil {
+		t.Fatal("x must open the reject form")
+	}
 	if !m.ClaimsKeys() {
 		t.Fatal("an open form must claim the keyboard")
 	}
-	const body = "package p\n# q d y ? \nallow { input.draft == false }\n"
-	m.ov.setValue("rego_module", body)
-	if got := m.ov.value("rego_module"); got != body {
-		t.Fatalf("the multiline body must round-trip untouched, got %q", got)
+	// Typing the global-chord letters lands in the field VERBATIM.
+	const reason = "d q y ? — the reason still needs fixing"
+	m.ov.setValue("reason", "")
+	m.ov.active = 0
+	for _, r := range reason {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	// Typing into the multiline field inserts runes verbatim (no truncation).
-	m.ov.active = len(m.ov.fields) - 1
-	m.ov.setValue("rego_module", "")
-	m.Update(typeKey("d"))
-	m.Update(typeKey("q"))
-	if got := m.ov.value("rego_module"); got != "dq" {
+	if got := m.ov.value("reason"); got != reason {
 		t.Fatalf("global-chord letters must land in the field, got %q", got)
 	}
-	// Enter inserts a newline in a multiline field; ctrl+s submits.
+}
+
+// TestMultilineFieldAcceptsNewlines covers the overlay's MULTILINE branch directly.
+//
+// No screen action constructs a multiline field any more (the policy editor's Rego body was
+// its only user), so the branch is exercised on the widget rather than through a screen: it
+// stays covered for the next form that wants a prose field.
+func TestMultilineFieldAcceptsNewlines(t *testing.T) {
+	m, _ := newHarness(t, &fakePlane{})
+	m.ov = newForm("Prose", "hint", "test-multi",
+		&ovField{Key: "body", Label: "body", Multi: true})
+	m.ov.active = 0
+	m.Update(typeKey("a"))
 	m.Update(enterKey())
-	if !strings.Contains(m.ov.value("rego_module"), "\n") {
-		t.Fatal("enter must insert a newline in a multiline field")
+	m.Update(typeKey("b"))
+	if got := m.ov.value("body"); got != "a\nb" {
+		t.Fatalf("enter must insert a newline in a multiline field, got %q", got)
+	}
+	if out := m.View(); !strings.Contains(out, "multiline") {
+		t.Errorf("a multiline field must say so in its label:\n%s", out)
 	}
 }
 
@@ -869,14 +751,9 @@ func TestViewRendersOverlaysAndHints(t *testing.T) {
 
 	m.SelectSource("policies")
 	loadAll(t, m)
-	if out := m.View(); !strings.Contains(out, "n: new policy") {
-		t.Errorf("the policies hint must advertise the write chords:\n%s", out)
+	if out := m.View(); !strings.Contains(out, ComingSoonText) {
+		t.Errorf("the policies pane must render the coming-soon placeholder:\n%s", out)
 	}
-	m.Update(typeKey("n"))
-	if out := m.View(); !strings.Contains(out, "rego module") {
-		t.Errorf("the open create form must render its fields:\n%s", out)
-	}
-	m.Update(escKey())
 
 	m.SelectSource("approvals")
 	loadAll(t, m)

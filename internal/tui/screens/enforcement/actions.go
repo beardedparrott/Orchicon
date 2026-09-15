@@ -28,28 +28,19 @@ import (
 // rpcTimeout bounds each write RPC (the plane answers in-band).
 const rpcTimeout = 20 * time.Second
 
-// editLoadedMsg carries the policy version an edit form is prefilled from.
-type editLoadedMsg struct {
-	policyID string
-	version  *apiv1.PolicyVersion
-	err      error
-}
-
-// versionsLoadedMsg carries a policy's version list for the picker.
-type versionsLoadedMsg struct {
-	policyID string
-	versions []*apiv1.PolicyVersion
-	err      error
-}
-
-// policyValues is the validated policy-editor payload (the enum fields are
-// parsed before the write is issued).
-type policyValues struct {
-	name, scopeRef, query, versionNote, rego string
-	dp                                       apiv1.DecisionPoint
-	scope                                    apiv1.PolicyScope
-	effect                                   apiv1.PolicyEffect
-}
+// NOTE: the POLICY EDITOR (create/edit/publish/version-inspect) was removed from this screen
+// when policies became a "coming soon" placeholder. The operator: "the form is weird and I
+// have never tested it ... just say 'Coming soon...' for now."
+//
+// It is deleted rather than parked because a form nobody can reach is the same class of thing
+// as a knob nothing honours: it invites someone to re-wire an unsettled design instead of
+// designing it. The plane-side capability is untouched — ListPolicies / CreatePolicy /
+// UpdatePolicyVersion / PublishPolicy / ListPolicyVersions all remain in the generated client,
+// and the Rego expression that parses into these types is in git history at the commit that
+// removed the editor.
+//
+// What remains here is the APPROVALS and RECOVERIES write surface, both of which the operator
+// uses.
 
 // --- action keys -----------------------------------------------------------
 
@@ -70,16 +61,10 @@ func (m *Model) handleActionKey(k tea.KeyMsg) (bool, tea.Cmd) {
 			return true, m.beginApprove(false)
 		}
 	case "policies":
-		switch k.String() {
-		case "n":
-			return true, m.beginPolicyCreate()
-		case "e":
-			return true, m.beginPolicyEdit()
-		case "p":
-			return true, m.beginPolicyPublish()
-		case "v":
-			return true, m.beginPolicyVersions()
-		}
+		// NO chords. The pane is a "coming soon" placeholder: it lists nothing, so every
+		// write chord would have nothing to act on. An unbound key falls through to the
+		// shared navigation layer, which is the honest behaviour for an inert pane.
+		return false, nil
 	case "recoveries":
 		switch k.String() {
 		case "a":
@@ -127,92 +112,6 @@ func (m *Model) beginApprove(approved bool) tea.Cmd {
 			&ovField{Key: "reason", Label: "reason (required)"})
 	}
 	return nil
-}
-
-// --- policies --------------------------------------------------------------
-
-func (m *Model) beginPolicyCreate() tea.Cmd {
-	if m.inFlight != "" {
-		return nil
-	}
-	m.actRef = ""
-	m.ov = newForm("New policy",
-		"rego/opa module — the body is sent whole (no silent truncation)",
-		"policy-create",
-		&ovField{Key: "name", Label: "name"},
-		&ovField{Key: "decision_point", Label: "decision point (admission|dispatch|budget|approval|recovery|completion)"},
-		&ovField{Key: "scope", Label: "scope (tenant|project|worker|task)", Value: "tenant"},
-		&ovField{Key: "scope_ref", Label: "scope ref (project_id / worker_id, empty for tenant)"},
-		&ovField{Key: "effect", Label: "effect (allow|deny|require_approval|require_review)", Value: "deny"},
-		&ovField{Key: "query", Label: "query (default data.<pkg>.allow)"},
-		&ovField{Key: "version_note", Label: "version note"},
-		&ovField{Key: "rego_module", Label: "rego module", Multi: true})
-	return nil
-}
-
-func (m *Model) beginPolicyEdit() tea.Cmd {
-	id := m.activeID()
-	if id == "" {
-		return m.refuse("no policy selected")
-	}
-	if m.inFlight != "" {
-		return nil
-	}
-	m.actRef = id
-	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		resp, err := cl.Policies.ListPolicyVersions(ctx, connect.NewRequest(&apiv1.ListPolicyVersionsRequest{PolicyId: id}))
-		if err != nil {
-			return editLoadedMsg{policyID: id, err: err}
-		}
-		vs := resp.Msg.GetVersions()
-		if len(vs) == 0 {
-			return editLoadedMsg{policyID: id, err: fmt.Errorf("policy %s has no version to edit", id)}
-		}
-		// Prefer the draft (the only mutable version); else the newest.
-		pick := vs[0]
-		for _, v := range vs {
-			if v.GetStatus() == apiv1.PolicyVersionStatus_POLICY_VERSION_STATUS_DRAFT {
-				pick = v
-				break
-			}
-		}
-		return editLoadedMsg{policyID: id, version: pick}
-	}
-}
-
-func (m *Model) beginPolicyPublish() tea.Cmd {
-	id := m.activeID()
-	if id == "" {
-		return m.refuse("no policy selected")
-	}
-	if m.inFlight != "" {
-		return nil
-	}
-	m.actRef = id
-	m.ov = newConfirm("Publish policy "+id,
-		"the draft version is compiled into the active bundle and becomes immutable.",
-		"policy-publish")
-	return nil
-}
-
-func (m *Model) beginPolicyVersions() tea.Cmd {
-	id := m.activeID()
-	if id == "" {
-		return m.refuse("no policy selected")
-	}
-	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-		defer cancel()
-		resp, err := cl.Policies.ListPolicyVersions(ctx, connect.NewRequest(&apiv1.ListPolicyVersionsRequest{PolicyId: id}))
-		if err != nil {
-			return versionsLoadedMsg{policyID: id, err: err}
-		}
-		return versionsLoadedMsg{policyID: id, versions: resp.Msg.GetVersions()}
-	}
 }
 
 // --- recoveries ------------------------------------------------------------
@@ -339,65 +238,6 @@ func (m *Model) cmdApproveStep(stepID string, approved bool, reason string) tea.
 				Approved:  approved,
 				Reason:    reason,
 			}))
-			return err
-		},
-	})
-}
-
-func (m *Model) cmdCreatePolicy(pv policyValues) tea.Cmd {
-	m.beginWrite("policy-create")
-	cl := m.cl
-	tenant := m.tenantID
-	return m.Base.Mutate(mutate.Request{
-		Name:   "create policy " + pv.name,
-		Source: "policies",
-		Do: func(ctx context.Context) error {
-			_, err := cl.Policies.CreatePolicy(ctx, connect.NewRequest(&apiv1.CreatePolicyRequest{
-				TenantId:      tenant,
-				Name:          pv.name,
-				DecisionPoint: pv.dp,
-				Scope:         pv.scope,
-				ScopeRef:      pv.scopeRef,
-				Effect:        pv.effect,
-				RegoModule:    pv.rego,
-				Query:         pv.query,
-				VersionNote:   pv.versionNote,
-			}))
-			return err
-		},
-	})
-}
-
-func (m *Model) cmdUpdatePolicyVersion(policyID string, pv policyValues) tea.Cmd {
-	m.beginWrite("policy-edit")
-	cl := m.cl
-	return m.Base.Mutate(mutate.Request{
-		Name:   "save policy " + policyID,
-		Source: "policies",
-		Do: func(ctx context.Context) error {
-			_, err := cl.Policies.UpdatePolicyVersion(ctx, connect.NewRequest(&apiv1.UpdatePolicyVersionRequest{
-				PolicyId:      policyID,
-				DecisionPoint: pv.dp,
-				Scope:         pv.scope,
-				ScopeRef:      pv.scopeRef,
-				Effect:        pv.effect,
-				RegoModule:    pv.rego,
-				Query:         pv.query,
-				VersionNote:   pv.versionNote,
-			}))
-			return err
-		},
-	})
-}
-
-func (m *Model) cmdPublishPolicy(policyID string) tea.Cmd {
-	m.beginWrite("policy-publish")
-	cl := m.cl
-	return m.Base.Mutate(mutate.Request{
-		Name:   "publish policy " + policyID,
-		Source: "policies",
-		Do: func(ctx context.Context) error {
-			_, err := cl.Policies.PublishPolicy(ctx, connect.NewRequest(&apiv1.PublishPolicyRequest{PolicyId: policyID}))
 			return err
 		},
 	})
@@ -572,27 +412,12 @@ func (m *Model) handleFormKey(k tea.KeyMsg) tea.Cmd {
 }
 
 // selectOverlayItem opens the inspector for the highlighted picker row.
+//
+// The only picker this screen still opens is the recovery-plan actor list, which has no
+// inspector: closing is the whole action. (The policy VERSIONS picker that used to inspect a
+// Rego body went with the policy editor — see the note at the top of this file.)
 func (m *Model) selectOverlayItem() tea.Cmd {
-	o := m.ov
-	if o == nil || o.cursor < 0 || o.cursor >= len(o.items) {
-		return nil
-	}
-	if o.action != "policy-versions" {
-		m.ov = nil
-		return nil
-	}
-	v := m.versions[o.items[o.cursor].ID]
-	if v == nil {
-		return nil
-	}
-	body := "v" + fmt.Sprint(v.GetVersion()) + "  " + versionStatusName(v.GetStatus()) + "\n" +
-		"decision point: " + decisionPointName(v.GetDecisionPoint()) + "\n" +
-		"scope: " + scopeName(v.GetScope()) + " " + v.GetScopeRef() + "\n" +
-		"effect: " + effectName(v.GetEffect()) + "\n" +
-		"query: " + v.GetQuery() + "\n" +
-		"note: " + v.GetVersionNote() + "\n\n" +
-		v.GetRegoModule()
-	m.ov = newViewer("Policy "+m.policyFor+" version v"+fmt.Sprint(v.GetVersion()), "rego module (verbatim)", body)
+	m.ov = nil
 	return nil
 }
 
@@ -605,54 +430,6 @@ func (m *Model) submitOverlay() tea.Cmd {
 	vals := map[string]string{}
 	for _, f := range o.fields {
 		vals[f.Key] = f.Value
-	}
-	var pv policyValues
-	// Enum fields parse up-front: a bad value is refused locally (shown in
-	// the overlay AND the dock) instead of sending a half-formed write.
-	if o.action == "policy-create" || o.action == "policy-edit" {
-		if strings.TrimSpace(vals["name"]) == "" && o.action == "policy-create" {
-			o.err = "name is required"
-			m.lastErr = "policy: " + o.err
-			m.Fail("policy: " + o.err)
-			return nil
-		}
-		dp, err := parseDecisionPoint(vals["decision_point"])
-		if err != nil {
-			o.err = err.Error()
-			m.lastErr = o.err
-			m.Fail(o.err)
-			return nil
-		}
-		sc, err := parseScope(vals["scope"])
-		if err != nil {
-			o.err = err.Error()
-			m.lastErr = o.err
-			m.Fail(o.err)
-			return nil
-		}
-		ef, err := parseEffect(vals["effect"])
-		if err != nil {
-			o.err = err.Error()
-			m.lastErr = o.err
-			m.Fail(o.err)
-			return nil
-		}
-		if strings.TrimSpace(vals["rego_module"]) == "" {
-			o.err = "the rego module must not be empty"
-			m.lastErr = o.err
-			m.Fail(o.err)
-			return nil
-		}
-		pv = policyValues{
-			name:        vals["name"],
-			scopeRef:    vals["scope_ref"],
-			query:       vals["query"],
-			versionNote: vals["version_note"],
-			rego:        vals["rego_module"],
-			dp:          dp,
-			scope:       sc,
-			effect:      ef,
-		}
 	}
 	if o.action == "approval-reject" && strings.TrimSpace(vals["reason"]) == "" {
 		o.err = "a rejection reason is required (it is written to .orchicon/<run_id>/summary)"
@@ -675,12 +452,6 @@ func (m *Model) submitOverlay() tea.Cmd {
 		return m.cmdApproveStep(m.actRef, true, vals["reason"])
 	case "approval-reject":
 		return m.cmdApproveStep(m.actRef, false, vals["reason"])
-	case "policy-create":
-		return m.cmdCreatePolicy(pv)
-	case "policy-edit":
-		return m.cmdUpdatePolicyVersion(m.actRef, pv)
-	case "policy-publish":
-		return m.cmdPublishPolicy(m.actRef)
 	case "recovery-approve-plan":
 		return m.cmdApprovePlan(m.actRef, vals["actor"])
 	case "recovery-reject-plan":
@@ -696,52 +467,6 @@ func (m *Model) submitOverlay() tea.Cmd {
 		return m.cmdMarkSucceeded(m.actRef, task, vals["actor"], vals["reason"])
 	}
 	m.inFlight = ""
-	return nil
-}
-
-// --- async results ---------------------------------------------------------
-
-func (m *Model) handleEditLoaded(msg editLoadedMsg) tea.Cmd {
-	if msg.err != nil {
-		m.lastErr = msg.err.Error()
-		m.Fail(msg.err.Error())
-		return nil
-	}
-	v := msg.version
-	m.ov = newForm("Edit policy "+msg.policyID+" (v"+fmt.Sprint(v.GetVersion())+")",
-		"only a draft version is mutable — publishing makes it immutable",
-		"policy-edit",
-		&ovField{Key: "decision_point", Label: "decision point", Value: decisionPointName(v.GetDecisionPoint())},
-		&ovField{Key: "scope", Label: "scope", Value: scopeName(v.GetScope())},
-		&ovField{Key: "scope_ref", Label: "scope ref", Value: v.GetScopeRef()},
-		&ovField{Key: "effect", Label: "effect", Value: effectName(v.GetEffect())},
-		&ovField{Key: "query", Label: "query", Value: v.GetQuery()},
-		&ovField{Key: "version_note", Label: "version note", Value: v.GetVersionNote()},
-		&ovField{Key: "rego_module", Label: "rego module", Multi: true, Value: v.GetRegoModule()})
-	return nil
-}
-
-func (m *Model) handleVersionsLoaded(msg versionsLoadedMsg) tea.Cmd {
-	if msg.err != nil {
-		m.lastErr = msg.err.Error()
-		m.Fail(msg.err.Error())
-		return nil
-	}
-	m.policyFor = msg.policyID
-	m.versions = map[string]*apiv1.PolicyVersion{}
-	items := make([]ovItem, 0, len(msg.versions))
-	for _, v := range msg.versions {
-		id := fmt.Sprint(v.GetVersion())
-		m.versions[id] = v
-		items = append(items, ovItem{
-			Label: "v" + id,
-			ID:    id,
-			Meta:  versionStatusName(v.GetStatus()) + "  " + v.GetVersionNote(),
-		})
-	}
-	m.ov = newPicker("Policy "+msg.policyID+" versions",
-		"enter inspects a version's rego body (verbatim — no truncation)",
-		"policy-versions", items)
 	return nil
 }
 
@@ -776,69 +501,11 @@ func (m *Model) Notice(msg string) {
 }
 
 // --- enum helpers ----------------------------------------------------------
-
-func parseDecisionPoint(s string) (apiv1.DecisionPoint, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "admission":
-		return apiv1.DecisionPoint_DECISION_POINT_ADMISSION, nil
-	case "dispatch":
-		return apiv1.DecisionPoint_DECISION_POINT_DISPATCH, nil
-	case "budget":
-		return apiv1.DecisionPoint_DECISION_POINT_BUDGET, nil
-	case "approval":
-		return apiv1.DecisionPoint_DECISION_POINT_APPROVAL, nil
-	case "recovery":
-		return apiv1.DecisionPoint_DECISION_POINT_RECOVERY, nil
-	case "completion":
-		return apiv1.DecisionPoint_DECISION_POINT_COMPLETION, nil
-	}
-	return 0, fmt.Errorf("unknown decision point %q (admission|dispatch|budget|approval|recovery|completion)", s)
-}
-
-func decisionPointName(v apiv1.DecisionPoint) string {
-	return strings.ToLower(strings.TrimPrefix(v.String(), "DECISION_POINT_"))
-}
-
-func parseScope(s string) (apiv1.PolicyScope, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "tenant":
-		return apiv1.PolicyScope_POLICY_SCOPE_TENANT, nil
-	case "project":
-		return apiv1.PolicyScope_POLICY_SCOPE_PROJECT, nil
-	case "worker":
-		return apiv1.PolicyScope_POLICY_SCOPE_WORKER, nil
-	case "task":
-		return apiv1.PolicyScope_POLICY_SCOPE_TASK, nil
-	}
-	return 0, fmt.Errorf("unknown scope %q (tenant|project|worker|task)", s)
-}
-
-func scopeName(v apiv1.PolicyScope) string {
-	return strings.ToLower(strings.TrimPrefix(v.String(), "POLICY_SCOPE_"))
-}
-
-func parseEffect(s string) (apiv1.PolicyEffect, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "allow":
-		return apiv1.PolicyEffect_POLICY_EFFECT_ALLOW, nil
-	case "deny":
-		return apiv1.PolicyEffect_POLICY_EFFECT_DENY, nil
-	case "require_approval":
-		return apiv1.PolicyEffect_POLICY_EFFECT_REQUIRE_APPROVAL, nil
-	case "require_review":
-		return apiv1.PolicyEffect_POLICY_EFFECT_REQUIRE_REVIEW, nil
-	}
-	return 0, fmt.Errorf("unknown effect %q (allow|deny|require_approval|require_review)", s)
-}
+//
+// Only the EFFECT name survives: the approvals detail renders the policy decisions recorded
+// against a step run, and needs to print an effect. The parse/name helpers for decision
+// point, scope and version status belonged to the policy editor, which is gone.
 
 func effectName(v apiv1.PolicyEffect) string {
 	return strings.ToLower(strings.TrimPrefix(v.String(), "POLICY_EFFECT_"))
-}
-
-func versionStatusName(v apiv1.PolicyVersionStatus) string {
-	return strings.ToLower(strings.TrimPrefix(v.String(), "POLICY_VERSION_STATUS_"))
-}
-
-func policyStatusName(v apiv1.PolicyStatus) string {
-	return strings.ToLower(strings.TrimPrefix(v.String(), "POLICY_STATUS_"))
 }

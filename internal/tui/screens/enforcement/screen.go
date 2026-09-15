@@ -1,15 +1,31 @@
-// Package enforcement implements the Enforcement screen: policies, pending
-// step approvals, policy decisions, and recovery executions — with the WRITE
-// paths the GUI exposes (approve/reject a pending step approval, create/edit/
-// publish a policy and inspect version bodies, and the recovery action
-// surface). StreamRecoveryEvents drives footer status (recovery rides the
-// enforcement UX in the GUI).
+// Package enforcement implements the Enforcement screen: pending step
+// approvals and recovery executions — with the WRITE paths the GUI exposes
+// (approve/reject a pending step approval, and the recovery action surface).
+// StreamRecoveryEvents drives footer status (recovery rides the enforcement
+// UX in the GUI).
+//
+// POLICIES show a COMING SOON placeholder. The operator: "Policies. We never
+// really ironed these out. They exist in the gui but the form is weird and I
+// have never tested it. I would like both the TUI and the GUI to just say
+// 'Coming soon...' for now." The pane therefore lists NOTHING and binds NO
+// chords: the policy form was the untested, weird part, and a half-wired
+// surface is worse than an honest placeholder. The RPCs and the proto remain
+// (ListPolicies/CreatePolicy/PublishPolicy/…), so the surface returns when the
+// design is settled — it is the untested UI shape that was removed, not the
+// capability.
+//
+// DECISIONS was removed outright. The operator: "I see something in the TUI
+// called Decisions. There is not a 1:1 for Decisions in the GUI. I think this
+// is left over cruft from the initial TUI when we were still brainstorming."
+// Correct — the GUI has no Decisions nav entry; decisions appear only as policy
+// context INSIDE the approvals surface, which this screen still renders (see
+// the approvals detail's "policy context" section). The standalone pane was a
+// second, worse copy of a panel the operator already has.
 //
 // Chords (content focus, per focused source):
 //
 //	approvals   a approve (reason)      x reject (reason required)
-//	policies    n new (rego body)       e edit draft      p publish
-//	            v versions → enter inspects a version body
+//	policies    (none — coming soon)
 //	recoveries  a approve continuation plan   x reject plan (reason)
 //	            c cancel recovery             m mark task succeeded
 //
@@ -52,11 +68,6 @@ type Model struct {
 	planStatus    map[string]apiv1.PlanStatus
 	planCache     map[string]*apiv1.ContinuationPlan
 
-	// versions caches a policy's versions for the inspector (keyed by
-	// version number); policyFor names the policy they belong to.
-	versions  map[string]*apiv1.PolicyVersion
-	policyFor string
-
 	// Write-path state.
 	ov       *overlay // the open modal (nil = none)
 	actRef   string   // the entity the open overlay writes to
@@ -79,16 +90,17 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 		recoveries:    map[string]*apiv1.RecoveryExecution{},
 		planStatus:    map[string]apiv1.PlanStatus{},
 		planCache:     map[string]*apiv1.ContinuationPlan{},
-		versions:      map[string]*apiv1.PolicyVersion{},
 		decisionsFor:  map[string][]*apiv1.PolicyDecision{},
 	}
 	// Every write goes through the ONE mutation executor (dock feedback,
 	// rollback, and the affected source's reconcile).
 	m.Base.SetExecutor(&mutate.Executor{Sink: m})
 	m.NameStr = "enforcement"
+	// Policies is a PLACEHOLDER pane: no rows, no chords (see the package comment).
+	// The empty-state text is the whole surface.
 	m.AddSource("policies", "Policies", m.fetchPolicies)
+	m.Base.SetSourceEmpty("policies", ComingSoonText)
 	m.AddSource("approvals", "Pending Approvals", m.fetchApprovals)
-	m.AddSource("decisions", "Decisions", m.fetchDecisions)
 	m.AddSource("recoveries", "Recoveries", m.fetchRecoveries)
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses([]screenkit.StatusMsg{
@@ -152,24 +164,22 @@ func (m *Model) activeID() string {
 
 // --- list panes ------------------------------------------------------------
 
-func (m *Model) fetchPolicies(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
-	resp, err := m.cl.Policies.ListPolicies(ctx, connect.NewRequest(&apiv1.ListPoliciesRequest{
-		TenantId:  "",
-		PageSize:  100,
-		PageToken: pageToken,
-	}))
-	if err != nil {
-		return nil, "", err
-	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Policies))
-	for _, p := range resp.Msg.Policies {
-		items = append(items, screenkit.Item{
-			ID:    p.GetId(),
-			Title: p.GetName(),
-			Meta:  policyStatusName(p.GetStatus()),
-		})
-	}
-	return items, resp.Msg.NextPageToken, nil
+// ComingSoonText is the whole Policies surface while the design is unsettled.
+//
+// The operator asked for exactly this string: "both the TUI and the GUI to just say
+// 'Coming soon...' for now." It is shared with the GUI (frontend/src/routes/policies.tsx
+// renders the same words) so the two clients cannot disagree about the state of the feature.
+const ComingSoonText = "Coming soon..."
+
+// fetchPolicies intentionally FETCHES NOTHING.
+//
+// It is a policy placeholder, not an oversight: the pane must list no rows and offer no
+// chords, and issuing a ListPolicies call behind a "coming soon" pane would be a request
+// nothing can act on. Keeping the source registered (rather than deleting it) is what keeps
+// the section DISCOVERABLE — the operator can see that policies exist as a surface and are
+// coming, instead of the nav entry silently disappearing.
+func (m *Model) fetchPolicies(context.Context, string) ([]screenkit.Item, string, error) {
+	return nil, "", nil
 }
 
 func (m *Model) fetchApprovals(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
@@ -190,26 +200,6 @@ func (m *Model) fetchApprovals(ctx context.Context, pageToken string) ([]screenk
 			ID:    a.GetStepRunId(),
 			Title: a.GetWorkflowName() + " → " + a.GetProjectName(),
 			Meta:  strings.ToLower(a.GetStatus()),
-		})
-	}
-	return items, resp.Msg.NextPageToken, nil
-}
-
-func (m *Model) fetchDecisions(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
-	resp, err := m.cl.Policies.ListDecisions(ctx, connect.NewRequest(&apiv1.ListDecisionsRequest{
-		TenantId:  "",
-		PageSize:  100,
-		PageToken: pageToken,
-	}))
-	if err != nil {
-		return nil, "", err
-	}
-	items := make([]screenkit.Item, 0, len(resp.Msg.Decisions))
-	for _, d := range resp.Msg.Decisions {
-		items = append(items, screenkit.Item{
-			ID:    d.GetId(),
-			Title: d.GetDecisionPoint() + " · " + d.GetTargetType(),
-			Meta:  effectName(d.GetEffect()),
 		})
 	}
 	return items, resp.Msg.NextPageToken, nil
@@ -241,33 +231,10 @@ func (m *Model) fetchRecoveries(ctx context.Context, pageToken string) ([]screen
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
 	case "policies":
-		resp, err := m.cl.Policies.GetPolicy(ctx, connect.NewRequest(&apiv1.GetPolicyRequest{Id: id}))
-		if err != nil {
-			return "", nil, "", err
-		}
-		p := resp.Msg.GetPolicy()
-		fields := []screenkit.Field{
-			{Key: "id", Value: p.GetId()},
-			{Key: "name", Value: p.GetName()},
-			{Key: "status", Value: policyStatusName(p.GetStatus())},
-			{Key: "current ver", Value: screenkit.FmtInt(int(p.GetCurrentVersion()))},
-			{Key: "created", Value: screenkit.FmtTime(p.GetCreatedAt())},
-			{Key: "updated", Value: screenkit.FmtTime(p.GetUpdatedAt())},
-			{Key: "actions", Value: "n new · e edit draft · p publish · v versions"},
-		}
-		// The version trail in the body; the versions picker (v → enter)
-		// inspects a single version's Rego body verbatim.
-		var body string
-		if vr, err := m.cl.Policies.ListPolicyVersions(ctx, connect.NewRequest(&apiv1.ListPolicyVersionsRequest{PolicyId: id})); err == nil {
-			var b strings.Builder
-			for _, v := range vr.Msg.GetVersions() {
-				b.WriteString("v" + screenkit.FmtInt(int(v.GetVersion())) + "  " +
-					versionStatusName(v.GetStatus()) + "  " +
-					v.GetVersionNote() + "\n")
-			}
-			body = strings.TrimRight(b.String(), "\n")
-		}
-		return "Policy: " + p.GetName(), fields, body, nil
+		// The pane lists nothing while policies are "coming soon", so this is only
+		// reached if a stale selection survives a reload. Say the same thing as the
+		// empty state rather than fetching a policy the surface no longer offers.
+		return "Policies", []screenkit.Field{{Key: "status", Value: ComingSoonText}}, "", nil
 
 	case "approvals":
 		// The list response carries the full ApprovalItem (no GetApproval
@@ -314,42 +281,6 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "Approval " + a.GetStepRunId(), fields, strings.TrimRight(b.String(), "\n"), nil
 		}
 		return "Pending Approval", []screenkit.Field{{Key: "step run", Value: id}, {Key: "actions", Value: "a approve · x reject"}}, "", nil
-
-	case "decisions":
-		// ListDecisions carries full PolicyDecision rows; render a fresh
-		// fetch when the row is not in the list cache.
-		if resp, err := m.cl.Policies.GetDecision(ctx, connect.NewRequest(&apiv1.GetDecisionRequest{Id: id})); err == nil {
-			d := resp.Msg.GetDecision()
-			fields := []screenkit.Field{
-				{Key: "id", Value: d.GetId()},
-				{Key: "decision point", Value: d.GetDecisionPoint()},
-				{Key: "effect", Value: effectName(d.GetEffect())},
-				{Key: "policy", Value: d.GetPolicyId() + " v" + screenkit.FmtInt(int(d.GetPolicyVersion()))},
-				{Key: "target", Value: d.GetTargetType() + " " + d.GetTargetId()},
-				{Key: "actor", Value: d.GetActorType() + " " + d.GetActorId()},
-				{Key: "trace id", Value: d.GetTraceId()},
-				{Key: "occurred", Value: screenkit.FmtTime(d.GetOccurredAt())},
-			}
-			var b strings.Builder
-			if d.GetInput() != "" {
-				b.WriteString("input:\n" + d.GetInput() + "\n")
-			}
-			if d.GetResult() != "" {
-				b.WriteString("\nresult:\n" + d.GetResult() + "\n")
-			}
-			if d.GetError() != "" {
-				b.WriteString("\nerror: " + d.GetError() + "\n")
-			}
-			return "Decision " + d.GetId(), fields, strings.TrimRight(b.String(), "\n"), nil
-		}
-		if it, ok := m.SourceItem("decisions", id); ok {
-			return "Decision", []screenkit.Field{
-				{Key: "id", Value: it.ID},
-				{Key: "point · target", Value: it.Title},
-				{Key: "effect", Value: it.Meta},
-			}, "", nil
-		}
-		return "Decision", []screenkit.Field{{Key: "id", Value: id}}, "", nil
 
 	case "recoveries":
 		r := m.recoveries[id]
@@ -444,12 +375,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		m.inFlight = ""
 		return m, m.Base.HandleMutation(msg)
 
-	case editLoadedMsg:
-		return m, m.handleEditLoaded(msg)
-
-	case versionsLoadedMsg:
-		return m, m.handleVersionsLoaded(msg)
-
 	case tea.KeyMsg:
 		// The overlay owns every key while open (the shell has already
 		// forwarded them verbatim via ClaimsKeys).
@@ -485,7 +410,7 @@ func (m *Model) View() string {
 	case "approvals":
 		hint = "a: approve · x: reject (the detail shows the upstream + policy context)"
 	case "policies":
-		hint = "n: new policy · e: edit draft · p: publish · v: versions (enter inspects a body)"
+		hint = ComingSoonText
 	case "recoveries":
 		hint = "a: approve plan · x: reject plan · c: cancel recovery · m: mark task succeeded (Confirm-gated)"
 	}
