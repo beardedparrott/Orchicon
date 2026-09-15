@@ -435,6 +435,14 @@ func (b *Base) BeginDetailEdit(title string, f *Form) {
 	}
 }
 
+// CloseDetailEdit closes the inline editor WITHOUT reporting a submit — the
+// programmatic equivalent of esc.
+func (b *Base) CloseDetailEdit() {
+	if b.editForm != nil {
+		b.finishDetailEdit(false)
+	}
+}
+
 // EditingDetail reports whether the detail pane is in inline-edit mode.
 func (b *Base) EditingDetail() bool { return b.editForm != nil }
 

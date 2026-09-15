@@ -89,6 +89,16 @@ type focusMode int
 const (
 	focusContent focusMode = iota
 	focusComposer
+	// focusTabs means the TAB BAR holds the keyboard — nothing below it has been
+	// chosen yet.
+	//
+	// It exists because "the default Projects view under Work captures the down
+	// arrows" was the pane receiving keys before the operator had selected
+	// anything: Tab put them straight into the content, whose default source was
+	// already focused. With this state Tab moves the top-level selection only; a
+	// submenu opens on Enter, and SELECTING an entry is what moves focus into the
+	// pane (see MenuSelect).
+	focusTabs
 )
 
 // App is the root model.
@@ -523,12 +533,11 @@ func (m *App) tabRingNext() {
 		m.closeTabMenu()
 		return
 	}
+	// From the composer, Tab lands on the TAB BAR for the current tab — not in its
+	// content. Landing in the content is what let a pane take the arrows before the
+	// operator had chosen anything.
 	if m.chatFocus == focusComposer {
-		m.setFocus(focusContent)
-		if m.active != TabAsk {
-			m.SwitchTo(TabAsk)
-		}
-		m.EnsureSubscriptions(TabAsk)
+		m.setFocus(focusTabs)
 		return
 	}
 	idx := 0
@@ -539,10 +548,11 @@ func (m *App) tabRingNext() {
 		}
 	}
 	if idx >= len(Tabs)-1 {
-		// Control content → wrap back to the chat prompt.
+		// Past the last tab: wrap back to the composer, which owns no tab.
 		m.setFocus(focusComposer)
 		return
 	}
+	m.setFocus(focusTabs)
 	m.SwitchTo(Tabs[idx+1].ID)
 	m.EnsureSubscriptions(Tabs[idx+1].ID)
 }

@@ -73,15 +73,15 @@ func TestFormCreatesWebhookThroughMutationLayer(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("n did not open the create form")
 	}
-	m.form.Set("name", "ci-events")
-	m.form.Set("target_url", "https://example.test/hook")
-	m.form.Set("event_filter", "execution.completed")
-	m.form.Set("scope", "tenant")
-	m.form.Set("secret", "shhh")
-	m.form.Set("max_retries", "5")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("name", "ci-events")
+	m.activeForm().Set("target_url", "https://example.test/hook")
+	m.activeForm().Set("event_filter", "execution.completed")
+	m.activeForm().Set("scope", "tenant")
+	m.activeForm().Set("secret", "shhh")
+	m.activeForm().Set("max_retries", "5")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if cmd == nil {
 		t.Fatal("submit did not produce a mutation cmd")

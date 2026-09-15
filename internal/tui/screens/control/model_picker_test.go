@@ -77,7 +77,7 @@ func openSettingsModelPicker(t *testing.T, m *Model) tea.Cmd {
 	if !m.formOpen() {
 		t.Fatal("e did not open the settings form")
 	}
-	if !m.form.FocusName("default_worker_model") {
+	if !m.activeForm().FocusName("default_worker_model") {
 		t.Fatal("the settings form has no default_worker_model field")
 	}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -174,7 +174,7 @@ func TestModelPickerCascadeCommitsIntoTheFormField(t *testing.T) {
 	if m.modelPicker != nil {
 		t.Fatal("committing must close the picker")
 	}
-	if got := m.form.Values["default_worker_model"]; got != "orchicon/anthropic/claude-sonnet-4" {
+	if got := m.activeForm().Values["default_worker_model"]; got != "orchicon/anthropic/claude-sonnet-4" {
 		t.Fatalf("form field = %q, want the committed ref", got)
 	}
 }
@@ -189,7 +189,7 @@ func TestModelPickerEscLeavesTheFieldUnchanged(t *testing.T) {
 	if m.modelPicker != nil {
 		t.Fatal("esc must close the picker")
 	}
-	if got := m.form.Values["default_worker_model"]; got != "opencode/anthropic/claude-sonnet-4" {
+	if got := m.activeForm().Values["default_worker_model"]; got != "opencode/anthropic/claude-sonnet-4" {
 		t.Fatalf("esc must not change the field, got %q", got)
 	}
 	if !m.formOpen() {

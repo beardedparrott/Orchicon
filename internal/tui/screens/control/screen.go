@@ -424,7 +424,7 @@ func (m *Model) bodyHeight() int { return m.h }
 // Confirm dialog is open the shell hands over every key verbatim, so a secret
 // value or a URL containing q / d / / is never eaten by a global chord.
 func (m *Model) ClaimsKeys() bool {
-	return m.form != nil || m.Open != nil || m.modelPicker != nil
+	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
@@ -1293,7 +1293,28 @@ func (m *Model) editFormForSource() *kit2.Form {
 	return nil
 }
 
-func (m *Model) formOpen() bool { return m.form != nil }
+// formOpen reports whether ANY form is open — the legacy modal or the inline
+// details-pane editor. Most forms now open in the pane, so a check that only
+// looked at the modal field would report "not open" for an open editor.
+func (m *Model) formOpen() bool { return m.form != nil || m.Base.EditingDetail() }
+
+// activeForm is the form the operator is currently editing, whichever host holds
+// it. Tests drive writes through this, so they assert WHAT is being edited rather
+// than WHERE it is drawn — which is the point of the change: the host is a
+// presentation choice, not part of the contract.
+func (m *Model) activeForm() *kit2.Form {
+	if m.form != nil {
+		return m.form
+	}
+	return m.Base.DetailForm()
+}
+
+// clearForm closes whichever host holds the form (what a screen does after a
+// submit or a cancel).
+func (m *Model) clearForm() {
+	m.form = nil
+	m.Base.CloseDetailEdit()
+}
 
 // newWebhookForm builds the typed create form.
 func (m *Model) newWebhookForm() *kit2.Form {
@@ -1742,8 +1763,11 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 	}
 
-	// The open form owns every key (modal, layered over the focus ring).
-	if m.formOpen() {
+	// The LEGACY modal host owns every key while it is up. Forms open in the
+	// details pane now (see the n/e/s chords), so this path is normally inert — it
+	// is kept for the hosts that still use it, and checks m.form directly rather
+	// than formOpen() so an INLINE editor is not mistaken for it.
+	if m.form != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			if k.String() == "esc" {
 				m.form = nil
@@ -1760,23 +1784,30 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 
 	// Screen chords run only when no modal dialog is open (the dialog owns
 	// every key through the kit2 base, layered over the focus ring).
+	//
+	// CREATE and EDIT open in the DETAILS PANE, not a modal. The operator: "Edit
+	// Tenant settings is popping up as a separate modal. We should not do that. It
+	// should be edited in the details pane just like anything else." A modal covers
+	// the list AND the detail it is editing; the pane keeps both visible, and it is
+	// the same host the work-item and worker forms already use, so the keys,
+	// validation and submit path cannot diverge between them.
 	if m.Open == nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			switch k.String() {
 			case "n":
 				if f := m.newFormForSource(); f != nil {
-					m.form = f
+					m.Base.BeginDetailEdit(f.Title, f)
 					return m, nil
 				}
 			case "e":
 				if f := m.editFormForSource(); f != nil {
-					m.form = f
+					m.Base.BeginDetailEdit(f.Title, f)
 					return m, nil
 				}
 			case "s":
 				// set credential / token form openers (per pane).
 				if f := m.secretFormForSource(); f != nil {
-					m.form = f
+					m.Base.BeginDetailEdit(f.Title, f)
 					return m, nil
 				}
 			default:
@@ -1818,7 +1849,7 @@ func (m *Model) View() string {
 	// detail) — a nine-across grid truncates every cell to a few runes.
 	out := m.Base.SinglePane(m.w, m.bodyHeight())
 
-	if m.formOpen() {
+	if m.form != nil {
 		box := formBox(m.form, m.w, m.h)
 		out = kit2.Center(kit2.FitLines(out, m.w, m.h), box, m.w, m.h)
 	} else if m.Open != nil {

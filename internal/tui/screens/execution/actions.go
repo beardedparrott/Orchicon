@@ -326,8 +326,17 @@ func (m *Model) actionByKey(key string) (kit2.Action, bool) {
 	return kit2.Action{}, false
 }
 
-// unavailableReason explains why a write chord has nothing to run on the
-// focused row (never a silent no-op).
+// unavailableReason explains why a write chord has nothing to run on the focused
+// row — but ONLY for the chords that source actually binds.
+//
+// It used to answer for ANY key, and that made the pane UNUSABLE: handleActionKey
+// treats a non-empty reason as "handled", so on the Executions and Workers panes
+// every key was consumed and explained — including the arrow keys. That is the
+// operator's "Executions and Workers will not allow you to use up/down when you
+// select their submenu. They are locked."
+//
+// A source with no chord bound to the pressed key must return "", so the key
+// falls through to the screen (which is what moves the list).
 func (m *Model) unavailableReason(key string) string {
 	switch m.ActiveSourceName() {
 	case srcRuns:
@@ -342,16 +351,23 @@ func (m *Model) unavailableReason(key string) string {
 		case keyForceProgress:
 			return "force-progress applies to a WEDGED (running) run — " + it.ID + " is " + state
 		}
+		return ""
 	case srcExecutions:
 		it, ok := m.ActiveItem()
 		if !ok {
 			return ""
 		}
-		return "execution " + it.ID + " is not live (" + strings.ToLower(it.Meta) + ") — there is nothing to cancel or interject into"
+		switch key {
+		case keyCancel:
+			return "execution " + it.ID + " is not live (" + strings.ToLower(it.Meta) + ") — there is nothing to cancel"
+		case keyInterject:
+			return "interjection needs a LIVE (running) execution — " + it.ID + " is " + strings.ToLower(it.Meta)
+		}
+		return ""
 	case srcWorkers:
 		it, ok := m.ActiveItem()
 		if !ok {
-			return "select a worker first"
+			return ""
 		}
 		status := workerStatusOf(it.Meta)
 		switch key {
@@ -360,7 +376,19 @@ func (m *Model) unavailableReason(key string) string {
 		case keyDelete:
 			return "delete (x) removes " + it.Title + " and all of its versions"
 		}
-		return "worker " + it.Title + " (" + status + ")"
+		return ""
+	case srcWorkflows:
+		it, ok := m.ActiveItem()
+		if !ok {
+			return ""
+		}
+		switch key {
+		case keyDeprecateWf:
+			return "deprecate applies to a PUBLISHED workflow — " + it.Title + " is " + workflowStatusOf(it.Meta)
+		case keyDeleteWorkflow:
+			return "delete (x) removes " + it.Title + " and all of its versions"
+		}
+		return ""
 	}
 	return ""
 }

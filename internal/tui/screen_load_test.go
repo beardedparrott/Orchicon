@@ -57,10 +57,11 @@ func TestTabRingAndRailToggle(t *testing.T) {
 	if m.chatFocus != focusComposer {
 		t.Fatal("launch focus must be the composer")
 	}
-	// Tab from the composer drops into the Ask content.
+	// Tab from the composer lands on the TAB BAR — not in the content, which is
+	// what let a pane take the arrows before anything was chosen.
 	m.tabRingNext()
-	if m.chatFocus != focusContent || m.ActiveTab() != TabAsk {
-		t.Fatalf("tab from composer = (%v, %s), want (content, ask)", m.chatFocus, m.ActiveTab())
+	if m.chatFocus != focusTabs || m.ActiveTab() != TabAsk {
+		t.Fatalf("tab from composer = (%v, %s), want (tab bar, ask)", m.chatFocus, m.ActiveTab())
 	}
 	// Each further Tab advances one area, in tab-bar order (Overview is second).
 	m.tabRingNext()

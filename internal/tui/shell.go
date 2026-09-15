@@ -143,28 +143,21 @@ func (m *App) MenuClick(x, y int) bool {
 	return true
 }
 
-// menuActivationKey reports whether k should open the active tab's dropdown.
+// menuActivationKey reports whether k opens the active tab's dropdown.
 //
-// ONLY from the composer, and only with an empty buffer — so a real message keeps
-// Enter as send. That is the original Phase-3.5 gesture and it is kept.
+// The TAB BAR opens it, on Enter — and that is the ONLY way a submenu appears
+// ("submenus should only pop up if you enter on them"). Tab used to pop it open
+// as it advanced, which ALSO left the menu up eating the arrows.
 //
-// CONTENT focus no longer opens the menu on any key. Down used to be bound here
-// and that was a mistake: the shell claimed it on every screen, so the vertical
-// keys could never reach a pane — "if you hit enter for example on 'Workers', the
-// arrow keys still move the submenu around instead of moving up and down on the
-// Workers", and "the default Projects view under Work captures the down arrows".
-// The operator's model is explicit:
+// From the COMPOSER, Enter/Space still open it with an empty buffer, so a real
+// message keeps Enter as send (the original Phase-3.5 gesture).
 //
-//  1. Tab moves through the menu
-//  2. up/down move through the submenu
-//  3. Enter selects the submenu
-//  4. then the arrows move through the pane items
-//  5. Tab breaks that and moves through the menu again
-//
-// so TAB is what puts you in menu mode (see the tab chord in router.go) and the
-// menu being OPEN is the mode: while it is open up/down navigate it, and once it
-// closes the arrows belong to the screen.
+// Nothing else opens it, and no VERTICAL key does from anywhere: "no menus should
+// grab up/down until you actually select it".
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
+	if m.chatFocus == focusTabs {
+		return k.String() == "enter"
+	}
 	if m.chatFocus != focusComposer {
 		return false
 	}

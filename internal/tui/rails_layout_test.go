@@ -422,15 +422,22 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 //  1. Tab moves through the menu
 //  2. up/down move through the submenu
 //  3. Enter selects the submenu
-//  4. then the arrows move through the pane items
-//  5. Tab breaks that and moves through the menu again
 //
-// The load-bearing part is that the arrows must reach the PANE after a selection.
-// They could not: the shell bound `down` to opening the menu from content focus,
-// so it was consumed on every screen — "if you hit enter for example on 'Workers',
-// the arrow keys still move the submenu around instead of moving up and down on
-// the Workers". The menu being OPEN is now the mode, and Tab is what opens it.
-func TestNavigationModelTabDownEnterArrows(t *testing.T) {
+// The operator's navigation model, end to end:
+//
+//  1. Tab moves through the top-level tabs — and ONLY moves. It must not pop a
+//     submenu open ("submenus should only pop up if you enter on them"), because
+//     an open menu also eats the arrows.
+//  2. Enter on a tab opens that tab's submenu.
+//  3. up/down move through the submenu.
+//  4. Enter selects — which closes the menu AND moves focus into the pane.
+//  5. up/down then move the pane items.
+//
+// The load-bearing parts are that nothing below the tab bar receives keys until a
+// submenu entry is SELECTED ("the project page STILL captures the down/up controls
+// without actually selecting it yet"), and that once selected the arrows do reach
+// the pane ("Executions and Workers ... are locked").
+func TestNavigationModelTabEnterArrows(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
 		switch tb.ID {
@@ -445,48 +452,58 @@ func TestNavigationModelTabDownEnterArrows(t *testing.T) {
 	m.setFocus(focusComposer)
 	m.SwitchTo(TabAsk)
 
-	// 1. Tab moves through the menu and drops the submenu open.
+	// 1. Tab lands on the TAB BAR — no submenu, and nothing below takes keys.
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
-	if m.TabMenu() == nil {
-		t.Fatal("step 1: tab must open the submenu")
+	if m.TabMenu() != nil {
+		t.Fatal("step 1: tab must NOT pop the submenu open")
 	}
-	if m.chatFocus != focusContent {
-		t.Fatal("step 1: tab must land on content, not the composer")
+	if m.chatFocus != focusTabs {
+		t.Fatalf("step 1: tab must land on the tab bar, got focus=%v", m.chatFocus)
 	}
 
-	// Tab again advances to the next tab's submenu.
+	// Tab again advances the top-level selection, still with no submenu.
 	first := m.active
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
 	if m.active == first {
 		t.Fatalf("step 1: tab must advance the tab ring (still %q)", m.active)
 	}
-	if m.TabMenu() == nil {
-		t.Fatal("step 1: tab must open the new tab's submenu too")
+	if m.TabMenu() != nil {
+		t.Fatal("step 1: advancing must not pop a submenu either")
 	}
 
-	// 2. up/down move through the submenu.
-	sel := m.TabMenu().Sel
+	// 2. Enter opens the submenu.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(*App)
+	if m.TabMenu() == nil {
+		t.Fatal("step 2: enter on the tab bar must open the submenu")
+	}
+
+	// 3. up/down move through it.
 	if len(m.TabMenu().Entries) > 1 {
+		sel := m.TabMenu().Sel
 		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = nm.(*App)
 		if m.TabMenu() == nil {
-			t.Fatal("step 2: down must not close the submenu")
+			t.Fatal("step 3: down must not close the submenu")
 		}
 		if m.TabMenu().Sel == sel {
-			t.Fatal("step 2: down must move the submenu selection")
+			t.Fatal("step 3: down must move the submenu selection")
 		}
 	}
 
-	// 3. Enter selects, which CLOSES the menu (step 4's precondition).
+	// 4. Enter selects: menu closes, focus moves into the pane.
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(*App)
 	if m.TabMenu() != nil {
-		t.Fatal("step 3: enter must close the submenu after selecting")
+		t.Fatal("step 4: enter must close the submenu after selecting")
+	}
+	if m.chatFocus != focusContent {
+		t.Fatalf("step 4: selecting must hand focus to the pane, got %v", m.chatFocus)
 	}
 
-	// 4. With the menu closed the arrows belong to the PANE, not the shell.
+	// 5. The arrows now move the pane list.
 	m.SwitchTo(TabExecution)
 	m.setFocus(focusContent)
 	ws := m.screens[TabExecution].(*work.Model)
@@ -497,22 +514,45 @@ func TestNavigationModelTabDownEnterArrows(t *testing.T) {
 		t.Fatal("fixture: could not focus the projects source")
 	}
 	it0, _ := ws.Base.ActiveItem()
-	before := it0.ID
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(*App)
+	itN, _ := ws.Base.ActiveItem()
+	if itN.ID == it0.ID {
+		t.Fatalf("step 5: down must move the pane cursor (still %q)", itN.ID)
+	}
+}
+
+// The COMPLEMENT, and the reason the previous fix went too far: with the tab bar
+// focused and no submenu open, a vertical key must not reach a pane — and must not
+// open a menu either.
+func TestArrowsDoNothingUntilASubmenuEntryIsSelected(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	ws := m.screens[TabWork].(*work.Model)
+	ws.LoadItems("projects", []kit2.Item{{ID: "p1", Title: "one"}, {ID: "p2", Title: "two"}}, "")
+	ws.Base.SelectSource("projects")
+
+	// Land on the tab bar and press down: nothing may move, and no menu may open.
+	m.setFocus(focusTabs)
+	it0, _ := ws.Base.ActiveItem()
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm.(*App)
 	if m.TabMenu() != nil {
-		t.Fatal("step 4: down with the menu closed must NOT reopen the submenu")
+		t.Fatal("down on the tab bar must not open a submenu")
 	}
 	itN, _ := ws.Base.ActiveItem()
-	if got := itN.ID; got == before {
-		t.Fatalf("step 4: down must move the pane cursor (still %q)", got)
-	}
-
-	// 5. Tab breaks out of the pane and returns to the menu.
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = nm.(*App)
-	if m.TabMenu() == nil {
-		t.Fatal("step 5: tab must return to the submenu")
+	if itN.ID != it0.ID {
+		t.Fatalf("down reached the pane (%q → %q) before any selection was made", it0.ID, itN.ID)
 	}
 }
 

@@ -60,8 +60,11 @@ func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
 	// Write the ref back into the field that opened the picker, so it then
 	// DISPLAYS adapter/provider/model — the operator's "the text it displays
 	// after the model is selected is the adapter/provider/model name".
-	if m.form != nil {
-		m.form.Set(m.modelField, ref)
+	//
+	// Whichever host holds the form: the picker can be layered over a modal or over
+	// the inline details-pane editor, and both must receive the choice.
+	if f := m.activeForm(); f != nil {
+		f.Set(m.modelField, ref)
 	}
 	m.Notice("model set to " + ref)
 	return nil
