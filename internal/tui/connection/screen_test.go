@@ -492,3 +492,174 @@ func TestViewNamesInPlaceContract(t *testing.T) {
 		t.Fatalf("password hint must name the in-place auto-refresh: %s", view)
 	}
 }
+
+// ---------- the credential field must never be pre-filled with a non-password ----------
+
+// A password-mode profile whose Token is the previous session's ACCESS TOKEN must
+// open with an EMPTY password field.
+//
+// This is this screen's oldest bug, and it produced a loop with no exit: the token
+// was loaded into the field labelled "Password > ", so validate() saw a password,
+// submit sent the stale token, the plane answered HTTP 401, and the operator could
+// not type the real password over a value they had not entered.
+func TestPasswordModeDoesNotPrefillTheCredentialField(t *testing.T) {
+	savedToken := strings.Repeat("eyJhbGciOi.", 40) // a JWT-shaped saved access token
+	p := &config.Profile{
+		Name:         "default",
+		URL:          "http://localhost:8091",
+		AuthMethod:   config.AuthPassword,
+		Username:     "orchicon",
+		Token:        savedToken,
+		RefreshToken: "refresh-abc",
+	}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+
+	if m.authAPI {
+		t.Fatal("a password profile must open in password mode")
+	}
+	if got := m.credential(); got != "" {
+		t.Fatalf("password field = %d chars, want EMPTY — the saved access token is not a password", len(got))
+	}
+	// The username IS carried, so the operator only types the password.
+	if got := m.username(); got != "orchicon" {
+		t.Fatalf("username = %q, want the saved username pre-filled", got)
+	}
+	// The refresh token still rides along: re-authenticating keeps auto-refresh.
+	if m.storedRefresh != "refresh-abc" {
+		t.Fatalf("storedRefresh = %q, want the saved refresh token carried through", m.storedRefresh)
+	}
+	// And an empty password is REFUSED rather than submitted.
+	if why := m.validate(); !strings.Contains(why, "password is required") {
+		t.Fatalf("validate() = %q, want it to require a password", why)
+	}
+}
+
+// An API-key profile still shows its key — that IS the credential, and blocking it
+// would make re-connecting by key impossible.
+func TestAPIKeyModeStillPrefillsTheKey(t *testing.T) {
+	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
+		AuthMethod: config.AuthAPIKey, Token: "oc_realkey"}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+	if !m.authAPI {
+		t.Fatal("an API-key profile must open in API-key mode")
+	}
+	if got := m.credential(); got != "oc_realkey" {
+		t.Fatalf("API key field = %q, want the stored key", got)
+	}
+}
+
+// Toggling to password mode CLEARS the field and parks the key; toggling back
+// restores it. Neither mode inherits the other's secret.
+func TestCredentialModeToggleParksAndClearsTheKey(t *testing.T) {
+	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
+		AuthMethod: config.AuthAPIKey, Token: "oc_realkey", Username: "orchicon"}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+
+	// API key → password: the field must be CLEARED (an API key is not a password).
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = nm.(Model)
+	if m.authAPI {
+		t.Fatal("ctrl+a must switch to password mode")
+	}
+	if got := m.credential(); got != "" {
+		t.Fatalf("password field = %q, want EMPTY after switching modes", got)
+	}
+
+	// password → API key: the key comes back.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = nm.(Model)
+	if !m.authAPI {
+		t.Fatal("ctrl+a must switch back to API-key mode")
+	}
+	if got := m.credential(); got != "oc_realkey" {
+		t.Fatalf("API key field = %q, want the parked key restored", got)
+	}
+}
+
+// ---------- the tab cycle must follow the order the fields are DRAWN ----------
+
+// In password mode the screen draws URL, Username, Password — the credential field
+// THIRD. The constants are fieldURL, fieldCredential, fieldUsername (the original
+// two-field layout), so cycling by INDEX moved focus down to Password and then back
+// UP to Username: the highlight jumped around the form and backspace landed in a
+// field the operator was not looking at, which is why the password box seemed
+// impossible to clear.
+func TestTabCycleFollowsTheDrawnFieldOrder(t *testing.T) {
+	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
+		AuthMethod: config.AuthPassword, Username: "orchicon"}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+
+	want := []int{fieldURL, fieldUsername, fieldCredential}
+	if got := m.visibleFields(); len(got) != len(want) {
+		t.Fatalf("visibleFields = %v, want %v", got, want)
+	} else {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("visibleFields = %v, want %v (the order drawn)", got, want)
+			}
+		}
+	}
+	if m.focus != fieldURL {
+		t.Fatalf("initial focus = %d, want the URL field", m.focus)
+	}
+	for step, w := range []int{fieldUsername, fieldCredential, fieldURL} {
+		nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = nm.(Model)
+		if m.focus != w {
+			t.Fatalf("tab %d landed on %d, want %d", step+1, m.focus, w)
+		}
+	}
+	// shift+tab goes BACKWARDS (it used to advance like tab).
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = nm.(Model)
+	if m.focus != fieldCredential {
+		t.Fatalf("shift+tab landed on %d, want the previous field %d", m.focus, fieldCredential)
+	}
+}
+
+// In API-key mode the username field is NOT DRAWN, so the cycle must skip it —
+// otherwise tab lands the caret in an invisible field.
+func TestTabCycleSkipsFieldsNotDrawn(t *testing.T) {
+	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
+		AuthMethod: config.AuthAPIKey, Token: "oc_k", Username: "orchicon"}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+
+	if got := m.visibleFields(); len(got) != 2 || got[0] != fieldURL || got[1] != fieldCredential {
+		t.Fatalf("visibleFields = %v, want [URL Credential] in API-key mode", got)
+	}
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(Model)
+	if m.focus != fieldCredential {
+		t.Fatalf("tab landed on %d, want the credential field (%d) — the username is not drawn in this mode", m.focus, fieldCredential)
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(Model)
+	if m.focus != fieldURL {
+		t.Fatalf("tab wrapped to %d, want the URL field", m.focus)
+	}
+}
+
+// The focused field can always be cleared and edited from the keyboard: the caret
+// is parked at the END when focus lands, so backspace has something to delete.
+func TestFocusedFieldIsClearableFromTheKeyboard(t *testing.T) {
+	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
+		AuthMethod: config.AuthAPIKey, Token: strings.Repeat("k", 200)}
+	m := New(p, fakeProbes(nil, nil, nil, "v0.2.93"))
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab}) // URL → credential
+	m = nm.(Model)
+	if m.focus != fieldCredential {
+		t.Fatal("fixture: expected focus on the credential field")
+	}
+	before := len(m.credential())
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = nm.(Model)
+	if got := len(m.credential()); got != before-1 {
+		t.Fatalf("backspace left the field at %d chars (was %d) — the caret is not where the operator is typing", got, before)
+	}
+	// ctrl+u clears the rest (bubbles binds it to DeleteBeforeCursor).
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = nm.(Model)
+	if got := m.credential(); got != "" {
+		t.Fatalf("ctrl+u left %q, want the field cleared", got)
+	}
+}

@@ -73,6 +73,12 @@ type Model struct {
 	// storedRefresh carries the existing profile's refresh token through an
 	// edit (API-key switch clears it; password probe overwrites it).
 	storedRefresh string
+	// storedToken is the API KEY that a switch away from API-key mode parked, so
+	// toggling ctrl+a back restores it.
+	//
+	// It is deliberately NOT the profile's Token in password mode: there, Token is
+	// the previous session's minted ACCESS TOKEN — not a password, and not a key.
+	storedToken string
 	// embedded marks the model as the SHELL's in-place /connect overlay:
 	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
 	// emitted on success — the shell polls Result() each Update.
@@ -121,21 +127,28 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.URL != "" {
 			m.inputs[fieldURL].SetValue(profile.URL)
 		}
-		if profile.Token != "" {
-			m.inputs[fieldCredential].SetValue(profile.Token)
-		}
 		if profile.Username != "" {
 			m.inputs[fieldUsername].SetValue(profile.Username)
 		}
 		if profile.AuthMethod == config.AuthPassword {
+			// PASSWORD MODE: the profile's Token is the previous session's minted
+			// ACCESS TOKEN. It is not a password, and showing it in the password
+			// field meant the field arrived pre-satisfied — so submit sent the stale
+			// token as the password, the plane answered HTTP 401, and there was no
+			// way to type the real one over it. Leave the field EMPTY (a password is
+			// never stored) and let the operator type it.
 			m.authAPI = false
+		} else if profile.Token != "" {
+			// API-KEY MODE: the Token IS the key. Park it so a mode switch can
+			// restore it; applyCredentialMode puts it in the field.
+			m.storedToken = profile.Token
 		}
 		// Carry the stored refresh token through an edit — a re-connect of the
 		// same password profile keeps auto-refresh (API-key mode ignores it).
 		m.storedRefresh = profile.RefreshToken
 	}
 	m.applyCredentialMode()
-	m.inputs[fieldURL].Focus()
+	m.setFocus(fieldURL)
 	return m
 }
 
@@ -143,14 +156,76 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 // from the active auth mode. API-key mode shows "API key >" with the oc_…
 // placeholder; username+password mode shows "Password >" with a password
 // placeholder — never "API key" in password mode.
+// visibleFields is the fields the operator can edit in the current mode, IN THE
+// ORDER THEY ARE DRAWN.
+//
+// The tab cycle walks THIS rather than the raw 0..fieldCount range. The constants
+// are fieldURL, fieldCredential, fieldUsername — the ORIGINAL two-field API-key
+// layout, with Username bolted on at the end when password mode arrived — but
+// password mode DRAWS URL, Username, Password, with the credential field THIRD.
+// Cycling by index therefore moved focus DOWN to Password and then back UP to
+// Username: the highlight jumped around the form, and a keystroke — or a
+// backspace — landed in the field the operator was not looking at, which is
+// exactly why the password box seemed impossible to clear.
+func (m *Model) visibleFields() []int {
+	if m.authAPI {
+		return []int{fieldURL, fieldCredential}
+	}
+	return []int{fieldURL, fieldUsername, fieldCredential}
+}
+
+// moveFocus advances the focus through visibleFields, wrapping at the ends.
+func (m *Model) moveFocus(delta int) {
+	fs := m.visibleFields()
+	pos := 0
+	for i, f := range fs {
+		if f == m.focus {
+			pos = i
+			break
+		}
+	}
+	pos = (pos + delta + len(fs)) % len(fs)
+	m.setFocus(fs[pos])
+}
+
+// setFocus focuses one field and blurs the rest, leaving the caret at the end so
+// the first keystroke appends and backspace has something to delete.
+func (m *Model) setFocus(field int) {
+	m.focus = field
+	for i := range m.inputs {
+		if i == field {
+			m.inputs[i].Focus()
+		} else {
+			m.inputs[i].Blur()
+		}
+	}
+	m.inputs[field].CursorEnd()
+}
+
+// applyCredentialMode derives the credential field's prompt, placeholder AND VALUE
+// from the active auth mode.
+//
+// The VALUE is the load-bearing part. Deriving only the label is this screen's
+// oldest bug: the field kept whatever it had been given — an API key, or the
+// previous session's access token — while its label changed to "Password > ", so
+// the operator saw a filled password box they had not filled and could not explain.
 func (m *Model) applyCredentialMode() {
 	if m.authAPI {
 		m.inputs[fieldCredential].Prompt = "API key > "
 		m.inputs[fieldCredential].Placeholder = "oc_… (create one in the GUI: Settings → API keys)"
+		// Restore the key a switch away from this mode parked.
+		m.inputs[fieldCredential].SetValue(m.storedToken)
 	} else {
 		m.inputs[fieldCredential].Prompt = "Password > "
 		m.inputs[fieldCredential].Placeholder = "password"
+		// CLEAR: a password is never carried across modes, and neither an API key
+		// nor a stale access token is one.
+		m.inputs[fieldCredential].SetValue("")
 	}
+	// Park the caret at the END: SetValue only moves the cursor when the field was
+	// previously empty, so a restored value could otherwise leave it at position 0
+	// with nothing before it to backspace.
+	m.inputs[fieldCredential].CursorEnd()
 }
 
 func (m *Model) currentURL() string {
@@ -300,15 +375,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
-		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
-			m.focus = (m.focus + 1) % fieldCount
-			for i := range m.inputs {
-				if i == m.focus {
-					m.inputs[i].Focus()
-				} else {
-					m.inputs[i].Blur()
-				}
-			}
+		case tea.KeyTab, tea.KeyDown:
+			m.moveFocus(1)
+			return m, nil
+		case tea.KeyShiftTab, tea.KeyUp:
+			m.moveFocus(-1)
 			return m, nil
 		case tea.KeyEnter:
 			if msg.Alt {
@@ -316,8 +387,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.submit()
 		case tea.KeyCtrlA:
+			// Leaving API-key mode: remember the key so switching back restores it.
+			if m.authAPI {
+				m.storedToken = m.credential()
+			}
 			m.authAPI = !m.authAPI
 			m.applyCredentialMode()
+			// The visible field set changes with the mode, and the credential field
+			// is not always the same neighbour — re-seat focus on the first field so
+			// the caret is never left inside a field that is no longer drawn.
+			m.setFocus(fieldURL)
 			m.errMsg = ""
 			m.info = ""
 			// Switching to API-key mode drops the stored password-mode
