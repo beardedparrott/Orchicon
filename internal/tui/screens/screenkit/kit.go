@@ -210,6 +210,11 @@ type Detail struct {
 	// item — and a different item must start at the top.
 	vpTitle string
 	dirty   bool // Body changed since the viewport last loaded it
+	// pendingOffset/pendingOffsetSet pin the viewport to a line offset on the NEXT
+	// render, overriding the usual "keep the reader's scroll" rule. An editor sets
+	// it so the pane follows its cursor; a reader never does.
+	pendingOffset    int
+	pendingOffsetSet bool
 
 	// Hero is the centered empty state (the GUI's "Ask Orchicon
 	// anything…" block): rendered until real content arrives.
@@ -264,6 +269,15 @@ func (d *Detail) ensureVP() {
 // (LineDown), negative = scroll up (LineUp). The old code called
 // LineDown for both directions, so scrolling up in the chat transcript
 // appeared dead.
+// SetScrollOffset pins the viewport to a line offset. Used by an editor whose
+// pane must FOLLOW a cursor rather than preserve a reader's place.
+func (d *Detail) SetScrollOffset(offset int) {
+	d.ensureVP()
+	d.pendingOffset = offset
+	d.pendingOffsetSet = true
+}
+
+// Wheel scrolls the detail pane by delta lines.
 func (d *Detail) Wheel(delta int) {
 	d.ensureVP()
 	if delta < 0 {
@@ -314,11 +328,16 @@ func (d *Detail) View() string {
 			sameItem := d.Title == d.vpTitle
 			atBottom := d.vp.AtBottom()
 			offset := d.vp.YOffset
+			pinned, pinnedSet := d.pendingOffset, d.pendingOffsetSet
+			d.pendingOffsetSet = false
 			d.vp.SetContent(d.Body)
 			d.vpBody = d.Body
 			d.vpTitle = d.Title
 			d.dirty = false
 			switch {
+			case pinnedSet:
+				// An editor asked for a specific line (its cursor's step).
+				d.vp.SetYOffset(pinned)
 			case !sameItem:
 				d.vp.GotoTop()
 			case atBottom:

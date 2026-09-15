@@ -406,6 +406,20 @@ func (b *Base) DetailWidth() int {
 	return 60
 }
 
+// SetDetailScrollTop pins the detail pane's viewport to a LINE OFFSET.
+//
+// The pane's normal rule is "keep the operator's scroll" (a live transcript must
+// not be yanked to the top). That is wrong for an editor, where the pane must
+// follow the CURSOR: selecting step 9 of 11 has to bring step 9 into view. Callers
+// that repaint on a selection change use this to place the cursor's step
+// deliberately, and it is a no-op before the first paint.
+func (b *Base) SetDetailScrollTop(offset int) {
+	if offset < 0 {
+		offset = 0
+	}
+	b.detail.SetScrollOffset(offset)
+}
+
 // SetDetailContent pushes live content into the open detail pane.
 func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 	b.detail.SetContent(title, fields, body)

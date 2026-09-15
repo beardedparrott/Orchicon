@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -65,11 +66,24 @@ const (
 	// different pane (n/e/p/u/x), and both sets are scoped to their own source —
 	// `p` is ALSO force-progress on a run, which is only safe because the
 	// workflow and worker form-openers dispatch solely while their pane has focus.
+	// Workflow lifecycle. `e` and `x` belong to the STEP editor while a flow is open
+	// (its chords are the common case once you are looking at a workflow), so the
+	// workflow's OWN edit/delete are the SHIFTED forms — `E` renames the workflow,
+	// `X` deletes it. `n`/`p`/`u` do not collide. Both sets are scoped to the
+	// Workflows pane, which is also what keeps `p` usable as force-progress on a run.
 	keyNewWorkflow    = "n"
-	keyEditWorkflow   = "e"
+	keyEditWorkflow   = "E"
 	keyPublishWf      = "p"
 	keyDeprecateWf    = "u"
-	keyDeleteWorkflow = "x"
+	keyDeleteWorkflow = "X"
+	// STEP editor chords, active while the workflow's FLOW view is the pane. They
+	// are the operator's own: `-` adds, `e` edits, and the cursor (up/down) picks
+	// which step those act on.
+	keyAddStep    = "-"
+	keyEditStep   = "e"
+	keyRemoveStep = "x"
+	keyStepUp     = "up"
+	keyStepDown   = "down"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -243,9 +257,123 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	return nil
 }
 
+// onDetailWorkflow enters the STEP editor when a workflow's detail loads.
+//
+// The editor is pointed at the version the pane SHOWS (published, else newest), so
+// what you edit is what you see. When that version is not a draft, saving creates
+// one — published versions are immutable, so step editing implies a draft (the
+// server rejects anything else).
+func (m *Model) onDetailWorkflow(id string) tea.Cmd {
+	if m.rpcGetWorkflow == nil || m.rpcListWorkflowVersions == nil {
+		return nil
+	}
+	get, list := m.rpcGetWorkflow, m.rpcListWorkflowVersions
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		w, err := get(ctx, id)
+		if err != nil {
+			return nil // the pane already reports the load failure
+		}
+		vs, err := list(ctx, id)
+		if err != nil {
+			vs = nil
+		}
+		return workflowEditorMsg{id: id, name: w.GetName(), version: pickFlowVersion(vs)}
+	}
+}
+
+// workflowEditorMsg carries the version the step editor should target.
+type workflowEditorMsg struct {
+	id      string
+	name    string
+	version *apiv1.WorkflowVersion
+}
+
+// handleFlowKeys drives the STEP editor while a workflow's flow is open. handled
+// is false when the key belongs to the navigation layer.
+//
+// It runs BEFORE handleActionKey because the two share `e` and `x`: with the flow
+// open, `e` edits the STEP the cursor is on, not the workflow's header. The cursor
+// keys are claimed here too — the pane is the editor, so up/down walk steps rather
+// than the (single-row-per-workflow) list.
+func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
+	if m.stepWorkflowID == "" || m.Base.DetailID() == "" {
+		return nil, false
+	}
+	switch kstr {
+	case keyStepDown, "j":
+		return m.stepCursor(1), true
+	case keyStepUp, "k":
+		return m.stepCursor(-1), true
+	case keyAddStep:
+		m.Base.BeginDetailEdit("Add step", m.addStepForm())
+		m.notice = ""
+		return nil, true
+	case keyRemoveStep:
+		s, ok := m.selectedFlowStep()
+		if !ok {
+			return m.refuse("no step selected"), true
+		}
+		steps := m.flowStepsOf()
+		if len(steps) <= 1 {
+			return m.refuse("a workflow needs at least one step — edit this one instead of removing it"), true
+		}
+		name := orDefaultStr(s.Name, s.ID)
+		desc := "Remove step " + name + "?\n"
+		if len(s.deps) > 0 || flowBranchOf(s) != nil {
+			desc += "Steps that ran after it, and any branch pointing at it, are rewired to skip it."
+		}
+		return m.confirmRemoveStep(s.ID, name, desc), true
+	case keyEditStep:
+		s, ok := m.selectedFlowStep()
+		if !ok {
+			return m.refuse("no step selected — use up/down to pick one"), true
+		}
+		m.Base.BeginDetailEdit("Edit step", m.editStepForm(s))
+		m.notice = ""
+		return nil, true
+	}
+	return nil, false
+}
+
+// confirmRemoveStep gates a step removal behind the confirm dialog (it rewires the
+// graph, so it is not silent).
+func (m *Model) confirmRemoveStep(id, name, desc string) tea.Cmd {
+	d := kit2.Confirm("Remove step", desc, "remove")
+	d.Danger = true
+	m.Open = d
+	m.OnDialog = func(choice string) tea.Cmd {
+		m.OnDialog = nil
+		if choice == "" {
+			m.notice = "cancelled"
+			return nil
+		}
+		remaining := removeStep(m.rawFlowSteps(), id)
+		// The cursor must move off the step that just disappeared.
+		m.stepSel = ""
+		if len(remaining) > 0 {
+			m.stepSel = remaining[0].ID
+		}
+		cmd, err := m.saveSteps(remaining, "remove step "+name)
+		if err != nil {
+			m.notice = err.Error()
+			return nil
+		}
+		return tea.Batch(cmd, m.paintFlow())
+	}
+	return nil
+}
+
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// The STEP editor owns the chords while a workflow's flow view is open.
+	if m.ActiveSourceName() == srcWorkflows {
+		if cmd, handled := m.handleFlowKeys(kstr); handled {
+			return cmd, true
+		}
+	}
 	// WORKFLOW lifecycle chords, scoped to the Workflows pane (see the key block
 	// above for why the scoping is load-bearing).
 	if m.ActiveSourceName() == srcWorkflows {
@@ -518,9 +646,11 @@ func (m *Model) HintLine() string {
 			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
 			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
 	case srcWorkflows:
-		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
-			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +
-			" x: delete " + theme.DetailKey.Render("·") + " enter: FLOW + versions · r: refresh")
+		return theme.HintText.Render("↑↓: step " + theme.DetailKey.Render("·") +
+			" e: edit step " + theme.DetailKey.Render("·") + " -: add step " + theme.DetailKey.Render("·") +
+			" x: remove step " + theme.DetailKey.Render("·") +
+			" n: new workflow " + theme.DetailKey.Render("·") + " E: edit workflow name " + theme.DetailKey.Render("·") +
+			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") + " r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
 }

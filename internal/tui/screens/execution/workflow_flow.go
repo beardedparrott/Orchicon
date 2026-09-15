@@ -209,12 +209,23 @@ func flowLegend() string {
 	return "● task  ⏸ approval  ◇ decision  ⑃ parallel  ↺ recover  ▪ work item  ▫ project  ⏹ end  ↻ re-entry"
 }
 
-// renderWorkflowFlow renders the flow plus a header. Returns "" for no steps, so
-// the caller can say so honestly rather than drawing an empty frame.
+// renderWorkflowFlow renders the flow plus a header (no cursor). Returns "" for no
+// steps, so the caller can say so honestly rather than drawing an empty frame.
 func renderWorkflowFlow(stepsJSON string, width int) string {
+	body, _ := renderWorkflowFlowView(stepsJSON, width, "")
+	return body
+}
+
+// renderWorkflowFlowView renders the flow with a CURSOR marker on the selected
+// step, and returns the step→line map so an editor can keep that step on screen.
+//
+// The map is why the marker is part of the RENDERED text rather than an overlay:
+// the pane's viewport scrolls by line, so the offsets have to describe exactly
+// what was drawn. A cursor drawn outside the text could not be tracked.
+func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, map[string]int) {
 	steps := parseFlowSteps(stepsJSON)
 	if len(steps) == 0 {
-		return ""
+		return "", nil
 	}
 	ordered := flowOrder(steps)
 	// Names for branch targets, and the set of steps some branch jumps BACK to.
@@ -229,23 +240,44 @@ func renderWorkflowFlow(stepsJSON string, width int) string {
 		}
 	}
 
+	// The cursor/selection marker: the step the operator is on. Passing it in
+	// keeps the marker in the RENDERED text, so the pane's line offsets (used for
+	// cursor-follow scrolling) stay correct.
+	cursorAt := -1
+	if sel != "" {
+		for i, s := range ordered {
+			if s.ID == sel {
+				cursorAt = i
+				break
+			}
+		}
+	}
+
+	lineOffsets := make(map[string]int, len(ordered))
 	var b strings.Builder
-	b.WriteString(theme.HintText.Render(flowLegend()) + "\n")
-	b.WriteString("\n")
+	line := 0
+	write := func(s string) {
+		b.WriteString(s + "\n")
+		line++
+	}
+	write(theme.HintText.Render(flowLegend()))
+	write("")
 	for i, s := range ordered {
+		lineOffsets[s.ID] = line // the line the step's NAME lands on
 		mark := flowKindMark(s.Kind)
 		name := s.Name
 		if name == "" {
 			name = s.ID
 		}
-		// A re-entry target is where a loop sends control BACK to, which is the
-		// single most surprising thing about a workflow and invisible in
-		// depends_on (which is linear).
 		if reentry[s.ID] {
 			name += " ↻"
 		}
 		idx := fmt.Sprintf("%2d ", i+1)
-		b.WriteString(" " + theme.DetailKey.Render(idx) + mark + " " + name + "\n")
+		cursor := "  "
+		if i == cursorAt {
+			cursor = theme.DetailKey.Render("▸") + " "
+		}
+		write(" " + cursor + theme.DetailKey.Render(idx) + mark + " " + name)
 
 		// The dim meta line: kind, the worker/gate it names, and any fan-in.
 		meta := []string{strings.ToLower(s.Kind)}
@@ -276,29 +308,29 @@ func renderWorkflowFlow(stepsJSON string, width int) string {
 			}
 			meta = append(meta, "joins "+strings.Join(names, " + "))
 		}
-		b.WriteString("    " + theme.HintText.Render(strings.Join(meta, " · ")) + "\n")
+		write("    " + theme.HintText.Render(strings.Join(meta, " · ")))
 
 		// Branches, NAMED (see the file header): the target may sit anywhere in
 		// the flow, so a name is the only honest way to show where control goes.
 		if br := flowBranchOf(s); br != nil {
 			if br.Success != "" {
-				b.WriteString("    " + theme.HintText.Render("├ success → "+branchTarget(nameOf, br.Success)) + "\n")
+				write("    " + theme.HintText.Render("├ success → "+branchTarget(nameOf, br.Success)))
 			}
 			if br.Loop != "" {
 				label := "└ loop ↻ " + branchTarget(nameOf, br.Loop)
 				if br.MaxIter > 0 {
 					label += fmt.Sprintf(" (max %d)", br.MaxIter)
 				}
-				b.WriteString("    " + theme.HintText.Render(label) + "\n")
+				write("    " + theme.HintText.Render(label))
 			}
 		}
 
 		// Connector to the next step, unless this is the last or a terminal sink.
 		if i < len(ordered)-1 && strings.ToLower(s.Kind) != "end" {
-			b.WriteString("    " + theme.HintText.Render("│") + "\n")
+			write("    " + theme.HintText.Render("│"))
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), lineOffsets
 }
 
 // branchTarget resolves a branch's step id to its name for display.

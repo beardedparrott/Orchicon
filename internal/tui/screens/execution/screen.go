@@ -80,6 +80,24 @@ type Model struct {
 	// Workflow lifecycle loads (workflow_forms.go), same shape.
 	rpcGetWorkflow          func(ctx context.Context, id string) (*apiv1.Workflow, error)
 	rpcListWorkflowVersions func(ctx context.Context, id string) ([]*apiv1.WorkflowVersion, error)
+	// rpcUpdateWorkflowVersion persists the DRAFT's steps (workflow_steps.go).
+	rpcUpdateWorkflowVersion func(ctx context.Context, workflowID, steps string) error
+
+	// --- the workflow STEP editor (workflow_steps.go) ---
+	//
+	// stepWorkflowID/stepVersionID identify the DRAFT being edited and
+	// stepSteps is its CURRENT steps JSON (the editor's working copy: an edit
+	// rewrites it locally, then saves). stepSel is the step the cursor is on,
+	// which is what makes the FLOW view the editing surface.
+	stepWorkflowID string
+	stepVersionID  string
+	stepSteps      string
+	stepSel        string
+	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
+	// version it is showing is published (immutable) — step editing implies a draft.
+	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
+	// stepWorkflowName is the header the editor repaints against.
+	stepWorkflowName string
 	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
 	// write fired without a plane.
 	rpcCreateWorkflow    func(ctx context.Context, req *apiv1.CreateWorkflowRequest) error
@@ -122,6 +140,8 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcListWorkerVersions = m.defaultListWorkerVersions
 	m.rpcGetWorkflow = m.defaultGetWorkflow
 	m.rpcListWorkflowVersions = m.defaultListWorkflowVersions
+	m.rpcUpdateWorkflowVersion = m.defaultUpdateWorkflowVersion
+	m.rpcCreateWorkflowVersion = m.defaultCreateWorkflowVersion
 	m.rpcCreateWorkflow = m.defaultCreateWorkflow
 	m.rpcUpdateWorkflow = m.defaultUpdateWorkflow
 	m.rpcPublishWorkflow = m.defaultPublishWorkflow
@@ -441,6 +461,10 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		// The workflow equivalent (workflow_forms.go).
 		return m, m.openWorkflowOpForm(msg)
 
+	case workflowEditorMsg:
+		// A workflow's detail landed: point the STEP editor at the version shown.
+		return m, m.enterStepEditor(msg.id, msg.name, msg.version)
+
 	case subs.EventPokeMsg:
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == "executions" && m.Base.DetailID() != "" {
 			if sh, ok := m.Shell().(interface {
@@ -625,6 +649,11 @@ func (m *Model) DetailWidth() int { return m.Base.DetailWidth() }
 // onDetail fires when the detail pane shows an execution: the shell
 // loads its durable session and merges the live event stream into it.
 func (m *Model) onDetail(src, id string) tea.Cmd {
+	// A WORKFLOW detail opens the STEP editor: the flow view IS the editing surface,
+	// so selecting a workflow puts the pane (and its cursor) into edit mode.
+	if src == srcWorkflows {
+		return m.onDetailWorkflow(id)
+	}
 	if src != "executions" {
 		return nil
 	}
