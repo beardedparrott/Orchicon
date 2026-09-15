@@ -53,8 +53,10 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			// chat prompt FIRST, then the six area tabs in order, then back
 			// to the prompt. From the composer Tab drops to the current
 			// tab's content; each further Tab advances to the next tab's
-			// content; after Control it wraps back to the composer. Left /
-			// right still switch tabs directly (content focus).
+			// content; after Control it wraps back to the composer. Left/right
+			// are NOT part of the ring: they move between the panes BELOW the
+			// menu (kit2.Base), because rotating the screens with them made the
+			// panes unreachable by arrow.
 			//
 			// NOTE: dispatch handles `tab` as a HARD CHORD before the
 			// screen-claims gate, so this route is the fallback — it is kept so
@@ -68,9 +70,12 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Handle: func(m *App, _ tea.Msg) bool { m.tabRingNext(); return true },
 		},
 		{
-			// Shift+Tab pops the side rails (conversations right rail +
-			// diff left pane) together — the secondary chrome toggle.
-			Name: "toggle side rails", Keys: "shift+tab", Scope: "global",
+			// Shift+Tab walks the ring BACKWARDS. (This route was named "toggle side
+			// rails" and carried a comment about popping the conversations and diff
+			// rails — it has called tabRingPrev since the ring was built, so the name
+			// and the comment were both stale, and the name is what the help overlay
+			// prints. The rails toggle is ctrl+r.)
+			Name: "previous tab (reverse focus ring)", Keys: "shift+tab", Scope: "global",
 			Match: func(msg tea.Msg) bool {
 				k, ok := msg.(tea.KeyMsg)
 				return ok && k.String() == "shift+tab"
@@ -338,14 +343,24 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			m.openTabMenu(m.active)
 			m.refreshStreamStatus()
 			return m, nil
-		case "left":
-			m.tabRingPrev()
+		case "left", "right":
+			// Left/right do NOT walk the tab ring — NOT EVEN HERE.
+			//
+			// They used to, in this very branch. Removing only the GLOBAL routes
+			// (27ad7c71) left this path alive, so with the bar focused — which is
+			// where Tab and a tab click both land — the arrows still rotated the
+			// screens. That is half of the operator's "left+right should not be moving
+			// the tab menu at the top nor should it be rotating through the different
+			// screens".
+			//
+			// They now hand the keyboard DOWN to the panes: "left+right should move
+			// between the two panes below the menus so you can grab focus on those for
+			// the specific submenu you have selected". There is deliberately NO return,
+			// so the key keeps travelling through this dispatch — ONE press both grabs
+			// a pane and moves to it (the screen's own left/right picks the source list
+			// or the detail). Tab/Shift+Tab remain the way to walk the ring.
+			m.setFocus(focusContent)
 			m.refreshStreamStatus()
-			return m, nil
-		case "right":
-			m.tabRingNext()
-			m.refreshStreamStatus()
-			return m, nil
 		}
 	}
 	// Screen-owned input mode: a screen with an open form/modal claims EVERY

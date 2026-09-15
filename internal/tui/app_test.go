@@ -128,6 +128,53 @@ func TestArrowsDoNotCycleTabs(t *testing.T) {
 	}
 }
 
+// The BAR-focused case, which is the one the first fix missed.
+//
+// Removing only the GLOBAL left/right routes (27ad7c71) left the focusTabs branch in
+// dispatch still calling tabRingPrev/tabRingNext — and the bar is exactly where Tab
+// and a tab click land. So the arrows still rotated the screens whenever the bar held
+// the keyboard: "left+right should not be moving the tab menu at the top nor should it
+// be rotating through the different screens".
+//
+// They now hand the keyboard DOWN to the panes, which is the other half of the
+// operator's ask ("move between the two panes below the menus so you can grab focus on
+// those"). The ring stays reachable on Tab/Shift+Tab.
+func TestArrowsDoNotCycleTabsEvenFromTheBar(t *testing.T) {
+	m := newTestApp()
+	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
+	m.RegisterScreen(TabExecution, &stubScreen{id: "execution"})
+	m.SwitchTo(TabWork)
+	m.setFocus(focusTabs)
+	if m.chatFocus != focusTabs {
+		t.Fatalf("precondition: focus = %v, want focusTabs", m.chatFocus)
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyRight}, {Type: tea.KeyLeft}} {
+		nm, _ := m.Update(k)
+		got := nm.(*App)
+		if tab := got.ActiveTab(); tab != TabWork {
+			t.Fatalf("arrow key moved the tab bar to %q — arrows must not rotate the screens", tab)
+		}
+		if got.chatFocus != focusContent {
+			t.Fatalf("arrow key left focus on %v — it must hand the keyboard down to the panes", got.chatFocus)
+		}
+		got.setFocus(focusTabs) // back to the bar for the next case
+	}
+	// The ring is still walkable from the bar. The exact stop order is the ring's own
+	// business (from the bar each Tab is one advance, so the first stop is the NEXT
+	// tab); the invariant this test is actually about is that Tab is not dead, since
+	// arrows no longer rotate anything.
+	nm := tea.Model(m)
+	seen := map[string]bool{}
+	for i := 0; i < 6; i++ {
+		next, _ := nm.(*App).Update(tea.KeyMsg{Type: tea.KeyTab})
+		nm = next
+		seen[string(nm.(*App).ActiveTab())] = true
+	}
+	if !seen[string(TabExecution)] {
+		t.Fatalf("Tab must still walk the ring to Execution — removing the arrow routes must not strand the bar; visited %v", seen)
+	}
+}
+
 func TestSwitchClosesPreviousScreen(t *testing.T) {
 	m := newTestApp()
 	a := &stubScreen{id: "work"}
