@@ -66,24 +66,33 @@ const (
 	// different pane (n/e/p/u/x), and both sets are scoped to their own source —
 	// `p` is ALSO force-progress on a run, which is only safe because the
 	// workflow and worker form-openers dispatch solely while their pane has focus.
-	// Workflow lifecycle. `e` and `x` belong to the STEP editor while a flow is open
-	// (its chords are the common case once you are looking at a workflow), so the
-	// workflow's OWN edit/delete are the SHIFTED forms — `E` renames the workflow,
-	// `X` deletes it. `n`/`p`/`u` do not collide. Both sets are scoped to the
-	// Workflows pane, which is also what keeps `p` usable as force-progress on a run.
+	//
+	// Workflow lifecycle. `e` is the WORKFLOW edit MODE — the operator: "when someone
+	// hits 'e' to edit a workflow, they are going to think they are editing the entire
+	// workflow and all its steps at once, not in pieces." Inside that mode `enter`
+	// edits the selected step, `a` adds and `x` removes, so the step chords are no
+	// longer separate top-level commands sitting outside a normal edit view. `E`
+	// renames the workflow header (a different act from editing its steps) and `X`
+	// deletes it; `n`/`p`/`u` do not collide. Both sets are scoped to the Workflows
+	// pane, which is also what keeps `p` usable as force-progress on a run.
 	keyNewWorkflow    = "n"
 	keyEditWorkflow   = "E"
 	keyPublishWf      = "p"
 	keyDeprecateWf    = "u"
 	keyDeleteWorkflow = "X"
-	// STEP editor chords, active while the workflow's FLOW view is the pane. They
-	// are the operator's own: `-` adds, `e` edits, and the cursor (up/down) picks
-	// which step those act on.
-	keyAddStep    = "-"
-	keyEditStep   = "e"
-	keyRemoveStep = "x"
-	keyStepUp     = "up"
-	keyStepDown   = "down"
+	// WORKFLOW EDIT MODE. `e` opens it from the Workflows pane; inside it the step
+	// cursor and the step chords are live. `a` is the operator's suggested key for
+	// adding ("Not sure how we can handle adding a step in this mode, maybe we can
+	// keep it 'a'"); `-` stays bound because it was the previous chord.
+	keyFlowEdit       = "e"
+	keyFlowEditStep   = "enter"
+	keyFlowAddStep    = "a"
+	keyFlowAddStepAlt = "-"
+	keyFlowRemoveStep = "x"
+	keyFlowExit       = "esc"
+	// Retained so the flow cursor keys read the same as before.
+	keyStepUp   = "up"
+	keyStepDown = "down"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -290,15 +299,30 @@ type workflowEditorMsg struct {
 	version *apiv1.WorkflowVersion
 }
 
-// handleFlowKeys drives the STEP editor while a workflow's flow is open. handled
-// is false when the key belongs to the navigation layer.
+// handleFlowKeys drives the WORKFLOW EDIT MODE.
 //
-// It runs BEFORE handleActionKey because the two share `e` and `x`: with the flow
-// open, `e` edits the STEP the cursor is on, not the workflow's header. The cursor
-// keys are claimed here too — the pane is the editor, so up/down walk steps rather
-// than the (single-row-per-workflow) list.
+// The operator's model: "I want to hit 'e' and edit all steps and add steps, delete steps,
+// etc. IN THIS SCREEN. I want the FULL visual editing to occur ... I see you can move up
+// and down with the arrow keys to select a step. I think that was at least in the right
+// direction. Though I think 'e' should be edit workflow mode ... then you can move the
+// arrow keys down, then hit 'enter' on the specific step to edit a step."
+//
+// So the mode is EXPLICIT. Outside it the flow view is a READ-ONLY view and this handler
+// claims only the key that opens the mode — the previous shape claimed the step chords
+// whenever a flow was on screen, which is exactly what made "edit step", "add step" and
+// "remove step" read as top-level commands living outside any edit view. handled is false
+// when the key belongs to the navigation layer.
+//
+// It runs BEFORE handleActionKey because the mode owns `e`, `x` and now `enter`, all of
+// which mean something else to the pane and the shell.
 func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 	if m.stepWorkflowID == "" || m.Base.DetailID() == "" {
+		return nil, false
+	}
+	if !m.flowEditing {
+		if kstr == keyFlowEdit {
+			return m.beginFlowEdit(), true
+		}
 		return nil, false
 	}
 	switch kstr {
@@ -306,11 +330,22 @@ func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 		return m.stepCursor(1), true
 	case keyStepUp, "k":
 		return m.stepCursor(-1), true
-	case keyAddStep:
+	case keyFlowEditStep, " ", "space":
+		// ENTER edits the step the cursor is on — the operator's explicit ask. It must be
+		// claimed here, ahead of kit2's own `enter: detail`, or the mode would reload the
+		// pane's detail instead of opening the step.
+		s, ok := m.selectedFlowStep()
+		if !ok {
+			return m.refuse("no step selected — press a to add the first one"), true
+		}
+		m.Base.BeginDetailEdit("Edit step", m.editStepForm(s))
+		m.notice = ""
+		return nil, true
+	case keyFlowAddStep, keyFlowAddStepAlt:
 		m.Base.BeginDetailEdit("Add step", m.addStepForm())
 		m.notice = ""
 		return nil, true
-	case keyRemoveStep:
+	case keyFlowRemoveStep:
 		s, ok := m.selectedFlowStep()
 		if !ok {
 			return m.refuse("no step selected"), true
@@ -325,16 +360,47 @@ func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 			desc += "Steps that ran after it, and any branch pointing at it, are rewired to skip it."
 		}
 		return m.confirmRemoveStep(s.ID, name, desc), true
-	case keyEditStep:
-		s, ok := m.selectedFlowStep()
+	case keyEditWorkflow:
+		// Renaming the workflow is a different act from editing its steps, so it keeps
+		// its own key inside the mode rather than sharing `enter`.
+		it, ok := m.ActiveItem()
 		if !ok {
-			return m.refuse("no step selected — use up/down to pick one"), true
+			return m.refuse("select a workflow first"), true
 		}
-		m.Base.BeginDetailEdit("Edit step", m.editStepForm(s))
-		m.notice = ""
+		return m.beginWorkflowOp(it.ID, opEditHeader), true
+	case keyFlowExit:
+		m.endFlowEdit()
 		return nil, true
 	}
 	return nil, false
+}
+
+// beginFlowEdit enters the workflow edit mode and says what the keys are: a mode the
+// operator cannot tell they are in is worse than no mode at all.
+func (m *Model) beginFlowEdit() tea.Cmd {
+	if m.stepWorkflowID == "" {
+		return m.refuse("select a workflow first")
+	}
+	m.flowEditing = true
+	// Seed the cursor if this is a fresh entry and the flow has steps.
+	if _, ok := m.selectedFlowStep(); !ok {
+		if steps := m.flowStepsOf(); len(steps) > 0 {
+			m.stepSel = steps[0].ID
+		}
+	}
+	m.notice = "editing " + m.stepWorkflowName + " — " +
+		"enter: edit step · a: add step · x: remove step · E: rename · esc: done"
+	return m.paintFlow()
+}
+
+// endFlowEdit leaves the mode and reports it.
+func (m *Model) endFlowEdit() {
+	if !m.flowEditing {
+		return
+	}
+	m.flowEditing = false
+	m.notice = "finished editing " + m.stepWorkflowName
+	m.paintFlow()
 }
 
 // confirmRemoveStep gates a step removal behind the confirm dialog (it rewires the
@@ -392,6 +458,23 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 				op = opPublish
 			}
 			return m.beginWorkflowOp(it.ID, op), true
+		case keyFlowEdit:
+			// `e` on the Workflows pane is the WORKFLOW EDIT MODE, not a step chord:
+			// "when someone hits 'e' to edit a workflow, they are going to think they are
+			// editing the entire workflow and all its steps at once, not in pieces". The
+			// per-step chords (enter/a/x) live inside the mode.
+			//
+			// This is only reached when the mode is OFF or when no flow is loaded — with the
+			// mode on, handleFlowKeys handles `e`... which it does not, so the mode's own
+			// keys are the ones listed in beginFlowEdit. Guarded here so pressing `e` inside
+			// the mode does not re-enter (a no-op) and does not fall through to a header form.
+			if m.flowEditing {
+				return nil, true
+			}
+			if m.stepWorkflowID == "" || m.Base.DetailID() == "" {
+				return m.refuse("select a workflow first"), true
+			}
+			return m.beginFlowEdit(), true
 		}
 	}
 	// Worker CRUD chords open FORMS (or start a load that opens one), so they are
@@ -646,11 +729,21 @@ func (m *Model) HintLine() string {
 			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
 			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
 	case srcWorkflows:
-		return theme.HintText.Render("↑↓: step " + theme.DetailKey.Render("·") +
-			" e: edit step " + theme.DetailKey.Render("·") + " -: add step " + theme.DetailKey.Render("·") +
-			" x: remove step " + theme.DetailKey.Render("·") +
-			" n: new workflow " + theme.DetailKey.Render("·") + " E: edit workflow name " + theme.DetailKey.Render("·") +
-			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") + " r: refresh")
+		if m.flowEditing {
+			// Inside the mode the flow IS the editing surface, so the cheat-sheet is the
+			// mode's own keys — the pane's list actions are not what the operator is doing.
+			return theme.HintText.Render("↑↓: step " + theme.DetailKey.Render("·") +
+				" enter: edit step " + theme.DetailKey.Render("·") +
+				" a: add step " + theme.DetailKey.Render("·") +
+				" x: remove step " + theme.DetailKey.Render("·") +
+				" E: rename workflow " + theme.DetailKey.Render("·") +
+				" esc: done " + theme.DetailKey.Render("·") + " r: refresh")
+		}
+		return theme.HintText.Render("e: edit workflow (steps) " + theme.DetailKey.Render("·") +
+			" n: new workflow " + theme.DetailKey.Render("·") +
+			" E: rename " + theme.DetailKey.Render("·") +
+			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +
+			" enter: flow view " + theme.DetailKey.Render("·") + " r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
 }

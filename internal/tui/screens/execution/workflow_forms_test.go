@@ -28,9 +28,9 @@ func wfExec(t *testing.T, wf *apiv1.Workflow, versions []*apiv1.WorkflowVersion)
 		*loads = append(*loads, "versions")
 		return versions, nil
 	}
-	m.rpcCreateWorkflow = func(context.Context, *apiv1.CreateWorkflowRequest) error {
+	m.rpcCreateWorkflow = func(context.Context, *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error) {
 		*writes = append(*writes, "create")
-		return nil
+		return &apiv1.Workflow{Id: "wf-new", Name: "created"}, nil
 	}
 	m.rpcUpdateWorkflow = func(context.Context, string, string) error {
 		*writes = append(*writes, "update")
@@ -75,10 +75,11 @@ func TestWorkflowChordsAreScopedToTheWorkflowsPane(t *testing.T) {
 func TestWorkflowCreateOpensInlineFormAndSubmits(t *testing.T) {
 	m, loads, writes := wfExec(t, nil, nil)
 	var got *apiv1.CreateWorkflowRequest
-	m.rpcCreateWorkflow = func(_ context.Context, req *apiv1.CreateWorkflowRequest) error {
+	m.rpcCreateWorkflow = func(_ context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error) {
 		got = req
 		*writes = append(*writes, "create")
-		return nil
+		// The id is what lets `n` select the new workflow and land in the edit mode.
+		return &apiv1.Workflow{Id: "wf-new", Name: req.GetName()}, nil
 	}
 	if !m.Base.SelectSource(srcWorkflows) {
 		t.Fatal("fixture: could not focus the Workflows pane")

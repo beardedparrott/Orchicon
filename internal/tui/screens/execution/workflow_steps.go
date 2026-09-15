@@ -946,8 +946,14 @@ func (m *Model) paintFlow() tea.Cmd {
 		{Key: "steps", Value: screenkit.FmtInt(len(m.flowStepsOf()))},
 		{Key: "editing", Value: m.stepEditingLabel()},
 	}
+	if m.flowEditing {
+		// The mode is stated in the PANE and not only in the notice line: the operator has
+		// to be able to tell, from the surface they are looking at and are about to change,
+		// that it is writable.
+		fields = append(fields, screenkit.Field{Key: "mode", Value: "EDIT — enter: step · a: add · x: remove · esc: done"})
+	}
 	if body == "" {
-		body = theme.HintText.Render("  no steps yet — press - to add the first one")
+		body = theme.HintText.Render("  no steps yet — press " + keyFlowAddStep + " to add the first one")
 	}
 	m.Base.SetDetailContent(title, fields, body)
 

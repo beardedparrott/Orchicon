@@ -93,6 +93,17 @@ type Model struct {
 	stepVersionID  string
 	stepSteps      string
 	stepSel        string
+	// flowEditing is the WORKFLOW EDIT MODE. Off, the flow view is a READ-ONLY view of
+	// the workflow; on, the step cursor and the step chords (enter/a/x/E/esc) are live.
+	// The mode is explicit so the step commands stop looking like top-level actions
+	// living outside an edit view — the operator's "when someone hits 'e' to edit a
+	// workflow, they are going to think they are editing the entire workflow and all its
+	// steps at once, not in pieces."
+	flowEditing bool
+	// flowEditPending is set by CREATE (n) and consumed when the new workflow's flow
+	// loads, so a new workflow opens straight into the mode — ready for its first step —
+	// instead of landing in a read-only view with nothing in it.
+	flowEditPending bool
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -100,7 +111,7 @@ type Model struct {
 	stepWorkflowName string
 	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
 	// write fired without a plane.
-	rpcCreateWorkflow    func(ctx context.Context, req *apiv1.CreateWorkflowRequest) error
+	rpcCreateWorkflow    func(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error)
 	rpcUpdateWorkflow    func(ctx context.Context, id, name string) error
 	rpcPublishWorkflow   func(ctx context.Context, id, note string) error
 	rpcDeprecateWorkflow func(ctx context.Context, id string) error
@@ -462,8 +473,17 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.openWorkflowOpForm(msg)
 
 	case workflowEditorMsg:
-		// A workflow's detail landed: point the STEP editor at the version shown.
-		return m, m.enterStepEditor(msg.id, msg.name, msg.version)
+		// A workflow's detail landed: point the STEP editor at the version shown, and if
+		// this is the load a CREATE was waiting for, drop straight into the edit mode so
+		// the operator can add the first step.
+		cmd := m.enterStepEditor(msg.id, msg.name, msg.version)
+		if m.flowEditPending {
+			m.flowEditPending = false
+			if c := m.beginFlowEdit(); c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
+		}
+		return m, cmd
 
 	case subs.EventPokeMsg:
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == "executions" && m.Base.DetailID() != "" {

@@ -79,7 +79,25 @@ func (m *Model) createWorkflowForm() *kit2.Form {
 		}
 		return m.Mutate(mutate.Request{
 			Name: "create workflow " + req.Name, Source: srcWorkflows,
-			Do: func(ctx context.Context) error { return m.rpcCreateWorkflow(ctx, req) },
+			Do: func(ctx context.Context) error {
+				wf, err := m.rpcCreateWorkflow(ctx, req)
+				if err != nil {
+					return err
+				}
+				// Land IN the edit mode on the new workflow.
+				//
+				// The operator: "I think 'e' should be edit workflow mode (and 'n' new workflow
+				// should work like this as well)". A new workflow's first version is created as a
+				// DRAFT with no steps (CreateWorkflowTx), so there is nothing to look at until a
+				// step exists — opening the mode is the only useful place to land. The id is
+				// selected PENDING the list reload, because the row does not exist client-side
+				// yet, and flowEditPending is consumed when that workflow's flow loads.
+				if id := wf.GetId(); id != "" {
+					m.flowEditPending = true
+					m.Base.SelectWhenLoaded(srcWorkflows, id)
+				}
+				return nil
+			},
 		}), nil
 	}
 	return f
@@ -215,12 +233,17 @@ func latestDraft(vs []*apiv1.WorkflowVersion) *apiv1.WorkflowVersion {
 
 // --- the writes ------------------------------------------------------------
 
-func (m *Model) defaultCreateWorkflow(ctx context.Context, req *apiv1.CreateWorkflowRequest) error {
+func (m *Model) defaultCreateWorkflow(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error) {
 	if m.cl == nil || m.cl.Workflows == nil {
-		return errors.New("no workflow client")
+		return nil, errors.New("no workflow client")
 	}
-	_, err := m.cl.Workflows.CreateWorkflow(ctx, connect.NewRequest(req))
-	return err
+	// The CREATED workflow is returned rather than discarded: `n` has to select it so the
+	// flow editor can open on it, and the id only exists once the server has made it.
+	resp, err := m.cl.Workflows.CreateWorkflow(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWorkflow(), nil
 }
 
 func (m *Model) defaultUpdateWorkflow(ctx context.Context, id, name string) error {
