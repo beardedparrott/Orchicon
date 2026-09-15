@@ -69,9 +69,17 @@ func TestWorkflowChordsAreScopedToTheWorkflowsPane(t *testing.T) {
 }
 
 // `n` opens the create form in the DETAILS PANE with no load, and its submit calls
-// CreateWorkflow with the operator's values.
+// CreateWorkflow with the operator's values — and NO steps: the version starts empty
+// because a DAG is authored in the flow view, not typed as JSON ("same goes for new
+// workflows").
 func TestWorkflowCreateOpensInlineFormAndSubmits(t *testing.T) {
 	m, loads, writes := wfExec(t, nil, nil)
+	var got *apiv1.CreateWorkflowRequest
+	m.rpcCreateWorkflow = func(_ context.Context, req *apiv1.CreateWorkflowRequest) error {
+		got = req
+		*writes = append(*writes, "create")
+		return nil
+	}
 	if !m.Base.SelectSource(srcWorkflows) {
 		t.Fatal("fixture: could not focus the Workflows pane")
 	}
@@ -88,8 +96,17 @@ func TestWorkflowCreateOpensInlineFormAndSubmits(t *testing.T) {
 	if len(*loads) != 0 {
 		t.Fatalf("create must not load, got %v", *loads)
 	}
+	// There is no raw-JSON steps field. This is the assertion that would have caught
+	// the form still asking the operator to type a DAG.
+	for _, s := range f.Specs {
+		if s.Name == "steps" {
+			t.Error("the create form still offers a Steps JSON blob — steps are authored in the flow view")
+		}
+		if s.Kind == kit2.KJSON {
+			t.Errorf("the create form has a raw JSON field %q", s.Name)
+		}
+	}
 	f.Set("name", "release pipeline")
-	f.Set("steps", `[{"id":"a","name":"First","kind":"task","depends_on":[]}]`)
 	cmd, err := f.OnSubmit(f.Values, nil)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -97,6 +114,15 @@ func TestWorkflowCreateOpensInlineFormAndSubmits(t *testing.T) {
 	runWrite(t, cmd)
 	if len(*writes) != 1 || (*writes)[0] != "create" {
 		t.Fatalf("writes = %v, want [create]", *writes)
+	}
+	if got == nil {
+		t.Fatal("the create request never reached the client")
+	}
+	if got.GetName() != "release pipeline" {
+		t.Errorf("name = %q, want the operator's value", got.GetName())
+	}
+	if got.GetSteps() != "" {
+		t.Errorf("steps = %q — a new workflow's version must start EMPTY", got.GetSteps())
 	}
 }
 
@@ -119,23 +145,6 @@ func TestWorkflowPublishNamesTheDraft(t *testing.T) {
 	runWrite(t, cmd)
 	if len(*writes) != 1 || (*writes)[0] != "publish" {
 		t.Fatalf("writes = %v, want [publish]", *writes)
-	}
-}
-
-// The steps validator rejects a blob that would create a silently dead workflow:
-// a dependency on a step the array does not define can never become ready.
-func TestStepsValidationRejectsUnknownDependencies(t *testing.T) {
-	if err := validateStepsJSON(`[{"id":"a","kind":"task","depends_on":["ghost"]}]`); err == nil {
-		t.Fatal("a dependency on an undefined step must be rejected before it is sent")
-	}
-	if err := validateStepsJSON(`not json`); err == nil {
-		t.Fatal("a non-array steps blob must be rejected")
-	}
-	if err := validateStepsJSON(`[{"id":"a","kind":"task","depends_on":[]},{"id":"b","kind":"task","depends_on":["a"]}]`); err != nil {
-		t.Fatalf("a valid chain was rejected: %v", err)
-	}
-	if err := validateStepsJSON(""); err != nil {
-		t.Fatalf("no steps yet is allowed: %v", err)
 	}
 }
 

@@ -54,13 +54,22 @@ func TestStepKindsMatchWhatTheBackendCanRun(t *testing.T) {
 			t.Errorf("kind %q must NOT be offered: policy is not a backend kind, decision is a stub", banned)
 		}
 	}
-	// Dual is exactly the kinds the reconciler reads success_branch/loop_branch for.
-	if !stepKindDual("approval") || !stepKindDual("loop_decision") {
-		t.Error("approval and loop_decision carry branches — they must be dual")
+	// Dual is NOT one flag: approvalConfig (workflow_reconciler.go:4892) has
+	// loop_branch and max_iterations and NO success_branch field at all, so an
+	// approval has no forward target to offer; loopDecisionConfig
+	// (workflow_reconciler.go:4849) has both.
+	if stepKindHasSuccess("approval") {
+		t.Error("approval has no success_branch in its config struct — offering a SUCCESS target would write a key nothing reads")
 	}
-	for _, single := range []string{"task", "parallel", "end"} {
-		if stepKindDual(single) {
-			t.Errorf("%q has no branch targets — it must not be dual", single)
+	if !stepKindHasLoop("approval") || !stepKindHasLoop("loop_decision") {
+		t.Error("approval and loop_decision both re-enter a named step on rejection/failure — both carry a LOOP target")
+	}
+	if !stepKindHasSuccess("loop_decision") {
+		t.Error("loop_decision carries success_branch — it must offer a SUCCESS target")
+	}
+	for _, none := range []string{"task", "parallel", "end"} {
+		if stepKindHasLoop(none) || stepKindHasSuccess(none) {
+			t.Errorf("%q has no branch targets — it must offer neither a SUCCESS nor a LOOP field", none)
 		}
 	}
 }

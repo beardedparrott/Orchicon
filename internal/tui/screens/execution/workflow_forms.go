@@ -44,9 +44,18 @@ func workflowStatusOf(meta string) string {
 
 // --- forms -----------------------------------------------------------------
 
-// createWorkflowForm creates a workflow AND its first version in one call —
-// CreateWorkflow takes the version's snapshot fields, so steps can be supplied
-// up front (as JSON) instead of leaving an empty shell.
+// createWorkflowForm creates a workflow AND its first version in one call. The
+// version is created EMPTY, deliberately: a workflow's steps are a DAG, and a DAG
+// cannot be authored in a form — the flow view is the editor for exactly that reason
+// (workflow_steps.go), so the form stops pretending otherwise.
+//
+// The first cut offered a `Steps (JSON array)` box here. It was the operator's "same
+// goes for new workflows": a JSON blob is not an editor, and the steps it produced
+// had no coordinates, no names worth reading, and no validation beyond the shape.
+//
+// CreateWorkflowTx creates version 1 as a DRAFT (internal/workflow/create.go:145), so
+// the new workflow is immediately step-editable: select it — which opens the flow
+// view — and press `-` to add the first step.
 func (m *Model) createWorkflowForm() *kit2.Form {
 	f := kit2.NewForm("New workflow",
 		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true,
@@ -56,12 +65,8 @@ func (m *Model) createWorkflowForm() *kit2.Form {
 				{Value: "template", Label: "template (tenant-level, bindable)"},
 				{Value: "one_shot", Label: "one_shot (project-scoped)"},
 			}},
-		// The steps are a JSON array of nodes. Offered here because a workflow with
-		// no steps cannot run, and the alternative is creating one and immediately
-		// editing it.
-		kit2.FieldSpec{Name: "steps", Label: "Steps (JSON array)", Kind: kit2.KJSON,
-			Placeholder: `[{"id":"a","name":"First","kind":"task","depends_on":[]}]`, Validate: validateStepsJSON},
-		kit2.FieldSpec{Name: "version_note", Label: "Version note", Kind: kit2.KText},
+		kit2.FieldSpec{Name: "version_note", Label: "Version note", Kind: kit2.KText,
+			Placeholder: "steps are added in the flow view — select the workflow, then -"},
 	)
 	f.Focused = true
 	f.Width = 70
@@ -69,7 +74,7 @@ func (m *Model) createWorkflowForm() *kit2.Form {
 		req := &apiv1.CreateWorkflowRequest{
 			Name:        strings.TrimSpace(v["name"]),
 			Type:        strings.TrimSpace(v["type"]),
-			Steps:       strings.TrimSpace(v["steps"]),
+			Steps:       "", // authored in the flow view, not typed as JSON
 			VersionNote: strings.TrimSpace(v["version_note"]),
 		}
 		return m.Mutate(mutate.Request{
@@ -125,34 +130,6 @@ func (m *Model) publishWorkflowForm(id string, draft *apiv1.WorkflowVersion) *ki
 		}), nil
 	}
 	return f
-}
-
-// validateStepsJSON rejects a steps blob that is not a JSON ARRAY, before it is
-// sent. The server would reject it too, but a form that fails round-trip wastes a
-// request and reports the error far from the field that caused it.
-func validateStepsJSON(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil // no steps yet: the version can be built later
-	}
-	steps := parseFlowSteps(s)
-	if len(steps) == 0 {
-		return errors.New("steps must be a JSON array of step objects")
-	}
-	// Every depends_on must name a step the array defines, or the step can never
-	// become ready — a silent dead workflow.
-	ids := make(map[string]bool, len(steps))
-	for _, st := range steps {
-		ids[st.ID] = true
-	}
-	for _, st := range steps {
-		for _, d := range st.deps {
-			if !ids[d] {
-				return errors.New("step " + st.ID + " depends on unknown step " + d)
-			}
-		}
-	}
-	return nil
 }
 
 // itoa32 is a tiny local helper so this file needs no strconv import for one call.
