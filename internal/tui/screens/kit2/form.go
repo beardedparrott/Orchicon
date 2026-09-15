@@ -1020,14 +1020,41 @@ func (f *Form) View() string {
 		var line string
 		switch {
 		case focused && f.expanded == s.Name && f.expandable(s.Kind):
-			// EXPANDED: the value wraps across as many rows as it needs, so the
-			// operator reads the whole thing instead of one windowed slice.
+			// EXPANDED (ctrl+e): the value wraps across as many rows as it needs, so the
+			// operator reads the whole thing instead of one windowed slice. Unbounded on
+			// purpose — this is the escape hatch for a value too large for the default.
 			for _, l := range f.expandedBody(s.Name, width-lipgloss.Width(prefix)) {
 				line = prefix + l
 				b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
 				prefix = strings.Repeat(" ", lipgloss.Width(prefix))
 			}
 			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+": (expanded — ctrl+e to collapse)", width)) + "\n")
+			continue
+		case focused && f.expandable(s.Kind):
+			// A FOCUSED multi-line field is WRAPPED by DEFAULT: the operator edits prose,
+			// a prompt or a JSON blob and must be able to read it as they write, without
+			// knowing a chord. The operator: "we need a better view on multiline boxes.
+			// Editing it in a single line going back and forth off the screen is NOT very
+			// intuitive. We need to expand it out within the details/edit pane just like
+			// it would look in the GUI to see the whole text and formatted properly."
+			//
+			// The value's OWN line breaks are preserved and long lines soft-wrap, so
+			// indentation and paragraph structure survive on screen. Rows are bounded so
+			// one long value cannot push the rest of the form out of reach; the withheld
+			// count is stated and ctrl+e shows all of it.
+			rows, hidden := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(prefix)), maxWrappedRows)
+			for i, l := range rows {
+				line = prefix + l
+				b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
+				if i == 0 {
+					prefix = strings.Repeat(" ", lipgloss.Width(prefix))
+				}
+			}
+			hint := fmt.Sprintf("  (%d lines — ctrl+e for the whole field, arrows move between fields)", lineCount(f.Values[s.Name]))
+			if hidden > 0 {
+				hint = fmt.Sprintf("  (+%d more lines hidden — ctrl+e for the whole field)", hidden)
+			}
+			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+":"+hint, width)) + "\n")
 			continue
 		case focused && s.Kind == KMultiSelect:
 			// While focused the options are SHOWN, each marked selected or not, with the
@@ -1053,6 +1080,17 @@ func (f *Form) View() string {
 			line = prefix + f.valueWithCaret(s.Name, avail)
 		default:
 			val := f.display(s)
+			// A multi-line value on an UNFOCUSED row must not emit its newlines: the host
+			// pads this string to the pane width, so raw breaks split one field into
+			// several visual rows and shift everything below. Flattened, with the break
+			// count stated, so the operator can see there is more there.
+			if f.expandable(s.Kind) {
+				if n := lineCount(f.Values[s.Name]); n > 1 {
+					val = oneLine(val)
+					line = prefix + val + theme.HintText.Render(fmt.Sprintf("  (%d lines)", n))
+					break
+				}
+			}
 			line = prefix + val
 			if s.Kind == KSecret && val != "" {
 				line += theme.HintText.Render("  (hidden)")
@@ -1185,6 +1223,134 @@ func (f *Form) expandable(k Kind) bool {
 
 // Expanded reports the field currently rendered wide ("" = none).
 func (f *Form) Expanded() string { return f.expanded }
+
+// maxWrappedRows bounds the DEFAULT wrapped view of a multi-line field.
+//
+// The point of the default is to let the operator READ what they are editing, but an
+// unbounded render would let one long value push every other field off the pane — you
+// could no longer reach the rest of the form. Six rows shows paragraphs, prompts and
+// small JSON in full; beyond that the field says how much is hidden and ctrl+e shows
+// all of it.
+const maxWrappedRows = 6
+
+// oneLine flattens a value for SINGLE-ROW display, marking the line breaks instead of
+// emitting them.
+//
+// Nothing did this before, and the omission was a real layout bug rather than a cosmetic
+// one: display() returns the raw value, so a multi-line KTextArea put literal newlines
+// into a string the host then PADS to the pane width — one field became several visual
+// rows, the width accounting went wrong, and the rows below it shifted. An unfocused
+// prompt or description corrupted the form it appeared in.
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\t", "    ")
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	parts := strings.Split(s, "\n")
+	// Trailing blank lines carry no information in a summary.
+	for len(parts) > 1 && strings.TrimSpace(parts[len(parts)-1]) == "" {
+		parts = parts[:len(parts)-1]
+	}
+	trimmed := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed = append(trimmed, strings.TrimRight(p, " "))
+	}
+	return strings.Join(trimmed, " \u21b5 ") // ↵ between logical lines
+}
+
+// lineCount reports how many logical lines a value has (0 or 1 = single-line).
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(strings.ReplaceAll(s, "\r\n", "\n"), "\n") + 1
+}
+
+// wrappedBody renders a multi-line value the way it should be READ: the value's OWN line
+// breaks preserved, long lines soft-wrapped to `width`, and a caret at the edit position.
+//
+// It returns the rows to draw and how many rows were withheld by maxRows, so the caller
+// can say so rather than silently cropping the operator's text.
+//
+// This exists alongside expandedBody (the ctrl+e view) because the two answer different
+// questions: this one is what a focused multi-line field shows BY DEFAULT, so the operator
+// never has to know a chord to see their own text; expandedBody is the unbounded view for
+// a value too large to fit the pane.
+func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hidden int) {
+	val := f.Values[name]
+	pos := f.caret(name)
+	runes := []rune(val)
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	const caretRune = "\u258f" // ▏
+	withCaret := string(runes[:pos]) + caretRune + string(runes[pos:])
+
+	withCaret = strings.ReplaceAll(withCaret, "\r\n", "\n")
+	withCaret = strings.ReplaceAll(withCaret, "\r", "\n")
+	withCaret = strings.ReplaceAll(withCaret, "\t", "    ")
+	for _, logical := range strings.Split(withCaret, "\n") {
+		rows = append(rows, wrapPreservingSpaces(logical, width)...)
+	}
+	if len(rows) == 0 {
+		rows = []string{""}
+	}
+	if maxRows > 0 && len(rows) > maxRows {
+		hidden = len(rows) - maxRows
+		rows = rows[:maxRows]
+	}
+	return rows, hidden
+}
+
+// wrapPreservingSpaces soft-wraps ONE logical line to `width` cells, leaving the line
+// untouched when it already fits.
+//
+// wrapFormLine (used by the ctrl+e view) wraps with strings.Fields, which collapses runs
+// of spaces and so DESTROYS the indentation of pretty-printed JSON and the deliberate
+// alignment of a prompt. This keeps the text verbatim and only inserts breaks.
+func wrapPreservingSpaces(line string, width int) []string {
+	if width < 8 || lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	var out []string
+	rest := line
+	for lipgloss.Width(rest) > width {
+		// Prefer the last space that fits — a word boundary.
+		cut, w := -1, 0
+		for i, r := range rest {
+			rw := lipgloss.Width(string(r))
+			if w+rw > width {
+				break
+			}
+			w += rw
+			if r == ' ' {
+				cut = i
+			}
+		}
+		if cut <= 0 {
+			// One token longer than the row (a minified JSON blob, a long URL):
+			// hard-split at the boundary rather than emit an over-wide row.
+			cut, w = 0, 0
+			for i, r := range rest {
+				rw := lipgloss.Width(string(r))
+				if w+rw > width {
+					cut = i
+					break
+				}
+				w += rw
+			}
+			if cut <= 0 {
+				break
+			}
+		}
+		out = append(out, rest[:cut])
+		rest = strings.TrimPrefix(rest[cut:], " ")
+	}
+	out = append(out, rest)
+	return out
+}
 
 // expandedBody renders the focused field's value WRAPPED across as many rows as
 // it needs, with a caret at the edit position.
