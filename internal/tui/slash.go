@@ -35,6 +35,39 @@ type SlashCommand struct {
 // panes with no TUI surface).
 func (c SlashCommand) NoticeOnly() bool { return c.Usage == "" }
 
+// MatchesQuery reports whether a typed slash word (WITHOUT the leading slash) names this
+// command — by its primary spelling OR any ALIAS.
+//
+// Aliases are not decoration: "/exit" resolves and RUNS, so a palette that cannot find it is
+// telling the operator a working command does not exist. That was the reported inconsistency
+// — "/exit works but doesn't get displayed in the slash command list as a valid slash
+// command" — and it happened because the filter matched `c.Name` alone.
+func (c SlashCommand) MatchesQuery(q string) bool {
+	if strings.Contains(c.Name, q) {
+		return true
+	}
+	for _, a := range c.Aliases {
+		if strings.Contains(a, q) {
+			return true
+		}
+	}
+	return false
+}
+
+// AliasLabel renders the aliases for display, in one shared form so /help and the palette
+// cannot drift apart — the exact drift that produced this report (helpLines showed the alias,
+// the palette row did not).
+func (c SlashCommand) AliasLabel() string {
+	if len(c.Aliases) == 0 {
+		return ""
+	}
+	alias := ""
+	for _, a := range c.Aliases {
+		alias += " " + a
+	}
+	return aliasSuffix(alias)
+}
+
 // slashRegistry is the ordered command set (built once per App).
 type slashRegistry struct {
 	byName map[string]*SlashCommand
@@ -361,11 +394,7 @@ func (r *slashRegistry) helpLines() []string {
 		if usage == "" {
 			usage = c.Name
 		}
-		alias := ""
-		for _, a := range c.Aliases {
-			alias += " " + a
-		}
-		lines = append(lines, fmt.Sprintf("  %-28s %s%s", usage, c.Desc, aliasSuffix(alias)))
+		lines = append(lines, fmt.Sprintf("  %-28s %s%s", usage, c.Desc, c.AliasLabel()))
 	}
 	return lines
 }

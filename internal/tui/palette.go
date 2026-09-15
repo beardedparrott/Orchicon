@@ -64,6 +64,11 @@ func (m *App) closePalette() {
 
 // refreshPalette recomputes the filtered candidate list from the live
 // slash registry (primary names only, no-dup).
+//
+// ALIASES MATCH THE FILTER but do not get their own ROW: an alias is the same command, so a
+// second row would be a phantom entry with identical behaviour — but a typed alias must FIND
+// it, or the palette denies a command that runs perfectly well. The row then DISPLAYS the
+// alias (c.AliasLabel), which is how the spelling becomes discoverable at all.
 func (m *App) refreshPalette() {
 	var out []*SlashCommand
 	seen := map[string]bool{}
@@ -75,7 +80,7 @@ func (m *App) refreshPalette() {
 		if seen[c.Name] {
 			continue
 		}
-		if strings.Contains(c.Name, m.palette.query) {
+		if c.MatchesQuery(m.palette.query) {
 			out = append(out, c)
 		}
 		seen[c.Name] = true
@@ -244,8 +249,13 @@ func (m *App) paletteView() string {
 			if usage == "" {
 				usage = c.Name
 			}
-			line := "  " + usage
-			pad := 26 - len(usage)
+			// The row carries its ALIASES, in the same shared form /help uses, so the two
+			// surfaces cannot disagree about what is a valid command.
+			alias := c.AliasLabel()
+			line := "  " + usage + alias
+			// Pad the DESCRIPTION to a fixed column, counting the alias too — otherwise a
+			// row with an alias pushes its description out of line with every other row.
+			pad := 26 - len(usage) - len(alias)
 			if pad < 1 {
 				pad = 1
 			}
