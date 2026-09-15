@@ -407,11 +407,28 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig
 	// key, and an approval has no missing-verdict problem (an approval proceeds
 	// unless it is explicitly REJECTED, so no verdict means forward, not a wedge).
+	//
+	// max_reask sits beside it because the two answer the SAME question from opposite
+	// sides, and only together are they honest: the policy says what a missing verdict
+	// MEANS, and max_reask says how many times to ask before giving up on getting one.
+	// It is a real, honoured bound (workflow_reconciler.go: the re-ask loop fails at
+	// `reaskCount >= cfg.MaxReask`), which is why it is offered where the DEAD
+	// retry_delay_seconds is not.
+	//
+	// decision_field / success_value / failure_value are deliberately NOT offered. They
+	// are not configuration an operator may safely change: see the note on
+	// loopDecisionConfig in workflow_reconciler.go.
 	if s.Kind == "loop_decision" {
-		specs = append(specs, kit2.FieldSpec{
-			Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
-			Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
-			Placeholder: "reask (engine default)"})
+		specs = append(specs,
+			kit2.FieldSpec{
+				Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
+				Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
+				Placeholder: "reask (engine default)"},
+			kit2.FieldSpec{
+				Name: "max_reask", Label: "Max re-asks (when the reviewer gives no verdict)",
+				Kind: kit2.KNumber, Initial: maxReaskOf(s.Config), Validate: validatePositiveInt,
+				Placeholder: "engine default 3"},
+		)
 	}
 	// There is NO raw JSON config box. Every key these kinds consume has a field
 	// above, and mergeStepConfig PRESERVES whatever the fields do not model — so the
@@ -491,6 +508,10 @@ func (m *Model) addStepForm() *kit2.Form {
 			Options: targetOptions(steps, ""), Placeholder: "type to search this workflow's steps"},
 		kit2.FieldSpec{Name: "max_iterations", Label: "Max iterations/rejections — approval + loop", Kind: kit2.KNumber,
 			Validate: validatePositiveInt, Placeholder: "3"},
+		kit2.FieldSpec{Name: "on_missing_decision", Label: "On missing decision — loop steps", Kind: kit2.KSelect,
+			Initial: "reask", Options: missingDecisionOptions()},
+		kit2.FieldSpec{Name: "max_reask", Label: "Max re-asks — loop steps (no verdict to route on)", Kind: kit2.KNumber,
+			Initial: "3", Validate: validatePositiveInt},
 	)
 	f.Focused = true
 	f.Width = 70
@@ -604,8 +625,27 @@ func configEdits(kind, existing string, v map[string]string) map[string]any {
 		// A blank means "not set", which the engine resolves to reask — the same
 		// behaviour as writing the default, so deleting the key is the honest edit.
 		edits["on_missing_decision"] = strings.TrimSpace(v["on_missing_decision"])
+		// A non-positive bound deletes the key: parseLoopDecisionConfig treats <= 0 as
+		// "use 3", so writing 0 would be a bound the engine silently replaces, and
+		// blanking it is the same statement made honestly.
+		edits["max_reask"] = intOrNil(v["max_reask"])
 	}
 	return edits
+}
+
+// maxReaskOf reads a loop decision's max_reask, falling back to the engine's own
+// default (3) so the form shows the budget that will actually apply.
+func maxReaskOf(config string) string {
+	var raw struct {
+		MaxReask int `json:"max_reask"`
+	}
+	if strings.TrimSpace(config) != "" {
+		_ = json.Unmarshal([]byte(config), &raw)
+	}
+	if raw.MaxReask <= 0 {
+		return "3"
+	}
+	return fmt.Sprintf("%d", raw.MaxReask)
 }
 
 // missingDecisionOf reads a loop decision's on_missing_decision, falling back to the

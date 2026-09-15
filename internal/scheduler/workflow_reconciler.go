@@ -4873,6 +4873,29 @@ type loopDecisionConfig struct {
 	// Any value the engine does not recognise is treated as the default, so a typo
 	// degrades to today's behaviour rather than to something new.
 	OnMissingDecision string `json:"on_missing_decision"`
+
+	// DecisionField / SuccessValue / FailureValue are PLATFORM CONTRACT, not operator
+	// preference, and are therefore exposed in NEITHER client's step editor.
+	//
+	// The verdict vocabulary is produced by the platform, not chosen per workflow: the
+	// worker identity preamble tells EVERY worker to "report your result via the
+	// ORCHICON WORKER SUMMARY contract" (db.WorkerIdentityPreamble), the seeded prompts
+	// spell it out as the literal `ORCHICON WORKER SUMMARY: success` / `failure` in 18
+	// places, and extractSummaryDecision NORMALIZES exactly those two words — passing any
+	// other first word through verbatim, which is what makes a custom vocabulary
+	// technically possible.
+	//
+	// That combination is a trap in a form. Point SuccessValue at "done" without also
+	// rewriting every worker prompt (and every approval reviewer's) and no verdict ever
+	// matches, so EVERY gate falls through to the missing-decision path — re-ask until
+	// the budget is spent, then fail. Nothing validates the two against each other, so
+	// the failure mode is silent and total. Left settable in the config (a workflow may
+	// legitimately drive it programmatically) but not offered as a knob.
+	//
+	// DecisionField is the same class for a second reason: the PRIMARY path does not
+	// consult it at all — the upstream step run's decision is decoded from a hardcoded
+	// `_decision` tag above — so only the legacy ticket fallback honours it. Offering it
+	// would move a knob that mostly does nothing.
 }
 
 // The on_missing_decision vocabulary. The engine routes on these exact strings;

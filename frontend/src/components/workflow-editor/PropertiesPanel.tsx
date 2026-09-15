@@ -343,6 +343,32 @@ export function PropertiesPanel({
               <option value="fail">fail — a verdict is mandatory; refuse immediately</option>
             </select>
           </Field>
+          <Field
+            label="Max re-asks"
+            hint="How many times to re-ask the reviewer for a verdict before the loop node FAILS (the run then needs a force-progress). Engine default 3. This is a different budget from max_iterations above: that bounds loops after an explicit failure, this bounds re-asks when no verdict arrived at all."
+          >
+            <input
+              type="number"
+              min={1}
+              max={100}
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
+              value={typeof cfg.max_reask === "number" ? cfg.max_reask : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxReask = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 3));
+                const next = { ...cfg, max_reask: maxReask };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          {/* decision_field / success_value / failure_value are intentionally NOT
+              exposed. The verdict vocabulary is PLATFORM CONTRACT, not preference:
+              every seeded worker prompt instructs the literal `ORCHICON WORKER
+              SUMMARY: success` / `failure`, and extractSummaryDecision normalizes
+              those two words (passing any other word through verbatim). Pointing a
+              gate at a different word without also rewriting every worker prompt
+              makes no verdict ever match, so the gate falls through to the
+              missing-decision path on every run. */}
           </>
         )}
 

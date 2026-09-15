@@ -142,6 +142,22 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	if _, ok := loop["on_missing_decision"]; !ok {
 		t.Error("a loop must expose on_missing_decision — it is how the operator says whether a missing verdict means re-ask, proceed, or fail")
 	}
+	// max_reask is a real, honoured bound (the re-ask loop fails at reaskCount >=
+	// cfg.MaxReask), and it is the other half of the same question, so it belongs
+	// beside the policy.
+	if _, ok := loop["max_reask"]; !ok {
+		t.Error("a loop must expose max_reask — it is the budget the missing-decision policy spends")
+	}
+	// THE PLATFORM CONTRACT MUST STAY OUT OF THE FORM. success_value/failure_value are
+	// what every seeded worker prompt emits (`ORCHICON WORKER SUMMARY: success`), and
+	// decision_field is not even consulted on the primary path. Exposing them would let
+	// an operator point a gate at a word no worker emits, making every verdict miss and
+	// every gate fail — silently, and only at run time.
+	for _, contract := range []string{"decision_field", "success_value", "failure_value"} {
+		if _, ok := loop[contract]; ok {
+			t.Errorf("%s is platform contract, not operator configuration — exposing it lets a gate be pointed at a verdict no worker emits", contract)
+		}
+	}
 	// Keys the previous cut invented labels for, none of which any reader consumes.
 	for _, invented := range []string{"conflict_value", "exhausted_review"} {
 		if _, ok := loop[invented]; ok {
@@ -159,8 +175,10 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	// REJECTED), and approvalConfig has no such key — so it must not be offered there
 	// any more than on a task.
 	for _, kind := range []flowStep{{ID: "a", Name: "A", Kind: "task", Ref: "w_x"}, {ID: "b", Name: "B", Kind: "approval"}} {
-		if _, ok := fieldsOf(m.editStepForm(kind))["on_missing_decision"]; ok {
-			t.Errorf("kind %q must not expose on_missing_decision — it is a loopDecisionConfig key", kind.Kind)
+		for _, unwanted := range []string{"on_missing_decision", "max_reask"} {
+			if _, ok := fieldsOf(m.editStepForm(kind))[unwanted]; ok {
+				t.Errorf("kind %q must not expose %q — it is a loopDecisionConfig key", kind.Kind, unwanted)
+			}
 		}
 	}
 }
@@ -440,6 +458,77 @@ func TestMissingDecisionAbsentReadsAsTheEngineDefault(t *testing.T) {
 	} {
 		if got := missingDecisionOf(tc.cfg); got != tc.want {
 			t.Errorf("missingDecisionOf(%q) = %q, want %q", tc.cfg, got, tc.want)
+		}
+	}
+}
+
+// max_reask is the other half of the missing-verdict question: the policy says what an
+// absent verdict MEANS, this says how many times to ask for one first. It round-trips,
+// it survives unrelated edits, and a blank/zero bound DELETES the key rather than
+// writing a value the engine silently replaces with 3.
+func TestMaxReaskRoundTripsAndDeletesWhenBlanked(t *testing.T) {
+	const steps = `[{"id":"a","name":"A","kind":"loop_decision","config":"{\"loop_branch\":\"b\",\"max_iterations\":6,\"max_reask\":7,\"on_missing_decision\":\"fail\"}","depends_on":["b"]},
+	                {"id":"b","name":"Start","kind":"task","ref":"w_x","depends_on":[]}]`
+	m, saved := cfgEditorModel(t, steps)
+
+	// The form shows the STORED bound, not the default.
+	f := m.editStepForm(m.rawFlowSteps()[0])
+	if got := f.Values["max_reask"]; got != "7" {
+		t.Fatalf("the form seeded max_reask = %q, want the stored 7", got)
+	}
+	// An unrelated edit leaves it alone.
+	f.Set("name", "A (renamed)")
+	cmd, err := f.OnSubmit(f.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	runWrite(t, cmd)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(parseFlowSteps((*saved)[0])[0].Config), &got); err != nil {
+		t.Fatalf("config is not JSON: %v", err)
+	}
+	if got["max_reask"].(float64) != 7 {
+		t.Errorf("an unrelated edit disturbed max_reask: %v", got)
+	}
+	if got["on_missing_decision"] != "fail" {
+		t.Errorf("the policy was disturbed: %v", got)
+	}
+
+	// Blanking it deletes the key, so the engine default applies honestly.
+	f2 := m.editStepForm(m.rawFlowSteps()[0])
+	f2.Set("max_reask", "")
+	cmd2, err := f2.OnSubmit(f2.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	runWrite(t, cmd2)
+	last := parseFlowSteps((*saved)[len(*saved)-1])[0]
+	var got2 map[string]any
+	if err := json.Unmarshal([]byte(last.Config), &got2); err != nil {
+		t.Fatalf("config is not JSON: %v", err)
+	}
+	if _, ok := got2["max_reask"]; ok {
+		t.Errorf("a blank bound was written instead of deleted: %s", last.Config)
+	}
+	if got2["loop_branch"] != "b" {
+		t.Errorf("the loop's real keys were lost: %v", got2)
+	}
+}
+
+// The bound the form shows is the one the engine would apply — parseLoopDecisionConfig
+// replaces anything <= 0 with 3, so an absent or zero value must read as 3.
+func TestMaxReaskReadsAsTheEngineDefault(t *testing.T) {
+	for _, tc := range []struct{ cfg, want string }{
+		{"", "3"},
+		{"{}", "3"},
+		{`{"loop_branch":"a","max_iterations":3}`, "3"},
+		{`{"max_reask":0}`, "3"},
+		{`{"max_reask":-2}`, "3"},
+		{`{"max_reask":9}`, "9"},
+		{"{broken", "3"},
+	} {
+		if got := maxReaskOf(tc.cfg); got != tc.want {
+			t.Errorf("maxReaskOf(%q) = %q, want %q", tc.cfg, got, tc.want)
 		}
 	}
 }
