@@ -21,8 +21,6 @@ export const stepKindClasses: Record<number, string> = {
     "border-emerald-400/70 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-100",
   [STEP_KIND.PROJECT]:
     "border-indigo-400/70 bg-indigo-50 text-indigo-950 dark:bg-indigo-950/40 dark:text-indigo-100",
-  [STEP_KIND.POLICY]:
-    "border-amber-400/70 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100",
   [STEP_KIND.LOOP_DECISION]:
     "border-cyan-400/70 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/40 dark:text-cyan-100",
   [STEP_KIND.END]:
@@ -42,11 +40,9 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         ? !!cfg.work_item_id
         : kind === STEP_KIND.PROJECT
           ? !!cfg.project_id
-          : kind === STEP_KIND.POLICY
-            ? !!data.gatePolicyRef
-            : kind === STEP_KIND.RECOVER
-              ? !!cfg.strategy
-              : true;
+          : kind === STEP_KIND.RECOVER
+            ? !!cfg.strategy
+            : true;
 
   const needsBinding =
     kind !== STEP_KIND.DECISION &&
@@ -164,19 +160,13 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
 
-      {data.gatePolicyRef && kind !== STEP_KIND.POLICY && (
+      {data.gatePolicyRef && (
         <div className="mt-1 flex items-center gap-1 truncate rounded bg-black/10 px-1 py-0.5 text-[9px] font-medium uppercase dark:bg-white/10">
           <span className="opacity-70">gate</span>
           <span className="font-mono normal-case opacity-90">
             {data.gatePolicyRef.slice(0, 16)}
             {data.gatePolicyRef.length > 16 ? "…" : ""}
           </span>
-        </div>
-      )}
-
-      {kind === STEP_KIND.POLICY && data.gatePolicyRef && (
-        <div className="mt-0.5 truncate font-mono text-[10px] opacity-70">
-          {data.gatePolicyRef.slice(0, 16)}...
         </div>
       )}
 

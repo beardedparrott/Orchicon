@@ -8,7 +8,6 @@ import {
   GitFork,
   Info,
   Repeat2,
-  ShieldCheck,
   UserCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -80,17 +79,8 @@ export function Palette({ readOnly, mode = "full" }: { readOnly: boolean; mode?:
       <Section
         title="Conditional"
         icon={GitBranch}
-        subtitle="Policy gates, approvals, and fan-out"
+        subtitle="Approvals and fan-out"
       >
-        <DraggableTile
-          label="Policy"
-          sublabel="Pick a policy on the right"
-          icon={ShieldCheck}
-          kindAccent="amber"
-          payload={{ kind: STEP_KIND.POLICY, name: "Policy" }}
-          description="A Rego policy gate evaluated before the step runs. Select the policy in the properties panel."
-          readOnly={readOnly}
-        />
         <DraggableTile
           label="Approval"
           sublabel="Human approval gate"

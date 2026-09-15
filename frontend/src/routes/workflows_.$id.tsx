@@ -524,11 +524,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           `Step "${d.name || n.id}" is a project but has no project selected.`,
         );
       }
-      if (d.kind === STEP_KIND.POLICY && !d.gatePolicyRef) {
-        errs.push(
-          `Step "${d.name || n.id}" is a policy but has no policy selected.`,
-        );
-      }
       if (d.kind === STEP_KIND.RECOVER && !cfg.strategy) {
         errs.push(
           `Step "${d.name || n.id}" is a recovery step but has no strategy selected.`,

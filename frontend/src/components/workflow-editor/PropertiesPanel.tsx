@@ -7,12 +7,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-import { useListPolicies } from "@/api/policies";
 import { useListProjects } from "@/api/projects";
 import { useListWorkItems } from "@/api/workItems";
 import { useListWorkers } from "@/api/workers";
 import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
-import { PolicyStatus } from "@/api/gen/orchicon/api/v1/policy_pb";
 import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 import {
@@ -38,7 +36,6 @@ export function PropertiesPanel({
   const { data: workItems } = useListWorkItems(projectId || "", {});
   const { data: workerItems } = useListWorkers();
   const workers = (workerItems ?? []).map((it) => it.worker!);
-  const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
 
   // Seed default config values for newly-created steps. Must be before
   // the early return to keep hook order stable across renders.
@@ -215,35 +212,6 @@ export function PropertiesPanel({
           </>
         )}
 
-        {d.kind === STEP_KIND.POLICY && (
-          <Field label="Policy" hint="The Rego policy evaluated as a gate for this step.">
-            <select
-              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
-              value={d.gatePolicyRef}
-              disabled={readOnly}
-              onChange={(e) => {
-                const pid = e.target.value;
-                const policy = policies?.find((p) => p.id === pid);
-                if (policy) {
-                  const next = { ...cfg, policy_title: policy.name };
-                  onChange({
-                    name: policy.name,
-                    gatePolicyRef: pid,
-                    config: JSON.stringify(next),
-                  });
-                }
-              }}
-            >
-              <option value="">-- Select a policy --</option>
-              {(policies ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-
         {d.kind === STEP_KIND.APPROVAL && (
           <>
           <Field label="Reviewer" hint="Who evaluates this approval gate. Human blocks for an API call; Worker dispatches to an AI approver.">
@@ -360,7 +328,7 @@ export function PropertiesPanel({
           </>
         )}
 
-        {d.gatePolicyRef && d.kind !== STEP_KIND.POLICY && (
+        {d.gatePolicyRef && (
           <div className="rounded-md border bg-muted/40 p-2">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               Gate policy
