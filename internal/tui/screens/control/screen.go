@@ -1461,6 +1461,31 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "warn_frac_cost", Label: "Ladder - cost: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_cost", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
 		kit2.FieldSpec{Name: "warn_frac_tools", Label: "Ladder - tool calls: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tools", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
 		kit2.FieldSpec{Name: "warn_frac_time", Label: "Ladder - wall clock: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_time", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
+		// --- The warning TEXT (the ladder's other half) ---
+		//
+		// The fractions above decide WHEN each stage fires; these are the words
+		// INJECTED INTO THE SESSION at that stage — the message the worker actually
+		// reads when it crosses a threshold. They are the remaining keys of the blob,
+		// so without them an operator could tune the thresholds from the TUI but not
+		// the instruction the worker obeys. The GUI has shipped these all along
+		// (frontend/src/routes/settings.tsx, BudgetWarningsEditor: one message per tier
+		// per dimension), which is what made their absence here a parity gap.
+		//
+		// `{pct}` is substituted with the percentage of that dimension's limit already
+		// consumed. They are KTextArea because the real copy is a paragraph, not a
+		// label; ctrl+e expands the focused field to a wrapped editor.
+		kit2.FieldSpec{Name: "warn_msg_tokens", Label: "Warning text - tokens: WARN", Kind: kit2.KTextArea, Initial: bi("warn_msg_tokens", ""), Placeholder: "sent at the first threshold; {pct} = % of the token limit used"},
+		kit2.FieldSpec{Name: "esc_msg_tokens", Label: "Warning text - tokens: ESCALATE", Kind: kit2.KTextArea, Initial: bi("esc_msg_tokens", ""), Placeholder: "a firmer restatement; the worker has not corrected course"},
+		kit2.FieldSpec{Name: "final_msg_tokens", Label: "Warning text - tokens: FINAL", Kind: kit2.KTextArea, Initial: bi("final_msg_tokens", ""), Placeholder: "the last message before the limit ABORTS the run"},
+		kit2.FieldSpec{Name: "warn_msg_cost", Label: "Warning text - cost: WARN", Kind: kit2.KTextArea, Initial: bi("warn_msg_cost", ""), Placeholder: "sent at the first threshold; {pct} = % of the cost limit used"},
+		kit2.FieldSpec{Name: "esc_msg_cost", Label: "Warning text - cost: ESCALATE", Kind: kit2.KTextArea, Initial: bi("esc_msg_cost", ""), Placeholder: "a firmer restatement; the worker has not corrected course"},
+		kit2.FieldSpec{Name: "final_msg_cost", Label: "Warning text - cost: FINAL", Kind: kit2.KTextArea, Initial: bi("final_msg_cost", ""), Placeholder: "the last message before the limit ABORTS the run"},
+		kit2.FieldSpec{Name: "warn_msg_tools", Label: "Warning text - tool calls: WARN", Kind: kit2.KTextArea, Initial: bi("warn_msg_tools", ""), Placeholder: "sent at the first threshold; {pct} = % of the tool-call limit used"},
+		kit2.FieldSpec{Name: "esc_msg_tools", Label: "Warning text - tool calls: ESCALATE", Kind: kit2.KTextArea, Initial: bi("esc_msg_tools", ""), Placeholder: "a firmer restatement; the worker has not corrected course"},
+		kit2.FieldSpec{Name: "final_msg_tools", Label: "Warning text - tool calls: FINAL", Kind: kit2.KTextArea, Initial: bi("final_msg_tools", ""), Placeholder: "the last message before the limit ABORTS the run"},
+		kit2.FieldSpec{Name: "warn_msg_time", Label: "Warning text - wall clock: WARN", Kind: kit2.KTextArea, Initial: bi("warn_msg_time", ""), Placeholder: "sent at the first threshold; {pct} = % of the time limit used"},
+		kit2.FieldSpec{Name: "esc_msg_time", Label: "Warning text - wall clock: ESCALATE", Kind: kit2.KTextArea, Initial: bi("esc_msg_time", ""), Placeholder: "a firmer restatement; the worker has not corrected course"},
+		kit2.FieldSpec{Name: "final_msg_time", Label: "Warning text - wall clock: FINAL", Kind: kit2.KTextArea, Initial: bi("final_msg_time", ""), Placeholder: "the last message before the limit ABORTS the run"},
 		// Which ladder tiers ALSO compact. The warn tier defaults to OFF: a lossy
 		// collapse at the first warning interrupts the worker mid-flight.
 		kit2.FieldSpec{Name: "compact_tier_warn", Label: "Compact at WARN tier", Kind: kit2.KCheckbox, Initial: bi("compact_tier_warn", "")},
@@ -2072,6 +2097,7 @@ func budgetInitials(blob string) map[string]string {
 		} `json:"memory"`
 		Warnings struct {
 			Fractions map[string][3]float64 `json:"fractions"`
+			Messages  map[string][3]string  `json:"messages"`
 		} `json:"warnings"`
 	}
 	if strings.TrimSpace(blob) != "" {
@@ -2100,6 +2126,29 @@ func budgetInitials(blob string) map[string]string {
 	out["warn_frac_cost"] = fracFor("cost_usd")
 	out["warn_frac_tools"] = fracFor("tool_call_count")
 	out["warn_frac_time"] = fracFor("wall_clock_seconds")
+
+	// The warning TEXT, one field per tier per dimension. Absent key = "" so a
+	// dimension the blob does not carry reads as blank and writes back omitted.
+	msgFor := func(key string, i int) string {
+		t, ok := raw.Warnings.Messages[key]
+		if !ok || i < 0 || i >= len(t) {
+			return ""
+		}
+		return t[i]
+	}
+	for _, d := range []struct {
+		key              string
+		warn, esc, final string
+	}{
+		{"tokens", "warn_msg_tokens", "esc_msg_tokens", "final_msg_tokens"},
+		{"cost_usd", "warn_msg_cost", "esc_msg_cost", "final_msg_cost"},
+		{"tool_call_count", "warn_msg_tools", "esc_msg_tools", "final_msg_tools"},
+		{"wall_clock_seconds", "warn_msg_time", "esc_msg_time", "final_msg_time"},
+	} {
+		out[d.warn] = msgFor(d.key, 0)
+		out[d.esc] = msgFor(d.key, 1)
+		out[d.final] = msgFor(d.key, 2)
+	}
 
 	// The tier toggles default OFF/ON/ON when absent — the built-in policy, whose
 	// WARN tier is off because a lossy collapse at the first warning interrupts the
@@ -2161,8 +2210,40 @@ func buildBudgetJSON(v map[string]string) string {
 			fractions[key] = tri
 		}
 	}
+	// The warning TEXT. A dimension is written only when at least ONE of its three
+	// messages is non-blank, and then all three go together — the rule the GUI's
+	// buildBudgetDefaults applies, and the one the server's ApplyBudgetJSON expects,
+	// because it reads `warnings.messages.<dim>` as a whole triple. So blanking every
+	// tier of a dimension leaves the stored copy untouched (the key is omitted, and
+	// an absent key means "keep"), while blanking a single tier in an otherwise
+	// populated dimension SILENCES just that tier — the adapter assigns each string
+	// verbatim, so "" injects nothing. That is a real edit, not a fallback.
+	messages := map[string]any{}
+	for key, fields := range map[string][3]string{
+		"tokens":             {"warn_msg_tokens", "esc_msg_tokens", "final_msg_tokens"},
+		"cost_usd":           {"warn_msg_cost", "esc_msg_cost", "final_msg_cost"},
+		"tool_call_count":    {"warn_msg_tools", "esc_msg_tools", "final_msg_tools"},
+		"wall_clock_seconds": {"warn_msg_time", "esc_msg_time", "final_msg_time"},
+	} {
+		tri := [3]string{
+			strings.TrimSpace(v[fields[0]]),
+			strings.TrimSpace(v[fields[1]]),
+			strings.TrimSpace(v[fields[2]]),
+		}
+		if tri[0] == "" && tri[1] == "" && tri[2] == "" {
+			continue
+		}
+		messages[key] = tri
+	}
+	warnings := map[string]any{}
 	if len(fractions) > 0 {
-		out["warnings"] = map[string]any{"fractions": fractions}
+		warnings["fractions"] = fractions
+	}
+	if len(messages) > 0 {
+		warnings["messages"] = messages
+	}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
 
 	// The tier toggles are always meaningful (their columns are NOT NULL DEFAULT),
