@@ -1221,6 +1221,27 @@ func (b *Base) ownsSource(name string) bool {
 }
 
 // SourceItem returns the named source's item by ID.
+// SourceItems returns a source's currently loaded rows (a copy). It is what a
+// BULK operation acts on: the scope of "accept all" must be the set the operator
+// can SEE, and that is exactly the rows the table holds.
+func (b *Base) SourceItems(name string) []Item {
+	for _, s := range b.sources {
+		if s.name != name {
+			continue
+		}
+		out := make([]Item, 0, len(s.table.Rows))
+		for _, r := range s.table.Rows {
+			title := ""
+			if len(r.Cells) > 0 {
+				title = r.Cells[0]
+			}
+			out = append(out, Item{ID: r.ID, Title: title, Meta: r.Meta})
+		}
+		return out
+	}
+	return nil
+}
+
 func (b *Base) SourceItem(name, id string) (Item, bool) {
 	for _, s := range b.sources {
 		if s.name != name {

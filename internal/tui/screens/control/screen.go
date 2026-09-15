@@ -1817,6 +1817,21 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 	}
 
+	// The INLINE details-pane editor owns every key while it is up — it is the
+	// focused surface, so it comes BEFORE the screen's own chords.
+	//
+	// It has to: the chords below answer 'n' (new), 'e' (edit) and 's' (set
+	// credential), so with a form open in the pane a plain letter fired a chord
+	// instead of being typed — every 'n', 'e' or 's' in a typed value re-opened a
+	// form and discarded the input.
+	if m.Base.EditingDetail() {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if handled, cmd := m.Base.Update(k); handled {
+				return m, cmd
+			}
+		}
+	}
+
 	// The LEGACY modal host owns every key while it is up. Forms open in the
 	// details pane now (see the n/e/s chords), so this path is normally inert — it
 	// is kept for the hosts that still use it, and checks m.form directly rather

@@ -20,6 +20,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,6 +75,10 @@ type Model struct {
 	form     *kit2.Form
 	formMode string
 	formID   string
+	// rpcPromote/rpcDismiss are thunks so a bulk triage is testable without a
+	// plane, and so a partial failure can be reported per-idea.
+	rpcPromote func(ctx context.Context, id string) error
+	rpcDismiss func(ctx context.Context, id string) error
 	// pending is the action the open confirmation dialog will run.
 	pending *kit2.Action
 	bar     *kit2.ActionBar
@@ -97,6 +102,8 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.Base.SetSourceEmpty(srcIdeas, "no ideas awaiting triage — automations whose outputs mode is 'idea' spawn them here")
 	m.Base.SetSourceEmpty(srcRejected, "no dismissed ideas — every dismissal is kept here as durable rejection history")
 	m.bar = kit2.NewActionBar()
+	m.rpcPromote = m.defaultPromote
+	m.rpcDismiss = m.defaultDismiss
 	return m
 }
 
@@ -122,18 +129,30 @@ func (m *Model) Init() tea.Cmd {
 // form or confirmation dialog). The shell consults it before its own routes
 // so a typed character is never stolen ('q' would quit, space would open
 // the tab menu, '/' the palette).
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
+func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil || m.Base.EditingDetail() }
 
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
 // state where Tab belongs to the form (field advance) rather than to the shell's
 // tab ring. See router.go's tab chord.
 // FormOpen reports whether a FORM is open. While one is up, Tab moves through the
 // form's FIELDS rather than the tab ring.
-func (m *Model) FormOpen() bool { return m.form != nil }
+// FORM-TAB: while a form is open Tab moves through its FIELDS, and an inline
+// details-pane editor counts — the earlier rule only yielded to a centred window,
+// which let Tab escape this host.
+func (m *Model) FormOpen() bool { return m.form != nil || m.Base.EditingDetail() }
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
-func (m *Model) ActiveForm() *kit2.Form { return m.form }
+// ActiveForm returns the form the operator is currently editing, whichever host
+// holds it — the legacy modal field or the inline details-pane editor. Tests drive
+// writes through this, so they assert WHAT is being edited rather than WHERE it is
+// drawn: the host is a presentation choice, not part of the contract.
+func (m *Model) ActiveForm() *kit2.Form {
+	if m.form != nil {
+		return m.form
+	}
+	return m.Base.DetailForm()
+}
 
 // DialogOpen reports whether a confirmation dialog is up.
 func (m *Model) DialogOpen() bool { return m.Open != nil }
@@ -442,6 +461,13 @@ func (m *Model) newCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KText, Required: true, Initial: now.Format("2006-01-02"), Validate: validateDate},
 		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: "standard"},
+		// The WINDOW confines fires to a daily interval [start, end). Both empty =
+		// 24/7 (the legacy behaviour); both set = a half-open window, which the
+		// server validates as end > start on the SAME day (wrapping midnight is
+		// out of scope in v1) and, for daily/weekly/monthly, requires start_time
+		// to lie INSIDE it.
+		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Placeholder: "09:00", Validate: validateClock},
+		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Placeholder: "17:00", Validate: validateClock},
 	)
 	m.wireForm(f, formCreate, "")
 	return f
@@ -467,6 +493,8 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KText, Required: true, Initial: s.GetStartDate(), Validate: validateDate},
 		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: s.GetStartTime(), Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: inOptions(s.GetOutputsMode(), []string{"standard", "idea", "none"}, "standard")},
+		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Initial: s.GetWindowStart(), Placeholder: "09:00", Validate: validateClock},
+		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Initial: s.GetWindowEnd(), Placeholder: "17:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	m.wireForm(f, formEdit, w.GetId())
@@ -479,6 +507,12 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 66
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		// One gate for BOTH modes: the window rules are the server's
+		// (internal/workitem/validate.go), and catching them here reports them at
+		// the form rather than coming back as a failed mutation.
+		if err := validateScheduleWindow(v); err != nil {
+			return nil, err
+		}
 		switch mode {
 		case formCreate:
 			projID := ""
@@ -646,12 +680,12 @@ func (m *Model) rpcDelete(ctx context.Context, id string) error {
 	return err
 }
 
-func (m *Model) rpcPromote(ctx context.Context, id string) error {
+func (m *Model) defaultPromote(ctx context.Context, id string) error {
 	_, err := m.cl.WorkItems.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: id}))
 	return err
 }
 
-func (m *Model) rpcDismiss(ctx context.Context, id string) error {
+func (m *Model) defaultDismiss(ctx context.Context, id string) error {
 	_, err := m.cl.WorkItems.DismissIdea(ctx, connect.NewRequest(&apiv1.DismissIdeaRequest{Id: id}))
 	return err
 }
@@ -675,11 +709,17 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 		return m, cmd
 
+	case ideaBulkDoneMsg:
+		return m, m.onIdeaBulkDone(msg)
+
 	case formReadyMsg:
 		if msg.err != nil {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
+		// The forms open IN THE DETAILS PANE, not a modal — the same host the
+		// work-item, worker and Control forms use, so the keys, validation and submit
+		// path cannot diverge between screens.
 		switch msg.mode {
 		case formCreate:
 			if len(msg.projects) == 0 {
@@ -687,21 +727,37 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 				return m, nil
 			}
 			m.projects, m.workflows = msg.projects, msg.workflows
-			m.form = m.newCreateForm()
+			if f := m.newCreateForm(); f != nil {
+				m.Base.BeginDetailEdit(f.Title, f)
+			}
 			m.formMode, m.formID = formCreate, ""
 		case formEdit:
-			if m.form = m.newEditForm(msg.item); m.form == nil {
+			f := m.newEditForm(msg.item)
+			if f == nil {
 				m.notice = "this item is not recurring — there is no recurrence to edit"
 				return m, nil
 			}
+			m.Base.BeginDetailEdit(f.Title, f)
 			m.formMode, m.formID = formEdit, msg.item.GetId()
 		}
 		m.notice = ""
 		return m, nil
 
 	case tea.KeyMsg:
-		// The open form owns every key while it is up (esc closes it; enter
-		// on the last field submits through the form's own validation).
+		// The INLINE details-pane editor owns every key while it is up — it is the
+		// focused surface, so this comes FIRST.
+		//
+		// It has to: handleKey answers 'e' (edit), 'n' (new) and 'p'/'x'
+		// (promote/dismiss), so with a form open in the pane a plain letter fired a
+		// CHORD instead of being typed. That is why typing "Nightly triage sweep"
+		// into the title lost every 'e' — each one re-prepared the edit form and
+		// discarded the text so far.
+		if m.Base.EditingDetail() {
+			if handled, cmd := m.Base.Update(msg); handled {
+				return m, cmd
+			}
+		}
+		// The legacy MODAL host (kept for any screen still using it).
 		if m.form != nil {
 			if msg.String() == "esc" {
 				m.form = nil
@@ -741,6 +797,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case "e":
 		if src == srcSchedules {
 			return m.prepEdit(), true
+		}
+	case "A":
+		// BULK triage on the Idea Cloud: 'A' accepts every listed idea, 'R'
+		// rejects them all. Triage is the reason the cloud exists, and a run that
+		// spawned eight ideas should not ask for eight keystrokes.
+		if src == srcIdeas {
+			return m.acceptAllIdeas(), true
+		}
+	case "R":
+		if src == srcIdeas {
+			return m.rejectAllIdeas(), true
 		}
 	case "p", "x":
 		if a, ok := m.actionByKey(msg.String()); ok {
@@ -800,12 +867,140 @@ func (m *Model) HintLine() string {
 	case srcSchedules:
 		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · enter: detail (run history) · f: more pages")
 	case srcIdeas:
-		return theme.HintText.Render("p: promote (→ work item) · x: dismiss (confirm) · ←/→: pane · enter: detail · r: refresh")
+		return theme.HintText.Render("p: promote (→ work item) " + theme.DetailKey.Render("·") + " x: dismiss (confirm) " + theme.DetailKey.Render("·") +
+			" A: accept ALL " + theme.DetailKey.Render("·") + " R: reject ALL (confirm) " + theme.DetailKey.Render("·") + " ←/→: pane · enter: detail · r: refresh")
 	case srcRejected:
 		return theme.HintText.Render("rejected history — the automation dedupe gate reads it before re-spawning · enter: detail")
 	default:
 		return theme.HintText.Render("enter: detail focus · ←/→: pane · f: more pages · r: refresh")
 	}
+}
+
+// --- bulk idea triage -------------------------------------------------------
+//
+// Triage is the reason the Idea Cloud exists: an automation proposes, a human
+// decides. One at a time is the wrong grain for that — a run that spawns eight
+// ideas asks for eight keystrokes and eight confirmations.
+//
+// So the decision applies to the SAME set the list is showing. It is the scope the
+// operator can SEE, which is the only scope they can reason about.
+
+// acceptAllIdeas promotes every idea currently listed.
+func (m *Model) acceptAllIdeas() tea.Cmd {
+	items := m.visibleItems(srcIdeas)
+	if len(items) == 0 {
+		return m.refuseAutomation("no ideas awaiting triage")
+	}
+	return m.bulkIdeaDecision(items, true)
+}
+
+// rejectAllIdeas dismisses every idea currently listed. Confirmed, because a
+// dismissal is durable rejection history — the dedupe gate will not re-propose
+// them — so it is not the kind of thing to do by accident.
+func (m *Model) rejectAllIdeas() tea.Cmd {
+	items := m.visibleItems(srcIdeas)
+	if len(items) == 0 {
+		return m.refuseAutomation("no ideas awaiting triage")
+	}
+	d := kit2.Confirm("Reject all ideas",
+		fmt.Sprintf("Reject %d idea(s)?\n\nEach is kept as REJECTED history and the "+
+			"automation's dedupe gate will not propose them again.", len(items)),
+		"reject all")
+	d.Danger = true
+	m.Open = d
+	m.OnDialog = func(choice string) tea.Cmd {
+		m.OnDialog = nil
+		if choice == "" {
+			m.notice = "cancelled"
+			return nil
+		}
+		return m.bulkIdeaDecision(items, false)
+	}
+	return nil
+}
+
+// bulkIdeaDecision runs accept-or-reject over a set, ONE mutation per idea.
+//
+// Not a single batched request: PromoteIdea/DismissIdea are per-item RPCs, and a
+// batch that reports only overall success would hide a partial failure — which is
+// exactly the case that matters here, since the operator has to know WHICH ideas
+// are still awaiting a decision.
+func (m *Model) bulkIdeaDecision(items []screenkit.Item, accept bool) tea.Cmd {
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	// Optimistic: the rows leave the list now, and a failure reloads the source.
+	for _, id := range ids {
+		m.RemoveRow(srcIdeas, id)
+	}
+	verb := "reject"
+	if accept {
+		verb = "accept"
+	}
+	m.notice = fmt.Sprintf("%s %d idea(s)…", verb, len(ids))
+	promote, dismiss := m.rpcPromote, m.rpcDismiss
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		failed := make([]string, 0)
+		for _, id := range ids {
+			var err error
+			if accept {
+				err = promote(ctx, id)
+			} else {
+				err = dismiss(ctx, id)
+			}
+			if err != nil {
+				failed = append(failed, id)
+			}
+		}
+		return ideaBulkDoneMsg{accept: accept, total: len(ids), failed: failed}
+	}
+}
+
+// ideaBulkDoneMsg reports a finished bulk triage.
+type ideaBulkDoneMsg struct {
+	accept bool
+	total  int
+	failed []string
+}
+
+// onIdeaBulkDone surfaces the outcome and reloads the sources: the optimistic
+// removal is only safe if a failure puts the rows back, and the durable truth is
+// the server's list.
+func (m *Model) onIdeaBulkDone(msg ideaBulkDoneMsg) tea.Cmd {
+	verb := "rejected"
+	if msg.accept {
+		verb = "accepted"
+	}
+	switch len(msg.failed) {
+	case 0:
+		m.notice = fmt.Sprintf("%s %d idea(s)", verb, msg.total)
+		// Accepting CREATES work items, so the rejection history and every
+		// work-item view can change too.
+		return tea.Batch(m.Refresh(srcIdeas), m.Refresh(srcRejected), m.Refresh(srcSchedules))
+	case msg.total:
+		m.notice = fmt.Sprintf("%s failed — nothing changed", verb)
+	default:
+		m.notice = fmt.Sprintf("%s %d of %d — %d failed (still listed)",
+			verb, msg.total-len(msg.failed), msg.total, len(msg.failed))
+	}
+	return tea.Batch(m.Refresh(srcIdeas), m.Refresh(srcRejected))
+}
+
+// refuseAutomation records a local refusal in the status line.
+func (m *Model) refuseAutomation(why string) tea.Cmd {
+	m.notice = why
+	return nil
+}
+
+// visibleItems returns a source's currently loaded rows.
+func (m *Model) visibleItems(src string) []screenkit.Item {
+	rows := m.Base.SourceItems(src)
+	out := make([]screenkit.Item, 0, len(rows))
+	out = append(out, rows...)
+	return out
 }
 
 // ---------------- helpers ----------------
@@ -822,6 +1017,8 @@ func scheduleFromValues(v map[string]string) *apiv1.RecurringSchedule {
 		StartDate:   strings.TrimSpace(v["start_date"]),
 		StartTime:   strings.TrimSpace(v["start_time"]),
 		OutputsMode: strings.TrimSpace(v["outputs"]),
+		WindowStart: strings.TrimSpace(v["window_start"]),
+		WindowEnd:   strings.TrimSpace(v["window_end"]),
 	}
 }
 
@@ -884,6 +1081,46 @@ func validateClock(v string) error {
 	return nil
 }
 
+// validateScheduleWindow mirrors the SERVER's rules (internal/workitem/validate.go:
+// 555-587) so a window the plane would reject is caught at the field instead of
+// coming back as a failed mutation. The rules are: both-or-neither, both HH:MM, end
+// strictly after start on the SAME day (wrapping midnight is out of scope in v1),
+// and for daily/weekly/monthly the anchor time must lie INSIDE the window.
+func validateScheduleWindow(v map[string]string) error {
+	ws := strings.TrimSpace(v["window_start"])
+	we := strings.TrimSpace(v["window_end"])
+	if (ws == "") != (we == "") {
+		return errors.New("window start and end must be set together (leave BOTH empty for 24/7)")
+	}
+	if ws == "" {
+		return nil
+	}
+	s, err := time.Parse("15:04", ws)
+	if err != nil {
+		return errors.New("window start must be HH:MM")
+	}
+	e, err := time.Parse("15:04", we)
+	if err != nil {
+		return errors.New("window end must be HH:MM")
+	}
+	sm := s.Hour()*60 + s.Minute()
+	em := e.Hour()*60 + e.Minute()
+	if em <= sm {
+		return errors.New("window end must be after window start (wrapping midnight is not supported)")
+	}
+	switch strings.ToLower(strings.TrimSpace(v["frequency"])) {
+	case "daily", "weekly", "monthly":
+		st, err := time.Parse("15:04", strings.TrimSpace(v["start_time"]))
+		if err != nil {
+			return nil // start_time has its own validator
+		}
+		m := st.Hour()*60 + st.Minute()
+		if m < sm || m >= em {
+			return errors.New("start time must lie INSIDE the window for a daily/weekly/monthly schedule")
+		}
+	}
+	return nil
+}
 func validateDays(v string) error {
 	for _, d := range splitDays(v) {
 		if !weekdays[d] {
