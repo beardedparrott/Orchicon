@@ -24,6 +24,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -1412,6 +1413,14 @@ func (m *Model) settingsForm() *kit2.Form {
 		}
 		return strconv.Itoa(int(v))
 	}
+	// The budget fields are seeded from the transport blob (it is the API's only
+	// representation of them).
+	bi := func(key, fallback string) string {
+		if v := budgetInitials(s.GetDefaultBudgetOverrides())[key]; v != "" {
+			return v
+		}
+		return fallback
+	}
 	f := kit2.NewForm("Edit tenant settings",
 		// Model refs are CHOSEN, not typed: a kit2.KModel field opens the
 		// three-tier ModelPicker (adapter → provider → model) and then DISPLAYS
@@ -1429,7 +1438,40 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallToolHangSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
-		kit2.FieldSpec{Name: "default_budget_overrides", Label: "Default budget overrides (JSON)", Kind: kit2.KJSON, Initial: s.GetDefaultBudgetOverrides()},
+		// --- Execution budget gates ---
+		//
+		// These used to be ONE json blob. The operator: "Currently default budget
+		// overrides is one big JSON blob. This should be expanded out into
+		// individual fields with short details on what each field is similar to
+		// the stall settings."
+		//
+		// The blob is a TRANSPORT shape over typed columns (db.BudgetLadder is the
+		// source of truth), so each field here is one key of it. An EMPTY gate
+		// means "built-in default" and an explicit 0 DISABLES it — which is why
+		// they are left blank rather than zero-filled: blank and 0 mean different
+		// things, and every placeholder says which is which.
+		kit2.FieldSpec{Name: "budget_tokens", Label: "Budget - tokens (0 = off, blank = built-in)", Kind: kit2.KNumber, Initial: bi("budget_tokens", ""), Placeholder: "all tokens at full weight, cache included"},
+		kit2.FieldSpec{Name: "budget_cost_usd", Label: "Budget - cost USD", Kind: kit2.KNumber, Initial: bi("budget_cost_usd", ""), Placeholder: "priced cost, a separate gate from tokens"},
+		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
+		kit2.FieldSpec{Name: "budget_tool_call_count", Label: "Budget - tool calls", Kind: kit2.KNumber, Initial: bi("budget_tool_call_count", ""), Placeholder: "how many tool calls before abort"},
+		kit2.FieldSpec{Name: "budget_compact_max_turns", Label: "Budget - compact at turns", Kind: kit2.KNumber, Initial: bi("budget_compact_max_turns", ""), Placeholder: "turns before a context compaction is forced"},
+		// The LADDER: each dimension goes warn, escalate, final and then ABORTS.
+		// A fraction is OF THE GATE ABOVE (0.5 = half of it).
+		kit2.FieldSpec{Name: "warn_frac_tokens", Label: "Ladder - tokens: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tokens", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
+		kit2.FieldSpec{Name: "warn_frac_cost", Label: "Ladder - cost: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_cost", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
+		kit2.FieldSpec{Name: "warn_frac_tools", Label: "Ladder - tool calls: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tools", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
+		kit2.FieldSpec{Name: "warn_frac_time", Label: "Ladder - wall clock: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_time", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
+		// Which ladder tiers ALSO compact. The warn tier defaults to OFF: a lossy
+		// collapse at the first warning interrupts the worker mid-flight.
+		kit2.FieldSpec{Name: "compact_tier_warn", Label: "Compact at WARN tier", Kind: kit2.KCheckbox, Initial: bi("compact_tier_warn", "")},
+		kit2.FieldSpec{Name: "compact_tier_escalate", Label: "Compact at ESCALATE tier", Kind: kit2.KCheckbox, Initial: bi("compact_tier_escalate", "")},
+		kit2.FieldSpec{Name: "compact_tier_final", Label: "Compact at FINAL tier", Kind: kit2.KCheckbox, Initial: bi("compact_tier_final", "")},
+		// Context compaction + memory.
+		kit2.FieldSpec{Name: "compact_enabled", Label: "Context compaction enabled", Kind: kit2.KCheckbox, Initial: bi("compact_enabled", "")},
+		kit2.FieldSpec{Name: "compact_pressure_frac", Label: "Compaction pressure fraction", Kind: kit2.KNumber, Initial: bi("compact_pressure_frac", ""), Placeholder: "0.9 = compact at 90% of the window"},
+		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
+		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
+		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		kit2.FieldSpec{Name: "backup_schedule", Label: "Backup schedule (cron)", Kind: kit2.KText, Initial: s.GetBackupSchedule()},
 		kit2.FieldSpec{Name: "backup_retention_days", Label: "Backup retention (days)", Kind: kit2.KNumber, Initial: i32(s.GetBackupRetentionDays())},
 		kit2.FieldSpec{Name: "backup_directory", Label: "Backup directory", Kind: kit2.KText, Initial: s.GetBackupDirectory()},
@@ -1461,7 +1503,12 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallToolHangSeconds = i64Of0(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
-		out.DefaultBudgetOverrides = strings.TrimSpace(v["default_budget_overrides"])
+		// The individual fields are composed back into the transport JSON the server
+		// merges into its typed columns. Absent keys are OMITTED rather than sent
+		// as zero: the server treats an absent gate as "keep the current value" and
+		// an explicit 0 as "disable it", so a blank field must not silently turn a
+		// gate off.
+		out.DefaultBudgetOverrides = buildBudgetJSON(v)
 		out.BackupSchedule = v["backup_schedule"]
 		out.BackupRetentionDays = int32(i64Of0(v["backup_retention_days"]))
 		out.BackupDirectory = v["backup_directory"]
@@ -1976,6 +2023,226 @@ func mcpTransport(v string) apiv1.MCPServerTransport {
 	return apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO
 }
 
+// buildBudgetJSON composes the individual budget fields back into the transport
+// JSON the Settings API expects.
+//
+// An EMPTY field is OMITTED, never sent as zero: the server stores an absent gate
+// as NULL ("built-in default") and an explicit 0 as a real value that DISABLES the
+// gate, so writing 0 for a blank field would turn gates off whenever the operator
+// saved the form without touching them.
+// budgetInitials reads the transport blob into the individual field values the
+// form edits.
+//
+// The blob is the API's ONLY representation of the budget (the typed columns are
+// the DB's source of truth, but TenantSettings exposes just the JSON), so the form
+// has to read it — and write it back through buildBudgetJSON. The two functions
+// are exact inverses for the keys the form covers.
+func budgetInitials(blob string) map[string]string {
+	out := map[string]string{}
+	var raw struct {
+		Tokens            *float64 `json:"tokens"`
+		CostUSD           *float64 `json:"cost_usd"`
+		WallClockSecs     *float64 `json:"wall_clock_seconds"`
+		ToolCallCount     *float64 `json:"tool_call_count"`
+		CompactMaxTurns   *float64 `json:"compact_max_turns"`
+		CompactTiers      []bool   `json:"compact_tiers"`
+		ContextCompaction *struct {
+			Enabled      *bool    `json:"enabled"`
+			PressureFrac *float64 `json:"pressure_frac"`
+			RecentTurns  *int     `json:"recent_turns"`
+		} `json:"context_compaction"`
+		Memory *struct {
+			Enabled       *bool `json:"enabled"`
+			DigestEntries *int  `json:"digest_entries"`
+		} `json:"memory"`
+		Warnings struct {
+			Fractions map[string][3]float64 `json:"fractions"`
+		} `json:"warnings"`
+	}
+	if strings.TrimSpace(blob) != "" {
+		_ = json.Unmarshal([]byte(blob), &raw)
+	}
+	f := func(v *float64) string {
+		if v == nil {
+			return ""
+		}
+		return trimZero(*v)
+	}
+	out["budget_tokens"] = f(raw.Tokens)
+	out["budget_cost_usd"] = f(raw.CostUSD)
+	out["budget_wall_clock_seconds"] = f(raw.WallClockSecs)
+	out["budget_tool_call_count"] = f(raw.ToolCallCount)
+	out["budget_compact_max_turns"] = f(raw.CompactMaxTurns)
+
+	fracFor := func(key string) string {
+		t, ok := raw.Warnings.Fractions[key]
+		if !ok {
+			return ""
+		}
+		return fracTriple(t[0], t[1], t[2])
+	}
+	out["warn_frac_tokens"] = fracFor("tokens")
+	out["warn_frac_cost"] = fracFor("cost_usd")
+	out["warn_frac_tools"] = fracFor("tool_call_count")
+	out["warn_frac_time"] = fracFor("wall_clock_seconds")
+
+	// The tier toggles default OFF/ON/ON when absent — the built-in policy, whose
+	// WARN tier is off because a lossy collapse at the first warning interrupts the
+	// worker mid-flight.
+	warn, escal, final := false, true, true
+	if len(raw.CompactTiers) == 3 {
+		warn, escal, final = raw.CompactTiers[0], raw.CompactTiers[1], raw.CompactTiers[2]
+	}
+	out["compact_tier_warn"] = boolStr(warn)
+	out["compact_tier_escalate"] = boolStr(escal)
+	out["compact_tier_final"] = boolStr(final)
+
+	if cc := raw.ContextCompaction; cc != nil {
+		if cc.Enabled != nil {
+			out["compact_enabled"] = boolStr(*cc.Enabled)
+		}
+		if cc.PressureFrac != nil {
+			out["compact_pressure_frac"] = fmtFrac(*cc.PressureFrac)
+		}
+		if cc.RecentTurns != nil {
+			out["compact_recent_turns"] = strconv.Itoa(*cc.RecentTurns)
+		}
+	}
+	if mem := raw.Memory; mem != nil {
+		if mem.Enabled != nil {
+			out["memory_enabled"] = boolStr(*mem.Enabled)
+		}
+		if mem.DigestEntries != nil {
+			out["memory_digest_entries"] = strconv.Itoa(*mem.DigestEntries)
+		}
+	}
+	return out
+}
+func buildBudgetJSON(v map[string]string) string {
+	out := map[string]any{}
+	gate := func(key, field string) {
+		raw := strings.TrimSpace(v[field])
+		if raw == "" {
+			return
+		}
+		n, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return
+		}
+		out[key] = n
+	}
+	gate("tokens", "budget_tokens")
+	gate("cost_usd", "budget_cost_usd")
+	gate("wall_clock_seconds", "budget_wall_clock_seconds")
+	gate("tool_call_count", "budget_tool_call_count")
+	gate("compact_max_turns", "budget_compact_max_turns")
+
+	fractions := map[string]any{}
+	for key, field := range map[string]string{
+		"tokens": "warn_frac_tokens", "cost_usd": "warn_frac_cost",
+		"tool_call_count": "warn_frac_tools", "wall_clock_seconds": "warn_frac_time",
+	} {
+		if tri, ok := parseFractionTriple(v[field]); ok {
+			fractions[key] = tri
+		}
+	}
+	if len(fractions) > 0 {
+		out["warnings"] = map[string]any{"fractions": fractions}
+	}
+
+	// The tier toggles are always meaningful (their columns are NOT NULL DEFAULT),
+	// so they are always written.
+	out["compact_tiers"] = []bool{
+		v["compact_tier_warn"] == "true",
+		v["compact_tier_escalate"] == "true",
+		v["compact_tier_final"] == "true",
+	}
+
+	cc := map[string]any{"enabled": v["compact_enabled"] == "true"}
+	if raw := strings.TrimSpace(v["compact_pressure_frac"]); raw != "" {
+		if f, err := strconv.ParseFloat(raw, 64); err == nil {
+			cc["pressure_frac"] = f
+		}
+	}
+	if raw := strings.TrimSpace(v["compact_recent_turns"]); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			cc["recent_turns"] = n
+		}
+	}
+	out["context_compaction"] = cc
+
+	mem := map[string]any{"enabled": v["memory_enabled"] == "true"}
+	if raw := strings.TrimSpace(v["memory_digest_entries"]); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			mem["digest_entries"] = n
+		}
+	}
+	out["memory"] = mem
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an
+// adapter expects. An unparseable or short triple yields ok=false, so the key is
+// omitted rather than half-written.
+func parseFractionTriple(raw string) ([3]float64, bool) {
+	var out [3]float64
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return out, false
+		}
+		out[i] = f
+	}
+	return out, true
+}
+
+// validFractionTriple is the field validator for the ladder rows.
+func validFractionTriple(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if _, ok := parseFractionTriple(raw); !ok {
+		return errors.New("want three comma-separated fractions, e.g. 0.25,0.5,0.75")
+	}
+	return nil
+}
+
+// fracTriple renders three fractions as the editable "a,b,c" form, blanking the
+// row when every value is zero (an unset ladder row reads as empty).
+func fracTriple(a, b, c float64) string {
+	if a == 0 && b == 0 && c == 0 {
+		return ""
+	}
+	return trimZero(a) + "," + trimZero(b) + "," + trimZero(c)
+}
+
+func trimZero(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// fmtFrac renders a single fraction, blank when unset.
+func fmtFrac(f float64) string {
+	if f == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// boolStr renders a bool for a KCheckbox field.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
 func int32Of(s string, def int32) int32 {
 	if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 32); err == nil {
 		return int32(n)
