@@ -108,6 +108,10 @@ type Model struct {
 	// name instead of typing an id, the way work items do. Loaded when the flow view
 	// opens, because a picker with no options is worse than a text box.
 	flowWorkers []kit2.Option
+	// runNames resolves the ids a workflow run carries (workflow_id / work_item_id) into the
+	// names an operator reads — the proto has no name fields, so the client resolves them.
+	// Shared by the runs LIST and the run DETAIL (names.go).
+	runNames runNames
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -285,11 +289,16 @@ func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.It
 	if err != nil {
 		return nil, "", err
 	}
+	// Resolve ids to names BEFORE rendering the rows, so the pane never flashes bare ids on
+	// a page it could have labelled. Best effort: an unresolvable name falls back to the id.
+	if m.runNames.stale() {
+		m.loadRunNames(ctx)
+	}
 	items := make([]screenkit.Item, 0, len(resp.Msg.Runs))
 	for _, r := range resp.Msg.Runs {
 		items = append(items, screenkit.Item{
 			ID:    r.GetId(),
-			Title: r.GetId(),
+			Title: m.runsTitle(r),
 			Meta:  strings.ToLower(r.GetStatus().String()),
 		})
 	}
@@ -419,13 +428,20 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		r := resp.Msg.GetRun()
+		// The names the list shows must also appear HERE, or opening a row would lose the
+		// context the row gave (the ids alone are what the operator asked to be rid of).
+		if m.runNames.stale() {
+			m.loadRunNames(ctx)
+		}
+		wf := m.runsWorkflowField(r)
+		item := m.runsWorkItemField(r)
 		fields := []screenkit.Field{
 			{Key: "id", Value: r.GetId()},
 			{Key: "status", Value: strings.ToLower(r.GetStatus().String())},
-			{Key: "workflow", Value: r.GetWorkflowId()},
+			{Key: "workflow", Value: wf},
 			{Key: "version", Value: screenkit.FmtInt(int(r.GetWorkflowVersion()))},
 			{Key: "current step", Value: r.GetCurrentStep()},
-			{Key: "work item", Value: r.GetWorkItemId()},
+			{Key: "work item", Value: item},
 			{Key: "branch", Value: r.GetWorktreeBranch()},
 			{Key: "pr", Value: r.GetPrUrl()},
 			{Key: "started", Value: screenkit.FmtTime(r.GetStartedAt())},

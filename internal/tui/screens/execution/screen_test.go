@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -21,12 +22,67 @@ import (
 type fakePlane struct {
 	apiv1connect.UnimplementedExecutionServiceHandler
 	apiv1connect.UnimplementedWorkflowServiceHandler
+	apiv1connect.UnimplementedWorkItemServiceHandler
 
 	mu       sync.Mutex
 	cancel   []*apiv1.CancelExecutionRequest
 	messages []*apiv1.SendExecutionMessageRequest
 	retries  []string
 	forced   []string
+
+	// --- name resolution (names.go) ---
+	//
+	// A WorkflowRun carries ids and no names, so the runs views resolve them from these two
+	// lists. They are fake state rather than real fixtures because the point is the RESOLUTION,
+	// not the data.
+	workflows         []*apiv1.Workflow
+	runs              []*apiv1.WorkflowRun
+	run               *apiv1.WorkflowRun
+	items             []*apiv1.WorkItem
+	failWorkItemList  error
+	workflowListCalls int
+	itemListCalls     int
+}
+
+func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.workflowListCalls++
+	return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: p.workflows}), nil
+}
+
+func (p *fakePlane) ListWorkflowRuns(_ context.Context, req *connect.Request[apiv1.ListWorkflowRunsRequest]) (*connect.Response[apiv1.ListWorkflowRunsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return connect.NewResponse(&apiv1.ListWorkflowRunsResponse{Runs: p.runs}), nil
+}
+
+func (p *fakePlane) GetWorkflowRun(_ context.Context, req *connect.Request[apiv1.GetWorkflowRunRequest]) (*connect.Response[apiv1.GetWorkflowRunResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r := p.run
+	if r == nil {
+		for _, cand := range p.runs {
+			if cand.GetId() == req.Msg.GetId() {
+				r = cand
+				break
+			}
+		}
+	}
+	if r == nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: r}), nil
+}
+
+func (p *fakePlane) ListWorkItems(context.Context, *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.itemListCalls++
+	if p.failWorkItemList != nil {
+		return nil, p.failWorkItemList
+	}
+	return connect.NewResponse(&apiv1.ListWorkItemsResponse{WorkItems: p.items}), nil
 }
 
 func (p *fakePlane) CancelExecution(_ context.Context, req *connect.Request[apiv1.CancelExecutionRequest]) (*connect.Response[apiv1.CancelExecutionResponse], error) {
@@ -62,6 +118,9 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(p))
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(p))
+	// The runs views resolve workflow/work-item NAMES from these two lists (names.go), so the
+	// fixture has to serve them.
+	mux.Handle(apiv1connect.NewWorkItemServiceHandler(p))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	m := New(client.New(client.Options{BaseURL: srv.URL}), subs.NewRegistry(), "")
