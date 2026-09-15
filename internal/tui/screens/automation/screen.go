@@ -75,6 +75,10 @@ type Model struct {
 	form     *kit2.Form
 	formMode string
 	formID   string
+	// datePicker is the open calendar modal (a KDate field activated), layered
+	// above the form that opened it. dateField is the field it writes back into.
+	datePicker *kit2.DatePicker
+	dateField  string
 	// rpcPromote/rpcDismiss are thunks so a bulk triage is testable without a
 	// plane, and so a partial failure can be reported per-idea.
 	rpcPromote func(ctx context.Context, id string) error
@@ -119,6 +123,11 @@ func (m *Model) Close() { m.reg.CloseAll() }
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h
 	m.Base.SetSize(w, h)
+	// A modal must follow a resize while it is up, or it stays sized for the old
+	// viewport and the centring lands it off-screen.
+	if m.datePicker != nil {
+		m.datePicker.SetScreen(w, h)
+	}
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -129,7 +138,9 @@ func (m *Model) Init() tea.Cmd {
 // form or confirmation dialog). The shell consults it before its own routes
 // so a typed character is never stolen ('q' would quit, space would open
 // the tab menu, '/' the palette).
-func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil || m.Base.EditingDetail() }
+func (m *Model) ClaimsKeys() bool {
+	return m.form != nil || m.Open != nil || m.datePicker != nil || m.Base.EditingDetail()
+}
 
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
 // state where Tab belongs to the form (field advance) rather than to the shell's
@@ -139,7 +150,9 @@ func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil || m.B
 // FORM-TAB: while a form is open Tab moves through its FIELDS, and an inline
 // details-pane editor counts — the earlier rule only yielded to a centred window,
 // which let Tab escape this host.
-func (m *Model) FormOpen() bool { return m.form != nil || m.Base.EditingDetail() }
+func (m *Model) FormOpen() bool {
+	return m.form != nil || m.datePicker != nil || m.Base.EditingDetail()
+}
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
@@ -457,8 +470,12 @@ func (m *Model) newCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KSelect, Options: wfOpts, Initial: "none"},
 		kit2.FieldSpec{Name: "frequency", Label: "Frequency", Kind: kit2.KSelect, Options: selOptions("daily", "hourly", "weekly", "monthly", "minute"), Initial: "daily"},
 		kit2.FieldSpec{Name: "interval", Label: "Interval", Kind: kit2.KNumber, Required: true, Initial: "1", Validate: validateInterval},
-		kit2.FieldSpec{Name: "days", Label: "Days", Kind: kit2.KText, Placeholder: "Mon,Wed,Fri (empty = every day)", Validate: validateDays},
-		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KText, Required: true, Initial: now.Format("2006-01-02"), Validate: validateDate},
+		// Weekdays are TOGGLED, not typed: "Mon,Wed,Fri" is a spelling test, and the
+		// multi-select shows the whole week with the chosen days marked.
+		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions()},
+		// A DATE is chosen from the calendar, not typed: "YYYY-MM-DD" is a format to
+		// remember and a text box cannot show that the 14th is a Saturday.
+		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: now.Format("2006-01-02")},
 		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: "standard"},
 		// The WINDOW confines fires to a daily interval [start, end). Both empty =
@@ -489,8 +506,8 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Initial: w.GetTitle()},
 		kit2.FieldSpec{Name: "frequency", Label: "Frequency", Kind: kit2.KSelect, Options: freqs, Initial: inOptions(s.GetFrequency(), []string{"daily", "hourly", "weekly", "monthly", "minute"}, "daily")},
 		kit2.FieldSpec{Name: "interval", Label: "Interval", Kind: kit2.KNumber, Required: true, Initial: strconv.Itoa(int(maxInt32(s.GetInterval(), 1))), Validate: validateInterval},
-		kit2.FieldSpec{Name: "days", Label: "Days", Kind: kit2.KText, Initial: strings.Join(s.GetDays(), ","), Validate: validateDays},
-		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KText, Required: true, Initial: s.GetStartDate(), Validate: validateDate},
+		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions(), Initial: strings.Join(s.GetDays(), ",")},
+		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: s.GetStartDate()},
 		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: s.GetStartTime(), Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: inOptions(s.GetOutputsMode(), []string{"standard", "idea", "none"}, "standard")},
 		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Initial: s.GetWindowStart(), Placeholder: "09:00", Validate: validateClock},
@@ -506,7 +523,9 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 66
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+	// A KDate field opens the host's calendar instead of accepting text.
+	f.OnOpenDatePicker = m.openDatePicker
+	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
 		// One gate for BOTH modes: the window rules are the server's
 		// (internal/workitem/validate.go), and catching them here reports them at
 		// the form rather than coming back as a failed mutation.
@@ -537,7 +556,7 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 				Kind:              kindFromForm(v["kind"]),
 				Title:             strings.TrimSpace(v["title"]),
 				WorkflowId:        wfID,
-				RecurringSchedule: scheduleFromValues(v),
+				RecurringSchedule: scheduleFromValues(v, multi),
 			}
 			name := "create recurring item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
@@ -548,7 +567,7 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 				},
 			}), nil
 		case formEdit:
-			sched := scheduleFromValues(v)
+			sched := scheduleFromValues(v, multi)
 			enabled := v["enabled"] == "true"
 			req := &apiv1.UpdateWorkItemRequest{
 				Id:                id,
@@ -744,6 +763,12 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// The CALENDAR is the topmost modal: it owns every key while it is up, so a
+		// keystroke aimed at it can never act on the form underneath.
+		if m.datePicker != nil {
+			_, cmd := m.datePicker.HandleKey(msg)
+			return m, tea.Batch(cmd, m.finishDatePicker())
+		}
 		// The INLINE details-pane editor owns every key while it is up — it is the
 		// focused surface, so this comes FIRST.
 		//
@@ -828,7 +853,11 @@ func (m *Model) View() string {
 	}
 	if m.w > 0 && m.h > 0 {
 		body = kit2.FitLines(body, m.w, m.h)
-		if m.form != nil {
+		// The CALENDAR is the topmost modal — it is layered above the form it was
+		// opened from, so it is checked first.
+		if m.datePicker != nil {
+			body = kit2.Center(body, m.datePicker.View(), m.w, m.h)
+		} else if m.form != nil {
 			body = kit2.Center(body, formBox(m.form, m.w), m.w, m.h)
 		} else if m.Open != nil {
 			box := m.Open.Box(minInt(64, m.w-4), minInt(12, m.h-2))
@@ -1005,21 +1034,40 @@ func (m *Model) visibleItems(src string) []screenkit.Item {
 
 // ---------------- helpers ----------------
 
-func scheduleFromValues(v map[string]string) *apiv1.RecurringSchedule {
+func scheduleFromValues(v map[string]string, multi map[string][]string) *apiv1.RecurringSchedule {
 	interval, _ := strconv.Atoi(strings.TrimSpace(v["interval"]))
 	if interval < 1 {
 		interval = 1
 	}
+	// Days come from the MULTI-SELECT, in the field's option order (Mon..Sun) —
+	// deterministic, unlike the map iteration it replaced. The legacy typed form is
+	// still parsed so a value already stored that way keeps working.
+	days := multi["days"]
+	if len(days) == 0 {
+		days = splitDays(v["days"])
+	}
 	return &apiv1.RecurringSchedule{
 		Frequency:   strings.TrimSpace(v["frequency"]),
 		Interval:    int32(interval),
-		Days:        splitDays(v["days"]),
+		Days:        days,
 		StartDate:   strings.TrimSpace(v["start_date"]),
 		StartTime:   strings.TrimSpace(v["start_time"]),
 		OutputsMode: strings.TrimSpace(v["outputs"]),
 		WindowStart: strings.TrimSpace(v["window_start"]),
 		WindowEnd:   strings.TrimSpace(v["window_end"]),
 	}
+}
+
+// weekdayOptions is the Mon..Sun option set, in calendar order. The VALUES are the
+// wire spelling the schedule stores (and the server validates), so they are also
+// what the toggle writes — no translation layer to drift.
+func weekdayOptions() []kit2.Option {
+	names := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+	out := make([]kit2.Option, 0, len(names))
+	for _, n := range names {
+		out = append(out, kit2.Option{Value: n, Label: n})
+	}
+	return out
 }
 
 func kindFromForm(v string) apiv1.WorkItemKind {
@@ -1227,3 +1275,37 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 // context engine.
 func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
 func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+
+// --- the calendar modal ---------------------------------------------------------
+
+// openDatePicker opens the host's calendar for a KDate field, seeded from the
+// field's current value so editing a date starts where the operator left it.
+func (m *Model) openDatePicker(field, current string) tea.Cmd {
+	var initial time.Time
+	if t, err := time.Parse("2006-01-02", strings.TrimSpace(current)); err == nil {
+		initial = t
+	}
+	m.dateField = field
+	dp := kit2.NewDatePicker("Select date", initial)
+	dp.SetScreen(m.w, m.h)
+	m.datePicker = dp
+	return nil
+}
+
+// finishDatePicker closes the calendar when it reports Done and writes the chosen
+// date into the field that opened it. The SCREEN owns the close (see
+// kit2.ModelPicker.Done for why a host callback cannot).
+func (m *Model) finishDatePicker() tea.Cmd {
+	if m.datePicker == nil || !m.datePicker.Done() {
+		return nil
+	}
+	value, committed, field := m.datePicker.Value(), m.datePicker.Committed(), m.dateField
+	m.datePicker, m.dateField = nil, ""
+	if !committed {
+		return nil
+	}
+	if f := m.ActiveForm(); f != nil && field != "" {
+		f.Set(field, value)
+	}
+	return nil
+}

@@ -867,3 +867,156 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 		t.Fatal("esc must cancel the form with no side effects")
 	}
 }
+
+// ---------- the calendar modal (KDate) ----------
+
+// A date field opens the CALENDAR, and the chosen date is written back into the
+// field. Typing "YYYY-MM-DD" was the old gesture; the GUI has a date control
+// (`type="date"`) and this is its TUI equivalent.
+func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
+	p := newPlane()
+	m := newModel(t, p)
+	m.SelectSource("schedules")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("n must open the create form")
+	}
+	if !f.FocusName("start_date") {
+		t.Fatal("fixture: no start_date field")
+	}
+	before := f.Values["start_date"]
+
+	// Enter on the field opens the calendar rather than editing text.
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.datePicker == nil {
+		t.Fatal("enter on start_date must open the calendar")
+	}
+	if !m.ClaimsKeys() {
+		t.Fatal("an open calendar must claim the keys")
+	}
+	if !m.FormOpen() {
+		t.Fatal("an open calendar must count as a form being open, so Tab reaches it")
+	}
+
+	// Step a day and choose it: the field takes the date.
+	dp := m.datePicker
+	want := dp.Value()
+	press(t, m, "right")
+	if dp.Value() == want {
+		t.Fatal("right must move the calendar cursor")
+	}
+	chosen := dp.Value()
+	press(t, m, "enter")
+	if m.datePicker != nil {
+		t.Fatal("enter must close the calendar")
+	}
+	if got := m.ActiveForm().Values["start_date"]; got != chosen {
+		t.Fatalf("start_date = %q, want the chosen date %q", got, chosen)
+	}
+	if got := m.ActiveForm().Values["start_date"]; got == before {
+		t.Fatal("the field did not change — the choice was not written back")
+	}
+}
+
+// Esc backs out WITHOUT touching the field.
+func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("schedules")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	f.FocusName("start_date")
+	before := f.Values["start_date"]
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.datePicker == nil {
+		t.Fatal("fixture: the calendar did not open")
+	}
+	press(t, m, "right") // move, then abandon
+	press(t, m, "esc")
+	if m.datePicker != nil {
+		t.Fatal("esc must close the calendar")
+	}
+	if got := m.ActiveForm().Values["start_date"]; got != before {
+		t.Fatalf("start_date = %q, want it untouched (%q)", got, before)
+	}
+}
+
+// The weekday field is a MULTI-SELECT: each day toggles independently, and the
+// chosen set reaches the schedule in calendar order.
+func TestRecurringDaysTogglesIndependently(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("schedules")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if !f.FocusName("days") {
+		t.Fatal("fixture: no days field")
+	}
+
+	// Toggle Mon (the cursor starts there), then walk to Wed and toggle that.
+	press(t, m, "space")
+	f = m.ActiveForm()
+	if got := f.MultiValues("days"); len(got) != 1 || got[0] != "Mon" {
+		t.Fatalf("days after one toggle = %v, want [Mon]", got)
+	}
+	press(t, m, "right") // Mon → Tue
+	press(t, m, "right") // Tue → Wed
+	press(t, m, "space")
+	f = m.ActiveForm()
+	got := f.MultiValues("days")
+	if len(got) != 2 || got[0] != "Mon" || got[1] != "Wed" {
+		t.Fatalf("days = %v, want [Mon Wed] in calendar order — each option must toggle independently", got)
+	}
+	// Toggling Mon off leaves Wed alone.
+	press(t, m, "left")
+	press(t, m, "left")
+	press(t, m, "space")
+	f = m.ActiveForm()
+	if got := f.MultiValues("days"); len(got) != 1 || got[0] != "Wed" {
+		t.Fatalf("days = %v, want [Wed] — toggling one day must not clear another", got)
+	}
+}
+
+// The edit form shows the STORED days as selected. Without seeding, an edit form
+// opened with nothing ticked and saving silently cleared the schedule.
+func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
+	p := newPlane()
+	// The shared fixture seeds a DAILY schedule with NO weekday selection, which is
+	// legitimate (empty days = every day) and therefore proves nothing about
+	// pre-fill. Give this one explicit days so the assertion is about the seeding.
+	w := p.seedRecurring("rec-1", "Nightly sweep", true)
+	w.RecurringSchedule.Days = []string{"Mon", "Wed"}
+	m := newModel(t, p)
+	m.SelectSource("schedules")
+	load(t, m, "schedules")
+	if len(itemsOf(m, "schedules")) == 0 {
+		t.Fatal("fixture: no recurring item listed")
+	}
+	if cmd := press(t, m, "e"); cmd == nil {
+		t.Fatal("e must load the edit form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+	if got := f.MultiValues("days"); len(got) == 0 {
+		t.Fatalf("days = %v, want the stored selection pre-filled — otherwise saving clears it", got)
+	}
+}

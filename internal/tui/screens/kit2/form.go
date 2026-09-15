@@ -3,6 +3,7 @@ package kit2
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,12 @@ const (
 	// (the operator's "the text it displays after the model is selected is the
 	// adapter/provider/model name").
 	KModel Kind = "model"
+	// KDate is a DATE field. Like KModel it is a REFERENCE chosen from a control
+	// rather than typed: the concrete date comes from the host's modal calendar
+	// (kit2.DatePicker), because a terminal text box demanding "YYYY-MM-DD" makes
+	// the format something to remember and hides which weekday a day is. The field
+	// is read-only and DISPLAYS the chosen date.
+	KDate Kind = "date"
 )
 
 // Option is one select choice.
@@ -90,6 +97,10 @@ type Form struct {
 	// anything": no way to correct mid-string and no way to clear a field.
 	pos map[string]int
 
+	// multiCur is the per-option cursor of a multi-select field (which weekday
+	// the operator is on), so space toggles the option they are LOOKING at.
+	multiCur map[string]int
+
 	// The open KPicker list: which field it belongs to, the query the operator
 	// is typing, and the highlighted option.
 	pickerField string
@@ -108,6 +119,11 @@ type Form struct {
 	// SCREEN's, so it can be layered over either a modal form or the inline
 	// detail editor.
 	OnOpenModelPicker func(name, current string) tea.Cmd
+
+	// OnOpenDatePicker is invoked when the operator ACTIVATES a KDate field. The
+	// host opens its calendar seeded with the field's current value and writes the
+	// chosen date back with Set. Same contract as OnOpenModelPicker.
+	OnOpenDatePicker func(name, current string) tea.Cmd
 
 	// expanded is the field currently rendered WIDE, toggled with ctrl+e.
 	//
@@ -141,6 +157,14 @@ func NewForm(title string, specs ...FieldSpec) *Form {
 		}
 		if s.Kind == KMultiSelect {
 			f.Multi[s.Name] = map[string]bool{}
+			// Seed from Initial: a COMMA-SEPARATED list of option values. Without
+			// this an EXISTING selection could never be shown — an edit form would
+			// open with every option unchecked, and saving would silently clear it.
+			for _, v := range strings.Split(s.Initial, ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					f.Multi[s.Name][v] = true
+				}
+			}
 		}
 	}
 	return f
@@ -450,6 +474,16 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	}
+	// A date field is the same shape: enter/space opens the host's calendar.
+	if s != nil && s.Kind == KDate {
+		switch k.String() {
+		case "enter", " ", "space":
+			if f.OnOpenDatePicker != nil {
+				return f.OnOpenDatePicker(s.Name, f.Values[s.Name]), true
+			}
+			return nil, true
+		}
+	}
 	if s != nil && s.Kind == KPicker {
 		if cmd, handled := f.pickerKey(s, k); handled {
 			return cmd, true
@@ -541,7 +575,7 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 				f.cycleSelect(s, 1)
 				return nil, true
 			case KMultiSelect:
-				f.cycleMulti(s)
+				f.toggleMultiAt(s, f.MultiCursor(s))
 				return nil, true
 			}
 		}
@@ -554,6 +588,13 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 			switch s.Kind {
 			case KSelect:
 				f.cycleSelect(s, d)
+				return nil, true
+			case KMultiSelect:
+				// LEFT/RIGHT walk the options INSIDE the field (up/down keep walking
+				// fields, matching KSelect). Without a per-option cursor the only
+				// toggleable option was the first one, so a weekday picker could
+				// select nothing but Monday.
+				f.moveMultiCursor(s, d)
 				return nil, true
 			case KCheckbox:
 				f.Values[s.Name] = toggleBool(f.Values[s.Name])
@@ -597,16 +638,48 @@ func (f *Form) cycleSelect(s *FieldSpec, d int) {
 	f.Values[s.Name] = s.Options[cur].Value
 }
 
-func (f *Form) cycleMulti(s *FieldSpec) {
-	// space/left-right toggles the FIRST option in the absence of a
-	// per-option cursor; real multi-select rows are toggled by SetMulti.
+// MultiCursor is the option index the operator is on inside a multi-select.
+func (f *Form) MultiCursor(s *FieldSpec) int {
+	if len(s.Options) == 0 {
+		return 0
+	}
+	i := f.multiCur[s.Name]
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(s.Options) {
+		i = len(s.Options) - 1
+	}
+	return i
+}
+
+// moveMultiCursor walks the option cursor, wrapping at the ends: a weekday row is
+// a ring the operator cycles, not a list they fall off.
+func (f *Form) moveMultiCursor(s *FieldSpec, d int) {
 	if len(s.Options) == 0 {
 		return
 	}
-	v := s.Options[0].Value
+	if f.multiCur == nil {
+		f.multiCur = map[string]int{}
+	}
+	i := (f.MultiCursor(s) + d + len(s.Options)) % len(s.Options)
+	f.multiCur[s.Name] = i
+}
+
+// toggleMultiAt flips ONE option — the one under the cursor, which is what makes
+// the control usable: toggling a fixed option (the old behaviour) meant only the
+// first could ever be selected.
+func (f *Form) toggleMultiAt(s *FieldSpec, i int) {
+	if len(s.Options) == 0 {
+		return
+	}
+	if i < 0 || i >= len(s.Options) {
+		return
+	}
 	if f.Multi[s.Name] == nil {
 		f.Multi[s.Name] = map[string]bool{}
 	}
+	v := s.Options[i].Value
 	f.Multi[s.Name][v] = !f.Multi[s.Name][v]
 }
 
@@ -664,10 +737,39 @@ func (f *Form) Validate() bool {
 func (f *Form) MultiValues(name string) []string {
 	m := f.Multi[name]
 	out := make([]string, 0, len(m))
-	for k, on := range m {
-		if on {
-			out = append(out, k)
+	// Iterate the SPEC's option order, never the map: a map has no order, so the
+	// returned slice reshuffled on every call. For a weekday multi-select that
+	// means the stored schedule's day list changed between saves for no reason the
+	// operator could see.
+	for _, s := range f.Specs {
+		if s.Name != name {
+			continue
 		}
+		for _, o := range s.Options {
+			if m[o.Value] {
+				out = append(out, o.Value)
+			}
+		}
+		// A value set programmatically for something the options do not enumerate
+		// still counts, ordered so the result stays deterministic.
+		var extras []string
+		for k, on := range m {
+			if !on {
+				continue
+			}
+			known := false
+			for _, o := range s.Options {
+				if o.Value == k {
+					known = true
+					break
+				}
+			}
+			if !known {
+				extras = append(extras, k)
+			}
+		}
+		sortStrings(extras)
+		return append(out, extras...)
 	}
 	return out
 }
@@ -709,6 +811,40 @@ func (f *Form) Submit() (tea.Cmd, error) {
 
 // display renders a field's value for the view. A secret field NEVER
 // returns its raw value — it returns a fixed mask.
+// multiLine renders a focused multi-select as its options, each marked and the
+// cursor highlighted. Two-character option labels keep a seven-day week on one row
+// inside a form line that also carries the field's own label.
+func (f *Form) multiLine(s FieldSpec) string {
+	cur := f.MultiCursor(&s)
+	var b strings.Builder
+	for i, o := range s.Options {
+		lbl := o.Label
+		if lbl == "" {
+			lbl = o.Value
+		}
+		if len(lbl) > 2 {
+			lbl = lbl[:2]
+		}
+		mark := "\u25a2" // ▢
+		if f.Multi[s.Name][o.Value] {
+			mark = "\u25a3" // ▣
+		}
+		cell := mark + lbl
+		switch {
+		case i == cur:
+			b.WriteString(theme.ListItemSelected.Render(cell))
+		case f.Multi[s.Name][o.Value]:
+			b.WriteString(theme.StatusOK.Render(cell))
+		default:
+			b.WriteString(theme.HintText.Render(cell))
+		}
+		if i < len(s.Options)-1 {
+			b.WriteString(" ")
+		}
+	}
+	return b.String()
+}
+
 func (f *Form) display(s FieldSpec) string {
 	v := f.Values[s.Name]
 	switch s.Kind {
@@ -893,6 +1029,10 @@ func (f *Form) View() string {
 			}
 			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+": (expanded — ctrl+e to collapse)", width)) + "\n")
 			continue
+		case focused && s.Kind == KMultiSelect:
+			// While focused the options are SHOWN, each marked selected or not, with the
+			// cursor on one — the operator has to see what they are toggling.
+			line = prefix + f.multiLine(s)
 		case focused && s.Kind == KPicker:
 			// While the list is open the field shows the QUERY being typed;
 			// closed it shows the choice that was made.
@@ -923,6 +1063,14 @@ func (f *Form) View() string {
 				hint := "  enter: choose model"
 				if f.Values[s.Name] != "" {
 					hint = "  enter: change model"
+				}
+				line += theme.HintText.Render(hint)
+			}
+			if s.Kind == KDate && focused {
+				// Same affordance as KModel: the field names the control that sets it.
+				hint := "  enter: pick a date"
+				if f.Values[s.Name] != "" {
+					hint = "  enter: change date"
 				}
 				line += theme.HintText.Render(hint)
 			}
@@ -1093,3 +1241,6 @@ func wrapFormLine(line string, width int) []string {
 	}
 	return out
 }
+
+// sortStrings orders a small slice deterministically (extras in a multi-select).
+func sortStrings(v []string) { sort.Strings(v) }
