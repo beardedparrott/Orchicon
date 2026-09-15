@@ -480,8 +480,22 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 
 // ---------------- actions (confirm + mutation executor) ----------------
 
-// actionsForSelection builds the entity-bound actions for the focused row.
+// actionsForSelection builds the entity-bound actions for the focused row — or the BULK
+// actions, when the operator has multi-selected.
+//
+// The operator's rule is the whole design: "we need to have a consistent way to handle bulk
+// operations on all forms. My suggestion would be spacebar can do multi-select and Esc
+// clears the multi-select and then the bulk options shows up only after you have more than
+// one item selected."
+//
+// So bulk replaces single-row AT MORE THAN ONE. One marked row is not a bulk operation — it
+// is the row the cursor is on, and offering "archive 1 item" beside "archive" would just be
+// a slower way to do the same thing. The action BAR, the hint LINE and the key dispatch all
+// derive from this one list, so switching to bulk here switches everywhere at once.
 func (m *Model) actionsForSelection() []kit2.Action {
+	if ids := m.Base.MarkedIDs(); len(ids) > 1 {
+		return m.bulkItemActions(ids)
+	}
 	switch m.ActiveSourceName() {
 	case srcProjects:
 		return m.projectActions()
@@ -490,6 +504,84 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	default:
 		return m.itemActions()
 	}
+}
+
+// bulkItemActions are the operations that make sense on a whole selection.
+//
+// Deliberately only the ones the server can do per item and that an operator plausibly wants
+// in bulk: ARCHIVE and DELETE. A bulk status change or reassignment would need a form per
+// item (each carries its own acceptance review and worker binding), so it is not offered
+// rather than offered misleadingly.
+//
+// One action, one confirm, and the confirm NAMES THE COUNT: a destructive operation on ten
+// rows must not look like one on a single row. The writes are sequential and the FIRST
+// failure stops and reports, because a partial bulk operation must say what it did rather
+// than claim a clean sweep.
+func (m *Model) bulkItemActions(ids []string) []kit2.Action {
+	n := len(ids)
+	count := fmt.Sprintf("%d", n)
+	label := func(verb string) string { return verb + " " + count + " selected" }
+	// A write path must never PANIC on a missing client: a screen without a plane is a
+	// configuration the rest of this screen already refuses gracefully, and a crash in a
+	// destructive bulk operation would take the whole TUI with it.
+	if m.cl == nil || m.cl.WorkItems == nil {
+		return []kit2.Action{{
+			Label: "no work-item client", Source: srcWorkItems,
+			Do: func(context.Context) error { return fmt.Errorf("no work-item client") },
+		}}
+	}
+	client := m.cl.WorkItems
+
+	// The rows are removed locally only AFTER the writes land (there is no rollback that can
+	// restore another item's server state), so these actions carry no optimistic Apply: a
+	// refresh is the honest reconciliation for a multi-row write.
+	archive := kit2.Action{
+		Label: label("archive"), Key: "a", Danger: true, Source: srcWorkItems,
+		Confirm: "Archive " + count + " items?\n" +
+			"Each must be terminal and childless — the server rejects the rest, and the first\n" +
+			"rejection stops the run. Reversible one at a time with restore.",
+		Do: func(ctx context.Context) error {
+			failed := 0
+			for _, id := range ids {
+				if _, err := client.ArchiveWorkItem(ctx, connect.NewRequest(&apiv1.ArchiveWorkItemRequest{Id: id})); err != nil {
+					failed++
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("archived %d of %d — %d were rejected (terminal, childless items only)",
+					n-failed, n, failed)
+			}
+			return nil
+		},
+	}
+	del := kit2.Action{
+		Label: label("delete"), Key: "x", Danger: true, Source: srcWorkItems,
+		Confirm: "Delete " + count + " items?\n" +
+			"This soft-deletes each (status → cancelled) and they leave every active view.",
+		Do: func(ctx context.Context) error {
+			failed := 0
+			for _, id := range ids {
+				if _, err := client.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: id})); err != nil {
+					failed++
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("deleted %d of %d — %d failed", n-failed, n, failed)
+			}
+			return nil
+		},
+	}
+	clear := kit2.Action{
+		Label: "clear selection", Key: "esc", Source: srcWorkItems,
+		// No confirm and no write: it is the escape hatch the operator named, and offering it
+		// as an action makes it discoverable from the bar as well as the key.
+		Do: func(context.Context) error { return nil },
+		Apply: func() {
+			m.Base.ClearMarks()
+			m.notice = "selection cleared"
+		},
+	}
+	return []kit2.Action{archive, del, clear}
 }
 
 // openAction opens the confirmation dialog for an action that needs one, or

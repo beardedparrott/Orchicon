@@ -61,6 +61,99 @@ type Table struct {
 	// state: Rows keeps the FULL set, and Move/Click/counts all operate on the
 	// filtered view, so the operator navigates what they can actually see.
 	Filter string
+
+	// Marks is the MULTI-SELECTION: row IDs the operator has marked with space, for the
+	// bulk operations every list needs a consistent way to reach.
+	//
+	// The operator: "we need to have a consistent way to handle bulk operations on all
+	// forms. My suggestion would be spacebar can do multi-select and Esc clears the
+	// multi-select and then the bulk options shows up only after you have more than one item
+	// selected."
+	//
+	// It lives on the TABLE, in package kit2, so every list screen gets the same gesture,
+	// the same clearing rule and the same "only at >1" threshold — rather than each screen
+	// inventing its own (one already had dedicated accept-all/reject-all chords, which is
+	// exactly the inconsistency this replaces).
+	//
+	// Keyed by row ID, not index: a reload reorders and filters the rows, and an index would
+	// silently re-point the selection at different items. It is nil until first use.
+	Marks map[string]bool
+}
+
+// IsMarked reports whether a row is part of the multi-selection.
+func (t *Table) IsMarked(id string) bool { return id != "" && t.Marks[id] }
+
+// MarkCount is how many rows are marked.
+func (t *Table) MarkCount() int { return len(t.Marks) }
+
+// ToggleMark flips a row's mark and reports the NEW state. An empty id is refused: a
+// gutter/parent row or an item that never got an id cannot be a member of the selection.
+func (t *Table) ToggleMark(id string) bool {
+	if id == "" {
+		return false
+	}
+	if t.Marks == nil {
+		t.Marks = map[string]bool{}
+	}
+	if t.Marks[id] {
+		delete(t.Marks, id)
+		return false
+	}
+	t.Marks[id] = true
+	return true
+}
+
+// ClearMarks empties the multi-selection. It reports whether there was anything to clear, so
+// esc can fall through to its other meaning when the operator had nothing marked.
+func (t *Table) ClearMarks() bool {
+	if len(t.Marks) == 0 {
+		return false
+	}
+	t.Marks = nil
+	return true
+}
+
+// MarkedIDs returns the marked row IDs in DRAW ORDER (the visible order the operator sees),
+// not map order — a bulk action that reports what it acted on must name them in the sequence
+// on screen.
+func (t *Table) MarkedIDs() []string {
+	if len(t.Marks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(t.Marks))
+	for _, r := range t.VisibleRows() {
+		if t.Marks[r.ID] {
+			out = append(out, r.ID)
+		}
+	}
+	return out
+}
+
+// PruneMarks drops marks whose rows are no longer present, and reports how many went.
+//
+// A reload can remove rows (a bulk action deletes them, a filter hides them, the plane
+// returns fewer). Leaving the marks behind would let the next bulk action act on items the
+// operator can no longer see — so the selection is reconciled against reality after every
+// load.
+func (t *Table) PruneMarks() int {
+	if len(t.Marks) == 0 {
+		return 0
+	}
+	present := make(map[string]bool, len(t.Rows))
+	for _, r := range t.Rows {
+		present[r.ID] = true
+	}
+	gone := 0
+	for id := range t.Marks {
+		if !present[id] {
+			delete(t.Marks, id)
+			gone++
+		}
+	}
+	if len(t.Marks) == 0 {
+		t.Marks = nil
+	}
+	return gone
 }
 
 // NewTable builds an empty table with columns.
@@ -563,6 +656,11 @@ func (t *Table) View() string {
 	// as a node is collapsed. A table whose rows carry no IDs falls back to the
 	// positional comparison.
 	cursorID := t.SelectedID()
+	// The MARK gutter appears once anything is marked, and only then: drawing an empty
+	// "[ ]" on every row of every list would spend a gutter on an affordance most panes
+	// never use, while appearing the moment the operator presses space makes the selection
+	// model immediately visible.
+	showMarks := t.MarkCount() > 0
 	for i := t.Offset; i < end; i++ {
 		r := vis[i]
 		indent := strings.Repeat("  ", r.Depth)
@@ -577,7 +675,15 @@ func (t *Table) View() string {
 				marker = "+ "
 			}
 		}
-		line := indent + marker + strings.Join(r.Cells, "  ")
+		mark := ""
+		if showMarks {
+			if t.Marks[r.ID] && r.ID != "" {
+				mark = "[x] "
+			} else {
+				mark = "[ ] "
+			}
+		}
+		line := indent + mark + marker + strings.Join(r.Cells, "  ")
 		if r.Meta != "" {
 			line += "  " + r.Meta
 		}

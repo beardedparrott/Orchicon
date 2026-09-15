@@ -63,6 +63,16 @@ func NewActionBar(actions ...Action) *ActionBar {
 	return &ActionBar{Actions: actions}
 }
 
+// Labels returns each action's label, in bar order. A test asserting what the operator can
+// reach asks the bar rather than re-reading the action slice, so it covers the wiring too.
+func (a *ActionBar) Labels() []string {
+	out := make([]string, 0, len(a.Actions))
+	for _, act := range a.Actions {
+		out = append(out, act.Label)
+	}
+	return out
+}
+
 // Selected returns the highlighted action (nil when the bar is empty).
 func (b *ActionBar) Selected() *Action {
 	if b.Sel < 0 || b.Sel >= len(b.Actions) {

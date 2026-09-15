@@ -2,6 +2,7 @@ package kit2
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -792,10 +793,40 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "r":
 		return true, b.Refresh(b.ActiveSourceName())
 	case "esc":
+		// ESC CLEARS THE MULTI-SELECTION before it does anything else. That is the operator's
+		// rule — "Esc clears the multi-select" — and it is also the safe order: an operator
+		// mid-selection reaching for esc means "drop this selection", not "unfocus the pane".
+		// With nothing marked, esc keeps its established meaning and falls through.
+		if t := b.curTable(); t != nil && t.ClearMarks() {
+			return true, nil
+		}
 		b.focusD = false
 		b.setFocusForPane()
 		return true, nil
-	case "enter", " ", "space":
+	case " ", "space":
+		// SPACE marks the cursor row — the operator's "spacebar can do multi-select" — and
+		// ENTER remains the activate gesture (see the case below).
+		//
+		// Space used to toggle focus into the detail pane, which made it redundant with enter
+		// and left no key for selecting more than one row. Acting on the DETAIL (while the
+		// detail has focus) is left alone: marking is a list affordance.
+		if !b.focusD {
+			if t := b.curTable(); t != nil {
+				if id := t.SelectedID(); id != "" {
+					t.ToggleMark(id)
+					// Advance one row, so a run of spaces builds a selection the way every other
+					// multi-select list does — without forcing space-then-down each time.
+					t.Move(1)
+					return true, b.loadDetail()
+				}
+			}
+			return true, nil
+		}
+		// Detail focused: space keeps its activate meaning.
+		b.focusD = false
+		b.setFocusForPane()
+		return true, nil
+	case "enter":
 		// Activate the selected row. A screen may install OnActivate to make
 		// that do something concrete (the Themes pane applies the palette);
 		// otherwise activation opens the row's detail.
@@ -891,7 +922,50 @@ func (b *Base) ActiveTable() *Table {
 	return b.sources[b.active].table
 }
 
+// MarkedIDs returns the focused source's multi-selection in DRAW ORDER (nil = none).
+//
+// A screen reads this to offer its BULK actions: the operator's rule is that bulk options
+// show up "only after you have more than one item selected", so a screen returns its bulk
+// action list when len(MarkedIDs()) > 1 and its single-row actions otherwise. The action bar,
+// the hint line and the key dispatch all follow from that one decision, because they are all
+// built from the same action list.
+func (b *Base) MarkedIDs() []string {
+	t := b.curTable()
+	if t == nil {
+		return nil
+	}
+	return t.MarkedIDs()
+}
+
+// MarkCount is how many rows are marked in the focused source.
+func (b *Base) MarkCount() int {
+	t := b.curTable()
+	if t == nil {
+		return 0
+	}
+	return t.MarkCount()
+}
+
+// ClearMarks drops the focused source's multi-selection, reporting whether there was one.
+func (b *Base) ClearMarks() bool {
+	t := b.curTable()
+	if t == nil {
+		return false
+	}
+	return t.ClearMarks()
+}
+
+// Marked reports whether a row id is in the focused source's multi-selection.
+func (b *Base) Marked(id string) bool {
+	t := b.curTable()
+	return t != nil && t.IsMarked(id)
+}
+
 func (b *Base) cycleSource(delta int) {
+	// Switching sources drops the selection: the marks belong to the list the operator was
+	// looking at, and carrying them to another pane would make the next bulk action act on
+	// rows they cannot see.
+	b.ClearMarks()
 	n := len(b.sources)
 	if n == 0 {
 		return
@@ -1146,6 +1220,15 @@ func (b *Base) topLine(s *source, w int) string {
 	b.actionHits = b.actionHits[:0]
 	var labels []string
 	used := 0
+	// A live MULTI-SELECTION is stated on the same row, left of the controls: the operator
+	// needs to know how many rows a bulk action will hit, and how to drop the selection.
+	if n := b.MarkCount(); n > 0 {
+		if n == 1 {
+			left += "  1 marked (space adds, esc clears)"
+		} else {
+			left += fmt.Sprintf("  %d marked (esc clears)", n)
+		}
+	}
 	for i := len(s.rowActions) - 1; i >= 0; i-- {
 		label := "[ " + s.rowActions[i].Label() + " ]"
 		end := inner - used - 1
@@ -1296,6 +1379,10 @@ func (b *Base) LoadItems(source string, items []Item, next string) bool {
 		s.table.SetItems(items, next)
 		s.table.Err = ""
 		s.err = ""
+		// Reconcile the multi-selection with what actually came back. A bulk action DELETES
+		// its rows, so without this the marks would linger on items that no longer exist and
+		// the next bulk action would report acting on them.
+		s.table.PruneMarks()
 		// A pending selection (a just-created entity) is applied here too: this
 		// is the synchronous load path, so a caller that is not the shell's
 		// fetch command still focuses the new row.
@@ -1378,6 +1465,13 @@ func (b *Base) ActiveItem() (Item, bool) {
 func (b *Base) SelectSource(name string) bool {
 	for i, s := range b.sources {
 		if s.name == name {
+			if b.active != i {
+				// MOVING TO ANOTHER SOURCE DROPS THE SELECTION, for the same reason
+				// cycleSource does: the marks belong to the list the operator was looking
+				// at, and a selection they have stopped looking at is one they will act on
+				// by mistake. Re-selecting the source they are already on keeps it.
+				b.ClearMarks()
+			}
 			b.active = i
 			b.focusD = false
 			b.setFocusForPane()
@@ -1405,6 +1499,20 @@ func (b *Base) SelectItem(src, id string) bool {
 		return false
 	}
 	return false
+}
+
+// DetailFocusedForTest reports whether the DETAIL pane holds the keyboard (the base's own
+// focus flag), so a test can assert where a key landed rather than inferring it.
+func (b *Base) DetailFocusedForTest() bool { return b.focusD }
+
+// SetFocusForTest moves the keyboard to "detail" or "list" by name.
+func (b *Base) SetFocusForTest(what string) {
+	b.focusD = what == "detail"
+	if b.focusD && b.Focus != nil {
+		b.Focus.Set("detail")
+		return
+	}
+	b.setFocusForPane()
 }
 
 // SourcesForTest exposes the registered sources for screen tests (the
