@@ -324,6 +324,35 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, nil
 		}
 	}
+	// THE TAB BAR'S OWN KEYS COME FIRST — ahead of every screen's key claim.
+	//
+	// The bar is the shell's chrome, and a screen claiming keys (an open form, a
+	// latched search box, a form still being prepared — or a STUCK latch, which is
+	// the real culprit behind "the projects screen still likes to steal focus") was
+	// able to swallow the bar's Enter. With the keyboard ON THE BAR nothing below
+	// should be able to take it: the operator is manipulating chrome, not content.
+	//
+	// Enter opens the selected tab's submenu; left/right walk the top-level tabs.
+	//
+	// ONLY while no submenu is open: with one up, Enter belongs to it (it SELECTS
+	// the highlighted entry) and reopening here would reset the selection to the
+	// first row every press — the menu could never be navigated at all.
+	if isKey && m.chatFocus == focusTabs && m.TabMenu() == nil {
+		switch k.String() {
+		case "enter", " ", "space":
+			m.openTabMenu(m.active)
+			m.refreshStreamStatus()
+			return m, nil
+		case "left":
+			m.tabRingPrev()
+			m.refreshStreamStatus()
+			return m, nil
+		case "right":
+			m.tabRingNext()
+			m.refreshStreamStatus()
+			return m, nil
+		}
+	}
 	// Screen-owned input mode: a screen with an open form/modal claims EVERY
 	// key (bar the hard chords handled above), so typed characters are never
 	// intercepted by shell routes — 'q' would quit, space opens the tab menu,

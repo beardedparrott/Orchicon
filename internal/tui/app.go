@@ -533,10 +533,15 @@ func (m *App) tabRingNext() {
 		m.closeTabMenu()
 		return
 	}
-	// From the composer, Tab lands on the TAB BAR for the current tab — not in its
-	// content. Landing in the content is what let a pane take the arrows before the
-	// operator had chosen anything.
-	if m.chatFocus == focusComposer {
+	// Tab lands on the TAB BAR, from the composer AND from the content.
+	//
+	// Landing in the content is what let a pane take the arrows before the operator
+	// had chosen anything. Returning from CONTENT is step 5 of the operator's model
+	// — "Tab breaks that and moves through submenu again" — and it is what makes the
+	// submenu reachable after a selection: Enter on the bar opens it. Without it,
+	// Tab from a pane jumped to the NEXT tab, leaving no way back to the menu of the
+	// row just picked except cycling the whole ring.
+	if m.chatFocus != focusTabs {
 		m.setFocus(focusTabs)
 		return
 	}
@@ -549,10 +554,8 @@ func (m *App) tabRingNext() {
 	}
 	// WRAP. The operator: "once you hit the end of the tab menu it stops. It
 	// should rotate back around." Past the last tab the ring returns to the
-	// first rather than stopping. (The composer is still one key away: ctrl+g
-	// focuses it from anywhere.)
+	// first rather than stopping.
 	next := (idx + 1) % len(Tabs)
-	m.setFocus(focusTabs)
 	m.SwitchTo(Tabs[next].ID)
 	m.EnsureSubscriptions(Tabs[next].ID)
 }
@@ -563,7 +566,7 @@ func (m *App) tabRingPrev() {
 		m.closeTabMenu()
 		return
 	}
-	if m.chatFocus == focusComposer {
+	if m.chatFocus != focusTabs {
 		m.setFocus(focusTabs)
 		return
 	}
@@ -575,7 +578,6 @@ func (m *App) tabRingPrev() {
 		}
 	}
 	prev := (idx - 1 + len(Tabs)) % len(Tabs)
-	m.setFocus(focusTabs)
 	m.SwitchTo(Tabs[prev].ID)
 	m.EnsureSubscriptions(Tabs[prev].ID)
 }

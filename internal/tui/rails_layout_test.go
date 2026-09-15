@@ -412,8 +412,21 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
+	// Tab must leave the CONTENT (returning to the bar) even though the screen is
+	// claiming keys — a claim is about text input, and the route between areas must
+	// not depend on no latch being set. It does NOT advance to the next tab from
+	// here; advancing is the bar's own gesture (one more Tab).
+	if m.active != TabWork {
+		t.Fatalf("tab from the content must stay on %q, got %q", TabWork, m.active)
+	}
+	if m.chatFocus != focusTabs {
+		t.Fatalf("tab must return to the tab bar through a screen claim, got focus=%v", m.chatFocus)
+	}
+	// And from the bar it advances, latch or no latch.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
 	if m.active != TabExecution {
-		t.Fatalf("tab left the active tab at %q, want execution — the ring must advance through a screen claim", m.active)
+		t.Fatalf("tab from the bar left the active tab at %q, want execution", m.active)
 	}
 }
 
@@ -582,7 +595,8 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	m.setFocus(focusContent)
 	ws := m.screens[TabWork].(*work.Model)
 
-	// An INLINE details-pane editor: Tab must still advance the ring.
+	// An INLINE details-pane editor must NOT take Tab — Tab is not a field-advance
+	// key there (the arrows already move between fields), it leaves for the bar.
 	ws.Base.BeginDetailEdit("Edit work item", kit2.NewForm("Edit work item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText}))
 	if !ws.Base.EditingDetail() {
@@ -590,7 +604,10 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
-	if m.active != TabExecution {
-		t.Fatalf("tab with an INLINE editor left the active tab at %q, want execution — inline editors must not take Tab", m.active)
+	if m.active != TabWork {
+		t.Fatalf("tab with an INLINE editor left the tab at %q, want %q", m.active, TabWork)
+	}
+	if m.chatFocus != focusTabs {
+		t.Fatalf("tab with an INLINE editor must reach the bar, got focus=%v", m.chatFocus)
 	}
 }
