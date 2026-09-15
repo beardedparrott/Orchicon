@@ -493,7 +493,12 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 // a slower way to do the same thing. The action BAR, the hint LINE and the key dispatch all
 // derive from this one list, so switching to bulk here switches everywhere at once.
 func (m *Model) actionsForSelection() []kit2.Action {
-	if ids := m.Base.MarkedIDs(); len(ids) > 1 {
+	// The BULK rule is kit2's, in one place: more than one marked row means the operator is
+	// operating on a SELECTION, not on the cursor row, so the single-row actions are replaced
+	// rather than mixed with it. (This screen had its own `len(ids) > 1` until the Schedules pane
+	// needed the same rule — two copies of a threshold is how "consistent bulk operations" stops
+	// being consistent.)
+	if ids := m.Base.BulkIDs(); len(ids) > 0 {
 		return m.bulkItemActions(ids)
 	}
 	switch m.ActiveSourceName() {
