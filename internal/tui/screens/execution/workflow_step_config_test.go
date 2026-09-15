@@ -137,6 +137,11 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	if _, ok := loop["success_branch"]; !ok {
 		t.Error("a loop must expose its SUCCESS target")
 	}
+	// on_missing_decision is a loopDecisionConfig key, and it is the replacement for
+	// the engine's tenant-id hardcode — so a loop MUST be able to set it.
+	if _, ok := loop["on_missing_decision"]; !ok {
+		t.Error("a loop must expose on_missing_decision — it is how the operator says whether a missing verdict means re-ask, proceed, or fail")
+	}
 	// Keys the previous cut invented labels for, none of which any reader consumes.
 	for _, invented := range []string{"conflict_value", "exhausted_review"} {
 		if _, ok := loop[invented]; ok {
@@ -148,6 +153,14 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	for _, unwanted := range []string{"recovery_strategy", "loop_branch", "success_branch", "reviewer"} {
 		if _, ok := end[unwanted]; ok {
 			t.Errorf("an end step carries no config — it must not expose %q", unwanted)
+		}
+	}
+	// An approval has no missing-verdict problem (it proceeds unless explicitly
+	// REJECTED), and approvalConfig has no such key — so it must not be offered there
+	// any more than on a task.
+	for _, kind := range []flowStep{{ID: "a", Name: "A", Kind: "task", Ref: "w_x"}, {ID: "b", Name: "B", Kind: "approval"}} {
+		if _, ok := fieldsOf(m.editStepForm(kind))["on_missing_decision"]; ok {
+			t.Errorf("kind %q must not expose on_missing_decision — it is a loopDecisionConfig key", kind.Kind)
 		}
 	}
 }
@@ -362,6 +375,72 @@ func TestWorkerBackedApprovalNeedsARef(t *testing.T) {
 	// Absent reviewer means the human path.
 	if err := validateStepConfigForKind(flowStep{ID: "a", Kind: "approval"}); err != nil {
 		t.Errorf("an approval with no reviewer is a human gate and must pass: %v", err)
+	}
+}
+
+// The policy round-trips through the form, and an edit to an UNRELATED field must not
+// disturb it — the same merge contract every other config key holds to.
+func TestMissingDecisionRoundTripsAndSurvivesOtherEdits(t *testing.T) {
+	const steps = `[{"id":"a","name":"A","kind":"loop_decision","config":"{\"loop_branch\":\"b\",\"max_iterations\":6,\"on_missing_decision\":\"success\"}","depends_on":["b"]},
+	                {"id":"b","name":"Start","kind":"task","ref":"w_x","depends_on":[]}]`
+	m, saved := cfgEditorModel(t, steps)
+
+	// The form SHOWS the stored policy rather than the default.
+	f := m.editStepForm(m.rawFlowSteps()[0])
+	if got := f.Values["on_missing_decision"]; got != "success" {
+		t.Fatalf("the form seeded on_missing_decision = %q, want the stored success", got)
+	}
+
+	// A rename alone leaves it alone.
+	f.Set("name", "A (renamed)")
+	cmd, err := f.OnSubmit(f.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	runWrite(t, cmd)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(parseFlowSteps((*saved)[0])[0].Config), &got); err != nil {
+		t.Fatalf("config is not JSON: %v", err)
+	}
+	if got["on_missing_decision"] != "success" {
+		t.Errorf("an unrelated edit disturbed on_missing_decision: %v", got)
+	}
+
+	// And setting it to reask is a real edit that lands.
+	f2 := m.editStepForm(m.rawFlowSteps()[0])
+	f2.Set("on_missing_decision", "reask")
+	cmd2, err := f2.OnSubmit(f2.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	runWrite(t, cmd2)
+	var got2 map[string]any
+	last := parseFlowSteps((*saved)[len(*saved)-1])[0]
+	if err := json.Unmarshal([]byte(last.Config), &got2); err != nil {
+		t.Fatalf("config is not JSON: %v", err)
+	}
+	if got2["on_missing_decision"] != "reask" {
+		t.Errorf("on_missing_decision = %v, want reask", got2["on_missing_decision"])
+	}
+	// The loop's real keys survive the change.
+	if got2["loop_branch"] != "b" {
+		t.Errorf("loop_branch was lost: %v", got2)
+	}
+}
+
+// A loop that carries NO policy reads as the engine default, because that is what will
+// actually run — an empty row beside a gate with real behaviour would be a lie.
+func TestMissingDecisionAbsentReadsAsTheEngineDefault(t *testing.T) {
+	for _, tc := range []struct{ cfg, want string }{
+		{"", "reask"},
+		{"{}", "reask"},
+		{`{"loop_branch":"a","max_iterations":3}`, "reask"},
+		{`{"on_missing_decision":"fail"}`, "fail"},
+		{"{broken", "reask"},
+	} {
+		if got := missingDecisionOf(tc.cfg); got != tc.want {
+			t.Errorf("missingDecisionOf(%q) = %q, want %q", tc.cfg, got, tc.want)
+		}
 	}
 }
 

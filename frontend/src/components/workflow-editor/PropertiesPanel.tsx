@@ -325,6 +325,24 @@ export function PropertiesPanel({
                 : "Connect the success outlet (right handle) to the next step."}
             </p>
           </Field>
+          <Field
+            label="On missing decision"
+            hint="What to do when NO upstream supplies a verdict to route on (config.decision_field, default _decision). reask re-dispatches the reviewer and asks for a verdict — and when that budget runs out the loop node FAILS, wedging the run. Set success for a gate whose upstream has no verdict to give (a terminal DevOps loop, where the re-ask would just re-run the same step the loop already targets)."
+          >
+            <select
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
+              value={typeof cfg.on_missing_decision === "string" ? cfg.on_missing_decision : "reask"}
+              disabled={readOnly}
+              onChange={(e) => {
+                const next = { ...cfg, on_missing_decision: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            >
+              <option value="reask">reask — re-ask the reviewer (engine default)</option>
+              <option value="success">success — proceed forward without one</option>
+              <option value="fail">fail — a verdict is mandatory; refuse immediately</option>
+            </select>
+          </Field>
           </>
         )}
 

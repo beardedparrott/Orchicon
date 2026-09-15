@@ -404,6 +404,15 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 				Initial: fmt.Sprintf("%d", br.MaxIter), Validate: validatePositiveInt},
 		)
 	}
+	// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig
+	// key, and an approval has no missing-verdict problem (an approval proceeds
+	// unless it is explicitly REJECTED, so no verdict means forward, not a wedge).
+	if s.Kind == "loop_decision" {
+		specs = append(specs, kit2.FieldSpec{
+			Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
+			Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
+			Placeholder: "reask (engine default)"})
+	}
 	// There is NO raw JSON config box. Every key these kinds consume has a field
 	// above, and mergeStepConfig PRESERVES whatever the fields do not model — so the
 	// box never bought anything except a way to corrupt a config by hand: "it still
@@ -591,7 +600,35 @@ func configEdits(kind, existing string, v map[string]string) map[string]any {
 		edits["loop_branch"] = strings.TrimSpace(v["loop_branch"])
 		edits["max_iterations"] = intOrNil(v["max_iterations"])
 	}
+	if kind == "loop_decision" {
+		// A blank means "not set", which the engine resolves to reask — the same
+		// behaviour as writing the default, so deleting the key is the honest edit.
+		edits["on_missing_decision"] = strings.TrimSpace(v["on_missing_decision"])
+	}
 	return edits
+}
+
+// missingDecisionOf reads a loop decision's on_missing_decision, falling back to the
+// engine's own default so the form shows the policy that will actually run rather than
+// an empty row beside a gate that has real behaviour.
+func missingDecisionOf(config string) string {
+	var raw struct {
+		OnMissingDecision string `json:"on_missing_decision"`
+	}
+	if strings.TrimSpace(config) != "" {
+		_ = json.Unmarshal([]byte(config), &raw)
+	}
+	return orDefaultStr(raw.OnMissingDecision, "reask")
+}
+
+// missingDecisionOptions is the engine's on_missing_decision vocabulary, with the
+// consequence spelled out — the whole point is that this used to be decided for you.
+func missingDecisionOptions() []kit2.Option {
+	return []kit2.Option{
+		{Value: "reask", Label: "reask — re-ask the reviewer for a verdict (engine default)"},
+		{Value: "success", Label: "success — proceed forward without one (a gate with no verdict to give)"},
+		{Value: "fail", Label: "fail — a verdict is mandatory here; refuse immediately"},
+	}
 }
 
 // existingRecovery pulls the stored `recovery` object out as a raw map, so an edit
