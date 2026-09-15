@@ -75,7 +75,7 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 				k, ok := msg.(tea.KeyMsg)
 				return ok && k.String() == "shift+tab"
 			},
-			Handle: func(m *App, _ tea.Msg) bool { m.toggleSideRails(); return true },
+			Handle: func(m *App, _ tea.Msg) bool { m.tabRingPrev(); return true },
 		},
 		{
 			// Left / right switch tabs directly (content focus).
@@ -105,20 +105,14 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Handle: func(m *App, _ tea.Msg) bool { m.quitting = true; return true },
 		},
 		{
-			// Diff sidebar toggle: D / Shift+D OUTSIDE text input. Ctrl+D is
-			// never used (EOF muscle memory). Both keys toggle the pane; when
-			// the pane is already open, re-toggling closes it.
-			Name: "toggle diff sidebar", Keys: "d / shift+d", Scope: "global",
-			Match: func(msg tea.Msg) bool {
-				k, ok := msg.(tea.KeyMsg)
-				return ok && (k.String() == "d" || k.String() == "D")
-			},
+			// Diff sidebar toggle: CTRL+D — the operator's binding ("change the diff
+			// panel to be ctrl+d"). It used to be `d`/`D`, which stole a plain letter
+			// from every screen and could only be bound there because this route ran
+			// ahead of the screen. A ctrl chord is never text, so it works from the
+			// composer too.
+			Name: "toggle diff sidebar", Keys: "ctrl+d", Scope: "global",
+			Match: keyMatcher("ctrl+d"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				if m.chatFocus != focusContent {
-					// While composing, `d` inserts a literal 'd' into the
-					// composer — the router never consumes it here.
-					return false
-				}
 				if m.diffOpen {
 					m.closeDiffPane()
 				} else {
@@ -198,7 +192,7 @@ func keyMatcher(s string) func(tea.Msg) bool {
 var composerBypassKeys = map[string]bool{
 	"ctrl+o": true, "ctrl+v": true, "ctrl+w": true, "ctrl+e": true,
 	"ctrl+a": true, "ctrl+f": true, "ctrl+t": true,
-	"ctrl+r": true, "ctrl+c": true, "q": true,
+	"ctrl+r": true, "ctrl+c": true, "ctrl+d": true, "q": true,
 	// Arrow tab cycling + tab key: structural chrome (the tab bar is the
 	// shell's spine — arrows must switch tabs while composing).
 	"right": true, "left": true, "tab": true, "shift+tab": true,
@@ -294,37 +288,22 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "tab":
-			// TAB yields to a WINDOWED MODAL FORM, and only to that.
+			// TAB moves through a FORM'S FIELDS whenever a form is open — modal OR
+			// inline. The operator: "when in an edit form, tab should move through
+			// the fields of the form just like up/down keys. Tabbing currently
+			// breaks out and moves to the next top tabmenu item. This is wrong.
+			// Tabs should only move to the next menu item if you are NOT in edit
+			// mode."
 			//
-			// The operator: "when inside an edit form, I feel this should be the one
-			// place where tab should overwrite the tabbing through menus option.
-			// Moving up and down with the arrow keys are fine, but I can definitely
-			// see people hitting tab and then being ripped away from the item they
-			// were editing."
-			//
-			// The test is ModalFormOpen, NOT ClaimsKeys: a CLAIM is broad (a search
-			// box, a form still being prepared, an inline details-pane editor) and
-			// yielding Tab to all of it is what made the ring stop at Work. A form
-			// drawn as its own centred WINDOW is the one state where Tab is
-			// unambiguously the form's field-advance and leaving would lose work.
-			// Inline editors do NOT take Tab — the arrows already move between their
-			// fields, so Tab stays navigation there.
-			if fs, ok := m.screens[m.active].(interface{ ModalFormOpen() bool }); ok && fs.ModalFormOpen() {
+			// So the test is FormOpen, not ModalFormOpen: the earlier rule yielded
+			// only to a centred WINDOW, which let Tab ESCAPE an inline editor — the
+			// host the worker, work-item and Control forms now use.
+			if fs, ok := m.screens[m.active].(interface{ FormOpen() bool }); ok && fs.FormOpen() {
 				return m.passToScreen(msg)
 			}
-			// TAB advances the top-level selection — and stops there.
-			//
-			// The operator's correction: "when tabbing through menus, the submenus
-			// automatically pop up now. That is wrong. Submenus should only pop up if
-			// you enter on them." So Tab moved the ring and also dropped the menu
-			// open, which additionally left the menu UP eating the arrows and made the
-			// first entry look pre-selected. Tab now only advances; Enter opens.
-			//
-			// The one exception is a WINDOWED MODAL FORM, where Tab is the form's
-			// field-advance and leaving would lose work.
-			if fs, ok := m.screens[m.active].(interface{ ModalFormOpen() bool }); ok && fs.ModalFormOpen() {
-				return m.passToScreen(msg)
-			}
+			// Otherwise Tab advances the top-level selection — and stops there. No
+			// submenu is popped open ("submenus should only pop up if you enter on
+			// them"), because an open menu would then eat the arrows.
 			m.closeTabMenu()
 			m.tabRingNext()
 			m.refreshStreamStatus()

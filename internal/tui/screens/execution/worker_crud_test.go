@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // crudExec builds an Execution screen with the worker CRUD loads and writes
@@ -400,5 +401,46 @@ func TestInlineWorkerFormOwnsArrowsAndEsc(t *testing.T) {
 	_, _ = m.Update(kmsg("esc"))
 	if m.Base.EditingDetail() {
 		t.Fatal("esc did not cancel the inline editor — a write chord swallowed it")
+	}
+}
+
+// Tab inside an open form moves through the FORM'S FIELDS, not the tab ring.
+//
+// "When in an edit form, tab should move through the fields of the form just like
+// up/down keys. Tabbing currently breaks out and moves to the next top tabmenu
+// item. This is wrong. Tabs should only move to the next menu item if you are NOT
+// in edit mode."
+//
+// The hook the shell consults is FormOpen — not the narrower ModalFormOpen it used
+// before, which only yielded to a centred WINDOW and therefore let Tab ESCAPE an
+// inline details-pane editor (the host these forms now use).
+func TestTabMovesFormFieldsWhileEditing(t *testing.T) {
+	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, nil)
+	if !m.Base.SelectSource(srcWorkers) {
+		t.Fatal("fixture: could not focus the Workers pane")
+	}
+	if _, handled := m.handleActionKey(keyNewWorker); !handled {
+		t.Fatal("n must open the create form")
+	}
+	f := detailForm(m)
+	if f == nil {
+		t.Fatal("the create form must be open inline")
+	}
+	if !m.FormOpen() {
+		t.Fatal("FormOpen must report an open INLINE editor — otherwise Tab escapes it")
+	}
+
+	start := f.Cursor
+	_, _ = m.Update(kmsg("tab"))
+	if detailForm(m) == nil {
+		t.Fatal("tab must not close the form")
+	}
+	if detailForm(m).Cursor == start {
+		t.Fatalf("tab did not move the field cursor (stuck at %d) — it broke out of the form", start)
+	}
+	// And shift+tab moves it back, the same way up/down do.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if got := detailForm(m).Cursor; got != start {
+		t.Fatalf("shift+tab did not move back to field %d (got %d)", start, got)
 	}
 }

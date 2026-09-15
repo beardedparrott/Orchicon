@@ -204,7 +204,12 @@ type Detail struct {
 	vp       viewport.Model
 	initOnce bool
 	vpBody   string // body currently loaded into the viewport
-	dirty    bool   // Body changed since the viewport last loaded it
+	// vpTitle is the TITLE the loaded body belongs to. It is the detail's
+	// IDENTITY: a body that changes under the same title is the same item
+	// updating (a live transcript appending), while a new title is a DIFFERENT
+	// item — and a different item must start at the top.
+	vpTitle string
+	dirty   bool // Body changed since the viewport last loaded it
 
 	// Hero is the centered empty state (the GUI's "Ask Orchicon
 	// anything…" block): rendered until real content arrives.
@@ -223,7 +228,11 @@ type Detail struct {
 func (d *Detail) SetContent(title string, fields []Field, body string) {
 	d.Title, d.Fields, d.Body = title, fields, body
 	d.Hero = false
-	if body != d.vpBody {
+	// The IDENTITY changed too, not just the body: a different item must reload
+	// even when its body happens to be byte-identical (two workflows whose flows
+	// render the same, say) — otherwise the pane keeps the previous item's scroll
+	// offset and its stale vpTitle.
+	if body != d.vpBody || title != d.vpTitle {
 		d.dirty = true
 	}
 }
@@ -293,18 +302,28 @@ func (d *Detail) View() string {
 	if d.Body != "" {
 		b.WriteString("\n")
 		if d.dirty || d.vpBody != d.Body {
-			// Reload the viewport but KEEP the operator's scroll: follow
-			// the tail only when they were already at the bottom (a live
-			// chat), otherwise restore the exact line offset (reading
-			// history must not be yanked away by the next chunk).
+			// Reload the viewport, and decide whether to KEEP the operator's scroll.
+			//
+			// Same title = the same item updating (a live transcript appending), so
+			// the offset is restored — "reading history must not be yanked away by
+			// the next chunk". A DIFFERENT title = a different item, and it must
+			// open at the TOP: preserving the offset across a selection switch
+			// landed the new item wherever the old one happened to be scrolled,
+			// which is why a workflow's FLOW appeared to start at step 3 with an
+			// approval on top (its first two steps were above the fold).
+			sameItem := d.Title == d.vpTitle
 			atBottom := d.vp.AtBottom()
 			offset := d.vp.YOffset
 			d.vp.SetContent(d.Body)
 			d.vpBody = d.Body
+			d.vpTitle = d.Title
 			d.dirty = false
-			if atBottom {
+			switch {
+			case !sameItem:
+				d.vp.GotoTop()
+			case atBottom:
 				d.vp.GotoBottom()
-			} else {
+			default:
 				d.vp.SetYOffset(offset)
 			}
 		}

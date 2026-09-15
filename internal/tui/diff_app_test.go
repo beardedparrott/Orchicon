@@ -22,20 +22,20 @@ func TestDiffToggleRequiresContentFocus(t *testing.T) {
 		t.Fatal("composer-focused 'd' must not open the diff pane")
 	}
 
-	// Content-focused `D` opens the pane on a diff-relevant owner. Wire a
+	// Content-focused CTRL+D opens the pane on a diff-relevant owner. Wire a
 	// stub execution screen exposing DetailID so diffOwner resolves.
 	ex := &diffStubOwner{detailID: "exec-1"}
 	m.RegisterScreen(TabExecution, ex)
 	m.setFocus(focusContent)
 	m.SwitchTo(TabExecution)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	if !nm.(*App).diffOpen {
-		t.Fatal("content-focused 'D' should open the diff pane")
+		t.Fatal("content-focused ctrl+d should open the diff pane")
 	}
 	// Re-toggle closes it.
-	nm, _ = nm.(*App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	nm, _ = nm.(*App).Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	if nm.(*App).diffOpen {
-		t.Fatal("re-toggle 'd' should close the diff pane")
+		t.Fatal("re-toggle ctrl+d should close the diff pane")
 	}
 }
 

@@ -85,11 +85,12 @@ func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
-// ModalFormOpen reports a form drawn as its own centred WINDOW — the one state
-// where Tab belongs to the form (field advance) rather than to the shell's tab
-// ring. An INLINE details-pane editor deliberately does not count: the arrows
-// already move between its fields, so Tab stays navigation there.
-func (m *Model) ModalFormOpen() bool { return m.form != nil || m.modelPicker != nil }
+// FormOpen reports whether a FORM is open — modal OR inline details-pane editor,
+// plus the model picker (a modal layered over a form). While one is up, Tab moves
+// through the form's FIELDS rather than the tab ring.
+func (m *Model) FormOpen() bool {
+	return m.form != nil || m.modelPicker != nil || m.Base.EditingDetail()
+}
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.

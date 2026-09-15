@@ -69,7 +69,9 @@ func qaApp(t *testing.T) (*App, *httptest.Server) {
 // expands a BatchMsg into its members before delivering them. The helper
 // mirrors that: it runs each member and feeds each resulting message back in.
 func openPaneViaD(m *App) *App {
-	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	// The diff pane is CTRL+D now; `d`/`D` are plain letters again (see the
+	// "toggle diff sidebar" route).
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = nm.(*App)
 	if cmd == nil {
 		return m

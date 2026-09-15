@@ -19,7 +19,7 @@ func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 	m.setFocus(focusContent)
 	m.width, m.height = 120, 40
 	m.SwitchTo(TabExecution)
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = nm.(*App)
 	m.width, m.height = 120, 40
 	m.refreshLayout()

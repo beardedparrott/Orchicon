@@ -127,7 +127,9 @@ func (m *Model) ClaimsKeys() bool { return m.form != nil || m.Open != nil }
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
 // state where Tab belongs to the form (field advance) rather than to the shell's
 // tab ring. See router.go's tab chord.
-func (m *Model) ModalFormOpen() bool { return m.form != nil }
+// FormOpen reports whether a FORM is open. While one is up, Tab moves through the
+// form's FIELDS rather than the tab ring.
+func (m *Model) FormOpen() bool { return m.form != nil }
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.

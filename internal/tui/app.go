@@ -547,14 +547,37 @@ func (m *App) tabRingNext() {
 			break
 		}
 	}
-	if idx >= len(Tabs)-1 {
-		// Past the last tab: wrap back to the composer, which owns no tab.
-		m.setFocus(focusComposer)
+	// WRAP. The operator: "once you hit the end of the tab menu it stops. It
+	// should rotate back around." Past the last tab the ring returns to the
+	// first rather than stopping. (The composer is still one key away: ctrl+g
+	// focuses it from anywhere.)
+	next := (idx + 1) % len(Tabs)
+	m.setFocus(focusTabs)
+	m.SwitchTo(Tabs[next].ID)
+	m.EnsureSubscriptions(Tabs[next].ID)
+}
+
+// tabRingPrev is tabRingNext in reverse, for Shift+Tab.
+func (m *App) tabRingPrev() {
+	if m.TabMenu() != nil {
+		m.closeTabMenu()
 		return
 	}
+	if m.chatFocus == focusComposer {
+		m.setFocus(focusTabs)
+		return
+	}
+	idx := 0
+	for i, t := range Tabs {
+		if t.ID == m.active {
+			idx = i
+			break
+		}
+	}
+	prev := (idx - 1 + len(Tabs)) % len(Tabs)
 	m.setFocus(focusTabs)
-	m.SwitchTo(Tabs[idx+1].ID)
-	m.EnsureSubscriptions(Tabs[idx+1].ID)
+	m.SwitchTo(Tabs[prev].ID)
+	m.EnsureSubscriptions(Tabs[prev].ID)
 }
 
 // toggleSideRails is the Shift+Tab action: toggle the LEFT diff pane.

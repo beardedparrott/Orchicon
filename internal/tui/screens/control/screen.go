@@ -430,7 +430,14 @@ func (m *Model) ClaimsKeys() bool {
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
 // state where Tab belongs to the form (field advance) rather than to the shell's
 // tab ring. See router.go's tab chord.
-func (m *Model) ModalFormOpen() bool { return m.form != nil || m.modelPicker != nil }
+// FormOpen reports whether a FORM is open — modal OR inline details-pane editor
+// (plus the model picker, which is a modal layered over a form). While one is up,
+// Tab moves through the form's FIELDS rather than the tab ring: "when in an edit
+// form, tab should move through the fields of the form just like up/down keys ...
+// Tabs should only move to the next menu item if you are NOT in edit mode."
+func (m *Model) FormOpen() bool {
+	return m.form != nil || m.modelPicker != nil || m.Base.EditingDetail()
+}
 
 // --- mutation sink (dock feedback) --------------------------------------
 

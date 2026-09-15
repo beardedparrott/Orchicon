@@ -68,15 +68,21 @@ func TestTabRingAndRailToggle(t *testing.T) {
 	if m.ActiveTab() != TabOverview {
 		t.Fatalf("tab advanced to %s, want overview", m.ActiveTab())
 	}
-	// …and after the last area it wraps back to the prompt.
+	// …and after the last area it WRAPS back round to the first: "once you hit the
+	// end of the tab menu it stops. It should rotate back around."
 	m.SwitchTo(TabControl)
-	m.setFocus(focusContent)
+	m.setFocus(focusTabs)
 	m.tabRingNext()
-	if m.chatFocus != focusComposer {
-		t.Fatal("tab after the last area must wrap back to the chat prompt")
+	if m.ActiveTab() != Tabs[0].ID {
+		t.Fatalf("tab after the last area must wrap to the first, got %s", m.ActiveTab())
 	}
-	// Shift+Tab toggles the diff pane only (the conversations rail is always
-	// on for MVP1 and is never part of this toggle).
+	// Shift+Tab reverses the ring: from the first tab it wraps to the last.
+	m.tabRingPrev()
+	if m.ActiveTab() != Tabs[len(Tabs)-1].ID {
+		t.Fatalf("shift+tab from the first tab must wrap to the last, got %s", m.ActiveTab())
+	}
+	// Shift+Tab does NOT touch the diff pane any more (ctrl+d owns it).
+	m.diffOpen = false
 	m.rightRailOpen = true
 	m.toggleSideRails()
 	if !m.diffOpen {
