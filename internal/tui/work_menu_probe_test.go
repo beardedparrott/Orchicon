@@ -1,23 +1,17 @@
-// NOTE (deliberately NOT fixed here): this screen does not implement FormOpen(), which
-// every other screen does. The shell's Tab hard chord treats a missing interface as "no
-// form open" and moves the ring, so on Work Tab walks out of an inline editor instead of
-// advancing its fields. That is a real gap, but it is NOT the bug this file is about, and
-// fixing it means choosing between two conflicting operator asks that are both recorded:
+// NOTE — the Tab-in-a-form conflict is now RESOLVED, deliberately.
 //
-//   - internal/tui/router.go's Tab chord: "when in an edit form, tab should move through
-//     the fields of the form just like up/down keys", with the note that the earlier rule
-//     "let Tab ESCAPE an inline editor"; internal/tui/screens/execution/worker_crud_test.go
-//     asserts the same ("FormOpen must report an open INLINE editor — otherwise Tab
-//     escapes it").
-//   - internal/tui/rails_layout_test.go's TestTabYieldsOnlyToAWindowedModalForm: "An
-//     INLINE details-pane editor must NOT take Tab ... it leaves for the bar", quoting
-//     "when inside an edit form, I feel this should be the one place where tab should
-//     overwrite the tabbing through menus option".
+// This file used to carry a note explaining that the Work screen did not implement
+// FormOpen(), so Tab walked OUT of an inline editor instead of advancing its fields, and
+// that fixing it meant choosing between two conflicting operator asks recorded in the tree
+// (router.go's Tab chord + worker_crud_test.go versus rails_layout_test.go's
+// TestTabYieldsOnlyToAWindowedModalForm).
 //
-// Both are operator preferences from different times. Adding the method here silently
-// picks one, so it is left for an explicit decision rather than smuggled in beside a
-// menu fix. The absence is also why the rails_layout test passes today — it is satisfied
-// by the missing method, not by design.
+// The operator settled it: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should
+// move through the edit items as opposed to the top menu bar on every screen. Once you
+// ctrl+s to save or hit Esc to get out of the editing mode, tab/shift+tab now affects the
+// top tab menu again." Work now implements FormOpen(), and the stale rails_layout
+// assertion was rewritten to the resolved rule (both halves: Tab goes to the form while it
+// is open, and to the bar once it closes).
 package tui
 
 // work_menu_probe_test.go — the Work tab's MENU and the shell's keys must own the
@@ -180,13 +174,18 @@ func TestWorkTabDoesNotSwallowShiftTab(t *testing.T) {
 	}
 }
 
-// The screen deliberately does NOT implement FormOpen() — see the note at the top of this
-// file. If that changes, this test is the place to assert the chosen semantics.
-func TestWorkScreenLacksFormOpenByDesign(t *testing.T) {
+// The Work screen must report an open form, so the shell's Tab chord routes Tab to the
+// FORM's fields rather than walking the bar. This is the resolved Tab-in-a-form rule; the
+// complementary assertion (that Tab returns to the bar once the form closes) lives in
+// rails_layout_test.go, which drives it through the real dispatch.
+func TestWorkScreenReportsOpenForms(t *testing.T) {
 	m := realWorkApp(t)
-	if _, ok := m.screens[TabWork].(interface{ FormOpen() bool }); ok {
-		t.Fatal("the Work screen now implements FormOpen() — that silently chooses one of the " +
-			"two conflicting Tab-in-a-form asks recorded in rails_layout_test.go and router.go; " +
-			"make the choice deliberate and update the stale test")
+	ws, ok := m.screens[TabWork].(interface{ FormOpen() bool })
+	if !ok {
+		t.Fatal("the Work screen does not implement FormOpen() — the shell's Tab chord cannot " +
+			"tell an open editor from a resting pane, so Tab escapes the form")
+	}
+	if ws.FormOpen() {
+		t.Fatal("a resting pane must not report an open form")
 	}
 }

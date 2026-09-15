@@ -593,21 +593,67 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	m = nm.(*App)
 	m.SwitchTo(TabWork)
 	m.setFocus(focusContent)
-	ws := m.screens[TabWork].(*work.Model)
 
-	// An INLINE details-pane editor must NOT take Tab — Tab is not a field-advance
-	// key there (the arrows already move between fields), it leaves for the bar.
-	ws.Base.BeginDetailEdit("Edit work item", kit2.NewForm("Edit work item",
-		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText}))
+	// A FORM owns Tab — inline editor or a windowed modal — and the operator settled the
+	// rule explicitly: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should move
+	// through the edit items as opposed to the top menu bar on every screen. Once you ctrl+s
+	// to save or hit Esc to get out of the editing mode, tab/shift+tab now affects the top
+	// tab menu again."
+	//
+	// This asserts BOTH halves of that: with a form open Tab goes to the FORM (the tab
+	// does not change, and the pane keeps the keyboard); with it closed Tab walks the bar
+	// again. The earlier version of this test asserted the opposite for an inline editor
+	// ("An INLINE details-pane editor must NOT take Tab ... it leaves for the bar"), quoting
+	// an earlier operator preference — the clarification above supersedes it, and that test
+	// passed only because the Work screen was MISSING FormOpen(), so it was satisfied by the
+	// absence rather than by design.
+	ws := m.screens[TabWork].(*work.Model)
+	form := kit2.NewForm("Edit work item",
+		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText},
+		kit2.FieldSpec{Name: "body", Label: "Body", Kind: kit2.KTextArea})
+	ws.Base.BeginDetailEdit("Edit work item", form)
 	if !ws.Base.EditingDetail() {
 		t.Fatal("fixture: expected an inline editor")
 	}
+	if !ws.FormOpen() {
+		t.Fatal("an inline editor must report FormOpen — otherwise the shell's Tab chord " +
+			"cannot tell an open form from a resting pane")
+	}
+
+	// A SET of keys the FORM owns while it is open: Tab/Shift+Tab advance and retreat the
+	// field cursor, and the tab must not change.
+	form.Cursor = 0
+	for _, tc := range []struct {
+		key  tea.KeyMsg
+		want int
+	}{
+		{tea.KeyMsg{Type: tea.KeyTab}, 1},
+		{tea.KeyMsg{Type: tea.KeyTab}, 0},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, 1},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, 0},
+	} {
+		nm, _ = m.Update(tc.key)
+		m = nm.(*App)
+		if m.active != TabWork {
+			t.Fatalf("%v with a form open moved the tab to %q — the form owns Tab",
+				tc.key, m.active)
+		}
+		if got := ws.Base.DetailForm().Cursor; got != tc.want {
+			t.Fatalf("%v: form field cursor = %d, want %d — Tab must move through the form's items",
+				tc.key, got, tc.want)
+		}
+	}
+
+	// Once the form CLOSES, Tab belongs to the bar again.
+	ws.Base.CloseDetailEdit()
+	if ws.FormOpen() {
+		t.Fatal("fixture: the form did not close")
+	}
+	before := m.active
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
-	if m.active != TabWork {
-		t.Fatalf("tab with an INLINE editor left the tab at %q, want %q", m.active, TabWork)
-	}
-	if m.chatFocus != focusTabs {
-		t.Fatalf("tab with an INLINE editor must reach the bar, got focus=%v", m.chatFocus)
+	if m.active == before && m.chatFocus != focusTabs {
+		t.Fatalf("Tab with no form open must walk the tab menu again, got tab=%q focus=%v",
+			m.active, m.chatFocus)
 	}
 }

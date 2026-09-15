@@ -196,6 +196,32 @@ func (m *Model) DropKeyClaim() {
 	m.Base.DropKeyClaim()
 }
 
+// FormOpen reports whether a FORM is open — the inline details-pane editor or the
+// modal image-create form. The shell's Tab hard chord consults it so that, while the
+// operator is editing, Tab (and Shift+Tab) move through the FORM'S ITEMS rather than
+// walking the top tab menu.
+//
+// This screen was missing the method entirely, and the absence was not benign: the chord
+// does `if fs, ok := FormOpen(); ok && fs.FormOpen()` — with ok == false it falls through
+// to `m.closeTabMenu(); m.tabRingNext()`, so on Work (and only Work) Tab walked OUT of an
+// open editor instead of moving between its inputs. Every other screen with a form
+// already implements it.
+//
+// The operator settled the rule explicitly: "ONCE IN EDIT/NEW MODE using down/up OR
+// tab/shift+tab should move through the edit items as opposed to the top menu bar on
+// every screen. Once you ctrl+s to save or hit Esc to get out of the editing mode,
+// tab/shift+tab now affects the top tab menu again." Which is exactly what this does —
+// the moment the form closes, the claim drops and Tab belongs to the bar again.
+func (m *Model) FormOpen() bool {
+	return m.form != nil || m.Base.EditingDetail()
+}
+
+// ModalFormOpen reports a form drawn as its own centred WINDOW — on this screen only the
+// runtime-image create form. The distinction matters for the shell's Tab handling on
+// screens that treat a windowed modal and an inline editor differently; here both take
+// Tab for their fields, per the rule above.
+func (m *Model) ModalFormOpen() bool { return m.form != nil }
+
 // ClaimsKeys reports whether the screen owns every key right now (a modal
 // form, an inline detail editor, a confirmation dialog, or a modal that is
 // still being PREPARED). The shell consults it before its own routes so a

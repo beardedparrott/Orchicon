@@ -97,6 +97,19 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	return m
 }
 
+// FormOpen reports whether the open overlay is a FIELD FORM. The shell's Tab hard chord
+// consults it, and without it the chord intercepted Tab BEFORE the overlay saw it — so
+// this screen's form fields could not be tabbed through at all, even though
+// handleFormKey has handled `tab`/`shift+tab` all along. Same defect class as the Work
+// screen's missing method.
+//
+// Only ovForm: a picker, viewer or confirm overlay has no fields, so Tab means nothing to
+// them and must keep walking the tab menu.
+func (m *Model) FormOpen() bool { return m.ov != nil && m.ov.kind == ovForm }
+
+// Overlay exposes the open modal for tests (nil = none).
+func (m *Model) Overlay() *overlay { return m.ov }
+
 func (m *Model) Name() string { return "enforcement" }
 
 // EnsureSubscriptions starts the recovery-events live stream once
