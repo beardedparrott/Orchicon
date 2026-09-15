@@ -105,10 +105,14 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	if _, ok := task["recovery_max_attempts"]; !ok {
 		t.Error("a task must expose recovery max_attempts")
 	}
-	// retry_delay_seconds is parsed into stepRecoveryConfig and never read, so it is
-	// NOT offered: a field that changes nothing is worse than no field.
-	if _, ok := task["recovery_delay_seconds"]; ok {
-		t.Error("retry_delay_seconds is parsed but never consumed — it must not be offered as configuration")
+	// There is NO delay field at all. The knob was REMOVED (it was parsed into
+	// stepRecoveryConfig and then read by nothing — execution dispatch has no deferral
+	// mechanism, so no retry ever waited). A field that changes nothing is worse than no
+	// field, so this asserts the form does not grow one back.
+	for _, dead := range []string{"recovery_delay_seconds", "retry_delay_seconds"} {
+		if _, ok := task[dead]; ok {
+			t.Errorf("%s is a dead knob — nothing waits on it, so it must not be offered as configuration", dead)
+		}
 	}
 	if _, ok := task["success_branch"]; ok {
 		t.Error("a task has no branch targets")
@@ -252,9 +256,11 @@ func TestRecoveryStrategyEditsMergeWithTheRest(t *testing.T) {
 	if rec["strategy"] != "human_escalation" || rec["max_attempts"].(float64) != 9 {
 		t.Errorf("recovery not updated: %v", rec)
 	}
-	// retry_delay_seconds is not modelled by the form, so it must ride along.
+	// A LEGACY key — removed from the engine and from this editor, but still present in
+	// configs written before that — must ride along rather than be silently deleted, so a
+	// strategy change does not destroy data the operator can still see in the raw config.
 	if rec["retry_delay_seconds"].(float64) != 30 {
-		t.Errorf("the unmodelled retry_delay_seconds was dropped: %v", rec)
+		t.Errorf("the legacy retry_delay_seconds key was dropped: %v", rec)
 	}
 	if got["note"] != "keep me" {
 		t.Errorf("a sibling key was dropped: %v", got)

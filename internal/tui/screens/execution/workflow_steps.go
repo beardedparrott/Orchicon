@@ -42,9 +42,10 @@
 //   - stepRecoveryConfig (workflow_reconciler.go:3885) is a task's config: strategy
 //     and max_attempts. Those two are consumed
 //     (workflow_reconciler.go:4659-4671, the switch whose cases are retry /
-//     summarize_restart / human_escalation / stop). `retry_delay_seconds` is parsed
-//     into the same struct and then NEVER read — the real delay is
-//     recovery.defaultRetryDelaySeconds — so it is preserved, not offered.
+//     summarize_restart / human_escalation / stop). There is NO delay field: the
+//     `retry_delay_seconds` key was removed from the struct entirely once it became
+//     clear nothing ever waited on it (see the note there). Stored configs still carry
+//     it, so the merge preserves it — but it is neither modelled nor offered.
 //
 //   - `conflict_value` and `exhausted_review` appear in every seeded loop_decision
 //     config and in NO reader anywhere in the tree; `branch_from` is a declared but
@@ -412,8 +413,8 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	// sides, and only together are they honest: the policy says what a missing verdict
 	// MEANS, and max_reask says how many times to ask before giving up on getting one.
 	// It is a real, honoured bound (workflow_reconciler.go: the re-ask loop fails at
-	// `reaskCount >= cfg.MaxReask`), which is why it is offered where the DEAD
-	// retry_delay_seconds is not.
+	// `reaskCount >= cfg.MaxReask`), which is why it is offered where a dead knob
+	// (the removed retry_delay_seconds) is not.
 	//
 	// decision_field / success_value / failure_value are deliberately NOT offered. They
 	// are not configuration an operator may safely change: see the note on
@@ -601,7 +602,7 @@ func approvalReviewer(config string) string {
 //
 // `existing` is the step's current config, needed because a task's recovery policy is
 // a NESTED object: merging it as a whole would drop the keys inside it that this
-// editor does not model (retry_delay_seconds).
+// editor does not model (a stored `retry_delay_seconds`, a key a future version adds).
 //
 // A blank value deletes its key, because an empty branch id or an empty reviewer is
 // not a value — it is the ABSENCE of one, and writing "" would make the JSON claim a
@@ -688,9 +689,11 @@ func existingRecovery(config string) map[string]any {
 }
 
 // recoveryBlock merges the two form values into the STORED recovery object, so keys
-// this editor does not model survive the edit. `retry_delay_seconds` is the concrete
-// case: the reconciler parses it into stepRecoveryConfig, nothing consumes it, and a
-// change to the strategy must not quietly delete it.
+// this editor does not model survive the edit. A stored `retry_delay_seconds` is the
+// concrete case: the key was removed from the engine and from this editor when it
+// turned out nothing consumed it, but existing workflows still carry it, and changing a
+// step's strategy must not quietly delete data the operator can still see in the raw
+// config.
 //
 // The strategy falls back to "retry" — the reconciler's own default
 // (readStepRecoveryConfig) and the one the GUI's step editor seeds — so a step always

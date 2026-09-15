@@ -77,6 +77,7 @@ If architecture or anything referenced in the docs has changed, update the relev
 8. Recovery is opt-out, not opt-in.
 9. Migrations are forward-only.
 10. Windows is always considered — delivered by running the whole Linux stack inside WSL2, no native Windows port.
+11. **Engine behaviour is never keyed on a tenant's identifiers** — no step id, project id, title, or worker id in a reconciler branch. Recorded policy is config; anything else is DERIVED from structure (the graph, the kind, the run's own rows). Two live loop decisions were once rescued and one stranded by a guard comparing `loop_branch == "step-devops-pr"` and a hardcoded success-branch list, which broke silently for every workflow that named its end step differently.
 
 ## Security standards (floor, not ceiling)
 
@@ -119,8 +120,37 @@ For Docker/infra changes, verify the full stack boots (healthz + Grafana on :300
 
 Every time you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon agent to match. The tool surface is `internal/askorchicon/tools.go` (`allTools()`), tool implementations in `tool_*.go` (one per domain), the agent identity in `agent.go`, defaults in `service.go`'s `defaultAgentConfigProto()`. The registry is what the Orchicon MCP server exposes (`orchicon mcp`, `internal/mcp/`) — `BuildConfigContent` registers it by default in every opencode run.
 
+## Both clients — GUI and TUI — stay in lockstep
+
+Orchicon ships **two first-class clients over the same API**: the GUI (`frontend/src/**`) and the TUI (`internal/tui/**`, `cmd/orch`). Any work in Orchicon must consider BOTH on changes that need made.
+
+- Touching a field, entity, action, setting, RPC, or capability means checking both clients' exposure of it. Implement it in both, or exclude one DELIBERATELY with the reason in a code comment and in the change description.
+- A capability in one client and not the other is incomplete work, not a follow-up. Parity gaps are the reason this rule exists: cheap to close with the context loaded, expensive to reconstruct later.
+- The historical drift is real and instructive: the GUI carried the budget-warning message copy and the loop-decision policy while the TUI exposed neither, and the TUI's workflow step editor still asked operators to type a raw JSON config. Neither client was wrong on its own; the asymmetry was the bug.
+- Prefer shared truth over duplicated logic. Where both clients must agree (a vocabulary, a default, a validation rule), keep the source in the API/DB and let each client read it, rather than re-implementing the rule twice.
+
+## Platform-owned contracts (do not make them configurable)
+
+The **task verdict** is contract, not preference. Every worker ends its output with `ORCHICON WORKER SUMMARY: success` / `failure`; `db.WorkerIdentityPreamble` sends every worker to that contract and the seeded prompts spell it out literally in 18 places; `extractSummaryDecision` → `firstWordAsDecision` (`internal/scheduler/reconciler.go`) NORMALIZES exactly those two words and passes any other first word through verbatim; and that word routes the workflow.
+
+- Because a custom word technically passes through, `loopDecisionConfig`'s `success_value` / `failure_value` / `decision_field` are technically settable — and deliberately **exposed in neither client's step editor**. Pointing a gate at a word no worker emits makes every verdict miss, so every gate falls through to the missing-verdict path and fails at run time. Nothing validates the prompt against the config, so the failure is silent and total. They remain settable in the config for a programmatic workflow; they are not a knob.
+- `decision_field` is the same class for a second reason: the primary path decodes the upstream step run's decision from a hardcoded `_decision` tag, and only the legacy ticket fallback honours the config key. Offering it would move a knob that mostly does nothing.
+- The general rule: **never ship a knob nothing honours.** Verify a field has a real consumer by finding the code that ACTS on it, not the code that parses it into a struct. See the `retry_delay_seconds` note below.
+
+## Loop and approval gates — how a missing verdict is decided
+
+A `loop_decision` routes on an upstream verdict. When NO upstream supplies one, the behaviour is now recorded policy rather than an engine guess:
+
+- `config.on_missing_decision` (`loopDecisionConfig`, `internal/scheduler/workflow_reconciler.go`) is `reask` (default), `success`, or `fail`. An ABSENT key — and any value outside that vocabulary — resolves to `reask`, which is what makes the policy purely additive: every workflow written before it behaves as it did. `reask` re-dispatches the reviewer up to `config.max_reask` (default 3) and then FAILS the node; `success` proceeds forward; `fail` refuses immediately. Both clients expose it, as they do `max_reask`.
+- `success` is the right policy for a gate whose only upstream emits no verdict: the re-ask re-dispatches the SAME step, and the loop target IS that step, so the "re-ask" is a loop carrying no new information. That shape is the terminal devops loop — devops → loop_decision, loop → devops, success → end — which exists so a DevOps worker can run again before the workflow finalizes.
+- Backfill: `db/migrations/20260924000000_backfill_loop_decision_missing_verdict.sql` (+ `_down`) sets `success` on the steps that need it, and `internal/db/seed_workflows.go` carries the key so new instances are right from birth. Its predicate is STRUCTURAL (loop_decision, object config, exactly one dependency, that dependency IS the loop target) rather than a list of ids, so it stays correct for renamed steps. **Any change to gate routing needs the same three-part treatment: engine + backfill for existing instances + seed for new ones.**
+- The migration runner applies pending migrations at boot BEFORE the control plane constructs its reconcilers (`cmd/orchicon/serve.go`, `MigrateOnBoot` defaults true), which is what makes an engine change safe to pair with a backfill: no boot can read the new code against data the backfill has not yet written.
+- RLS note: `workflow_versions` is `ENABLE` + `FORCE ROW LEVEL SECURITY`, so a backfill UPDATE in a migration is subject to it — EXCEPT that the migration role is the bootstrap superuser (`initdb -U orchicon`, `cmd/orchicon/container.go`), and superusers bypass FORCE RLS. This is the same reasoning `20260806000000_normalize_work_item_kind.sql` already relies on.
+
 ## Things you need to know
 
+- **Dead knobs**: `recovery_executions.retry_delay_seconds` and the matching `retry_delay_seconds` step-config key were REMOVED from the code — the value was written from a constant and parsed off a task step's config, and NO code ever read it back, because execution dispatch has no deferral mechanism at all (the only `next_attempt_at` machinery in the tree is for webhook deliveries). The COLUMN is retained because up migrations are additive-only (no destructive DDL), and `20260925000000_retire_recovery_retry_delay.sql` corrects its comment to say so; a stored `retry_delay_seconds` in an existing step config is now ignored by the engine and preserved verbatim by both step editors. The same file's stale claim that `ORCHICON_RECOVERY_MAX_RETRIES` / `ORCHICON_RECOVERY_RETRY_DELAY_SECONDS` override the recovery defaults was false — neither name was ever read — and is corrected at source in `internal/recovery/engine.go`.
+- `db/migrations/atlas.sum` is NOT verified by anything: `internal/migrate` reads the `*.sql` files directly and `tools/atlas-ci` does not check the sum. It is regenerated by `make migrate-hash` (needs the atlas binary, `make tools`) as part of `make full-rebuild`.
 - Connect-ES codegen is pinned to local v1 npm plugins. Atlas RLS policies are hand-appended SQL — after hand-editing a migration run `make migrate-hash`.
 - `orchicon container` runs the whole stack as PID-1. `orchicon serve` runs the plane headless. Reconcilers use `pg_try_advisory_lock` for per-kind leadership. NATS subscribers fan events out to streaming RPCs.
 - Worker lifecycle: draft → published → deprecated → retired (published versions immutable). WorkItem hierarchy: Epic → Feature → Task → Subtask (max 4 levels). Dependency edges form a DAG with cycle detection.

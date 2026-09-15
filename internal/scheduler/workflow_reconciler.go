@@ -3891,10 +3891,18 @@ func readConfigProjectID(config string) string {
 //   - "human_escalation": set the step to approval_pending; a human
 //     must mark the task succeeded to continue.
 //   - "stop": permanent failure — no retry, step is marked failed.
+//
+// There is deliberately NO delay field. live config carries `retry_delay_seconds` — it
+// was written into the seeds and into stored step configs — but NOTHING ever waited on
+// it: the value was parsed here and then read by no code, and the recovery row that
+// carried it was never consulted when a retry was dispatched (there is no deferral
+// mechanism for execution dispatch at all; retries go out immediately). A knob that
+// silently does nothing is worse than no knob, so it is gone. A stored
+// `retry_delay_seconds` key is now IGNORED here and PRESERVED verbatim by the step
+// editors, which never modelled it.
 type stepRecoveryConfig struct {
-	Strategy          string `json:"strategy"`
-	MaxAttempts       int    `json:"max_attempts"`
-	RetryDelaySeconds int    `json:"retry_delay_seconds"`
+	Strategy    string `json:"strategy"`
+	MaxAttempts int    `json:"max_attempts"`
 }
 
 // readStepRecoveryConfig reads the "recovery" block from the step's
@@ -3919,9 +3927,6 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 	}
 	if outer.Recovery.MaxAttempts > 0 {
 		cfg.MaxAttempts = outer.Recovery.MaxAttempts
-	}
-	if outer.Recovery.RetryDelaySeconds > 0 {
-		cfg.RetryDelaySeconds = outer.Recovery.RetryDelaySeconds
 	}
 	return cfg
 }
