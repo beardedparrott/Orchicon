@@ -363,6 +363,29 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			m.refreshStreamStatus()
 		}
 	}
+	// Tab dropdown submenu keys: the open menu owns arrows/enter/esc and
+	// its own tab chords (BEFORE composer handling so esc closes the menu
+	// instead of falling through to focus toggling — no focus trap).
+	//
+	// THIS RUNS BEFORE THE SCREEN-CLAIMS GATE BELOW, and the order is load-bearing.
+	// The menu is drawn ON TOP of every pane and is the thing the operator just opened
+	// and is looking at, so it must outrank a screen's claim on the keyboard. With the
+	// gate first, any latched claim made the open menu completely inert — the exact
+	// defect where a stray `formLoading = true` inside the Projects pane's action builder
+	// killed the Work submenu's arrows/Enter AND the shell's shift+tab.
+	//
+	// It also has to be above the gate because a MOUSE click can open the menu while a
+	// screen claims keys (dispatchMouse handles the menu at the very top of dispatch,
+	// before the gate), so gate-first left a mouse-opened menu dead on the same path.
+	//
+	// This steals nothing: menuHandleKey returns handled=false for every key it does not
+	// own, so typing still reaches the screen (and the rest of the chain) normally.
+	if isKey && m.TabMenu() != nil {
+		if handled, cmd := m.menuHandleKey(k); handled {
+			m.refreshStreamStatus()
+			return m, cmd
+		}
+	}
 	// Screen-owned input mode: a screen with an open form/modal claims EVERY
 	// key (bar the hard chords handled above), so typed characters are never
 	// intercepted by shell routes — 'q' would quit, space opens the tab menu,
@@ -371,15 +394,6 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if isKey {
 		if ks, ok := m.screens[m.active].(interface{ ClaimsKeys() bool }); ok && ks.ClaimsKeys() {
 			return m.passToScreen(msg)
-		}
-	}
-	// Tab dropdown submenu keys: the open menu owns arrows/enter/esc and
-	// its own tab chords (BEFORE composer handling so esc closes the menu
-	// instead of falling through to focus toggling — no focus trap).
-	if isKey && m.TabMenu() != nil {
-		if handled, cmd := m.menuHandleKey(k); handled {
-			m.refreshStreamStatus()
-			return m, cmd
 		}
 	}
 	// Ask rail SELECTION: while the conversations rail is up and the composer

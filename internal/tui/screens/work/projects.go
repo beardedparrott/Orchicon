@@ -164,12 +164,31 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 }
 
 // projectActions is the Projects pane's entity-bound action set.
+//
+// This function MUST NOT set m.formLoading. It used to, and that single line broke
+// the whole tab bar on this pane: actionsForSelection() calls it to build the footer
+// hints and the key bindings, so formLoading latched TRUE the moment a project was
+// selected and NOTHING ever cleared it (the three legitimate setters are the prep*
+// helpers, whose returned cmd delivers the *_formMsg that clears it).
+//
+// ClaimsKeys() includes formLoading, so the shell then handed EVERY key to this screen
+// before any of its own routes ran:
+//
+//   - the Work submenu's up/down never reached menuHandleKey (the menu looked dead);
+//   - Enter selected nothing, because it fell to the pane's own "load detail";
+//   - shift+tab was swallowed outright — it is a global route, which sits even later
+//     in the chain.
+//
+// That is the operator's "can't go into reverse tab once I hit the Work/Projects
+// screen ... can't hit enter on any submenu under Work nor up/down on the Work menu" —
+// and it is why the oddity was specific to Projects: itemActions() and imageActions()
+// never set the flag. The two locals below are captured by the closures and have
+// nothing to do with form preparation.
 func (m *Model) projectActions() []kit2.Action {
 	it, ok := m.ActiveItem()
 	if !ok {
 		return nil
 	}
-	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return []kit2.Action{{
