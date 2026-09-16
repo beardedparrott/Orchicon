@@ -105,6 +105,11 @@ const (
 	keySchedView   = "v"
 	keyGoToRun     = "g"
 	keySchedDelete = "x"
+	// keyFollowUp is the FOLLOW-UP box on the Executions pane — the complement of the interject
+	// (`i`) nudge: a nudge steers a LIVE session, a follow-up asks about one that has finished.
+	// Two chords rather than one because they have different preconditions, and the key that
+	// cannot apply says why (execution_detail.go).
+	keyFollowUp = "f"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -557,6 +562,19 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			}[kstr]
 			return m.beginWorkerOp(it.ID, op), true
 		}
+	}
+	if kstr == keyFollowUp {
+		if m.ActiveSourceName() != srcExecutions {
+			return m.refuse("the follow-up box applies to an execution — focus the Executions pane"), true
+		}
+		it, ok := m.ActiveItem()
+		if !ok {
+			return m.refuse("select an execution first"), true
+		}
+		if why := m.followUpAvailable(it.Meta); why != "" {
+			return m.refuse(why), true
+		}
+		return m.beginFollowUp(it.ID), true
 	}
 	if kstr == keyInterject {
 		if m.ActiveSourceName() != srcExecutions {

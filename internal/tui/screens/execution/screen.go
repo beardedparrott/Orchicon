@@ -118,6 +118,9 @@ type Model struct {
 	// runFlow is the RUNS pane's step-flow state: the step the cursor is on and the rows it
 	// walks, so `enter` can jump to that step's execution (run_flow.go).
 	runFlow runFlowState
+	// todos caches each execution's worker todo list, shown in the detail pane
+	// (execution_detail.go).
+	todos todosCache
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -444,17 +447,30 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		e := resp.Msg.GetExecution()
-		fields := []screenkit.Field{
-			{Key: "id", Value: e.GetId()},
-			{Key: "status", Value: strings.ToLower(e.GetStatus().String())},
-			{Key: "health", Value: strings.ToLower(e.GetHealthState().String())},
-			{Key: "worker", Value: e.GetWorkerId()},
-			{Key: "project", Value: e.GetProjectId()},
-			{Key: "tokens", Value: screenkit.FmtInt64(e.GetTokenUsage())},
-			{Key: "started", Value: screenkit.FmtTime(e.GetStartedAt())},
-			{Key: "ended", Value: screenkit.FmtTime(e.GetEndedAt())},
+		// The GUI's context strip as fields: worker NAME, workflow, work item, iteration, tokens,
+		// cost, branch, PR — each omitted when empty rather than rendered as a zero the operator
+		// has to interpret (execution_detail.go).
+		meta := ""
+		if it, ok := m.Base.SourceItem("executions", id); ok {
+			meta = it.Meta
 		}
-		return "Execution " + e.GetId(), fields, "", nil
+		fields := executionFields(e, meta)
+		// The worker's TODO LIST, with the transcript. The list is context for reading the
+		// transcript, so it sits ABOVE it rather than at the end where it would be a footnote.
+		m.todos.put(id, m.todos.get(id))
+		var b strings.Builder
+		if todo := renderTodos(m.todos.get(id), m.w); todo != "" {
+			b.WriteString(todo + "\n\n")
+		}
+		if e.GetErrorMessage() != "" {
+			b.WriteString(theme.ErrorText.Render("error: "+e.GetErrorMessage()) + "\n\n")
+		}
+		if out := strings.TrimSpace(e.GetOutput()); out != "" {
+			b.WriteString(theme.ListTitle.Render("output") + "\n" + out + "\n")
+		}
+		body := strings.TrimRight(b.String(), "\n")
+		return "Execution " + e.GetId(), fields, body, nil
+
 	case "runs":
 		resp, err := m.cl.Workflows.GetWorkflowRun(ctx, connect.NewRequest(&apiv1.GetWorkflowRunRequest{Id: id}))
 		if err != nil {
@@ -562,6 +578,20 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			if m.flowEditing {
 				return m, m.paintFlow()
 			}
+		}
+		return m, nil
+
+	case execTodosMsg:
+		// The worker's todo list landed. A failure is survivable by design: the list is context,
+		// so a failed fetch leaves whatever was there and never turns "open an execution" into an
+		// error.
+		if msg.err == nil {
+			m.todos.put(msg.execID, msg.todos)
+		}
+		// Repaint in place when this is the execution on screen, so the list appears without the
+		// operator reselecting the row.
+		if m.Base.DetailID() == msg.execID && m.Base.ActiveSourceName() == srcExecutions {
+			return m, m.Base.RequestDetail(srcExecutions, msg.execID)
 		}
 		return m, nil
 
@@ -764,10 +794,14 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	if src != "executions" {
 		return nil
 	}
+	// An EXECUTION detail loads two things: its session transcript (via the shell, which owns the
+	// durable+live merge) and its worker TODO LIST. Both are needed before the pane is readable,
+	// and both are best-effort — neither can fail the detail.
+	cmds := []tea.Cmd{m.loadTodos(id)}
 	if sh, ok := m.Shell().(interface{ OpenExecutionSession(string) tea.Cmd }); ok {
-		return sh.OpenExecutionSession(id)
+		cmds = append(cmds, sh.OpenExecutionSession(id))
 	}
-	return nil
+	return tea.Batch(cmds...)
 }
 
 // requestSessionRefresh re-opens the session view for the detail pane's

@@ -52,6 +52,37 @@ type fakePlane struct {
 	updated       []*apiv1.UpdateWorkItemRequest
 	deleteItemErr error
 	workItem      *apiv1.WorkItem
+
+	// --- executions (the Executions detail) ---
+	exec      *apiv1.WorkerExecution
+	todos     []*apiv1.TodoItem
+	failTodos bool
+	followUps []*apiv1.ContinueExecutionSessionRequest
+}
+
+func (p *fakePlane) GetExecution(_ context.Context, req *connect.Request[apiv1.GetExecutionRequest]) (*connect.Response[apiv1.GetExecutionResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exec == nil || p.exec.GetId() != req.Msg.GetId() {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
+	}
+	return connect.NewResponse(&apiv1.GetExecutionResponse{Execution: p.exec}), nil
+}
+
+func (p *fakePlane) GetExecutionTodos(_ context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failTodos {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("todos unavailable"))
+	}
+	return connect.NewResponse(&apiv1.GetExecutionTodosResponse{Todos: p.todos}), nil
+}
+
+func (p *fakePlane) ContinueExecutionSession(_ context.Context, req *connect.Request[apiv1.ContinueExecutionSessionRequest]) (*connect.Response[apiv1.ContinueExecutionSessionResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.followUps = append(p.followUps, req.Msg)
+	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: "the model's answer"}), nil
 }
 
 func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.GetWorkItemRequest]) (*connect.Response[apiv1.GetWorkItemResponse], error) {
