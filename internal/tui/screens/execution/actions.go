@@ -160,23 +160,46 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	switch m.ActiveSourceName() {
 	case srcExecutions:
 		id := item.ID
-		if !isLiveExecution(item.Meta) {
-			return nil
-		}
-		return []kit2.Action{
-			{
+		// CANCEL is offered only for a LIVE execution — cancelling something already finished is
+		// not a thing. But the bar is not empty for a finished one: `i` (interject) and `f`
+		// (follow-up) are both bound there, and the FOLLOW-UP is specifically for a session that is
+		// no longer live. Returning nil here removed every row, which is why the operator could not
+		// find the follow-up box: "I don't see the follow-up chat box to kick off additional
+		// questions to the worker. This feature is in the GUI and should be in the TUI." It was
+		// bound and handled, just never advertised on the executions anyone actually reads — a
+		// finished execution is the normal thing to open.
+		//
+		// So the bar lists what the pane can DO and each row explains its own precondition when it
+		// cannot apply (interject refuses off a live session by name), which is the same contract
+		// the rest of this screen's actions follow.
+		acts := []kit2.Action{}
+		if isLiveExecution(item.Meta) {
+			acts = append(acts, kit2.Action{
 				Label: "cancel", Key: keyCancel, Danger: true, Source: srcExecutions,
 				Confirm: "Cancel execution " + id + "?\n" +
 					"The execution transitions to TERMINATED and its worker session is stopped; " +
 					"in-flight tool calls are abandoned (the reason is recorded as " + strconv.Quote(cancelReason) + ").",
 				Do: func(ctx context.Context) error { return m.rpcCancelExecution(ctx, id) },
-			},
-			{
+			})
+		}
+		acts = append(acts,
+			kit2.Action{
 				Label: "interject", Key: keyInterject, Source: srcExecutions,
 				// The message is collected by a form — handleActionKey opens it.
 				Do: func(context.Context) error { return errNeedForm("interject") },
 			},
-		}
+			// The FOLLOW-UP box is offered here so the gesture is DISCOVERABLE. It earns its own
+			// row rather than sharing the interject's: the two have different PRECONDITIONS
+			// (interject needs a LIVE session, a follow-up needs one that still exists), so a shared
+			// row would advertise both with a restriction that only applies to one of them. The
+			// row's Do refuses by name, exactly as the interject's does, because the message is
+			// collected by a form.
+			kit2.Action{
+				Label: "follow-up", Key: keyFollowUp, Source: srcExecutions,
+				Do: func(context.Context) error { return errNeedForm("follow-up") },
+			},
+		)
+		return acts
 
 	case srcRuns:
 		id := item.ID
@@ -468,40 +491,35 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	// highlighted step's execution — the operator's "if you hit enter on a particular step
 	// (whether it's complete or still running), it should take you to the execution".
 	//
-	// `enter` is DELIBERATELY NOT gated on the detail focus, and that is the correction for
-	// "hitting enter on a step is not taking you to the execution page for that step". The gate
-	// looked principled — the keys are the detail's, so the detail must hold the focus — but it
-	// was written against a pane that DRAWS the cursor it acts on. The flow is rendered and one
-	// of its rows is MARKED the moment the run's detail lands, while the focus is still on the
-	// LIST, and every row advertises "enter → execution" right there in the text. So the
-	// advertised gesture had to be pressed TWICE: the first press was consumed by the base as
-	// "focus the detail pane" (kit2.Base's enter toggles focusD when nothing else claims it), and
-	// only a second press — after a focus change the row never asked for — performed the jump. An
-	// operator who pressed enter once, watched nothing happen, and moved on was reading the pane
-	// correctly; the pane was lying.
+	// ENTER IS A TWO-STAGE GESTURE, which is the operator's stated model and now the shipped one:
+	// "You should have to hit enter FIRST on the workflow run, THEN it moves to the detail pane and
+	// then from there enter should select steps."
 	//
-	// The vertical keys KEEP the focus distinction, because there the distinction is real: with
-	// the list focused up/down move the list (the operator's navigation model — "arrow keys move
-	// pane items"), and the step cursor is walked once the detail holds the focus (`right` also
-	// focuses it). Jumping is different in kind: it is a whole-pane navigation that leaves the
-	// pane, so it is not in competition with anything the list does with the key.
+	//   list focused  + enter  →  move the keyboard into the DETAIL pane (the base does this)
+	//   detail focused + enter →  jump to the cursor step's execution
 	//
-	// When there is NO flow to act on, enter falls through to the base, so the generic "activate
-	// the selected row / open its detail" gesture is untouched — the jump takes over exactly
-	// where the pane is actually offering one. The repaint is local — the rows are cached from
-	// the detail fetch — so moving the cursor costs no round trip.
-	if m.ActiveSourceName() == srcRuns {
-		if kstr == "enter" && m.runFlow.count() > 0 {
-			return m.goToRunStepExecution(), true
-		}
-		if m.Base.DetailFocusedForTest() {
-			switch kstr {
-			case "up", "k":
-				m.runFlow.moveSteps(-1)
-				return m.repaintRunFlow(), true
-			case "down", "j":
-				m.runFlow.moveSteps(1)
-				return m.repaintRunFlow(), true
+	// A previous revision claimed enter unconditionally while a flow was drawn, on the reasoning
+	// that every row advertises "enter → execution". That reasoning was wrong about which enter the
+	// row was advertising: the rows describe what enter does ONCE THE DETAIL HAS THE FOCUS, and the
+	// first enter is what GIVES it the focus. Claiming the key from the list also broke the list,
+	// because enter on a run row is how you open the run at all.
+	//
+	// So the vertical keys and enter share one rule — the detail must hold the focus — because on
+	// this pane they are all "act on the step cursor" gestures, and the step cursor is the detail's.
+	// When there is NO flow to act on, enter falls through to the base even with the detail focused,
+	// so the generic "activate the selected row" gesture is untouched. The repaint is local — the
+	// rows are cached from the detail fetch — so moving the cursor costs no round trip.
+	if m.ActiveSourceName() == srcRuns && m.Base.DetailFocusedForTest() {
+		switch kstr {
+		case "up", "k":
+			m.runFlow.moveSteps(-1)
+			return m.repaintRunFlow(), true
+		case "down", "j":
+			m.runFlow.moveSteps(1)
+			return m.repaintRunFlow(), true
+		case "enter":
+			if m.runFlow.count() > 0 {
+				return m.goToRunStepExecution(), true
 			}
 		}
 	}

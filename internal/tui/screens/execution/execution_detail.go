@@ -199,6 +199,11 @@ func (m *Model) composeExecutionBody(id string) (string, []screenkit.Field) {
 		return "", nil
 	}
 	sections := []string{}
+	if u := m.execUsage.get(id); u != nil {
+		if ctxSection := renderUsage(u, m.w); ctxSection != "" {
+			sections = append(sections, ctxSection)
+		}
+	}
 	if todo := renderTodos(m.todos.get(id), m.w); todo != "" {
 		sections = append(sections, todo)
 	}

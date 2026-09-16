@@ -28,10 +28,17 @@ func stepRun(id, stepID, name string, kind apiv1.StepKind, status apiv1.StepRunS
 	}
 }
 
+// runStepRowsArrival orders rows with NO authored order — the fallback path. The server's own
+// arrival order stands in for the workflow definition, which is what runStepRows does when the
+// version cannot be read and is the right input for tests that are not about ordering.
+func runStepRowsArrival(runs []*apiv1.WorkflowStepRun) []runStepRow {
+	return runStepRows(runs, nil)
+}
+
 // A run's steps render with their STATUS, KIND, RETRY COUNT and timing — the four things the
 // operator asked to see "next to the steps".
 func TestRunFlowShowsStatusKindRetriesAndTiming(t *testing.T) {
-	rows := runStepRows([]*apiv1.WorkflowStepRun{
+	rows := runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "Architect", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "exec-a"),
 		stepRun("sr-2", "b", "Engineer", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 2, 0, "exec-b"),
 		stepRun("sr-3", "c", "Reviewer", apiv1.StepKind_STEP_KIND_APPROVAL, apiv1.StepRunStatus_STEP_RUN_STATUS_FAILED, 0, 0, ""),
@@ -65,7 +72,7 @@ func TestRunFlowShowsStatusKindRetriesAndTiming(t *testing.T) {
 // The CURSOR is marked, and it is the only mark (a second marker would make "which step is
 // selected" ambiguous).
 func TestRunFlowMarksOnlyTheCursor(t *testing.T) {
-	rows := runStepRows([]*apiv1.WorkflowStepRun{
+	rows := runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e2"),
 	})
@@ -88,7 +95,7 @@ func TestRunFlowGroupsIterationsUnderTheStep(t *testing.T) {
 	old := stepRun("sr-1", "a", "DevOps", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_FAILED, 0, 0, "e1")
 	old.SupersededBy = "sr-2"
 
-	rows := runStepRows([]*apiv1.WorkflowStepRun{old, active})
+	rows := runStepRowsArrival([]*apiv1.WorkflowStepRun{old, active})
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want both iterations", len(rows))
 	}
@@ -119,7 +126,7 @@ func TestRunFlowGroupsIterationsUnderTheStep(t *testing.T) {
 // The cursor MOVES over the steps, clamps at both ends, and repaints.
 func TestRunFlowCursorWalksAndClamps(t *testing.T) {
 	s := &runFlowState{}
-	s.setRows(runStepRows([]*apiv1.WorkflowStepRun{
+	s.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 0, 0, "e2"),
 		stepRun("sr-3", "c", "Three", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_PENDING, 0, 0, ""),
@@ -150,7 +157,7 @@ func TestRunFlowCursorWalksAndClamps(t *testing.T) {
 // highlight every time an event arrived — which is exactly when the operator is watching it.
 func TestRunFlowCursorSurvivesALiveReload(t *testing.T) {
 	s := &runFlowState{}
-	first := runStepRows([]*apiv1.WorkflowStepRun{
+	first := runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 0, 0, "e2"),
 	})
@@ -161,7 +168,7 @@ func TestRunFlowCursorSurvivesALiveReload(t *testing.T) {
 	}
 
 	// The run advanced: step a is now FAILED with a retry, and a third step appeared.
-	second := runStepRows([]*apiv1.WorkflowStepRun{
+	second := runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_FAILED, 1, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e2"),
 		stepRun("sr-3", "c", "Three", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 0, 0, "e3"),
@@ -178,13 +185,13 @@ func TestRunFlowCursorSurvivesALiveReload(t *testing.T) {
 // Selecting a DIFFERENT run re-seats the cursor: the step ids of one run mean nothing in another.
 func TestRunFlowCursorResetsForANewRun(t *testing.T) {
 	s := &runFlowState{}
-	s.setRows(runStepRows([]*apiv1.WorkflowStepRun{
+	s.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e2"),
 	}), "run-1")
 	s.moveSteps(1)
 
-	s.setRows(runStepRows([]*apiv1.WorkflowStepRun{
+	s.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-9", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 0, 0, "e9"),
 	}), "run-2")
 	if got := s.sel(); got != "b" {
@@ -203,7 +210,7 @@ func TestRunFlowCursorResetsForANewRun(t *testing.T) {
 func TestEnterOnAStepJumpsToItsExecution(t *testing.T) {
 	m := newModel(t, &fakePlane{})
 	m.Base.SelectSource(srcRuns)
-	m.runFlow.setRows(runStepRows([]*apiv1.WorkflowStepRun{
+	m.runFlow.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "exec-a"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_RUNNING, 0, 0, "exec-b"),
 	}), "run-1")
@@ -217,22 +224,72 @@ func TestEnterOnAStepJumpsToItsExecution(t *testing.T) {
 	}
 }
 
-// A step with NO execution explains itself rather than silently doing nothing — and the two
-// causes (not dispatched yet, not a worker step) both have no execution, so the message has to
-// work for both.
-func TestEnterOnAStepWithoutAnExecutionRefuses(t *testing.T) {
-	m := newModel(t, &fakePlane{})
-	m.Base.SelectSource(srcRuns)
-	m.runFlow.setRows(runStepRows([]*apiv1.WorkflowStepRun{
-		stepRun("sr-1", "a", "Approval", apiv1.StepKind_STEP_KIND_APPROVAL, apiv1.StepRunStatus_STEP_RUN_STATUS_PENDING, 0, 0, ""),
-	}), "run-1")
-
-	m.goToRunStepExecution()
-	if !strings.Contains(m.notice, "no execution linked") {
-		t.Errorf("notice = %q — a step with no execution must say so", m.notice)
+// A step with NO execution explains itself rather than silently doing nothing — and the reason it
+// gives must MATCH THE STEP's state, which is the correction for a live case: on run
+// 01M2B8D9M0H8E59RKNADW9QH33 the Senior Software Engineer step is status=SUCCEEDED with
+// worker_execution_id NULL, and the old message told the operator a step that plainly succeeded
+// "has not been dispatched". A message that contradicts the status printed right beside it is
+// worse than no message.
+func TestEnterOnAStepWithoutAnExecutionExplainsItself(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    apiv1.StepKind
+		status  apiv1.StepRunStatus
+		wantNot []string // must NOT appear: claims that would be false for this state
+		want    string   // must appear
+	}{
+		{
+			// The live case: it RAN and finished; only the link is missing.
+			name: "succeeded", kind: apiv1.StepKind_STEP_KIND_TASK,
+			status:  apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED,
+			wantNot: []string{"has not been dispatched"},
+			want:    "no execution linked",
+		},
+		{
+			// Genuinely not run yet: the old wording is correct here.
+			name: "blocked", kind: apiv1.StepKind_STEP_KIND_TASK,
+			status:  apiv1.StepRunStatus_STEP_RUN_STATUS_BLOCKED,
+			wantNot: []string{"no execution linked"},
+			want:    "has not been dispatched",
+		},
+		{
+			// A non-worker step: a missing execution is EXPECTED, so saying so is the honest answer.
+			name: "approval", kind: apiv1.StepKind_STEP_KIND_APPROVAL,
+			status: apiv1.StepRunStatus_STEP_RUN_STATUS_PENDING,
+			want:   "approval gate",
+		},
+		{
+			name: "parallel", kind: apiv1.StepKind_STEP_KIND_PARALLEL,
+			status: apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED,
+			want:   "parallel marker",
+		},
+		{
+			name: "loop decision", kind: apiv1.StepKind_STEP_KIND_LOOP_DECISION,
+			status: apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED,
+			want:   "loop decision",
+		},
 	}
-	if m.Base.ActiveSourceName() != srcRuns {
-		t.Error("a refused jump must not move the pane")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newModel(t, &fakePlane{})
+			m.Base.SelectSource(srcRuns)
+			m.runFlow.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
+				stepRun("sr-1", "a", "A Step", c.kind, c.status, 0, 0, ""),
+			}), "run-1")
+
+			m.goToRunStepExecution()
+			if !strings.Contains(m.notice, c.want) {
+				t.Errorf("notice = %q — want it to contain %q", m.notice, c.want)
+			}
+			for _, bad := range c.wantNot {
+				if strings.Contains(m.notice, bad) {
+					t.Errorf("notice = %q — it must NOT claim %q for this step's state", m.notice, bad)
+				}
+			}
+			if m.Base.ActiveSourceName() != srcRuns {
+				t.Error("a refused jump must not move the pane")
+			}
+		})
 	}
 }
 
@@ -241,7 +298,7 @@ func TestEnterOnAStepWithoutAnExecutionRefuses(t *testing.T) {
 func TestRunFlowKeysAreScopedToTheFocusedDetail(t *testing.T) {
 	m := newModel(t, &fakePlane{})
 	m.Base.SelectSource(srcRuns)
-	m.runFlow.setRows(runStepRows([]*apiv1.WorkflowStepRun{
+	m.runFlow.setRows(runStepRowsArrival([]*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "One", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e1"),
 		stepRun("sr-2", "b", "Two", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "e2"),
 	}), "run-1")

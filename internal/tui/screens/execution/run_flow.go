@@ -45,25 +45,60 @@ type runStepRow struct {
 	active bool
 }
 
-// runStepRows collapses a run's step runs into one row per STEP, newest attempt first.
+// runStepRows collapses a run's step runs into one row per STEP, in the workflow's AUTHORED order.
 //
-// Ordering: by step ID so the grouping is stable, then by iteration descending so the ACTIVE run
-// of a looped step is the one that represents it. Superseded runs are kept as trailing rows so a
-// loop's history is visible without pretending the step is at several states at once.
-func runStepRows(runs []*apiv1.WorkflowStepRun) []runStepRow {
+// ORDERING — this is the operator's "I think it is showing the results in reverse order":
+// "It is showing the PR Reviewer and QA Engineer as first in the list."
+//
+// The list was sorted ALPHABETICALLY BY STEP ID (`sort.Strings`), which is not an order at all.
+// The live SDLC run it was reported on has steps step-sse, step-parallel, step-branch-a,
+// step-branch-b, step-loop, so sorting by id yields branch-a, branch-b, loop, parallel, sse — i.e.
+// PR Reviewer, QA Engineer, Loop Decision, Parallel, Senior Software Engineer, which is exactly
+// what the operator saw. Nothing about a random id encodes when a step runs, and the SEMANTIC ids
+// (step-devops-pr, step-approval) sort just as arbitrarily.
+//
+// So the order comes from the WORKFLOW DEFINITION. `authored` is the version's steps in flow
+// order (flowOrder — Kahn over `depends_on`, keeping the authored order among steps that are
+// simultaneously ready), which is what the workflow view already draws and what the GUI maps run
+// status onto.
+//
+// The server's own order is `created_at ASC, id ASC`, which for a run created in one statement
+// (every step run of a run shares a created_at) collapses to ID order — the same defect. It is
+// used here only as a FALLBACK, for the cases where authored order is unavailable: the workflow
+// version could not be read, or the run is for a version whose steps no longer include a step the
+// run recorded. A step the definition does not mention is appended AFTER the authored ones rather
+// than dropped, so a renderer never silently hides a row.
+func runStepRows(runs []*apiv1.WorkflowStepRun, authored []string) []runStepRow {
 	byStep := map[string][]*apiv1.WorkflowStepRun{}
-	order := []string{}
+	appeared := []string{}
 	for _, s := range runs {
 		id := s.GetStepId()
 		if id == "" {
 			id = s.GetId()
 		}
 		if _, seen := byStep[id]; !seen {
-			order = append(order, id)
+			appeared = append(appeared, id)
 		}
 		byStep[id] = append(byStep[id], s)
 	}
-	sort.Strings(order)
+
+	// The authored order first, then anything the definition did not name — ordered by the
+	// server's own arrival order, which is the best signal left for a step the version cannot
+	// account for.
+	order := make([]string, 0, len(appeared))
+	seen := map[string]bool{}
+	for _, id := range authored {
+		if _, ok := byStep[id]; ok && !seen[id] {
+			order = append(order, id)
+			seen[id] = true
+		}
+	}
+	for _, id := range appeared {
+		if !seen[id] {
+			order = append(order, id)
+			seen[id] = true
+		}
+	}
 
 	out := make([]runStepRow, 0, len(runs))
 	for _, id := range order {
@@ -93,6 +128,23 @@ func runStepRows(runs []*apiv1.WorkflowStepRun) []runStepRow {
 		}
 	}
 	return out
+}
+
+// authoredStepOrder reads a workflow version's steps in FLOW order and returns their ids. It is
+// the input that makes a run's step flow read top-to-bottom instead of alphabetically by id.
+//
+// Best effort: a version that cannot be read, or whose steps do not parse, yields nil and the
+// caller falls back to the run's own arrival order. A run is still perfectly renderable without
+// it — it just loses the one thing the operator asked for, which is the order.
+func authoredStepOrder(stepsJSON string) []string {
+	ordered := flowOrder(parseFlowSteps(stepsJSON))
+	ids := make([]string, 0, len(ordered))
+	for _, s := range ordered {
+		if s.ID != "" {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
 }
 
 func stepDisplayName(s *apiv1.WorkflowStepRun) string {

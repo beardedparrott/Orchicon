@@ -1082,6 +1082,30 @@ func (m *App) RefreshExecutionSession(execID string, events []*apiv1.StreamExecu
 
 // OpenExecutionSession loads an execution's durable session (the
 // execution screen's onDetail hook) and merges live events.
+//
+// THE TAIL, NOT THE HEAD — and that is the whole point of beforeSeq here. The operator: "I don't
+// think it is showing the entire execution. In fact, I don't think any of the executions in the TUI
+// are showing the entire execution."
+//
+// This asked for `Limit: 200` with NO beforeSeq, which the server answers with the FIRST 200 parts
+// in seq order (db.ListExecutionSessionParts: `ORDER BY seq` when beforeSeq is unset). A real
+// execution is far bigger than that — the one the operator named has 17,574 parts — so the pane
+// showed the opening 200 and nothing else: no late tool calls, no final answer, no follow-up reply.
+// Every execution looked truncated because every execution was.
+//
+// The GUI solved this the same way and for the same reason (frontend/src/api/executions.ts):
+//
+//	beforeSeq: 9223372036854775807n,   // max int64 = from the END
+//	limit: 10000,
+//	return [...res.parts].reverse();   // DESC → chronological
+//
+// so the server's DESC-tail query returns the NEWEST parts and the client puts them back in
+// reading order. MaxInt64 as beforeSeq means "everything up to the end", which is the idiom the
+// generated API already encodes (the GUI passes it as a bigint for exactly this).
+//
+// The limit is the GUI's 10000 rather than a number of my own: the two clients must agree about
+// how much of a transcript is "the transcript", or the operator sees a different execution
+// depending on which window they are in.
 func (m *App) OpenExecutionSession(execID string) tea.Cmd {
 	if execID == "" {
 		return nil
@@ -1092,14 +1116,33 @@ func (m *App) OpenExecutionSession(execID string) tea.Cmd {
 		defer cancel()
 		resp, err := cl.Executions.GetExecutionSession(ctx, connect.NewRequest(&apiv1.GetExecutionSessionRequest{
 			ExecutionId: execID,
-			Limit:       200,
+			BeforeSeq:   sessionTailFromSeq,
+			Limit:       sessionPartLimit,
 		}))
 		if err != nil {
 			return execSessionMsg{execID: execID, err: err}
 		}
-		return execSessionMsg{execID: execID, parts: resp.Msg.GetParts()}
+		// The server returns the tail NEWEST-first (seq DESC); the transcript reads oldest-first,
+		// so it is reversed here rather than at every render (chat.MergeSessionItems sorts, but it
+		// should be handed a coherent sequence to merge).
+		parts := resp.Msg.GetParts()
+		chronological := make([]*apiv1.ExecutionSessionPart, len(parts))
+		for i, p := range parts {
+			chronological[len(parts)-1-i] = p
+		}
+		return execSessionMsg{execID: execID, parts: chronological}
 	}
 }
+
+// sessionTailFromSeq is the "from the end" sentinel for GetExecutionSession's before_seq: every
+// part whose seq is below this, i.e. all of them, newest-first. It is math.MaxInt64, the same value
+// the GUI sends, so both clients ask the server the identical question.
+const sessionTailFromSeq = int64(^uint64(0) >> 1)
+
+// sessionPartLimit bounds how much of a transcript is fetched. 10000 is the GUI's number (see
+// useGetExecutionSession): generous enough to cover a long run's tail, bounded enough that a
+// pathological session cannot stall the pane.
+const sessionPartLimit = 10000
 
 // execSessionMsg carries the durable session parts for one execution.
 type execSessionMsg struct {

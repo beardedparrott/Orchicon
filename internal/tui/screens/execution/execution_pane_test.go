@@ -25,16 +25,23 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
-// --- report 1a: the key must act on the flow the pane is showing ---------------------------------
+// --- report 1a: enter is the operator's TWO-STAGE gesture ---------------------------------------
 
-// ONE press of enter on the runs pane jumps to the cursor step's execution.
+// Enter on the run MOVES INTO the detail pane; enter AGAIN on a step jumps to its execution.
 //
-// The key used to be scoped to "the detail pane has focus", but the run's detail is what DRAWS the
-// step flow — cursor marker, and a literal "enter → execution" on every row — and it is drawn with
-// the LIST still focused. So the advertised gesture had to be pressed twice: the first press was
-// the base's "focus the detail pane", and only the second jumped. An operator who pressed once and
-// moved on was reading the pane correctly; the pane was lying.
-func TestEnterOnAStepJumpsOnTheFirstPress(t *testing.T) {
+// The operator's model, verbatim: "hitting enter on the run immediately jumps to the execution.
+// You should have to hit enter FIRST on the workflow run, THEN it moves to the detail pane and
+// then from there enter should select steps."
+//
+// A previous revision claimed enter unconditionally while a flow was drawn — first press jumped —
+// on the reasoning that every row advertises "enter → execution". That misread which enter the row
+// advertises: the rows say what enter does once the DETAIL holds the focus, and the first enter is
+// what GIVES it the focus. Claiming the key from the list also broke the list, because enter on a
+// run row is how the run is opened.
+//
+// Both presses are asserted here, through the screen's own dispatch, because only the second is
+// interesting on its own and a test of the second alone would pass with the first broken.
+func TestEnterIsATwoStageGestureOnARun(t *testing.T) {
 	p := namePlane()
 	p.workflows = []*apiv1.Workflow{{Id: "wf-1", Name: "SDLC"}}
 	p.run = &apiv1.WorkflowRun{Id: "run-1", WorkflowId: "wf-1", WorkItemId: "wi-1"}
@@ -44,7 +51,7 @@ func TestEnterOnAStepJumpsOnTheFirstPress(t *testing.T) {
 	m := newModel(t, p)
 	m.Base.SelectSource(srcRuns)
 
-	// The run's detail lands, which is what draws the flow and its marker.
+	// The run's detail lands, which is what draws the flow.
 	title, fields, body, err := m.detail(context.Background(), srcRuns, "run-1")
 	if err != nil {
 		t.Fatalf("detail: %v", err)
@@ -53,15 +60,23 @@ func TestEnterOnAStepJumpsOnTheFirstPress(t *testing.T) {
 	if m.runFlow.count() == 0 {
 		t.Fatal("the run drew no step flow — the fixture is wrong, so this test would pass vacuously")
 	}
-	// The operator has not focused the detail; they are reading the flow the detail already drew.
 	if m.Base.DetailFocusedForTest() {
-		t.Fatal("the fixture left the detail focused, which is not the state the bug was reported in")
+		t.Fatal("the fixture left the detail focused, which is not the state the gesture starts in")
 	}
 
+	// FIRST enter: into the detail. It must NOT have jumped — that is the report.
+	press(t, m, "enter")
+	if got := m.Base.ActiveSourceName(); got != srcRuns {
+		t.Fatalf("the first enter left the pane on %q — it must move the FOCUS into the detail, not jump", got)
+	}
+	if !m.Base.DetailFocusedForTest() {
+		t.Fatal("the first enter did not move the focus into the detail")
+	}
+
+	// SECOND enter: from the detail, on the step, out to its execution.
 	cmd := press(t, m, "enter")
 	if got := m.Base.ActiveSourceName(); got != srcExecutions {
-		t.Fatalf("enter left the pane on %q — the flow is DRAWN with a cursor (%q), so enter must act on it",
-			got, m.runFlow.sel())
+		t.Fatalf("the second enter left the pane on %q — with the detail focused it must jump to the step's execution", got)
 	}
 	if cmd == nil {
 		t.Error("the jump produced no command, so nothing was requested for the execution")
@@ -73,6 +88,7 @@ func TestEnterOnAStepJumpsOnTheFirstPress(t *testing.T) {
 func TestEnterWithNoFlowIsNotHijacked(t *testing.T) {
 	m := newModel(t, namePlane())
 	m.Base.SelectSource(srcRuns)
+	m.Base.SetFocusForTest("detail")
 	if _, handled := m.handleActionKey("enter"); handled {
 		t.Error("enter was claimed with no step flow to jump from — it must fall through to the base")
 	}
@@ -106,9 +122,12 @@ func TestJumpSurvivesTheExecutionsListLanding(t *testing.T) {
 	}
 	m.Base.DeliverDetailForTest(srcRuns, "run-1", title, body, fields)
 
+	// The gesture: enter into the detail, then enter on the step. (The focus step is asserted on its
+	// own above; here the point is that the JUMP survives the list landing that follows it.)
+	press(t, m, "enter")
 	cmd := press(t, m, "enter")
 	if got := m.Base.ActiveSourceName(); got != srcExecutions {
-		t.Fatalf("enter did not switch panes (on %q)", got)
+		t.Fatalf("the jump did not switch panes (on %q)", got)
 	}
 	runAllCmds(t, m, cmd)
 	if got, _, _ := m.Base.DetailForTest(); !strings.Contains(got, "exec-target") {

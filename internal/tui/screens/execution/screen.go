@@ -121,6 +121,9 @@ type Model struct {
 	// todos caches each execution's worker todo list, shown in the detail pane
 	// (execution_detail.go).
 	todos todosCache
+	// execUsage caches each execution's context / token / cost picture, derived from its usage
+	// records (execution_context.go).
+	execUsage usageCache
 	// execDetail holds the REST of an execution's detail — the run's record (facts, error, output)
 	// and the merged session transcript. The pane's body is these and the todo list COMPOSED, so
 	// neither a session repaint nor a todo landing can blank the others (execution_detail.go).
@@ -493,9 +496,15 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		// similar look to our new workflow view where we have the steps, and it should show next
 		// to the steps if it succeeded, failed, how many retries". The cursor lives here so
 		// `enter` can jump to the highlighted step's execution.
+		//
+		// The ORDER comes from the workflow DEFINITION, not from the server's step-run rows and
+		// not from the step ids: the rows arrive ordered by created_at, which for a run is one
+		// shared instant and therefore collapses to id order, and a random id says nothing about
+		// when a step runs. Reading the version's steps and putting them in FLOW order (the same
+		// `flowOrder` the workflow view draws) is what makes this list read top-to-bottom.
 		var body string
 		if sr, err := m.cl.Workflows.GetWorkflowStepRuns(ctx, connect.NewRequest(&apiv1.GetWorkflowStepRunsRequest{RunId: id})); err == nil {
-			m.runFlow.setRows(runStepRows(sr.Msg.GetStepRuns()), id)
+			m.runFlow.setRows(runStepRows(sr.Msg.GetStepRuns(), m.runStepOrder(ctx, r)), id)
 			body, _ = renderRunFlow(m.runFlow.rows(), m.w, m.runFlow.sel())
 		}
 		fields = append(fields, screenkit.Field{Key: "steps", Value: screenkit.FmtInt(m.runFlow.count())})
@@ -571,6 +580,17 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			if m.flowEditing {
 				return m, m.paintFlow()
 			}
+		}
+		return m, nil
+
+	case execUsageMsg:
+		// The context / usage picture landed. Like the todo list, it repaints from cache and asks
+		// for nothing — a landing that requests work is a loop with no base case.
+		if msg.err == nil && msg.usage != nil {
+			m.execUsage.put(msg.execID, msg.usage)
+		}
+		if m.Base.DetailID() == msg.execID && m.Base.ActiveSourceName() == srcExecutions {
+			return m, m.repaintExecutionDetail()
 		}
 		return m, nil
 
@@ -804,7 +824,7 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	// repaints from cache and requests nothing (the execTodosMsg case), so a fetch issued here can
 	// only ever produce one repaint. The staleness gate keeps even that to once per todosTTL when
 	// the pane is re-fetched by live event pokes.
-	cmds := []tea.Cmd{m.todosRefreshCmd(id)}
+	cmds := []tea.Cmd{m.todosRefreshCmd(id), m.usageRefreshCmd(id)}
 	if sh, ok := m.Shell().(interface{ OpenExecutionSession(string) tea.Cmd }); ok {
 		cmds = append(cmds, sh.OpenExecutionSession(id))
 	}
