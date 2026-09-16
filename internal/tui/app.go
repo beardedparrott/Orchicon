@@ -122,6 +122,10 @@ type App struct {
 	help          helpModel
 	routes        []KeyRoute
 	quitting      bool
+	// refreshGen identifies the CURRENT rolling-refresh chain. Every tick carries the generation that
+	// armed it and is dropped when it no longer matches, so switching tabs cannot leave the old chain
+	// running (which would multiply the refresh rate on every switch) — see refresh.go.
+	refreshGen uint64
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
 	dock         dock.Model
@@ -359,6 +363,10 @@ func (m *App) SwitchTo(id TabID) {
 		old.Close()
 	}
 	m.active = id
+	// Bumping the generation makes any tick still in flight stale, so it cannot act on the tab the
+	// operator has left. The single chain adopts the new generation on its next fire (refresh.go), so
+	// no new chain is armed here — one chain for the session's lifetime.
+	m.refreshGen++
 	if _, ok := m.screens[id]; !ok {
 		if s := m.newScreen(id); s != nil {
 			m.screens[id] = s
@@ -1233,6 +1241,11 @@ func (m *App) Init() tea.Cmd {
 	// (ensureLoaded, called from SwitchTo).
 	m.ensureLoaded(m.active)
 	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.fetchAskDefaultModel())
+	// ARM THE ROLLING REFRESH WINDOW (refresh.go). One chain for the session, re-armed by its own
+	// handler, refreshing whatever the active tab is showing every few seconds — because an event
+	// poke only arrives when the server chooses to emit one, and the follow-up reply that made this
+	// necessary is written durably without any live event at all.
+	cmds = append(cmds, refreshCmd(m.refreshGen))
 	if c := m.drainStaged(); c != nil {
 		cmds = append(cmds, c)
 	}

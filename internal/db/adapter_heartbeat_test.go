@@ -208,3 +208,78 @@ func adapterTestPool(t *testing.T) *Pool {
 	t.Cleanup(pool.Close)
 	return pool
 }
+
+// --- the batched usage enrichment (the executions page-load fix) -------------------------------
+
+// SumUsageForExecutions must return exactly what the per-row SumUsageForExecution returns, for every
+// id — the batched form replaced a loop that issued one query per execution, and a batching change
+// that silently lost or mis-attributed a total would be worse than the slowness it fixed.
+func TestSumUsageForExecutionsMatchesThePerRowForm(t *testing.T) {
+	pool := adapterTestPool(t)
+	ctx := context.Background()
+	tenant := adapterTestTenant
+
+	// A page of real ids, taken from the executions that actually have usage.
+	ttx0, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	var ids []string
+	rows, err := ttx0.Tx.Query(ctx, `SELECT DISTINCT execution_id FROM usage_records
+		WHERE tenant_id = $1 AND execution_id <> '' ORDER BY execution_id LIMIT 25`, tenant)
+	if err != nil {
+		_ = ttx0.Rollback(ctx)
+		t.Fatalf("sample ids: %v", err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			_ = ttx0.Rollback(ctx)
+			t.Fatalf("scan id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	_ = ttx0.Rollback(ctx)
+	if len(ids) == 0 {
+		t.Skip("no usage records to compare against in this tenant")
+	}
+
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	batched, err := SumUsageForExecutions(ctx, ttx.Tx, tenant, ids)
+	if err != nil {
+		t.Fatalf("SumUsageForExecutions: %v", err)
+	}
+	for _, id := range ids {
+		wantTokens, wantCost, err := SumUsageForExecution(ctx, ttx.Tx, tenant, id)
+		if err != nil {
+			t.Fatalf("SumUsageForExecution(%s): %v", id, err)
+		}
+		got, ok := batched[id]
+		if !ok {
+			t.Errorf("the batched result is MISSING %s — a row would render without its totals", id)
+			continue
+		}
+		if got.Tokens != wantTokens {
+			t.Errorf("%s tokens = %d, want %d (per-row form)", id, got.Tokens, wantTokens)
+		}
+		if got.CostUSD != wantCost {
+			t.Errorf("%s cost = %v, want %v (per-row form)", id, got.CostUSD, wantCost)
+		}
+	}
+	// An id with no usage is simply absent, not a zero entry — the caller distinguishes "no records"
+	// from "zero cost", and a zero entry would claim the latter.
+	if _, ok := batched["definitely-not-an-execution"]; ok {
+		t.Error("a nonexistent execution produced an entry — absence must mean no records")
+	}
+	// Empty input is not an error and does no work.
+	if got, err := SumUsageForExecutions(ctx, ttx.Tx, tenant, nil); err != nil || len(got) != 0 {
+		t.Errorf("empty input = (%v, %v), want an empty map and no error", got, err)
+	}
+}

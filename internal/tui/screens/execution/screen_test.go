@@ -407,3 +407,15 @@ func sourceNames(m *Model) []string {
 	}
 	return out
 }
+
+// ListExecutions serves the fixture's single execution, so the list path is exercised end to end
+// (titles, meta, and the fetch's own name resolution) rather than only its helpers.
+func (p *fakePlane) ListExecutions(_ context.Context, req *connect.Request[apiv1.ListExecutionsRequest]) (*connect.Response[apiv1.ListExecutionsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	resp := &apiv1.ListExecutionsResponse{}
+	if p.exec != nil {
+		resp.Executions = []*apiv1.WorkerExecution{p.exec}
+	}
+	return connect.NewResponse(resp), nil
+}

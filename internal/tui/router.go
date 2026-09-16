@@ -268,6 +268,12 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The ROLLING REFRESH WINDOW's tick (refresh.go). It is the shell's own message — no screen
+	// produces it — so it is consumed here, ahead of the screens, and it re-arms itself. Handled
+	// before the screens so a tick can never be mistaken for a screen's business.
+	if rt, ok := msg.(refreshTickMsg); ok {
+		return m.handleRefreshTick(rt)
+	}
 	// The composer's caret animates from cursor.BlinkMsg ticks, which are NOT key
 	// messages — and the dock is only ever handed keys (three call sites, all
 	// tea.KeyMsg). Without this the tick reached the shell and was dropped, so the

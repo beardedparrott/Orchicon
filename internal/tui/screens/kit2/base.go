@@ -319,6 +319,40 @@ func (b *Base) Refresh(source string) tea.Cmd {
 	return nil
 }
 
+// RefreshView re-reads what is ON SCREEN: the ACTIVE source's list and, when the detail pane is
+// showing an item, that item's detail. It is the rolling refresh window's hook (tui.Refresher).
+//
+// WHY ONLY THE VISIBLE SOURCE. A kit2 screen can carry nine sources (Control does), and every list
+// now fetches itself WHOLE — so reloading all of them every few seconds would be exactly the load
+// problem the executions page just had. The operator is looking at one list; that is the one worth
+// re-reading. The other sources reload when they are selected, which is when they matter.
+//
+// IT REFUSES WHILE AN EDITOR IS OPEN. The inline detail editor and the modal forms are typing
+// surfaces: reloading underneath one would move rows and re-seat the cursor while the operator is
+// mid-edit. A paused refresh is strictly better than a hostile one.
+//
+// The cursor survives by construction — Table.SetItems re-seats it BY ID — so when nothing has
+// changed the reload is invisible, which is what makes a 5s window tolerable to read against.
+func (b *Base) RefreshView() tea.Cmd {
+	if b.editingDetail() || b.Open != nil {
+		return nil
+	}
+	cmds := []tea.Cmd{}
+	if b.active >= 0 && b.active < len(b.sources) {
+		cmds = append(cmds, b.loadSource(b.active, ""))
+	}
+	// The open detail is refreshed too: a list reload does not re-read the row under the cursor, and
+	// the detail is where a follow-up reply appears. It is a no-op when nothing is selected.
+	if b.detailID != "" {
+		cmds = append(cmds, b.RequestDetail(b.ActiveSourceName(), b.detailID))
+	}
+	return tea.Batch(cmds...)
+}
+
+// editingDetail reports whether the inline detail editor is open. (EditingDetail is the exported
+// form; this is the internal read the refresh guard needs.)
+func (b *Base) editingDetail() bool { return b.editForm != nil }
+
 // loadSource loads a source from the top, fetching the WHOLE set.
 //
 // IT FOLLOWS THE CURSOR INTERNALLY SO NOBODY HAS TO PAGINATE. The operator: "I don't understand

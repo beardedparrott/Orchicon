@@ -256,15 +256,60 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 	if err != nil {
 		return nil, "", err
 	}
+	// The work item TITLES come from the shared name index (names.go), the same cache the runs pane
+	// uses. The proto carries no task-title field and the execution row's own is never populated, so
+	// resolving here is what lets the row say WHAT ran rather than which id it was — the operator:
+	// "The titles of the executions really don't tell me anything besides ID and status. I would like
+	// the workflow name and work item associated with it."
+	//
+	// Best effort by construction: a name that is not in the index simply does not contribute, so a
+	// cold or failed index degrades to the previous title (the id) rather than to an empty row.
+	m.runNames.ensure(ctx, m)
 	items := make([]screenkit.Item, 0, len(resp.Msg.Executions))
 	for _, e := range resp.Msg.Executions {
 		items = append(items, screenkit.Item{
-			ID:    e.GetId(),
-			Title: e.GetId(),
-			Meta:  strings.ToLower(e.GetStatus().String()),
+			ID: e.GetId(),
+			// `<workflow> · <work item>` — the two names the operator asked for, with the ID kept as
+			// a fallback so a row is never blank. The worker name rides in Meta beside the status,
+			// because "which worker" is the other thing a row of executions needs to be readable.
+			Title: executionListTitle(e, &m.runNames),
+			Meta:  executionListMeta(e),
 		})
 	}
 	return items, resp.Msg.NextPageToken, nil
+}
+
+// executionListTitle composes the row's primary line: the workflow name, the bound work item's
+// title, or the id — in that order of preference, joined when more than one is known.
+//
+// The ID is ALWAYS the fallback rather than a suffix: a row that cannot resolve anything must still
+// identify itself, and an id is better than a blank line.
+func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
+	wf := strings.TrimSpace(e.GetWorkflowName())
+	item := strings.TrimSpace(names.itemTitle(e.GetTaskId()))
+	switch {
+	case wf != "" && item != "":
+		return wf + " · " + item
+	case wf != "":
+		return wf
+	case item != "":
+		return item
+	}
+	return e.GetId()
+}
+
+// executionListMeta is the secondary line: the status (what the operator scans for) and the worker's
+// name when it is known — "succeeded · Quick Software Engineer" — so a run's identity and its state
+// are both legible without opening it.
+func executionListMeta(e *apiv1.WorkerExecution) string {
+	meta := strings.ToLower(strings.TrimPrefix(e.GetStatus().String(), "EXECUTION_STATUS_"))
+	if meta == "" {
+		meta = strings.ToLower(e.GetStatus().String())
+	}
+	if w := strings.TrimSpace(e.GetWorkerName()); w != "" {
+		meta += " · " + w
+	}
+	return meta
 }
 
 func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {

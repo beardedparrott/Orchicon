@@ -585,3 +585,44 @@ func ClearUsageSessionIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids .
 	}
 	return tag.RowsAffected(), nil
 }
+
+// ExecutionUsageTotals is one execution's summed token/cost totals.
+type ExecutionUsageTotals struct {
+	Tokens  int64
+	CostUSD float64
+}
+
+// SumUsageForExecutions returns the token and cost totals for MANY executions in ONE query.
+//
+// WHY THIS REPLACES A LOOP. ListExecutions enriched its page by calling SumUsageForExecution once
+// per row — a query per execution, each an index scan plus two aggregates. That was survivable while
+// the list fetched one page of 100; once every list fetched itself WHOLE (the page concept is
+// retired), the executions list pulled 2,959 rows and issued ~5,900 enrichment queries for a single
+// screen load. The operator reported it plainly: "The initial execution page load is pretty slow."
+//
+// One grouped query answers the same question for the whole page, which is what makes the load
+// something the operator does not wait on.
+func SumUsageForExecutions(ctx context.Context, tx pgx.Tx, tenantID string, executionIDs []string) (map[string]ExecutionUsageTotals, error) {
+	out := make(map[string]ExecutionUsageTotals, len(executionIDs))
+	if tenantID == "" || len(executionIDs) == 0 {
+		return out, nil
+	}
+	const q = `SELECT execution_id, COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0)
+		FROM usage_records
+		WHERE tenant_id = $1 AND execution_id = ANY($2)
+		GROUP BY execution_id`
+	rows, err := tx.Query(ctx, q, tenantID, executionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("db: sum usage for executions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var t ExecutionUsageTotals
+		if err := rows.Scan(&id, &t.Tokens, &t.CostUSD); err != nil {
+			return nil, fmt.Errorf("db: scan usage totals: %w", err)
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}
