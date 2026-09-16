@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -70,15 +69,7 @@ func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 8, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatalf("create adapter: %v", err)
-	}
+	_ = createTestAdapter(t, env.pool, "opencode", 8)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit adapter: %v", err)
 	}

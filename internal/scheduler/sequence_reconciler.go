@@ -844,6 +844,7 @@ var stopRuntime RuntimeLifecycle
 
 // SetStopAbortHook injects the live-session abort hook used by StopSequence.
 func SetStopAbortHook(fn func(ctx context.Context, execID, reason string) error) { stopAbortHook = fn }
+
 // SetStopRuntime injects the runtime lifecycle used to reap containers after Stop.
 func SetStopRuntime(rl RuntimeLifecycle) { stopRuntime = rl }
 

@@ -14,31 +14,40 @@ import (
 // process offering execution capabilities. tenant_id is the primary
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 type AdapterRow struct {
-	ID                    string
-	TenantID              string
-	Kind                  string
-	Version               string
-	Endpoint              string
-	Capabilities          []byte // jsonb
-	Status                string
+	ID                      string
+	TenantID                string
+	Kind                    string
+	Version                 string
+	Endpoint                string
+	Capabilities            []byte // jsonb
+	Status                  string
 	MaxConcurrentExecutions int
-	RegisteredAt          time.Time
-	LastHeartbeatAt       *time.Time
+	RegisteredAt            time.Time
+	LastHeartbeatAt         *time.Time
 }
 
-// CreateAdapter inserts a new runtime adapter registration
-// (docs/04 §2: register). Returns the row with server-generated
-// timestamps.
+// CreateAdapter registers a runtime adapter row.
+//
+// last_heartbeat_at IS persisted when the caller sets one. It used to be DROPPED — the INSERT's
+// column list omitted it and the field was only read back — so a caller that passed a heartbeat got
+// a row with NULL instead, silently. That mattered far beyond a missing column: the dispatcher's
+// candidate query treats NULL as FRESH (`last_heartbeat_at IS NULL OR last_heartbeat_at >= now() -
+// ttl`), so every test fixture that created an adapter with `LastHeartbeatAt: &now` in fact created
+// one that could never expire. 156 such rows accumulated in the live tenant, and because
+// selectAdapter's tiebreak is the adapter ID, they entered the same candidate pool as the real
+// adapter — 993 real executions were dispatched onto a `localhost:0` phantom, and every one of them
+// after the real adapter stopped being preferred came back failed/failed_to_start.
 func CreateAdapter(ctx context.Context, tx pgx.Tx, a AdapterRow) (AdapterRow, error) {
 	const q = `INSERT INTO runtime_adapters
-		(id, tenant_id, kind, version, endpoint, capabilities, status, max_concurrent_executions)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		(id, tenant_id, kind, version, endpoint, capabilities, status, max_concurrent_executions,
+		 last_heartbeat_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, tenant_id, kind, version, endpoint, capabilities, status,
 			max_concurrent_executions, registered_at, last_heartbeat_at`
 	row := a
 	err := tx.QueryRow(ctx, q,
 		a.ID, a.TenantID, a.Kind, a.Version, a.Endpoint, a.Capabilities,
-		a.Status, a.MaxConcurrentExecutions,
+		a.Status, a.MaxConcurrentExecutions, a.LastHeartbeatAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Kind, &row.Version, &row.Endpoint,
 		&row.Capabilities, &row.Status, &row.MaxConcurrentExecutions,
@@ -48,6 +57,18 @@ func CreateAdapter(ctx context.Context, tx pgx.Tx, a AdapterRow) (AdapterRow, er
 		return AdapterRow{}, fmt.Errorf("db: create adapter: %w", err)
 	}
 	return row, nil
+}
+
+// DeleteAdapter removes an adapter row. It exists so a TEST FIXTURE can clean up after itself: the
+// dispatch fixtures create adapters to exercise selectAdapter, and without this the rows outlived the
+// test that made them and stayed dispatch candidates forever. Absent means success (idempotent),
+// which is what a t.Cleanup wants.
+func DeleteAdapter(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	const q = `DELETE FROM runtime_adapters WHERE id = $1 AND tenant_id = $2`
+	if _, err := tx.Exec(ctx, q, id, tenantID); err != nil {
+		return fmt.Errorf("db: delete adapter: %w", err)
+	}
+	return nil
 }
 
 // GetAdapter fetches a single adapter by id within the tenant scope.
@@ -72,11 +93,11 @@ func GetAdapter(ctx context.Context, tx pgx.Tx, tenantID, id string) (AdapterRow
 
 // ListAdaptersFilter scopes a list query to a tenant, optionally by kind.
 type ListAdaptersFilter struct {
-	TenantID  string
-	Kind      string
-	Status    string
-	PageSize  int
-	AfterID   string
+	TenantID string
+	Kind     string
+	Status   string
+	PageSize int
+	AfterID  string
 }
 
 // ListAdapters returns a page of registered adapters for the tenant.

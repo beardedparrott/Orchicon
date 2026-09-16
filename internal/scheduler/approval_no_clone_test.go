@@ -524,3 +524,53 @@ func (e *approvalTestEnv) mustList(t *testing.T, tx pgx.Tx) []db.WorkItemRow {
 	}
 	return items
 }
+
+// createTestAdapter creates a dispatch-candidate adapter for a test AND registers its removal.
+//
+// THE TEARDOWN IS THE POINT. These fixtures exist to exercise dispatch, which needs a READY adapter
+// of the matching kind with a fresh heartbeat. Without cleanup the row outlives the test that made
+// it, and stays a dispatch candidate forever: the dispatcher's query treats a NULL heartbeat as
+// FRESH (`last_heartbeat_at IS NULL OR ... >= now() - ttl`) and selectAdapter breaks ties on adapter
+// ID, so those rows enter the SAME candidate pool as the real adapter. In the live dev tenant that
+// produced 156 permanent phantom adapters (endpoint `localhost:0`) and 993 real executions
+// dispatched onto them.
+//
+// LastHeartbeatAt is deliberately NOT set: a test adapter that heartbeats competes with the real one
+// for the whole 60s TTL. Left NULL it still dispatches (the query accepts NULL), and the cleanup
+// below removes it within the test's lifetime.
+func createTestAdapter(t *testing.T, pool *db.Pool, kind string, maxConcurrent int) string {
+	t.Helper()
+	ctx := context.Background()
+	id := db.NewID()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
+		ID: id, TenantID: approvalTestTenant,
+		Kind: kind, Version: "test", Endpoint: "localhost:0",
+		Capabilities: []byte("{}"), Status: "ready",
+		MaxConcurrentExecutions: maxConcurrent,
+	}); err != nil {
+		_ = ttx.Rollback(ctx)
+		t.Fatalf("create adapter: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit adapter: %v", err)
+	}
+	t.Cleanup(func() {
+		cctx := context.Background()
+		cttx, err := pool.BeginTenantTx(cctx, approvalTestTenant)
+		if err != nil {
+			t.Logf("adapter cleanup: begin tx: %v", err)
+			return
+		}
+		defer cttx.Rollback(cctx)
+		if err := db.DeleteAdapter(cctx, cttx.Tx, approvalTestTenant, id); err != nil {
+			t.Logf("adapter cleanup: delete %s: %v", id, err)
+			return
+		}
+		_ = cttx.Commit(cctx)
+	})
+	return id
+}

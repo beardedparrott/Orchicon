@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -79,15 +78,7 @@ func seedReadyAdapter(t *testing.T, pool *db.Pool) {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 64, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = createTestAdapter(t, pool, "opencode", 64)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

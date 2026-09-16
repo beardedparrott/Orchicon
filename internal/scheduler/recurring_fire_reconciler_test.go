@@ -1076,4 +1076,3 @@ func TestRecurringFireSkipsPausedItem(t *testing.T) {
 		t.Errorf("ledger entries = %d, want 0 (paused item records no fire)", len(entries))
 	}
 }
-

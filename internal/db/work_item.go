@@ -98,7 +98,7 @@ type WorkItemRow struct {
 	// SpawnedByRunID is the workflow run id of the recurring fire's run
 	// that produced this work item (empty = not an automation spawn).
 	SpawnedByRunID *string
-	SecretIDs   []byte // jsonb array of secret IDs to inject at dispatch (max 10)
+	SecretIDs      []byte // jsonb array of secret IDs to inject at dispatch (max 10)
 	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
 	SequenceAttempts int
 	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
@@ -569,7 +569,7 @@ type UpdateWorkItemFields struct {
 	// update (nil = unchanged).
 	SpawnedByWorkItemID *string
 	SpawnedByRunID      *string
-	SecretIDs         *[]byte
+	SecretIDs           *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.

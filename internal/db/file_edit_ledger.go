@@ -15,23 +15,23 @@ import (
 // and doubles as the stream sequence for resume; id doubles as the stream
 // event_id for dedup.
 type FileEditLedgerRow struct {
-	ID            string
-	TenantID      string
-	OwnerKind     string
-	OwnerID       string
-	Seq           int64
-	Path          string
-	Kind          string // create | modify | delete
-	UnifiedDiff   string
-	BeforeSize    int64
-	AfterSize     int64
-	BeforeSHA256  string
-	AfterSHA256   string
-	Tool          string // batch_write | write | edit | opencode:write | opencode:edit | reconcile:git
-	IsBinary      bool
-	Truncated     bool
-	GitConfirmed  bool
-	CreatedAt     time.Time
+	ID           string
+	TenantID     string
+	OwnerKind    string
+	OwnerID      string
+	Seq          int64
+	Path         string
+	Kind         string // create | modify | delete
+	UnifiedDiff  string
+	BeforeSize   int64
+	AfterSize    int64
+	BeforeSHA256 string
+	AfterSHA256  string
+	Tool         string // batch_write | write | edit | opencode:write | opencode:edit | reconcile:git
+	IsBinary     bool
+	Truncated    bool
+	GitConfirmed bool
+	CreatedAt    time.Time
 }
 
 // FileEdit owner_kind values (polymorphic owner: executions + Ask chats).

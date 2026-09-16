@@ -6,10 +6,10 @@ import (
 	"os"
 	"testing"
 
+	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/migrate"
-	assets "github.com/beardedparrott/orchicon"
 )
 
 func TestUpdateWorkItemVersionConflictDistinct(t *testing.T) {

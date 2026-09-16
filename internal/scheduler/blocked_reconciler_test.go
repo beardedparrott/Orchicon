@@ -12,7 +12,6 @@ import (
 	"context"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -41,15 +40,7 @@ func newBlockedStandaloneEnv(t *testing.T) (*sequenceTestEnv, db.WorkItemRow) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 8, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = createTestAdapter(t, env.pool, "opencode", 8)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

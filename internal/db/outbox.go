@@ -2,9 +2,9 @@ package db
 
 import (
 	"context"
-	"sync"
 	"crypto/rand"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,16 +16,16 @@ import (
 // (docs/09_Database_Schema.md §6). The relay polls unpublished rows and
 // publishes them to NATS, then marks published_at.
 type OutboxRow struct {
-	ID              string    // ULID, also used as the NATS MsgId for dedup
-	TenantID        string    // scopes the row via RLS
-	EventType       string    // e.g. "project.created"
-	AggregateType   string    // e.g. "project"
-	AggregateID     string    // the entity ULID
-	AggregateVer    int       // entity version after the mutation
-	Payload         []byte    // JSON-encoded event envelope
-	OccurredAt      time.Time
-	TraceID         string
-	CorrelationID   string
+	ID            string // ULID, also used as the NATS MsgId for dedup
+	TenantID      string // scopes the row via RLS
+	EventType     string // e.g. "project.created"
+	AggregateType string // e.g. "project"
+	AggregateID   string // the entity ULID
+	AggregateVer  int    // entity version after the mutation
+	Payload       []byte // JSON-encoded event envelope
+	OccurredAt    time.Time
+	TraceID       string
+	CorrelationID string
 }
 
 // EnqueueOutbox inserts an outbox row within the given transaction. It
