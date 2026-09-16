@@ -38,6 +38,7 @@ type fakePlane struct {
 	workflows         []*apiv1.Workflow
 	runs              []*apiv1.WorkflowRun
 	run               *apiv1.WorkflowRun
+	stepRuns          []*apiv1.WorkflowStepRun
 	items             []*apiv1.WorkItem
 	failWorkItemList  error
 	workflowListCalls int
@@ -113,6 +114,13 @@ func (p *fakePlane) GetWorkflowRun(_ context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
 	}
 	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: r}), nil
+}
+
+// GetWorkflowStepRuns serves the step runs the run flow renders.
+func (p *fakePlane) GetWorkflowStepRuns(context.Context, *connect.Request[apiv1.GetWorkflowStepRunsRequest]) (*connect.Response[apiv1.GetWorkflowStepRunsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return connect.NewResponse(&apiv1.GetWorkflowStepRunsResponse{StepRuns: p.stepRuns}), nil
 }
 
 func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {

@@ -426,6 +426,20 @@ func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 	b.detail.SetContent(title, fields, body)
 }
 
+// SetDetailBody replaces the detail pane's FIELDS and BODY while keeping its title — the
+// in-place repaint a cursor move needs, where the item is unchanged and only what is drawn for it
+// differs (the runs step flow moving its marker). Going through SetDetailContent would need the
+// title, and every caller re-supplying it is a caller that can get it wrong.
+func (b *Base) SetDetailBody(body string, fields []Field) {
+	b.detail.SetContent(b.detail.Title, fields, body)
+}
+
+// DetailForTest exposes the pane's current contents, so a screen can REPAINT around a change
+// without re-deriving what the fetch produced (and so tests can assert what is on screen).
+func (b *Base) DetailForTest() (string, []Field, string) {
+	return b.detail.Title, b.detail.Fields, b.detail.Body
+}
+
 // SetExecutor installs the single mutation executor (feedback + reconcile).
 func (b *Base) SetExecutor(e *mutate.Executor) { b.Exec = e }
 

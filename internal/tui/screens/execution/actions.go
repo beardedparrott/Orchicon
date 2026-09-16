@@ -459,6 +459,27 @@ func (m *Model) confirmRemoveStep(id, name, desc string) tea.Cmd {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// THE RUNS STEP FLOW. With the detail focused on a run, the vertical keys walk the run's STEPS
+	// and `enter` jumps to the highlighted step's execution — the operator's "if you hit enter on a
+	// particular step (whether it's complete or still running), it should take you to the
+	// execution".
+	//
+	// Scoped to (runs pane + detail focused) on purpose: with the LIST focused the same keys move
+	// the list, which is the operator's navigation model, and on any other pane they mean whatever
+	// that pane binds. The repaint is local — the rows are cached from the detail fetch — so moving
+	// the cursor costs no round trip.
+	if m.ActiveSourceName() == srcRuns && m.Base.DetailFocusedForTest() {
+		switch kstr {
+		case "up", "k":
+			m.runFlow.moveSteps(-1)
+			return m.repaintRunFlow(), true
+		case "down", "j":
+			m.runFlow.moveSteps(1)
+			return m.repaintRunFlow(), true
+		case "enter":
+			return m.goToRunStepExecution(), true
+		}
+	}
 	// The SCHEDULES pane's own chords (view cycle, jump to the run) run first, scoped to its
 	// pane: `v` and `g` mean nothing elsewhere on this screen, and scoping keeps a future
 	// binding elsewhere from silently stealing them here.

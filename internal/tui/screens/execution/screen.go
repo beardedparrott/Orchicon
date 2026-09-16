@@ -115,6 +115,9 @@ type Model struct {
 	// sched is the Schedules pane's state: which lens it is showing, and the row → run
 	// bindings the `g` jump needs (schedules.go).
 	sched schedState
+	// runFlow is the RUNS pane's step-flow state: the step the cursor is on and the rows it
+	// walks, so `enter` can jump to that step's execution (run_flow.go).
+	runFlow runFlowState
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -477,15 +480,22 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "started", Value: screenkit.FmtTime(r.GetStartedAt())},
 			{Key: "ended", Value: screenkit.FmtTime(r.GetEndedAt())},
 		}
-		// Step runs trail in the body when present.
+		// Step runs are rendered as a FLOW, not a list (run_flow.go): the operator's "mimic a
+		// similar look to our new workflow view where we have the steps, and it should show next
+		// to the steps if it succeeded, failed, how many retries". The cursor lives here so
+		// `enter` can jump to the highlighted step's execution.
 		var body string
 		if sr, err := m.cl.Workflows.GetWorkflowStepRuns(ctx, connect.NewRequest(&apiv1.GetWorkflowStepRunsRequest{RunId: id})); err == nil {
-			var b strings.Builder
-			for _, s := range sr.Msg.GetStepRuns() {
-				b.WriteString(screenkit.StatusBadge(strings.ToLower(s.GetStatus().String())) + " " +
-					s.GetStepName() + "  (" + screenkit.FmtTime(s.GetStartedAt()) + ")\n")
+			m.runFlow.setRows(runStepRows(sr.Msg.GetStepRuns()), id)
+			body, _ = renderRunFlow(m.runFlow.rows(), m.w, m.runFlow.sel())
+		}
+		fields = append(fields, screenkit.Field{Key: "steps", Value: screenkit.FmtInt(m.runFlow.count())})
+		if cur := m.runFlow.current(); cur != nil {
+			if cur.executionID != "" {
+				fields = append(fields, screenkit.Field{Key: "selected", Value: cur.name + " → enter: execution " + cur.executionID})
+			} else {
+				fields = append(fields, screenkit.Field{Key: "selected", Value: cur.name + " — no execution linked"})
 			}
-			body = strings.TrimRight(b.String(), "\n")
 		}
 		return "Workflow Run " + r.GetId(), fields, body, nil
 	}
@@ -562,6 +572,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			}); ok {
 				sh.RefreshExecutionSession(m.Base.DetailID(), m.SessionEvents(m.Base.DetailID()))
 			}
+		}
+		// A LIVE run's step flow must not go stale: the whole point of rendering a run as a flow is
+		// watching its steps turn, so an execution event on the RUNS pane re-reads the run rather
+		// than waiting for the operator to reselect it. The cursor survives (runFlowState keeps it
+		// by step), so the pane does not jump around while it is being watched.
+		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == srcRuns && m.Base.DetailID() != "" {
+			return m, m.Base.RequestDetail(srcRuns, m.Base.DetailID())
 		}
 		return m, m.reg.WaitEventPoke("execution-events")
 
