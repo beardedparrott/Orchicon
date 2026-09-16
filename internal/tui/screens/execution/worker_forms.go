@@ -249,13 +249,13 @@ func (m *Model) workerModelRef(id string) string {
 	return m.workerModel[id]
 }
 
-// setWorkerModelRef is the model write as a plain error (the form path), sharing
-// defaultSetWorkerModel's semantics.
+// setWorkerModelRef is the model write as a plain error (the form path), sharing the bulk write's
+// semantics: one id is simply the smallest batch.
 func (m *Model) setWorkerModelRef(ctx context.Context, workerID, ref string) error {
 	if m.rpcSetWorkerModel == nil {
 		return errors.New("no worker client")
 	}
-	return m.rpcSetWorkerModel(ctx, workerID, ref)
+	return m.rpcSetWorkerModel(ctx, []string{workerID}, ref)
 }
 
 // editWorkerVersionForm is the version editor: the prompt fields and the

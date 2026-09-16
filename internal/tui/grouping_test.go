@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/execution"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
@@ -390,10 +391,11 @@ func TestRailFolderRowManagesItsGrouping(t *testing.T) {
 	}
 	m.catFormKey(tea.KeyMsg{Type: tea.KeyEsc})
 
-	// `x` deletes it, behind the confirm.
-	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	// THE SHARED DELETE CHORD deletes it, behind the confirm — the same `ctrl+x` the panes use for an
+	// item, a selection, and a folder row.
+	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	if m.bulkConfirm == nil {
-		t.Fatal("x on a folder row must raise the delete confirm")
+		t.Fatal("ctrl+x on a folder row must raise the delete confirm")
 	}
 	if !strings.Contains(m.bulkConfirm.Body, screenkit.UncategorizedGroupName) {
 		t.Fatalf("the confirm must say where the items go, got %q", m.bulkConfirm.Body)
@@ -436,3 +438,63 @@ func TestSpaceOnAFolderMarksItsMembers(t *testing.T) {
 		t.Fatalf("space on a fully-marked folder must clear it, got %d", got)
 	}
 }
+
+// TestDeleteChordMatchesThePanes is the DRIFT GUARD for the one value that necessarily lives in two
+// packages.
+//
+// The shell draws the conversations rail and its folder rows; the execution screen draws the Workers and
+// Workflows panes; the shell imports the screen, not the other way round. So `ctrl+x` is written down in
+// both — and that is EXACTLY how the operator found Workers on `x` and Workflows on `shift+x` while every
+// test stayed green. Rather than add another comment asking people to keep them in step, this compares
+// them: change one without the other and the suite fails here, naming both values.
+func TestDeleteChordMatchesThePanes(t *testing.T) {
+	if got, want := categoryDeleteChord, execution.DeleteChord(); got != want {
+		t.Fatalf("the rail's folder-delete chord (%q) and the panes' delete chord (%q) have drifted", got, want)
+	}
+	// And both are the chord the operator asked for, asserted as a LITERAL: comparing the two constants
+	// only proves they agree, which they would also do at `x`.
+	if categoryDeleteChord != "ctrl+x" {
+		t.Fatalf("the delete chord must be ctrl+x, got %q", categoryDeleteChord)
+	}
+}
+
+// TestRailFolderDeleteAnswersTheSharedChord: the rail's folder row really does answer it (the guard above
+// only checks the constant).
+func TestRailFolderDeleteAnswersTheSharedChord(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, _ := categoryApp(t, cat)
+	m = loadCats(t, m)
+	m.attachRail(3)
+	for i, r := range m.railRows() {
+		if r.folder && r.catID == "cat-1" {
+			m.convSel = i
+		}
+	}
+	// The OLD chord must not delete a grouping any more. Note what it DOES do: with the rail up and the
+	// composer empty, a bare letter is TYPED — the rail's keys are driven from the composer, which is why
+	// its item chords are all modified — so the composer has to be cleared before the real chord is tried.
+	// Asserting this explicitly is what documents why the next line needs the clear.
+	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(categoryDeleteChordOld)})
+	if m.bulkConfirm != nil {
+		t.Fatalf("%q still deletes a grouping — the chord must have MOVED, not been added to",
+			categoryDeleteChordOld)
+	}
+	if m.dock.Value() != categoryDeleteChordOld {
+		t.Fatalf("a bare letter on the rail must be TYPED (got %q) — the rail binds only modified chords",
+			m.dock.Value())
+	}
+	m.dock.SetValue("")
+
+	// The shared one does.
+	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if m.bulkConfirm == nil {
+		t.Fatal("ctrl+x on a folder row must raise the grouping delete confirm")
+	}
+}
+
+// categoryDeleteChordOld is the chord this used to be, kept in ONE place here purely so the test above can
+// assert it no longer deletes.
+const categoryDeleteChordOld = "x"

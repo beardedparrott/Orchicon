@@ -237,6 +237,8 @@ func kmsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+x":
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

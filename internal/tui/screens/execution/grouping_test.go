@@ -435,8 +435,8 @@ func TestWorkflowsBulkDeleteUsesItsOwnKey(t *testing.T) {
 		t.Fatalf("two marked workflows must offer a bulk delete: %+v", acts)
 	}
 	for _, a := range acts {
-		if a.Label == "delete 2 selected" && a.Key != keyDeleteWorkflow {
-			t.Fatalf("the bulk delete must answer %q, got %q", keyDeleteWorkflow, a.Key)
+		if a.Label == "delete 2 selected" && a.Key != keyDelete {
+			t.Fatalf("the bulk delete must answer %q, got %q", keyDelete, a.Key)
 		}
 	}
 }

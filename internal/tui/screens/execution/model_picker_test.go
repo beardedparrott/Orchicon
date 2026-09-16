@@ -33,8 +33,11 @@ func newPickerExec(t *testing.T) (*Model, *[]string, *[]string) {
 		*loads = append(*loads, "models:"+kind+"/"+provider)
 		return []kit2.PickerOption{{Value: "claude-sonnet-4", Label: "claude-sonnet-4"}}, false, nil
 	}
-	m.rpcSetWorkerModel = func(_ context.Context, workerID, ref string) error {
-		*writes = append(*writes, workerID+"="+ref)
+	// The write records the WHOLE batch in one entry, because that is what the screen sends: one
+	// BulkUpdateWorkerModel call for the selection (a loop of single writes would make a ten-worker change
+	// ten chances to half-apply). Recording `ids=ref` also lets a test see the ORDER and the COUNT.
+	m.rpcSetWorkerModel = func(_ context.Context, workerIDs []string, ref string) error {
+		*writes = append(*writes, strings.Join(workerIDs, ",")+"="+ref)
 		return nil
 	}
 	return m, loads, writes
@@ -77,17 +80,18 @@ func lastOf(s []string) string {
 	return s[len(s)-1]
 }
 
-// The picker opens seeded from the worker's ACTIVE model_ref, which the workers
-// list already carries — including a slashed model remainder, verbatim.
+// The picker opens seeded from the workers' SHARED ACTIVE model_ref — which the workers list already
+// carries — including a slashed model remainder, verbatim.
 func TestWorkerModelPickerOpensSeededFromTheActiveRef(t *testing.T) {
 	m, _, _ := newPickerExec(t)
 	m.workerMu.Lock()
 	m.workerModel["w-1"] = "orchicon/commandcode/deepseek/deepseek-v4-flash"
+	m.workerModel["w-2"] = "orchicon/commandcode/deepseek/deepseek-v4-flash"
 	m.workerMu.Unlock()
 
-	cmd := m.beginSetModel("w-1")
+	cmd := m.beginBulkSetModel([]string{"w-1", "w-2"})
 	if m.modelPicker == nil {
-		t.Fatal("beginSetModel must open the picker")
+		t.Fatal("beginBulkSetModel must open the picker")
 	}
 	if !m.ClaimsKeys() {
 		t.Fatal("an open picker must claim the keyboard")
@@ -106,11 +110,32 @@ func TestWorkerModelPickerOpensSeededFromTheActiveRef(t *testing.T) {
 	}
 }
 
-// The three-step walk WRITES the chosen ref for that worker (BulkUpdateWorkerModel
-// with the single id), through the one mutation executor.
-func TestWorkerModelPickerCascadeWritesTheChosenRef(t *testing.T) {
+// When the selected workers' models DIFFER there is nothing honest to seed with, so the picker starts at
+// the preferred adapter rather than presenting one worker's ref as if it were everyone's.
+func TestWorkerModelPickerDoesNotSeedFromOneOfMany(t *testing.T) {
+	m, _, _ := newPickerExec(t)
+	m.workerMu.Lock()
+	m.workerModel["w-1"] = "orchicon/anthropic/claude-sonnet-4"
+	m.workerModel["w-2"] = "orchicon/commandcode/deepseek/deepseek-v4-flash"
+	m.workerMu.Unlock()
+
+	m.beginBulkSetModel([]string{"w-1", "w-2"})
+	if m.modelPicker == nil {
+		t.Fatal("the picker must open")
+	}
+	if got := m.modelPicker.Model(); got != "" {
+		t.Fatalf("a mixed selection must not seed a model, got %q", got)
+	}
+	if got := m.modelPicker.Provider(); got != "" {
+		t.Fatalf("a mixed selection must not seed a provider, got %q", got)
+	}
+}
+
+// The three-step walk WRITES the chosen ref for the WHOLE SELECTION in one call, through the one
+// mutation executor.
+func TestWorkerModelPickerCascadeWritesTheChosenRefForEveryMarkedWorker(t *testing.T) {
 	m, loads, writes := newPickerExec(t)
-	cmd := m.beginSetModel("w-1")
+	cmd := m.beginBulkSetModel([]string{"w-1", "w-2", "w-3"})
 
 	// Adapter kinds → the provider tier is requested; the preferred kind wins.
 	cmd = runLoad(t, m, cmd)
@@ -155,15 +180,15 @@ func TestWorkerModelPickerCascadeWritesTheChosenRef(t *testing.T) {
 		t.Fatal("committing must close the picker")
 	}
 	runWrite(t, wcmd)
-	if len(*writes) != 1 || (*writes)[0] != "w-1=orchicon/anthropic/claude-sonnet-4" {
-		t.Fatalf("writes = %v, want the chosen ref for w-1", *writes)
+	if len(*writes) != 1 || (*writes)[0] != "w-1,w-2,w-3=orchicon/anthropic/claude-sonnet-4" {
+		t.Fatalf("writes = %v, want ONE write covering all three marked workers", *writes)
 	}
 }
 
 // esc backs out without writing.
 func TestWorkerModelPickerEscWritesNothing(t *testing.T) {
 	m, _, writes := newPickerExec(t)
-	m.beginSetModel("w-1")
+	m.beginBulkSetModel([]string{"w-1", "w-2"})
 
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.modelPicker != nil {
@@ -179,7 +204,7 @@ func TestWorkerModelPickerEscWritesNothing(t *testing.T) {
 func TestWorkerModelPickerOwnsTheKeyboard(t *testing.T) {
 	m, _, _ := newPickerExec(t)
 	m.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "running"}}, "")
-	m.beginSetModel("w-1")
+	m.beginBulkSetModel([]string{"w-1", "w-2"})
 
 	// "c" is the cancel-execution chord; with the picker open it must be typed
 	// into the search, not open a confirm dialog.
@@ -271,7 +296,7 @@ func TestWorkerModelIsSetThroughTheFormField(t *testing.T) {
 // A load landing after the picker closed is dropped.
 func TestWorkerModelPickerIgnoresALateLoad(t *testing.T) {
 	m, _, _ := newPickerExec(t)
-	m.beginSetModel("w-1")
+	m.beginBulkSetModel([]string{"w-1", "w-2"})
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
 	m.Update(modelKindsMsg{Kinds: []string{"orchicon"}})

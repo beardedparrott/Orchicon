@@ -38,14 +38,15 @@ const (
 )
 
 // categoryRenameChord / categoryDeleteChord are the chords a CATEGORY ROW answers, on any surface that
-// shows one. They are the surface's OWN item keys — `e` edits what the cursor is on, `x` deletes it —
-// re-pointed by whether that is an item or a grouping, which is how the GUI reads too (the folder row
-// carries the rename and delete affordances itself).
+// shows one. They are the surface's OWN item keys — `e` edits what the cursor is on, and the shared
+// delete chord deletes it — re-pointed by whether that is an item or a grouping, which is how the GUI
+// reads too (the folder row carries the rename and delete affordances itself).
 //
-// They live here, with the other chords, so the rail and the two kit2 panes that draw folders cannot
-// disagree about the binding. (The execution package keeps its own constants because it cannot import
-// the shell; that is the one place a change here has to be mirrored.)
+// categoryDeleteChord is `ctrl+x`, the SAME chord the Workers and Workflows panes use for every delete
+// (single, bulk, and a folder). The execution package names that chord itself because it cannot import
+// the shell — so a test asserts the two agree rather than trusting them to (`TestDeleteChordMatchesThePanes`),
+// which is the only way this particular drift can be caught.
 const (
 	categoryRenameChord = "e"
-	categoryDeleteChord = "x"
+	categoryDeleteChord = "ctrl+x"
 )

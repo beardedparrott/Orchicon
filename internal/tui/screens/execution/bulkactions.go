@@ -77,3 +77,14 @@ func (m *Model) markableIDs() []string {
 	}
 	return out
 }
+
+// DeleteChord is the pane's delete chord, EXPORTED so the shell can assert its own copy of the same
+// value agrees.
+//
+// The two have to live in different packages — the shell draws the conversations rail and its folder
+// rows, the execution screen draws the Workers and Workflows panes, and the shell imports the screen
+// rather than the other way round — so the literal necessarily appears twice. That is exactly how the
+// Worker and Workflow delete chords drifted apart in the first place (one pane on `x`, the other on
+// `shift+x`), so rather than add a third comment asking people to keep them in step, a test compares
+// them: see the shell's TestDeleteChordMatchesThePanes.
+func DeleteChord() string { return keyDelete }

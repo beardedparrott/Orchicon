@@ -37,7 +37,10 @@ type categoryManageHost interface {
 // and delete affordances itself.
 const (
 	keyRenameCategory = "e"
-	keyDeleteCategory = "x"
+	// keyDeleteCategory is the SHARED delete chord, not a copy of its value: a grouping is deleted by the
+	// same key that deletes the items inside it, which is what "delete whatever the cursor is on" means —
+	// and two literals here is exactly how the Worker and Workflow delete chords drifted apart.
+	keyDeleteCategory = keyDelete
 )
 
 // grouped arranges a finished item list into collapsible category folders, using THE RESPONSE'S OWN

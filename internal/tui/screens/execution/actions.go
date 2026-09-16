@@ -16,6 +16,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -58,6 +59,14 @@ const (
 	keyRetryRun      = "t"
 	keyForceProgress = "p"
 	keySetModel      = "m"
+	// keyBulkSetModel sets the model for EVERY marked worker at once — the TUI's counterpart to the
+	// GUI's BulkChangeWorkerModelDialog, and the one thing a per-worker form cannot do (you cannot edit
+	// ten forms at once).
+	//
+	// SHIFT+M, because lowercase `m` is the retired single-worker chord — retired on purpose, since the
+	// model is a FIELD on the Edit and Version forms now, and re-binding it here would quietly bring back
+	// the second way of doing the same thing that was removed.
+	keyBulkSetModel = "M"
 	// Worker CRUD (Item 6). Each opens a form or a confirm; none writes from
 	// Update directly.
 	keyNewWorker   = "n"
@@ -66,12 +75,21 @@ const (
 	keyPublish     = "p"
 	keySetActive   = "a"
 	keyDeprecate   = "u"
-	keyDelete      = "x"
+	// keyDelete is THE delete chord, for BOTH panes and for both single and bulk deletes. It is one
+	// constant with one value because the operator asked for exactly that: *"let's make those consistent
+	// across the board please with 'ctrl+x' for single and bulk on both"*, after finding Workers on `x`,
+	// Workflows on `shift+x`, and the bulk variants on whatever their pane happened to use.
+	//
+	// TWO SEPARATE CONSTANTS SET TO THE SAME LITERAL WOULD DRIFT AGAIN — that is how this happened the
+	// first time — so the Workflows pane reads this one too. `ctrl+x` is also free of the STEP EDITOR's
+	// `x` (remove step), which the old `X`/`x` pair had to be arranged around; that collision is simply
+	// gone now.
+	keyDelete = "ctrl+x"
 	// keyCategorize ASSIGNS the selected item to a grouping (worker / workflow / conversation
 	// categories). A CAPITAL, following this screen's own convention that a capital is the OTHER act on
-	// the same pane (`E` renames a workflow header, `V` edits a version, `X` deletes a workflow) — and
-	// because every lowercase letter with a mnemonic is taken here: `c` is cancel, `g` goes to the run,
-	// `t` retries.
+	// the same pane (`E` renames a workflow header, `V` edits a version, `M` sets the model on a
+	// selection) — and because every lowercase letter with a mnemonic is taken here: `c` is cancel, `g`
+	// goes to the run, `t` retries.
 	//
 	// It opens the SHELL's assign-or-create modal (see tui/categories.go): the category list is the
 	// shell's cache and the modal is shell-hosted, so the screen hands the intent over rather than
@@ -87,14 +105,14 @@ const (
 	// workflow and all its steps at once, not in pieces." Inside that mode `enter`
 	// edits the selected step, `a` adds and `x` removes, so the step chords are no
 	// longer separate top-level commands sitting outside a normal edit view. `E`
-	// renames the workflow header (a different act from editing its steps) and `X`
-	// deletes it; `n`/`p`/`u` do not collide. Both sets are scoped to the Workflows
+	// renames the workflow header (a different act from editing its steps); delete is
+	// the shared `ctrl+x` (see keyDelete). Both sets are scoped to the Workflows
 	// pane, which is also what keeps `p` usable as force-progress on a run.
-	keyNewWorkflow    = "n"
-	keyEditWorkflow   = "E"
-	keyPublishWf      = "p"
-	keyDeprecateWf    = "u"
-	keyDeleteWorkflow = "X"
+	keyNewWorkflow  = "n"
+	keyEditWorkflow = "E"
+	keyPublishWf    = "p"
+	keyDeprecateWf  = "u"
+	// Delete is keyDelete — ONE chord for both panes (see its declaration).
 	// WORKFLOW EDIT MODE. `e` opens it from the Workflows pane; inside it the step
 	// cursor and the step chords are live. `a` is the operator's suggested key for
 	// adding ("Not sure how we can handle adding a step in this mode, maybe we can
@@ -198,12 +216,22 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	// marking rows on these panes highlighted them and did nothing else.
 	if m.ActiveSourceName() == srcWorkers {
 		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
-			return m.entityBulkActions(srcWorkers, keyDelete, "worker", ids, m.rpcDeleteWorker)
+			acts := m.entityBulkActions(srcWorkers, keyDelete, "worker", ids, m.rpcDeleteWorker)
+			// The worker-only bulk act. It opens a MODAL rather than writing, so its Do refuses the way
+			// every other form-opening action on this screen does (see errNeedForm) — the key path
+			// intercepts `M` first and opens the picker, and a CLICK on the bar label gets the refusal
+			// instead of a silent nothing.
+			return append(acts, kit2.Action{
+				Label: fmt.Sprintf("set model %d selected", len(ids)), Key: keyBulkSetModel, Source: srcWorkers,
+				Do: func(context.Context) error {
+					return errors.New("press " + keyBulkSetModel + " with rows marked to choose a model, or e to edit one worker")
+				},
+			})
 		}
 	}
 	if m.ActiveSourceName() == srcWorkflows {
 		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
-			return m.entityBulkActions(srcWorkflows, keyDeleteWorkflow, "workflow", ids, m.rpcDeleteWorkflow)
+			return m.entityBulkActions(srcWorkflows, keyDelete, "workflow", ids, m.rpcDeleteWorkflow)
 		}
 	}
 	item, ok := m.ActiveItem()
@@ -368,7 +396,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		acts = append(acts, kit2.Action{
-			Label: "delete", Key: keyDeleteWorkflow, Danger: true, Source: srcWorkflows,
+			Label: "delete", Key: keyDelete, Danger: true, Source: srcWorkflows,
 			Confirm: "Delete workflow " + name + "?\n" +
 				"This removes the workflow and every version of it, and cannot be undone.",
 			Apply:    func() { m.Base.RemoveRow(srcWorkflows, id) },
@@ -732,10 +760,32 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		m.notice = "the message box is now INLINE at the bottom of the execution — press enter to send"
 		return m.repaintTranscript(), true
 	}
+	if kstr == keyBulkSetModel && m.ActiveSourceName() == srcWorkers {
+		// BULK SET MODEL. The mechanism is the same ONE the mark/delete path uses — a selection above the
+		// shared threshold replaces the single-row actions — and this is the act with no single-row
+		// equivalent to replace: a per-worker model edit is a FORM FIELD (e / V), which is why lowercase
+		// `m` was retired. Chaining ten forms is not a feature, so the bulk case is its own modal.
+		//
+		// SCOPED TO THE WORKERS PANE, exactly like every other worker chord here (n/e/V/p/a/u). The
+		// Workflows pane has its own model story (a ref per version, edited through V), and the
+		// executions and runs panes have none at all — so the key falls through there rather than
+		// opening a WORKER picker over a workflow.
+		ids := m.markableIDs()
+		if len(ids) < kit2.BulkThreshold {
+			// Refuse with the two REAL routes rather than a bare "no": an operator pressing M with
+			// nothing marked needs to know both that marking is the bulk gesture and that one worker's
+			// model lives on its form.
+			if len(ids) == 1 {
+				return m.refuse("one worker is not a bulk selection — press e to edit it, or mark two or more with space"), true
+			}
+			return m.refuse("mark two or more workers first (space marks), then " + keyBulkSetModel + " sets their model together"), true
+		}
+		return m.beginBulkSetModel(ids), true
+	}
 	if kstr == keySetModel {
 		// The chord is gone (the model is a form field now), but a conversation —
 		// or a muscle memory — may still send it. Explain rather than no-op.
-		return m.refuse("the model is a field on the Edit form (e) and the version editor (V) — open one and choose it there"), true
+		return m.refuse("the model is a field on the Edit form (e) and the version editor (V) — open one and choose it there, or press " + keyBulkSetModel + " to set it for several marked workers"), true
 	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
@@ -821,7 +871,7 @@ func (m *Model) unavailableReason(key string) string {
 		case keyDeprecate:
 			return "deprecate applies to a PUBLISHED worker — " + it.Title + " is " + status
 		case keyDelete:
-			return "delete (x) removes " + it.Title + " and all of its versions"
+			return "this worker cannot be deleted — the pane offers no delete for it (retired workers are kept)"
 		}
 		return ""
 	case srcWorkflows:
@@ -832,8 +882,8 @@ func (m *Model) unavailableReason(key string) string {
 		switch key {
 		case keyDeprecateWf:
 			return "deprecate applies to a PUBLISHED workflow — " + it.Title + " is " + workflowStatusOf(it.Meta)
-		case keyDeleteWorkflow:
-			return "delete (x) removes " + it.Title + " and all of its versions"
+		case keyDelete:
+			return "this workflow cannot be deleted — the pane offers no delete for it"
 		}
 		return ""
 	}
@@ -938,10 +988,23 @@ func (m *Model) HintLine() string {
 		return m.scheduleHint()
 
 	case srcWorkers:
-		return theme.HintText.Render("n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
-			" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +
-			" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
-			" u: deprecate " + theme.DetailKey.Render("·") + " x: delete " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
+		// THE DELETE CHORD AND THE BULK SET-MODEL CHORD ARE NAMED HERE, and the mark state is stated,
+		// because the composer is the row the operator reads. It used to advertise `x: delete` — a chord
+		// that no longer exists anywhere — and said nothing about what marking rows does, so a bulk
+		// delete was invisible until it was already selected.
+		if n := m.Base.MarkCount(); n > 0 {
+			return theme.HintText.Render(m.markHint(n) +
+				keyDelete + ": delete " + fmt.Sprint(n) + " " + theme.DetailKey.Render("·") +
+				" " + keyBulkSetModel + ": set model " + theme.DetailKey.Render("·") +
+				" esc: clear " + theme.DetailKey.Render("·") + " ↑↓: move · r: refresh")
+		}
+		return theme.HintText.Render(
+			"n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
+				" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +
+				" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
+				" u: deprecate " + theme.DetailKey.Render("·") + " C: categorize " + theme.DetailKey.Render("·") +
+				" " + keyDelete + ": delete " + theme.DetailKey.Render("·") +
+				" space: mark for bulk " + theme.DetailKey.Render("·") + " enter: versions · r: refresh")
 	case srcWorkflows:
 		if m.flowEditing {
 			// Inside the mode the flow IS the editing surface, so the cheat-sheet is the
@@ -953,11 +1016,28 @@ func (m *Model) HintLine() string {
 				" E: rename workflow " + theme.DetailKey.Render("·") +
 				" esc: done " + theme.DetailKey.Render("·") + " r: refresh")
 		}
+		// The Workflows pane used to advertise NO delete at all — the chord existed (`shift+x`) and was
+		// simply not written down, which is how it stayed undiscoverable.
+		if n := m.Base.MarkCount(); n > 0 {
+			return theme.HintText.Render(m.markHint(n) +
+				keyDelete + ": delete " + fmt.Sprint(n) + " " + theme.DetailKey.Render("·") +
+				" esc: clear " + theme.DetailKey.Render("·") + " ↑↓: move · r: refresh")
+		}
 		return theme.HintText.Render("e: edit workflow (steps) " + theme.DetailKey.Render("·") +
 			" n: new workflow " + theme.DetailKey.Render("·") +
 			" E: rename " + theme.DetailKey.Render("·") +
 			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +
+			" C: categorize " + theme.DetailKey.Render("·") +
+			" " + keyDelete + ": delete " + theme.DetailKey.Render("·") +
+			" space: mark for bulk " + theme.DetailKey.Render("·") +
 			" enter: flow view " + theme.DetailKey.Render("·") + " r: refresh")
 	}
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · r: refresh")
+}
+
+// markHint states the selection, LEFT of the chords that act on it: the operator needs the count before
+// they need the keys, and the count is what tells them the delete is about to hit more than the row under
+// the cursor.
+func (m *Model) markHint(n int) string {
+	return fmt.Sprintf("%d marked", n) + " " + theme.DetailKey.Render("·") + " "
 }

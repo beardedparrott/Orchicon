@@ -48,12 +48,14 @@ type Model struct {
 	// modelPicker is the open worker-model picker (adapter → provider → model,
 	// with search). A model_ref is CHOSEN, never typed, so it gets its own modal.
 	modelPicker *kit2.ModelPicker
-	// modelPickerWorker is the worker the open picker writes to.
-	modelPickerWorker string
+	// modelPickerWorkers is the SET of workers the open picker writes to — the marked selection it was
+	// opened for. A list rather than one id because the picker IS the bulk act (M): a per-worker model
+	// edit is a form field, so there is no single-worker row-action path to keep separate.
+	modelPickerWorkers []string
 	// modelPickerField is the FORM FIELD the open picker writes back into, when it
 	// was opened from a KModel field inside a form (the worker create form and the
 	// version editor). Empty when the picker was opened from the row action (that
-	// one writes straight through rpcSetWorkerModel).
+	// one writes straight through the rpcSetWorkerModel thunk).
 	modelPickerField string
 	// workerOp / workerOpID remember which worker CRUD operation is waiting on a
 	// load, so its form opens when the data lands (and a late result for a worker
@@ -71,7 +73,7 @@ type Model struct {
 	rpcModelKinds     func(ctx context.Context) ([]string, []string, error)
 	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
 	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
-	rpcSetWorkerModel func(ctx context.Context, workerID, ref string) error
+	rpcSetWorkerModel func(ctx context.Context, workerIDs []string, ref string) error
 	// Worker CRUD loads: thunks for the same reason (worker_forms.go) — the
 	// interactive operations need the worker's CURRENT state before they can
 	// seed a form or decide whether they apply.
@@ -181,7 +183,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcModelKinds = m.defaultModelKinds
 	m.rpcModelProviders = m.defaultModelProviders
 	m.rpcModelModels = m.defaultModelModels
-	m.rpcSetWorkerModel = m.defaultSetWorkerModel
+	m.rpcSetWorkerModel = m.defaultSetWorkerModelRefs
 	m.rpcGetWorker = m.defaultGetWorker
 	m.rpcListWorkerVersions = m.defaultListWorkerVersions
 	m.rpcGetWorkflow = m.defaultGetWorkflow
