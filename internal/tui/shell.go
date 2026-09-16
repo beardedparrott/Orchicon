@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -321,7 +322,6 @@ func (m *App) menuView() string {
 // slash palette, and the centered overlays.
 func (m *App) overlayBoxAt(base, box string, top, left int) string {
 	rows := strings.Split(base, "\n")
-	bw := lipgloss.Width(box)
 	for i, br := range strings.Split(box, "\n") {
 		r := top + i
 		if r < 0 {
@@ -330,7 +330,7 @@ func (m *App) overlayBoxAt(base, box string, top, left int) string {
 		if r >= len(rows) {
 			break
 		}
-		rows[r] = overlayRow(rows[r], br, left, bw)
+		rows[r] = overlayRow(rows[r], br, left)
 	}
 	return strings.Join(rows, "\n")
 }
@@ -350,6 +350,55 @@ func (m *App) overlayCentered(base, box string) string {
 	return m.overlayBoxAt(base, box, top, left)
 }
 
+// modalInnerWidth is the width a modal's CONTENT has to lay itself out in — the panel's interior,
+// i.e. the modal width minus its two border cells. It exists so a form can be told the width it
+// actually has instead of the outer width it does not: laying a field out to `modalWidth` overflows the
+// panel by exactly the two border cells, and Panel.Pad then truncates the field's last two columns.
+func (m *App) modalInnerWidth() int {
+	w := m.modalWidth() - 2
+	if w < 8 {
+		w = 8
+	}
+	return w
+}
+
+// modalPanel wraps a modal's body in a SOLID, uniformly-sized bordered panel.
+//
+// THE OPERATOR'S ASK, VERBATIM: "Weird visual bug when renaming a conversation. Probably should just
+// be its own modal with a solid background. This also happens when applying to a category."
+//
+// The modals used to splice the form's raw View() straight over the frame, and a kit2 form's View is
+// NOT a rectangle — its title and hint rows are written at their natural width while its field rows
+// are padded to the form width. Two consequences, both measured: the base showed through the gaps
+// inside the modal, and the ragged rows tripped the splice defect in overlayRow and shifted everything
+// after the modal sideways.
+//
+// A kit2.Panel is a rectangle BY CONSTRUCTION: every interior row is padded (and truncated) to the
+// inner width and painted with the opaque screen background, and the whole thing is normalized to
+// exactly w×h. The conversations rail has used one since it was built; the modals now do too, so a
+// modal cannot be anything but solid.
+//
+// The panel is sized to its CONTENT, not to the viewport: a viewport-tall panel would paint a wall of
+// background over the screen behind it, which is a worse artefact than the one being fixed.
+func (m *App) modalPanel(body string, w int) string {
+	if w < 10 {
+		w = 10
+	}
+	lines := strings.Split(body, "\n")
+	// Trailing blank lines would only add empty interior rows.
+	for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	// No panel TITLE: the form already renders its own title as its first line, and putting it on the
+	// border as well would print it twice.
+	p := kit2.NewPanel("", w, len(lines)+2)
+	p.SetContent(strings.Join(lines, "\n"))
+	return p.View()
+}
+
 // composeView renders the shell with the open dropdown overlaid on the
 // opaque full-screen base.
 func (m *App) composeView(base string) string {
@@ -358,7 +407,6 @@ func (m *App) composeView(base string) string {
 		return base
 	}
 	top, left := m.menuGeometry()
-	w, _ := m.menuSize(m.TabMenu())
 	rows := strings.Split(base, "\n")
 	menuRows := strings.Split(menu, "\n")
 	for i, mr := range menuRows {
@@ -366,15 +414,28 @@ func (m *App) composeView(base string) string {
 		if r >= len(rows) {
 			break
 		}
-		rows[r] = overlayRow(rows[r], mr, left, w)
+		rows[r] = overlayRow(rows[r], mr, left)
 	}
 	return strings.Join(rows, "\n")
 }
 
-// overlayRow splices overlay into row starting at column left (both
-// ANSI-aware). Cells right of the overlay keep the row's background.
-func overlayRow(row, overlay string, left, width int) string {
+// overlayRow splices overlay into row starting at column left (both ANSI-aware). Cells right of the
+// overlay keep the row's background.
+//
+// THE OVERLAY'S WIDTH IS MEASURED HERE, NOT PASSED IN, and that is the fix for a real visual defect.
+// The caller used to pass the BOX's MAXIMUM line width and it was then used as the width of EVERY row.
+// A box whose lines are not all the same width — which the kit2 forms are BY DESIGN, since their title
+// and hint rows are written at their natural width while their field rows are padded — therefore
+// spliced a SHORT row as if it were a wide one, and `keep` landed far to the right of where the glyphs
+// actually ended. That DELETED the base cells in between and returned a row shorter than the frame,
+// which the final fillView then padded at the FAR RIGHT: everything after the modal shifted sideways,
+// and base content stayed visible inside the modal's own rectangle.
+//
+// Measured before the fix: a 5-cell row inside a 25-cell box turned a 40-cell row into a 25-cell one,
+// and 18 base cells survived within the box's rectangle — the operator's "weird visual bug".
+func overlayRow(row, overlay string, left int) string {
 	cols := lipgloss.Width(row)
+	ow := lipgloss.Width(overlay)
 	var prefix, suffix string
 	if left > 0 {
 		if left >= cols {
@@ -383,15 +444,11 @@ func overlayRow(row, overlay string, left, width int) string {
 			prefix = ansi.Truncate(row, left, "")
 		}
 	}
-	total := lipgloss.Width(prefix) + width
-	if rest := cols - total; rest > 0 {
-		keep := lipgloss.Width(prefix) + width
-		suffix = ansi.Truncate(ansi.Truncate(row, keep+rest, ""), cols, "")
-		// Truncate(row, keep+rest) keeps exactly keep+rest visible cells;
-		// drop the first keep of them to isolate the tail.
-		if keep > 0 {
-			suffix = ansi.TruncateLeft(suffix, keep, "")
-		}
+	// Keep everything from the cell AFTER the overlay's own last cell. Using the overlay's measured
+	// width rather than a box-wide constant is what makes a ragged overlay safe.
+	keep := lipgloss.Width(prefix) + ow
+	if rest := cols - keep; rest > 0 {
+		suffix = ansi.TruncateLeft(row, keep, "")
 	}
 	return prefix + overlay + suffix
 }

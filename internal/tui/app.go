@@ -646,14 +646,15 @@ func (m *App) renameConvKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	return m, cmd
 }
 
-// renameConvView composes the modal over the base view.
+// renameConvView composes the modal over the base view, inside a SOLID panel.
 func (m *App) renameConvView(base string, w, h int) string {
 	if m.renameConv == nil {
 		return base
 	}
-	m.renameConv.Width = m.modalWidth()
-	m.renameConv.Height = h
-	return m.overlayCentered(base, m.renameConv.View())
+	// The form lays itself out in the PANEL'S INTERIOR, so its rows fit inside the border rather than
+	// being truncated by two columns on the right.
+	m.renameConv.Width = m.modalInnerWidth()
+	return m.overlayCentered(base, m.modalPanel(m.renameConv.View(), m.modalWidth()))
 }
 
 // conversationTitle looks up a rail conversation's current title ("" when it is not loaded).

@@ -440,12 +440,13 @@ func (m *App) onCategoriesMutated(msg categoriesMutatedMsg) tea.Cmd {
 	return tea.Batch(local, m.loadCategories())
 }
 
-// assignCategoryView composes the modal over the base view.
+// assignCategoryView composes the modal over the base view, inside a SOLID panel.
 func (m *App) assignCategoryView(base string, w, h int) string {
 	if m.assignForm == nil {
 		return base
 	}
-	m.assignForm.Width = m.modalWidth()
-	m.assignForm.Height = h
-	return m.overlayCentered(base, m.assignForm.View())
+	// Same rule as the rename modal: the form gets the panel's INTERIOR width and the panel gives the
+	// modal the solid rectangle the operator asked for.
+	m.assignForm.Width = m.modalInnerWidth()
+	return m.overlayCentered(base, m.modalPanel(m.assignForm.View(), m.modalWidth()))
 }
