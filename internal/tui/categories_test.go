@@ -30,6 +30,13 @@ type stubCategories struct {
 	// assignments records AssignToCategory calls.
 	assignedCategory, assignedEntity string
 	assignedTarget                   apiv1.CategoryTargetType
+	// assignCalls records EVERY AssignToCategory entity id, in call order.
+	//
+	// The single assignedEntity field above cannot express a BULK write — it keeps only the last one —
+	// so a bulk test asserting on it would pass with one call and fail to notice four missing.
+	assignCalls []string
+	// unassignCalls likewise records every UnassignFromCategory entity id, in call order.
+	unassignCalls []string
 	// unassigned records UnassignFromCategory calls.
 	unassignedEntity string
 	unassignedTarget apiv1.CategoryTargetType
@@ -87,12 +94,14 @@ func (s *stubCategories) AssignToCategory(_ context.Context, req *connect.Reques
 	s.assignedCategory = req.Msg.GetCategoryId()
 	s.assignedEntity = req.Msg.GetEntityId()
 	s.assignedTarget = req.Msg.GetTargetType()
+	s.assignCalls = append(s.assignCalls, req.Msg.GetEntityId())
 	return connect.NewResponse(&apiv1.AssignToCategoryResponse{}), nil
 }
 
 func (s *stubCategories) UnassignFromCategory(_ context.Context, req *connect.Request[apiv1.UnassignFromCategoryRequest]) (*connect.Response[apiv1.UnassignFromCategoryResponse], error) {
 	s.unassignedEntity = req.Msg.GetEntityId()
 	s.unassignedTarget = req.Msg.GetTargetType()
+	s.unassignCalls = append(s.unassignCalls, req.Msg.GetEntityId())
 	return connect.NewResponse(&apiv1.UnassignFromCategoryResponse{}), nil
 }
 
@@ -169,8 +178,8 @@ func TestCategorizeChordOnTheWorkersPaneOpensTheModal(t *testing.T) {
 	if m.assignForm == nil {
 		t.Fatal("the hook must open the assign modal")
 	}
-	if m.assignEntity != "worker-42" {
-		t.Fatalf("the modal must target the selected entity, got %q", m.assignEntity)
+	if len(m.assignEntities) != 1 || m.assignEntities[0] != "worker-42" {
+		t.Fatalf("the modal must target the selected entity, got %v", m.assignEntities)
 	}
 	// The picker offers the existing groupings, an explicit uncategorized, and a create-in-place.
 	opts := m.assignForm.Specs[0].Options
@@ -350,7 +359,7 @@ func TestAssignEscClosesWithoutWriting(t *testing.T) {
 	m.OpenAssignCategory("worker-1", "W", apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER)
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm.(*App)
-	if m.assignForm != nil || m.assignEntity != "" {
+	if m.assignForm != nil || len(m.assignEntities) != 0 {
 		t.Fatal("esc must close the modal and forget its target")
 	}
 	// Same reasoning as the refusal test: the returned command is not evidence of a write (App.Update
@@ -385,8 +394,8 @@ func TestCategorizeChordOnTheRailUsesTheSelectedConversation(t *testing.T) {
 	if m.assignForm == nil {
 		t.Fatal("ctrl+t must open the assign modal on the rail")
 	}
-	if m.assignEntity != "conv-b" {
-		t.Fatalf("the modal must target the SELECTED conversation, got %q", m.assignEntity)
+	if len(m.assignEntities) != 1 || m.assignEntities[0] != "conv-b" {
+		t.Fatalf("the modal must target the SELECTED conversation, got %v", m.assignEntities)
 	}
 	if m.assignTarget != apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION {
 		t.Fatalf("wrong target type: %v", m.assignTarget)

@@ -170,16 +170,24 @@ func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
 		t.Fatalf("enter must open the HIGHLIGHTED conversation: chatConvID=%q, want c2", m.chatConvID)
 	}
 
-	// Space is the same gesture (a fresh app — re-opening the same
-	// conversation is deliberately idempotent).
+	// SPACE NO LONGER OPENS — it MARKS, which is what "selects" means on every other list in this
+	// client and what the operator asked for when they requested bulk operations ("Spacebar selects,
+	// then we should be able to bulk delete or bulk assign"). ENTER remains the open gesture, so the
+	// earlier "space or enter selects" wording is satisfied by the pair rather than by both keys.
+	//
+	// The whole point of asserting it HERE is that the two must stay distinguishable: a space that
+	// still opened, or an enter that stopped opening, would both be regressions.
 	m2 := newRails()
 	nm2, _ := m2.dispatch(tea.KeyMsg{Type: tea.KeySpace})
 	m2 = nm2
 	if m2.MenuOpenID() != "" {
-		t.Fatalf("space on Ask with the rail up must select, not open the submenu (menuOpen=%q)", m2.MenuOpenID())
+		t.Fatalf("space on Ask with the rail up must MARK, not open the submenu (menuOpen=%q)", m2.MenuOpenID())
 	}
-	if m2.chatConvID != "c2" {
-		t.Fatalf("space must open the highlighted conversation: chatConvID=%q, want c2", m2.chatConvID)
+	if m2.chatConvID == "c2" {
+		t.Fatal("space must not OPEN the highlighted conversation any more — enter is the open gesture")
+	}
+	if ids := m2.convMarkedIDs(); len(ids) != 1 || ids[0] != "c2" {
+		t.Fatalf("space must MARK the highlighted conversation, got %v", ids)
 	}
 }
 

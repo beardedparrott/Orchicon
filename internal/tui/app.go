@@ -200,13 +200,24 @@ type App struct {
 	renameConvID string
 	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
 	// type because the picker needs whichever type its item belongs to and the Control pane lists all
-	// three; assignForm is the assign-or-create modal (nil = closed), assignTarget/assignEntity record
+	// three; assignForm is the assign-or-create modal (nil = closed); assignTarget/assignEntities record
 	// what it is pointed at so a selection change behind it cannot retarget the write.
-	categories    []*apiv1.Category
-	assignForm    *kit2.Form
-	assignTarget  apiv1.CategoryTargetType
-	assignEntity  string
-	pendingCatCmd tea.Cmd
+	categories   []*apiv1.Category
+	assignForm   *kit2.Form
+	assignTarget apiv1.CategoryTargetType
+	// assignEntities is what the modal is pointed at — a LIST, because the rail can bulk-assign a whole
+	// marked selection as well as one row. It is a field rather than a value read from the shell at
+	// submit time so a selection change behind the modal cannot retarget the write.
+	assignEntities []string
+	pendingCatCmd  tea.Cmd
+	// convMarked is the rail's multi-selection, keyed by conversation ID (never by index: the rolling
+	// refresh re-seats rows by id, and an index-keyed mark would silently move to a different
+	// conversation). nil = nothing marked.
+	convMarked map[string]bool
+	// bulkConfirm hosts the confirm dialog for a destructive bulk rail operation (nil = closed), and
+	// bulkConfirmRun is what the affirmative choice dispatches.
+	bulkConfirm    *kit2.Dialog
+	bulkConfirmRun func() tea.Cmd
 	// metrics is the open conversation's usage roll-up feeding the composer's
 	// stat strip. ctxWindowFor/ctxWindow cache the resolved context window per
 	// model ref: the window costs a provider round trip and changes only when
@@ -1008,7 +1019,7 @@ func (m *App) refreshComposerHint() {
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
 	// underneath is not the thing reading the operator's keystrokes.
-	if m.renameConv != nil || m.assignForm != nil {
+	if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -1028,6 +1039,20 @@ func (m *App) refreshComposerHint() {
 			ctx = formComposerHint
 		} else if h, ok := s.(interface{ HintLine() string }); ok {
 			ctx = ansi.Strip(strings.TrimSpace(h.HintLine()))
+		}
+	}
+	// THE RAIL'S CHORD LIST BELONGS HERE, NOT INSIDE THE RAIL PANE.
+	//
+	// It was drawn inside the rail, and that was wrong twice over: the rail's inner text width is 28
+	// cells against a 34-cell chord list, so it was TRUNCATED mid-word ("ctrl+n: rename · ctrl+t: ca…"
+	// — the operator's screenshot), and the rail is not where the keys live. The composer is: the
+	// rail's keys are driven from there (an empty box is what makes the arrows move the rail at all),
+	// and the operator asked for the move.
+	if rail := m.railHintLine(); rail != "" {
+		if ctx == "" {
+			ctx = rail
+		} else {
+			ctx = rail + " · " + ctx
 		}
 	}
 	before := m.dock.Lines()
@@ -1692,6 +1717,11 @@ func (m App) viewFrame() string {
 	if m.assignForm != nil {
 		base = m.assignCategoryView(base, w, h)
 	}
+	// The bulk confirm (a destructive rail operation) sits in the same layer, for the same reason: the
+	// shell owns the surface it names.
+	if m.bulkConfirm != nil {
+		base = m.bulkConfirmView(base, w, h)
+	}
 	return fillView(base, w, h)
 }
 
@@ -2167,6 +2197,10 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	if m.convScroll > len(m.conversations) {
 		m.convScroll = 0
 	}
+	// Marks are reconciled against the new list: a reload is the honest reconciliation for a bulk
+	// delete, and a mark on a conversation that no longer exists would overstate the selection and
+	// aim the next bulk action at a row the server would reject.
+	m.pruneConvMarks()
 	// The detail header reads its title + message count out of THIS list, so a
 	// refresh has to repaint the open pane or the new values sit unrendered
 	// until the next unrelated wake.

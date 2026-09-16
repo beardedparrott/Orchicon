@@ -137,10 +137,13 @@ func (m *App) rightRailView() string {
 		}
 
 		body = append(body, theme.HintText.Render(truncateRight(fmt.Sprintf("%d-%d/%d", m.convScroll+1, end, len(m.conversations)), innerW)))
-		// THE RAIL ADVERTISES ITS OWN ACTION. A chord nobody can see is the same as no chord, and the
-		// rail is where the operator is looking when they want to rename a conversation — so the key
-		// belongs here, not only in the palette and the help overlay.
-		body = append(body, theme.HintText.Render(truncateRight(conversationRenameChord+": rename · "+conversationCategorizeChord+": categorize", innerW)))
+		// NO CHORD LIST HERE. The rail advertises its actions in the COMPOSER's affordance row now
+		// (shell.railHintLine): this pane is 32 cells wide with 28 of inner text, and the chord list
+		// was TRUNCATED mid-word inside it — "ctrl+n: rename · ctrl+t: ca…" in the operator's
+		// screenshot — while the composer is where the rail's keys are actually driven from.
+		//
+		// The marked count stays: it is rail state, it fits, and it is the one number the operator
+		// needs while building a selection.
 	}
 
 	p := kit2.NewPanel(title, w, h)
@@ -150,13 +153,28 @@ func (m *App) rightRailView() string {
 }
 
 // conversationRow renders one rail conversation row (title + meta).
+//
+// A MARKED row shows a marker in the gutter, so a selection is visible while it is being built — the
+// cursor alone cannot express "and these four as well". The marker is one cell and the title is
+// truncated to the remaining width, so the meta column stays aligned on marked and unmarked rows
+// alike (a marker that shifted the numbers would make the list jump as the operator spaces down it).
 func (m *App) conversationRow(c chat.Conversation, i, w int) string {
 	meta := fmt.Sprintf("%d msgs", c.MessageN)
 	if c.TurnInFly {
 		meta = "running"
 	}
-	row := " " + c.Title
-	pad := w - 1 - len([]rune(c.Title)) - len([]rune(meta))
+	marker := " "
+	if m.convMarked[c.ID] {
+		marker = "✓"
+	}
+	title := c.Title
+	// w-1 for the gutter, and the marker takes one cell of it: the title keeps whatever is left.
+	avail := w - 1
+	if lipgloss.Width(title) > avail {
+		title = truncateRight(title, avail)
+	}
+	row := marker + title
+	pad := w - 1 - lipgloss.Width(title) - lipgloss.Width(meta)
 	if pad < 1 {
 		pad = 1
 	}

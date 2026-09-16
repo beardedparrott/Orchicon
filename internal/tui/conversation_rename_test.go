@@ -245,12 +245,23 @@ func TestRenameChordNeedsTheRail(t *testing.T) {
 	}
 }
 
-// TestRailAdvertisesTheRenameChord: a chord nobody can see is the same as no chord, and the rail is
-// exactly where the operator is looking when they want this.
+// TestRailAdvertisesTheRenameChord: a chord nobody can see is the same as no chord. It is advertised
+// in the COMPOSER's affordance row, not inside the rail pane.
+//
+// It USED to be drawn in the rail, and that was wrong twice over: the rail's inner text width is 28
+// cells against a 34-cell chord list, so it was TRUNCATED mid-word — "ctrl+n: rename · ctrl+t: ca…"
+// in the operator's screenshot — and the rail is not where the keys live. The composer is: the rail's
+// keys are driven from there (an empty box is what makes the arrows move the rail at all), and the
+// operator asked for the move.
 func TestRailAdvertisesTheRenameChord(t *testing.T) {
 	m, _ := asksWithRail(t, "one", "two")
-	if !strings.Contains(m.rightRailView(), "ctrl+n") {
-		t.Fatalf("the rail must advertise its own rename chord:\n%s", m.rightRailView())
+	m.refreshComposerHint()
+	if !strings.Contains(m.dock.Hint(), "ctrl+n") {
+		t.Fatalf("the composer must advertise the rail's rename chord:\n%s", m.dock.Hint())
+	}
+	// And the rail pane must NOT carry the truncated copy any more.
+	if strings.Contains(m.rightRailView(), "ctrl+n") {
+		t.Fatalf("the rail must not repeat the chord list in its own (truncating) pane:\n%s", m.rightRailView())
 	}
 }
 

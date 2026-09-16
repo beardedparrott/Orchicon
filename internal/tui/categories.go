@@ -162,11 +162,33 @@ func (m *App) categoryName(id string) string {
 // selection change behind the modal (the rolling refresh re-seats a cursor, a stream pokes a list)
 // cannot retarget the write to a different item.
 func (m *App) openAssignCategory(entityID, entityLabel string, target apiv1.CategoryTargetType) {
-	if entityID == "" {
+	m.openAssignCategories([]string{entityID}, entityLabel, target)
+}
+
+// openAssignCategories is the general form: ONE OR MANY entities.
+//
+// It is the same modal either way — the picker, the "— uncategorized —" row and the "+ new category…"
+// row all mean the same thing for a list as for a row, and the write loops the ids. Splitting it into
+// two modals would mean two implementations of one write, which is how the TUI's tab-selection gesture
+// ended up written three times and drifted.
+func (m *App) openAssignCategories(entityIDs []string, entityLabel string, target apiv1.CategoryTargetType) {
+	// Drop empty ids: a caller passing [] is a bug, and a modal that writes to "" is worse than a
+	// refusal.
+	ids := make([]string, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
 		m.dock.SetError("nothing selected to categorize")
 		return
 	}
-	f := kit2.NewForm("Categorize "+targetLabel(target),
+	title := "Categorize " + targetLabel(target)
+	if len(ids) > 1 {
+		title = fmt.Sprintf("Categorize %d %ss", len(ids), targetLabel(target))
+	}
+	f := kit2.NewForm(title,
 		kit2.FieldSpec{
 			Name:  assignPickField,
 			Label: "Category",
@@ -186,13 +208,13 @@ func (m *App) openAssignCategory(entityID, entityLabel string, target apiv1.Cate
 		}
 		return m.assignSubmit(vals), nil
 	}
-	f.Values[assignEntityKey] = entityID
+	f.Values[assignEntityKey] = strings.Join(ids, "\x00")
 	f.Values[assignNewField] = ""
 	f.Values[assignPickField] = assignNoneValue
 	f.Width = m.modalWidth()
 	m.assignForm = f
 	m.assignTarget = target
-	m.assignEntity = entityID
+	m.assignEntities = ids
 	m.refreshAssignOptions()
 	if len(m.categories) == 0 {
 		// Nothing cached yet: ask, and the reply fills the picker in place (onCategoriesLoaded).
@@ -284,32 +306,48 @@ func (m *App) assignCategoryKey(k tea.KeyMsg) (*App, tea.Cmd) {
 
 func (m *App) closeAssign() {
 	m.assignForm = nil
-	m.assignEntity = ""
+	m.assignEntities = nil
 	m.refreshComposerHint()
 }
 
-// assignSubmit performs the write the modal describes: assign, unassign, or create-then-assign.
+// assignSubmit performs the write the modal describes: assign, unassign, or create-then-assign — for
+// ONE entity or for a whole marked selection.
+//
+// The three branches each LOOP the entity list. Every write is a separate RPC per entity (the API is
+// per-entity: AssignToCategory / UnassignFromCategory take one entity_id each), and a partial failure
+// is REPORTED as one — "assigned 3 of 5" — rather than stopping at the first error, because the ids
+// after the failure are just as valid as the ones before it and abandoning them would leave the
+// selection half-applied with no explanation.
 func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 	cl := m.clients
 	if cl == nil || cl.Categories == nil {
 		return nil
 	}
-	entity := m.assignEntity
+	entities := append([]string(nil), m.assignEntities...)
+	if len(entities) == 0 {
+		return nil
+	}
 	target := m.assignTarget
 	choice := vals[assignPickField]
 	client := cl.Categories
 
 	switch choice {
 	case assignNoneValue:
-		// "Uncategorized" is a REAL state with its own RPC — it is not "assign to nothing".
+		// "Uncategorized" is a REAL state with its own RPC — it is not "assign to nothing" — and for a
+		// selection it means "clear the grouping on all of these", which is a legitimate bulk act.
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			_, err := client.UnassignFromCategory(ctx, connect.NewRequest(&apiv1.UnassignFromCategoryRequest{
-				EntityId:   entity,
-				TargetType: target,
-			}))
-			return categoriesMutatedMsg{Op: "unassign", Err: err}
+			failed := 0
+			for _, entity := range entities {
+				if _, err := client.UnassignFromCategory(ctx, connect.NewRequest(&apiv1.UnassignFromCategoryRequest{
+					EntityId:   entity,
+					TargetType: target,
+				})); err != nil {
+					failed++
+				}
+			}
+			return categoriesMutatedMsg{Op: "unassign", Count: len(entities), Failed: failed}
 		}
 	case assignNewValue:
 		name := strings.TrimSpace(vals[assignNewField])
@@ -318,6 +356,9 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 		}
 		// CREATE THEN ASSIGN, in one command: the operator asked for one gesture that makes a grouping
 		// AND puts the item in it, so a failure of either half must be reported as one failure.
+		//
+		// The CREATE happens ONCE for the whole selection: creating one grouping per entity would make
+		// five groupings with five suffixed slugs, when the operator asked for one.
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
@@ -332,12 +373,17 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 			if id == "" {
 				return categoriesMutatedMsg{Op: "create", Err: fmt.Errorf("created category came back without an id")}
 			}
-			_, err = client.AssignToCategory(ctx, connect.NewRequest(&apiv1.AssignToCategoryRequest{
-				CategoryId: id,
-				EntityId:   entity,
-				TargetType: target,
-			}))
-			return categoriesMutatedMsg{Op: "assign", Err: err}
+			failed := 0
+			for _, entity := range entities {
+				if _, err := client.AssignToCategory(ctx, connect.NewRequest(&apiv1.AssignToCategoryRequest{
+					CategoryId: id,
+					EntityId:   entity,
+					TargetType: target,
+				})); err != nil {
+					failed++
+				}
+			}
+			return categoriesMutatedMsg{Op: "assign", Count: len(entities), Failed: failed}
 		}
 	default:
 		if choice == "" {
@@ -346,12 +392,17 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			_, err := client.AssignToCategory(ctx, connect.NewRequest(&apiv1.AssignToCategoryRequest{
-				CategoryId: choice,
-				EntityId:   entity,
-				TargetType: target,
-			}))
-			return categoriesMutatedMsg{Op: "assign", Err: err}
+			failed := 0
+			for _, entity := range entities {
+				if _, err := client.AssignToCategory(ctx, connect.NewRequest(&apiv1.AssignToCategoryRequest{
+					CategoryId: choice,
+					EntityId:   entity,
+					TargetType: target,
+				})); err != nil {
+					failed++
+				}
+			}
+			return categoriesMutatedMsg{Op: "assign", Count: len(entities), Failed: failed}
 		}
 	}
 }
@@ -359,9 +410,14 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 // categoriesMutatedMsg is the result of any category write. It always RELOADS the list: an assignment
 // changes no name and a create changes no assignment, but every one of them changes what the next
 // picker must offer, and a stale picker offers a category that no longer exists.
+//
+// Count/Failed describe a BULK write, so a partial failure can be reported as one ("3 of 5 failed")
+// instead of the first error hiding the rest. Failed == 0 with Count > 1 is a clean bulk write.
 type categoriesMutatedMsg struct {
-	Op  string
-	Err error
+	Op     string
+	Err    error
+	Count  int
+	Failed int
 }
 
 func (m *App) onCategoriesMutated(msg categoriesMutatedMsg) tea.Cmd {
@@ -369,7 +425,16 @@ func (m *App) onCategoriesMutated(msg categoriesMutatedMsg) tea.Cmd {
 		m.dock.SetError("category " + msg.Op + ": " + msg.Err.Error())
 		return nil
 	}
-	m.dock.SetNotice("category " + msg.Op + " ok")
+	// A PARTIAL bulk write is REPORTED, not swallowed: some of the operator's selection did not take,
+	// and a clean "ok" would leave them believing it all did.
+	switch {
+	case msg.Failed > 0:
+		m.dock.SetError(fmt.Sprintf("category %s: %d of %d failed", msg.Op, msg.Failed, msg.Count))
+	case msg.Count > 1:
+		m.dock.SetNotice(fmt.Sprintf("category %s: %d ok", msg.Op, msg.Count))
+	default:
+		m.dock.SetNotice("category " + msg.Op + " ok")
+	}
 	local := m.pendingCatCmd
 	m.pendingCatCmd = nil
 	return tea.Batch(local, m.loadCategories())

@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/modelpick"
 )
@@ -302,6 +301,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The bulk confirm dialog (a destructive rail operation) is the same shape again: it owns every key
+	// while it is open, so the confirm cannot be answered by a keystroke that also did something else.
+	if m.bulkConfirm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.bulkConfirmKey(k)
+		}
+		return m, nil
+	}
 	// Category write results and the category list land here rather than in a screen: the modal and the
 	// cache are the shell's, so the shell reconciles them.
 	switch msg := msg.(type) {
@@ -525,12 +532,26 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// conversation rather than pop the New/Conversations menu. The menu is
 	// still reachable from every other tab (and here whenever the rail is
 	// hidden — the launch page shows no list).
+	// SPACE IS NO LONGER AN OPEN KEY. It MARKS now (railbulk.go) — the operator's "Spacebar selects" —
 	if isKey && m.TabMenu() == nil && m.active == TabAsk && m.railVisible() &&
 		strings.TrimSpace(m.dock.Value()) == "" &&
-		(k.String() == "enter" || k.String() == " " || k.String() == "space") {
+		k.String() == "enter" {
 		cmd := m.openSelectedRailConversation()
 		m.refreshStreamStatus()
 		return m, cmd
+	}
+	// Ask rail MARK: while the rail is up and the composer is empty, SPACE marks the highlighted
+	// conversation and advances one row — the gesture every other list in this client uses
+	// (kit2.ToggleMark + Move(1); see railbulk.go).
+	//
+	// IT IS CLAIMED HERE, AHEAD OF THE TAB-SUBMENU ACTIVATION BELOW, because that activation also fires
+	// on SPACE with an empty composer. Without this branch, removing space from the open gesture above
+	// would have made it pop the tab menu instead — worse than either behaviour it replaced.
+	if isKey && m.TabMenu() == nil && m.active == TabAsk && m.railVisible() &&
+		strings.TrimSpace(m.dock.Value()) == "" && k.String() == " " {
+		m.toggleConvMark()
+		m.refreshStreamStatus()
+		return m, nil
 	}
 	// Tab submenu ACTIVATION (Phase 3 finding 3): Enter or Space on the
 	// active tab opens its dropdown. Enter with an empty composer is a
@@ -578,58 +599,30 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// pane's detail. With text in the buffer the textarea keeps them
 			// for cursor movement.
 			if strings.TrimSpace(m.dock.Value()) == "" {
-				// ctrl+n RENAMES THE SELECTED CONVERSATION — the rail's own item action.
-				//
-				// The rail is the one list in the app whose keys are driven from the COMPOSER (an empty
-				// box means the arrows move the rail), so a plain letter cannot be its action key:
-				// 'e' or 'x' would become untypeable as the first character of a message. Hence a
-				// MODIFIER chord, and ctrl+n specifically because it collides with nothing: not a
-				// control-byte alias (ctrl+h is backspace, ctrl+i tab, ctrl+j LF, ctrl+m return), not an
-				// XON/XOFF flow byte (those are ctrl+q / ctrl+s), and not already bound anywhere.
-				//
-				// It is advertised in the rail's own footer and in the help overlay, because a chord
-				// nobody can see is the same as no chord — and `/rename` remains the discoverable path
-				// through the palette for anyone who looks there first.
-				if m.railVisible() && m.active == TabAsk && k.String() == conversationRenameChord {
-					if m.convSel < 0 || m.convSel >= len(m.conversations) {
-						m.dock.SetError("no conversation selected in the rail")
-						return m, nil
-					}
-					c := m.conversations[m.convSel]
-					m.openRenameConversation(c.ID, c.Title)
+				// THE RAIL'S ITEM CHORDS: ctrl+n renames, ctrl+t categorizes (the whole MARKED
+				// SELECTION when there is one), ctrl+x bulk-deletes. One implementation for the
+				// composer and the content, so the two cannot disagree about what the rail's
+				// selection is — see railbulk.go.
+				if handled, cmd := m.railItemKey(k.String()); handled {
+					return m, cmd
+				}
+				// ESC CLEARS THE MULTI-SELECTION before it does anything else — the same order kit2
+				// uses, and the safe one: an operator mid-selection reaching for esc means "drop this
+				// selection", not "unfocus the pane". With nothing marked it keeps its meaning.
+				if k.String() == "esc" && m.clearConvMarks() {
 					m.refreshStreamStatus()
 					return m, nil
 				}
-				if m.railVisible() && m.active == TabAsk && k.String() == conversationCategorizeChord {
-					// ctrl+t CATEGORIZES the selected conversation, the rail's second item action.
-					//
-					// Same reasoning as ctrl+n (rename): the rail's keys are driven from the COMPOSER,
-					// so a bare letter would become untypeable as the first character of a message. It
-					// is advertised in the rail's own footer for the same reason ctrl+n is — a chord
-					// nobody can see is the same as no chord.
-					if m.convSel < 0 || m.convSel >= len(m.conversations) {
-						m.dock.SetError("no conversation selected in the rail")
-						return m, nil
-					}
-					c := m.conversations[m.convSel]
-					m.OpenAssignCategory(c.ID, c.Title,
-						apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
-					m.refreshStreamStatus()
-					return m, nil
-				}
+				// THE RAIL OWNS THE VERTICAL KEYS whenever it is on screen with an empty composer —
+				// and it claims them from the CONTENT too (the call is below, before the
+				// focusContent gate). Both sites share railOwnsVerticalKey, because they did not
+				// share anything before and that is exactly what broke: see the helper for the bug
+				// the composer-only wiring caused.
 				if d := scrollKeyDelta(k.String()); d != 0 {
-					if m.railVisible() && m.active == TabAsk {
-						switch k.String() {
-						case "up":
-							m.selectRailConversation(-1)
-						case "down":
-							m.selectRailConversation(1)
-						case "pgup":
-							m.selectRailConversation(-5)
-						case "pgdown":
-							m.selectRailConversation(5)
-						}
-					} else {
+					if m.railOwnsVerticalKey(k.String()) {
+						return m, nil
+					}
+					if !m.railVisible() || m.active != TabAsk {
 						// Any other screen: the vertical keys belong to the SCREEN, which
 						// decides for itself — its list moves the cursor, and its DETAIL
 						// scrolls once the detail holds focus. The shell scrolling the detail
@@ -638,8 +631,6 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 						// captures the down arrows").
 						return m.passToScreen(msg)
 					}
-					m.refreshStreamStatus()
-					return m, nil
 				}
 			}
 			if composerBypassKeys[k.String()] {
@@ -714,6 +705,31 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			if c := m.drainStaged(); c != nil {
 				return m, c
 			}
+			return m, nil
+		}
+	}
+	// THE RAIL'S KEYS FROM THE CONTENT, BEFORE THE SCREEN GETS THEM.
+	//
+	// This is the fix for the operator's report. The rail's arrows were wired into the COMPOSER branch
+	// only, so with the keyboard in the content — which is where they are when reading the transcript,
+	// and what the footer's "ctrl+g composer" tells them — the key fell through to the Ask screen. That
+	// screen has a HIDDEN "conversations" source (HideSources), so its cursor moved and the pane
+	// re-requested that conversation's detail: the transcript changed while the rail's highlight never
+	// moved. "it moves through the conversations but the currently selected conversation selector is
+	// not moving."
+	//
+	// The empty-composer rule is deliberately NOT applied here: it exists only because the composer needs
+	// the arrows for text navigation, and from content focus the composer does not have the keys at all.
+	// A draft is left untouched by this path.
+	if k, isKey := msg.(tea.KeyMsg); isKey && m.chatFocus == focusContent {
+		if handled, cmd := m.railItemKey(k.String()); handled {
+			return m, cmd
+		}
+		if k.String() == "esc" && m.clearConvMarks() {
+			m.refreshStreamStatus()
+			return m, nil
+		}
+		if m.railOwnsVerticalKey(k.String()) {
 			return m, nil
 		}
 	}
