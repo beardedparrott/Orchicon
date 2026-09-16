@@ -102,14 +102,22 @@ const (
 	// operator's "key that takes you to the workflow run", and `x` is the delete — whose
 	// MEANING is per-view (cancel an upcoming/running schedule, or remove the schedule from a
 	// finished row's item), matching the GUI's two different buttons.
+	// keySchedView / keyGoToRun / keySchedDelete are the Schedules pane's chords: the lens cycle,
+	// the jump to the run, and the delete. (The Execution detail's message box needs NO chord — it
+	// is a POSITION in the transcript, reached by walking down past the last block:
+	// execution_blocks.go.)
 	keySchedView   = "v"
 	keyGoToRun     = "g"
 	keySchedDelete = "x"
-	// keyFollowUp is the FOLLOW-UP box on the Executions pane — the complement of the interject
-	// (`i`) nudge: a nudge steers a LIVE session, a follow-up asks about one that has finished.
-	// Two chords rather than one because they have different preconditions, and the key that
-	// cannot apply says why (execution_detail.go).
-	keyFollowUp = "f"
+)
+
+// The RETIRED chords. `f` was the follow-up box AND the base's pager; `i` was the interject box.
+// Both are now positions in the transcript rather than keys (execution_blocks.go), and these
+// constants exist only so the screen can EXPLAIN where the box went instead of going silent on an
+// operator who learned them. See handleActionKey's stub.
+const (
+	keyFollowUpLegacy  = "f"
+	keyInterjectLegacy = "i"
 )
 
 // DropKeyClaim releases the screen's key claim so the focus chord can return the
@@ -161,17 +169,14 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	case srcExecutions:
 		id := item.ID
 		// CANCEL is offered only for a LIVE execution — cancelling something already finished is
-		// not a thing. But the bar is not empty for a finished one: `i` (interject) and `f`
-		// (follow-up) are both bound there, and the FOLLOW-UP is specifically for a session that is
-		// no longer live. Returning nil here removed every row, which is why the operator could not
-		// find the follow-up box: "I don't see the follow-up chat box to kick off additional
-		// questions to the worker. This feature is in the GUI and should be in the TUI." It was
-		// bound and handled, just never advertised on the executions anyone actually reads — a
-		// finished execution is the normal thing to open.
+		// not a thing. But the bar is not empty for a finished one, and the MESSAGE BOX is why:
+		// the composer works on a finished execution too (it asks a follow-up), which is the
+		// normal thing to open and exactly what the operator reported not finding.
 		//
-		// So the bar lists what the pane can DO and each row explains its own precondition when it
-		// cannot apply (interject refuses off a live session by name), which is the same contract
-		// the rest of this screen's actions follow.
+		// The box is a POSITION in the transcript rather than a chord (execution_blocks.go): walk
+		// down past the last block and you are in it. So the bar advertises it as an instruction
+		// rather than as a key — a key here would be a second way to reach a box the operator
+		// already reaches by pressing down, which is how the old `f`/`i` pair became unintuitive.
 		acts := []kit2.Action{}
 		if isLiveExecution(item.Meta) {
 			acts = append(acts, kit2.Action{
@@ -183,20 +188,31 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		acts = append(acts,
+			// The box, advertised as the gesture that reaches it.
+			//
+			// No Key either: the box is a POSITION in the transcript (down past the last block), so
+			// a key would be a second route to something the operator already reaches by pressing
+			// down — which is how the old `f`/`i` pair became unintuitive. The label IS the gesture.
 			kit2.Action{
-				Label: "interject", Key: keyInterject, Source: srcExecutions,
-				// The message is collected by a form — handleActionKey opens it.
-				Do: func(context.Context) error { return errNeedForm("interject") },
+				Label: "↓ past the last block: message box", Source: srcExecutions,
+				Do: func(context.Context) error {
+					return errNeedForm("message box — walk down past the last block")
+				},
 			},
-			// The FOLLOW-UP box is offered here so the gesture is DISCOVERABLE. It earns its own
-			// row rather than sharing the interject's: the two have different PRECONDITIONS
-			// (interject needs a LIVE session, a follow-up needs one that still exists), so a shared
-			// row would advertise both with a restriction that only applies to one of them. The
-			// row's Do refuses by name, exactly as the interject's does, because the message is
-			// collected by a form.
+			// The COLLAPSE gesture, on the same principle: the operator needs to know it exists before
+			// trying it on a 200-line tool dump.
+			//
+			// It carries NO Key: `enter` is handled by the transcript cursor itself
+			// (execution_blocks.go), and claiming it here as an ACTION would put it in the
+			// action-by-key table, where it would fire on ANY focused execution row — including
+			// while the cursor is on a prose block, which is exactly the "enter did nothing"
+			// experience this item exists to remove. The bar is a LABEL; the key belongs to the
+			// cursor.
 			kit2.Action{
-				Label: "follow-up", Key: keyFollowUp, Source: srcExecutions,
-				Do: func(context.Context) error { return errNeedForm("follow-up") },
+				Label: "enter on a block: expand / collapse", Source: srcExecutions,
+				Do: func(context.Context) error {
+					return errNeedForm("enter on a block toggles it — tool calls and thinking start collapsed")
+				},
 			},
 		)
 		return acts
@@ -487,6 +503,30 @@ func (m *Model) confirmRemoveStep(id, name, desc string) tea.Cmd {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
+	// THE EXECUTION TRANSCRIPT'S BLOCK CURSOR AND COMPOSER own the keys while the Executions pane's
+	// detail is focused (execution_blocks.go).
+	//
+	// This is the operator's model, and it is ONE mechanism rather than two gestures:
+	//
+	//	"The executions are incredibly long ... a user can move down the line using tab or down
+	//	 arrow and hitting enter on a block should collapse or expand it."
+	//	"I would rather a chat box be at the bottom of the execution and you can ... gain focus with
+	//	 the down arrow key or tab and then type in your response and hit enter to send it."
+	//
+	// So: up/down (or tab/shift+tab) move the cursor through the blocks, enter toggles a collapsible
+	// one, and WALKING DOWN PAST THE LAST BLOCK lands in the composer — where the same keys type and
+	// `enter` sends. Walking up from the composer returns to the blocks. There is no separate key to
+	// learn for the input box, which is the whole point: the old `f` modal was unintuitive precisely
+	// because reaching it was its own gesture.
+	//
+	// Scoped to the detail focus, like the runs flow: with the LIST focused the same keys move the
+	// list, which is the operator's navigation model. And `enter` is NOT claimed while the composer
+	// holds the keyboard — there it means SEND, and it is handled by the composer branch below.
+	if m.ActiveSourceName() == srcExecutions && m.Base.DetailFocusedForTest() {
+		if cmd, handled := m.handleTranscriptKeys(kstr); handled {
+			return cmd, true
+		}
+	}
 	// THE RUNS STEP FLOW. The vertical keys walk the run's STEPS and `enter` jumps to the
 	// highlighted step's execution — the operator's "if you hit enter on a particular step
 	// (whether it's complete or still running), it should take you to the execution".
@@ -601,28 +641,27 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			return m.beginWorkerOp(it.ID, op), true
 		}
 	}
-	if kstr == keyFollowUp {
+	if kstr == keyFollowUpLegacy || kstr == keyInterjectLegacy {
+		// The two modals are GONE: one inline box at the bottom of the execution does both jobs, and
+		// WHICH job is decided by the execution's state rather than by which key was pressed
+		// (execution_blocks.go — the GUI's own composer, which has the same single control).
+		//
+		// They are kept as EXPLAINING stubs rather than deleted outright for two reasons, and both
+		// are about the operator rather than the code:
+		//   1. `f` WAS ALSO THE BASE'S PAGER (`kit2.Base.loadMore`, advertised in the pane title as
+		//      "more pages: press f"). One key, two meanings — and the meaning the operator was
+		//      reading was not the one that fired. The chord has to stop claiming `f`, and a stub
+		//      that says where the box went is the honest way to retire muscle memory.
+		//   2. An operator who learned `i` last week should not get silence.
+		//
+		// The stub also moves the cursor INTO the box, so the answer to "where did it go" is the
+		// thing itself rather than a description of it.
 		if m.ActiveSourceName() != srcExecutions {
-			return m.refuse("the follow-up box applies to an execution — focus the Executions pane"), true
+			return m.refuse("the message box is on the Executions pane — focus it first"), true
 		}
-		it, ok := m.ActiveItem()
-		if !ok {
-			return m.refuse("select an execution first"), true
-		}
-		if why := m.followUpAvailable(it.Meta); why != "" {
-			return m.refuse(why), true
-		}
-		return m.beginFollowUp(it.ID), true
-	}
-	if kstr == keyInterject {
-		if m.ActiveSourceName() != srcExecutions {
-			return m.refuse("interjection applies to a running execution — focus the Executions pane"), true
-		}
-		it, ok := m.ActiveItem()
-		if !ok || !isLiveExecution(it.Meta) {
-			return m.refuse("interjection needs a LIVE (running) execution — this one is not running"), true
-		}
-		return m.beginInterject(it.ID), true
+		m.blocks.cursor.atComposer = true
+		m.notice = "the message box is now INLINE at the bottom of the execution — press enter to send"
+		return m.repaintTranscript(), true
 	}
 	if kstr == keySetModel {
 		// The chord is gone (the model is a form field now), but a conversation —
@@ -771,30 +810,6 @@ func (m *Model) runAction(a kit2.Action) tea.Cmd {
 		Rollback: a.Rollback,
 		Do:       a.Do,
 	})
-}
-
-// beginInterject opens the interjection form: a message injected into the
-// LIVE worker session (no new execution / work item / workflow state).
-func (m *Model) beginInterject(execID string) tea.Cmd {
-	f := kit2.NewForm("Interject into "+execID,
-		kit2.FieldSpec{Name: "message", Label: "Message", Kind: kit2.KTextArea, Required: true,
-			Placeholder: "steer the running worker — the reply streams back into the session"})
-	f.Focused = true
-	f.Width = 66
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		msg := strings.TrimSpace(v["message"])
-		id := execID
-		return m.Mutate(mutate.Request{
-			Name:   "interject into " + id,
-			Source: srcExecutions,
-			Do: func(ctx context.Context) error {
-				return m.rpcSendMessage(ctx, id, msg)
-			},
-		}), nil
-	}
-	m.form = f
-	m.notice = ""
-	return nil
 }
 
 // --- write RPCs ------------------------------------------------------------

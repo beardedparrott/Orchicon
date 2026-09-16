@@ -197,26 +197,29 @@ func TestFailedTodoFetchLeavesTheDetailWorking(t *testing.T) {
 	}
 }
 
-// --- the follow-up box ------------------------------------------------------
+// --- the message box (the retired `f` / `i` modals) -------------------------
 
-// `f` opens the follow-up box on the Executions pane, and submitting it calls
-// ContinueExecutionSession with the operator's text.
-func TestFollowUpBoxCallsContinueExecutionSession(t *testing.T) {
+// The composer posts ContinueExecutionSession for a FINISHED execution, with the operator's text.
+//
+// This replaces the `f` modal: the operator's report was that the chord opened a box, they typed a
+// question, pressed ctrl+s, and NOTHING happened — and that the interface was "very weird" and "not
+// very intuitive". The box is now a position in the transcript (walk down past the last block) and
+// sending is `enter`, which is what they asked for: "type in your response and hit enter to send
+// it".
+func TestComposerSendsAFollowUpOnAFinishedExecution(t *testing.T) {
 	p := execPlane()
+	p.exec.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
 	m := newModel(t, p)
 	m.Base.SelectSource(srcExecutions)
 	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "succeeded"}}, "")
 
-	if _, handled := m.handleActionKey(keyFollowUp); !handled {
-		t.Fatal("f was not handled on the Executions pane")
-	}
-	if m.form == nil {
-		t.Fatal("f did not open the follow-up box")
-	}
-	m.form.Set("message", "why did you skip the migration?")
-	cmd, err := m.form.OnSubmit(m.form.Values, nil)
-	if err != nil {
-		t.Fatalf("submit: %v", err)
+	m.blocks.cursor.atComposer = true
+	m.composer.value = "why did you skip the migration?"
+	m.composer.cursor = len([]rune(m.composer.value))
+
+	cmd := m.sendComposer()
+	if cmd == nil {
+		t.Fatal("sending produced no command")
 	}
 	runWrite(t, cmd)
 	if len(p.followUps) != 1 {
@@ -228,66 +231,138 @@ func TestFollowUpBoxCallsContinueExecutionSession(t *testing.T) {
 	if got := p.followUps[0].GetExecutionId(); got != "exec-1" {
 		t.Errorf("execution = %q, want the selected one", got)
 	}
-	// The REPLY is surfaced — the whole point of asking.
-	if !strings.Contains(m.notice, "the model's answer") {
-		t.Errorf("notice = %q, want the reply", m.notice)
+	// The draft is CLEARED, so the same question cannot be posted twice by a second enter.
+	if m.composer.value != "" {
+		t.Errorf("the composer kept the draft (%q) — a second enter would post it again", m.composer.value)
 	}
 }
 
-// `f` is scoped to the Executions pane: on another pane it belongs to whatever that pane binds.
-func TestFollowUpKeyIsScopedToTheExecutionsPane(t *testing.T) {
-	m := newModel(t, execPlane())
-	m.Base.SelectSource(srcRuns)
-	if _, handled := m.handleActionKey(keyFollowUp); !handled {
-		t.Fatal("f must still be HANDLED (so it is not silently dropped), but as a refusal")
-	}
-	if m.form != nil {
-		t.Error("f opened the follow-up box on the Runs pane")
-	}
-	if !strings.Contains(m.notice, "Executions") {
-		t.Errorf("notice = %q — the refusal must name where the box applies", m.notice)
-	}
-}
-
-// A follow-up with no execution selected refuses rather than opening a box that cannot submit.
-func TestFollowUpRefusesWithNoSelection(t *testing.T) {
-	m := newModel(t, execPlane())
-	m.Base.SelectSource(srcExecutions)
-	// No rows loaded: there is no active item.
-	if _, handled := m.handleActionKey(keyFollowUp); !handled {
-		t.Fatal("f must be handled")
-	}
-	if m.form != nil {
-		t.Error("f opened a form with nothing selected")
-	}
-	if !strings.Contains(m.notice, "select an execution") {
-		t.Errorf("notice = %q, want it to ask for a selection", m.notice)
-	}
-}
-
-// The NUDGE and the FOLLOW-UP are separate acts with separate keys: `i` requires a LIVE execution,
-// `f` does not. Asserted together, because the distinction is the reason for two chords.
-func TestNudgeAndFollowUpHaveDifferentPreconditions(t *testing.T) {
+// The composer messages a LIVE execution instead — the SAME box, the same key, decided by state.
+//
+// This is the operator's "(Interjects should work the same way on live executions)": one control
+// for both acts, which is also the GUI's model (a single textarea whose placeholder changes).
+func TestComposerMessagesALiveExecution(t *testing.T) {
 	p := execPlane()
-	// The execution is SUCCEEDED — not live.
-	p.exec.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
+	p.exec.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING
+	m := newModel(t, p)
+	m.Base.SelectSource(srcExecutions)
+	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "running"}}, "")
+
+	m.blocks.cursor.atComposer = true
+	m.composer.value = "check the migration path first"
+	m.composer.cursor = len([]rune(m.composer.value))
+
+	runWrite(t, m.sendComposer())
+	if len(p.messages) != 1 {
+		t.Fatalf("SendExecutionMessage calls = %d, want 1", len(p.messages))
+	}
+	if got := p.messages[0].GetMessage(); got != "check the migration path first" {
+		t.Errorf("message = %q, want the operator's text", got)
+	}
+}
+
+// The placeholder names the act, so the operator knows what enter will DO before pressing it —
+// "nudge the live session" vs "ask a follow-up". The GUI's own rule.
+func TestComposerPlaceholderNamesTheAct(t *testing.T) {
+	if got := composerPlaceholder("running"); !strings.Contains(got, "mid-run") {
+		t.Errorf("live placeholder = %q, want it to describe messaging the worker", got)
+	}
+	if got := composerPlaceholder("succeeded"); !strings.Contains(got, "follow-up") {
+		t.Errorf("finished placeholder = %q, want it to describe a follow-up", got)
+	}
+}
+
+// An empty draft sends nothing — enter on an empty box must not create a mutation.
+func TestComposerRefusesAnEmptyDraft(t *testing.T) {
+	p := execPlane()
 	m := newModel(t, p)
 	m.Base.SelectSource(srcExecutions)
 	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "succeeded"}}, "")
-
-	// The nudge refuses: nothing live to steer.
-	m.handleActionKey(keyInterject)
-	if m.form != nil {
-		t.Error("i opened the interject box for a FINISHED execution — a nudge needs a live session")
+	m.blocks.cursor.atComposer = true
+	if cmd := m.sendComposer(); cmd != nil {
+		t.Error("an empty draft produced a command")
 	}
-	nudgeNotice := m.notice
-
-	// The follow-up opens: there is still a session to ask about.
-	m.notice = ""
-	if _, handled := m.handleActionKey(keyFollowUp); !handled || m.form == nil {
-		t.Errorf("f did not open the follow-up box for a finished execution (notice=%q)", m.notice)
+	if len(p.followUps) != 0 {
+		t.Error("an empty draft posted a follow-up")
 	}
-	if nudgeNotice == m.notice {
-		t.Error("the two chords produced the same outcome — they are meant to differ")
+}
+
+// The composer TYPES: printable runes insert at the caret, editing keys edit, and enter is
+// deliberately NOT consumed by the text editor (it means SEND).
+func TestComposerTypingAndEditing(t *testing.T) {
+	m := newModel(t, execPlane())
+	m.Base.SelectSource(srcExecutions)
+	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "succeeded"}}, "")
+	// The transcript's keys are scoped to the DETAIL focus, like the runs flow: with the LIST
+	// focused the same keys move the list.
+	m.Base.SetFocusForTest("detail")
+	m.blocks.cursor.atComposer = true
+
+	// A character routes through the composer's key handler.
+	if _, handled := m.handleActionKey("a"); !handled {
+		t.Fatal("a printable rune was not handled by the composer")
+	}
+	if m.composer.value != "a" {
+		t.Fatalf("value = %q, want a", m.composer.value)
+	}
+	// backspace
+	m.handleActionKey("backspace")
+	if m.composer.value != "" {
+		t.Errorf("after backspace value = %q, want empty", m.composer.value)
+	}
+	// ctrl+u clears
+	m.composer.value = "long draft"
+	m.composer.cursor = len([]rune(m.composer.value))
+	m.handleActionKey("ctrl+u")
+	if m.composer.value != "" {
+		t.Errorf("ctrl+u left %q", m.composer.value)
+	}
+	// up LEAVES the box (back to the blocks) without destroying the draft.
+	m.composer.value = "keep me"
+	if _, handled := m.handleActionKey("up"); !handled {
+		t.Error("up was not handled")
+	}
+	if m.blocks.cursor.atComposer {
+		t.Error("up did not leave the composer")
+	}
+	if m.composer.value != "keep me" {
+		t.Errorf("leaving the box destroyed the draft (%q)", m.composer.value)
+	}
+}
+
+// The retired chords EXPLAIN instead of going silent, and land the operator IN the box.
+func TestRetiredChordsExplainAndFocusTheComposer(t *testing.T) {
+	m := newModel(t, execPlane())
+	m.Base.SelectSource(srcExecutions)
+	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "succeeded"}}, "")
+
+	for _, k := range []string{keyFollowUpLegacy, keyInterjectLegacy} {
+		m.blocks.cursor.atComposer = false
+		m.notice = ""
+		if _, handled := m.handleActionKey(k); !handled {
+			t.Fatalf("%q must still be HANDLED, so it is not silently dropped", k)
+		}
+		if m.form != nil {
+			t.Errorf("%q opened a modal — the modals are gone", k)
+		}
+		if !m.blocks.cursor.atComposer {
+			t.Errorf("%q did not land the operator in the message box", k)
+		}
+		if !strings.Contains(m.notice, "INLINE") {
+			t.Errorf("%q notice = %q, want it to say where the box went", k, m.notice)
+		}
+	}
+}
+
+// `f` is no longer claimed as a WRITE chord, which matters because the BASE also binds it (the
+// pager, advertised as "more pages: press f"). The stub must not swallow the pager on another pane.
+func TestRetiredKeysAreScopedToTheExecutionsPane(t *testing.T) {
+	m := newModel(t, execPlane())
+	m.Base.SelectSource(srcRuns)
+	if _, handled := m.actionByKey(keyFollowUpLegacy); handled {
+		t.Error("f is still bound as an execution action")
+	}
+	if _, handled := m.actionByKey(keyInterjectLegacy); handled {
+		t.Error("i is still bound as an execution action")
 	}
 }

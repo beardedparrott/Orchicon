@@ -124,6 +124,10 @@ type Model struct {
 	// execUsage caches each execution's context / token / cost picture, derived from its usage
 	// records (execution_context.go).
 	execUsage usageCache
+	// blocks is the execution transcript's COLLAPSE state and cursor, and composer is the inline
+	// message box at the bottom of the pane (execution_blocks.go).
+	blocks   blockState
+	composer composer
 	// execDetail holds the REST of an execution's detail — the run's record (facts, error, output)
 	// and the merged session transcript. The pane's body is these and the todo list COMPOSED, so
 	// neither a session repaint nor a todo landing can blank the others (execution_detail.go).
@@ -867,9 +871,14 @@ func (m *Model) RenderSession(items []chat.ChatItem) {
 	// with the run's facts and the todo list. It used to install the whole body from four fields
 	// of its own (id / session events / status), which is why the pane flickered: every live
 	// repaint replaced the full record with that stub, and the next detail fetch replaced the stub
-	// with the record — forever. It is also why "several of them still look like the old ones":
-	// whichever of the two writers painted last decided what the operator saw.
-	m.execDetail.putTranscript(id, chat.RenderItems(items, m.Base.DetailWidth()))
+	// with the record — forever.
+	//
+	// It is recorded as ITEMS rather than as a rendered string because the pane draws it as
+	// COLLAPSIBLE BLOCKS with a cursor (execution_blocks.go): the operator expands and collapses
+	// individual blocks, so the block boundaries have to survive the repaint that a live event
+	// triggers. A string would have to be re-split to be toggled, which is how a "collapse" state
+	// ends up keyed on an index that the next event renumbers.
+	m.execDetail.putTranscript(id, items)
 	body, fields := m.composeExecutionBody(id)
 	if len(fields) == 0 {
 		// The session can paint before the detail arrives. Keep the pane's existing shape rather

@@ -339,23 +339,37 @@ func TestForceProgressWedgedRunConfirmsAndWrites(t *testing.T) {
 	}
 }
 
-// TestInterjectSendsMessageThroughForm pins the interjection: the chord opens
-// a message form and the submitted value reaches SendExecutionMessage.
-func TestInterjectSendsMessageThroughForm(t *testing.T) {
+// TestInterjectGoesThroughTheInlineComposer pins the interjection: the message box at the bottom of
+// the execution posts to SendExecutionMessage.
+//
+// This REPLACES the `i` modal test. The operator retired that interface: "You said in executions 'f'
+// was a follow up yet the interface says 'f' is more pages ... typed in a question and hit ctrl+s to
+// save it and nothing happened. This doesn't seem to be working and frankly is very weird interface
+// wise. Not very intuitive. I would rather a chat box be at the bottom of the execution ... and then
+// type in your response and hit enter to send it. (Interjects should work the same way on live
+// executions)". So the nudge is now the SAME box as the follow-up, decided by the execution's state
+// rather than by which key was pressed — and sending is `enter`, not ctrl+s.
+func TestInterjectGoesThroughTheInlineComposer(t *testing.T) {
 	p := &fakePlane{}
 	m := newModel(t, p)
+	m.Base.SelectSource(srcExecutions)
 	m.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-7", Title: "exec-7", Meta: "running"}}, "")
+	m.Base.SetFocusForTest("detail")
 
+	// The retired chord must not open a modal; it lands in the box and says where the box is.
 	press(t, m, "i")
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("interject must open a message form")
+	if m.form != nil {
+		t.Fatal("i still opens a modal — the box is inline now")
 	}
-	f.Set("message", "stop and re-run the tests")
-	if !f.FocusName("message") {
-		t.Fatal("form has no message field")
+	if !m.blocks.cursor.atComposer {
+		t.Fatal("i did not land the operator in the message box")
 	}
-	run(t, m, press(t, m, "ctrl+s"))
+
+	// Type and send: enter, on a LIVE execution, is SendExecutionMessage.
+	m.composer.value = "stop and re-run the tests"
+	m.composer.cursor = len([]rune(m.composer.value))
+	run(t, m, press(t, m, "enter"))
+
 	if len(p.messages) != 1 {
 		t.Fatalf("SendExecutionMessage calls = %d, want 1", len(p.messages))
 	}

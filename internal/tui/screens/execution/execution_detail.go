@@ -28,8 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
-	"github.com/beardedparrott/orchicon/internal/tui/mutate"
-	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -114,15 +113,20 @@ type execDetailState struct {
 	byID map[string]*execDetailParts
 }
 
-// execDetailParts is one execution's record plus its transcript.
+// execDetailParts is one execution's record plus its session ITEMS.
 //
 // facts and record are stored as RENDERED text rather than as the proto message: the fields carry
 // the GUI's context strip and the record carries the styled error/output, and both depend on the
 // list row's meta (status) which is only in hand at fetch time.
+//
+// The transcript is stored as ITEMS, not as a rendered string, because the pane now renders it as
+// COLLAPSIBLE BLOCKS with a cursor (execution_blocks.go) — and a cursor that toggles a block has to
+// be able to re-render that block on demand. A pre-rendered string could only be redrawn whole,
+// which is precisely the shape that made expansion impossible before.
 type execDetailParts struct {
-	facts      []screenkit.Field
-	record     string // error + output, already styled
-	transcript string // the merged durable+live session view
+	facts  []screenkit.Field
+	record string // error + output, already styled
+	items  []chat.ChatItem
 }
 
 // put records an execution's fetched facts and record.
@@ -141,8 +145,8 @@ func (s *execDetailState) put(id string, e *apiv1.WorkerExecution, facts []scree
 	p.record = renderExecutionRecord(e)
 }
 
-// putTranscript records the rendered session transcript, leaving the record alone.
-func (s *execDetailState) putTranscript(id, transcript string) {
+// putTranscript records the merged session ITEMS, leaving the record alone.
+func (s *execDetailState) putTranscript(id string, items []chat.ChatItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.byID == nil {
@@ -153,7 +157,19 @@ func (s *execDetailState) putTranscript(id, transcript string) {
 		p = &execDetailParts{}
 		s.byID[id] = p
 	}
-	p.transcript = transcript
+	p.items = items
+}
+
+// blockItems returns an execution's session items, for callers that need the CURRENT transcript
+// length (the cursor clamp and the toggle both do).
+func (s *execDetailState) blockItems(id string) []chat.ChatItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.byID[id]
+	if !ok {
+		return nil
+	}
+	return p.items
 }
 
 // parts returns a COPY of an execution's parts (nil when nothing has arrived).
@@ -210,10 +226,45 @@ func (m *Model) composeExecutionBody(id string) (string, []screenkit.Field) {
 	if p.record != "" {
 		sections = append(sections, p.record)
 	}
-	if t := strings.TrimRight(p.transcript, "\n"); t != "" {
-		sections = append(sections, t)
+	// The transcript is drawn as COLLAPSIBLE BLOCKS with the cursor, and the COMPOSER is its last
+	// position — so walking down past the last block reaches the input box (execution_blocks.go).
+	if len(p.items) > 0 {
+		blocks := blocksFromItems(p.items, m.w)
+		m.blocks.reset(id)
+		m.clampBlockCursor(len(blocks))
+		if body, _ := renderBlocks(blocks, &m.blocks, m.w, m.blocks.cursor); body != "" {
+			sections = append(sections, body)
+		}
+		// The composer is its own section so it reads as a control rather than another block.
+		sections = append(sections, m.composer.render(m.w, m.execMeta(id), m.blocks.cursor.atComposer))
 	}
 	return strings.Join(sections, "\n\n"), p.facts
+}
+
+// execMeta is the execution's list-row status, which decides what the composer will DO when it is
+// submitted (message a live worker vs ask a follow-up on a finished one).
+func (m *Model) execMeta(id string) string {
+	if it, ok := m.Base.SourceItem(srcExecutions, id); ok {
+		return it.Meta
+	}
+	return ""
+}
+
+// clampBlockCursor keeps the cursor inside the transcript's CURRENT length: a live transcript grows,
+// and a re-fetch can shrink one. An out-of-range cursor would make `enter` toggle nothing and look
+// broken.
+func (m *Model) clampBlockCursor(n int) {
+	if m.blocks.cursor.idx >= n {
+		m.blocks.cursor.idx = n - 1
+	}
+	if m.blocks.cursor.idx < 0 {
+		m.blocks.cursor.idx = 0
+	}
+}
+
+// blockItems is the pane's current transcript, for the cursor and the toggle.
+func (m *Model) blockItems() []chat.ChatItem {
+	return m.execDetail.blockItems(m.Base.DetailID())
 }
 
 // repaintExecutionDetail recomposes the execution pane from its current parts without asking the
@@ -392,57 +443,3 @@ func truncateForField(s string, max int) string {
 }
 
 // --- the follow-up -----------------------------------------------------------
-
-// beginFollowUp opens the follow-up box for a session that is no longer LIVE.
-//
-// The GUI's composer does both jobs on one control: nudge a running session (SendExecutionMessage)
-// or follow up on a finished one (ContinueExecutionSession). The TUI already had the nudge (`i`);
-// this is its complement, and it is a SEPARATE chord because the two are different acts with
-// different preconditions — a nudge needs a live session, a follow-up needs a session that still
-// exists.
-func (m *Model) beginFollowUp(execID string) tea.Cmd {
-	f := kit2.NewForm("Follow up on "+execID,
-		kit2.FieldSpec{Name: "message", Label: "Question about this run", Kind: kit2.KTextArea, Required: true,
-			Placeholder: "ask about what it did — the reply joins the session transcript, no new execution"})
-	f.Focused = true
-	f.Width = 66
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		msg := strings.TrimSpace(v["message"])
-		id := execID
-		return m.Mutate(mutate.Request{
-			Name: "follow up on " + id, Source: srcExecutions,
-			Do: func(ctx context.Context) error {
-				resp, err := m.cl.Executions.ContinueExecutionSession(ctx, connect.NewRequest(&apiv1.ContinueExecutionSessionRequest{
-					ExecutionId: id, Message: msg,
-				}))
-				if err != nil {
-					return err
-				}
-				// The reply is shown in the notice, which is the one surface the shell never
-				// truncates — a follow-up's answer is the whole point of asking, and the body is
-				// re-read from the transcript anyway.
-				reply := strings.TrimSpace(resp.Msg.GetReply())
-				if reply == "" {
-					reply = "(the model returned an empty reply)"
-				}
-				m.notice = "follow-up reply: " + reply
-				return nil
-			},
-		}), nil
-	}
-	m.form = f
-	m.notice = ""
-	return nil
-}
-
-// followUpAvailable reports why a follow-up cannot run, or "" when it can. The precondition is
-// the SESSION, not the run: a follow-up re-attaches to a session that still exists.
-func (m *Model) followUpAvailable(meta string) string {
-	if m.cl == nil || m.cl.Executions == nil {
-		return "no execution client"
-	}
-	if meta == "" {
-		return "select an execution first"
-	}
-	return ""
-}

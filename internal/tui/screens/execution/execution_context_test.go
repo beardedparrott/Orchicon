@@ -268,31 +268,35 @@ func TestUsageFetchIsGatedOnStaleness(t *testing.T) {
 	}
 }
 
-// --- the follow-up box must be DISCOVERABLE ------------------------------------------------------
+// --- the message box must be DISCOVERABLE -------------------------------------------------------
 
-// The follow-up box is offered in the action bar, not merely bound to a key.
+// The message box is offered in the action bar, because the bar is the ONE place the pane states
+// what it can do — and the operator's report was precisely that they could not find it.
 //
-// The operator: "I don't see the follow-up chat box to kick off additional questions to the worker."
-// `f` was handled by the screen's dispatch all along, but the bar is the ONE place the pane states
-// what it can do — a key that is handled but never advertised is a key nobody knows about.
-func TestFollowUpIsOfferedInTheActionBar(t *testing.T) {
-	p := execPlane()
-	m := newModel(t, p)
+// It is advertised as the GESTURE that reaches it (walk down past the last block) rather than as a
+// key: the box is a position in the transcript, so a key would be a second way to reach something
+// the operator already reaches by pressing down — which is how the old `f`/`i` pair became
+// unintuitive in the first place.
+func TestMessageBoxIsOfferedInTheActionBar(t *testing.T) {
+	m := newModel(t, execPlane())
 	m.Base.SelectSource(srcExecutions)
 	m.Base.LoadItems(srcExecutions, []kit2.Item{{ID: "exec-1", Title: "exec-1", Meta: "succeeded"}}, "")
 
-	labels := map[string]string{}
+	var foundMessage, foundCollapse bool
 	for _, a := range m.actionsForSelection() {
-		labels[a.Key] = a.Label
+		switch {
+		case strings.Contains(a.Label, "message box"):
+			foundMessage = true
+		case strings.Contains(a.Label, "expand"):
+			foundCollapse = true
+		}
 	}
-	if _, ok := labels[keyFollowUp]; !ok {
-		t.Errorf("the follow-up box is not offered in the action bar (keys: %v) — the operator cannot find it", labels)
+	if !foundMessage {
+		t.Error("the message box is not offered in the action bar — the operator cannot find it")
 	}
-	if _, ok := labels[keyInterject]; !ok {
-		t.Errorf("interject left the action bar (keys: %v)", labels)
+	if !foundCollapse {
+		t.Error("the collapse gesture is not offered in the action bar")
 	}
-	// Both are present on a FINISHED execution: interject's own refusal explains that it needs a
-	// LIVE one, which is exactly why the two do not share a row.
 }
 
 // A usage landing repaints from cache and requests nothing.

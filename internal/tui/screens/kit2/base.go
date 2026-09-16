@@ -412,6 +412,14 @@ func (b *Base) DetailWidth() int {
 	return 60
 }
 
+// SetDetailScrollBottom pins the detail pane's viewport to its LAST row.
+//
+// It goes through the same pending-offset mechanism an editor's cursor uses, with an offset past
+// the end: the viewport clamps to the last page, which is exactly "bottom". Adding a second
+// scrolling path would mean two things could disagree about where the pane is, and this pane is
+// already written by three producers.
+func (b *Base) SetDetailScrollBottom() { b.detail.SetScrollOffset(1 << 20) }
+
 // SetDetailScrollTop pins the detail pane's viewport to a LINE OFFSET.
 //
 // The pane's normal rule is "keep the operator's scroll" (a live transcript must
