@@ -352,49 +352,84 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 	return p, nil
 }
 
-// DeleteProject hard-deletes a project and cascades to all owned entities
-// (work items, workflows, workflow versions, workflow runs, step runs).
-// The tenant_id is injected into the WHERE clause for isolation.
+// DeleteProject removes a project and EVERYTHING that belongs to it.
+//
+// THE CASCADE IS THE CONTRACT, and it used to be incomplete in a way that reached production and
+// stayed there. The work hierarchy was covered (step runs, runs, versions, workflows, dependencies,
+// work items) but the TELEMETRY tables were not — and none of them has an FK to projects, so nothing
+// blocked the delete and nothing pointed at the leftovers afterwards. Measured on the live dev
+// tenant after every project had been removed: 1264 orphaned worker_executions, 150 orphaned
+// recovery_executions, 9959 orphaned usage_records and 132 orphaned recurring_run_history rows, all
+// carrying a project_id that no longer existed. Deleting a project in the GUI left all of it behind;
+// the DB-backed tests, which create and drop projects constantly, left a large share of it.
+//
+// Nine tables carry a project_id and only ONE of them (project_mcp_servers) declares a foreign key,
+// which is exactly why this has to be explicit: a missing delete is silent rather than an error.
+//
+// ORDER MATTERS, leaves first, so nothing is left mid-cascade if a later statement fails and so the
+// row counts a caller observes step down rather than flicker:
+//
+//  1. execution_session_parts  — children of the executions (they DO cascade, but deleting them
+//     first keeps this function correct even if that FK is ever changed)
+//  2. usage_records            — reference executions AND the project
+//  3. worker_executions        — the project's executions
+//  4. continuation_plans       — children of the recoveries
+//  5. recovery_step_runs       — children of the recoveries
+//  6. recovery_executions      — the project's recoveries
+//  7. recurring_run_history    — references the runs (deleted below) and the work items
+//  8. workflow_step_runs       — children of the runs
+//  9. workflow_runs
+//
+// 10. workflow_versions        — children of the workflows
+// 11. workflows
+// 12. work_item_attachments    — children of the work items
+// 13. work_item_dependencies
+// 14. work_items
+// 15. project_mcp_servers      — the one real FK to projects
+// 16. the project
+//
+// Every statement is scoped by BOTH tenant_id and the project, so a cross-tenant id can never match
+// (defence in depth behind row-level security).
 func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
-	// Cascade: delete step runs for all workflow runs in this project
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_step_runs
-		 WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade step runs: %w", err)
+	// Each entry is one cascade step; the loop keeps the order auditable in one place rather than
+	// spread over 60 lines of near-identical statements, where a missing one is invisible.
+	steps := []struct {
+		what string
+		q    string
+	}{
+		{"execution session parts", `DELETE FROM execution_session_parts
+			WHERE execution_id IN (SELECT id FROM worker_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"usage records", `DELETE FROM usage_records WHERE tenant_id = $1 AND project_id = $2`},
+		{"worker executions", `DELETE FROM worker_executions WHERE tenant_id = $1 AND project_id = $2`},
+		{"continuation plans", `DELETE FROM continuation_plans
+			WHERE recovery_id IN (SELECT id FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"recovery step runs", `DELETE FROM recovery_step_runs
+			WHERE recovery_id IN (SELECT id FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"recovery executions", `DELETE FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2`},
+		{"recurring run history", `DELETE FROM recurring_run_history
+			WHERE tenant_id = $1 AND (
+				workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)
+				OR work_item_id IN (SELECT id FROM work_items WHERE tenant_id = $1 AND project_id = $2))`},
+		{"workflow step runs", `DELETE FROM workflow_step_runs
+			WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)`},
+		{"workflow runs", `DELETE FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2`},
+		{"workflow versions", `DELETE FROM workflow_versions
+			WHERE workflow_id IN (SELECT id FROM workflows WHERE tenant_id = $1 AND project_id = $2)`},
+		{"workflows", `DELETE FROM workflows WHERE tenant_id = $1 AND project_id = $2`},
+		{"work item attachments", `DELETE FROM work_item_attachments
+			WHERE work_item_id IN (SELECT id FROM work_items WHERE tenant_id = $1 AND project_id = $2)`},
+		{"work item dependencies", `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND project_id = $2`},
+		{"work items", `DELETE FROM work_items WHERE tenant_id = $1 AND project_id = $2`},
+		{"project mcp servers", `DELETE FROM project_mcp_servers WHERE tenant_id = $1 AND project_id = $2`},
 	}
-	// Cascade: delete workflow runs
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflow runs: %w", err)
+	for _, s := range steps {
+		if _, err := tx.Exec(ctx, s.q, tenantID, id); err != nil {
+			return fmt.Errorf("db: delete project cascade %s: %w", s.what, err)
+		}
 	}
-	// Cascade: delete workflow versions
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_versions
-		 WHERE workflow_id IN (SELECT id FROM workflows WHERE tenant_id = $1 AND project_id = $2)`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflow versions: %w", err)
-	}
-	// Cascade: delete workflows
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflows WHERE tenant_id = $1 AND project_id = $2`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflows: %w", err)
-	}
-	// Cascade: delete work item dependencies
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM work_item_dependencies WHERE project_id = $1 AND tenant_id = $2`,
-		id, tenantID); err != nil {
-		return fmt.Errorf("db: delete project cascade work item dependencies: %w", err)
-	}
-	// Cascade: delete work items
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM work_items WHERE project_id = $1 AND tenant_id = $2`,
-		id, tenantID); err != nil {
-		return fmt.Errorf("db: delete project cascade work items: %w", err)
-	}
-	// Delete the project itself
+	// The project itself. A missing row is not an error here: the caller may be retrying a delete
+	// whose cascade already ran, and the contract this function owes is "the project and its data are
+	// gone" — which is true either way.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM projects WHERE id = $1 AND tenant_id = $2`,
 		id, tenantID); err != nil {

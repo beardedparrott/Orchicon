@@ -262,8 +262,8 @@ func toolRetryFailedWorkflowRun(ctx context.Context, pool *db.Pool, args json.Ra
 		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"run_id":              updated.ID,
-		"status":              updated.Status,
-		"reset_step_run_ids":  reset,
+		"run_id":             updated.ID,
+		"status":             updated.Status,
+		"reset_step_run_ids": reset,
 	})
 }

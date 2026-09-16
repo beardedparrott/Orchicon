@@ -45,7 +45,7 @@ func approvalTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, approvalTestTenant); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}
 	return pool

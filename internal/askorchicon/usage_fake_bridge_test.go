@@ -97,10 +97,10 @@ func TestAskUsageCaptureNonOpencodeAdapter(t *testing.T) {
 	go func() {
 		waitForSend(t, client, 1)
 		client.sub.feed(busStepFinish("ses_1", map[string]any{
-			"input":      float64(120),
-			"output":     float64(45),
-			"reasoning":  float64(10),
-			"cache":      map[string]any{"read": float64(500), "write": float64(80)},
+			"input":     float64(120),
+			"output":    float64(45),
+			"reasoning": float64(10),
+			"cache":     map[string]any{"read": float64(500), "write": float64(80)},
 		}, 0.037))
 		client.sub.feed(busIdle("ses_1"))
 	}()

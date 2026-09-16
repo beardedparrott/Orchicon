@@ -690,16 +690,22 @@ var cannedWorkers = []cannedWorker{
 const automationResearchRoleID = "r_se_automation_research"
 
 // seedAutomationResearchRole creates the automation-research role
-// (idempotent).
-func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx) error {
-	if _, err := GetRole(ctx, tx, "tnt_dev", automationResearchRoleID); err == nil {
+// (idempotent) for the tenant the caller names.
+//
+// The tenant is a PARAMETER because this helper used to hardcode "tnt_dev": a test running against a
+// non-dev tenant still seeded the role into the dev tenant, so a fixture could pass while its own
+// tenant had no role at all — and every DB-backed test that called the seed wrote a row into the
+// operator's real tenant. The SQL inside the transaction defers to current_setting('app.tenant_id')
+// (which BeginTenantTx sets), so this Go-level value is the only place the tenant has to be named.
+func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx, tenantID string) error {
+	if _, err := GetRole(ctx, tx, tenantID, automationResearchRoleID); err == nil {
 		return nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	_, err := CreateRole(ctx, tx, RoleRow{
 		ID:           automationResearchRoleID,
-		TenantID:     "tnt_dev",
+		TenantID:     tenantID,
 		Name:         "automation-research",
 		Scope:        "tenant",
 		Entitlements: []string{"workitem:read", "workitem:write", "aigateway:read"},
@@ -707,19 +713,30 @@ func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-func SeedDevWorkers(ctx context.Context, p *Pool) error {
+// SeedDevWorkers seeds the canned worker identities for a tenant.
+//
+// THE TENANT IS A PARAMETER. It used to be hardcoded to "tnt_dev" in five places, which meant every
+// caller — including 46 DB-backed test fixtures — wrote into the OPERATOR'S REAL TENANT regardless of
+// which tenant it was testing. A fixture that intended to exercise a scratch tenant still landed rows
+// in dev, so the dev tenant accumulated test fixtures (100 projects, 1078 work items and 1264 orphaned
+// executions were the measured residue) while the tenant under test had no seeded workers at all.
+//
+// The SQL inside this function no longer names a tenant either: it defers to
+// current_setting('app.tenant_id'), which BeginTenantTx sets per transaction, so the value flows from
+// this one argument rather than from 29 string literals.
+func SeedDevWorkers(ctx context.Context, p *Pool, tenantID string) error {
 	var errs []error
 	// Plane channel: seed the automation-research role (idempotent). The
 	// canned Automation Research trio binds it via RoleRef in its profiles —
 	// the canned sync fills empty role_ref bindings and never clobbers a
 	// human-assigned role.
 	{
-		ttx, terr := p.BeginTenantTx(ctx, "tnt_dev")
+		ttx, terr := p.BeginTenantTx(ctx, tenantID)
 		if terr != nil {
 			errs = append(errs, fmt.Errorf("seed automation role: begin tx: %w", terr))
 		} else {
 			ok := true
-			if err := seedAutomationResearchRole(ctx, ttx.Tx); err != nil {
+			if err := seedAutomationResearchRole(ctx, ttx.Tx, tenantID); err != nil {
 				errs = append(errs, fmt.Errorf("seed automation role: %w", err))
 				ok = false
 			}
@@ -731,7 +748,7 @@ func SeedDevWorkers(ctx context.Context, p *Pool) error {
 		}
 	}
 	for _, w := range cannedWorkers {
-		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
+		ttx, err := p.BeginTenantTx(ctx, tenantID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("seed worker %s: begin tx: %w", w.ID, err))
 			continue
@@ -755,14 +772,14 @@ func SeedDevWorkers(ctx context.Context, p *Pool) error {
 	// who customized one keeps their worker. The operator is responsible
 	// for repointing any workflow step refs before the delete takes hold.
 	for _, retiredID := range retiredCannedWorkers {
-		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
+		ttx, err := p.BeginTenantTx(ctx, tenantID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("retire worker %s: begin tx: %w", retiredID, err))
 			continue
 		}
 		var exists bool
 		if err := ttx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev')`, retiredID,
+			`SELECT EXISTS (SELECT 1 FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id'))`, retiredID,
 		).Scan(&exists); err != nil {
 			ttx.Rollback(ctx)
 			errs = append(errs, fmt.Errorf("retire worker %s: check exists: %w", retiredID, err))
@@ -838,7 +855,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	if _, err := ttx.Exec(ctx,
 		`UPDATE workers SET status = 'published', name = $1, purpose = $2, description = $3,
 			role_ref = COALESCE(NULLIF($4, ''), role_ref)
-		 WHERE id = $5 AND tenant_id = 'tnt_dev'`,
+		 WHERE id = $5 AND tenant_id = current_setting('app.tenant_id')`,
 		w.Name, w.Purpose, w.Description, w.RoleRef, targetID,
 	); err != nil {
 		return fmt.Errorf("update worker: %w", err)
@@ -848,14 +865,14 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// safety context is already present on it.
 	var curVer int
 	if err := ttx.QueryRow(ctx,
-		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, targetID,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`, targetID,
 	).Scan(&curVer); err != nil {
 		return fmt.Errorf("seed worker %s: current version: %w", w.ID, err)
 	}
 	var pubID, curAgents string
 	verErr := ttx.QueryRow(ctx,
 		`SELECT id, agents_md FROM worker_versions
-		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 		targetID, curVer,
 	).Scan(&pubID, &curAgents)
 
@@ -883,14 +900,14 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		var bestStatus string
 		berr := ttx.QueryRow(ctx,
 			`SELECT version, status FROM worker_versions
-			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
+			  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND status = 'published'
 			  ORDER BY version DESC LIMIT 1`,
 			targetID,
 		).Scan(&bestVer, &bestStatus)
 		if errors.Is(berr, pgx.ErrNoRows) {
 			berr = ttx.QueryRow(ctx,
 				`SELECT version, status FROM worker_versions
-				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
+				  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id')
 				  ORDER BY version DESC LIMIT 1`,
 				targetID,
 			).Scan(&bestVer, &bestStatus)
@@ -900,7 +917,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			// A usable row exists below the broken pointer — re-point
 			// and continue from it.
 			if _, err := ttx.Exec(ctx,
-				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
+				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = current_setting('app.tenant_id')`,
 				bestVer, targetID,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: repair current version pointer: %w", w.ID, err)
@@ -910,7 +927,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			draftCurrent = bestStatus != "published"
 			if err := ttx.QueryRow(ctx,
 				`SELECT id, agents_md FROM worker_versions
-				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+				  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 				targetID, curVer,
 			).Scan(&pubID, &curAgents); err != nil {
 				return fmt.Errorf("seed worker %s: reload repaired version: %w", w.ID, err)
@@ -928,7 +945,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				     context_sources, permissions, gated_tools, budget_overrides,
 				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				     labels, published_at, created_at)
-				 VALUES ($1, 'tnt_dev', $2, 1, 'Safety context roll-forward', 'published',
+				 VALUES ($1, current_setting('app.tenant_id'), $2, 1, 'Safety context roll-forward', 'published',
 				        '', $3, $4, $5, $6,
 				        '[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', $8, '', '{}',
 				        now(), now())`,
@@ -971,7 +988,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		var maxVer int
 		if err := ttx.QueryRow(ctx,
 			`SELECT COALESCE(max(version), 0) FROM worker_versions
-			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, targetID,
+			  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id')`, targetID,
 		).Scan(&maxVer); err != nil {
 			return fmt.Errorf("seed worker %s: max version: %w", w.ID, err)
 		}
@@ -981,7 +998,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				`UPDATE worker_versions
 				    SET role = $1, skills = $2, behavior = $3, agents_md = $4,
 				        concurrency_limit = $5
-				  WHERE worker_id = $6 AND tenant_id = 'tnt_dev'
+				  WHERE worker_id = $6 AND tenant_id = current_setting('app.tenant_id')
 				    AND version = 1`,
 				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.ConcurrencyLimit, targetID,
 			); err != nil {
@@ -1011,7 +1028,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				     context_sources, permissions, gated_tools, budget_overrides,
 				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				     labels, published_at, created_at)
-				 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
+				 SELECT $1, current_setting('app.tenant_id'), worker_id, $2, 'Safety context roll-forward',
 				        'published', COALESCE(NULLIF(model_ref,''), ''),
 				        $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools,
@@ -1021,13 +1038,13 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				        recovery_workflow_ref,
 				        labels, now(), now()
 				   FROM worker_versions
-				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
+				  WHERE id = $7 AND tenant_id = current_setting('app.tenant_id')`,
 				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID, budgetParam, w.ConcurrencyLimit,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: roll forward to v%d: %w", w.ID, newVer, err)
 			}
 			if _, err := ttx.Exec(ctx,
-				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
+				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = current_setting('app.tenant_id')`,
 				newVer, targetID,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: set current version: %w", w.ID, err)
@@ -1049,7 +1066,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	pubTag, err := ttx.Exec(ctx,
 		`UPDATE worker_versions SET status = 'published',
 			model_ref = COALESCE(NULLIF(model_ref, ''), '')
-		 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
+		 WHERE tenant_id = current_setting('app.tenant_id') AND status = 'draft'
 		   AND worker_id = $1
 		   AND NOT EXISTS (
 		     SELECT 1 FROM worker_versions p
@@ -1059,7 +1076,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		   )
 		   AND version = (
 		     SELECT max(version) FROM worker_versions
-		     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
+		     WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND status = 'draft'
 		   )`,
 		targetID,
 	)
@@ -1070,9 +1087,9 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		if _, err := ttx.Exec(ctx,
 			`UPDATE workers SET current_version = (
 			   SELECT max(version) FROM worker_versions
-			   WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
+			   WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND status = 'published'
 			 )
-			 WHERE id = $1 AND tenant_id = 'tnt_dev'`,
+			 WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`,
 			targetID,
 		); err != nil {
 			return fmt.Errorf("seed worker %s: set current version after promotion: %w", w.ID, err)
@@ -1086,7 +1103,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (string, error) {
 	var targetID string
 	err := ttx.QueryRow(ctx,
-		`SELECT id FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, w.ID,
+		`SELECT id FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`, w.ID,
 	).Scan(&targetID)
 	if err == nil {
 		return targetID, nil
@@ -1098,7 +1115,7 @@ func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (str
 	// Canned ID is free — does a user-created worker own the slug?
 	var ownerID string
 	oerr := ttx.QueryRow(ctx,
-		`SELECT id FROM workers WHERE tenant_id = 'tnt_dev' AND slug = $1`, w.Slug,
+		`SELECT id FROM workers WHERE tenant_id = current_setting('app.tenant_id') AND slug = $1`, w.Slug,
 	).Scan(&ownerID)
 	if errors.Is(oerr, pgx.ErrNoRows) {
 		return "", nil // slug free — create
@@ -1148,7 +1165,7 @@ func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (str
 func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bool, error) {
 	var curVer int
 	if err := ttx.QueryRow(ctx,
-		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`, workerID,
 	).Scan(&curVer); err != nil {
 		return false, err
 	}
@@ -1156,7 +1173,7 @@ func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bo
 	err := ttx.QueryRow(ctx,
 		`SELECT role, skills, behavior, agents_md, system_prompt
 		   FROM worker_versions
-		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 		workerID, curVer,
 	).Scan(&role, &skills, &behavior, &agents, &sp)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1178,14 +1195,14 @@ func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bo
 func workerIsSeedManaged(ctx context.Context, ttx *TenantTx, workerID string) (bool, error) {
 	var curVer int
 	if err := ttx.QueryRow(ctx,
-		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`, workerID,
 	).Scan(&curVer); err != nil {
 		return false, err
 	}
 	var agents string
 	err := ttx.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions
-		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 		workerID, curVer,
 	).Scan(&agents)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1203,15 +1220,15 @@ func workerIsSeedManaged(ctx context.Context, ttx *TenantTx, workerID string) (b
 // (e.g. adopted ULID UI workers) before recreating under the canned ID.
 func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error {
 	if _, err := ttx.Exec(ctx,
-		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id')`, workerID); err != nil {
 		return fmt.Errorf("delete worker versions: %w", err)
 	}
 	if _, err := ttx.Exec(ctx,
-		`DELETE FROM edit_locks WHERE resource_id = $1 AND resource_type = 'worker' AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		`DELETE FROM edit_locks WHERE resource_id = $1 AND resource_type = 'worker' AND tenant_id = current_setting('app.tenant_id')`, workerID); err != nil {
 		return fmt.Errorf("delete worker edit locks: %w", err)
 	}
 	if _, err := ttx.Exec(ctx,
-		`DELETE FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		`DELETE FROM workers WHERE id = $1 AND tenant_id = current_setting('app.tenant_id')`, workerID); err != nil {
 		return fmt.Errorf("delete worker: %w", err)
 	}
 	return nil
@@ -1225,7 +1242,7 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Create worker.
 	_, err := ttx.Exec(ctx,
 		`INSERT INTO workers (id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by)
-		 VALUES ($1, 'tnt_dev', $2, $3, $4, $5, $6, 'published', 1, 'orchicon')
+		 VALUES ($1, current_setting('app.tenant_id'), $2, $3, $4, $5, $6, 'published', 1, 'orchicon')
 		 ON CONFLICT (id) DO NOTHING`,
 		w.ID, w.Name, w.Slug, w.Description, w.Purpose, w.RoleRef,
 	)
@@ -1244,7 +1261,7 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			model_ref, role, skills, behavior, agents_md,
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
-		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
+		 VALUES ($1, current_setting('app.tenant_id'), $2, 1, 'Pre-canned worker', 'published',
 			'',
 			$3, $4, $5, $6,
 			'[]', '{}', '[]', COALESCE($7::jsonb, '{}'::jsonb), '', $8, '', '{}',

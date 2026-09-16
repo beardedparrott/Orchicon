@@ -51,8 +51,8 @@ const (
 	// no_progress window is also 120s) without killing slow-but-alive
 	// calls, and the recycle budget is raised so one recycle is never a
 	// death sentence.
-	defaultAskMCPToolWedgeWindow    = 120 * time.Second
-	defaultAskMCPReconnectAttempts  = 3
+	defaultAskMCPToolWedgeWindow   = 120 * time.Second
+	defaultAskMCPReconnectAttempts = 3
 )
 
 func askStallNoProgressWindow() time.Duration {

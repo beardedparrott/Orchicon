@@ -126,10 +126,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 
-	// Seed canned workers for the dev tenant so they're available for
+	// Seed canned workers for the deployment tenant so they're available for
 	// workflow templates and manual dispatch. Idempotent — workers that
 	// already exist are skipped or updated with current data.
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	//
+	// The tenant is PASSED IN. This call used to rely on SeedDevWorkers hardcoding "tnt_dev", which
+	// meant a deployment configured with any other tenant (ORCHICON_DEPLOYMENT_TENANT_ID) seeded its
+	// canned workers into tnt_dev — where they were invisible to the very deployment that needed
+	// them, while polluting a tenant it does not own.
+	if err := db.SeedDevWorkers(context.Background(), pool, cfg.DeploymentTenantID); err != nil {
 		log.Warn("seed dev workers failed (continuing)", "error", err)
 	}
 

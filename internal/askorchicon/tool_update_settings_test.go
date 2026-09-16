@@ -40,11 +40,11 @@ func TestToolValidateModelRef(t *testing.T) {
 		"claude/anthropic/claude-sonnet-5",
 		"opencode/opencode-go/deepseek-v4-flash",
 		"orchicon/local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL",
-		"opencode-go/deepseek-v4-flash",                                   // legacy 2-seg (built-in)
-		"local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL",                         // legacy 2-seg (tenant-custom)
-		"orchicon/commandcode/deepseek/deepseek-v4-flash",                 // slashed model id, verbatim
-		"",                                                                // unset = valid
-		"   ",                                                             // unset/blank = valid
+		"opencode-go/deepseek-v4-flash",                   // legacy 2-seg (built-in)
+		"local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL",         // legacy 2-seg (tenant-custom)
+		"orchicon/commandcode/deepseek/deepseek-v4-flash", // slashed model id, verbatim
+		"",    // unset = valid
+		"   ", // unset/blank = valid
 	}
 	for _, ref := range pass {
 		if err := toolValidateModelRef(ref); err != nil {
@@ -56,10 +56,10 @@ func TestToolValidateModelRef(t *testing.T) {
 		ref   string
 		point string
 	}{
-		{"foo/anthropic/claude-sonnet-5", "register an adapter"}, // unknown adapter
+		{"foo/anthropic/claude-sonnet-5", "register an adapter"},    // unknown adapter
 		{"mystery-provider/claude-sonnet-5", "Settings → Adapters"}, // unknown 2-seg provider
-		{"/", "adapter/provider/model"}, // malformed
-		{"claude/anthropic", "adapter kind"}, // 2-seg known-adapter first segment
+		{"/", "adapter/provider/model"},                             // malformed
+		{"claude/anthropic", "adapter kind"},                        // 2-seg known-adapter first segment
 	}
 	for _, c := range fail {
 		err := toolValidateModelRef(c.ref)
