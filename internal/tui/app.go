@@ -850,7 +850,22 @@ func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
 func (m *App) refreshComposerHint() {
 	ctx := ""
 	if s := m.screens[m.active]; s != nil {
-		if h, ok := s.(interface{ HintLine() string }); ok {
+		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
+		//
+		// The operator: "There is no ctrl+s - save guidance in the composer under providers or secrets
+		// like other pages". The screen's own HintLine is a BROWSING cheat-sheet — for the providers
+		// pane it says "n: new custom · e: edit · t: enable/disable · s: set token · c: clear ·
+		// x: delete" — and it said exactly that while a provider form had the keyboard. Every one of
+		// those chords is INERT in that state (the form consumes every key), and the two that DO work,
+		// ctrl+s and esc, were not mentioned. So the hint was not merely incomplete, it was wrong:
+		// it advertised six keys that do nothing and hid the one that saves.
+		//
+		// The fix is here rather than in each screen's HintLine because this is the ONE place that
+		// knows a form is open for EVERY screen (the same FormOpen probe the Tab chord uses), so the
+		// form's keys cannot be forgotten by a screen that adds a form later.
+		if fo, ok := s.(interface{ FormOpen() bool }); ok && fo.FormOpen() {
+			ctx = formComposerHint
+		} else if h, ok := s.(interface{ HintLine() string }); ok {
 			ctx = ansi.Strip(strings.TrimSpace(h.HintLine()))
 		}
 	}
@@ -862,6 +877,10 @@ func (m *App) refreshComposerHint() {
 		m.refreshLayout()
 	}
 }
+
+// formComposerHint is what the composer advertises while ANY screen has a form open. It names only
+// keys the form actually honours, so the hint is true in that state — see refreshComposerHint.
+const formComposerHint = "ctrl+s: save · esc: cancel · tab/↑↓: next field · enter: next field (or open a picker/list)"
 
 func (m *App) updateContextChip() {
 	if s := m.screens[m.active]; s != nil {

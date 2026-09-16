@@ -117,12 +117,22 @@ func validateBaseURL(raw string) error {
 	return nil
 }
 
-func validateAuthMode(mode string) error {
+// ValidateAuthMode reports whether a value is an auth mode this service honours.
+//
+// EXPORTED because the clients need to ask the same question. The TUI's provider form offered
+// `bearer` and `api_key` — neither of which this function accepts, so choosing one produced a
+// provider the server refused — while `token`, the value every existing provider uses, was not
+// offered at all. A client that builds its choices from these constants cannot make that mistake, and
+// a test can assert the options are accepted rather than asserting they look right.
+func ValidateAuthMode(mode string) error {
 	if mode != AuthModeNone && mode != AuthModeToken {
 		return invalidf("auth_mode must be %q or %q", AuthModeNone, AuthModeToken)
 	}
 	return nil
 }
+
+// validateAuthMode is the internal spelling kept for the existing call sites.
+func validateAuthMode(mode string) error { return ValidateAuthMode(mode) }
 
 // ManualModel is one operator-added model entry (ADR-0006 D1/D4): the
 // storage shape of manual_models JSONB, mirroring orchicon.ModelInfo hints.

@@ -35,6 +35,8 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/providers"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
@@ -1656,9 +1658,7 @@ func (m *Model) newProviderForm() *kit2.Form {
 		kit2.FieldSpec{Name: "display_name", Label: "Display name", Kind: kit2.KText, Required: true, Placeholder: "Local Ollama"},
 		kit2.FieldSpec{Name: "ref_id", Label: "Ref id", Kind: kit2.KText, Required: true, Placeholder: "local-ollama"},
 		kit2.FieldSpec{Name: "base_url", Label: "Base URL", Kind: kit2.KText, Required: true, Validate: validURL, Placeholder: "http://127.0.0.1:11434"},
-		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: "none", Options: []kit2.Option{
-			{Value: "none", Label: "none"}, {Value: "bearer", Label: "bearer"}, {Value: "api_key", Label: "api_key"},
-		}},
+		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: providers.AuthModeNone, Options: authModeOptions()},
 	)
 	f.Focused = true
 	f.Width = 64
@@ -1701,9 +1701,7 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 	f := kit2.NewForm("Edit provider: "+item.Title,
 		kit2.FieldSpec{Name: "display_name", Label: "Display name (custom)", Kind: kit2.KText, Initial: dn},
 		kit2.FieldSpec{Name: "base_url", Label: "Base URL (custom)", Kind: kit2.KText, Initial: bu},
-		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: am, Options: []kit2.Option{
-			{Value: "none", Label: "none"}, {Value: "bearer", Label: "bearer"}, {Value: "api_key", Label: "api_key"},
-		}},
+		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: normalizeAuthMode(am), Options: authModeOptions()},
 		kit2.FieldSpec{Name: "base_url_override", Label: "Base URL override", Kind: kit2.KText, Initial: ov},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
@@ -1769,7 +1767,7 @@ func (m *Model) providerTokenForm(item kit2.Item) *kit2.Form {
 // read back.
 func (m *Model) newSecretForm() *kit2.Form {
 	f := kit2.NewForm("New secret",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "GITHUB_TOKEN"},
+		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Validate: validSecretName, Placeholder: "GITHUB_TOKEN"},
 		kit2.FieldSpec{Name: "value", Label: "Value", Kind: kit2.KSecret, Required: true},
 		kit2.FieldSpec{Name: "description", Label: "Description", Kind: kit2.KText},
 	)
@@ -2040,6 +2038,31 @@ func validModelRef(v string) error {
 	}
 	if _, err := adapter.ParseModelRef(v, nil); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validSecretName rejects a name the secrets store will refuse, AT THE POINT OF ENTRY.
+//
+// It calls the SERVER'S OWN validator (secrets.ValidateName) rather than restating the rule, so the
+// two can never drift — the same reasoning the model picker uses for a context window. That matters
+// because the rule is not obvious: it is `^[A-Z][A-Z0-9_]+$`, i.e. UPPERCASE ONLY, and a lowercase
+// name is the natural thing to type.
+//
+// WHY THIS IS A BUG FIX AND NOT POLISH. Without it the form accepted `my_token`, CLOSED as if it had
+// saved, and only then did the server reject it — leaving the operator with a closed form, no row,
+// and a transient dock error. That is the operator's report exactly: "I tried adding a secret and a
+// provider in the TUI and saved it, yet they were never actually created." A validation error the
+// form can see is one the form can SHOW, next to the field, before it closes.
+func validSecretName(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil // Required reports emptiness; this reports a malformed NAME
+	}
+	if err := secrets.ValidateName(v); err != nil {
+		// The server's message already names the rule; keep it, and add the human hint the regex
+		// alone does not give.
+		return errors.New("must be UPPERCASE: letters, digits and _ only, starting with a letter (e.g. GITHUB_TOKEN)")
 	}
 	return nil
 }
@@ -2361,4 +2384,41 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// normalizeAuthMode maps a STORED auth mode onto one the form can offer.
+//
+// WHY THIS IS NOT JUST DEFENSIVE PADDING. A select whose Initial is not one of its Options fails
+// validation with "unknown option", so it cannot be submitted at all — the operator would be unable
+// to edit that provider by ANY route. A value outside {none, token} is either legacy or invented (the
+// form used to offer `bearer` and `api_key`, neither of which the server accepts), so the only
+// submit-able repair is a value the server accepts: the stored one is normalised to `none`, and the
+// operator sees the choices that actually work.
+func normalizeAuthMode(mode string) string {
+	if providers.ValidateAuthMode(mode) == nil {
+		return mode
+	}
+	return providers.AuthModeNone
+}
+
+// authModeOptions is the provider auth-mode choice, built from the SERVER'S OWN constants.
+//
+// It offered `none`, `bearer` and `api_key`. The server accepts exactly TWO values —
+// providers.AuthModeNone ("none") and providers.AuthModeToken ("token") — and rejects anything else
+// with `auth_mode must be "none" or "token"`. So BOTH extra options were unusable, and the one value
+// every existing provider actually uses, `token` (the GUI offers only none|token, and the live table
+// holds 2×token, 1×none and ZERO bearer/api_key), could not be chosen at all.
+//
+// That is the second half of the operator's "I tried adding a secret and a provider in the TUI and
+// saved it, yet they were never actually created": picking `bearer` produced a provider the server
+// refused. The options come from the exported constants rather than from string literals here, so the
+// list CANNOT drift from what the server honours — the same reasoning as validSecretName calling the
+// secrets store's validator.
+func authModeOptions() []kit2.Option {
+	return []kit2.Option{
+		{Value: providers.AuthModeNone, Label: providers.AuthModeNone},
+		// The GUI's own wording: choosing a token is what makes the plane write the tenant secret for
+		// this provider, so the label says which secret appears and that it is automatic.
+		{Value: providers.AuthModeToken, Label: "token (auto-writes CUSTOM_<REF>_API_KEY)"},
+	}
 }
