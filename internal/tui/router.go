@@ -283,6 +283,16 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, tea.Batch(cmd, m.finishAskModelPicker())
 		}
 	}
+	// The rename modal owns EVERY key while it is up, for the same reason the model picker does: it is
+	// layered above the composer, so a keystroke aimed at the form can never reach the composer or a
+	// screen behind it. It is checked HERE, next to the other App-level overlays, so no route below can
+	// claim a key first (notably ctrl+s, which is the form's save chord).
+	if m.renameConv != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.renameConvKey(k)
+		}
+		return m, nil
+	}
 	// /connect in-place overlay owns ALL messages while open (never quits):
 	// keys drive the embedded connection form; the async probe's start/done
 	// messages flow through connectTick.
@@ -551,6 +561,28 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// pane's detail. With text in the buffer the textarea keeps them
 			// for cursor movement.
 			if strings.TrimSpace(m.dock.Value()) == "" {
+				// ctrl+n RENAMES THE SELECTED CONVERSATION — the rail's own item action.
+				//
+				// The rail is the one list in the app whose keys are driven from the COMPOSER (an empty
+				// box means the arrows move the rail), so a plain letter cannot be its action key:
+				// 'e' or 'x' would become untypeable as the first character of a message. Hence a
+				// MODIFIER chord, and ctrl+n specifically because it collides with nothing: not a
+				// control-byte alias (ctrl+h is backspace, ctrl+i tab, ctrl+j LF, ctrl+m return), not an
+				// XON/XOFF flow byte (those are ctrl+q / ctrl+s), and not already bound anywhere.
+				//
+				// It is advertised in the rail's own footer and in the help overlay, because a chord
+				// nobody can see is the same as no chord — and `/rename` remains the discoverable path
+				// through the palette for anyone who looks there first.
+				if m.railVisible() && m.active == TabAsk && k.String() == "ctrl+n" {
+					if m.convSel < 0 || m.convSel >= len(m.conversations) {
+						m.dock.SetError("no conversation selected in the rail")
+						return m, nil
+					}
+					c := m.conversations[m.convSel]
+					m.openRenameConversation(c.ID, c.Title)
+					m.refreshStreamStatus()
+					return m, nil
+				}
 				if d := scrollKeyDelta(k.String()); d != 0 {
 					if m.railVisible() && m.active == TabAsk {
 						switch k.String() {

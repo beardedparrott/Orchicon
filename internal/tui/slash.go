@@ -262,18 +262,37 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			return nil
 		},
 	})
+	// /rename OPENS A PREFILLED FORM with no arguments, and writes directly with one.
+	//
+	// The direct form was the only way in, which is the operator's report — "We can't rename
+	// conversations in the TUI" — because a command you must know, that cannot show you the current
+	// title, is not a rename UI. With no arguments it now opens the same modal `ctrl+n` opens, so the
+	// palette (the documented command surface) is a real route to it, and the current title is there
+	// to edit rather than retype.
 	add(SlashCommand{
-		Name: "/rename", Usage: "/rename <title>",
-		Desc:    "rename the open conversation (UpdateConversationTitle)",
-		MinArgs: 1,
+		Name: "/rename", Usage: "/rename [title]",
+		Desc: "rename the open conversation — with no title, opens a prefilled box (UpdateConversationTitle)",
 		Run: func(m *App, args []string) tea.Cmd {
-			if m.chatConvID == "" {
+			id := m.chatConvID
+			if id == "" {
+				// The open conversation is the target by default, but if the operator has only the
+				// RAIL loaded (a conversation selected, none "open"), that selection is what they are
+				// looking at — use it rather than refusing.
+				if m.railVisible() && m.active == TabAsk && m.convSel >= 0 && m.convSel < len(m.conversations) {
+					id = m.conversations[m.convSel].ID
+				}
+			}
+			if id == "" {
 				m.dock.SetError("no conversation open — /new or pick one from the rail")
+				return nil
+			}
+			if len(args) == 0 {
+				m.openRenameConversation(id, m.conversationTitle(id))
 				return nil
 			}
 			title := strings.Join(args, " ")
 			m.dock.SetNotice("renaming to " + title)
-			return m.chat.RenameConversation(m.chatConvID, title)
+			return m.chat.RenameConversation(id, title)
 		},
 	})
 	add(SlashCommand{

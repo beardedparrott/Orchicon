@@ -187,6 +187,17 @@ type App struct {
 	// App (not on a screen), so the SHELL hosts this picker and owns its keys and
 	// mouse while it is open — the same kit2.ModelPicker the screens use.
 	modelPicker *kit2.ModelPicker
+	// renameConv is the conversation-rename modal (nil = closed), hosted here for the same reason as the
+	// model picker: the surface it names (the conversations rail) belongs to the SHELL, so no screen
+	// can own its keys.
+	//
+	// The operator: "We can't rename conversations in the TUI." The RPC was already wired and reachable
+	// by `/rename <title>` — but that is a command you have to KNOW, and it cannot show you the current
+	// title to edit. The GUI prefills an input with the existing title (startRenameConv), which is what
+	// this form does, and `ctrl+n` opens it from the rail itself so the gesture is available where the
+	// operator is looking.
+	renameConv   *kit2.Form
+	renameConvID string
 	// metrics is the open conversation's usage roll-up feeding the composer's
 	// stat strip. ctxWindowFor/ctxWindow cache the resolved context window per
 	// model ref: the window costs a provider round trip and changes only when
@@ -529,6 +540,106 @@ func (m *App) newChat() {
 		}
 	}
 	m.updateContextChip()
+}
+
+// openRenameConversation opens the rename modal for a conversation, PREFILLED with its current title.
+//
+// Prefilling is the whole point, and it is the GUI's behaviour ("Conversation rename state" /
+// startRenameConv selects the existing title). A rename box that opened EMPTY would make the operator
+// retype a title they cannot see, which is worse than the `/rename <title>` command it replaces.
+func (m *App) openRenameConversation(id, current string) {
+	if id == "" {
+		m.dock.SetError("no conversation to rename — open one first")
+		return
+	}
+	f := kit2.NewForm("Rename conversation", kit2.FieldSpec{
+		Name:     "title",
+		Label:    "Title",
+		Kind:     kit2.KText,
+		Required: true,
+		// Prefilled, and the caret is placed at the END by the form, so typing appends and ctrl+u
+		// clears — both useful on a title.
+		Initial: current,
+	})
+	prev := current
+	f.OnSubmit = func(vals map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		title := strings.TrimSpace(vals["title"])
+		if title == "" {
+			// Stay open and SAY why, rather than closing on a no-op (the GUI's saveRenameConv
+			// silently returns when the trimmed value is empty — a save that does nothing is the
+			// silent-rejection class this codebase keeps having to fix).
+			return nil, fmt.Errorf("a title is required")
+		}
+		if title == prev {
+			return nil, nil // unchanged: valid, and nothing to write (the GUI does the same)
+		}
+		return m.chat.RenameConversation(id, title), nil
+	}
+	f.Width = m.modalWidth()
+	m.renameConv = f
+	m.renameConvID = id
+	m.refreshComposerHint()
+}
+
+// modalWidth sizes an App-hosted modal to the viewport, with a margin so it never touches the edges.
+func (m *App) modalWidth() int {
+	w := m.width - 8
+	if w > 72 {
+		w = 72
+	}
+	if w < 24 {
+		w = 24
+	}
+	return w
+}
+
+// renameConvKey drives the rename modal. The modal OWNS every key while it is open (like the model
+// picker): a form whose keystrokes could reach the composer behind it would let a save chord land in
+// a message.
+func (m *App) renameConvKey(k tea.KeyMsg) (*App, tea.Cmd) {
+	if m.renameConv == nil {
+		return m, nil
+	}
+	switch k.String() {
+	case "esc":
+		// Cancel: the modal closes and the modal's ID is cleared with it, so a later ctrl+s cannot
+		// write to a conversation the operator has stopped looking at.
+		m.renameConv = nil
+		m.renameConvID = ""
+		m.refreshComposerHint()
+		return m, nil
+	case "ctrl+c":
+		// Quit still works with a modal up (the hard escape).
+		m.quitting = true
+		return m, tea.Quit
+	}
+	cmd, _ := m.renameConv.HandleKey(k)
+	if m.renameConv != nil && m.renameConv.Submitted {
+		m.renameConv = nil
+		m.renameConvID = ""
+		m.refreshComposerHint()
+	}
+	return m, cmd
+}
+
+// renameConvView composes the modal over the base view.
+func (m *App) renameConvView(base string, w, h int) string {
+	if m.renameConv == nil {
+		return base
+	}
+	m.renameConv.Width = m.modalWidth()
+	m.renameConv.Height = h
+	return m.overlayCentered(base, m.renameConv.View())
+}
+
+// conversationTitle looks up a rail conversation's current title ("" when it is not loaded).
+func (m *App) conversationTitle(id string) string {
+	for _, c := range m.conversations {
+		if c.ID == id {
+			return c.Title
+		}
+	}
+	return ""
 }
 
 // scrollKeyDelta maps the vertical keys to a line delta (0 = not a scroll
@@ -881,7 +992,12 @@ func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
 // context.
 func (m *App) refreshComposerHint() {
 	ctx := ""
-	if s := m.screens[m.active]; s != nil {
+	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
+	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
+	// underneath is not the thing reading the operator's keystrokes.
+	if m.renameConv != nil {
+		ctx = formComposerHint
+	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
 		//
 		// The operator: "There is no ctrl+s - save guidance in the composer under providers or secrets
@@ -1546,6 +1662,12 @@ func (m App) viewFrame() string {
 	if m.modelPicker != nil {
 		m.modelPicker.SetScreen(w, h)
 		base = m.overlayCentered(base, m.modelPicker.View())
+	}
+	// The rename modal goes in the same layer. It and the model picker are mutually exclusive in
+	// practice (the picker opens from the composer's model chip, the rename box from the rail), and
+	// both are hosted here rather than on a screen, so ordering is not load-bearing.
+	if m.renameConv != nil {
+		base = m.renameConvView(base, w, h)
 	}
 	return fillView(base, w, h)
 }

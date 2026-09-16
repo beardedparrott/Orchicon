@@ -135,7 +135,12 @@ func (m *App) rightRailView() string {
 		if end > len(m.conversations) {
 			end = len(m.conversations)
 		}
+
 		body = append(body, theme.HintText.Render(truncateRight(fmt.Sprintf("%d-%d/%d", m.convScroll+1, end, len(m.conversations)), innerW)))
+		// THE RAIL ADVERTISES ITS OWN ACTION. A chord nobody can see is the same as no chord, and the
+		// rail is where the operator is looking when they want to rename a conversation — so the key
+		// belongs here, not only in the palette and the help overlay.
+		body = append(body, theme.HintText.Render(truncateRight("ctrl+n: rename", innerW)))
 	}
 
 	p := kit2.NewPanel(title, w, h)
