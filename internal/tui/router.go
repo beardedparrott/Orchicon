@@ -163,6 +163,12 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 	// tab bar are the same fact. It used to be a hand-listed ctrl+letter — and one of those (ctrl+e)
 	// was ALSO the composer's end-of-line binding, which is the kind of collision a derived key cannot
 	// have.
+	//
+	// The HANDLER is shared with the tab click and with the chord-pressed-while-a-menu-is-open case
+	// (openTabWithMenu): go to the tab AND drop its submenu down with the keyboard in it. This route
+	// used to do SwitchTo ALONE, which is why the chord left the menu shut and Enter then went wherever
+	// the screen underneath wanted — the operator's "when hitting the F#, it automatically gains focus
+	// on the first submenu in the list and hitting enter doesn't bring down the submenu".
 	for i := range tabs {
 		tab := tabs[i]
 		routes = append(routes, KeyRoute{
@@ -171,16 +177,7 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Scope: "global",
 			Match: keyMatcher(tab.Chord),
 			Handle: func(m *App, _ tea.Msg) bool {
-				wasActive := m.ActiveTab()
-				m.SwitchTo(tab.ID)
-				// Re-arm streams on every chord press, exactly once: on an
-				// actual switch the route arms here (SwitchTo doesn't arm
-				// for a NEW active tab); on a same-tab re-press SwitchTo's
-				// toggle path already armed — the route must not arm a
-				// second time (double-arm = double stream dials).
-				if m.ActiveTab() != wasActive || wasActive != tab.ID {
-					m.EnsureSubscriptions(tab.ID)
-				}
+				m.openTabWithMenu(tab.ID)
 				return true
 			},
 		})
@@ -388,6 +385,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					cl.DropKeyClaim()
 				}
 			}
+			// A DROPDOWN IS ALSO "whatever holds the keys" and is dismissed for the same reason. It
+			// outranks every screen claim (menuHandleKey runs ahead of the gate below), so leaving it
+			// up made ctrl+g a HALF-escape: the composer had the caret and the menu still owned Enter
+			// and the arrows — one screen state with the keyboard split in two, which is the exact
+			// confusion this key exists to end. ctrl+g is the documented way back to typing (the
+			// footer and the help overlay both name it), so it must land somewhere a keystroke means
+			// "type".
+			m.closeTabMenu()
 			m.setFocus(focusComposer)
 			m.refreshStreamStatus()
 			return m, nil
@@ -430,6 +435,26 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// or the detail). Tab/Shift+Tab remain the way to walk the ring.
 			m.setFocus(focusContent)
 			m.refreshStreamStatus()
+		case "esc":
+			// ESC FROM THE BAR DISENGAGES INTO THE CONTENT — the same place esc from the COMPOSER
+			// already goes, so "esc" means one thing at both places the operator starts from and
+			// never leaves them somewhere their typing is silently discarded.
+			//
+			// It was DEAD here, and that became load-bearing with this change: an F-key now lands
+			// on the bar with the submenu down, so its first esc closes the MENU (menuHandleKey,
+			// standard) — and the second esc had nowhere to go. With the keyboard on the bar and
+			// nothing selected below it, typing went to the screen, so the operator's next letters
+			// ran screen actions instead of filling the box: the trap TestFocusChordAndFallthrough
+			// pins by asserting "esc must return focus to content" after a chord.
+			//
+			// The DIFF PANE keeps precedence, exactly as delivered: it is a global route further
+			// down, so when the pane is open esc still closes it first and the content is reached on
+			// the next press.
+			if !m.diffOpen {
+				m.setFocus(focusContent)
+				m.refreshStreamStatus()
+				return m, nil
+			}
 		}
 	}
 	// Tab dropdown submenu keys: the open menu owns arrows/enter/esc and
@@ -663,11 +688,25 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 	}
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
-		// Toggle decision BEFORE any close: one click = exactly one menu
-		// transition. Capturing the open state after the outside-click
-		// close would turn "click the open tab again" into "reopen" (the
-		// menu could never close by mouse).
-		wasOpen := m.MenuOpenID()
+		// A TAB CLICK IS RESOLVED FIRST, ahead of the menu's outside-click close.
+		//
+		// The two are in the same gesture — row 0 is the bar, which is always outside the panel —
+		// and the close would erase the state the tab's own toggle depends on: with the menu
+		// closed first, "click the open tab again" would look like "no menu is open", i.e. a
+		// REOPEN, and the menu could never be closed by mouse. That is why this used to capture
+		// MenuOpenID() into a `wasOpen` and re-derive the toggle inline; resolving the click first
+		// lets the toggle live in ONE place (openTabWithMenu) instead of a fourth copy of it.
+		//
+		// Nothing is lost by the reorder: the dropdown renders BELOW the bar, so a press at y == 0
+		// can never be inside the panel or on its header/border — the two cases handled just below.
+		if mo.Y == 0 {
+			if id, ok := m.TabClick(mo.X); ok {
+				// The click and the chord are the SAME behaviour: go to the tab and drop its
+				// submenu. It used to be spelled out again here, which is how they came to disagree.
+				m.openTabWithMenu(id)
+				return m, nil
+			}
+		}
 		if m.TabMenu() != nil {
 			if m.MenuClick(mo.X, mo.Y) {
 				return m, nil
@@ -676,21 +715,6 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 				return m, nil // header/border: keep the menu open
 			}
 			m.closeTabMenu() // click outside closes (standard menu behavior)
-		}
-		if mo.Y == 0 {
-			if id, ok := m.TabClick(mo.X); ok {
-				if wasOpen == id {
-					// Click the open tab again: close its dropdown (the
-					// tab is already active — SwitchTo re-arms only).
-					m.SwitchTo(id)
-					m.EnsureSubscriptions(id)
-				} else {
-					m.SwitchTo(id)
-					m.EnsureSubscriptions(id)
-					m.openTabMenu(id)
-				}
-				return m, nil
-			}
 		}
 	}
 	if m.railVisible() && mo.X >= m.width-ConversationsRailWidth {

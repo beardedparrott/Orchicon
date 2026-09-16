@@ -362,6 +362,22 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 	if got := m.dock.Value(); got != "half-written thought" {
 		t.Fatalf("the draft must survive a screen switch, got %q", got)
 	}
+	// THE CHORD DROPS THE SUBMENU, so the draft's Enter belongs to the MENU now — Enter operates what
+	// is on screen rather than sending a message while a dropdown is visibly open. That is the
+	// operator's own ask ("automatically drops the submenu down and gains focus to that"), so this is
+	// asserted rather than worked around, and the way back to typing is the documented one: ctrl+g,
+	// which also dismisses the menu it is leaving.
+	if m.MenuOpenID() != TabWork {
+		t.Fatalf("the chord must drop the Work submenu, got menuOpen=%q", m.MenuOpenID())
+	}
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatalf("ctrl+g must dismiss the dropdown it is leaving, got %q", m.MenuOpenID())
+	}
+	if m.chatFocus != focusComposer {
+		t.Fatal("ctrl+g must return the keyboard to the composer")
+	}
 
 	// Send, then fail: the draft comes back into the box.
 	m.chatConvID = "conv-9"

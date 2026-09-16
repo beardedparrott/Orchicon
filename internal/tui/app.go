@@ -1416,7 +1416,9 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	m.refreshComposerHint()
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
-	m.footer.ComposerFocus = m.chatFocus == focusComposer
+	// footer.ComposerFocus is NOT recomputed here: it is derived in setFocus, the one place focus
+	// changes (see setFocus). Recomputing it on this path was one of only two partial sources for
+	// the flag, and the KEYBOARD paths — exactly the ones that move focus — reached neither.
 	return m, cmd
 }
 
@@ -2590,6 +2592,16 @@ func (m *App) setFocus(f focusMode) {
 	} else {
 		m.dock.Blur()
 	}
+	// THE FOOTER'S FOCUS HINT IS DERIVED HERE, at the ONE chokepoint every focus change passes
+	// through, rather than at the handful of call sites somebody remembered.
+	//
+	// It was set in three places in the MOUSE handler and recomputed in passToScreen — neither of
+	// which covers the keyboard. So pressing Tab to the tab bar (or an F-key, which now lands there)
+	// left the footer claiming "composer" while the composer was blurred and typing went nowhere:
+	// the focus indicator said the opposite of the truth at exactly the moment the operator needed
+	// it. It is the only on-screen evidence of where the keyboard is, so a wrong value is worse than
+	// no value.
+	m.footer.ComposerFocus = f == focusComposer
 }
 
 // sendFromComposer routes composer text: slash commands dispatch,

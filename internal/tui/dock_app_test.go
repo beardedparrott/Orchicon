@@ -67,7 +67,28 @@ func TestFocusChordAndFallthrough(t *testing.T) {
 			t.Fatalf("%s while composing must switch tabs (structural chord), got %q", tab.Chord, m2.ActiveTab())
 		}
 	}
-	// esc returns focus to content; the composer blurs.
+	// esc disengages to the content; the composer blurs.
+	//
+	// THE CHORD NOW DROPS THE SUBMENU, so esc has two jobs in order: close the menu it just opened,
+	// then hand the keyboard to the content. The operator asked for the first half ("it goes to the
+	// menu, but also automatically drops the submenu down and gains focus to that") and the second
+	// half is what this test always pinned, so BOTH are asserted — the earlier one-press form was
+	// only reachable while a chord left no menu, which was the defect.
+	if m2.MenuOpenID() != m2.ActiveTab() {
+		t.Fatalf("the chord must drop the active tab's submenu (menuOpen=%q, active=%q)",
+			m2.MenuOpenID(), m2.ActiveTab())
+	}
+	if m2.chatFocus != focusTabs {
+		t.Fatal("the chord must put the keyboard in the submenu it opened")
+	}
+	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m2 = nm.(*App)
+	if m2.MenuOpenID() != "" {
+		t.Fatalf("esc must close the open submenu first, got %q", m2.MenuOpenID())
+	}
+	if m2.chatFocus != focusTabs {
+		t.Fatal("closing the menu must leave the keyboard on the bar")
+	}
 	nm, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m2 = nm.(*App)
 	if m2.chatFocus != focusContent || m2.dock.Focused {

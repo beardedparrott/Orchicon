@@ -53,6 +53,12 @@ func (m *App) TabMenu() *TabMenu {
 }
 
 // openTabMenu populates + opens tab's dropdown (entries from nav config).
+//
+// This is the DATA half (what the menu contains), deliberately separate from where the keyboard
+// goes: the composer's Enter/Space opens a dropdown with an empty buffer, and THAT path must not
+// move the keyboard — the operator is mid-compose, and moving focus would send their next letter to
+// the screen instead of the box. Taking focus is the job of openTabWithMenu, the tab-SELECTION
+// gesture.
 func (m *App) openTabMenu(id TabID) {
 	tm := &TabMenu{}
 	for _, e := range m.navEntries(id) {
@@ -61,6 +67,42 @@ func (m *App) openTabMenu(id TabID) {
 	tm.Sel = 0
 	m.menus[id] = tm
 	m.menuOpen = id
+}
+
+// openTabWithMenu is the ONE meaning of selecting a tab by chord or by click: GO TO IT, DROP ITS
+// SUBMENU DOWN, and PUT THE KEYBOARD IN IT.
+//
+// This existed as THREE copies and they had already drifted: the tab CLICK did SwitchTo + openTabMenu,
+// menuHandleKey did SwitchTo + openTabMenu, and the global CHORD route did SwitchTo ALONE. So the same
+// key meant different things depending on whether a dropdown happened to be open — the chord switched
+// tabs and left the menu shut, which is what the operator hit.
+//
+// WITH THE MENU SHUT, ENTER WENT WHEREVER LAY UNDERNEATH, and that is why the report was screen
+// dependent: "when hitting the F#, it automatically gains focus on the first submenu in the list and
+// hitting enter doesn't bring down the submenu". On Ask the conversations rail claims Enter while a
+// rail is up, a screen claiming keys (an open form, a latched search) claims it everywhere, and a
+// non-empty composer takes it as send — none of which is the submenu. With the keyboard on the bar
+// the menu owns the arrows and Enter outright, because menuHandleKey runs ahead of every screen
+// claim, so the key after a chord means one thing on every screen.
+func (m *App) openTabWithMenu(id TabID) {
+	// Re-selecting the tab whose menu is already down CLOSES it — the toggle the click route,
+	// SwitchTo's same-tab path and menuHandleKey all already honour. A re-press still re-arms the
+	// streams (SwitchTo's same-tab path deliberately does not, since it cannot tell a re-press from
+	// a re-selection).
+	if m.active == id && m.menuOpen == id {
+		m.closeTabMenu()
+		m.EnsureSubscriptions(id)
+		return
+	}
+	wasActive := m.active
+	m.SwitchTo(id)
+	// Arm the streams ONCE. SwitchTo arms internally only on its same-tab path (above, where it is
+	// skipped); for a NEW active tab it deliberately does not, so the arm happens here.
+	if m.active != wasActive {
+		m.EnsureSubscriptions(id)
+	}
+	m.openTabMenu(id)
+	m.setFocus(focusTabs)
 }
 
 // closeTabMenu closes the open dropdown.
@@ -577,13 +619,10 @@ func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	}
 	for _, t := range Tabs {
 		if t.Chord == k.String() {
-			if t.ID == m.menuOpen {
-				m.closeTabMenu()
-			} else {
-				m.SwitchTo(t.ID)
-				m.EnsureSubscriptions(t.ID)
-				m.openTabMenu(t.ID)
-			}
+			// ONE meaning, shared with the click and the global chord route. This copy already got
+			// the switch-and-drop-the-menu half right, which is exactly how the routing came to be
+			// inconsistent: whether the chord opened a menu depended on whether one was already up.
+			m.openTabWithMenu(t.ID)
 			return true, nil
 		}
 	}
