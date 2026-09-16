@@ -1991,7 +1991,7 @@ func (m *Model) refreshActionBar() {
 
 // HintLine returns the screen's key cheat-sheet (pane-aware).
 func (m *Model) HintLine() string {
-	hint := "enter: detail focus · ←/→: pane · f: more pages · r: refresh"
+	hint := "enter: detail focus · ←/→: pane · r: refresh"
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		hint = "n: new · e: edit · t: enable/disable · T: test · x: delete (deliveries ride the detail)"

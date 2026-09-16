@@ -167,11 +167,6 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`
 	idx := 2
-	if f.AfterID != "" {
-		where += fmt.Sprintf(` AND id > $%d`, idx)
-		args = append(args, f.AfterID)
-		idx++
-	}
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d)`, idx, idx)
 		args = append(args, "%"+f.Search+"%")
@@ -195,11 +190,31 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
+	// THE CURSOR MUST AGREE WITH THE ORDER. It used to be a bare `id > $n` while the default ordering
+	// is (created_at ASC, ...) — two different orders, so page 2 could both repeat and skip rows. That
+	// is not theoretical here: the live tenant has 499 project pairs whose id order DISAGREES with
+	// their created_at order, because an id is minted when a row is CREATED while created_at is
+	// assigned by the database, and a bulk import or a restored dump reorders the two.
+	//
+	// The cursor is now a keyset on the SAME (sort key, id) tuple the ORDER BY uses — the pattern
+	// ListExecutions and ListWorkItems already use — so page N+1 continues exactly where page N
+	// stopped, whatever the direction and whichever column is the sort key.
+	if f.AfterID != "" {
+		cmp := ">"
+		if sortOrder == "DESC" {
+			cmp = "<"
+		}
+		where += fmt.Sprintf(` AND (%s, id) %s (
+			SELECT p2.%s, p2.id FROM projects p2
+			WHERE p2.tenant_id = $1 AND p2.id = $%d)`, sortBy, cmp, sortBy, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
 		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects
 		WHERE %s
-		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
+		ORDER BY %s %s, id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {

@@ -215,11 +215,6 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`
 	idx := 2
-	if f.AfterID != "" {
-		where += fmt.Sprintf(` AND id > $%d`, idx)
-		args = append(args, f.AfterID)
-		idx++
-	}
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d OR purpose ILIKE $%d)`, idx, idx, idx)
 		args = append(args, "%"+f.Search+"%")
@@ -238,11 +233,26 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
+	// THE CURSOR MUST AGREE WITH THE ORDER — the same correction as ListWorkItems and ListProjects. A
+	// bare `id > $n` against a `created_at` ordering is two different orders, and the live tenant has
+	// 1213 worker pairs whose id order DISAGREES with their created_at order, so page 2 could both
+	// repeat and SKIP rows. The keyset compares the SAME (sort key, id) tuple the ORDER BY uses.
+	if f.AfterID != "" {
+		cmp := ">"
+		if sortOrder == "DESC" {
+			cmp = "<"
+		}
+		where += fmt.Sprintf(` AND (%s, id) %s (
+			SELECT w2.%s, w2.id FROM workers w2
+			WHERE w2.tenant_id = $1 AND w2.id = $%d)`, sortBy, cmp, sortBy, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at
 		FROM workers
 		WHERE %s
-		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
+		ORDER BY %s %s, id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {

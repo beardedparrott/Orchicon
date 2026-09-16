@@ -146,7 +146,7 @@ func (m *Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("enter: detail focus · f: more pages · r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
+	b.WriteString(theme.HintText.Render("enter: detail focus · r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
 	return m.Base.Frame(b.String())
 }
 

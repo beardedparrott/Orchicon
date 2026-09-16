@@ -405,7 +405,7 @@ func (m *Model) View() string {
 	} else if m.lastOK != "" {
 		tail = append(tail, theme.HintText.Render("✓ "+m.lastOK))
 	}
-	hint := "enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh"
+	hint := "enter: detail focus · ←/→ or h/l: pane · r: refresh"
 	switch m.Base.ActiveSourceName() {
 	case "approvals":
 		hint = "a: approve · x: reject (the detail shows the upstream + policy context)"

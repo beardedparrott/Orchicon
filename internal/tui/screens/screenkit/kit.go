@@ -136,9 +136,6 @@ func (l *List) Click(row int) bool {
 func (l *List) View(focused bool) string {
 	var b strings.Builder
 	title := l.Title
-	if l.NextPageToken != "" {
-		title += theme.HintText.Render("  (more pages: press f)")
-	}
 	if focused {
 		b.WriteString(theme.ListTitle.Render(title))
 	} else {

@@ -898,14 +898,14 @@ func (m *Model) refreshActionBar() {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcRecurring:
-		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · enter: detail (run history) · f: more pages")
+		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · enter: detail (run history)")
 	case srcIdeas:
 		return theme.HintText.Render("p: promote (→ work item) " + theme.DetailKey.Render("·") + " x: dismiss (confirm) " + theme.DetailKey.Render("·") +
 			" A: accept ALL " + theme.DetailKey.Render("·") + " R: reject ALL (confirm) " + theme.DetailKey.Render("·") + " ←/→: pane · enter: detail · r: refresh")
 	case srcRejected:
 		return theme.HintText.Render("rejected history — the automation dedupe gate reads it before re-spawning · enter: detail")
 	default:
-		return theme.HintText.Render("enter: detail focus · ←/→: pane · f: more pages · r: refresh")
+		return theme.HintText.Render("enter: detail focus · ←/→: pane · r: refresh")
 	}
 }
 

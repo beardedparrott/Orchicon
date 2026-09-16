@@ -862,7 +862,7 @@ func errNeedForm(what string) error {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcExecutions:
-		return theme.HintText.Render("c: cancel (confirm) · i: interject · enter: live session · ←/→: pane · f: more pages · r: refresh")
+		return theme.HintText.Render("c: cancel (confirm) · i: interject · enter: live session · ←/→: pane · r: refresh")
 	case srcRuns:
 		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
 	case srcSchedules:
@@ -890,5 +890,5 @@ func (m *Model) HintLine() string {
 			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +
 			" enter: flow view " + theme.DetailKey.Render("·") + " r: refresh")
 	}
-	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh")
+	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · r: refresh")
 }

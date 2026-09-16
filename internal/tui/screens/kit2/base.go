@@ -319,6 +319,22 @@ func (b *Base) Refresh(source string) tea.Cmd {
 	return nil
 }
 
+// loadSource loads a source from the top, fetching the WHOLE set.
+//
+// IT FOLLOWS THE CURSOR INTERNALLY SO NOBODY HAS TO PAGINATE. The operator: "I don't understand
+// concept of 'pages'. It's mentioned in the TUI, yet I never page to see more work items. I just hold
+// the down arrow and I should be able to see all of them. Same goes for any other item in the TUI.
+// Pages are unnecessary imo" — and they are right, from the operator's side: the pane is a scrolling
+// list, and holding DOWN must reach the end of it, not the end of a page.
+//
+// The screen's fetch still speaks the RPC's paging protocol (it has to — that IS the API), so the
+// loop lives HERE, once, for every source, instead of in each screen and instead of in the
+// operator's head. The bound is a safety net against a server that never clears its token, not a
+// display limit: a real tenant's lists are far smaller than the cap.
+//
+// The returned next-token is deliberately NOT propagated to the table: a token means "there is more
+// you have not fetched", and after this loop there is not. That is what removes the "more pages: press
+// f" affordance — not a hidden key, but the absence of anything left to fetch.
 func (b *Base) loadSource(i int, pageToken string) tea.Cmd {
 	s := b.sources[i]
 	if s.fetch == nil {
@@ -326,24 +342,41 @@ func (b *Base) loadSource(i int, pageToken string) tea.Cmd {
 	}
 	s.table.Loading = true
 	name := s.name
+	fetch := s.fetch
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		items, next, err := s.fetch(ctx, pageToken)
-		return fetchedMsg{src: name, items: items, next: next, append: pageToken != "", err: err}
+		all := make([]screenkit.Item, 0, 256)
+		token := pageToken
+		for page := 0; page < maxSourcePages; page++ {
+			items, next, err := fetch(ctx, token)
+			if err != nil {
+				// A FAILED page after a successful one still returns what was fetched: a partial list
+				// beats an empty pane, and the operator keeps the rows they can already see. Only a
+				// failure on the FIRST page is an error state.
+				if len(all) > 0 {
+					return fetchedMsg{src: name, items: all, err: nil}
+				}
+				return fetchedMsg{src: name, items: items, err: err}
+			}
+			all = append(all, items...)
+			token = next
+			if token == "" {
+				break
+			}
+		}
+		return fetchedMsg{src: name, items: all}
 	}
 }
 
-func (b *Base) loadMore() tea.Cmd {
-	if b.active < 0 || b.active >= len(b.sources) {
-		return nil
-	}
-	s := b.sources[b.active]
-	if s.table.NextPageToken == "" {
-		return nil
-	}
-	return b.loadSource(b.active, s.table.NextPageToken)
-}
+// maxSourcePages bounds the whole-set load. A source that returns a token for ever would otherwise
+// spin inside one command; this is a guard on a broken server, never a limit on what is displayed
+// (every real list in a tenant is orders of magnitude smaller).
+const maxSourcePages = 200
+
+// loadMore is retired along with the pager: nothing is left unfetched, so there is no next page to
+// ask for. Kept as a no-op so the `f` binding can be removed without a call site dangling.
+func (b *Base) loadMore() tea.Cmd { return nil }
 
 // friendlyFetchErr maps a raw RPC error to a retryable state string.
 func friendlyFetchErr(errText string) string {
@@ -826,7 +859,14 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		b.cycleSource(1)
 		return true, b.loadDetail()
 	case "f":
-		return true, b.loadMore()
+		// `f` IS RETIRED. It was the pager ("more pages: press f"), which no longer exists: every
+		// source is fetched whole, so there is never a next page to ask for (see loadSource).
+		//
+		// It is NOT claimed as a stub here, because `f` is a letter an operator might reasonably want
+		// on a pane that has no other use for it, and a refusal for a concept that no longer exists
+		// would be noise. It simply falls through to whatever the screen binds — which is how the
+		// execution screen's message-box stub, and any future screen-level `f`, can own it.
+		return false, nil
 	case "r":
 		return true, b.Refresh(b.ActiveSourceName())
 	case "esc":

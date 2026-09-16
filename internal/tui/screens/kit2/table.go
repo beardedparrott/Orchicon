@@ -601,9 +601,9 @@ func (t *Table) View() string {
 	var b strings.Builder
 	if t.TitleRows() > 0 {
 		title := t.Title
-		if t.NextPageToken != "" {
-			title += theme.HintText.Render("  (more: f)")
-		}
+		// NO "more pages" marker: every source is fetched WHOLE (base.loadSource), so a page token is
+		// never set and there is never anything left unfetched to advertise. The marker's absence is
+		// the point — the operator asked not to have the concept, so it is not mentioned.
 		if t.Focused {
 			b.WriteString(theme.ListTitle.Render(title))
 		} else {

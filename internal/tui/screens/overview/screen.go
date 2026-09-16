@@ -136,7 +136,7 @@ func (m *Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · f: more pages · r: refresh · live telemetry stream feeds cost/usage"))
+	b.WriteString(theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · r: refresh · live telemetry stream feeds cost/usage"))
 	return m.Base.Frame(b.String())
 }
 

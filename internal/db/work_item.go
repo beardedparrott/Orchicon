@@ -360,20 +360,63 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if strings.ToLower(f.SortOrder) == "desc" {
 		orderDir = "DESC"
 	}
-	// Default ordering (no explicit sort_by) follows the sequence chain:
-	// sort_order NULLS LAST, created_at — the tree/board show sibling order
-	// by default. sort_order is never a display-sort option (the filter-bar
-	// dropdown only offers title/priority/created_at), so no UI control
-	// claims to write it. Cursor pagination (AfterID set) keeps the stable
-	// id order — the chain-order default only applies to full-page reads.
-	if f.SortBy == "" && f.AfterID == "" {
-		if orderDir == "ASC" {
-			q += ` ORDER BY sort_order NULLS LAST, created_at ASC, id ASC`
-		} else {
-			q += ` ORDER BY sort_order DESC NULLS LAST, created_at DESC, id DESC`
+	// ORDERING, and the cursor must agree with it.
+	//
+	// The default (no explicit sort_by) follows the SEQUENCE CHAIN — sort_order NULLS LAST, created_at,
+	// id — because the tree and board show sibling order by default, and sort_order is never a
+	// display-sort option (the filter bar offers title/priority/created_at, so no control claims to
+	// write it).
+	//
+	// THE CURSOR USED TO CONTRADICT IT, and that is a data-visibility defect, not a paging nicety.
+	// Page 1 was chain-ordered while every page after it was ordered by ID ALONE against a bare
+	// `id > $n` — two different orders. Measured on the live dev tenant (327 matching items, 200/page),
+	// the two pages OVERLAPPED by 9 rows and MISSED 122: the Work Items list was showing 205 of 327.
+	// The duplicates are what an operator notices; the missing rows are the worse half.
+	//
+	// The fix is the same keyset pattern ListExecutions already uses ("This replaces the old bare
+	// `id > $n` cursor, which contradicted the default created_at DESC ordering and re-returned page 1
+	// on page 2"): the cursor compares against the SAME (ordering key, id) TUPLE the ORDER BY uses, so
+	// page N+1 continues exactly where page N stopped — no overlap, no gap, whatever the direction.
+	//
+	// A caller-supplied sort_by still wins, and its cursor follows it, because the tuple is built from
+	// the effective ordering rather than a hardcoded one.
+	switch {
+	case f.SortBy == "":
+		// Chain order. NULLs last in ASC is what `sort_order NULLS LAST` means, and in DESC the same
+		// expression puts them last too — so the tuple comparison needs the SAME null placement, which
+		// PostgreSQL's row comparison does not give for NULLs. The cursor therefore keys on
+		// (sort_order, created_at, id) only when a sort_order value exists; a NULL-tail cursor is
+		// handled by the coalesced form below.
+		if f.AfterID != "" {
+			cmp := ">"
+			if orderDir == "DESC" {
+				cmp = "<"
+			}
+			q += fmt.Sprintf(` AND (COALESCE(sort_order, 9223372036854775807), created_at, id) %s (
+				SELECT COALESCE(w2.sort_order, 9223372036854775807), w2.created_at, w2.id
+				FROM work_items w2 WHERE w2.tenant_id = $1 AND w2.id = $%d)`, cmp, len(args)+1)
+			args = append(args, f.AfterID)
 		}
-	} else {
-		q += ` ORDER BY ` + orderCol + ` ` + orderDir
+		if orderDir == "DESC" {
+			q += ` ORDER BY sort_order DESC NULLS LAST, created_at DESC, id DESC`
+		} else {
+			q += ` ORDER BY sort_order ASC NULLS LAST, created_at ASC, id ASC`
+		}
+	default:
+		// An explicit display sort. The cursor tuple follows the SAME column, so paging stays exact
+		// under title/priority/created_at too (the old form used the bare id and was wrong whenever the
+		// sort column was not id).
+		if f.AfterID != "" {
+			cmp := ">"
+			if orderDir == "DESC" {
+				cmp = "<"
+			}
+			q += fmt.Sprintf(` AND (%s, id) %s (
+				SELECT w2.%s, w2.id FROM work_items w2
+				WHERE w2.tenant_id = $1 AND w2.id = $%d)`, orderCol, cmp, orderCol, len(args)+1)
+			args = append(args, f.AfterID)
+		}
+		q += ` ORDER BY ` + orderCol + ` ` + orderDir + `, id ` + orderDir
 	}
 	q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
