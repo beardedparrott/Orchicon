@@ -243,7 +243,7 @@ func TestEnterOnAStepWithoutAnExecutionExplainsItself(t *testing.T) {
 			name: "succeeded", kind: apiv1.StepKind_STEP_KIND_TASK,
 			status:  apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED,
 			wantNot: []string{"has not been dispatched"},
-			want:    "no execution linked",
+			want:    "no longer carries its execution link",
 		},
 		{
 			// Genuinely not run yet: the old wording is correct here.
@@ -290,6 +290,56 @@ func TestEnterOnAStepWithoutAnExecutionExplainsItself(t *testing.T) {
 				t.Error("a refused jump must not move the pane")
 			}
 		})
+	}
+}
+
+// A step the manual FORCE-PROGRESS escape hatch marked succeeded is identified as such, in the row
+// AND in the refusal.
+//
+// This is the one case where a green status does NOT mean the work happened: force-progress writes
+// `_forced: true` into the step run's result and marks the step terminal WITHOUT dispatching it, so
+// there is no execution because none was ever created. Live evidence — the three real "succeeded
+// task step with no execution" rows in the dev tenant all carry
+// `{"_forced": true, "_forced_reason": "manual force-progress"}`. The reconciler's own comment
+// records the failure mode this hides: "a force-progress marked the DevOps PR step succeeded
+// without ever dispatching it, and the PR was never merged".
+func TestForcedStepSaysItWasNotDispatched(t *testing.T) {
+	forced := stepRun("sr-1", "a", "DevOps Engineer", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "")
+	forced.Result = `{"_forced": true, "_forced_at": "2026-08-10T21:53:48Z", "_forced_reason": "manual force-progress"}`
+
+	rows := runStepRowsArrival([]*apiv1.WorkflowStepRun{forced})
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if !rows[0].forced {
+		t.Fatal("the force-progress marker was not read from the step run's result")
+	}
+
+	// The ROW says so, rather than reading as an ordinary success with a missing link.
+	body, _ := renderRunFlow(rows, 100, "a")
+	if !strings.Contains(body, "manual force-progress") {
+		t.Errorf("the row does not disclose the manual override:\n%s", body)
+	}
+	if strings.Contains(body, "no execution linked yet") {
+		t.Errorf("a forced step reads as still-dispatching:\n%s", body)
+	}
+
+	// And the REFUSAL names the override rather than "finished but unlinked".
+	if got := noExecutionReason(&rows[0]); !strings.Contains(got, "force-progress") {
+		t.Errorf("the refusal = %q — it must name the override", got)
+	}
+}
+
+// A step whose result carries no marker is NOT reported as forced — the disclosure has to mean
+// something, so an unparseable, empty, or ordinary result must not set it.
+func TestUnforcedStepsAreNotReportedAsForced(t *testing.T) {
+	for _, result := range []string{"", "{}", `{"_prompt": "hi"}`, "not json", `{"_forced": false}`} {
+		sr := stepRun("sr-1", "a", "Engineer", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "")
+		sr.Result = result
+		rows := runStepRowsArrival([]*apiv1.WorkflowStepRun{sr})
+		if rows[0].forced {
+			t.Errorf("result %q was read as forced", result)
+		}
 	}
 }
 

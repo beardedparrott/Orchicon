@@ -15,6 +15,7 @@ package execution
 // on a workflow it picks a step to edit.
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,9 +41,39 @@ type runStepRow struct {
 	executionID string
 	started     string
 	ended       string
+	// forced is true when the step run was marked terminal by the MANUAL force-progress escape
+	// hatch rather than by anything the engine did. Such a row has NO execution behind it —
+	// force-progress writes `_forced: true` into the result and marks the step succeeded without
+	// ever dispatching it — so the pane must say so, or a step that never ran reads as work that
+	// was done. Live evidence: the three real "succeeded task step with no execution" rows in the
+	// dev tenant all carry `{"_forced": true, "_forced_reason": "manual force-progress"}`.
+	forced bool
 	// active is false for a SUPERSEDED iteration — it is shown (history matters) but it is not
 	// what the cursor lands on and it cannot be jumped from.
 	active bool
+}
+
+// stepRunForced reports whether a step run carries the force-progress marker, and the reason
+// recorded with it.
+//
+// The marker lives in the step run's RESULT json, which the proto sends to clients as a STRING
+// (WorkflowStepRun.result — stepRunRowToProto copies the raw bytes into that string verbatim), so
+// the client can tell a genuinely-dispatched success from a manual override. Best effort: an
+// unparseable or empty result is simply not forced.
+func stepRunForced(result string) (bool, string) {
+	if len(result) == 0 {
+		return false, ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		return false, ""
+	}
+	f, _ := m["_forced"].(bool)
+	if !f {
+		return false, ""
+	}
+	reason, _ := m["_forced_reason"].(string)
+	return true, reason
 }
 
 // runStepRows collapses a run's step runs into one row per STEP, in the workflow's AUTHORED order.
@@ -112,6 +143,7 @@ func runStepRows(runs []*apiv1.WorkflowStepRun, authored []string) []runStepRow 
 			return si.GetIteration() > sj.GetIteration()
 		})
 		for i, s := range group {
+			forced, _ := stepRunForced(s.GetResult())
 			out = append(out, runStepRow{
 				stepID:      id,
 				runID:       s.GetId(),
@@ -123,6 +155,7 @@ func runStepRows(runs []*apiv1.WorkflowStepRun, authored []string) []runStepRow 
 				executionID: s.GetWorkerExecutionId(),
 				started:     shortClock(s.GetStartedAt()),
 				ended:       shortClock(s.GetEndedAt()),
+				forced:      forced,
 				active:      i == 0 && s.GetSupersededBy() == "",
 			})
 		}
@@ -258,6 +291,13 @@ func renderRunFlow(rows []runStepRow, width int, sel string) (string, map[string
 		}
 		if r.executionID != "" {
 			meta = append(meta, "enter → execution")
+		} else if r.forced {
+			// The step did NOT run: force-progress marked it succeeded to unwedge the run, and
+			// there is no execution because none was ever dispatched. Saying "no execution linked
+			// yet" here would read as "still dispatching" for a step that is finished, and saying
+			// nothing would let a manual override pass as real work — a DevOps PR step marked
+			// succeeded without dispatching is exactly how a PR silently never gets merged.
+			meta = append(meta, "no execution — succeeded by manual force-progress")
 		} else if r.active && r.status == "running" {
 			meta = append(meta, "no execution linked yet")
 		}

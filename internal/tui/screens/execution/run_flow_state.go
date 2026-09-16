@@ -242,10 +242,16 @@ func noExecutionReason(cur *runStepRow) string {
 		return cur.name + " is an approval gate — it waits on a human decision and has no execution of its own"
 	case cur.kind == "loop_decision":
 		return cur.name + " is a loop decision — it reads its branches' results and has no execution of its own"
+	case cur.forced:
+		// It did NOT run. force-progress marked it succeeded to unwedge the run, so there is no
+		// execution because none was ever dispatched — and the operator is owed that, because a
+		// forced success is the one case where a green status does NOT mean the work happened.
+		return cur.name + " was marked " + cur.status + " by the manual force-progress escape hatch, " +
+			"without being dispatched — there is no execution behind it"
 	case cur.status == "succeeded" || cur.status == "failed" || cur.status == "skipped":
-		// It RAN. The step run just does not carry the execution's id.
-		return cur.name + " finished (" + cur.status + ") but the run has no execution linked to it — " +
-			"check the Executions pane for its worker's session"
+		// It RAN but the link is missing — see the note above on how that happens.
+		return cur.name + " finished (" + cur.status + ") but the run no longer carries its execution link " +
+			"(the execution was removed, or the link was lost to a test fixture) — it cannot be opened"
 	case cur.status == "running" || cur.status == "recovering":
 		return cur.name + " is " + cur.status + " but no execution is linked yet"
 	case cur.status == "blocked":
