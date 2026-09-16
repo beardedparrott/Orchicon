@@ -347,7 +347,9 @@ func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit
 	m.workerMu.Lock()
 	m.workerModel = models
 	m.workerMu.Unlock()
-	return items, resp.Msg.GetNextPageToken(), nil
+	// GROUPED LAST, over the finished list: the grouping is a presentation of the same rows, so doing it
+	// here cannot change what was fetched or how a row's own fields are computed.
+	return m.grouped(items, apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER), resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
@@ -390,7 +392,7 @@ func (m *Model) fetchWorkflows(ctx context.Context, pageToken string) ([]screenk
 			Meta:  strings.ToLower(w.GetStatus().String()),
 		})
 	}
-	return items, resp.Msg.NextPageToken, nil
+	return m.grouped(items, apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW), resp.Msg.NextPageToken, nil
 }
 
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {

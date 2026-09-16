@@ -84,9 +84,17 @@ func allTargetTypes() []apiv1.CategoryTargetType {
 // All three are loaded together because the Control pane lists them together and the assign modal
 // needs whichever type its item belongs to — a per-type lazy load would mean the first assign after a
 // tab switch opens a picker with nothing in it.
+//
+// THE ASSIGNMENTS ARE THE POINT. The first version of this fetched only the categories and DISCARDED
+// the assignments the same response carries — which is why the operator's "I created a conversation
+// category and assigned a conversation to it, but it is not showing up in the UI" was literally true:
+// the assignment existed on the server, arrived in this response, and was thrown away before anything
+// could render it. A category list is useless to a LIST OF ITEMS without knowing which item is in
+// which group.
 type categoriesLoadedMsg struct {
-	Categories []*apiv1.Category
-	Err        error
+	Categories  []*apiv1.Category
+	Assignments []*apiv1.CategoryAssignment
+	Err         error
 }
 
 // loadCategories fetches all three target types.
@@ -99,6 +107,7 @@ func (m *App) loadCategories() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var out []*apiv1.Category
+		var assigns []*apiv1.CategoryAssignment
 		for _, t := range allTargetTypes() {
 			resp, err := cl.Categories.ListCategories(ctx, connect.NewRequest(&apiv1.ListCategoriesRequest{
 				TargetType: t,
@@ -109,8 +118,11 @@ func (m *App) loadCategories() tea.Cmd {
 				return categoriesLoadedMsg{Err: fmt.Errorf("%s categories: %w", targetLabel(t), err)}
 			}
 			out = append(out, resp.Msg.GetCategories()...)
+			// The assignments arrive in the SAME response and are what makes a grouping visible on the
+			// item it belongs to.
+			assigns = append(assigns, resp.Msg.GetAssignments()...)
 		}
-		return categoriesLoadedMsg{Categories: out}
+		return categoriesLoadedMsg{Categories: out, Assignments: assigns}
 	}
 }
 
@@ -120,9 +132,56 @@ func (m *App) onCategoriesLoaded(msg categoriesLoadedMsg) tea.Cmd {
 		m.dock.SetError(msg.Err.Error())
 	}
 	m.categories = msg.Categories
+	// The assignment map is rebuilt from scratch, not merged: an unassign must CLEAR the entry, and a
+	// merge would leave the item showing a grouping it is no longer in.
+	m.catAssignedBy = make(map[string]string, len(msg.Assignments))
+	for _, a := range msg.Assignments {
+		m.catAssignedBy[catEntityKey(a.GetTargetType(), a.GetEntityId())] = a.GetCategoryId()
+	}
 	// An open assign modal was built before the list arrived; re-point its options at the real list so
 	// the operator does not have to close and reopen it.
 	m.refreshAssignOptions()
+	// A SCREEN THAT GROUPS ITS ROWS needs the new assignments to place them: without this the grouping
+	// would stay as it was at the first load until something else happened to refresh the pane.
+	if s := m.screens[m.active]; s != nil {
+		if r, ok := s.(interface{ RefreshView() tea.Cmd }); ok {
+			return r.RefreshView()
+		}
+	}
+	return nil
+}
+
+// catEntityKey keys the assignment map. The TARGET TYPE is part of the key because an entity id is only
+// unique within its own kind — a bare id would let a worker's grouping leak onto a conversation that
+// happened to share it.
+func catEntityKey(t apiv1.CategoryTargetType, entityID string) string {
+	return fmt.Sprintf("%d\x00%s", int32(t), entityID)
+}
+
+// CategoryOf is the shell's read-side hook for a screen that GROUPS its rows by category.
+//
+// One method, returning the id AND the name, because a caller needs both and two lookups could report a
+// different group between them. Unexported work stays in categoryOf; this is the contract with the
+// screens, alongside OpenAssignCategory.
+func (m *App) CategoryOf(target apiv1.CategoryTargetType, entityID string) (string, string) {
+	c := m.categoryOf(target, entityID)
+	if c == nil {
+		return "", ""
+	}
+	return c.GetId(), c.GetName()
+}
+
+// categoryOf returns the category an entity is assigned to, or nil.
+func (m *App) categoryOf(t apiv1.CategoryTargetType, entityID string) *apiv1.Category {
+	id := m.catAssignedBy[catEntityKey(t, entityID)]
+	if id == "" {
+		return nil
+	}
+	for _, c := range m.categories {
+		if c.GetId() == id {
+			return c
+		}
+	}
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -158,14 +159,28 @@ func (m *App) rightRailView() string {
 // cursor alone cannot express "and these four as well". The marker is one cell and the title is
 // truncated to the remaining width, so the meta column stays aligned on marked and unmarked rows
 // alike (a marker that shifted the numbers would make the list jump as the operator spaces down it).
+//
+// THE GROUPING IS SHOWN HERE, and that is the fix for "I created a conversation category and assigned a
+// conversation to it, but it is not showing up in the UI": until this, nothing rendered an assignment
+// on an item at all, so the only place a grouping existed was the screen that manages them.
 func (m *App) conversationRow(c chat.Conversation, i, w int) string {
 	meta := fmt.Sprintf("%d msgs", c.MessageN)
 	if c.TurnInFly {
 		meta = "running"
 	}
+	// The grouping leads the meta when there is one, so the operator can see at a glance which
+	// conversations are grouped. It is appended AFTER the message count in the composition below, which
+	// keeps the count (the right-hand anchor the list has always had) in the same column for every row.
+	group := ""
+	if cat := m.categoryOf(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, c.ID); cat != nil {
+		group = cat.GetName()
+	}
 	marker := " "
 	if m.convMarked[c.ID] {
 		marker = "✓"
+	}
+	if group != "" {
+		meta = group + " · " + meta
 	}
 	title := c.Title
 	// w-1 for the gutter, and the marker takes one cell of it: the title keeps whatever is left.

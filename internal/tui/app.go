@@ -205,6 +205,13 @@ type App struct {
 	categories   []*apiv1.Category
 	assignForm   *kit2.Form
 	assignTarget apiv1.CategoryTargetType
+	// catAssignedBy maps a TARGET-TYPE-SCOPED entity key (catEntityKey) to the grouping that entity is in.
+	//
+	// THIS is what makes a grouping visible on the item. Without it the shell knew the categories but not
+	// which item belonged to which, so the operator's "I created a conversation category and assigned a
+	// conversation to it, but it is not showing up in the UI" was literally true: the assignment was
+	// fetched in the same response as the categories and thrown away before anything could render it.
+	catAssignedBy map[string]string
 	// assignEntities is what the modal is pointed at — a LIST, because the rail can bulk-assign a whole
 	// marked selection as well as one row. It is a field rather than a value read from the shell at
 	// submit time so a selection change behind the modal cannot retarget the write.

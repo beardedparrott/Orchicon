@@ -27,6 +27,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -624,6 +625,9 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			if !ok {
 				return m.refuse("select a workflow first"), true
 			}
+			if screenkit.IsGroupRow(it.ID) {
+				return m.refuse("that is a category row — enter expands or collapses it; pick a workflow inside"), true
+			}
 			op := opEditHeader
 			if kstr == keyPublishWf {
 				op = opPublish
@@ -668,6 +672,12 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			it, ok := m.ActiveItem()
 			if !ok {
 				return m.refuse("select a worker first"), true
+			}
+			// A CATEGORY ROW IS NOT A WORKER. These panes nest their rows under their grouping, and the
+			// parent row carries a synthetic id — so an op aimed at it would hit the server with an id it
+			// has never heard of and fail with something unrelated to what the operator did.
+			if screenkit.IsGroupRow(it.ID) {
+				return m.refuse("that is a category row — enter expands or collapses it; pick a worker inside"), true
 			}
 			op := map[string]workerOp{
 				keyEditWorker:  opEditHeader,

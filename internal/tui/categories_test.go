@@ -49,6 +49,9 @@ type stubCategories struct {
 	updatedName   string
 	// listErr makes ListCategories fail (the degraded path).
 	listErr error
+	// assigned maps an entity id to the category it is in, so a test can exercise a REAL assignment
+	// travelling through ListCategories into the shell's cache and out onto a row.
+	assigned map[string]string
 }
 
 func (s *stubCategories) ListCategories(_ context.Context, req *connect.Request[apiv1.ListCategoriesRequest]) (*connect.Response[apiv1.ListCategoriesResponse], error) {
@@ -61,7 +64,21 @@ func (s *stubCategories) ListCategories(_ context.Context, req *connect.Request[
 			out = append(out, c)
 		}
 	}
-	return connect.NewResponse(&apiv1.ListCategoriesResponse{Categories: out}), nil
+	// ASSIGNMENTS TRAVEL IN THE SAME RESPONSE, which is exactly what the shell used to discard.
+	var assigns []*apiv1.CategoryAssignment
+	for entity, catID := range s.assigned {
+		for _, c := range s.mine {
+			if c.GetId() != catID || c.GetTargetType() != req.Msg.GetTargetType() {
+				continue
+			}
+			assigns = append(assigns, &apiv1.CategoryAssignment{
+				TargetType: req.Msg.GetTargetType(),
+				EntityId:   entity,
+				CategoryId: catID,
+			})
+		}
+	}
+	return connect.NewResponse(&apiv1.ListCategoriesResponse{Categories: out, Assignments: assigns}), nil
 }
 
 func (s *stubCategories) CreateCategory(_ context.Context, req *connect.Request[apiv1.CreateCategoryRequest]) (*connect.Response[apiv1.CreateCategoryResponse], error) {
