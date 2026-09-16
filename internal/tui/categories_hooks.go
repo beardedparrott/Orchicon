@@ -36,3 +36,16 @@ const (
 	conversationRenameChord     = "ctrl+n"
 	conversationCategorizeChord = "ctrl+t"
 )
+
+// categoryRenameChord / categoryDeleteChord are the chords a CATEGORY ROW answers, on any surface that
+// shows one. They are the surface's OWN item keys — `e` edits what the cursor is on, `x` deletes it —
+// re-pointed by whether that is an item or a grouping, which is how the GUI reads too (the folder row
+// carries the rename and delete affordances itself).
+//
+// They live here, with the other chords, so the rail and the two kit2 panes that draw folders cannot
+// disagree about the binding. (The execution package keeps its own constants because it cannot import
+// the shell; that is the one place a change here has to be mirrored.)
+const (
+	categoryRenameChord = "e"
+	categoryDeleteChord = "x"
+)

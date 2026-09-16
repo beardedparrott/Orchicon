@@ -278,8 +278,8 @@ func buildSlashRegistry(m *App) *slashRegistry {
 				// The open conversation is the target by default, but if the operator has only the
 				// RAIL loaded (a conversation selected, none "open"), that selection is what they are
 				// looking at — use it rather than refusing.
-				if m.railVisible() && m.active == TabAsk && m.convSel >= 0 && m.convSel < len(m.conversations) {
-					id = m.conversations[m.convSel].ID
+				if m.railVisible() && m.active == TabAsk && m.convSel >= 0 && m.convSel < len(m.railRows()) {
+					id = m.conversations[m.railConvIndexAt(m.convSel)].ID
 				}
 			}
 			if id == "" {

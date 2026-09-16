@@ -317,6 +317,8 @@ func TestBulkAssignTargetsEveryMarkedConversation(t *testing.T) {
 	m, stub := categoryApp(t, convCat("cat-1", "Research"))
 	m = loadCats(t, m)
 	m.attachRail(5)
+	// Start on a CONVERSATION row — with a grouping present the rail's first rows are folders.
+	m = railSelectConversation(t, m, "conv-01")
 	m = press(m, spaceKey, spaceKey, spaceKey)
 
 	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlT})

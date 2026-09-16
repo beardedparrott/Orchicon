@@ -227,6 +227,10 @@ type App struct {
 	// refresh re-seats rows by id, and an index-keyed mark would silently move to a different
 	// conversation). nil = nothing marked.
 	convMarked map[string]bool
+	// convCollapsed is the conversations rail's collapsed folders, keyed by category id. Session state,
+	// exactly as the GUI's per-page collapse is LOCAL state (`orchicon.categories.<page>.collapsed`) and
+	// not server state — neither client makes a grouping's open/closed a tenant fact.
+	convCollapsed map[string]bool
 	// bulkConfirm hosts the confirm dialog for a destructive bulk rail operation (nil = closed), and
 	// bulkConfirmRun is what the affirmative choice dispatches.
 	bulkConfirm    *kit2.Dialog
@@ -2210,7 +2214,7 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	m.convErr = ""
 	m.convLoaded = true
 	m.conversations = msg.Convs
-	if m.convSel >= len(m.conversations) {
+	if m.convSel >= len(m.railRows()) {
 		m.convSel = 0
 	}
 	if m.convScroll > len(m.conversations) {

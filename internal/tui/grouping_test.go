@@ -21,7 +21,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
+
+// railSelectConversation puts the rail cursor on a conversation's ROW (not on its index in
+// m.conversations — since the rail nests, the two are different the moment a grouping exists).
+func railSelectConversation(t *testing.T, m *App, convID string) *App {
+	t.Helper()
+	for i, r := range m.railRows() {
+		if !r.folder && m.railConvID(r) == convID {
+			m.convSel = i
+			return m
+		}
+	}
+	t.Fatalf("conversation %q has no visible rail row", convID)
+	return m
+}
 
 // TestAssignmentReachesTheShellCache: the first half — the assignment must survive the load.
 func TestAssignmentReachesTheShellCache(t *testing.T) {
@@ -47,8 +62,10 @@ func TestAssignmentReachesTheShellCache(t *testing.T) {
 	}
 }
 
-// TestRailRowShowsItsGrouping: the second half — and the one the operator was actually looking at.
-func TestRailRowShowsItsGrouping(t *testing.T) {
+// TestRailNestsAConversationUnderItsGrouping: the second half — and the one the operator was actually
+// looking at. Since the rail nests, the CONVERSATION sits INSIDE a folder named after its grouping,
+// which is how the GUI's Ask sidebar renders it.
+func TestRailNestsAConversationUnderItsGrouping(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research",
 		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
@@ -58,23 +75,86 @@ func TestRailRowShowsItsGrouping(t *testing.T) {
 	m = loadCats(t, m)
 	m.attachRail(3)
 
+	rows := m.railRows()
+	var folderAt, memberAt = -1, -1
+	for i, r := range rows {
+		if r.folder && r.catID == "cat-1" {
+			folderAt = i
+		}
+		if !r.folder && m.railConvID(r) == "conv-01" {
+			memberAt = i
+		}
+	}
+	if folderAt < 0 {
+		t.Fatalf("the grouping must render as a folder: %+v", rows)
+	}
+	if memberAt != folderAt+1 {
+		t.Fatalf("the assigned conversation must sit directly under its folder (folder=%d member=%d): %+v",
+			folderAt, memberAt, rows)
+	}
+
+	// AND THE FOLDER IS VISIBLE IN THE RENDER — the operator's complaint was about what they SEE.
 	rail := m.rightRailView()
 	if !strings.Contains(rail, "Research") {
-		t.Fatalf("the assigned conversation's grouping must be VISIBLE in the rail:\n%s", rail)
+		t.Fatalf("the grouping folder must be VISIBLE in the rail:\n%s", rail)
 	}
-	// The grouping rides on the ROW IT BELONGS TO, not on every row: conv-02 and conv-03 are in no
-	// grouping, so the name must appear exactly once.
-	if n := strings.Count(rail, "Research"); n != 1 {
-		t.Fatalf("only the assigned row may carry the grouping, got %d occurrences:\n%s", n, rail)
-	}
-	// And the row keeps its message count, which is the right-hand anchor the rail has always had.
-	if !strings.Contains(rail, "2 msgs") {
-		t.Fatalf("the row must keep its meta:\n%s", rail)
+	// The other two conversations are ungrouped, so they land in Uncategorized.
+	if !strings.Contains(rail, screenkit.UncategorizedGroupName) {
+		t.Fatalf("the ungrouped conversations must appear under Uncategorized:\n%s", rail)
 	}
 }
 
-// TestGroupingSurvivesAFreshLoad: the assignment map is REBUILT on every load rather than merged, so an
-// unassign must clear the row rather than leave it showing a grouping it is no longer in.
+// TestCollapsedFolderHidesItsMembers: the arrow's whole purpose — a collapsed grouping keeps its row and
+// drops its members, and the count does not change with it.
+func TestCollapsedFolderHidesItsMembers(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	stub.assigned = map[string]string{"conv-01": "cat-1", "conv-02": "cat-1"}
+	m = loadCats(t, m)
+	m.attachRail(3)
+
+	before := len(m.railRows())
+	m.toggleConvFolder("cat-1")
+	after := m.railRows()
+
+	if len(after) != before-2 {
+		t.Fatalf("collapsing must hide exactly the folder's two members, got %d rows (was %d)", len(after), before)
+	}
+	for _, r := range after {
+		if !r.folder && (m.railConvID(r) == "conv-01" || m.railConvID(r) == "conv-02") {
+			t.Fatalf("a hidden member must not be a row: %+v", r)
+		}
+	}
+	// The folder SURVIVES with its true count, or the operator would think items vanished.
+	var f *railRow
+	for i := range after {
+		if after[i].folder && after[i].catID == "cat-1" {
+			f = &after[i]
+		}
+	}
+	if f == nil {
+		t.Fatal("the folder row must survive collapsing")
+	}
+	if f.count != 2 {
+		t.Fatalf("the count must be the folder's total, not its visible members, got %d", f.count)
+	}
+
+	// A collapsed folder renders the CLOSED arrow.
+	if rail := m.rightRailView(); !strings.Contains(rail, "▸") {
+		t.Fatalf("a collapsed folder must show the closed arrow:\n%s", rail)
+	}
+	// And expanding brings them back.
+	m.toggleConvFolder("cat-1")
+	if len(m.railRows()) != before {
+		t.Fatalf("expanding must restore every row, got %d (want %d)", len(m.railRows()), before)
+	}
+}
+
+// TestGroupingIsClearedWhenUnassigned: the assignment map is REBUILT on every load rather than merged,
+// so an unassign must MOVE THE CONVERSATION OUT of its folder rather than leaving it filed.
 func TestGroupingIsClearedWhenUnassigned(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research",
@@ -84,17 +164,23 @@ func TestGroupingIsClearedWhenUnassigned(t *testing.T) {
 	stub.assigned = map[string]string{"conv-01": "cat-1"}
 	m = loadCats(t, m)
 	m.attachRail(3)
-	if !strings.Contains(m.rightRailView(), "Research") {
-		t.Fatal("precondition: the grouping must be visible")
-	}
 
 	// The assignment is removed server-side (an unassign) and the shell reloads.
 	stub.assigned = nil
 	m = loadCats(t, m)
 
-	if strings.Contains(m.rightRailView(), "Research") {
-		t.Fatalf("an unassigned conversation must stop showing the grouping:\n%s", m.rightRailView())
+	for _, r := range m.railRows() {
+		if !r.folder && m.railConvID(r) == "conv-01" {
+			if screenkit.GroupCategoryID(r.parent) == "cat-1" {
+				t.Fatalf("an unassigned conversation must leave its folder, still parented to %q", r.parent)
+			}
+			if screenkit.GroupCategoryID(r.parent) != screenkit.UncategorizedGroupID {
+				t.Fatalf("it must fall into Uncategorized, got parent %q", r.parent)
+			}
+			return
+		}
 	}
+	t.Fatal("the conversation must still be a rail row")
 }
 
 // TestGroupedPaneNestsRowsUnderTheirCategory was removed rather than kept as a type assertion: the
@@ -257,5 +343,96 @@ func TestManagingAStaleGroupingRefuses(t *testing.T) {
 	}
 	if stub.deletedID != "" {
 		t.Fatalf("nothing may be deleted for a stale row, got %q", stub.deletedID)
+	}
+}
+
+// TestRailFolderRowManagesItsGrouping: the GUI's FolderItem affordances — onToggle, onStartRename,
+// onDelete — reached from the rail's own folder row. The shell must be handed the CATEGORY id, because
+// rename and delete address the grouping, not the row.
+func TestRailFolderRowManagesItsGrouping(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	// A member, so collapsing the folder has something to hide — otherwise "rows unchanged" is true for
+	// a reason that has nothing to do with the toggle working.
+	stub.assigned = map[string]string{"conv-01": "cat-1"}
+	m = loadCats(t, m)
+	m.attachRail(3)
+
+	// Put the cursor on the folder row.
+	folderAt := -1
+	for i, r := range m.railRows() {
+		if r.folder && r.catID == "cat-1" {
+			folderAt = i
+		}
+	}
+	if folderAt < 0 {
+		t.Fatalf("the grouping must have a folder row: %+v", m.railRows())
+	}
+	m.convSel = folderAt
+
+	// ENTER toggles the arrow.
+	before := len(m.railRows())
+	m = press(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.railRows()) >= before {
+		t.Fatalf("enter on a folder must collapse it, rows %d -> %d", before, len(m.railRows()))
+	}
+
+	// `e` renames the grouping, prefilled.
+	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if m.catForm == nil {
+		t.Fatal("e on a folder row must open the rename form")
+	}
+	if got := m.catForm.Values[catAdminName]; got != "Research" {
+		t.Fatalf("the rename form must be prefilled, got %q", got)
+	}
+	m.catFormKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// `x` deletes it, behind the confirm.
+	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.bulkConfirm == nil {
+		t.Fatal("x on a folder row must raise the delete confirm")
+	}
+	if !strings.Contains(m.bulkConfirm.Body, screenkit.UncategorizedGroupName) {
+		t.Fatalf("the confirm must say where the items go, got %q", m.bulkConfirm.Body)
+	}
+	m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// AND A CONVERSATION ROW STILL MEANS CONVERSATION THINGS: `e` there is not a grouping rename.
+	m = railSelectConversation(t, m, "conv-02")
+	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if m.catForm != nil {
+		t.Fatal("e on a CONVERSATION row must not open a grouping rename")
+	}
+}
+
+// TestSpaceOnAFolderMarksItsMembers: "space marks what is under the cursor", and for a folder that is
+// everything inside it. Applying the same key to the folder's members is what makes a whole group one
+// gesture to select — and the reverse: space again clears the group.
+func TestSpaceOnAFolderMarksItsMembers(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	stub.assigned = map[string]string{"conv-01": "cat-1", "conv-02": "cat-1"}
+	m = loadCats(t, m)
+	m.attachRail(4)
+
+	for i, r := range m.railRows() {
+		if r.folder && r.catID == "cat-1" {
+			m.convSel = i
+		}
+	}
+	m = press(m, spaceKey)
+	if got := m.convMarkedCount(); got != 2 {
+		t.Fatalf("space on a folder must mark its two members, got %d: %v", got, m.convMarkedIDs())
+	}
+	// Again clears the group — the same toggle a single row has.
+	m = press(m, spaceKey)
+	if got := m.convMarkedCount(); got != 0 {
+		t.Fatalf("space on a fully-marked folder must clear it, got %d", got)
 	}
 }

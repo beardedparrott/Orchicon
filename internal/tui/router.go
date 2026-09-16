@@ -829,7 +829,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, nil
 		}
 		if mo.Button == tea.MouseButtonWheelDown {
-			max := len(m.conversations) - m.railVisibleRows()
+			max := len(m.railRows()) - m.railVisibleRows()
 			if max < 0 {
 				max = 0
 			}

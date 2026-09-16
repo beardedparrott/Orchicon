@@ -20,7 +20,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -127,17 +126,20 @@ func (m *App) rightRailView() string {
 	case len(m.conversations) == 0:
 		body = append(body, theme.HintText.Render(truncateRight("none yet — type below", innerW)))
 	default:
-		rows := 0
-		for i := m.convScroll; i < len(m.conversations) && rows < h-5; i++ {
-			body = append(body, m.conversationRow(m.conversations[i], i, innerW))
-			rows++
+		// THE RAIL RENDERS ITS ROWS, not m.conversations: a grouping is a row of its own, and the members
+		// of a collapsed folder are not rows at all.
+		all := m.railRows()
+		drawn := 0
+		for i := m.convScroll; i < len(all) && drawn < h-5; i++ {
+			body = append(body, m.railLine(all[i], i, innerW))
+			drawn++
 		}
-		end := m.convScroll + rows
-		if end > len(m.conversations) {
-			end = len(m.conversations)
+		end := m.convScroll + drawn
+		if end > len(all) {
+			end = len(all)
 		}
 
-		body = append(body, theme.HintText.Render(truncateRight(fmt.Sprintf("%d-%d/%d", m.convScroll+1, end, len(m.conversations)), innerW)))
+		body = append(body, theme.HintText.Render(truncateRight(fmt.Sprintf("%d-%d/%d", m.convScroll+1, end, len(all)), innerW)))
 		// NO CHORD LIST HERE. The rail advertises its actions in the COMPOSER's affordance row now
 		// (shell.railHintLine): this pane is 32 cells wide with 28 of inner text, and the chord list
 		// was TRUNCATED mid-word inside it — "ctrl+n: rename · ctrl+t: ca…" in the operator's
@@ -153,6 +155,38 @@ func (m *App) rightRailView() string {
 	return p.View()
 }
 
+// railLine renders one rail row: a grouping folder (with its arrow and count) or a conversation.
+func (m *App) railLine(r railRow, i, w int) string {
+	if r.folder {
+		arrow := "▾"
+		if m.convCollapsed[r.catID] {
+			arrow = "▸"
+		}
+		// The count is the FOLDER's total, not its visible members: collapsing must not make the number
+		// change, or the operator would think items vanished.
+		meta := fmt.Sprintf("%d", r.count)
+		title := arrow + " " + r.title
+		avail := w - 1 - lipgloss.Width(meta)
+		if lipgloss.Width(title) > avail {
+			title = truncateRight(title, avail)
+		}
+		line := " " + title
+		pad := w - 1 - lipgloss.Width(title) - lipgloss.Width(meta)
+		if pad < 1 {
+			pad = 1
+		}
+		line = truncateRight(line+strings.Repeat(" ", pad)+meta, w)
+		if i == m.convSel {
+			return theme.ListItemSelected.Render(line)
+		}
+		return theme.ListItem.Render(line)
+	}
+	if r.conv < 0 || r.conv >= len(m.conversations) {
+		return ""
+	}
+	return m.conversationRow(m.conversations[r.conv], i, w)
+}
+
 // conversationRow renders one rail conversation row (title + meta).
 //
 // A MARKED row shows a marker in the gutter, so a selection is visible while it is being built — the
@@ -160,31 +194,20 @@ func (m *App) rightRailView() string {
 // truncated to the remaining width, so the meta column stays aligned on marked and unmarked rows
 // alike (a marker that shifted the numbers would make the list jump as the operator spaces down it).
 //
-// THE GROUPING IS SHOWN HERE, and that is the fix for "I created a conversation category and assigned a
-// conversation to it, but it is not showing up in the UI": until this, nothing rendered an assignment
-// on an item at all, so the only place a grouping existed was the screen that manages them.
+// THE GROUPING IS NOT NAMED HERE, because the row is INSIDE its folder: repeating the category on every
+// member is the same fact twice, and the GUI does not do it either. (An earlier version tagged the row,
+// before the rail could nest — the test that caught the duplication is why this note exists.)
 func (m *App) conversationRow(c chat.Conversation, i, w int) string {
 	meta := fmt.Sprintf("%d msgs", c.MessageN)
 	if c.TurnInFly {
 		meta = "running"
 	}
-	// The grouping leads the meta when there is one, so the operator can see at a glance which
-	// conversations are grouped. It is appended AFTER the message count in the composition below, which
-	// keeps the count (the right-hand anchor the list has always had) in the same column for every row.
-	group := ""
-	if cat := m.categoryOf(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, c.ID); cat != nil {
-		group = cat.GetName()
-	}
 	marker := " "
 	if m.convMarked[c.ID] {
 		marker = "✓"
 	}
-	if group != "" {
-		meta = group + " · " + meta
-	}
 	title := c.Title
-	// w-1 for the gutter, and the marker takes one cell of it: the title keeps whatever is left.
-	avail := w - 1
+	avail := w - 1 - lipgloss.Width(meta)
 	if lipgloss.Width(title) > avail {
 		title = truncateRight(title, avail)
 	}
@@ -233,12 +256,12 @@ func alignRail(s string, h int) string {
 // sits at absolute row 3 (after the tab chrome + the gap row); conversation
 // rows start at absolute row 4.
 func (m *App) railRowAt(absoluteY int) (int, bool) {
-	line := absoluteY - railTopRow // 0 = header, 1 = first conversation
+	line := absoluteY - railTopRow // 0 = header, 1 = first row
 	if line < 1 {
 		return 0, false
 	}
 	idx := m.convScroll + (line - 1)
-	if idx >= 0 && idx < len(m.conversations) {
+	if idx >= 0 && idx < len(m.railRows()) {
 		return idx, true
 	}
 	return 0, false
@@ -256,11 +279,29 @@ func (m *App) railHeaderHit(absoluteY int) bool {
 // detail pane is where the transcript renders, so without it a rail click
 // changed invisible state and the operator saw "nothing happened"
 // (operator finding 9 + 7).
-func (m *App) openRailConversation(idx int) tea.Cmd {
-	if idx < 0 || idx >= len(m.conversations) {
+// openRailConversation opens the conversation behind a ROW index (deliberate navigation — never
+// auto-opened at launch). It opens BOTH the chat target (live chunks follow it) AND the Ask screen's
+// conversation detail — the detail pane is where the transcript renders, so without it a rail click
+// changed invisible state and the operator saw "nothing happened" (operator finding 9 + 7).
+//
+// A FOLDER row is not a conversation, so this returns nil for one: enter on a folder toggles it (see
+// railItemKey), and opening "nothing" would clear the transcript.
+func (m *App) openRailConversation(row int) tea.Cmd {
+	// A FOLDER ROW TOGGLES. "Activate the highlighted row" is one gesture and it has to do whatever that
+	// row affords: for a grouping that is the arrow (the same key kit2 uses on a tree node), not opening a
+	// conversation that is not there.
+	//
+	// This lives here rather than only in railItemKey because the shell's ENTER branch claims enter for
+	// the rail before the screen's key path runs — so a folder's enter arrived here and did nothing.
+	if f := m.railFolderAt(row); f != nil {
+		m.toggleConvFolder(f.catID)
 		return nil
 	}
-	m.convSel = idx
+	idx := m.railConvIndexAt(row)
+	if idx < 0 {
+		return nil
+	}
+	m.convSel = row
 	id := m.conversations[idx].ID
 	var cmds []tea.Cmd
 	if s := m.screens[TabAsk]; s != nil {
@@ -283,15 +324,16 @@ func (m *App) openRailConversation(idx int) tea.Cmd {
 // rail is focused) and keeps it on screen. Opening is the Enter/Space
 // gesture (openSelectedRailConversation), not the arrow keys.
 func (m *App) selectRailConversation(delta int) {
-	if len(m.conversations) == 0 {
+	rows := m.railRows()
+	if len(rows) == 0 {
 		return
 	}
 	m.convSel += delta
 	if m.convSel < 0 {
 		m.convSel = 0
 	}
-	if m.convSel >= len(m.conversations) {
-		m.convSel = len(m.conversations) - 1
+	if m.convSel >= len(rows) {
+		m.convSel = len(rows) - 1
 	}
 	m.railFollowSelection()
 }
@@ -314,7 +356,7 @@ func (m *App) railFollowSelection() {
 	if m.convSel >= m.convScroll+rows {
 		m.convScroll = m.convSel - rows + 1
 	}
-	maxOff := len(m.conversations) - rows
+	maxOff := len(m.railRows()) - rows
 	if maxOff < 0 {
 		maxOff = 0
 	}
@@ -330,7 +372,7 @@ func (m *App) railFollowSelection() {
 // Enter/Space gesture on the Ask tab (the operator's "space or enter
 // selects"). No-op when the list is empty.
 func (m *App) openSelectedRailConversation() tea.Cmd {
-	if len(m.conversations) == 0 {
+	if len(m.railRows()) == 0 {
 		return nil
 	}
 	return m.openRailConversation(m.convSel)

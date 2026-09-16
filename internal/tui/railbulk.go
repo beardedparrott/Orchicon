@@ -48,20 +48,46 @@ const (
 // spaces builds a selection the way every multi-select list does, without forcing mark-then-down
 // every time.
 func (m *App) toggleConvMark() {
-	if m.convSel < 0 || m.convSel >= len(m.conversations) {
+	// A FOLDER ROW marks its members — "space marks what is under the cursor", and for a folder that is
+	// everything inside it. It is a TOGGLE on the group: if all of them are already marked, space clears
+	// the group, so the same key reads the same way as it does on a single row.
+	if f := m.railFolderAt(m.convSel); f != nil {
+		if m.convMarked == nil {
+			m.convMarked = map[string]bool{}
+		}
+		ids := m.railRowsInFolder(f.catID)
+		all := len(ids) > 0
+		for _, id := range ids {
+			if !m.convMarked[id] {
+				all = false
+				break
+			}
+		}
+		for _, id := range ids {
+			if all {
+				delete(m.convMarked, id)
+			} else {
+				m.convMarked[id] = true
+			}
+		}
+		return
+	}
+	idx := m.railConvIndexAt(m.convSel)
+	if idx < 0 {
 		return
 	}
 	if m.convMarked == nil {
 		m.convMarked = map[string]bool{}
 	}
-	id := m.conversations[m.convSel].ID
+	id := m.conversations[idx].ID
 	if m.convMarked[id] {
 		delete(m.convMarked, id)
 	} else {
 		m.convMarked[id] = true
 	}
-	// Step to the next row, clamped at the end so the last space does not walk off the list.
-	if m.convSel < len(m.conversations)-1 {
+	// Step to the next row, clamped at the end so the last space does not walk off the list. The step
+	// walks the VISIBLE rows, so a collapsed folder is skipped rather than entered.
+	if m.convSel < len(m.railRows())-1 {
 		m.convSel++
 		m.railFollowSelection()
 	}
@@ -181,15 +207,35 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 	if !m.railVisible() || m.active != TabAsk {
 		return false, nil
 	}
-	switch k {
-	case conversationRenameChord:
-		if m.convSel < 0 || m.convSel >= len(m.conversations) {
-			m.dock.SetError("no conversation selected in the rail")
+	// A FOLDER ROW MANAGES ITS GROUPING, the same placement as the GUI's FolderItem (onToggle /
+	// onStartRename / onDelete) and the same contextual-key rule the Workers and Workflows panes use:
+	// enter toggles the arrow, `e` renames, `x` deletes.
+	if f := m.railFolderAt(m.convSel); f != nil {
+		switch k {
+		case "enter":
+			m.toggleConvFolder(f.catID)
+			m.refreshStreamStatus()
+			return true, nil
+		case categoryRenameChord:
+			m.OpenRenameCategory(f.catID)
+			m.refreshStreamStatus()
+			return true, nil
+		case categoryDeleteChord:
+			m.OpenDeleteCategory(f.catID)
+			m.refreshStreamStatus()
 			return true, nil
 		}
-		c := m.conversations[m.convSel]
-		m.openRenameConversation(c.ID, c.Title)
-		m.refreshStreamStatus()
+		return false, nil
+	}
+	switch k {
+	case conversationRenameChord:
+		if idx := m.railConvIndexAt(m.convSel); idx >= 0 {
+			c := m.conversations[idx]
+			m.openRenameConversation(c.ID, c.Title)
+			m.refreshStreamStatus()
+			return true, nil
+		}
+		m.dock.SetError("no conversation selected in the rail")
 		return true, nil
 
 	case conversationCategorizeChord:
@@ -200,13 +246,13 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 			m.refreshStreamStatus()
 			return true, nil
 		}
-		if m.convSel < 0 || m.convSel >= len(m.conversations) {
-			m.dock.SetError("no conversation selected in the rail")
+		if idx := m.railConvIndexAt(m.convSel); idx >= 0 {
+			c := m.conversations[idx]
+			m.openAssignCategory(c.ID, c.Title, apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
+			m.refreshStreamStatus()
 			return true, nil
 		}
-		c := m.conversations[m.convSel]
-		m.openAssignCategory(c.ID, c.Title, apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
-		m.refreshStreamStatus()
+		m.dock.SetError("no conversation selected in the rail")
 		return true, nil
 
 	case conversationBulkDeleteChord:
@@ -317,6 +363,12 @@ func (m *App) railHintLine() string {
 		conversationRenameChord+": rename",
 		conversationCategorizeChord+": categorize",
 	)
+	// A FOLDER ROW answers its own keys, and the composer is where they are advertised (the rail is where
+	// the operator looks, the composer is where the keys live). Naming them only for folder rows keeps the
+	// hint about what the cursor can actually do.
+	if f := m.railFolderAt(m.convSel); f != nil {
+		parts = append(parts, "enter: collapse/expand", categoryRenameChord+": rename group", categoryDeleteChord+": delete group")
+	}
 	if n := m.convMarkedCount(); n >= kit2.BulkThreshold {
 		parts = append(parts, conversationBulkDeleteChord+": delete "+fmt.Sprintf("%d", n))
 	}

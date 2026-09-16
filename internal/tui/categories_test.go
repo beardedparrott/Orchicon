@@ -402,7 +402,8 @@ func TestCategorizeChordOnTheRailUsesTheSelectedConversation(t *testing.T) {
 	m.askMode = askConversations
 	m.convRailOpen = true
 	m.conversations = []chat.Conversation{{ID: "conv-a", Title: "first"}, {ID: "conv-b", Title: "second"}}
-	m.convSel = 1
+	// The cursor goes on a CONVERSATION ROW, not an index: the rail nests now, so row 1 may be a folder.
+	m = railSelectConversation(t, m, "conv-b")
 
 	// The REAL chord, through Update — not a test-only shortcut. The rail's keys are driven from the
 	// composer, so this also proves the chord wins over typing in that state.
