@@ -259,6 +259,15 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if mo, ok := msg.(tea.MouseMsg); ok {
 		return m.dispatchMouse(mo)
 	}
+	// The copy toast's timer. It is the TUI's own message (never produced by a screen or the
+	// wire), so it is safe to consume here — and it must be, or the confirmation would stay on
+	// screen until something else happened to repaint.
+	if tm, ok := msg.(clipToastMsg); ok {
+		if m.clip != nil {
+			m.clip.clearToast(tm.seq)
+		}
+		return m, nil
+	}
 	// The composer's caret animates from cursor.BlinkMsg ticks, which are NOT key
 	// messages — and the dock is only ever handed keys (three call sites, all
 	// tea.KeyMsg). Without this the tick reached the shell and was dropped, so the
@@ -577,6 +586,22 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 // tab bar (click = switch + open its menu), the Ask rail, then
 // fall-through to the screen/pane.
 func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
+	// SELECT AND COPY runs ahead of everything else, because it has to work over EVERYTHING: the
+	// tab bar, the dropdown, the rails, a pane, the transcript. The shell owns the frame, so it
+	// is the only layer that can select across all of them (clipboard.go).
+	//
+	// It is deliberately ahead of the menu handling: while a drag is live the operator is
+	// selecting text, and the press that started it has already been delivered (a press is never
+	// consumed — that is what keeps clicking intact), so nothing here can swallow a click that a
+	// click should have got.
+	if m.clip != nil {
+		if consumed, copyText := m.clip.handleMouse(mo); consumed {
+			if copyText != "" {
+				return m, m.clip.copyCmd(copyText)
+			}
+			return m, nil
+		}
+	}
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
 		// Toggle decision BEFORE any close: one click = exactly one menu
 		// transition. Capturing the open state after the outside-click

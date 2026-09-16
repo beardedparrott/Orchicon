@@ -124,13 +124,17 @@ type App struct {
 	quitting      bool
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock            dock.Model
-	chat            *chat.Controller
-	chatStore       *chatStore    // guarded chatItems (stream goroutine writes)
-	chatWake        chan struct{} // live-chunk repaint poke (cap 1)
-	chatCmds        chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
-	chatFocus       focusMode
-	mouseEnabled    bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+	dock         dock.Model
+	chat         *chat.Controller
+	chatStore    *chatStore    // guarded chatItems (stream goroutine writes)
+	chatWake     chan struct{} // live-chunk repaint poke (cap 1)
+	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
+	chatFocus    focusMode
+	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+
+	// clip is the frame the renderer last painted plus the drag-select in progress over it.
+	// A POINTER because App is copied on every Update/View (clipboard.go).
+	clip            *clipState
 	palette         palette
 	slash           *slashRegistry
 	contextOverride string // /context pin <desc>
@@ -226,9 +230,14 @@ const DiffPaneWidth = 48
 // NewApp builds the shell over an established client set.
 func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
 	m := &App{
-		clients:         cl,
-		profile:         profile,
-		reg:             subs.NewRegistry(),
+		clients: cl,
+		profile: profile,
+		reg:     subs.NewRegistry(),
+		// The SELECTION and its clipboard live on a shared pointer: App is a value model, so
+		// View and Update each receive a COPY — only a shared pointer lets the frame the
+		// renderer painted be read back by the mouse handler that arrives after it
+		// (clipboard.go).
+		clip:            &clipState{},
 		screens:         map[TabID]Screen{},
 		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
 		execSessions:    map[string][]chat.ChatItem{},
@@ -1386,6 +1395,15 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 // The slash palette floats above the composer when open; the tab
 // dropdown overlays the body region.
 func (m App) View() string {
+	frame := m.viewFrame()
+	if m.clip == nil {
+		return frame
+	}
+	m.clip.setFrame(frame)
+	return m.clip.decorate(frame)
+}
+
+func (m App) viewFrame() string {
 	if m.quitting {
 		return ""
 	}
