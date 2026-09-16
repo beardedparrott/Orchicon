@@ -190,6 +190,18 @@ func TestDeleteProjectIsIdempotent(t *testing.T) {
 	tenant := "tnt_dev"
 	proj := "zz_idem_probe_" + NewID()[:10]
 
+	// CLEANUP IS NOT REDUNDANT WITH THE DELETES BELOW, and its absence was a real leak: this test
+	// asserts that DeleteProject is harmless when called twice, so a FAILURE anywhere before the
+	// second call — or a failure of the second call itself — left the probe project behind in the
+	// shared tenant. It was the only test in this file without a t.Cleanup, and it did leak: two
+	// probes survived in the dev tenant from a single run while this was being written.
+	t.Cleanup(func() {
+		cctx := context.Background()
+		if err := DeleteProjectByID(cctx, pool, tenant, proj); err != nil {
+			t.Logf("cleanup: delete idempotency probe %s: %v", proj, err)
+		}
+	})
+
 	ttx, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)

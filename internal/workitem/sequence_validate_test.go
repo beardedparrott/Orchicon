@@ -205,7 +205,7 @@ func seedPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string, pu
 	if _, err := db.CreateWorkflowVersion(ctx, ttx.Tx, db.WorkflowVersionRow{
 		ID: db.NewID(), TenantID: validateParentTestTenant, WorkflowID: wf.ID,
 		Version: 1, Status: domain.WorkflowVersionDraft,
-		Steps: []byte(`[{"id":"step-1","name":"Task","kind":"task","ref":"w_se_devops_engineer","worker_version":0,"depends_on":[],"config":""}]`),
+		Steps:  []byte(`[{"id":"step-1","name":"Task","kind":"task","ref":"w_se_devops_engineer","worker_version":0,"depends_on":[],"config":""}]`),
 		Inputs: []byte("{}"), Outputs: []byte("{}"),
 	}); err != nil {
 		t.Fatal(err)

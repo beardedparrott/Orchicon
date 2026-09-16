@@ -393,6 +393,9 @@ func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	return env
 }
 
@@ -817,6 +820,9 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	_ = srA
 
 	getRun := func() db.WorkflowRunRow {

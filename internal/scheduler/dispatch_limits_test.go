@@ -224,6 +224,9 @@ func TestWorktreeInPlaceSerialization(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, env.pool, approvalTestTenant, proj.ID)
 
 	env.rec.SetDispatchLimiter(stubDispatchLimiter{inPlaceLim: func(string) int { return 1 }})
 
