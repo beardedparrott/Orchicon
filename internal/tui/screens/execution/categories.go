@@ -28,20 +28,76 @@ type categorizeHost interface {
 // the other, and because the shell's read side is a pure lookup.
 type categoryHost interface {
 	CategoryOf(target apiv1.CategoryTargetType, entityID string) (id, name string)
+	// CategoryGroupsFor is the ORDERED folder list, empty categories included — the GUI builds a group
+	// for every category it knows and only then appends Uncategorized, so the TUI must not decide an
+	// order of its own.
+	CategoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec
 }
 
-// grouped arranges a finished item list into collapsible category groups.
+// categoryManageHost is the optional shell capability for MANAGING a grouping from the pane that shows
+// it — the GUI's per-folder rename and delete, reachable from every grouped list rather than from one
+// special section.
+type categoryManageHost interface {
+	OpenRenameCategory(categoryID string)
+	OpenDeleteCategory(categoryID string)
+}
+
+// The chords that act on a CATEGORY ROW. They reuse the pane's own item keys because they apply to the
+// row under the cursor: `e` edits what the cursor is on (a worker, or the grouping when the cursor is
+// on a folder) and `x` deletes it. That is how the GUI reads too — the folder row carries the rename
+// and delete affordances itself.
+const (
+	keyRenameCategory = "e"
+	keyDeleteCategory = "x"
+)
+
+// grouped arranges a finished item list into collapsible category folders.
 //
-// It is ADDITIVE: with no shell hook, or with nothing assigned, screenkit.GroupItemsByCategory returns
+// It is ADDITIVE: with no shell hook, or with no categories, screenkit.GroupItemsByCategory returns
 // the list UNCHANGED, so a plane with no categories renders exactly the flat list it always did.
 func (m *Model) grouped(items []screenkit.Item, target apiv1.CategoryTargetType) []screenkit.Item {
 	host, ok := m.Shell().(categoryHost)
 	if !ok || host == nil {
 		return items
 	}
-	return screenkit.GroupItemsByCategory(items, func(id string) (string, string) {
-		return host.CategoryOf(target, id)
+	groups := host.CategoryGroupsFor(target)
+	return screenkit.GroupItemsByCategory(items, groups, func(id string) string {
+		catID, _ := host.CategoryOf(target, id)
+		return catID
 	})
+}
+
+// groupRowKey handles the chords that act on a CATEGORY ROW rather than on an item, reporting whether
+// it owned the key.
+//
+// IT RUNS BEFORE THE ITEM CHORDS, because the keys are the SAME ONES: `e` on a folder must rename the
+// grouping, not open a worker form against a synthetic id. Returning false for everything else is what
+// lets the item ops keep their normal path, and the ones that WOULD be wrong on a folder (publish,
+// set-active, version, categorize, the flow editor) are refused with a reason by the callers.
+func (m *Model) groupRowKey(kstr string) (tea.Cmd, bool) {
+	if !m.isGroupRowSelected() {
+		return nil, false
+	}
+	item, _ := m.ActiveItem()
+	catID := screenkit.GroupCategoryID(item.ID)
+	if catID == "" {
+		return nil, false
+	}
+	switch kstr {
+	case keyRenameCategory, keyDeleteCategory:
+		host, ok := m.Shell().(categoryManageHost)
+		if !ok || host == nil {
+			return m.refuse("grouping management is unavailable in this build"), true
+		}
+		if kstr == keyRenameCategory {
+			host.OpenRenameCategory(catID)
+		} else {
+			host.OpenDeleteCategory(catID)
+		}
+		m.notice = ""
+		return nil, true
+	}
+	return nil, false
 }
 
 // categorizeSelected opens the shell's assign modal for the highlighted row.

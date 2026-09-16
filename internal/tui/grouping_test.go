@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
@@ -100,3 +102,160 @@ func TestGroupingIsClearedWhenUnassigned(t *testing.T) {
 // screenkit/group_test.go, while the WIRING (does the pane actually call it, with the right target
 // type, and refuse writes aimed at a category row?) lives in the execution package — which is where the
 // pane is. A test here could only have asserted that a method exists.
+
+// --- managing a grouping from the pane that shows it -------------------------------------------------
+
+// TestRenameCategoryIsPrefilledAndWrites is the GUI's folder rename, reached from a pane: the box opens
+// with the CURRENT name and description (an empty box makes the operator retype a value they cannot
+// see) and the write carries the grouping's own id.
+func TestRenameCategoryIsPrefilledAndWrites(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research", Description: "deep dives",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	m = loadCats(t, m)
+
+	m.OpenRenameCategory("cat-1")
+	if m.catForm == nil {
+		t.Fatal("OpenRenameCategory must open the rename form")
+	}
+	if got := m.catForm.Values[catAdminName]; got != "Research" {
+		t.Fatalf("the form must be PREFILLED with the current name, got %q", got)
+	}
+	if got := m.catForm.Values[catAdminDesc]; got != "deep dives" {
+		t.Fatalf("the form must be prefilled with the current description, got %q", got)
+	}
+
+	m.catForm.Set(catAdminName, "Investigations")
+	cmd, err := m.catForm.Submit()
+	if err != nil {
+		t.Fatalf("a valid rename must submit: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("a changed name must produce a write")
+	}
+	cmd()
+
+	if stub.updatedID != "cat-1" {
+		t.Fatalf("the update must target the grouping that was opened, got %q", stub.updatedID)
+	}
+	if stub.updatedName != "Investigations" {
+		t.Fatalf("the update sent %q", stub.updatedName)
+	}
+}
+
+// TestRenameCategoryRefusesABlankNameWithTheFormOpen: a save that closes and writes nothing is the
+// silent-rejection class — the operator sees the box go away and the grouping is unchanged.
+func TestRenameCategoryRefusesABlankNameWithTheFormOpen(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	m = loadCats(t, m)
+	m.OpenRenameCategory("cat-1")
+
+	m.catForm.Set(catAdminName, "   ")
+	cmd, err := m.catForm.Submit()
+	if err == nil {
+		t.Fatal("a blank name must be refused")
+	}
+	if cmd != nil {
+		t.Fatal("nothing may be written when the name is blank")
+	}
+	if m.catForm.Submitted {
+		t.Fatal("a refused rename must leave the form OPEN")
+	}
+	if stub.updatedID != "" {
+		t.Fatalf("UpdateCategory ran for a blank name: %q", stub.updatedID)
+	}
+}
+
+// TestRenameCategoryIsANoOpWhenUnchanged: the GUI's rule — a write on every save is audit noise.
+func TestRenameCategoryIsANoOpWhenUnchanged(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research", Description: "d",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	m = loadCats(t, m)
+	m.OpenRenameCategory("cat-1")
+	cmd, err := m.catForm.Submit() // untouched
+	if err != nil {
+		t.Fatalf("an unchanged rename is valid: %v", err)
+	}
+	if cmd != nil {
+		t.Fatal("an unchanged grouping must not be written")
+	}
+	if stub.updatedID != "" {
+		t.Fatalf("an unchanged rename wrote: %q", stub.updatedID)
+	}
+}
+
+// TestDeleteCategoryConfirmNamesWhatHappensToTheItems: the operator's real question is not whether the
+// grouping goes but what happens to what was in it — so the confirm says so, and says how many.
+func TestDeleteCategoryConfirmSaysWhereTheItemsGo(t *testing.T) {
+	cat := &apiv1.Category{
+		Id: "cat-1", Name: "Research",
+		TargetType: apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION,
+	}
+	m, stub := categoryApp(t, cat)
+	stub.assigned = map[string]string{"conv-01": "cat-1", "conv-02": "cat-1"}
+	m = loadCats(t, m)
+
+	m.OpenDeleteCategory("cat-1")
+	if m.bulkConfirm == nil {
+		t.Fatal("OpenDeleteCategory must raise a confirm")
+	}
+	body := m.bulkConfirm.Body
+	if !strings.Contains(body, "Uncategorized") {
+		t.Fatalf("the confirm must say where the items go, got %q", body)
+	}
+	if !strings.Contains(body, "2") {
+		t.Fatalf("the confirm must say HOW MANY items are affected, got %q", body)
+	}
+
+	// Dismissing writes nothing.
+	m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if stub.deletedID != "" {
+		t.Fatalf("dismissing must not delete, got %q", stub.deletedID)
+	}
+
+	// Confirming deletes exactly that grouping. The dialog RETURNS the operation's command rather than
+	// running it, so the test has to run it the way the shell does — merely receiving it would let a
+	// delete that never fires pass.
+	m.OpenDeleteCategory("cat-1")
+	_, cmd := m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming must produce the delete command")
+	}
+	cmd()
+	if stub.deletedID != "cat-1" {
+		t.Fatalf("confirming must delete cat-1, got %q", stub.deletedID)
+	}
+}
+
+// TestManagingAGroupingWithAStaleRowRefuses: the grouping can be deleted (here or in the GUI) between
+// the fetch that drew the row and the keypress. Opening a form against an id that no longer exists
+// would write to nothing and report nothing.
+func TestManagingAStaleGroupingRefuses(t *testing.T) {
+	m, stub := categoryApp(t)
+	m = loadCats(t, m)
+	m.dock.SetError("")
+
+	m.OpenRenameCategory("cat_GONE")
+	if m.catForm != nil {
+		t.Fatal("a stale grouping must not open a rename form")
+	}
+	if m.dock.Err == "" {
+		t.Fatal("a stale grouping must say so")
+	}
+	m.OpenDeleteCategory("cat_GONE")
+	if m.bulkConfirm != nil {
+		t.Fatal("a stale grouping must not raise a delete confirm")
+	}
+	if stub.deletedID != "" {
+		t.Fatalf("nothing may be deleted for a stale row, got %q", stub.deletedID)
+	}
+}

@@ -603,6 +603,15 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			return cmd, true
 		}
 	}
+	// CATEGORY ROWS FIRST, for the two panes that group their rows. `e` and `x` are the panes' OWN item
+	// keys, and on a folder they must manage the GROUPING (rename / delete) rather than open a form
+	// against a synthetic id. It runs ahead of the flow editor too, so `x` on a folder cannot remove a
+	// workflow step.
+	if m.ActiveSourceName() == srcWorkers || m.ActiveSourceName() == srcWorkflows {
+		if cmd, handled := m.groupRowKey(kstr); handled {
+			return cmd, true
+		}
+	}
 	// The STEP editor owns the chords while a workflow's flow view is open.
 	if m.ActiveSourceName() == srcWorkflows {
 		if cmd, handled := m.handleFlowKeys(kstr); handled {

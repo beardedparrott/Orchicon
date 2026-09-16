@@ -212,6 +212,12 @@ type App struct {
 	// conversation to it, but it is not showing up in the UI" was literally true: the assignment was
 	// fetched in the same response as the categories and thrown away before anything could render it.
 	catAssignedBy map[string]string
+	// catForm is the shell's PREFILLED grouping-rename form (nil = closed), hosted here for the same
+	// reason as the rename/assign modals: the grouping it edits is drawn by whoever shows it, and the
+	// shell owns the modal host and the cache. catFormID is the grouping it was opened for, so a
+	// refresh that re-seats the cursor cannot retarget the write.
+	catForm   *kit2.Form
+	catFormID string
 	// assignEntities is what the modal is pointed at — a LIST, because the rail can bulk-assign a whole
 	// marked selection as well as one row. It is a field rather than a value read from the shell at
 	// submit time so a selection change behind the modal cannot retarget the write.
@@ -1027,7 +1033,7 @@ func (m *App) refreshComposerHint() {
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
 	// underneath is not the thing reading the operator's keystrokes.
-	if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil {
+	if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -1729,6 +1735,11 @@ func (m App) viewFrame() string {
 	// shell owns the surface it names.
 	if m.bulkConfirm != nil {
 		base = m.bulkConfirmView(base, w, h)
+	}
+	// The grouping-rename form sits in the same layer: the shell owns the grouping cache, and the modal
+	// is opened from a category row in whichever pane is showing it.
+	if m.catForm != nil {
+		base = m.catAdminView(base, w, h)
 	}
 	return fillView(base, w, h)
 }

@@ -20,6 +20,15 @@ func (m *App) OpenAssignCategory(entityID, entityLabel string, target apiv1.Cate
 	m.openAssignCategory(entityID, entityLabel, target)
 }
 
+// OpenRenameCategory / OpenDeleteCategory are the shell's MANAGE hooks, called by a pane whose cursor
+// is on a category row. They are the TUI equivalent of the GUI's per-folder rename and delete
+// (CategoryFolder's onRename / onDelete), which is what lets the same two actions be reachable from
+// every grouped list instead of from one special section.
+func (m *App) OpenRenameCategory(categoryID string) { m.openRenameCategory(categoryID) }
+
+// OpenDeleteCategory opens the delete confirm for a grouping.
+func (m *App) OpenDeleteCategory(categoryID string) { m.openDeleteCategory(categoryID) }
+
 // conversationCategorizeChord and conversationRenameChord are named here so the rail's footer and the
 // help overlay cannot drift from the bindings — the same reason the tab chords are derived rather than
 // spelled out (row 288: the chords were written down in four places).

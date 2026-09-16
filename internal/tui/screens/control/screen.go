@@ -105,9 +105,6 @@ type Model struct {
 	// one thing a masked field cannot tell the operator.
 	secretNames map[string]bool
 	settings    *apiv1.TenantSettings
-	// catRows is the loaded grouping rows, kept so an edit form can resolve a row's target type and
-	// current values without a second round trip at open time.
-	catRows []categoryRow
 
 	// adapterDisabled is the LOCAL dispatch toggle for a registered adapter.
 	// The public RuntimeAdapterService is read-only (ListAdapters +
@@ -143,16 +140,6 @@ type Model struct {
 	rpcUpdateSecret       func(ctx context.Context, r *apiv1.UpdateSecretRequest) error
 	rpcDeleteSecret       func(ctx context.Context, id string) error
 
-	// Category groupings (categories.go). Thunks for the same reason as every other write in this
-	// file: a test asserts the payload without a live plane. The categories surface originally called
-	// m.cl.Categories DIRECTLY, which is why it shipped with no coverage — the write was not reachable
-	// from a test at all. The list returns the categories AND the assignments together, because
-	// ListCategories answers both in one response and the pane counts assignments from it.
-	rpcListCategories func(ctx context.Context, target apiv1.CategoryTargetType) ([]*apiv1.Category, []*apiv1.CategoryAssignment, error)
-	rpcCreateCategory func(ctx context.Context, r *apiv1.CreateCategoryRequest) error
-	rpcUpdateCategory func(ctx context.Context, r *apiv1.UpdateCategoryRequest) error
-	rpcDeleteCategory func(ctx context.Context, id string) error
-
 	// Model-picker loads (model_picker.go). Thunks for the same reason as the
 	// rest: a test asserts the per-adapter branch and the payload without a live
 	// plane.
@@ -187,10 +174,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	// owns its palette set, and this is where the operator picks one. Selecting
 	// a row and pressing the action key applies + persists it.
 	m.AddSource("themes", "Themes", m.fetchThemes)
-	// CATEGORY GROUPINGS (worker / workflow / conversation): the tenant's groupings, one pane for all
-	// three types. See categories.go for why the management lives on Control while assignment lives on
-	// the item's own pane.
-	m.AddSource("categories", "Categories", m.fetchCategories)
 	m.AddSource("admin", "Admin", m.fetchAdmin)
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses(nil)
@@ -396,39 +379,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			return errNoClient("secret")
 		}
 		_, err := m.cl.Secrets.CreateSecret(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcListCategories = func(ctx context.Context, target apiv1.CategoryTargetType) ([]*apiv1.Category, []*apiv1.CategoryAssignment, error) {
-		if m.cl == nil || m.cl.Categories == nil {
-			return nil, nil, errNoClient("category")
-		}
-		resp, err := m.cl.Categories.ListCategories(ctx, connect.NewRequest(&apiv1.ListCategoriesRequest{
-			TargetType: target,
-		}))
-		if err != nil {
-			return nil, nil, err
-		}
-		return resp.Msg.GetCategories(), resp.Msg.GetAssignments(), nil
-	}
-	m.rpcCreateCategory = func(ctx context.Context, r *apiv1.CreateCategoryRequest) error {
-		if m.cl == nil || m.cl.Categories == nil {
-			return errNoClient("category")
-		}
-		_, err := m.cl.Categories.CreateCategory(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcUpdateCategory = func(ctx context.Context, r *apiv1.UpdateCategoryRequest) error {
-		if m.cl == nil || m.cl.Categories == nil {
-			return errNoClient("category")
-		}
-		_, err := m.cl.Categories.UpdateCategory(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcDeleteCategory = func(ctx context.Context, id string) error {
-		if m.cl == nil || m.cl.Categories == nil {
-			return errNoClient("category")
-		}
-		_, err := m.cl.Categories.DeleteCategory(ctx, connect.NewRequest(&apiv1.DeleteCategoryRequest{Id: id}))
 		return err
 	}
 	m.rpcUpdateSecret = func(ctx context.Context, r *apiv1.UpdateSecretRequest) error {
@@ -976,33 +926,6 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 		body := "TUI palettes are validated for terminal contrast — the borders carry each panel's title, so a browser hairline would render them invisible."
 		return "Theme: " + id, fields, body, nil
 
-	case "categories":
-		// The groupings pane. A HEADING row (id "") has no detail of its own, so it explains the pane
-		// instead — the same shape the themes and adapters panes use for their section rows — and the
-		// empty-state row (also id "") is answered from the loaded rows rather than pretending to be an
-		// item.
-		if id == "" {
-			return "Categories", []screenkit.Field{
-				{Key: "applies to", Value: "worker · workflow · conversation"},
-				{Key: "actions", Value: "n: new · e: rename · x: delete"},
-				{Key: "assign", Value: "C on the item's own pane (Workers, Workflows, or the Ask rail)"},
-				{Key: "load", Value: fmt.Sprintf("%d grouping(s) loaded", len(m.catRows))},
-			}, "A grouping is a folder: items keep their data and an item is in at most one grouping per type. Deleting one moves its items to Uncategorized rather than deleting them.", nil
-		}
-		row := m.categoryRowFor(id)
-		if row == nil {
-			return "Category", []screenkit.Field{{Key: "id", Value: id}}, "", nil
-		}
-		fields := []screenkit.Field{
-			{Key: "name", Value: row.Name},
-			{Key: "applies to", Value: row.TargetName},
-			{Key: "slug", Value: row.Slug},
-			{Key: "description", Value: row.Desc},
-			{Key: "assigned", Value: fmt.Sprintf("%d", row.AssignedN)},
-			{Key: "sort order", Value: fmt.Sprintf("%d", row.SortOrder)},
-		}
-		return "Category: " + row.Name, fields, "", nil
-
 	case "settings":
 		s := m.settings
 		if s == nil {
@@ -1272,10 +1195,6 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			},
 			Rollback: func() { delete(m.adapterDisabled, id) },
 		}}
-	case "categories":
-		// The groupings pane: rename (a prefilled form, opened by the pane's `e`) and delete (a
-		// confirmed write). CREATE is the pane's `n`, like every other list here.
-		return m.categoryActions(item)
 	}
 	return nil
 }
@@ -1366,8 +1285,6 @@ func (m *Model) newFormForSource() *kit2.Form {
 		return m.newProviderForm()
 	case "secrets":
 		return m.newSecretForm()
-	case "categories":
-		return m.newCategoryForm()
 	}
 	return nil
 }
@@ -1392,13 +1309,6 @@ func (m *Model) editFormForSource() *kit2.Form {
 		return m.editProviderForm(item)
 	case "secrets":
 		return m.editSecretForm(item)
-	case "categories":
-		// PREFILLED from the loaded row: an edit box that opens empty makes the operator retype a value
-		// they cannot see (the same rule the conversation rename follows).
-		if row := m.categoryRowFor(item.ID); row != nil {
-			return m.categoryEditForm(row.ID, row.Name, row.Desc)
-		}
-		return nil
 	}
 	return nil
 }
@@ -1954,15 +1864,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 	case mutate.Result:
 		return m, m.HandleMutation(msg)
-	case categoryCreatedMsg:
-		// A category write went through the form's own OnSubmit (the value being typed is what the
-		// call needs), so the reload is triggered from here rather than by the mutation executor's
-		// source reconciliation.
-		if msg.Err != nil {
-			m.Fail("category: " + msg.Err.Error())
-			return m, nil
-		}
-		return m, m.Refresh("categories")
 	}
 
 	// The MODEL PICKER is a modal layered ABOVE the form that opened it: while it
@@ -2151,8 +2052,6 @@ func (m *Model) HintLine() string {
 		hint = "n: new · e: rotate value · x: delete (values are never read back)"
 	case "adapters":
 		hint = "t: enable/disable (local dispatch filter) · ←/→: pane · r: refresh"
-	case "categories":
-		hint = "n: new grouping · e: rename (prefilled) · x: delete (items move to Uncategorized)"
 	case "admin":
 		hint = "admin-gated — the first row reports the live permission state"
 	}

@@ -42,6 +42,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
 // Sentinel picker values. They cannot collide with a category id (a ULID), so they are safe as
@@ -169,6 +170,38 @@ func (m *App) CategoryOf(target apiv1.CategoryTargetType, entityID string) (stri
 		return "", ""
 	}
 	return c.GetId(), c.GetName()
+}
+
+// CategoryGroupsFor is the shell's ordered folder list for a grouped pane.
+func (m *App) CategoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec {
+	return m.categoryGroupsFor(target)
+}
+
+// catByID finds a cached category (nil when the id is unknown — a stale row, or a grouping deleted
+// between a fetch and the operator acting on its row).
+func (m *App) catByID(id string) *apiv1.Category {
+	for _, c := range m.categories {
+		if c.GetId() == id {
+			return c
+		}
+	}
+	return nil
+}
+
+// categoryGroupsFor returns the categories to render as folders for one target type, IN THE SERVER'S
+// ORDER (sort_order, then name — the same rule categoriesFor applies to the assign picker).
+//
+// EMPTY CATEGORIES ARE INCLUDED, which is the GUI's behaviour: it builds a group for every category it
+// knows about and only then appends the Uncategorized folder, so an operator who created "Frontend"
+// sees the folder even before anything is in it. Passing the ORDERED list in (rather than letting the
+// list helper invent an order) is also what keeps the two clients' folder order identical.
+func (m *App) categoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec {
+	cats := m.categoriesFor(target)
+	out := make([]screenkit.GroupSpec, 0, len(cats))
+	for _, c := range cats {
+		out = append(out, screenkit.GroupSpec{ID: c.GetId(), Name: c.GetName()})
+	}
+	return out
 }
 
 // categoryOf returns the category an entity is assigned to, or nil.
@@ -508,4 +541,139 @@ func (m *App) assignCategoryView(base string, w, h int) string {
 	// modal the solid rectangle the operator asked for.
 	m.assignForm.Width = m.modalInnerWidth()
 	return m.overlayCentered(base, m.modalPanel(m.assignForm.View(), m.modalWidth()))
+}
+
+// The rename form's field names, shared with the tests so they drive the form the way the operator
+// does rather than by a literal that could drift.
+const (
+	catAdminName = "name"
+	catAdminDesc = "description"
+)
+
+// --- managing a grouping FROM THE PANE THAT SHOWS IT -------------------------------------------
+//
+// The operator: "In the GUI all of that is handled per screen and not in a special section" … "Both
+// should honor the same and work in the same way. People should be able to go back and forth between
+// TUI and GUI and feel at home."
+//
+// He is right, and the GUI's placement is specific: rename and delete live ON THE FOLDER ROW itself
+// (`CategoryFolder`'s onRename/onDelete, wired in workers.tsx / workflows.tsx / ask-orchicon.tsx), with
+// the create dialog per screen too. So these live on the shell — the shell owns the modal host and the
+// category cache — and every grouped pane reaches them through ONE pair of hooks. That is what lets
+// Control → Categories be removed rather than kept as a second, divergent home for the same actions.
+
+// openRenameCategory opens the PREFILLED rename form for a grouping.
+//
+// Prefilled for the reason that keeps recurring in this client: an edit box that opens EMPTY makes the
+// operator retype a value they cannot see. The GUI's folder rename starts from the current name.
+func (m *App) openRenameCategory(categoryID string) {
+	cat := m.catByID(categoryID)
+	if cat == nil {
+		// A stale row: the grouping was deleted (here or in the GUI) between the fetch that drew the row
+		// and the keypress. Say so rather than opening a form against an id that no longer exists.
+		m.dock.SetError("that grouping is no longer loaded — press r to refresh")
+		return
+	}
+	prevName, prevDesc := cat.GetName(), cat.GetDescription()
+	f := kit2.NewForm("Rename grouping",
+		kit2.FieldSpec{Name: catAdminName, Label: "Name", Kind: kit2.KText, Required: true, Initial: prevName},
+		kit2.FieldSpec{Name: catAdminDesc, Label: "Description", Kind: kit2.KText, Initial: prevDesc},
+	)
+	f.OnSubmit = func(vals map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		name := strings.TrimSpace(vals[catAdminName])
+		if name == "" {
+			return nil, fmt.Errorf("a name is required")
+		}
+		desc := strings.TrimSpace(vals[catAdminDesc])
+		if name == prevName && desc == prevDesc {
+			return nil, nil // unchanged: valid, and nothing to write (the GUI behaves the same)
+		}
+		return m.mutateCategory("update", func(ctx context.Context) error {
+			n, d := name, desc
+			_, err := m.clients.Categories.UpdateCategory(ctx, connect.NewRequest(&apiv1.UpdateCategoryRequest{
+				Id: categoryID, Name: &n, Description: &d,
+			}))
+			return err
+		}), nil
+	}
+	f.Width = m.modalInnerWidth()
+	m.catForm = f
+	m.catFormID = categoryID
+	m.refreshComposerHint()
+}
+
+// openDeleteCategory raises the confirm for deleting a grouping, saying where its items go.
+//
+// The wording is the GUI's own: `Delete "<name>"? Items will move to Uncategorized.` — the operator's
+// real question is not whether the grouping goes but what happens to what was in it.
+func (m *App) openDeleteCategory(categoryID string) {
+	cat := m.catByID(categoryID)
+	if cat == nil {
+		m.dock.SetError("that grouping is no longer loaded — press r to refresh")
+		return
+	}
+	n := 0
+	for _, id := range m.catAssignedBy {
+		if id == categoryID {
+			n++
+		}
+	}
+	body := fmt.Sprintf("%q? Its %d item(s) will move to Uncategorized.", cat.GetName(), n)
+	if n == 0 {
+		body = fmt.Sprintf("%q? Nothing is in it.", cat.GetName())
+	}
+	m.openBulkConfirm("Delete grouping", body, "delete", func() tea.Cmd {
+		return m.mutateCategory("delete", func(ctx context.Context) error {
+			_, err := m.clients.Categories.DeleteCategory(ctx, connect.NewRequest(&apiv1.DeleteCategoryRequest{Id: categoryID}))
+			return err
+		})
+	})
+}
+
+// mutateCategory runs one category write and reloads the cache with it.
+func (m *App) mutateCategory(op string, fn func(context.Context) error) tea.Cmd {
+	cl := m.clients
+	if cl == nil || cl.Categories == nil {
+		m.dock.SetError("no category client")
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return categoriesMutatedMsg{Op: op, Err: fn(ctx)}
+	}
+}
+
+// catFormKey drives the rename form. Like every shell modal it OWNS each key while it is open, so a
+// save chord cannot land in the composer behind it.
+func (m *App) catFormKey(k tea.KeyMsg) (*App, tea.Cmd) {
+	if m.catForm == nil {
+		return m, nil
+	}
+	switch k.String() {
+	case "esc":
+		m.catForm = nil
+		m.catFormID = ""
+		m.refreshComposerHint()
+		return m, nil
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	}
+	cmd, _ := m.catForm.HandleKey(k)
+	if m.catForm != nil && m.catForm.Submitted {
+		m.catForm = nil
+		m.catFormID = ""
+		m.refreshComposerHint()
+	}
+	return m, cmd
+}
+
+// catAdminView composes the rename form over the base view, inside a SOLID panel.
+func (m *App) catAdminView(base string, w, h int) string {
+	if m.catForm == nil {
+		return base
+	}
+	m.catForm.Width = m.modalInnerWidth()
+	return m.overlayCentered(base, m.modalPanel(m.catForm.View(), m.modalWidth()))
 }

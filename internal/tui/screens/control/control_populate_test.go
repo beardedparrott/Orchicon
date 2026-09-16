@@ -42,15 +42,16 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// registers all seven sources with non-nil fetch functions.
 	// Control's own surfaces only — Workers moved to the Execution tab and
 	// Runtime Images to the Work tab (GUI nav-config group placement).
-	// "categories" is a TUI PLACEMENT DECISION, not GUI parity: the GUI manages groupings IN PLACE (a
-	// create-category dialog in each of the workers / workflows / ask sidebars, plus drag-and-drop into
-	// folders). A cell grid has no drag-and-drop, and a create dialog repeated in three panes would be
-	// three implementations of one write — so the management lives here, where this client files its
-	// other settings surfaces, while ASSIGNMENT stays on each item's own pane (`C`).
+	//
+	// CATEGORIES ARE NOT HERE, and that is the parity fix rather than a gap: the GUI manages groupings
+	// IN PLACE — a create-category dialog in each of the workers / workflows / ask sidebars, and rename
+	// and delete ON THE FOLDER ROW itself. Filing them under Control was a TUI invention, and it made
+	// the two clients look like they had separate sets of categories. The TUI now does the same: create
+	// folds into the assign gesture on each pane, and rename/delete are the folder row's `e` / `x`.
 	want := map[string]bool{
 		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
-		"settings": false, "admin": false, "categories": false,
+		"settings": false, "admin": false,
 	}
 	for _, s := range m.Base.SourcesForTest() {
 		if _, ok := want[s.Name]; !ok {

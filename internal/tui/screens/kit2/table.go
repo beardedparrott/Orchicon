@@ -170,10 +170,26 @@ func NewTable(title string, cols ...Column) *Table {
 // Reseating it at the top on every refresh threw the operator's selection away
 // after each mutation — the reported "+/- moves it properly but then jumps your
 // focus up to the parent". A genuinely new list still starts at the top.
+//
+// THE OPEN/COLLAPSED STATE IS PRESERVED BY ID TOO, and that is not a nicety: this table is reloaded by
+// the ROLLING REFRESH every few seconds, so re-OPENING every folder on each load would make a collapsed
+// group spring back open under the operator's cursor — collapsing would be impossible to use at all.
+// The GUI's folders stay collapsed across updates, so the two clients would also have felt different.
+// Only rows whose id SURVIVES keep their state; a folder that appears for the first time starts open.
 func (t *Table) SetItems(items []screenkit.Item, next string) {
 	prev := t.SelectedID()
+	wasOpen := make(map[string]bool, len(t.Rows))
+	for _, r := range t.Rows {
+		if r.ID != "" {
+			wasOpen[r.ID] = r.Open
+		}
+	}
 	rows := make([]Row, 0, len(items))
 	for _, it := range items {
+		open, seen := wasOpen[it.ID]
+		if !seen {
+			open = true
+		}
 		rows = append(rows, Row{
 			ID:     it.ID,
 			Cells:  []string{it.Title},
@@ -181,7 +197,7 @@ func (t *Table) SetItems(items []screenkit.Item, next string) {
 			Depth:  it.Depth,
 			Parent: it.Parent,
 			Expand: it.HasChildren,
-			Open:   true,
+			Open:   open,
 		})
 	}
 	t.Rows = rows

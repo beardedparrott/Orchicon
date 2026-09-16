@@ -309,6 +309,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The grouping-rename form, opened from a category row in any grouped pane.
+	if m.catForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.catFormKey(k)
+		}
+		return m, nil
+	}
 	// Category write results and the category list land here rather than in a screen: the modal and the
 	// cache are the shell's, so the shell reconciles them.
 	switch msg := msg.(type) {
