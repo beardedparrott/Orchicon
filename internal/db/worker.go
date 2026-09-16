@@ -128,6 +128,17 @@ type ListWorkersFilter struct {
 	AfterID   string
 }
 
+// Page-size bounds, EXPORTED so a caller can tell whether a page came back FULL.
+//
+// A list endpoint answers with a page token only when there MIGHT be another page, and "might" is
+// exactly `len(page) == PageSize`. Without knowing the size, the only safe signal was "the page was
+// non-empty", which is why the worker list used to hand out a token on its last page too: every load
+// then paid one extra round trip to be told there was nothing left.
+const (
+	DefaultListPageSize = 100
+	MaxListPageSize     = 1000
+)
+
 // WorkerListRow is the enriched list row — the Worker header plus the
 // active version's model_ref and status. The active version is the row
 // pinned by current_version when >0, otherwise the latest version.
@@ -144,17 +155,12 @@ type WorkerListRow struct {
 // N+1 ListWorkerVersions per card. Tenant isolation is preserved on
 // every join.
 func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerListRow, error) {
-	if f.PageSize <= 0 || f.PageSize > 1000 {
-		f.PageSize = 100
+	if f.PageSize <= 0 || f.PageSize > MaxListPageSize {
+		f.PageSize = DefaultListPageSize
 	}
 	args := []any{f.TenantID}
 	where := `w.tenant_id = $1`
 	idx := 2
-	if f.AfterID != "" {
-		where += fmt.Sprintf(` AND w.id > $%d`, idx)
-		args = append(args, f.AfterID)
-		idx++
-	}
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (w.name ILIKE $%d OR w.slug ILIKE $%d OR w.purpose ILIKE $%d)`, idx, idx, idx)
 		args = append(args, "%"+f.Search+"%")
@@ -166,14 +172,37 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 		idx++
 	}
 	sortBy := "w.created_at"
+	sortCol := "created_at"
 	if f.SortBy == "name" {
-		sortBy = "w.name"
+		sortBy, sortCol = "w.name", "name"
 	} else if f.SortBy == "status" {
-		sortBy = "w.status"
+		sortBy, sortCol = "w.status", "status"
 	}
 	sortOrder := "ASC"
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
+	}
+	// THE CURSOR MUST AGREE WITH THE ORDER — the SAME correction ListWorkers already carries, applied
+	// here because THIS is the function the Workers pane calls.
+	//
+	// It cost the operator real rows: a bare `id > $n` against a `created_at` ordering is two different
+	// orders, and the dev tenant is a perfect illustration — its 7 seeded workers have ids like
+	// `w_se_qa_engineer`, and 'w' sorts AFTER every digit, so every one of them is "greater than" the
+	// last row of a created_at-ordered page. The walk therefore returned the whole list, then those 7
+	// again, then 4 of them again: 19 workers rendered as 30 rows with the same names repeated three
+	// times over. (Measured against the live tenant: page1=19, page2=7, page3=4.)
+	//
+	// The keyset compares the SAME (sort key, id) tuple the ORDER BY uses.
+	if f.AfterID != "" {
+		cmp := ">"
+		if sortOrder == "DESC" {
+			cmp = "<"
+		}
+		where += fmt.Sprintf(` AND (%s, w.id) %s (
+			SELECT w2.%s, w2.id FROM workers w2
+			WHERE w2.tenant_id = $1 AND w2.id = $%d)`, sortBy, cmp, sortCol, idx)
+		args = append(args, f.AfterID)
+		idx++
 	}
 	q := fmt.Sprintf(`SELECT w.id, w.tenant_id, w.name, w.slug, w.description, w.purpose, w.role_ref, w.status,
 		w.current_version, w.created_by, w.version, w.created_at, w.updated_at,
@@ -186,7 +215,7 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 			ORDER BY version DESC LIMIT 1
 		) v ON true
 		WHERE %s
-		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
+		ORDER BY %s %s, w.id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -209,8 +238,8 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 // ListWorkers returns a page of workers for the tenant with cursor-based
 // pagination, optional search/filter, and configurable sort.
 func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerRow, error) {
-	if f.PageSize <= 0 || f.PageSize > 1000 {
-		f.PageSize = 100
+	if f.PageSize <= 0 || f.PageSize > MaxListPageSize {
+		f.PageSize = DefaultListPageSize
 	}
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`

@@ -813,6 +813,12 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		SortBy:    req.Msg.SortBy,
 		SortOrder: req.Msg.SortOrder,
 	}
+	// THE PAGE SIZE IS RESOLVED HERE so the token below can tell a FULL page from a last one. The DB
+	// layer applies the same default, so both agree on what "full" means.
+	pageSize := f.PageSize
+	if pageSize <= 0 || pageSize > db.MaxListPageSize {
+		pageSize = db.DefaultListPageSize
+	}
 	if req.Msg.Status != nil {
 		f.Status = workerStatusFromProto(*req.Msg.Status)
 	}
@@ -837,7 +843,12 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		// Keep deprecated workers populated for wire-compat during rollout.
 		resp.Workers = append(resp.Workers, item.Worker)
 	}
-	if len(rows) > 0 {
+	// A TOKEN ONLY WHEN THE PAGE WAS FULL — i.e. when there might be more. This used to be "whenever any
+	// row came back", which handed the client a token on the LAST page too: every list load paid an extra
+	// round trip to be told there was nothing left, and any client that trusted the token without
+	// checking emptiness would walk for ever. It was not the cause of the duplicated rows (a mismatched
+	// cursor was), but it is the same mistake in miniature: a signal that does not mean what it says.
+	if len(rows) == pageSize {
 		resp.NextPageToken = rows[len(rows)-1].ID
 	}
 	// Enrich with worker categories (each response only carries its own target_type set).
