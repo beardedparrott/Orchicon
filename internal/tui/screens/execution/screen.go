@@ -817,6 +817,15 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	if src != "executions" {
 		return nil
 	}
+	// INSTALL THE MESSAGE BOX, which is the moment the pane knows WHICH execution it is showing (the
+	// base calls this hook right after SetContent on a detail landing).
+	//
+	// Doing it here rather than in the screen's detail() return is the whole reason the operator did
+	// not see a prompt: detail() only RETURNS text, and the base is what writes the pane — so a
+	// composer appended to the body landed at the end of a 65-line transcript, below the fold, and a
+	// composer installed from a paint helper never ran on the ordinary fetch path at all. A FOOTER is
+	// not part of the body, so the base's own write cannot displace it (screenkit.Detail.SetFooter).
+	m.installComposerFooter(id)
 	// An EXECUTION detail loads its SESSION TRANSCRIPT (via the shell, which owns the durable+live
 	// merge) and, when its cache is stale, its worker TODO LIST. Both are best-effort — neither can
 	// fail the detail.
@@ -885,7 +894,7 @@ func (m *Model) RenderSession(items []chat.ChatItem) {
 		// than blanking it — the facts are on their way, and they carry the fields.
 		return
 	}
-	m.Base.SetDetailContent("Execution "+id, fields, body)
+	m.paintExecution(id, fields, body)
 }
 
 // SelectItem selects the item by ID in the named source (slash arg

@@ -445,6 +445,14 @@ func (b *Base) DetailWidth() int {
 	return 60
 }
 
+// SetDetailFooter installs a FIXED band at the bottom of the detail pane, outside
+// the pane's scrolling region, so it is always on screen however tall the body
+// is — the shape an input needs (screenkit.Detail.SetFooter explains why).
+func (b *Base) SetDetailFooter(s string) { b.detail.SetFooter(s) }
+
+// DetailFooter returns the pane's current fixed band.
+func (b *Base) DetailFooter() string { return b.detail.Footer() }
+
 // SetDetailScrollBottom pins the detail pane's viewport to its LAST row.
 //
 // It goes through the same pending-offset mechanism an editor's cursor uses, with an offset past

@@ -235,8 +235,6 @@ func (m *Model) composeExecutionBody(id string) (string, []screenkit.Field) {
 		if body, _ := renderBlocks(blocks, &m.blocks, m.w, m.blocks.cursor); body != "" {
 			sections = append(sections, body)
 		}
-		// The composer is its own section so it reads as a control rather than another block.
-		sections = append(sections, m.composer.render(m.w, m.execMeta(id), m.blocks.cursor.atComposer))
 	}
 	return strings.Join(sections, "\n\n"), p.facts
 }

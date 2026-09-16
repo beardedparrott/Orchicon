@@ -44,6 +44,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -640,7 +641,7 @@ func (m *Model) repaintTranscript() tea.Cmd {
 	if len(fields) == 0 {
 		return nil // the record has not landed; there is nothing to draw yet
 	}
-	m.Base.SetDetailContent("Execution "+id, fields, body)
+	m.paintExecution(id, fields, body)
 	return m.scrollToBlockCursor()
 }
 
@@ -695,4 +696,36 @@ func (m *Model) transcriptPrefixRows() int {
 		rows += strings.Count(p.record, "\n") + 2
 	}
 	return rows
+}
+
+// paintExecution is the ONE place an execution detail is written to the pane, so the fixed message
+// box cannot be forgotten by any of the three callers (the detail landing, a cache repaint, and a
+// cursor move).
+//
+// THE COMPOSER IS A PANE FOOTER, NOT A BODY SECTION. It used to be appended to the body — which
+// reads correctly and is unusable: the transcript is taller than the pane, the viewport opens at the
+// TOP, and the input therefore sat ~65 lines below the fold. The operator reported exactly that
+// ("I STILL don't see a chat prompt inside an execution in the TUI") and the prompt had been there
+// the whole time, just never on screen. A footer is the shape an input needs: always visible,
+// never scrolled away (screenkit.Detail.SetFooter).
+//
+// It is installed even when there is NO transcript, because an execution that produced nothing is
+// precisely when the operator wants to ask why.
+func (m *Model) paintExecution(id string, fields []screenkit.Field, body string) {
+	m.installComposerFooter(id)
+	m.Base.SetDetailContent("Execution "+id, fields, body)
+}
+
+// installComposerFooter puts the message box in the pane's FIXED footer band.
+//
+// It is idempotent and state-driven (the band's placeholder depends on whether the execution is live
+// and whether the box has the keyboard), so every caller can call it unconditionally: the detail
+// landing, a cache repaint, and a cursor move all end with the band in the right state.
+func (m *Model) installComposerFooter(id string) {
+	if m.Base.ActiveSourceName() != srcExecutions {
+		// Another source's detail is showing: the band must not linger over it.
+		m.Base.SetDetailFooter("")
+		return
+	}
+	m.Base.SetDetailFooter(m.composer.render(m.w, m.execMeta(id), m.blocks.cursor.atComposer))
 }

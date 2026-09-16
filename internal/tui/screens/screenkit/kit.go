@@ -213,6 +213,11 @@ type Detail struct {
 	pendingOffset    int
 	pendingOffsetSet bool
 
+	// footer is a FIXED band below the scrolling body (the execution detail's
+	// message box). It is never part of what the viewport scrolls, so an input
+	// placed here is always on screen — see SetFooter.
+	footer string
+
 	// Hero is the centered empty state (the GUI's "Ask Orchicon
 	// anything…" block): rendered until real content arrives.
 	Hero      bool
@@ -245,12 +250,60 @@ func (d *Detail) SetHero(title, body string) {
 	d.Hero, d.HeroTitle, d.HeroBody = true, title, body
 }
 
+// SetFooter installs a FIXED band at the bottom of the pane, outside the
+// scrolling region. An empty string removes it.
+//
+// WHY THIS IS A PANE FEATURE AND NOT ANOTHER BODY SECTION. The execution
+// detail's message box was written into the BODY, at the end of the
+// transcript — which reads correctly and is unusable: a real transcript is
+// taller than the pane, the viewport opens at the TOP, and the input therefore
+// sat ~65 lines below the fold with no way to reach it but scrolling. The
+// operator: "I STILL don't see a chat prompt inside an execution in the TUI".
+// The prompt was there the whole time; it was simply never on screen.
+//
+// A footer is the shape an input needs: always visible, never scrolled away,
+// never part of what the transcript is measured against. The viewport's height
+// is reduced by the band so the LAST line of the body still clears it rather
+// than hiding behind it.
+func (d *Detail) SetFooter(s string) {
+	d.footer = s
+}
+
+// Footer returns the current fixed band ("" when none).
+func (d *Detail) Footer() string { return d.footer }
+
+// footerRows is how many rows the band occupies, including its separator.
+func (d *Detail) footerRows() int {
+	if d.footer == "" {
+		return 0
+	}
+	return strings.Count(d.footer, "\n") + 2 // one blank separator row + the band
+}
+
 // ensureVP (re)initializes the viewport for the current pane size.
+//
+// THE VIEWPORT MUST FIT WHAT View() ACTUALLY EMITS. The pane is hosted by a Panel that renders
+// exactly `Height-2` content rows and CLIPS anything beyond them — and it clips the TAIL. So content
+// that overflows loses its LAST lines, which is precisely where a footer lives: the message box was
+// installed, correct, and thrown away by the clip. (Before the footer existed the tail was the
+// bottom of the scrollable body, where losing it merely looked like the transcript continuing past
+// the fold.)
+//
+// So the budget is computed from the rows View() will write: the title, the fields, the body's
+// separator + viewport, and the footer's separator + band. The viewport gets what is LEFT, which is
+// what makes the band always visible — the property an input needs.
 func (d *Detail) ensureVP() {
-	w, h := d.Width, d.Height-2
+	w := d.Width
 	if w < 1 {
 		w = 1
 	}
+	// Rows View() spends on everything that is not the scrolling body.
+	overhead := 1 + len(d.Fields) // title + fields
+	if d.Body != "" {
+		overhead += 2 // the blank separator + at least something in the viewport
+	}
+	overhead += d.footerRows()
+	h := d.Height - 2 - overhead
 	if h < 1 {
 		h = 1
 	}
@@ -344,6 +397,14 @@ func (d *Detail) View() string {
 			}
 		}
 		b.WriteString(d.vp.View())
+	}
+	// The FIXED band goes last, below the scrolling body and outside it: whatever
+	// the transcript does, the input stays where the operator expects a prompt to
+	// be. It is emitted even when the body is empty, because an execution with no
+	// transcript still accepts a question — that is exactly when a message box
+	// matters most.
+	if d.footer != "" {
+		b.WriteString("\n" + d.footer)
 	}
 	return b.String()
 }
