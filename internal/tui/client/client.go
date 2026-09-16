@@ -157,6 +157,7 @@ type Clients struct {
 	Providers  apiv1connect.ProviderServiceClient
 	Webhooks   apiv1connect.WebhookServiceClient
 	Adapters   apiv1connect.RuntimeAdapterServiceClient
+	Categories apiv1connect.CategoryServiceClient
 
 	HTTP *http.Client // underlying client (tests can stub transports)
 
@@ -250,6 +251,7 @@ func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	c.FileEdits = newClient(apiv1connect.NewFileEditServiceClient, httpClient, base, opts2)
 	c.Providers = newClient(apiv1connect.NewProviderServiceClient, httpClient, base, opts2)
 	c.Webhooks = newClient(apiv1connect.NewWebhookServiceClient, httpClient, base, opts2)
+	c.Categories = newClient(apiv1connect.NewCategoryServiceClient, httpClient, base, opts2)
 	c.Adapters = newClient(apiv1connect.NewRuntimeAdapterServiceClient, httpClient, base, opts2)
 	return c
 }

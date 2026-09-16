@@ -198,6 +198,15 @@ type App struct {
 	// operator is looking.
 	renameConv   *kit2.Form
 	renameConvID string
+	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
+	// type because the picker needs whichever type its item belongs to and the Control pane lists all
+	// three; assignForm is the assign-or-create modal (nil = closed), assignTarget/assignEntity record
+	// what it is pointed at so a selection change behind it cannot retarget the write.
+	categories    []*apiv1.Category
+	assignForm    *kit2.Form
+	assignTarget  apiv1.CategoryTargetType
+	assignEntity  string
+	pendingCatCmd tea.Cmd
 	// metrics is the open conversation's usage roll-up feeding the composer's
 	// stat strip. ctxWindowFor/ctxWindow cache the resolved context window per
 	// model ref: the window costs a provider round trip and changes only when
@@ -492,6 +501,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingRailCmd != nil {
 		cmds = append(cmds, m.pendingRailCmd)
 		m.pendingRailCmd = nil
+	}
+	if m.pendingCatCmd != nil {
+		cmds = append(cmds, m.pendingCatCmd)
+		m.pendingCatCmd = nil
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -995,7 +1008,7 @@ func (m *App) refreshComposerHint() {
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
 	// underneath is not the thing reading the operator's keystrokes.
-	if m.renameConv != nil {
+	if m.renameConv != nil || m.assignForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -1408,6 +1421,13 @@ func (m *App) Init() tea.Cmd {
 	// (ensureLoaded, called from SwitchTo).
 	m.ensureLoaded(m.active)
 	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.fetchAskDefaultModel())
+	// The category list is loaded ONCE at startup alongside everything else, so the first assignment the
+	// operator makes already has its picker populated. The assign modal also triggers a load if the
+	// cache is empty (a session that started before the server had any, or a failed first load), so this
+	// is the fast path rather than the only path.
+	if c := m.loadCategories(); c != nil {
+		cmds = append(cmds, c)
+	}
 	// ARM THE ROLLING REFRESH WINDOW (refresh.go). One chain for the session, re-armed by its own
 	// handler, refreshing whatever the active tab is showing every few seconds — because an event
 	// poke only arrives when the server chooses to emit one, and the follow-up reply that made this
@@ -1668,6 +1688,9 @@ func (m App) viewFrame() string {
 	// both are hosted here rather than on a screen, so ordering is not load-bearing.
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
+	}
+	if m.assignForm != nil {
+		base = m.assignCategoryView(base, w, h)
 	}
 	return fillView(base, w, h)
 }

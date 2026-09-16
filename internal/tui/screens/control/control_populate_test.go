@@ -42,10 +42,15 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// registers all seven sources with non-nil fetch functions.
 	// Control's own surfaces only — Workers moved to the Execution tab and
 	// Runtime Images to the Work tab (GUI nav-config group placement).
+	// "categories" is a TUI PLACEMENT DECISION, not GUI parity: the GUI manages groupings IN PLACE (a
+	// create-category dialog in each of the workers / workflows / ask sidebars, plus drag-and-drop into
+	// folders). A cell grid has no drag-and-drop, and a create dialog repeated in three panes would be
+	// three implementations of one write — so the management lives here, where this client files its
+	// other settings surfaces, while ASSIGNMENT stays on each item's own pane (`C`).
 	want := map[string]bool{
 		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
-		"settings": false, "admin": false,
+		"settings": false, "admin": false, "categories": false,
 	}
 	for _, s := range m.Base.SourcesForTest() {
 		if _, ok := want[s.Name]; !ok {

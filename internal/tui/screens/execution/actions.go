@@ -66,6 +66,16 @@ const (
 	keySetActive   = "a"
 	keyDeprecate   = "u"
 	keyDelete      = "x"
+	// keyCategorize ASSIGNS the selected item to a grouping (worker / workflow / conversation
+	// categories). A CAPITAL, following this screen's own convention that a capital is the OTHER act on
+	// the same pane (`E` renames a workflow header, `V` edits a version, `X` deletes a workflow) — and
+	// because every lowercase letter with a mnemonic is taken here: `c` is cancel, `g` goes to the run,
+	// `t` retries.
+	//
+	// It opens the SHELL's assign-or-create modal (see tui/categories.go): the category list is the
+	// shell's cache and the modal is shell-hosted, so the screen hands the intent over rather than
+	// owning a second implementation of it.
+	keyCategorize = "C"
 	// Workflow lifecycle. The SAME chords reuse handles the same verbs on a
 	// different pane (n/e/p/u/x), and both sets are scoped to their own source —
 	// `p` is ALSO force-progress on a run, which is only safe because the
@@ -601,6 +611,9 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	// WORKFLOW lifecycle chords, scoped to the Workflows pane (see the key block
 	// above for why the scoping is load-bearing).
 	if m.ActiveSourceName() == srcWorkflows {
+		if kstr == keyCategorize {
+			return m.categorizeSelected(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKFLOW), true
+		}
 		switch kstr {
 		case keyNewWorkflow:
 			m.Base.BeginDetailEdit("New workflow", m.createWorkflowForm())
@@ -640,6 +653,9 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	// pane is focused. That scoping matters: `p` is also force-progress on a run,
 	// and an unscoped switch would hijack it and refuse with a worker message.
 	if m.ActiveSourceName() == srcWorkers {
+		if kstr == keyCategorize {
+			return m.categorizeSelected(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER), true
+		}
 		switch kstr {
 		case keyNewWorker:
 			// Item 3: worker editing happens IN THE DETAILS PANE, like work items —

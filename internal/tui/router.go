@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/modelpick"
 )
@@ -292,6 +293,22 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m.renameConvKey(k)
 		}
 		return m, nil
+	}
+	// The assign-or-create modal is the same shape and the same discipline: every key, above every
+	// route and every screen claim, so ctrl+s can never be swallowed by the screen behind it.
+	if m.assignForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.assignCategoryKey(k)
+		}
+		return m, nil
+	}
+	// Category write results and the category list land here rather than in a screen: the modal and the
+	// cache are the shell's, so the shell reconciles them.
+	switch msg := msg.(type) {
+	case categoriesLoadedMsg:
+		return m, m.onCategoriesLoaded(msg)
+	case categoriesMutatedMsg:
+		return m, m.onCategoriesMutated(msg)
 	}
 	// /connect in-place overlay owns ALL messages while open (never quits):
 	// keys drive the embedded connection form; the async probe's start/done
@@ -573,13 +590,30 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				// It is advertised in the rail's own footer and in the help overlay, because a chord
 				// nobody can see is the same as no chord — and `/rename` remains the discoverable path
 				// through the palette for anyone who looks there first.
-				if m.railVisible() && m.active == TabAsk && k.String() == "ctrl+n" {
+				if m.railVisible() && m.active == TabAsk && k.String() == conversationRenameChord {
 					if m.convSel < 0 || m.convSel >= len(m.conversations) {
 						m.dock.SetError("no conversation selected in the rail")
 						return m, nil
 					}
 					c := m.conversations[m.convSel]
 					m.openRenameConversation(c.ID, c.Title)
+					m.refreshStreamStatus()
+					return m, nil
+				}
+				if m.railVisible() && m.active == TabAsk && k.String() == conversationCategorizeChord {
+					// ctrl+t CATEGORIZES the selected conversation, the rail's second item action.
+					//
+					// Same reasoning as ctrl+n (rename): the rail's keys are driven from the COMPOSER,
+					// so a bare letter would become untypeable as the first character of a message. It
+					// is advertised in the rail's own footer for the same reason ctrl+n is — a chord
+					// nobody can see is the same as no chord.
+					if m.convSel < 0 || m.convSel >= len(m.conversations) {
+						m.dock.SetError("no conversation selected in the rail")
+						return m, nil
+					}
+					c := m.conversations[m.convSel]
+					m.OpenAssignCategory(c.ID, c.Title,
+						apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
 					m.refreshStreamStatus()
 					return m, nil
 				}
