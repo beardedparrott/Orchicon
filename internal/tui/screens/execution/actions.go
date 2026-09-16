@@ -193,6 +193,19 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			return m.scheduleDeleteActions(ids)
 		}
 	}
+	// WORKERS and WORKFLOWS take the same rule: more than one marked row means the operator is operating on
+	// a SELECTION, so the single-row actions are replaced rather than mixed with it. Without this branch,
+	// marking rows on these panes highlighted them and did nothing else.
+	if m.ActiveSourceName() == srcWorkers {
+		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
+			return m.entityBulkActions(srcWorkers, keyDelete, "worker", ids, m.rpcDeleteWorker)
+		}
+	}
+	if m.ActiveSourceName() == srcWorkflows {
+		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
+			return m.entityBulkActions(srcWorkflows, keyDeleteWorkflow, "workflow", ids, m.rpcDeleteWorkflow)
+		}
+	}
 	item, ok := m.ActiveItem()
 	if !ok {
 		return nil

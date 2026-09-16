@@ -23,17 +23,6 @@ type categorizeHost interface {
 	OpenAssignCategory(entityID, entityLabel string, target apiv1.CategoryTargetType)
 }
 
-// categoryHost is the optional shell capability for READING groupings, so a pane can nest its rows
-// under their category. A separate interface from categorizeHost because a screen may grow one without
-// the other, and because the shell's read side is a pure lookup.
-type categoryHost interface {
-	CategoryOf(target apiv1.CategoryTargetType, entityID string) (id, name string)
-	// CategoryGroupsFor is the ORDERED folder list, empty categories included — the GUI builds a group
-	// for every category it knows and only then appends Uncategorized, so the TUI must not decide an
-	// order of its own.
-	CategoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec
-}
-
 // categoryManageHost is the optional shell capability for MANAGING a grouping from the pane that shows
 // it — the GUI's per-folder rename and delete, reachable from every grouped list rather than from one
 // special section.
@@ -51,20 +40,39 @@ const (
 	keyDeleteCategory = "x"
 )
 
-// grouped arranges a finished item list into collapsible category folders.
+// grouped arranges a finished item list into collapsible category folders, using THE RESPONSE'S OWN
+// CATEGORIES.
 //
-// It is ADDITIVE: with no shell hook, or with no categories, screenkit.GroupItemsByCategory returns
-// the list UNCHANGED, so a plane with no categories renders exactly the flat list it always did.
-func (m *Model) grouped(items []screenkit.Item, target apiv1.CategoryTargetType) []screenkit.Item {
-	host, ok := m.Shell().(categoryHost)
-	if !ok || host == nil {
+// WHY THE RESPONSE AND NOT THE SHELL'S CACHE — two reasons, and the first is the operator's report:
+//
+//	"None of the GUI categories are coming up for Workers or Workflows in the TUI."
+//
+// The shell's cache is loaded ONCE at startup, so a grouping created in the other client while the TUI
+// is running never appeared. Both list responses have carried their own categories and assignments all
+// along (worker/service.go and workflow/service.go enrich them, which is how the GUI's screens get
+// them) — and this pane was throwing them away to consult a cache that could be minutes stale.
+//
+// The second reason is correctness rather than freshness: this runs inside the fetch COMMAND, on a
+// goroutine, so reading the shell's cache from here raced the main loop that writes it. A response's own
+// data has no such problem.
+//
+// It is ADDITIVE: with no categories, screenkit.GroupItemsByCategory returns the list UNCHANGED, so a
+// plane with no groupings renders exactly the flat list it always did.
+func (m *Model) grouped(items []screenkit.Item, cats []*apiv1.Category, assigns []*apiv1.CategoryAssignment) []screenkit.Item {
+	if len(cats) == 0 {
 		return items
 	}
-	groups := host.CategoryGroupsFor(target)
-	return screenkit.GroupItemsByCategory(items, groups, func(id string) string {
-		catID, _ := host.CategoryOf(target, id)
-		return catID
-	})
+	groups := make([]screenkit.GroupSpec, 0, len(cats))
+	for _, c := range cats {
+		groups = append(groups, screenkit.GroupSpec{
+			ID: c.GetId(), Name: c.GetName(), SortOrder: int(c.GetSortOrder()),
+		})
+	}
+	byEntity := make(map[string]string, len(assigns))
+	for _, a := range assigns {
+		byEntity[a.GetEntityId()] = a.GetCategoryId()
+	}
+	return screenkit.GroupItemsByCategory(items, groups, func(id string) string { return byEntity[id] })
 }
 
 // groupRowKey handles the chords that act on a CATEGORY ROW rather than on an item, reporting whether

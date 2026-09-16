@@ -122,6 +122,14 @@ func NewController(cl *client.Clients) *Controller {
 type ConversationsMsg struct {
 	Convs []Conversation
 	Err   string
+	// Categories and Assignments are the CONVERSATION groupings the SAME response carried.
+	//
+	// They are here because the list is the freshest place the rail can learn its groupings from: the
+	// shell's cache is loaded once at startup, so a grouping created in the GUI while the TUI runs never
+	// reached the rail. Passing them through the message also keeps the read on the MAIN LOOP, where the
+	// cache lives — the fetch itself runs on a goroutine.
+	Categories  []*apiv1.Category
+	Assignments []*apiv1.CategoryAssignment
 }
 
 // TranscriptMsg carries the durable transcript of the opened
@@ -450,7 +458,7 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				Mode:      cv.GetMode(),
 			})
 		}
-		return ConversationsMsg{Convs: convs}
+		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
 	}
 }
 

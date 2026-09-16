@@ -155,12 +155,24 @@ func TestEmptyCategoriesStillRenderAsFolders(t *testing.T) {
 	}
 }
 
-// TestFolderOrderFollowsTheGroupsArgument: the order is the CALLER'S (the server's sort_order), not
-// first-appearance — that is what keeps the two clients' folder order identical.
-func TestFolderOrderFollowsTheGroupsArgument(t *testing.T) {
-	in := items("w1", "w2")
-	groups := []GroupSpec{{ID: "catB", Name: "Beta"}, {ID: "catA", Name: "Alpha"}}
-	out := GroupItemsByCategory(in, groups, memberOf(map[string]string{"w1": "catA", "w2": "catB"}))
+// TestFolderOrderIsTheServersNotTheCallers: the folders are ordered by the SERVER's sort_order (then the
+// name as a tie-break), NOT by the order the caller happened to list them in.
+//
+// The sorting lives inside GroupItemsByCategory on purpose: three surfaces build folder lists from three
+// different responses, and "the GUI and the TUI list groupings the same way" cannot survive three
+// callers each remembering to sort. The caller passes what it knows; the helper decides the order.
+func TestFolderOrderIsTheServersNotTheCallers(t *testing.T) {
+	in := items("w1", "w2", "w3")
+	// Deliberately out of order, with explicit sort orders that disagree with both the argument order
+	// AND the alphabet — so passing this test means sort_order was actually honoured.
+	groups := []GroupSpec{
+		{ID: "catB", Name: "Beta", SortOrder: 5},
+		{ID: "catA", Name: "Alpha", SortOrder: 1},
+		{ID: "catC", Name: "Gamma", SortOrder: 3},
+	}
+	out := GroupItemsByCategory(in, groups, memberOf(map[string]string{
+		"w1": "catC", "w2": "catB", "w3": "catA",
+	}))
 
 	var folders []string
 	for _, it := range out {
@@ -168,8 +180,42 @@ func TestFolderOrderFollowsTheGroupsArgument(t *testing.T) {
 			folders = append(folders, it.Title)
 		}
 	}
-	if len(folders) != 2 || folders[0] != "Beta" || folders[1] != "Alpha" {
-		t.Fatalf("folders must follow the caller's order, got %v", folders)
+	want := []string{"Alpha", "Gamma", "Beta"}
+	if len(folders) != len(want) {
+		t.Fatalf("got %v, want %v", folders, want)
+	}
+	for i := range want {
+		if folders[i] != want[i] {
+			t.Fatalf("folders must follow the server's sort_order, got %v want %v", folders, want)
+		}
+	}
+}
+
+// TestFolderOrderTieBreaksByName keeps the order STABLE when several categories share a sort order, which
+// they do when they were created in one transaction. An unstable order would shuffle the folders between
+// reloads — and the rolling refresh reloads every few seconds, so the operator would watch them move.
+func TestFolderOrderTieBreaksByName(t *testing.T) {
+	in := items("w1")
+	groups := []GroupSpec{
+		{ID: "catB", Name: "Beta", SortOrder: 0},
+		{ID: "catA", Name: "Beta too", SortOrder: 0},
+		{ID: "catC", Name: "alpha", SortOrder: 0},
+	}
+	for run := 0; run < 5; run++ {
+		out := GroupItemsByCategory(in, groups, memberOf(nil))
+		var folders []string
+		for _, it := range out {
+			if IsGroupRow(it.ID) {
+				folders = append(folders, it.Title)
+			}
+		}
+		// Case-insensitive by name: "alpha" sorts before "Beta" before "Beta too".
+		want := []string{"alpha", "Beta", "Beta too"}
+		for i := range want {
+			if folders[i] != want[i] {
+				t.Fatalf("run %d: tied folders must order by name, got %v want %v", run, folders, want)
+			}
+		}
 	}
 }
 

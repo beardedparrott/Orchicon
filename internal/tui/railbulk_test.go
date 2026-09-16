@@ -298,16 +298,73 @@ func TestBulkDeleteAsksFirstAndThenDeletesEach(t *testing.T) {
 	}
 }
 
-// TestBulkDeleteRefusesWithTooFewMarks: a key that silently does nothing reads as broken, so the
-// refusal names the specific, actionable reason.
-func TestBulkDeleteRefusesWithTooFewMarks(t *testing.T) {
-	m := railApp(t, 5)
+// TestDeleteChordDeletesONEConversationWithoutMarks is the operator's report:
+//
+//	"In conversations there is no ctrl+x to just delete 1 item. You have to select multiple first."
+//
+// Requiring two marks meant there was no way to delete a single conversation at all — the one thing the
+// key is most obviously for. It now deletes the conversation UNDER THE CURSOR, which is what `x` does on
+// every other list in this client, behind the same confirm (the delete is irreversible and takes the
+// messages with it).
+func TestDeleteChordDeletesONEConversationWithoutMarks(t *testing.T) {
+	// The Ask stub, not the category one: a conversation delete goes through AskOrchiconService, and a
+	// fixture without that client would "pass" by failing to route at all.
+	m, stub := asksWithRail(t, "first", "second", "third")
+	m = railSelectConversation(t, m, "c2")
+
 	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	if m.bulkConfirm != nil {
-		t.Fatal("one (or zero) marks must not raise a bulk confirm")
+	if m.bulkConfirm == nil {
+		t.Fatal("ctrl+x on a single conversation must raise the delete confirm, not a refusal")
 	}
-	if !strings.Contains(m.dock.Err, "two or more") {
-		t.Fatalf("the refusal must say what to do, got %q", m.dock.Err)
+	// The confirm names the conversation, so the operator can see WHICH one is about to go — a count
+	// would be meaningless here and an anonymous "delete?" is worse.
+	if !strings.Contains(m.bulkConfirm.Body, "second") {
+		t.Fatalf("the confirm must name the conversation: %q", m.bulkConfirm.Body)
+	}
+	// Esc dismisses and writes nothing.
+	_, cmd := m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || stub.deletedID != "" {
+		t.Fatalf("dismissing must write nothing, got cmd=%v deleted=%q", cmd != nil, stub.deletedID)
+	}
+
+	// Confirming deletes EXACTLY the cursor's conversation — not a neighbour, and not all three.
+	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	_, cmd = m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming must produce the delete command")
+	}
+	m = runCmdDelivering(t, m, cmd)
+	if stub.deletedID != "c2" {
+		t.Fatalf("ctrl+x must delete the conversation under the cursor, got %q", stub.deletedID)
+	}
+	if n := len(m.convMarkedIDs()); n != 0 {
+		t.Fatalf("a single delete must not have needed marks, got %d", n)
+	}
+}
+
+// TestDeleteChordStillDeletesTheMarkedSelection keeps the bulk half: with a real selection, ctrl+x acts on
+// ALL of it and the confirm says how many.
+func TestDeleteChordStillDeletesTheMarkedSelection(t *testing.T) {
+	m, stub := asksWithRail(t, "one", "two", "three", "four", "five")
+	m = press(m, spaceKey, spaceKey, spaceKey) // c1..c3 marked
+	if got := len(m.convBulkIDs()); got != 3 {
+		t.Fatalf("precondition: 3 marked, got %d", got)
+	}
+
+	m = press(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if m.bulkConfirm == nil {
+		t.Fatal("ctrl+x must raise a confirm")
+	}
+	if !strings.Contains(m.bulkConfirm.Title, "3") {
+		t.Fatalf("the confirm must state HOW MANY: %q", m.bulkConfirm.Title)
+	}
+	_, cmd := m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming must produce the delete command")
+	}
+	m = runCmdDelivering(t, m, cmd)
+	if stub.deletedID == "" {
+		t.Fatal("the marked selection must be deleted")
 	}
 }
 

@@ -256,18 +256,34 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 		return true, nil
 
 	case conversationBulkDeleteChord:
-		ids := m.convBulkIDs()
-		if len(ids) == 0 {
-			// Refuse LOUDLY rather than no-op: a key that silently does nothing reads as broken, and
-			// the reason here is specific and actionable.
-			m.dock.SetError("mark two or more conversations first (space marks)")
+		if ids := m.convBulkIDs(); len(ids) > 0 {
+			m.openBulkConfirm(
+				fmt.Sprintf("Delete %d conversations", len(ids)),
+				fmt.Sprintf("%d conversations and all their messages will be deleted.\nThis cannot be undone.", len(ids)),
+				"delete",
+				func() tea.Cmd { return m.bulkDeleteConversations(ids) },
+			)
+			m.refreshStreamStatus()
 			return true, nil
 		}
+		// NO BULK SELECTION → delete the conversation UNDER THE CURSOR, which is what `x` does on every
+		// other list in this client.
+		//
+		// The operator: "In conversations there is no ctrl+x to just delete 1 item. You have to select
+		// multiple first." Requiring two marks meant there was NO WAY to delete a single conversation —
+		// the one thing the key is most obviously for. A single delete still confirms, because it is
+		// irreversible and takes the messages with it.
+		idx := m.railConvIndexAt(m.convSel)
+		if idx < 0 {
+			m.dock.SetError("no conversation selected in the rail")
+			return true, nil
+		}
+		c := m.conversations[idx]
 		m.openBulkConfirm(
-			fmt.Sprintf("Delete %d conversations", len(ids)),
-			fmt.Sprintf("%d conversations and all their messages will be deleted.\nThis cannot be undone.", len(ids)),
+			"Delete conversation",
+			fmt.Sprintf("“%s” and all its messages will be deleted.\nThis cannot be undone.", c.Title),
 			"delete",
-			func() tea.Cmd { return m.bulkDeleteConversations(ids) },
+			func() tea.Cmd { return m.bulkDeleteConversations([]string{c.ID}) },
 		)
 		m.refreshStreamStatus()
 		return true, nil

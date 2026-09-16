@@ -31,6 +31,8 @@ package screenkit
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // groupRowIDPrefix marks a synthesized category row. A real entity id is a ULID (uppercase Crockford
@@ -46,10 +48,27 @@ const (
 	UncategorizedGroupName = "Uncategorized"
 )
 
-// GroupSpec is one category to render as a folder, in display order.
+// GroupSpec is one category to render as a folder.
 type GroupSpec struct {
 	ID   string
 	Name string
+	// SortOrder is the SERVER's ordering for this category. The list helper sorts by it, so every
+	// surface renders folders in the same sequence no matter which response it built them from.
+	SortOrder int
+}
+
+// SortGroupSpecs orders folders the way BOTH clients render them: the server's sort_order, then the
+// name as a tie-break (folders created in the same transaction share an order, and an unstable order
+// would shuffle them between reloads — the rolling refresh makes that visible every few seconds).
+func SortGroupSpecs(gs []GroupSpec) []GroupSpec {
+	out := append([]GroupSpec(nil), gs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
 }
 
 // GroupRowID is the synthetic row id for a category's folder row.
@@ -88,6 +107,9 @@ func GroupItemsByCategory(items []Item, groups []GroupSpec, categoryOf func(enti
 	if len(groups) == 0 || len(items) == 0 {
 		return items
 	}
+	// THE ORDER IS APPLIED HERE, not left to each caller: three surfaces build folder lists from three
+	// different responses, and "the GUI and the TUI list groupings the same way" is the whole point.
+	groups = SortGroupSpecs(groups)
 	inGroup := make([]string, len(items))
 	for i, it := range items {
 		// A row with no id is a HEADING (the Control pane's per-type rows use those): it cannot carry an

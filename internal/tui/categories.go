@@ -308,8 +308,11 @@ func (m *App) openAssignCategories(entityIDs []string, entityLabel string, targe
 	m.assignTarget = target
 	m.assignEntities = ids
 	m.refreshAssignOptions()
-	if len(m.categories) == 0 {
-		// Nothing cached yet: ask, and the reply fills the picker in place (onCategoriesLoaded).
+	// ALWAYS RELOAD WHEN THE PICKER OPENS, so the options are as fresh as the pane's own list is. The
+	// reply fills the picker IN PLACE (onCategoriesLoaded → refreshAssignOptions), so the modal appears
+	// immediately and its options land a moment later — better than offering a grouping that was deleted
+	// in the other client, which is the one failure a picker cannot recover from.
+	if m.clients != nil && m.clients.Categories != nil {
 		m.pendingCatCmd = m.loadCategories()
 	}
 	m.refreshComposerHint()
@@ -676,4 +679,45 @@ func (m *App) catAdminView(base string, w, h int) string {
 	}
 	m.catForm.Width = m.modalInnerWidth()
 	return m.overlayCentered(base, m.modalPanel(m.catForm.View(), m.modalWidth()))
+}
+
+// applyCategorySet replaces the cached CATEGORIES AND ASSIGNMENTS for one target type with a fresher
+// set, leaving the other two kinds alone.
+//
+// Why per-type rather than "replace everything": the three sets arrive from three different responses,
+// each carrying only its own kind (ListWorkers sends worker groupings, ListWorkflows workflow ones,
+// ListConversations conversation ones). Replacing wholesale would make whichever response landed last
+// the only one that existed.
+//
+// It is called from the MAIN LOOP only — from a response handler, never from a fetch goroutine.
+func (m *App) applyCategorySet(target apiv1.CategoryTargetType, cats []*apiv1.Category, assigns []*apiv1.CategoryAssignment) {
+	if len(cats) == 0 && len(assigns) == 0 {
+		return
+	}
+	kept := m.categories[:0:0]
+	for _, c := range m.categories {
+		if c.GetTargetType() != target {
+			kept = append(kept, c)
+		}
+	}
+	m.categories = append(kept, cats...)
+
+	if m.catAssignedBy == nil {
+		m.catAssignedBy = map[string]string{}
+	}
+	// The assignments are REPLACED for this type, never merged: an unassign has to CLEAR the entry, and a
+	// merge would leave an item showing a grouping it is no longer in. The map's key already carries the
+	// target type (catEntityKey), so the type's own slice is a prefix sweep.
+	prefix := fmt.Sprintf("%d\x00", int32(target))
+	for k := range m.catAssignedBy {
+		if strings.HasPrefix(k, prefix) {
+			delete(m.catAssignedBy, k)
+		}
+	}
+	for _, a := range assigns {
+		if a.GetTargetType() != target {
+			continue
+		}
+		m.catAssignedBy[catEntityKey(target, a.GetEntityId())] = a.GetCategoryId()
+	}
 }

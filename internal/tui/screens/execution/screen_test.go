@@ -24,6 +24,15 @@ type fakePlane struct {
 	apiv1connect.UnimplementedWorkflowServiceHandler
 	apiv1connect.UnimplementedWorkItemServiceHandler
 
+	// --- worker list (the Workers pane's grouping) ---
+	//
+	// The list response carries the WORKER groupings alongside the page, exactly as the real service
+	// enriches it. The pane groups from THESE, not from the shell's cache (which is loaded once at
+	// startup and could be minutes stale) — so a test needs to be able to put groupings in the response.
+	workerItems       []*apiv1.WorkerListItem
+	workerCategories  []*apiv1.Category
+	workerAssignments []*apiv1.CategoryAssignment
+
 	mu       sync.Mutex
 	cancel   []*apiv1.CancelExecutionRequest
 	messages []*apiv1.SendExecutionMessageRequest
@@ -213,6 +222,8 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	// The runs views resolve workflow/work-item NAMES from these two lists (names.go), so the
 	// fixture has to serve them.
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(p))
+	// The WORKER list, so the Workers pane's own fetch (and its grouping) can be driven.
+	mux.Handle(apiv1connect.NewWorkerServiceHandler(&fakeWorkers{plane: p}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	m := New(client.New(client.Options{BaseURL: srv.URL}), subs.NewRegistry(), "")

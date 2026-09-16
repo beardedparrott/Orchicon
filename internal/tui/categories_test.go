@@ -238,10 +238,9 @@ func TestAssignWritesTheChosenCategory(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("ctrl+s must produce the write")
 	}
-	if nm, _ := m.Update(cmd()); nm != nil {
-		m = nm.(*App)
-	}
-	m = nm.(*App)
+	// RUN IT THE WAY THE RUNTIME DOES — see runCmdDelivering: the returned command can be a batch (the
+	// shell stages the picker's reload alongside the write), and merely calling it runs nothing.
+	m = runCmdDelivering(t, m, cmd)
 	if stub.assignedCategory != "w2" || stub.assignedEntity != "worker-42" {
 		t.Fatalf("AssignToCategory got (%q, %q), want (w2, worker-42)", stub.assignedCategory, stub.assignedEntity)
 	}
@@ -264,10 +263,9 @@ func TestUncategorizedUnassigns(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("saving the default choice must issue the unassign")
 	}
-	if nm, _ := m.Update(cmd()); nm != nil {
-		m = nm.(*App)
-	}
-	m = nm.(*App)
+	// RUN IT THE WAY THE RUNTIME DOES — see runCmdDelivering: the returned command can be a batch (the
+	// shell stages the picker's reload alongside the write), and merely calling it runs nothing.
+	m = runCmdDelivering(t, m, cmd)
 	if stub.unassignedEntity != "conv-7" {
 		t.Fatalf("UnassignFromCategory got entity %q, want conv-7", stub.unassignedEntity)
 	}
@@ -305,10 +303,9 @@ func TestCreateAndAssignInOneGesture(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("a new-grouping save must issue the writes (errors=%v)", m.assignForm)
 	}
-	if nm, _ := m.Update(cmd()); nm != nil {
-		m = nm.(*App)
-	}
-	m = nm.(*App)
+	// RUN IT THE WAY THE RUNTIME DOES — see runCmdDelivering: the returned command can be a batch (the
+	// shell stages the picker's reload alongside the write), and merely calling it runs nothing.
+	m = runCmdDelivering(t, m, cmd)
 	if stub.createdName != "Platform" {
 		t.Fatalf("CreateCategory got name %q, want Platform", stub.createdName)
 	}
@@ -343,11 +340,7 @@ func TestNewCategoryWithoutANameIsRefusedWithTheFormOpen(t *testing.T) {
 	// command: App.Update also drains the composer's caret-blink starter, so a non-nil cmd can be a
 	// blink timer with no write behind it — an earlier version of this test asserted `cmd != nil` and
 	// failed on exactly that. Running whatever came back and checking the stub is the honest check.
-	if cmd != nil {
-		if nm2, _ := m.Update(cmd()); nm2 != nil {
-			m = nm2.(*App)
-		}
-	}
+	m = runCmdDelivering(t, m, cmd)
 	if stub.createdName != "" {
 		t.Fatalf("CreateCategory was called anyway: %q", stub.createdName)
 	}
@@ -381,11 +374,7 @@ func TestAssignEscClosesWithoutWriting(t *testing.T) {
 	}
 	// Same reasoning as the refusal test: the returned command is not evidence of a write (App.Update
 	// drains the caret-blink starter too), so run it and ask the SERVER.
-	if cmd != nil {
-		if nm2, _ := m.Update(cmd()); nm2 != nil {
-			m = nm2.(*App)
-		}
-	}
+	m = runCmdDelivering(t, m, cmd)
 	if stub.assignedEntity != "" {
 		t.Fatalf("esc wrote an assignment to %q", stub.assignedEntity)
 	}

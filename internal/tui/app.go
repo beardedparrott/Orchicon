@@ -2213,6 +2213,10 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	}
 	m.convErr = ""
 	m.convLoaded = true
+	// THE LIST'S OWN GROUPINGS COME WITH IT. Applying them here is what keeps the rail's folders current
+	// when the grouping was created in the OTHER client: the shell's cache is loaded once at startup, so
+	// before this the rail could only ever show groupings that existed when the TUI began.
+	m.applyCategorySet(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, msg.Categories, msg.Assignments)
 	m.conversations = msg.Convs
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = 0
