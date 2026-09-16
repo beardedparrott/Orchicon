@@ -54,25 +54,31 @@ func TestTabBarNumbered(t *testing.T) {
 		}
 	}
 
-	// THE NUMBERS ARE KEYS, so they are drawn underlined, and the bar names the modifier ONCE at its
-	// left so the numbers read as chords ("alt+ 1·Ask Orchicon"). Both are the operator's request, and
-	// both are asserted rather than assumed: the numbered chrome without them is just decoration.
+	// THE KEY LABEL IS UNDERLINED, because it IS a key and not decoration — the operator asked for
+	// that when the chords were numbers ("We should probably underline the numbers") and again when
+	// they became function keys ("underline the F1-F7 individually"). Each tab's own label is asserted
+	// individually, which is what "individually" means: a single underline anywhere in the bar would
+	// satisfy a looser check while leaving six tabs unlabelled.
 	//
-	// The assertion spells the SGR sequence out rather than calling underlineDigits — a test that asks
-	// the helper it is testing produces the expected text passes when the helper is a no-op, which is
+	// The assertion spells the SGR sequence out rather than calling underlineTabKey — a test that asks
+	// the helper it is testing to produce the expected text passes when the helper is a no-op, which is
 	// how this assertion read before it was checked by disabling the underline.
 	for _, tab := range Tabs {
 		want := "\x1b[4m" + tab.Ordinal + "\x1b[24m"
 		if !strings.Contains(raw, want) {
-			t.Errorf("tab %s: the number %q is not underlined in the bar (want %q): %q", tab.Title, tab.Ordinal, want, raw)
+			t.Errorf("tab %s: the key %q is not underlined in the bar (want %q): %q", tab.Title, tab.Ordinal, want, raw)
 		}
 	}
-	if !strings.Contains(line, tabBarModifier()) {
-		t.Errorf("the bar does not name its modifier (%q) at the left: %q", tabBarModifier(), line)
-	}
-	// The modifier label must sit BEFORE the first tab — that is what makes it read as a prefix.
-	if i, j := strings.Index(line, tabBarModifier()), strings.Index(line, tabFullLabel(Tabs[0])); i < 0 || j < 0 || i > j {
-		t.Errorf("the modifier label must precede the first tab (modifier at %d, first tab at %d): %q", i, j, line)
+	// THE BAR NO LONGER NAMES A MODIFIER, and that is pinned as a STRUCTURAL fact rather than by
+	// looking for the absence of a string: nothing is painted before the first tab. "alt+ 1·Ask
+	// Orchicon" existed to explain a MODIFIER that the label did not name; the label now IS the whole
+	// key ("F1"), so a prefix would be five cells of noise in front of the operator's own tabs.
+	// Asserting the bar's HEAD, rather than that some substring is missing, also fails if a future
+	// change paints anything else in there (a mode indicator, a title).
+	trimmed := strings.TrimLeft(line, " ")
+	if !strings.HasPrefix(trimmed, tabFullLabel(Tabs[0])) {
+		t.Errorf("something is painted before the first tab (want the bar to start with %q): %q",
+			tabFullLabel(Tabs[0]), trimmed)
 	}
 }
 

@@ -46,11 +46,11 @@ func TestTabBarCentered(t *testing.T) {
 			t.Fatalf("%d: centered row lost tab labels: %q", w, row)
 		}
 		// CENTERING, ASSERTED EXACTLY: the row is the pad, then the bar, then the remainder. The old
-		// form hardcoded the bar's own leading pad ("the TabBar container pad + the first tab's own
-		// pad"), which stopped being a constant the moment the bar gained a label at its LEFT — the
-		// first painted glyph is now the modifier ("alt+"), not a tab number, so one of those two pad
-		// columns is a glyph. Comparing the row against the bar itself cannot drift that way, and it
-		// pins the centering more tightly than a gutter count did.
+		// form hardcoded two pad columns before the first glyph ("the TabBar container pad + the first
+		// tab's own pad"), which stopped describing anything the moment the bar's HEAD changed: it
+		// carried a modifier label ("alt+") for a while, and now starts at the first tab again with its
+		// "F1" key label. Comparing the row against the bar itself cannot drift that way, and it pins
+		// the centering more tightly than a gutter count did.
 		pad := (w - barW) / 2
 		wantRow := strings.Repeat(" ", pad) + ansi.Strip(bar) + strings.Repeat(" ", w-barW-pad)
 		if row != wantRow {

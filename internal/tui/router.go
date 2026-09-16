@@ -157,12 +157,12 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 	}
-	// One chord route per tab, in tab order: alt+1 … alt+7.
+	// One chord route per tab, in tab order: F1 … F7.
 	//
-	// The chord is taken from the Tab (alt+<ordinal>), so the key the operator presses and the number
-	// printed in the tab bar are the same fact. It used to be a hand-listed ctrl+letter — and one of
-	// those (ctrl+e) was ALSO the composer's end-of-line binding, which is the kind of collision a
-	// derived key cannot have.
+	// The chord is taken from the Tab itself, so the key the operator presses and the key printed in the
+	// tab bar are the same fact. It used to be a hand-listed ctrl+letter — and one of those (ctrl+e)
+	// was ALSO the composer's end-of-line binding, which is the kind of collision a derived key cannot
+	// have.
 	for i := range tabs {
 		tab := tabs[i]
 		routes = append(routes, KeyRoute{
@@ -202,19 +202,28 @@ func keyMatcher(s string) func(tea.Msg) bool {
 // unknown chords are silent no-ops that still report consumed), locking
 // the shell chrome behind a focus escape forever.
 var composerBypassKeys = map[string]bool{
-	// The tab chords, derived from the SAME source the tab bar draws from — a literal list here is
-	// what let the two drift before (the chords were spelled out in four places).
-	//
-	// alt+<digit> is safe to bypass: a textarea has no meaning for it, so consuming it here cannot
-	// take a keystroke away from typing. (Before, this list held ctrl+e — which IS a textarea's
-	// end-of-line — so the composer lost that binding to a tab switch.)
-	"alt+1": true, "alt+2": true, "alt+3": true, "alt+4": true,
-	"alt+5": true, "alt+6": true, "alt+7": true,
 	"ctrl+r": true, "ctrl+c": true, "ctrl+d": true, "q": true,
 	// TAB is structural chrome (the tab bar is the shell's spine). LEFT/RIGHT are
 	// deliberately NOT here: in a text box they are cursor movement, which is what
 	// the operator expects from a composer.
 	"tab": true, "shift+tab": true,
+}
+
+// The tab chords are ADDED from the SAME source the tab bar draws from.
+//
+// They were previously spelled out as literals in this map (under a comment claiming they were
+// derived, which is how a claim like that rots): that is the FOURTH place the old ctrl+letter chords
+// were written down, and it is exactly how a chord change can leave the composer swallowing the key
+// instead of switching tabs. Deriving them makes a chord change a one-line change in `Tabs`.
+//
+// An F-key is safe to bypass: a textarea has no meaning for F1–F7 (it binds no F-key at all), so
+// consuming one here cannot take a keystroke away from typing. (The alternative is not academic —
+// this list once held ctrl+e, which IS a textarea's end-of-line, so the composer lost that binding
+// to a tab switch.)
+func init() {
+	for _, t := range Tabs {
+		composerBypassKeys[t.Chord] = true
+	}
 }
 
 // screenOwnsTab reports whether the active screen wants Tab for a focus move INSIDE its pane,

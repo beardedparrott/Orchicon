@@ -54,42 +54,53 @@ const (
 type Tab struct {
 	ID      TabID
 	Title   string // GUI nav label
-	Chord   string // alt+<ordinal> — the modifier the tab bar names once (see tabBarModifier)
-	Ordinal string // "1"…"7" — numbered tab chrome (mockup parity)
+	Chord   string // "f1"…"f7" — the tab chord: the SAME key the bar PRINTS, lowercased
+	Ordinal string // "F1"…"F7" — the key the bar prints, UNDERLINED: it IS the chord, not decoration
 }
 
 // Tabs is the top tab bar, in GUI nav order. Ordinals number the tabs so
 // the tab bar matches the mockup's "1 · 2 · 3…" chrome; clicking a tab
 // (mouse) is wired in the shell dispatcher.
 //
-// THE CHORDS ARE alt+<number>, and they are DERIVED from the ordinal so the key and the number on
-// screen cannot disagree. They used to be ctrl+o / ctrl+v / ctrl+w / ctrl+e / ctrl+a / ctrl+f /
-// ctrl+t — a letter per tab, unrelated to the number printed beside it, which is why the operator
-// asked for them to match the ordinals instead: "I think we should get rid of the ctrl+letter for the
-// tab menus up top and instead make them ctrl+number and use the numbers that we have assigned each
-// tab menu. We should probably underline the numbers and to the left of "Ask Orchicon" put "Ctrl +"
-// so it is apparent to the users".
+// THE CHORDS ARE F1 … F7, and the label the bar prints IS the chord (only the case differs), so the
+// key the operator presses and the text beside the tab cannot disagree — the same invariant the
+// chord list has carried since the ctrl+letter chords were replaced, when a letter per tab sat next
+// to an unrelated number: "I think we should get rid of the ctrl+letter for the tab menus up top".
 //
-// WHY alt AND NOT ctrl — measured, not assumed (a pty probe through bubbletea's own parser, the same
-// one the running program uses): the terminal does NOT deliver a distinct key for ctrl+<digit>. ctrl+1
-// arrives as ctrl+q, ctrl+2 as ctrl+@, and — the reason this is not merely cosmetic — **ctrl+3
-// arrives as ESC and ctrl+8 as BACKSPACE**, because a control byte is `digit & 0x1f` and 3 and 8
-// collide with the escape and delete bytes. ctrl+4/5/6/7 arrive as ctrl+\ / ctrl+] / ctrl+^ / ctrl+_.
-// The protocols that would disambiguate (xterm's modifyOtherKeys, kitty CSI-u) are NOT negotiated by
-// bubbletea and return nothing at all. So ctrl+<number> is undeliverable AND would hijack escape and
-// backspace. alt+<number> arrives cleanly as alt+1 … alt+7 (also measured), so the operator gets the
-// numbers they asked for with a modifier that actually exists.
+// HOW WE GOT TO F-KEYS — three candidates, each MEASURED through a pty and bubbletea's OWN parser
+// (the same one the running program uses; the probe is validated by its delivery of plain letters
+// and of the chord under test), never assumed:
 //
-// A side benefit worth recording: ctrl+e was ALSO the standard readline "end of line" binding in the
-// composer and in form fields, so a tab chord on it was ambiguous. alt+<digit> collides with nothing.
+//  1. ctrl+<digit> DOES NOT EXIST as a key. ctrl+1 arrives as ctrl+q, ctrl+2 as ctrl+@, and — the
+//     reason this is more than cosmetic — **ctrl+3 arrives as ESC and ctrl+8 as BACKSPACE**, because
+//     a control byte is `digit & 0x1f` and 3 and 8 collide with the escape and delete bytes.
+//     ctrl+4/5/6/7 arrive as ctrl+\ / ctrl+] / ctrl+^ / ctrl+_. The protocols that would
+//     disambiguate (xterm's modifyOtherKeys, kitty CSI-u) are NOT negotiated by bubbletea and return
+//     nothing at all.
+//  2. alt+<digit> IS delivered correctly — measured: alt+1 genuinely arrives as alt+1 — but the
+//     operator's EMULATOR claims it first: "I use Konsole and I bet a lot of other people do as well
+//     and when I hit alt+number it moves to a different terminal tab as opposed to actually
+//     affecting orch". That is claimed at the emulator's level, before any program sees the byte, so
+//     no binding here can recover it. The operator's own suggestion, shift+<digit>, is ALSO not
+//     bindable: shift+1 arrives as the SHIFTED SYMBOL ("!"), so binding the digits' shifted forms
+//     would break typing punctuation everywhere. (Measured alongside: shift+1 → "!", ctrl+alt+1 →
+//     nothing, and both disambiguating protocols → nothing.)
+//  3. F1 … F7 IS delivered cleanly — measured: F1 → "f1". One keystroke, not claimed by the
+//     emulator, and it collides with nothing here (no screen binds an F-key).
+//
+// WHICH IS WHY THE BAR NO LONGER NAMES A MODIFIER. "alt+ 1·Ask Orchicon" existed because a bare
+// number beside a tab does not say what to hold down — it was a label explaining the MODIFIER. An
+// F-key needs no explanation: the label printed at the tab ("F1") already names the whole key, so a
+// modifier prefix would be five cells of noise in front of the operator's own tabs. The label is
+// gone, and the label printed at each tab is what the operator presses.
 var Tabs = []Tab{
-	{TabAsk, "Ask Orchicon", "alt+1", "1"},
-	{TabOverview, "Overview", "alt+2", "2"},
-	{TabWork, "Work", "alt+3", "3"},
-	{TabExecution, "Execution", "alt+4", "4"},
-	{TabAutomation, "Automation", "alt+5", "5"},
-	{TabEnforcement, "Enforcement", "alt+6", "6"},
-	{TabControl, "Control", "alt+7", "7"},
+	{TabAsk, "Ask Orchicon", "f1", "F1"},
+	{TabOverview, "Overview", "f2", "F2"},
+	{TabWork, "Work", "f3", "F3"},
+	{TabExecution, "Execution", "f4", "F4"},
+	{TabAutomation, "Automation", "f5", "F5"},
+	{TabEnforcement, "Enforcement", "f6", "F6"},
+	{TabControl, "Control", "f7", "F7"},
 }
 
 // Screen is the contract every area screen implements (alias of the

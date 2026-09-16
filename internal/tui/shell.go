@@ -354,47 +354,23 @@ func overlayRow(row, overlay string, left, width int) string {
 	return prefix + overlay + suffix
 }
 
-// tabSeparator joins a tab's number to its title in the numbered chrome.
+// tabSeparator joins a tab's KEY to its title in the key-labelled chrome — "F1·Ask Orchicon".
 const tabSeparator = "·"
 
-// tabFullLabel is the numbered form of a tab's label. Shared by the layout and the renderer so the
-// underline can never be applied to a label that is not actually the numbered form.
+// tabFullLabel is the key-labelled form of a tab's label — "F1·Ask Orchicon". Shared by the layout
+// and the renderer so the underline can never be applied to a label that is not actually the
+// key-labelled form.
+//
+// The printed key double-serves as the mockup's numbered chrome (the ordinal prefix), which is why
+// the prefix is the key rather than a decorative number.
 func tabFullLabel(t Tab) string { return t.Ordinal + tabSeparator + t.Title }
 
-// tabBarModifier is the modifier the tab bar names ONCE at its left — "alt+" — so the underlined
-// numbers read as chords. It is DERIVED from the tab chords rather than spelled out, so the label and
-// the bindings cannot disagree; if a future tab uses a different modifier, this follows.
-func tabBarModifier() string {
-	if len(Tabs) == 0 {
-		return ""
-	}
-	if i := strings.IndexByte(Tabs[0].Chord, '+'); i >= 0 {
-		return Tabs[0].Chord[:i+1]
-	}
-	return ""
-}
-
-// tabBarModifierFor returns the modifier label FOR THIS TIER, which is NOT the same at every width.
-//
-// The label exists to explain the numbers ("alt+ 1·Ask Orchicon"), so a tier that has dropped the
-// numbers must drop the label too — otherwise the bar spends five cells labelling keys that are not
-// on screen, and at 80 columns that was the difference between fitting and overflowing
-// (TestOverviewTabBarFitsAt80 caught it: the seven-tab bar measured 81 cells once the label was
-// unconditional). The modifier is part of the NUMBERED chrome, so it appears and disappears with it.
-func (m App) tabBarModifierFor(labels []string) string {
-	if len(Tabs) == 0 || len(labels) == 0 {
-		return ""
-	}
-	if labels[0] != tabFullLabel(Tabs[0]) {
-		return "" // the plain tier: no numbers to explain
-	}
-	return tabBarModifier()
-}
-
-// underlineDigits wraps a run in the underline attribute (SGR 4 / 24), leaving the surrounding styling
-// alone. The tab numbers are underlined because they are KEYS, not decoration — the operator asked for
-// exactly that: "We should probably underline the numbers".
-func underlineDigits(s string) string { return "\x1b[4m" + s + "\x1b[24m" }
+// underlineTabKey wraps a run in the underline attribute (SGR 4 / 24), leaving the surrounding
+// styling alone. The tab's key label is underlined because it IS a key, not decoration — the
+// operator asked for exactly that: "We should probably underline the numbers", and then, when the
+// chords became function keys, "underline the F1-F7 individually". Each tab's own label is a separate
+// run, so each is underlined on its own.
+func underlineTabKey(s string) string { return "\x1b[4m" + s + "\x1b[24m" }
 
 // tabBarLeftPad and tabBarPillPad measure the STYLES' own padding instead of assuming a cell count,
 // so a theme change cannot silently shift every click target. tabLabelStarts computes columns from
@@ -402,8 +378,8 @@ func underlineDigits(s string) string { return "\x1b[4m" + s + "\x1b[24m" }
 func tabBarLeftPad() int { return lipgloss.Width(theme.TabBar.Render("x")) - 1 }
 func tabBarPillPad() int { return (lipgloss.Width(theme.TabInactive.Render("x")) - 1) / 2 }
 
-// tabBarDisplay is a label as DRAWN: the numbered chrome gets its number underlined. The plain tier
-// (no ordinals) is drawn as-is, so the underline can never appear on a label with no number in it.
+// tabBarDisplay is a label as DRAWN: the key-labelled chrome gets its key underlined. The plain tier
+// (titles only) is drawn as-is, so the underline can never appear on a label with no key in it.
 func (m App) tabBarDisplay(i int, label string) string {
 	if i >= len(Tabs) {
 		return label
@@ -411,15 +387,18 @@ func (m App) tabBarDisplay(i int, label string) string {
 	if label != tabFullLabel(Tabs[i]) {
 		return label
 	}
-	return underlineDigits(Tabs[i].Ordinal) + label[len(Tabs[i].Ordinal):]
+	return underlineTabKey(Tabs[i].Ordinal) + label[len(Tabs[i].Ordinal):]
 }
 
 // tabBarLayout picks the label form and inter-tab gap for the current
 // viewport: the widest tier that fits wins. Narrow widths drop the
-// inter-tab gaps first, then the ordinal prefixes, so all SEVEN tabs stay
+// inter-tab gaps first, then the key prefixes, so all SEVEN tabs stay
 // inside the viewport (the pills still separate visually via their own
 // padding). m.width <= 0 (unsized — e.g. registry introspection) always
-// uses the full numbered form, so the numbered chrome is the default.
+// uses the full key-labelled form, so the labelled chrome is the default.
+//
+// NOTE the key prefixes are only LABELS: the chords are global routes and work at every width, so a
+// narrow terminal loses the reminder, not the binding.
 func (m App) tabBarLayout() (labels []string, gap string) {
 	full := make([]string, len(Tabs))
 	plain := make([]string, len(Tabs))
@@ -443,19 +422,22 @@ func (m App) tabBarLayout() (labels []string, gap string) {
 
 // tabBarBuilt renders the tab bar AND reports the visible column where each label's text begins.
 //
+// The bar is now ONLY the tabs: the modifier label that used to sit at its left ("alt+ 1·Ask
+// Orchicon") is gone, because the label printed at each tab IS the whole key ("F1") and a modifier
+// prefix would explain a modifier that no longer exists.
+//
 // Both come from ONE pass, which is the point: the columns used to be recovered afterwards by
 // searching the STYLED render for the plain label (strings.Index), which works only while the label
 // appears in the bar byte-for-byte. Underlining the number breaks that (the render now interleaves
 // escape codes inside the label), and a search that fails returns -1, i.e. a silently dead click
 // target. Computing the columns as the bar is BUILT cannot drift from what was drawn.
 func (m App) tabBarBuilt(labels []string, gap string) (string, []int) {
-	mod := m.tabBarModifierFor(labels)
 	leftPad := tabBarLeftPad()
 	pillPad := tabBarPillPad()
 
 	parts := make([]string, len(labels))
 	starts := make([]int, len(labels))
-	col := leftPad + lipgloss.Width(mod)
+	col := leftPad
 	for i, label := range labels {
 		disp := m.tabBarDisplay(i, label)
 		if i < len(Tabs) && Tabs[i].ID == m.active {
@@ -467,12 +449,11 @@ func (m App) tabBarBuilt(labels []string, gap string) (string, []int) {
 		starts[i] = col + pillPad
 		col += pillPad + lipgloss.Width(disp) + pillPad + lipgloss.Width(gap)
 	}
-	return theme.TabBar.Render(mod + strings.Join(parts, gap)), starts
+	return theme.TabBar.Render(strings.Join(parts, gap)), starts
 }
 
 // tabBarRender renders the tab bar from explicit labels + gap (the active
-// tab styled, the rest inactive), wrapped in the TabBar container style with the modifier label at
-// its left.
+// tab styled, the rest inactive), wrapped in the TabBar container style.
 func (m App) tabBarRender(labels []string, gap string) string {
 	bar, _ := m.tabBarBuilt(labels, gap)
 	return bar

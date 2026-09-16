@@ -52,18 +52,19 @@ func TestTabOrderMirrorsGUINav(t *testing.T) {
 			t.Fatalf("tab %d = %q, want %q", i, Tabs[i].Title, title)
 		}
 	}
-	// THE CHORD IS THE NUMBER ON SCREEN. Asserted against the bar's OWN modifier label and the tab's
-	// ordinal rather than a literal list, because that is the invariant the operator asked for — "make
+	// THE CHORD IS THE KEY THE BAR PRINTS. Asserted from each tab's own key label rather than a literal
+	// list, because that is the invariant asked for when the ctrl+letter chords were replaced — "make
 	// them ctrl+number and use the numbers that we have assigned each tab menu" — and a literal list
-	// here is one of the four places the old ctrl+letter chords were spelled out, which is how they
-	// were able to drift from the bar.
+	// here is one of the four places those old chords were spelled out, which is how they could drift
+	// from the bar.
 	//
 	// It also checks the chord is EXPRESSIBLE as a key event, which is the part that is easy to get
-	// wrong: ctrl+<digit> looks fine in a string and is undeliverable (ctrl+3 arrives as esc).
+	// wrong: ctrl+<digit> looks fine in a string and is undeliverable (ctrl+3 arrives as esc), and
+	// alt+<digit> is deliverable but claimed by the emulator before the program sees it.
 	for i, tab := range Tabs {
-		want := tabBarModifier() + tab.Ordinal
+		want := strings.ToLower(tab.Ordinal)
 		if tab.Chord != want {
-			t.Fatalf("tab %d chord = %q, want %q (the number the tab bar prints)", i, tab.Chord, want)
+			t.Fatalf("tab %d chord = %q, want %q (the key the tab bar prints)", i, tab.Chord, want)
 		}
 		if got := keyFor(tab.Chord).String(); got != tab.Chord {
 			t.Fatalf("tab %d chord %q is not expressible as a key event (got %q)", i, tab.Chord, got)
@@ -86,11 +87,32 @@ func TestChordSwitching(t *testing.T) {
 	}
 }
 
+// tabChordKeys maps each tab's function-key chord to its key event, explicitly: bubbletea's KeyType
+// values do not run in source order between families (KeyF1 + 1 lands on ctrl+shift+end), so a family
+// built by incrementing its first member silently produces the wrong key for six of the seven tabs.
+var tabChordKeys = map[string]tea.KeyMsg{
+	"f1": {Type: tea.KeyF1},
+	"f2": {Type: tea.KeyF2},
+	"f3": {Type: tea.KeyF3},
+	"f4": {Type: tea.KeyF4},
+	"f5": {Type: tea.KeyF5},
+	"f6": {Type: tea.KeyF6},
+	"f7": {Type: tea.KeyF7},
+}
+
 // keyFor builds the KeyMsg whose String() equals s.
 func keyFor(s string) tea.KeyMsg {
-	// ALT-PREFIXED keys first: alt+<digit> is the tab chord form, and it is a KeyRunes with Alt set.
+	// ALT-PREFIXED keys: alt+<digit> was a former tab chord form — a KeyRunes with Alt set. Kept
+	// because the chord form is the sort of thing that comes back.
 	if rest, ok := strings.CutPrefix(s, "alt+"); ok {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(rest), Alt: true}
+	}
+	// The tab chords are function keys: f1 … f7. Listed EXPLICITLY rather than computed from KeyF1,
+	// because bubbletea's KeyType values do not run in source order — KeyF1 + 1 is ctrl+shift+end, not
+	// f2 (found by this very helper, when the chord assertion rejected the key it built). A computed
+	// family would look like a broken feature rather than a broken helper.
+	if k, ok := tabChordKeys[s]; ok {
+		return k
 	}
 	switch s {
 	case "ctrl+a":

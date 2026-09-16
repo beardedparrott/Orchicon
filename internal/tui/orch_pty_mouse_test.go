@@ -182,7 +182,7 @@ func TestPTYMouseGate(t *testing.T) {
 	_, _ = s.tty.WriteString(strings.Repeat("\x7f", 40))
 
 	// 5. CLICK A RAIL ROW opens that conversation: its transcript paints.
-	_, _ = s.tty.WriteString("\x1b1") // alt+1 → back to Ask (a structural chord)
+	_, _ = s.tty.WriteString("\x1bOP") // F1 → back to Ask (a structural chord; vt100/xterm encoding)
 	s.readFor(1500 * time.Millisecond)
 	// SGR rows are 1-based: the FIRST conversation row (0-based railTopRow+1)
 	// is SGR row railTopRow+2.
