@@ -352,12 +352,12 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 	if m.dock.Value() != "half-written thought" {
 		t.Fatalf("precondition: %q", m.dock.Value())
 	}
-	// Screen switch (ctrl+w is a structural chord: it switches tabs while
-	// composing) must not touch the draft.
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlW})
+	// Screen switch (a tab chord is STRUCTURAL: it switches tabs while composing) must not touch the
+	// draft. Driven by the tab's OWN chord so this test follows the bindings rather than restating them.
+	nm, _ = m.dispatch(keyFor(tabChord(TabWork)))
 	m = nm
 	if m.ActiveTab() != TabWork {
-		t.Fatalf("precondition: ctrl+w must switch tabs, got %q", m.ActiveTab())
+		t.Fatalf("precondition: %s must switch tabs, got %q", tabChord(TabWork), m.ActiveTab())
 	}
 	if got := m.dock.Value(); got != "half-written thought" {
 		t.Fatalf("the draft must survive a screen switch, got %q", got)

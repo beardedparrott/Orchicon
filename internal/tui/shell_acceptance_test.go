@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -35,16 +36,43 @@ func TestTabBarAlwaysVisibleOnEveryTab(t *testing.T) {
 }
 
 // TestTabBarNumberedPins the mockup-parity numbered chrome (ordinal prefix).
+//
+// It asserts against the bar with its ANSI stripped, because the numbers are now UNDERLINED (they are
+// keys — the operator asked for the underline) and the escape codes sit inside the label, so a raw
+// substring search for "1·Ask Orchicon" no longer matches. Asserting on the visible text is what this
+// test always meant — it is about what the operator READS — and the underline is asserted separately
+// below rather than left implied.
 func TestTabBarNumbered(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
-	line := app.tabBarView()
-	for i, tab := range Tabs {
-		want := tab.Ordinal + "·" + tab.Title
+	raw := app.tabBarView()
+	line := ansi.Strip(raw)
+	for _, tab := range Tabs {
+		want := tabFullLabel(tab)
 		if !strings.Contains(line, want) {
 			t.Errorf("tab %s: ordinal label %q missing from %q", tab.Title, want, line)
 		}
-		_ = i
+	}
+
+	// THE NUMBERS ARE KEYS, so they are drawn underlined, and the bar names the modifier ONCE at its
+	// left so the numbers read as chords ("alt+ 1·Ask Orchicon"). Both are the operator's request, and
+	// both are asserted rather than assumed: the numbered chrome without them is just decoration.
+	//
+	// The assertion spells the SGR sequence out rather than calling underlineDigits — a test that asks
+	// the helper it is testing produces the expected text passes when the helper is a no-op, which is
+	// how this assertion read before it was checked by disabling the underline.
+	for _, tab := range Tabs {
+		want := "\x1b[4m" + tab.Ordinal + "\x1b[24m"
+		if !strings.Contains(raw, want) {
+			t.Errorf("tab %s: the number %q is not underlined in the bar (want %q): %q", tab.Title, tab.Ordinal, want, raw)
+		}
+	}
+	if !strings.Contains(line, tabBarModifier()) {
+		t.Errorf("the bar does not name its modifier (%q) at the left: %q", tabBarModifier(), line)
+	}
+	// The modifier label must sit BEFORE the first tab — that is what makes it read as a prefix.
+	if i, j := strings.Index(line, tabBarModifier()), strings.Index(line, tabFullLabel(Tabs[0])); i < 0 || j < 0 || i > j {
+		t.Errorf("the modifier label must precede the first tab (modifier at %d, first tab at %d): %q", i, j, line)
 	}
 }
 

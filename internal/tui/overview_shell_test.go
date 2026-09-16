@@ -35,8 +35,8 @@ func TestOverviewIsSecondDomain(t *testing.T) {
 	if Tabs[0].ID != TabAsk {
 		t.Fatalf("tab[0] = %q, want ask", Tabs[0].ID)
 	}
-	if Tabs[1].ID != TabOverview || Tabs[1].Title != "Overview" || Tabs[1].Chord != "ctrl+v" {
-		t.Fatalf("tab[1] = %+v, want the Overview domain (ctrl+v)", Tabs[1])
+	if Tabs[1].ID != TabOverview || Tabs[1].Title != "Overview" || Tabs[1].Chord != tabChord(TabOverview) {
+		t.Fatalf("tab[1] = %+v, want the Overview domain (%s)", Tabs[1], tabChord(TabOverview))
 	}
 	for i, tab := range Tabs {
 		if want := strconv.Itoa(i + 1); tab.Ordinal != want {
@@ -124,19 +124,19 @@ func TestOverviewSlashNavigation(t *testing.T) {
 	}
 }
 
-// TestOverviewChordSwitches pins the ctrl+v chord (structural: it bypasses
-// the composer, like every other tab chord).
+// TestOverviewChordSwitches pins the Overview tab's chord (structural: it bypasses the composer, like
+// every other tab chord). The chord is READ from Tabs, so this test follows the binding.
 func TestOverviewChordSwitches(t *testing.T) {
 	m := newTestApp()
 	stub := &navStub{tab: TabOverview}
 	m.RegisterScreen(TabOverview, stub)
-	nm, _ := m.Update(keyFor("ctrl+v"))
+	nm, _ := m.Update(keyFor(tabChord(TabOverview)))
 	m2 := nm.(*App)
 	if m2.ActiveTab() != TabOverview {
-		t.Fatalf("ctrl+v: active tab = %q, want overview", m2.ActiveTab())
+		t.Fatalf("%s: active tab = %q, want overview", tabChord(TabOverview), m2.ActiveTab())
 	}
 	if stub.ensured == 0 {
-		t.Fatal("ctrl+v must arm the Overview screen's subscriptions")
+		t.Fatalf("%s must arm the Overview screen's subscriptions", tabChord(TabOverview))
 	}
 }
 

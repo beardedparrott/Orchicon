@@ -52,10 +52,21 @@ func TestTabOrderMirrorsGUINav(t *testing.T) {
 			t.Fatalf("tab %d = %q, want %q", i, Tabs[i].Title, title)
 		}
 	}
-	chords := []string{"ctrl+o", "ctrl+v", "ctrl+w", "ctrl+e", "ctrl+a", "ctrl+f", "ctrl+t"}
-	for i, chord := range chords {
-		if Tabs[i].Chord != chord {
-			t.Fatalf("tab %d chord = %q, want %q", i, Tabs[i].Chord, chord)
+	// THE CHORD IS THE NUMBER ON SCREEN. Asserted against the bar's OWN modifier label and the tab's
+	// ordinal rather than a literal list, because that is the invariant the operator asked for — "make
+	// them ctrl+number and use the numbers that we have assigned each tab menu" — and a literal list
+	// here is one of the four places the old ctrl+letter chords were spelled out, which is how they
+	// were able to drift from the bar.
+	//
+	// It also checks the chord is EXPRESSIBLE as a key event, which is the part that is easy to get
+	// wrong: ctrl+<digit> looks fine in a string and is undeliverable (ctrl+3 arrives as esc).
+	for i, tab := range Tabs {
+		want := tabBarModifier() + tab.Ordinal
+		if tab.Chord != want {
+			t.Fatalf("tab %d chord = %q, want %q (the number the tab bar prints)", i, tab.Chord, want)
+		}
+		if got := keyFor(tab.Chord).String(); got != tab.Chord {
+			t.Fatalf("tab %d chord %q is not expressible as a key event (got %q)", i, tab.Chord, got)
 		}
 	}
 }
@@ -77,6 +88,10 @@ func TestChordSwitching(t *testing.T) {
 
 // keyFor builds the KeyMsg whose String() equals s.
 func keyFor(s string) tea.KeyMsg {
+	// ALT-PREFIXED keys first: alt+<digit> is the tab chord form, and it is a KeyRunes with Alt set.
+	if rest, ok := strings.CutPrefix(s, "alt+"); ok {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(rest), Alt: true}
+	}
 	switch s {
 	case "ctrl+a":
 		return tea.KeyMsg{Type: tea.KeyCtrlA}
@@ -313,12 +328,12 @@ func TestChordEnsuresSubscriptions(t *testing.T) {
 	m := newTestApp()
 	s := &stubScreen{id: "work"}
 	m.RegisterScreen(TabWork, s)
-	m.Update(keyFor("ctrl+w"))
+	m.Update(keyFor(tabChord(TabWork)))
 	if s.ensure == 0 {
 		t.Fatal("tab chord must ensure the screen's subscriptions")
 	}
 	first := s.ensure
-	m.Update(keyFor("ctrl+w"))
+	m.Update(keyFor(tabChord(TabWork)))
 	if s.ensure != first+1 {
 		t.Fatalf("chord re-press must re-arm EnsureSubscriptions: ensure=%d", s.ensure)
 	}
@@ -334,4 +349,16 @@ func TestWorseStatusWins(t *testing.T) {
 	if statusRank(stream.StatusOpen) != 1 {
 		t.Fatal("open rank pinned (footer default)")
 	}
+}
+
+// tabChord resolves a tab's chord from Tabs, so a test FOLLOWS the bindings instead of restating
+// them. Restating is how the old ctrl+letter chords ended up spelled out in four places and drifted
+// from the bar the operator reads.
+func tabChord(id TabID) string {
+	for _, t := range Tabs {
+		if t.ID == id {
+			return t.Chord
+		}
+	}
+	return ""
 }

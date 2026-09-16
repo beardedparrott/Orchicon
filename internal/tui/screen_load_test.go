@@ -29,7 +29,7 @@ func TestSwitchToRunsScreenFirstLoadOnce(t *testing.T) {
 	if ctrl.inits != 0 {
 		t.Fatalf("screen inited before activation: %d", ctrl.inits)
 	}
-	_, cmd := m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlT})
+	_, cmd := m.dispatch(keyFor(tabChord(TabControl)))
 	if cmd == nil {
 		t.Fatal("activating a screen must return its first-load cmd")
 	}
@@ -37,8 +37,8 @@ func TestSwitchToRunsScreenFirstLoadOnce(t *testing.T) {
 		t.Fatalf("inits = %d, want 1", ctrl.inits)
 	}
 	// Leaving and returning must not re-run the load (state is kept).
-	m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlO})
-	m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlT})
+	m.dispatch(keyFor(tabChord(TabAsk)))
+	m.dispatch(keyFor(tabChord(TabControl)))
 	if ctrl.inits != 1 {
 		t.Fatalf("re-activation re-ran the load: inits = %d, want 1", ctrl.inits)
 	}

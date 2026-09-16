@@ -354,6 +354,66 @@ func overlayRow(row, overlay string, left, width int) string {
 	return prefix + overlay + suffix
 }
 
+// tabSeparator joins a tab's number to its title in the numbered chrome.
+const tabSeparator = "·"
+
+// tabFullLabel is the numbered form of a tab's label. Shared by the layout and the renderer so the
+// underline can never be applied to a label that is not actually the numbered form.
+func tabFullLabel(t Tab) string { return t.Ordinal + tabSeparator + t.Title }
+
+// tabBarModifier is the modifier the tab bar names ONCE at its left — "alt+" — so the underlined
+// numbers read as chords. It is DERIVED from the tab chords rather than spelled out, so the label and
+// the bindings cannot disagree; if a future tab uses a different modifier, this follows.
+func tabBarModifier() string {
+	if len(Tabs) == 0 {
+		return ""
+	}
+	if i := strings.IndexByte(Tabs[0].Chord, '+'); i >= 0 {
+		return Tabs[0].Chord[:i+1]
+	}
+	return ""
+}
+
+// tabBarModifierFor returns the modifier label FOR THIS TIER, which is NOT the same at every width.
+//
+// The label exists to explain the numbers ("alt+ 1·Ask Orchicon"), so a tier that has dropped the
+// numbers must drop the label too — otherwise the bar spends five cells labelling keys that are not
+// on screen, and at 80 columns that was the difference between fitting and overflowing
+// (TestOverviewTabBarFitsAt80 caught it: the seven-tab bar measured 81 cells once the label was
+// unconditional). The modifier is part of the NUMBERED chrome, so it appears and disappears with it.
+func (m App) tabBarModifierFor(labels []string) string {
+	if len(Tabs) == 0 || len(labels) == 0 {
+		return ""
+	}
+	if labels[0] != tabFullLabel(Tabs[0]) {
+		return "" // the plain tier: no numbers to explain
+	}
+	return tabBarModifier()
+}
+
+// underlineDigits wraps a run in the underline attribute (SGR 4 / 24), leaving the surrounding styling
+// alone. The tab numbers are underlined because they are KEYS, not decoration — the operator asked for
+// exactly that: "We should probably underline the numbers".
+func underlineDigits(s string) string { return "\x1b[4m" + s + "\x1b[24m" }
+
+// tabBarLeftPad and tabBarPillPad measure the STYLES' own padding instead of assuming a cell count,
+// so a theme change cannot silently shift every click target. tabLabelStarts computes columns from
+// these, so they must agree with what the styles actually draw.
+func tabBarLeftPad() int { return lipgloss.Width(theme.TabBar.Render("x")) - 1 }
+func tabBarPillPad() int { return (lipgloss.Width(theme.TabInactive.Render("x")) - 1) / 2 }
+
+// tabBarDisplay is a label as DRAWN: the numbered chrome gets its number underlined. The plain tier
+// (no ordinals) is drawn as-is, so the underline can never appear on a label with no number in it.
+func (m App) tabBarDisplay(i int, label string) string {
+	if i >= len(Tabs) {
+		return label
+	}
+	if label != tabFullLabel(Tabs[i]) {
+		return label
+	}
+	return underlineDigits(Tabs[i].Ordinal) + label[len(Tabs[i].Ordinal):]
+}
+
 // tabBarLayout picks the label form and inter-tab gap for the current
 // viewport: the widest tier that fits wins. Narrow widths drop the
 // inter-tab gaps first, then the ordinal prefixes, so all SEVEN tabs stay
@@ -364,7 +424,7 @@ func (m App) tabBarLayout() (labels []string, gap string) {
 	full := make([]string, len(Tabs))
 	plain := make([]string, len(Tabs))
 	for i, t := range Tabs {
-		full[i] = t.Ordinal + "·" + t.Title
+		full[i] = tabFullLabel(t)
 		plain[i] = t.Title
 	}
 	if m.width <= 0 {
@@ -381,18 +441,41 @@ func (m App) tabBarLayout() (labels []string, gap string) {
 	return plain, ""
 }
 
-// tabBarRender renders the tab bar from explicit labels + gap (the active
-// tab styled, the rest inactive), wrapped in the TabBar container style.
-func (m App) tabBarRender(labels []string, gap string) string {
+// tabBarBuilt renders the tab bar AND reports the visible column where each label's text begins.
+//
+// Both come from ONE pass, which is the point: the columns used to be recovered afterwards by
+// searching the STYLED render for the plain label (strings.Index), which works only while the label
+// appears in the bar byte-for-byte. Underlining the number breaks that (the render now interleaves
+// escape codes inside the label), and a search that fails returns -1, i.e. a silently dead click
+// target. Computing the columns as the bar is BUILT cannot drift from what was drawn.
+func (m App) tabBarBuilt(labels []string, gap string) (string, []int) {
+	mod := m.tabBarModifierFor(labels)
+	leftPad := tabBarLeftPad()
+	pillPad := tabBarPillPad()
+
 	parts := make([]string, len(labels))
+	starts := make([]int, len(labels))
+	col := leftPad + lipgloss.Width(mod)
 	for i, label := range labels {
-		if Tabs[i].ID == m.active {
-			parts[i] = theme.TabActive.Render(label)
+		disp := m.tabBarDisplay(i, label)
+		if i < len(Tabs) && Tabs[i].ID == m.active {
+			parts[i] = theme.TabActive.Render(disp)
 		} else {
-			parts[i] = theme.TabInactive.Render(label)
+			parts[i] = theme.TabInactive.Render(disp)
 		}
+		// The label's TEXT starts after the pill's own left padding.
+		starts[i] = col + pillPad
+		col += pillPad + lipgloss.Width(disp) + pillPad + lipgloss.Width(gap)
 	}
-	return theme.TabBar.Render(strings.Join(parts, gap))
+	return theme.TabBar.Render(mod + strings.Join(parts, gap)), starts
+}
+
+// tabBarRender renders the tab bar from explicit labels + gap (the active
+// tab styled, the rest inactive), wrapped in the TabBar container style with the modifier label at
+// its left.
+func (m App) tabBarRender(labels []string, gap string) string {
+	bar, _ := m.tabBarBuilt(labels, gap)
+	return bar
 }
 
 // tabBarView renders the centered top tab bar at the widest layout tier
@@ -427,35 +510,23 @@ func (m App) tabTitle(id TabID) string {
 }
 
 // tabLabelStarts returns the visible terminal column where each tab's
-// rendered label begins in the centered tab bar (Tabs order, -1 when the
-// label is not found), using the SAME layout tier the bar was rendered
-// with — so key navigation, the dropdown geometry, and the mouse hit-test
-// can never disagree with what is on screen.
+// label TEXT begins in the centered tab bar (Tabs order), using the SAME layout tier the bar was
+// rendered with — so key navigation, the dropdown geometry, and the mouse hit-test can never disagree
+// with what is on screen. It includes the bar's centering offset.
 //
-// Mouse X is a terminal COLUMN (0-based) but strings.Index returns a BYTE
-// offset into the ANSI-styled render — measure the visible width of the
-// styled prefix with lipgloss.Width (ANSI-aware) to get the label's true
-// starting column. Labels are located sequentially so a label that repeats
-// a substring earlier in the styled render cannot shift the result.
+// The columns come from tabBarBuilt, which records them AS IT DRAWS. They used to be recovered by
+// searching the styled render for each label (strings.Index), which silently returned -1 — a dead
+// click target — the moment the label stopped appearing in the bar byte-for-byte, which is exactly
+// what underlining the number does.
 func (m App) tabLabelStarts() []int {
 	labels, gap := m.tabBarLayout()
-	bar := m.tabBarRender(labels, gap)
+	bar, starts := m.tabBarBuilt(labels, gap)
 	barW := lipgloss.Width(bar)
-	offset := 0
 	if barW > 0 && barW < m.width {
-		offset = (m.width - barW) / 2
-	}
-	starts := make([]int, len(Tabs))
-	from := 0
-	for i := range Tabs {
-		idx := strings.Index(bar[from:], labels[i])
-		if idx < 0 {
-			starts[i] = -1
-			continue
+		offset := (m.width - barW) / 2
+		for i := range starts {
+			starts[i] += offset
 		}
-		idx += from
-		starts[i] = offset + lipgloss.Width(bar[:idx])
-		from = idx + len(labels[i])
 	}
 	return starts
 }

@@ -23,7 +23,7 @@ func TestStreamsAreRecreatedWhenReturningToATab(t *testing.T) {
 	// is under test, and a nil client would panic inside the dial (which is now
 	// guarded, but the point here is the registry, not the guard).
 	m.clients = client.New(client.Options{BaseURL: "http://127.0.0.1:1"})
-	m.dispatch(keyFor("ctrl+w") /* work */)
+	m.dispatch(keyFor(tabChord(TabWork))) /* work */
 	m.EnsureSubscriptions(TabWork)
 	if n := m.reg.Count(); n == 0 {
 		t.Fatal("the work tab must open a live stream")
@@ -88,7 +88,7 @@ func containsStr(hay, needle string) bool {
 // screen would still have used the stale, unauthorised client.
 func TestConnectRebuildsTheActiveScreenWithTheNewClient(t *testing.T) {
 	m := newTestApp()
-	m.dispatch(keyFor("ctrl+w")) // Work
+	m.dispatch(keyFor(tabChord(TabWork))) // Work
 	if m.screens[TabWork] == nil {
 		t.Fatal("the work screen must exist")
 	}

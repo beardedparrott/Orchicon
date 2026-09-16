@@ -49,18 +49,22 @@ func TestFocusChordAndFallthrough(t *testing.T) {
 	if !m.dock.Focused {
 		t.Fatal("the composer must be focused at launch")
 	}
-	// Structural chords bypass the composer while it is focused: ctrl+w
+	// Structural chords bypass the composer while it is focused: a tab chord
 	// switches tabs (it is a shell chord, never readline editing).
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+	nm, _ := m.Update(keyFor(tabChord(TabWork)))
 	m2 := nm.(*App)
 	if m2.ActiveTab() != TabWork {
-		t.Fatalf("ctrl+w while composing must switch tabs (structural chord), got %q", m2.ActiveTab())
+		t.Fatalf("%s while composing must switch tabs (structural chord), got %q", tabChord(TabWork), m2.ActiveTab())
 	}
-	for _, chord := range []string{"ctrl+a", "ctrl+e", "ctrl+f", "ctrl+t", "ctrl+o"} {
-		nm, _ = m.Update(keyFor(chord))
+	// EVERY tab chord is structural, driven from Tabs so the test cannot drift from the bindings.
+	for _, tab := range Tabs {
+		if tab.ID == TabWork {
+			continue // already asserted above
+		}
+		nm, _ = m.Update(keyFor(tab.Chord))
 		m2 = nm.(*App)
-		if m2.ActiveTab() != keyTabFor(chord) {
-			t.Fatalf("%s while composing must switch tabs (structural chord), got %q", chord, m2.ActiveTab())
+		if m2.ActiveTab() != tab.ID {
+			t.Fatalf("%s while composing must switch tabs (structural chord), got %q", tab.Chord, m2.ActiveTab())
 		}
 	}
 	// esc returns focus to content; the composer blurs.
