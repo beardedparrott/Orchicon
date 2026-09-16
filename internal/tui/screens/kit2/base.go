@@ -132,9 +132,14 @@ type Base struct {
 	// pendingSelect names a row to focus as soon as it APPEARS in a source —
 	// used after a create, so the new entity is selected and visible instead of
 	// silently landing below the fold while the cursor stays where it was.
+	//
+	// pendingOwn is the stronger claim a JUMP makes (ShowEntity): the detail it
+	// requested must not be replaced by the row under the cursor when the landing
+	// arrives.
 	// Guarded because the mutation's Do runs off the update loop.
 	pendingMu     sync.Mutex
 	pendingSelect map[string]string
+	pendingOwn    map[string]string
 
 	// actionHits is recomputed on every render (see filterLine) and consumed by
 	// the next click, so a control is hit-tested against what was DRAWN.
@@ -657,6 +662,16 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			if b.noAutoDetail {
 				return true, nil
 			}
+			// A JUMP owns the pane until its target has actually landed: the detail it asked for
+			// is the one the operator wants, and the row under the cursor is not it when the
+			// target is off this page (see ShowEntity).
+			//
+			// The claim is cleared when the JUMP'S DETAIL ARRIVES (detailMsg), not here — see
+			// ownsPending for why consuming it on the first list landing is the bug rather than
+			// the fix.
+			if b.ownsPending(s.name) {
+				return true, nil
+			}
 			return true, b.loadDetail()
 		}
 		return true, nil
@@ -907,6 +922,68 @@ func (b *Base) SelectWhenLoaded(src, id string) {
 	b.pendingMu.Unlock()
 }
 
+// ShowEntity brings an entity into view AND makes its own detail the pane's content — the
+// "take me to X" gesture (a jump, or a follow-through from another pane).
+//
+// It is SelectWhenLoaded PLUS one guarantee, and that guarantee is load-bearing: a list landing
+// auto-loads the detail of the row UNDER THE CURSOR (see the fetchedMsg case), and a jump's target
+// is frequently NOT on the loaded page — the executions list is recent-first and paginated, so an
+// older run's step execution is exactly the row that is missing. The landing then loaded whatever
+// happened to be at the top, replacing the item the operator had just asked to see: the jump
+// looked like it did nothing ("hitting enter on a step is not taking you to the execution page for
+// that step").
+//
+// So a jump CLAIMS the pane: the detail it requested is the authority, and the next landing of
+// that source leaves it alone. The claim is CONSUMED by that landing, so ordinary refreshes
+// afterwards behave normally.
+//
+// Callers that only want the CURSOR moved (a freshly created row, whose detail should load the
+// normal way) want SelectWhenLoaded instead — a create is not a jump.
+func (b *Base) ShowEntity(src, id string) {
+	b.SelectWhenLoaded(src, id)
+	if id == "" {
+		return
+	}
+	b.pendingMu.Lock()
+	if b.pendingOwn == nil {
+		b.pendingOwn = map[string]string{}
+	}
+	b.pendingOwn[src] = id
+	b.pendingMu.Unlock()
+}
+
+// ownsPending reports whether a jump currently CLAIMS this source's detail pane, leaving the claim
+// in place.
+//
+// The claim used to be consumed on the first LIST landing, which read as equivalent and is not: a
+// list landing arrives on every refresh (a live execution event pokes one continuously), and once
+// the claim was spent the very next refresh auto-loaded the row under the cursor — so a jump to a
+// target that is not on the loaded page was honoured for one refresh and then undone. That is the
+// operator's "hitting enter on a step is not taking you to the execution page for that step": the
+// pane switched, showed the right execution, and then slid back to the top of the executions list a
+// beat later.
+//
+// The claim is therefore held until the OPERATOR takes control — clearPendingOwn is called by
+// loadDetail, which is what a cursor move (or a row click) goes through. Releasing it when the
+// jump's own detail landed would not work: the jump issues a list refresh AND a detail request, so
+// the detail can arrive BEFORE the list, and the claim would be spent by the very event it had to
+// survive.
+func (b *Base) ownsPending(src string) bool {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	_, ok := b.pendingOwn[src]
+	return ok
+}
+
+// clearPendingOwn drops a source's claim. It is called when an EXPLICIT load happens (a cursor
+// move, a row click) — the operator choosing what to look at ends the jump — and deliberately not
+// by RequestDetail, which is how the jump itself asks for its target.
+func (b *Base) clearPendingOwn(src string) {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	delete(b.pendingOwn, src)
+}
+
 // focusPending applies (and clears) a pending selection for a source once its
 // rows have landed. A row that is not present yet stays pending for the next
 // load rather than being dropped.
@@ -1137,6 +1214,11 @@ func (b *Base) loadDetail() tea.Cmd {
 		return nil
 	}
 	src := s.name
+	// An explicit load ends any jump's claim on this pane: the operator (or the UI on their
+	// behalf — a create focusing its new row) is choosing what to look at, and that choice wins
+	// over a jump in flight. RequestDetail does NOT clear it, which is how the jump asks for its
+	// own target without cancelling itself.
+	b.clearPendingOwn(src)
 	fn := b.detailFn
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -1537,6 +1619,27 @@ func (b *Base) SelectItem(src, id string) bool {
 // DetailFocusedForTest reports whether the DETAIL pane holds the keyboard (the base's own
 // focus flag), so a test can assert where a key landed rather than inferring it.
 func (b *Base) DetailFocusedForTest() bool { return b.focusD }
+
+// DeliverFetchForTest hands the base a fetch result as if a list load had landed, and returns the
+// follow-up command it produced.
+//
+// A list landing is where the auto-detail load happens (see the fetchedMsg case), and that step is
+// INVISIBLE to a screen test: fetchedMsg is unexported, and the fetch functions go to the plane. A
+// screen whose behaviour depends on what happens when the rows arrive — a JUMP that must not be
+// clobbered by the row under the cursor — therefore had no way to be tested at all, which is how a
+// jump that always lost the race shipped. This is that seam, in the same spirit as the rest of the
+// ForTest helpers here.
+func (b *Base) DeliverFetchForTest(src string, items []screenkit.Item, next string) tea.Cmd {
+	_, cmd := b.Update(fetchedMsg{src: src, items: items, next: next})
+	return cmd
+}
+
+// DeliverDetailForTest hands the base a detail payload as if its load had resolved, returning the
+// follow-up command (the onDetail hook's work).
+func (b *Base) DeliverDetailForTest(src, id, title, body string, fields []Field) tea.Cmd {
+	_, cmd := b.Update(detailMsg{src: src, id: id, title: title, fields: fields, body: body})
+	return cmd
+}
 
 // SetFocusForTest moves the keyboard to "detail" or "list" by name.
 func (b *Base) SetFocusForTest(what string) {

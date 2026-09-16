@@ -121,6 +121,10 @@ type Model struct {
 	// todos caches each execution's worker todo list, shown in the detail pane
 	// (execution_detail.go).
 	todos todosCache
+	// execDetail holds the REST of an execution's detail — the run's record (facts, error, output)
+	// and the merged session transcript. The pane's body is these and the todo list COMPOSED, so
+	// neither a session repaint nor a todo landing can blank the others (execution_detail.go).
+	execDetail execDetailState
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
 	rpcCreateWorkflowVersion func(ctx context.Context, workflowID string) error
@@ -455,21 +459,10 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			meta = it.Meta
 		}
 		fields := executionFields(e, meta)
-		// The worker's TODO LIST, with the transcript. The list is context for reading the
-		// transcript, so it sits ABOVE it rather than at the end where it would be a footnote.
-		m.todos.put(id, m.todos.get(id))
-		var b strings.Builder
-		if todo := renderTodos(m.todos.get(id), m.w); todo != "" {
-			b.WriteString(todo + "\n\n")
-		}
-		if e.GetErrorMessage() != "" {
-			b.WriteString(theme.ErrorText.Render("error: "+e.GetErrorMessage()) + "\n\n")
-		}
-		if out := strings.TrimSpace(e.GetOutput()); out != "" {
-			b.WriteString(theme.ListTitle.Render("output") + "\n" + out + "\n")
-		}
-		body := strings.TrimRight(b.String(), "\n")
-		return "Execution " + e.GetId(), fields, body, nil
+		// Store the run's own detail and COMPOSE the body from it, the todo list and the session —
+		// three writers, one pane, so none of them can blank the others.
+		m.execDetail.put(id, e, fields)
+		return "Execution " + e.GetId(), fields, m.composeExecutionBodyFor(id), nil
 
 	case "runs":
 		resp, err := m.cl.Workflows.GetWorkflowRun(ctx, connect.NewRequest(&apiv1.GetWorkflowRunRequest{Id: id}))
@@ -590,8 +583,14 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 		// Repaint in place when this is the execution on screen, so the list appears without the
 		// operator reselecting the row.
+		//
+		// It repaints from CACHE. It used to ask the BASE for the detail again (RequestDetail),
+		// which looks equivalent and is not: a detail landing calls onDetail, and onDetail issued
+		// the next todo fetch — so todo → detail → todo → detail closed a loop with no base case,
+		// one round trip per lap, every lap repainting the pane. That is the flicker. Here the
+		// landing is the END of the cycle: it updates the body it already has.
 		if m.Base.DetailID() == msg.execID && m.Base.ActiveSourceName() == srcExecutions {
-			return m, m.Base.RequestDetail(srcExecutions, msg.execID)
+			return m, m.repaintExecutionDetail()
 		}
 		return m, nil
 
@@ -794,10 +793,18 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	if src != "executions" {
 		return nil
 	}
-	// An EXECUTION detail loads two things: its session transcript (via the shell, which owns the
-	// durable+live merge) and its worker TODO LIST. Both are needed before the pane is readable,
-	// and both are best-effort — neither can fail the detail.
-	cmds := []tea.Cmd{m.loadTodos(id)}
+	// An EXECUTION detail loads its SESSION TRANSCRIPT (via the shell, which owns the durable+live
+	// merge) and, when its cache is stale, its worker TODO LIST. Both are best-effort — neither can
+	// fail the detail.
+	//
+	// The todos fetch lives HERE rather than in a landing handler, which matters: the reason the
+	// pane used to flicker is that a todo landing asked for the DETAIL again, and this hook is what
+	// a detail landing calls — so the two closed a loop with no base case (one round trip per lap,
+	// every lap repainting the pane). The loop is broken at the other end now: a todo landing
+	// repaints from cache and requests nothing (the execTodosMsg case), so a fetch issued here can
+	// only ever produce one repaint. The staleness gate keeps even that to once per todosTTL when
+	// the pane is re-fetched by live event pokes.
+	cmds := []tea.Cmd{m.todosRefreshCmd(id)}
 	if sh, ok := m.Shell().(interface{ OpenExecutionSession(string) tea.Cmd }); ok {
 		cmds = append(cmds, sh.OpenExecutionSession(id))
 	}
@@ -836,15 +843,20 @@ func (m *Model) SessionEvents(execID string) []*apiv1.StreamExecutionEventsRespo
 // detail pane (durable parts + live events, phase-grouped).
 func (m *Model) RenderSession(items []chat.ChatItem) {
 	id := m.Base.DetailID()
-	title := "Execution " + id
-	fields := []screenkit.Field{
-		{Key: "id", Value: id},
-		{Key: "session events", Value: screenkit.FmtInt(len(items))},
+	// The transcript is ONE of the three parts of this pane, so it is RECORDED and then composed
+	// with the run's facts and the todo list. It used to install the whole body from four fields
+	// of its own (id / session events / status), which is why the pane flickered: every live
+	// repaint replaced the full record with that stub, and the next detail fetch replaced the stub
+	// with the record — forever. It is also why "several of them still look like the old ones":
+	// whichever of the two writers painted last decided what the operator saw.
+	m.execDetail.putTranscript(id, chat.RenderItems(items, m.Base.DetailWidth()))
+	body, fields := m.composeExecutionBody(id)
+	if len(fields) == 0 {
+		// The session can paint before the detail arrives. Keep the pane's existing shape rather
+		// than blanking it — the facts are on their way, and they carry the fields.
+		return
 	}
-	if it, ok := m.Base.SourceItem("executions", id); ok {
-		fields = append(fields, screenkit.Field{Key: "status", Value: it.Meta})
-	}
-	m.Base.SetDetailContent(title, fields, chat.RenderItems(items, m.Base.DetailWidth()))
+	m.Base.SetDetailContent("Execution "+id, fields, body)
 }
 
 // SelectItem selects the item by ID in the named source (slash arg

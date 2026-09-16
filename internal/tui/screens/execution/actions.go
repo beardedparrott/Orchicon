@@ -464,25 +464,45 @@ func (m *Model) confirmRemoveStep(id, name, desc string) tea.Cmd {
 // handleActionKey dispatches a write chord for the focused source. handled
 // is false when the key belongs to the shared navigation layer.
 func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
-	// THE RUNS STEP FLOW. With the detail focused on a run, the vertical keys walk the run's STEPS
-	// and `enter` jumps to the highlighted step's execution — the operator's "if you hit enter on a
-	// particular step (whether it's complete or still running), it should take you to the
-	// execution".
+	// THE RUNS STEP FLOW. The vertical keys walk the run's STEPS and `enter` jumps to the
+	// highlighted step's execution — the operator's "if you hit enter on a particular step
+	// (whether it's complete or still running), it should take you to the execution".
 	//
-	// Scoped to (runs pane + detail focused) on purpose: with the LIST focused the same keys move
-	// the list, which is the operator's navigation model, and on any other pane they mean whatever
-	// that pane binds. The repaint is local — the rows are cached from the detail fetch — so moving
-	// the cursor costs no round trip.
-	if m.ActiveSourceName() == srcRuns && m.Base.DetailFocusedForTest() {
-		switch kstr {
-		case "up", "k":
-			m.runFlow.moveSteps(-1)
-			return m.repaintRunFlow(), true
-		case "down", "j":
-			m.runFlow.moveSteps(1)
-			return m.repaintRunFlow(), true
-		case "enter":
+	// `enter` is DELIBERATELY NOT gated on the detail focus, and that is the correction for
+	// "hitting enter on a step is not taking you to the execution page for that step". The gate
+	// looked principled — the keys are the detail's, so the detail must hold the focus — but it
+	// was written against a pane that DRAWS the cursor it acts on. The flow is rendered and one
+	// of its rows is MARKED the moment the run's detail lands, while the focus is still on the
+	// LIST, and every row advertises "enter → execution" right there in the text. So the
+	// advertised gesture had to be pressed TWICE: the first press was consumed by the base as
+	// "focus the detail pane" (kit2.Base's enter toggles focusD when nothing else claims it), and
+	// only a second press — after a focus change the row never asked for — performed the jump. An
+	// operator who pressed enter once, watched nothing happen, and moved on was reading the pane
+	// correctly; the pane was lying.
+	//
+	// The vertical keys KEEP the focus distinction, because there the distinction is real: with
+	// the list focused up/down move the list (the operator's navigation model — "arrow keys move
+	// pane items"), and the step cursor is walked once the detail holds the focus (`right` also
+	// focuses it). Jumping is different in kind: it is a whole-pane navigation that leaves the
+	// pane, so it is not in competition with anything the list does with the key.
+	//
+	// When there is NO flow to act on, enter falls through to the base, so the generic "activate
+	// the selected row / open its detail" gesture is untouched — the jump takes over exactly
+	// where the pane is actually offering one. The repaint is local — the rows are cached from
+	// the detail fetch — so moving the cursor costs no round trip.
+	if m.ActiveSourceName() == srcRuns {
+		if kstr == "enter" && m.runFlow.count() > 0 {
 			return m.goToRunStepExecution(), true
+		}
+		if m.Base.DetailFocusedForTest() {
+			switch kstr {
+			case "up", "k":
+				m.runFlow.moveSteps(-1)
+				return m.repaintRunFlow(), true
+			case "down", "j":
+				m.runFlow.moveSteps(1)
+				return m.repaintRunFlow(), true
+			}
 		}
 	}
 	// The SCHEDULES pane's own chords (view cycle, jump to the run) run first, scoped to its

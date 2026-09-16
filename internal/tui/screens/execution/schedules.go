@@ -369,7 +369,9 @@ func (m *Model) goToScheduleRun() tea.Cmd {
 		return m.refuse("this schedule has not fired yet — there is no workflow run to jump to")
 	}
 	m.Base.SelectSource(srcRuns)
-	m.Base.SelectWhenLoaded(srcRuns, runID)
+	// ShowEntity: a jump CLAIMS the pane, so the run it was asked to show survives the runs list
+	// landing (the same race the step→execution jump had).
+	m.Base.ShowEntity(srcRuns, runID)
 	m.notice = "jumped to run " + runID
 	return tea.Batch(m.Base.Refresh(srcRuns), m.Base.RequestDetail(srcRuns, runID))
 }

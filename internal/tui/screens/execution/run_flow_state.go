@@ -162,7 +162,11 @@ func (m *Model) goToRunStepExecution() tea.Cmd {
 		return m.refuse(cur.name + " has no execution linked — it has not been dispatched (or is not a worker step)")
 	}
 	m.Base.SelectSource(srcExecutions)
-	m.Base.SelectWhenLoaded(srcExecutions, cur.executionID)
+	// ShowEntity, NOT SelectWhenLoaded: this is a JUMP, so the detail asked for here is the one
+	// the pane must keep. The executions list is recent-first and paginated, so the step's
+	// execution is often not on the loaded page — and the landing would otherwise load whatever
+	// row sits at the top, which is the "not taking you to the execution for that step" report.
+	m.Base.ShowEntity(srcExecutions, cur.executionID)
 	m.notice = "jumped to execution " + cur.executionID
 	return tea.Batch(m.Base.Refresh(srcExecutions), m.Base.RequestDetail(srcExecutions, cur.executionID))
 }

@@ -48,12 +48,16 @@ type execFollowUpMsg struct {
 	err    error
 }
 
-// todosCache holds each execution's todo list. A todo list changes only when the worker writes a
-// new one, so it is re-read on the detail fetch (which already polls) rather than on a timer of
-// its own.
+// todosCache holds each execution's todo list, and WHEN each was fetched.
+//
+// The stamp is not decoration: it is what lets the cached list be drawn on the FIRST paint of the
+// detail (so the pane never blinks back to a version without the todos) without the fetch that
+// refreshed it having to ask for the detail again — the loop that made the pane flicker
+// continuously (see screen.go's loadTodos case and the execTodosMsg case in its Update).
 type todosCache struct {
 	mu sync.Mutex
 	m  map[string][]*apiv1.TodoItem
+	at map[string]time.Time
 }
 
 func (c *todosCache) put(id string, todos []*apiv1.TodoItem) {
@@ -61,14 +65,169 @@ func (c *todosCache) put(id string, todos []*apiv1.TodoItem) {
 	defer c.mu.Unlock()
 	if c.m == nil {
 		c.m = map[string][]*apiv1.TodoItem{}
+		c.at = map[string]time.Time{}
 	}
 	c.m[id] = todos
+	c.at[id] = time.Now()
 }
 
 func (c *todosCache) get(id string) []*apiv1.TodoItem {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.m[id]
+}
+
+// fetchedAt reports when an execution's list was last fetched, and whether it ever was.
+//
+// `ok` distinguishes "never fetched" from "fetched, and the worker has no todos" — the first must
+// trigger a fetch, the second must NOT (or the pane would re-fetch an empty list forever, which is
+// the same defect in a quieter form).
+func (c *todosCache) fetchedAt(id string) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, ok := c.at[id]
+	return t, ok
+}
+
+// todosTTL is how long a cached todo list is drawn before it is re-read.
+//
+// The list is genuinely live while an execution runs (the worker rewrites it between turns), so it
+// must keep refreshing — but the refresh has to be driven by a CLOCK rather than by its own
+// arrival, because a fetch whose landing re-issued the fetch is an unbounded loop, and one whose
+// landing re-issued the DETAIL fetch is a loop that repaints the pane on every lap (the
+// "flicking repeatedly like they are refreshing poorly over and over" report).
+const todosTTL = 10 * time.Second
+
+// execDetailState is one execution's detail, held as its SEPARATE writers rather than as one
+// rendered string.
+//
+// The pane has three independent sources — the run's record (fetched by the detail), its todo list
+// (fetched on a clock) and its session transcript (pushed by the shell, live) — and they arrive in
+// any order and repeatedly. Holding one pre-rendered body meant each writer had to REPLACE the
+// whole pane, so whichever painted last decided what the operator saw: a live session repaint
+// replaced the run's facts with a four-field stub ("several of them still look like the old
+// ones"), and the next detail fetch replaced the stub with the record. Holding the PARTS and
+// composing on demand is what stops that: every writer updates its own part and the pane is
+// rebuilt from all of them.
+type execDetailState struct {
+	mu   sync.Mutex
+	byID map[string]*execDetailParts
+}
+
+// execDetailParts is one execution's record plus its transcript.
+//
+// facts and record are stored as RENDERED text rather than as the proto message: the fields carry
+// the GUI's context strip and the record carries the styled error/output, and both depend on the
+// list row's meta (status) which is only in hand at fetch time.
+type execDetailParts struct {
+	facts      []screenkit.Field
+	record     string // error + output, already styled
+	transcript string // the merged durable+live session view
+}
+
+// put records an execution's fetched facts and record.
+func (s *execDetailState) put(id string, e *apiv1.WorkerExecution, facts []screenkit.Field) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byID == nil {
+		s.byID = map[string]*execDetailParts{}
+	}
+	p, ok := s.byID[id]
+	if !ok {
+		p = &execDetailParts{}
+		s.byID[id] = p
+	}
+	p.facts = facts
+	p.record = renderExecutionRecord(e)
+}
+
+// putTranscript records the rendered session transcript, leaving the record alone.
+func (s *execDetailState) putTranscript(id, transcript string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byID == nil {
+		s.byID = map[string]*execDetailParts{}
+	}
+	p, ok := s.byID[id]
+	if !ok {
+		p = &execDetailParts{}
+		s.byID[id] = p
+	}
+	p.transcript = transcript
+}
+
+// parts returns a COPY of an execution's parts (nil when nothing has arrived).
+func (s *execDetailState) parts(id string) *execDetailParts {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.byID[id]
+	if !ok {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
+// renderExecutionRecord renders the run's own prose: the error, then the output.
+func renderExecutionRecord(e *apiv1.WorkerExecution) string {
+	var b strings.Builder
+	if e.GetErrorMessage() != "" {
+		b.WriteString(theme.ErrorText.Render("error: "+e.GetErrorMessage()) + "\n\n")
+	}
+	if out := strings.TrimSpace(e.GetOutput()); out != "" {
+		b.WriteString(theme.ListTitle.Render("output") + "\n" + out + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// composeExecutionBodyFor composes the pane body for an execution whose parts are already stored,
+// falling back to the empty string when nothing has arrived yet.
+func (m *Model) composeExecutionBodyFor(id string) string {
+	body, _ := m.composeExecutionBody(id)
+	return body
+}
+
+// composeExecutionBody composes the execution pane's body and fields from its parts, in reading
+// order: the todo list (context for reading the transcript), then the record (error/output), then
+// the transcript. Absent parts contribute nothing — no empty headers.
+//
+// fields is empty when the record has not been fetched, which is how a caller tells "the pane is
+// not describable yet" from "the pane is empty".
+func (m *Model) composeExecutionBody(id string) (string, []screenkit.Field) {
+	p := m.execDetail.parts(id)
+	if p == nil {
+		return "", nil
+	}
+	sections := []string{}
+	if todo := renderTodos(m.todos.get(id), m.w); todo != "" {
+		sections = append(sections, todo)
+	}
+	if p.record != "" {
+		sections = append(sections, p.record)
+	}
+	if t := strings.TrimRight(p.transcript, "\n"); t != "" {
+		sections = append(sections, t)
+	}
+	return strings.Join(sections, "\n\n"), p.facts
+}
+
+// repaintExecutionDetail recomposes the execution pane from its current parts without asking the
+// server for anything.
+//
+// This is the END of the todos cycle: the landing updates the list and redraws from cache, rather
+// than requesting the detail — which, with the fetch hanging off the detail landing, closed a
+// detail → todo → detail → todo loop that repainted the pane on every lap (the flicker).
+func (m *Model) repaintExecutionDetail() tea.Cmd {
+	id := m.Base.DetailID()
+	if id == "" || m.Base.ActiveSourceName() != srcExecutions {
+		return nil
+	}
+	body, fields := m.composeExecutionBody(id)
+	if len(fields) == 0 {
+		return nil // the record has not landed; there is nothing to draw yet
+	}
+	m.Base.SetDetailContent("Execution "+id, fields, body)
+	return nil
 }
 
 // loadTodos fetches an execution's todo list. Best effort: a failure leaves the previous list
@@ -87,6 +246,28 @@ func (m *Model) loadTodos(execID string) tea.Cmd {
 		}
 		return execTodosMsg{execID: execID, todos: resp.Msg.GetTodos()}
 	}
+}
+
+// todosRefreshCmd returns the todo fetch for an execution WHEN its cached list is stale, and nil
+// otherwise.
+//
+// Fetch-when-stale is the whole contract, and it replaces a REPAINT-WHEN-LANDED one. The pane
+// always DRAWS whatever is cached — immediately, on the first paint, so the section never blinks
+// out — and re-reads it only when the cached copy is old enough to be worth re-reading. Nothing
+// here asks for the detail again, so a landing has nothing left to re-trigger and the cycle cannot
+// close (screen.go's execTodosMsg case and onDetail, which is where it used to).
+//
+// The very first paint has nothing cached, so it fetches and draws no section yet — one fetch,
+// then the section appears and stays.
+func (m *Model) todosRefreshCmd(execID string) tea.Cmd {
+	if m.cl == nil || m.cl.Executions == nil || execID == "" {
+		return nil
+	}
+	at, ever := m.todos.fetchedAt(execID)
+	if !ever || time.Since(at) > todosTTL {
+		return m.loadTodos(execID)
+	}
+	return nil
 }
 
 // renderTodos draws the worker's todo list as a section of the detail body.
