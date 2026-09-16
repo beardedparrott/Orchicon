@@ -42,7 +42,7 @@ import (
 // Source names (also the slash-command slugs the shell generates).
 const (
 	srcWorkflows = "workflows"
-	srcSchedules = "schedules"
+	srcRecurring = "recurring-items"
 	srcIdeas     = "ideas"
 	srcRejected  = "rejected"
 )
@@ -98,11 +98,11 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// operator's "Workflows should be under Execution not Automation"). Automation
 	// keeps the recurring items that BIND a workflow — its create form still
 	// fetches workflow options for the binding field.
-	m.AddSource(srcSchedules, "Recurring Items", m.fetchSchedules)
+	m.AddSource(srcRecurring, "Recurring Items", m.fetchSchedules)
 	m.AddSource(srcIdeas, "Idea Cloud", m.fetchIdeas)
 	m.AddSource(srcRejected, "Rejected Ideas", m.fetchRejected)
 	m.SetDetail(m.detail)
-	m.Base.SetSourceEmpty(srcSchedules, "no recurring items yet — press n to create one")
+	m.Base.SetSourceEmpty(srcRecurring, "no recurring items yet — press n to create one")
 	m.Base.SetSourceEmpty(srcIdeas, "no ideas awaiting triage — automations whose outputs mode is 'idea' spawn them here")
 	m.Base.SetSourceEmpty(srcRejected, "no dismissed ideas — every dismissal is kept here as durable rejection history")
 	m.bar = kit2.NewActionBar()
@@ -299,7 +299,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 		}
 		return "Workflow: " + w.GetName(), fields, body, nil
 
-	case srcSchedules:
+	case srcRecurring:
 		resp, err := m.cl.WorkItems.GetWorkItem(ctx, connect.NewRequest(&apiv1.GetWorkItemRequest{Id: id}))
 		if err != nil {
 			return "", nil, "", err
@@ -564,7 +564,7 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 			}
 			name := "create recurring item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
-				Name: name, Source: srcSchedules,
+				Name: name, Source: srcRecurring,
 				Do: func(ctx context.Context) error {
 					_, err := m.cl.WorkItems.CreateWorkItem(ctx, connect.NewRequest(req))
 					return err
@@ -581,8 +581,8 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 			}
 			name := "save recurring item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
-				Name: name, Source: srcSchedules,
-				Rollback: func() { m.Refresh(srcSchedules) },
+				Name: name, Source: srcRecurring,
+				Rollback: func() { m.Refresh(srcRecurring) },
 				Do: func(ctx context.Context) error {
 					_, err := m.cl.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(req))
 					return err
@@ -604,18 +604,18 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		return nil
 	}
 	switch m.ActiveSourceName() {
-	case srcSchedules:
+	case srcRecurring:
 		id, title := item.ID, item.Title
 		return []kit2.Action{
 			{
-				Label: "pause/resume", Key: "p", Source: srcSchedules,
+				Label: "pause/resume", Key: "p", Source: srcRecurring,
 				Do: func(ctx context.Context) error { return m.rpcTogglePause(ctx, id) },
 			},
 			{
-				Label: "delete", Key: "x", Danger: true, Source: srcSchedules,
+				Label: "delete", Key: "x", Danger: true, Source: srcRecurring,
 				Confirm:  "Delete " + title + "?\nThe recurring item is cancelled (soft delete) and stops firing. Its fire history is kept.",
-				Apply:    func() { m.RemoveRow(srcSchedules, id) },
-				Rollback: func() { m.Refresh(srcSchedules) },
+				Apply:    func() { m.RemoveRow(srcRecurring, id) },
+				Rollback: func() { m.Refresh(srcRecurring) },
 				Do:       func(ctx context.Context) error { return m.rpcDelete(ctx, id) },
 			},
 		}
@@ -820,11 +820,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	src := m.ActiveSourceName()
 	switch msg.String() {
 	case "n":
-		if src == srcSchedules {
+		if src == srcRecurring {
 			return m.prepCreate(), true
 		}
 	case "e":
-		if src == srcSchedules {
+		if src == srcRecurring {
 			return m.prepEdit(), true
 		}
 	case "A":
@@ -897,7 +897,7 @@ func (m *Model) refreshActionBar() {
 // HintLine is the screen's key cheat-sheet.
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
-	case srcSchedules:
+	case srcRecurring:
 		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · enter: detail (run history) · f: more pages")
 	case srcIdeas:
 		return theme.HintText.Render("p: promote (→ work item) " + theme.DetailKey.Render("·") + " x: dismiss (confirm) " + theme.DetailKey.Render("·") +
@@ -1012,7 +1012,7 @@ func (m *Model) onIdeaBulkDone(msg ideaBulkDoneMsg) tea.Cmd {
 		m.notice = fmt.Sprintf("%s %d idea(s)", verb, msg.total)
 		// Accepting CREATES work items, so the rejection history and every
 		// work-item view can change too.
-		return tea.Batch(m.Refresh(srcIdeas), m.Refresh(srcRejected), m.Refresh(srcSchedules))
+		return tea.Batch(m.Refresh(srcIdeas), m.Refresh(srcRejected), m.Refresh(srcRecurring))
 	case msg.total:
 		m.notice = fmt.Sprintf("%s failed — nothing changed", verb)
 	default:

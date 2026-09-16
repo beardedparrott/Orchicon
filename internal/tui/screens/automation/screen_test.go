@@ -461,7 +461,7 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 
 	// 'n' prepares the form: projects + workflows load first.
 	if cmd := press(t, m, "n"); cmd == nil {
@@ -520,9 +520,9 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 		t.Fatalf("recurring_schedule = %+v", s)
 	}
 	// The created item is a recurring work item → the Recurring Items pane.
-	load(t, m, "schedules")
-	if !hasTitle(itemsOf(m, "schedules"), "Nightly triage sweep") {
-		t.Fatalf("created item missing from Recurring Items: %v", titles(itemsOf(m, "schedules")))
+	load(t, m, "recurring-items")
+	if !hasTitle(itemsOf(m, "recurring-items"), "Nightly triage sweep") {
+		t.Fatalf("created item missing from Recurring Items: %v", titles(itemsOf(m, "recurring-items")))
 	}
 }
 
@@ -530,8 +530,8 @@ func TestRecurringItemsEdit(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
@@ -555,9 +555,9 @@ func TestRecurringItemsEdit(t *testing.T) {
 	if s == nil || s.GetFrequency() != "weekly" || s.GetInterval() != 3 || s.GetStartTime() != "06:00" {
 		t.Fatalf("update recurring_schedule = %+v", s)
 	}
-	load(t, m, "schedules")
-	if !hasTitle(itemsOf(m, "schedules"), "Weekly sweep") {
-		t.Fatalf("edited title must render in the list: %v", titles(itemsOf(m, "schedules")))
+	load(t, m, "recurring-items")
+	if !hasTitle(itemsOf(m, "recurring-items"), "Weekly sweep") {
+		t.Fatalf("edited title must render in the list: %v", titles(itemsOf(m, "recurring-items")))
 	}
 }
 
@@ -565,8 +565,8 @@ func TestRecurringItemsPauseResume(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	run(t, m, press(t, m, "p"))
 	first := p.lastUpdated(t)
@@ -582,9 +582,9 @@ func TestRecurringItemsPauseResume(t *testing.T) {
 	if second.RecurringEnabled == nil || !second.GetRecurringEnabled() {
 		t.Fatalf("second p must resume: %+v", second)
 	}
-	load(t, m, "schedules")
+	load(t, m, "recurring-items")
 	var meta string
-	for _, it := range itemsOf(m, "schedules") {
+	for _, it := range itemsOf(m, "recurring-items") {
 		if it.ID == "rec-1" {
 			meta = it.Meta
 		}
@@ -598,8 +598,8 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	press(t, m, "x")
 	if !m.DialogOpen() {
@@ -624,8 +624,8 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	if st := p.itemStatus("rec-1"); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
 		t.Fatalf("soft delete must cancel the item, got %v", st)
 	}
-	load(t, m, "schedules")
-	if hasTitle(itemsOf(m, "schedules"), "Nightly sweep") {
+	load(t, m, "recurring-items")
+	if hasTitle(itemsOf(m, "recurring-items"), "Nightly sweep") {
 		t.Fatal("a deleted recurring item must leave the Recurring Items pane")
 	}
 }
@@ -658,10 +658,10 @@ func TestRecurringRunHistoryRenders(t *testing.T) {
 	// A wide region: the ledger lines are long, and the detail viewport
 	// clips (never wraps) at the pane width.
 	m.SetSize(400, 40)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
-	cmd := m.RequestDetail("schedules", "rec-1")
+	cmd := m.RequestDetail("recurring-items", "rec-1")
 	if cmd == nil {
 		t.Fatal("RequestDetail must produce a cmd")
 	}
@@ -813,11 +813,11 @@ func TestAutomationEmptyStates(t *testing.T) {
 	// Workflows are NOT here any more: they moved to the Execution tab, which
 	// owns the Execution domain (executions, runs, workflows, workers).
 	m := newModelWith(t, newPlane(), nil)
-	for _, src := range []string{"schedules", "ideas", "rejected"} {
+	for _, src := range []string{"recurring-items", "ideas", "rejected"} {
 		load(t, m, src)
 	}
 	for _, tc := range []struct{ src, want string }{
-		{"schedules", "no recurring items yet"},
+		{"recurring-items", "no recurring items yet"},
 		{"ideas", "no ideas awaiting triage"},
 		{"rejected", "no dismissed ideas"},
 	} {
@@ -837,7 +837,7 @@ func TestAutomationEmptyStates(t *testing.T) {
 func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 	p := newPlane()
 	m := newModel(t, p)
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 	run(t, m, press(t, m, "n"))
 	f := m.ActiveForm()
 	if f == nil {
@@ -876,7 +876,7 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 	p := newPlane()
 	m := newModel(t, p)
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 	if cmd := press(t, m, "n"); cmd == nil {
 		t.Fatal("n must load the create form")
 	} else {
@@ -928,7 +928,7 @@ func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 // Esc backs out WITHOUT touching the field.
 func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
 	m := newModel(t, newPlane())
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 	if cmd := press(t, m, "n"); cmd == nil {
 		t.Fatal("n must load the create form")
 	} else {
@@ -957,7 +957,7 @@ func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
 // chosen set reaches the schedule in calendar order.
 func TestRecurringDaysTogglesIndependently(t *testing.T) {
 	m := newModel(t, newPlane())
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 	if cmd := press(t, m, "n"); cmd == nil {
 		t.Fatal("n must load the create form")
 	} else {
@@ -1002,9 +1002,9 @@ func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
 	w := p.seedRecurring("rec-1", "Nightly sweep", true)
 	w.RecurringSchedule.Days = []string{"Mon", "Wed"}
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
-	if len(itemsOf(m, "schedules")) == 0 {
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
+	if len(itemsOf(m, "recurring-items")) == 0 {
 		t.Fatal("fixture: no recurring item listed")
 	}
 	if cmd := press(t, m, "e"); cmd == nil {
