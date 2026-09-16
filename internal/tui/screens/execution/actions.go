@@ -140,6 +140,27 @@ func (m *Model) FormOpen() bool {
 	return m.form != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
+// OwnsTab reports that Tab is a move INSIDE this pane, not a move of the shell's
+// tab ring: on the Executions detail, Tab toggles between the TRANSCRIPT and the
+// MESSAGE BOX.
+//
+// The operator: "Once we have focus on an execution detail pane, we should allow
+// tab to tab between the Execution details and the chat prompt. Currently once you
+// go into a chat in an execution you are locked in it and can't get out."
+//
+// The lock-in was real and had two causes. The chat CLAIMED Tab and then did
+// nothing with it (this screen's composer treated "tab" as "nothing below me"), so
+// the key vanished; and when the shell won the race instead, it moved the TOP MENU
+// while the caret stayed in the chat — which reads as being stuck, because typing
+// still went into the chat. Esc and up always worked, but nothing advertised them
+// and Tab is the gesture the whole rest of the app uses to move between regions.
+//
+// Scoped to the DETAIL with an execution selected, so the list keeps the shell's
+// Tab (walking the ring) and this explains a toggle that is only real in the pane.
+func (m *Model) OwnsTab() bool {
+	return m.Base.ActiveSourceName() == srcExecutions && m.Base.DetailFocusedForTest() && m.Base.DetailID() != ""
+}
+
 // ActiveForm returns the open form (nil when closed) — tests and the shell
 // read the in-progress input through it.
 func (m *Model) ActiveForm() *kit2.Form { return m.form }

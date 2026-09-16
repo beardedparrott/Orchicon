@@ -662,21 +662,31 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 
 	m.clearForm() // the screen clears the form on submit
 
-	// store a token (masked)
-	f := m.secretFormForSource()
-	if f == nil {
-		t.Fatal("no provider token form")
+	// THE TOKEN IS A FIELD ON THE PROVIDER FORM, not a separate `s` form. The operator: "We should get
+	// rid of the 's' to set a token on providers and have that as just another inline field in the
+	// edit/new." So there is no provider entry in secretFormForSource any more — and the assertion is
+	// on THAT, because a leftover form would be a knob nothing reaches.
+	if m.secretFormForSource() != nil {
+		t.Fatal("providers must not offer a separate token form — the token is a field on the provider form")
 	}
-	f.Set("token", "sk-secret-token")
-	cmd, err = f.Submit()
+	// And the field is really there, on the EDIT form, carried through to the RPC.
+	tokenID, tokenVal = "", ""
+	edit := m.editFormForSource()
+	if edit == nil {
+		t.Fatal("no provider edit form")
+	}
+	edit.Set("token", "sk-secret-token")
+	cmd, err = edit.Submit()
 	if err != nil {
-		t.Fatalf("token submit: %v (%v)", err, f.Errors)
+		t.Fatalf("edit submit: %v (%v)", err, edit.Errors)
 	}
-	if res := runCmd(t, cmd); res.Err != nil {
-		t.Fatalf("set token failed: %v", res.Err)
+	for _, c := range batchCmds(t, cmd) {
+		if res, ok := c().(mutateResult); ok {
+			m.HandleMutation(res)
+		}
 	}
 	if tokenID != "p1" || tokenVal != "sk-secret-token" {
-		t.Fatalf("set token payload wrong: %q %q", tokenID, tokenVal)
+		t.Fatalf("the token typed into the provider form did not reach SetProviderToken: %q %q", tokenID, tokenVal)
 	}
 	if strings.Contains(m.View(), "sk-secret-token") {
 		t.Fatal("the token was rendered")
@@ -895,4 +905,22 @@ func hasField(fields []kit2.Field, key, want string) bool {
 		}
 	}
 	return false
+}
+
+// batchCmds flattens a mutation cmd into its individual commands, so a test can run each and feed its
+// result back (the edit form now emits SEVERAL mutations — settings, custom update, and the token).
+func batchCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if msg == nil {
+		return nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return batch
+	}
+	// A single command: wrap it, since its message is consumed by the caller.
+	return []tea.Cmd{func() tea.Msg { return msg }}
 }

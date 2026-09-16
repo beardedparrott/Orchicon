@@ -80,7 +80,15 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 				k, ok := msg.(tea.KeyMsg)
 				return ok && k.String() == "shift+tab"
 			},
-			Handle: func(m *App, _ tea.Msg) bool { m.tabRingPrev(); return true },
+			Handle: func(m *App, _ tea.Msg) bool {
+				if m.screenOwnsTab() {
+					// The pane owns Tab, so the ring must NOT also act on it: the key falls through to the
+					// screen, which toggles between its own two regions.
+					return false
+				}
+				m.tabRingPrev()
+				return true
+			},
 		},
 		// LEFT/RIGHT are NOT tab-chord routes. They used to rotate the whole tab bar,
 		// which made it impossible to move focus between the two panes below it —
@@ -209,6 +217,21 @@ var composerBypassKeys = map[string]bool{
 	"tab": true, "shift+tab": true,
 }
 
+// screenOwnsTab reports whether the active screen wants Tab for a focus move INSIDE its pane,
+// rather than for the shell's tab ring.
+//
+// It is an OPTIONAL hook (tui screens implement it when they have two regions to move between), and
+// it is deliberately distinct from FormOpen, which the Tab chord also consults: FormOpen additionally
+// makes the composer advertise a FORM's keys, and a transcript is not a form.
+func (m *App) screenOwnsTab() bool {
+	s := m.screens[m.active]
+	if s == nil {
+		return false
+	}
+	ot, ok := s.(interface{ OwnsTab() bool })
+	return ok && ot.OwnsTab()
+}
+
 // dispatch evaluates the route chain. With the composer ALWAYS focused
 // (Phase 2a), the global routes run only when the composer is not in
 // control of a key: dispatch lets the dock consume each key first while
@@ -325,6 +348,17 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// only to a centred WINDOW, which let Tab ESCAPE an inline editor — the
 			// host the worker, work-item and Control forms now use.
 			if fs, ok := m.screens[m.active].(interface{ FormOpen() bool }); ok && fs.FormOpen() {
+				return m.passToScreen(msg)
+			}
+			// A screen may also need Tab for a TWO-REGION toggle inside its own pane — the execution
+			// transcript and its message box are two surfaces the operator moves between with Tab, and
+			// the operator's report is what a missing hook costs: "once you go into a chat in an
+			// execution you are locked in it and can't get out." Either way the shell was moving the top
+			// menu while the caret stayed in the chat, which reads as being stuck.
+			//
+			// This is a SEPARATE hook from FormOpen on purpose: FormOpen also decides that the composer
+			// advertises the FORM's keys (ctrl+s / esc), which would be a lie over a transcript.
+			if m.screenOwnsTab() {
 				return m.passToScreen(msg)
 			}
 			// Otherwise Tab advances the top-level selection — and stops there. No

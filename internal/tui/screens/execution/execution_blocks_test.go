@@ -205,18 +205,91 @@ func TestDownWalksIntoTheComposerAndUpComesBack(t *testing.T) {
 	}
 }
 
-// TAB is the same ladder as down — the operator named both ("using tab or down arrow").
-func TestTabWalksTheSameLadderAsDown(t *testing.T) {
-	m, _ := modelWithTranscript(t)
-	// Tab from the top moves to block 1…
-	m.handleActionKey("tab")
-	if m.blocks.cursor.atComposer || m.blocks.cursor.idx != 1 {
-		t.Fatalf("tab moved the cursor to (%d, composer=%v), want block 1", m.blocks.cursor.idx, m.blocks.cursor.atComposer)
+// TAB toggles between the TRANSCRIPT and the MESSAGE BOX — and works BOTH ways.
+//
+// The operator: "Once we have focus on an execution detail pane, we should allow tab to tab between
+// the Execution details and the chat prompt. Currently once you go into a chat in an execution you
+// are locked in it and can't get out."
+//
+// This REPLACES a test that pinned Tab as a second Down (walking the blocks). The operator named both
+// keys then; he has since asked for Tab to be the pane toggle, and up/down still walk the transcript
+// (down past the last block lands in the box, exactly as before) — so the old behaviour is not lost,
+// only Tab's meaning is.
+func TestTabTogglesBetweenTranscriptAndMessageBox(t *testing.T) {
+	m, blocks := modelWithTranscript(t)
+	if len(blocks) == 0 {
+		t.Fatal("fixture has no transcript")
 	}
-	// And shift+tab is up.
+	if m.blocks.cursor.atComposer {
+		t.Fatal("the fixture starts in the composer")
+	}
+
+	// Transcript → the box.
+	if _, handled := m.handleActionKey("tab"); !handled {
+		t.Fatal("tab was not handled in the transcript — it must move to the message box")
+	}
+	if !m.blocks.cursor.atComposer {
+		t.Fatal("tab did not move focus into the message box")
+	}
+
+	// The box → back to the transcript. THIS is the half that was missing: the key used to be claimed
+	// and dropped, so the operator could not tab out of the chat at all.
+	if _, handled := m.handleActionKey("tab"); !handled {
+		t.Fatal("tab was not handled in the message box — this is the operator's \"locked in a chat\"")
+	}
+	if m.blocks.cursor.atComposer {
+		t.Fatal("tab did not move focus OUT of the message box — the operator stays locked in the chat")
+	}
+
+	// shift+tab is the same toggle: the pane has two positions, so the reverse lands on the other one.
 	m.handleActionKey("shift+tab")
+	if !m.blocks.cursor.atComposer {
+		t.Error("shift+tab did not move into the message box")
+	}
+	m.handleActionKey("shift+tab")
+	if m.blocks.cursor.atComposer {
+		t.Error("shift+tab did not move back out of the message box")
+	}
+}
+
+// UP/DOWN still walk the transcript, and down past the last block still lands in the box — Tab's new
+// meaning did not take the arrows' behaviour with it.
+func TestArrowsStillWalkTheTranscript(t *testing.T) {
+	m, blocks := modelWithTranscript(t)
+	m.handleActionKey("down")
+	if m.blocks.cursor.atComposer || m.blocks.cursor.idx != 1 {
+		t.Fatalf("down moved to (%d, composer=%v), want block 1", m.blocks.cursor.idx, m.blocks.cursor.atComposer)
+	}
+	m.handleActionKey("up")
 	if m.blocks.cursor.idx != 0 {
-		t.Errorf("shift+tab left the cursor on %d, want 0", m.blocks.cursor.idx)
+		t.Errorf("up left the cursor on %d, want 0", m.blocks.cursor.idx)
+	}
+	// Down past the last block reaches the box.
+	for i := 0; i < len(blocks)+2; i++ {
+		m.handleActionKey("down")
+	}
+	if !m.blocks.cursor.atComposer {
+		t.Error("walking down past the last block no longer reaches the message box")
+	}
+}
+
+// The screen TELLS THE SHELL it owns Tab while the execution detail is focused, so the shell does not
+// move the top menu instead — the other half of the lock-in. Scoped: the list keeps the shell's Tab.
+func TestOwnsTabOnlyOnTheFocusedExecutionDetail(t *testing.T) {
+	m, _ := modelWithTranscript(t)
+	if !m.OwnsTab() {
+		t.Error("the focused execution detail must own Tab — otherwise the shell moves the top menu while the caret stays in the chat")
+	}
+	// The LIST does not: Tab there still walks the tab ring.
+	m.Base.SetFocusForTest("list")
+	if m.OwnsTab() {
+		t.Error("the list must NOT own Tab — walking the ring from a list is the navigation model")
+	}
+	// Another source's detail does not either.
+	m.Base.SetFocusForTest("detail")
+	m.Base.SelectSource(srcRuns)
+	if m.OwnsTab() {
+		t.Error("a non-execution source must not own Tab")
 	}
 }
 

@@ -567,14 +567,26 @@ func (m *Model) composerKeys(kstr string) (tea.Cmd, bool) {
 		// Leaving the box keeps the DRAFT: an accidental esc must not destroy a typed question.
 		m.blocks.cursor.atComposer = false
 		return nil, true
-	case "up", "shift+tab":
+	case "up":
+		m.blocks.cursor.atComposer = false
+		return m.repaintTranscript(), true
+	case "tab", "shift+tab":
+		// TAB LEAVES THE CHAT — the operator's "we should allow tab to tab between the Execution
+		// details and the chat prompt. Currently once you go into a chat in an execution you are
+		// locked in it and can't get out."
+		//
+		// It used to be claimed and then DROPPED ("nothing below the composer"), so the key vanished;
+		// and where the shell won the race instead it moved the top menu while the caret stayed here,
+		// which reads as stuck. This is the same toggle as blockKeys' — the pane has two positions,
+		// so forward and reverse both land on the other one — and OwnsTab is what stops the shell
+		// acting on it first.
 		m.blocks.cursor.atComposer = false
 		return m.repaintTranscript(), true
 	case "enter":
 		// ENTER SENDS — the operator's gesture ("type in your response and hit enter to send it").
 		// The GUI uses the same rule (enter sends, shift+enter newlines), and this box is one line.
 		return m.sendComposer(), true
-	case "down", "tab":
+	case "down":
 		// Already at the bottom of the ladder: nothing below the composer.
 		return nil, true
 	}
@@ -592,7 +604,7 @@ func (m *Model) composerKeys(kstr string) (tea.Cmd, bool) {
 func (m *Model) blockKeys(kstr string) (tea.Cmd, bool) {
 	n := len(m.blockItems())
 	switch kstr {
-	case "down", "j", "tab":
+	case "down", "j":
 		if n == 0 {
 			// No transcript (an execution with no session): the composer is still reachable, which
 			// matters because asking a follow-up is exactly what an operator wants on a silent run.
@@ -607,7 +619,14 @@ func (m *Model) blockKeys(kstr string) (tea.Cmd, bool) {
 		}
 		m.blocks.cursor.idx++
 		return m.repaintTranscript(), true
-	case "up", "k", "shift+tab":
+	case "tab", "shift+tab":
+		// TAB MOVES TO THE MESSAGE BOX — the other half of the pane's two-region toggle (see
+		// composerKeys). Tab used to WALK THE BLOCKS here, which made it a second Down; the operator
+		// asked for it to move between the two regions instead, and up/down still walk the transcript
+		// (down past the last block lands in the box, exactly as before).
+		m.blocks.cursor.atComposer = true
+		return m.repaintTranscript(), true
+	case "up", "k":
 		if m.blocks.cursor.idx > 0 {
 			m.blocks.cursor.idx--
 		}

@@ -100,7 +100,11 @@ type Model struct {
 	providers  map[string]*apiv1.ProviderEntry
 	mcpServers map[string]*apiv1.MCPServer
 	adapters   map[string]*apiv1.RuntimeAdapter
-	settings   *apiv1.TenantSettings
+	// secretNames is the set of secret NAMES the tenant holds (never values — the list API does not
+	// return them). The provider forms use it to say whether a token is already stored, which is the
+	// one thing a masked field cannot tell the operator.
+	secretNames map[string]bool
+	settings    *apiv1.TenantSettings
 
 	// adapterDisabled is the LOCAL dispatch toggle for a registered adapter.
 	// The public RuntimeAdapterService is read-only (ListAdapters +
@@ -154,6 +158,7 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		mcpServers:      map[string]*apiv1.MCPServer{},
 		adapters:        map[string]*apiv1.RuntimeAdapter{},
 		adapterDisabled: map[string]bool{},
+		secretNames:     map[string]bool{},
 	}
 	m.NameStr = "control"
 	// Workers live on the Execution tab and Runtime Images on the Work tab
@@ -508,7 +513,12 @@ func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]kit2.Item
 		return nil, "", err
 	}
 	items := make([]kit2.Item, 0, len(resp.Msg.Secrets))
+	// Remember the NAMES (never the values — the API does not return them). The provider forms ask
+	// whether CUSTOM_<REF>_API_KEY already exists so a blank token field can say "stored" instead of
+	// leaving the operator to guess; the name is what that question is answered from.
+	m.secretNames = make(map[string]bool, len(resp.Msg.Secrets))
 	for _, s := range resp.Msg.Secrets {
+		m.secretNames[s.GetName()] = true
 		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: "value hidden"})
 	}
 	return items, resp.Msg.NextPageToken, nil
@@ -1659,6 +1669,17 @@ func (m *Model) newProviderForm() *kit2.Form {
 		kit2.FieldSpec{Name: "ref_id", Label: "Ref id", Kind: kit2.KText, Required: true, Placeholder: "local-ollama"},
 		kit2.FieldSpec{Name: "base_url", Label: "Base URL", Kind: kit2.KText, Required: true, Validate: validURL, Placeholder: "http://127.0.0.1:11434"},
 		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: providers.AuthModeNone, Options: authModeOptions()},
+		// THE TOKEN IS A FIELD HERE, not a separate `s` chord. The operator: "We should get rid of the 's'
+		// to set a token on providers and have that as just another inline field in the edit/new." It
+		// was a second form reached by a chord the hint had to explain, for a value that belongs to the
+		// same object — and setting it needed the provider to exist FIRST, so the two steps were never
+		// really independent.
+		//
+		// OPTIONAL by design: a provider may legitimately have no token (auth mode `none`), and a
+		// blank field must not block the create. It is a KSecret, so the value is masked in the view
+		// and never read back.
+		kit2.FieldSpec{Name: "token", Label: "API token (optional)", Kind: kit2.KSecret,
+			Placeholder: "paste the key — stored as CUSTOM_<REF>_API_KEY, never read back"},
 	)
 	f.Focused = true
 	f.Width = 64
@@ -1669,9 +1690,24 @@ func (m *Model) newProviderForm() *kit2.Form {
 			BaseUrl:     v["base_url"],
 			AuthMode:    v["auth_mode"],
 		}
+		// The token is TWO RPCs on the server's side — create, then set the token against the
+		// provider's ref id (the same two calls the GUI makes) — so both ride in ONE mutation, in
+		// order, and a failure of either surfaces as one failure of "create provider".
+		tok := strings.TrimSpace(v["token"])
+		refID := strings.TrimSpace(v["ref_id"])
 		return m.Mutate(mutate.Request{
 			Name: "create provider " + v["display_name"], Source: "providers",
-			Do: func(ctx context.Context) error { return m.rpcCreateProvider(ctx, req) },
+			Do: func(ctx context.Context) error {
+				if err := m.rpcCreateProvider(ctx, req); err != nil {
+					return err
+				}
+				if tok == "" {
+					return nil
+				}
+				// A custom provider's id IS its ref id (providers.CreateCustom: ID: in.RefID), which is
+				// what the token's secret name is derived from too.
+				return m.rpcSetProviderToken(ctx, refID, tok)
+			},
 		}), nil
 	}
 	return f
@@ -1704,6 +1740,12 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: normalizeAuthMode(am), Options: authModeOptions()},
 		kit2.FieldSpec{Name: "base_url_override", Label: "Base URL override", Kind: kit2.KText, Initial: ov},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
+		// The token is a field HERE too, so "change the provider's auth" is one form rather than a form
+		// plus a chord. BLANK MEANS LEAVE IT ALONE: a KSecret is never read back, so an empty field is
+		// indistinguishable from "unchanged" and must be treated as such — otherwise merely editing a
+		// base URL would wipe the stored token.
+		kit2.FieldSpec{Name: "token", Label: "API token (blank = unchanged)", Kind: kit2.KSecret,
+			Placeholder: m.tokenPlaceholder(item.ID)},
 	)
 	f.Focused = true
 	f.Width = 64
@@ -1734,33 +1776,37 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 				Do: func(ctx context.Context) error { return m.rpcUpdateProvider(ctx, cust) },
 			})
 		}
-		cmds := make([]tea.Cmd, 0, len(reqs))
+		cmds := make([]tea.Cmd, 0, len(reqs)+1)
 		for _, r := range reqs {
 			cmds = append(cmds, m.Mutate(r))
+		}
+		// THE TOKEN, ONLY WHEN TYPED. A KSecret is never read back, so a blank field carries no
+		// information — treating it as "clear the token" would silently wipe the credential of anyone
+		// who edited only the base URL.
+		if tok := strings.TrimSpace(v["token"]); tok != "" {
+			cmds = append(cmds, m.Mutate(mutate.Request{
+				Name: "store provider token " + item.Title, Source: "providers",
+				Do: func(ctx context.Context) error { return m.rpcSetProviderToken(ctx, id, tok) },
+			}))
 		}
 		return tea.Batch(cmds...), nil
 	}
 	return f
 }
 
-// providerTokenForm stores a provider API token via the secret store. The
-// token field is a KSecret — masked in the view, written once, never read
-// back.
-func (m *Model) providerTokenForm(item kit2.Item) *kit2.Form {
-	f := kit2.NewForm("Store provider token: "+item.Title,
-		kit2.FieldSpec{Name: "token", Label: "Token", Kind: kit2.KSecret, Required: true},
-	)
-	f.Focused = true
-	f.Width = 64
-	id := item.ID
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		tok := v["token"]
-		return m.Mutate(mutate.Request{
-			Name: "store provider token " + item.Title, Source: "providers",
-			Do: func(ctx context.Context) error { return m.rpcSetProviderToken(ctx, id, tok) },
-		}), nil
+// tokenPlaceholder states whether a token is already stored for this provider.
+//
+// A secret's value is never readable, so without this the operator cannot tell "I already gave this
+// provider a token" from "I never did" — and the two call for opposite actions when the field is
+// blank. The token's secret NAME is derived from the ref id (`CUSTOM_<REF uppercased, - → _>_API_KEY`,
+// providers.CustomSecretName), so asking the secrets list for it answers the question without ever
+// touching the value.
+func (m *Model) tokenPlaceholder(providerID string) string {
+	want := providers.CustomSecretName(providerID)
+	if m.secretNames[want] {
+		return "stored (" + want + ") — type to replace"
 	}
-	return f
+	return "none stored — will be stored as " + want
 }
 
 // newSecretForm creates a secret by name. The value is written once and never
@@ -1918,6 +1964,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 
 // secretFormForSource opens the credential/token entry form for panes that
 // store secrets (MCP "s", Providers "s").
+// --- the `s` chord is GONE for providers -------------------------------------------------------
+//
+// The operator: "We should get rid of the 's' to set a token on providers and have that as just
+// another inline field in the edit/new." The token is now a field on both provider forms, so there is
+// no separate form to open — and no chord to explain. `secretFormForSource` no longer answers for the
+// providers pane; MCP keeps its own `s` (a credential per MCP SERVER is a genuinely separate object,
+// not a field of the server's own definition).
 func (m *Model) secretFormForSource() *kit2.Form {
 	item, ok := m.ActiveItem()
 	if !ok {
@@ -1926,8 +1979,6 @@ func (m *Model) secretFormForSource() *kit2.Form {
 	switch m.ActiveSourceName() {
 	case "mcp":
 		return m.mcpSecretForm(item)
-	case "providers":
-		return m.providerTokenForm(item)
 	}
 	return nil
 }
@@ -1996,7 +2047,7 @@ func (m *Model) HintLine() string {
 	case "mcp":
 		hint = "n: new · e: edit · t: enabled · s: set credential · c: clear · i: install · x: delete"
 	case "providers":
-		hint = "n: new custom · e: edit · t: enable/disable · s: set token · c: clear · x: delete"
+		hint = "n: new custom · e: edit (the token is a field) · t: enable/disable · c: clear token · x: delete"
 	case "secrets":
 		hint = "n: new · e: rotate value · x: delete (values are never read back)"
 	case "adapters":
