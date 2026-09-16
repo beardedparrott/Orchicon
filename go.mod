@@ -22,6 +22,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/open-policy-agent/opa v1.18.2
+	github.com/yuin/goldmark v1.8.6
 	github.com/zitadel/oidc/v3 v3.49.2
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.20.0

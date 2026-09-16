@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -201,6 +202,10 @@ type Detail struct {
 	vp       viewport.Model
 	initOnce bool
 	vpBody   string // body currently loaded into the viewport
+	// vpWidth is the width the loaded body was RENDERED at. Markdown has to be laid out at a concrete
+	// width, so a pane resize invalidates the rendered lines even though the SOURCE has not changed —
+	// without this the pane would keep the old width's line breaks after a resize.
+	vpWidth int
 	// vpTitle is the TITLE the loaded body belongs to. It is the detail's
 	// IDENTITY: a body that changes under the same title is the same item
 	// updating (a live transcript appending), while a new title is a DIFFERENT
@@ -365,7 +370,7 @@ func (d *Detail) View() string {
 	}
 	if d.Body != "" {
 		b.WriteString("\n")
-		if d.dirty || d.vpBody != d.Body {
+		if d.dirty || d.vpBody != d.Body || d.vpWidth != d.vp.Width {
 			// Reload the viewport, and decide whether to KEEP the operator's scroll.
 			//
 			// Same title = the same item updating (a live transcript appending), so
@@ -380,8 +385,9 @@ func (d *Detail) View() string {
 			offset := d.vp.YOffset
 			pinned, pinnedSet := d.pendingOffset, d.pendingOffsetSet
 			d.pendingOffsetSet = false
-			d.vp.SetContent(d.Body)
+			d.vp.SetContent(d.bodyContent())
 			d.vpBody = d.Body
+			d.vpWidth = d.vp.Width
 			d.vpTitle = d.Title
 			d.dirty = false
 			switch {
@@ -407,6 +413,35 @@ func (d *Detail) View() string {
 		b.WriteString("\n" + d.footer)
 	}
 	return b.String()
+}
+
+// bodyContent is the detail body as it should be DISPLAYED: laid out to the pane's width.
+//
+// Two things are happening here, and both were needed for the work-item surface specifically:
+//
+//  1. MARKDOWN IS RENDERED. A work item's description and acceptance criteria are authored markdown —
+//     the GUI renders them through markdown.tsx — and the TUI showed the source, so a quoted
+//     operator requirement appeared as "> ...", which reads as punctuation noise and loses the
+//     attribution the marker encodes.
+//
+//  2. THE BODY IS LAID OUT AT ALL. This pane never wrapped: it handed the raw string to a viewport,
+//     which does not reflow, so a long description was CUT at the pane's edge. Rendering lays every
+//     line to the width, so nothing can exceed the pane — which is the requirement, because there is
+//     no horizontal scroll to reach what an over-wide line hides.
+//
+// The markdown path is GATED on the body actually containing markdown. That gate is the important
+// safety property: this one pane serves every list+detail screen, including ones whose body is a log
+// dump, a trace, a JSON blob or a pre-composed key/value block. Rendering those through markdown
+// would CONSUME characters (emphasis and link markers vanish), and a log line is evidence. Bodies
+// that are not markdown are passed through untouched, exactly as delivered.
+func (d *Detail) bodyContent() string {
+	if d.vp.Width < 1 || !md.LooksLikeMarkdown(d.Body) {
+		return d.Body
+	}
+	if out := md.RenderString(d.Body, d.vp.Width); out != "" {
+		return out
+	}
+	return d.Body
 }
 
 // centerBlock renders the centered empty state: title, a blank line, and

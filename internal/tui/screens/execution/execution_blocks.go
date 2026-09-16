@@ -40,9 +40,11 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -92,6 +94,11 @@ type textBlock struct {
 	live bool
 	// user marks the operator's own message, which is labelled on its first line.
 	user bool
+	// markdown marks a body the GUI renders through react-markdown, so the TUI renders it the same
+	// way instead of printing the SOURCE. This mirrors the GUI exactly rather than generously: prose
+	// and reasoning are markdown, a TOOL's output is not (ToolCard draws a <pre>), and an artifact is
+	// markdown only when its type says so or its name ends in .md (ArtifactCard's own isMarkdown).
+	markdown bool
 }
 
 // defaultExpanded reports whether a block is shown expanded with NO operator decision recorded.
@@ -141,17 +148,26 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 		case chat.KindUser:
 			b.kind = blockText
 			b.body = it.Text
+			b.markdown = true
 			// The operator's own words are LABELLED on their first line rather than given a separate
 			// header, so the band reads as one block.
 			b.user = true
 		case chat.KindText:
 			b.kind = blockText
 			b.body = it.Text
+			b.markdown = true
 		case chat.KindReasoning:
 			b.kind = blockReasoning
-			b.summary = firstLine(it.Text)
+			// The summary is the first RENDERED line, not the first source line: a collapsed block
+			// whose preview read "## Findings" or an opening fence would be the raw source again,
+			// which is the whole defect. Reasoning is markdown in the GUI (ReasoningBubble defaults
+			// to the rendered view, with a Raw toggle beside it).
+			b.summary = mdFirstLine(it.Text, width)
 			b.body = it.Text
+			b.markdown = true
 		case chat.KindError:
+			// ERRORS STAY RAW. An error is diagnostic text the operator reads verbatim, and
+			// emphasis markers inside a stack trace are evidence, not formatting.
 			b.kind = blockError
 			b.summary = firstLine(it.Text)
 			b.body = it.Text
@@ -162,6 +178,8 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 			b.kind = blockArtifact
 			b.summary = it.Name + " (" + it.Type + ")"
 			b.body = it.Content
+			b.markdown = strings.EqualFold(it.Type, "markdown") ||
+				strings.HasSuffix(strings.ToLower(it.Name), ".md")
 		case chat.KindSession:
 			b.kind = blockSession
 			b.summary = "session " + it.SessionID
@@ -340,13 +358,40 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		// The body, indented under its header. A collapsed block emits NOTHING here — not an empty
 		// row — so a collapsed transcript really is one line per block.
 		if expanded && strings.TrimSpace(blk.body) != "" {
-			for _, l := range strings.Split(strings.TrimRight(blk.body, "\n"), "\n") {
-				write("   " + l)
+			for _, l := range blk.bodyLines(width - len(bodyIndent)) {
+				write(bodyIndent + l)
 			}
 		}
 		write("")
 	}
 	return strings.TrimRight(b.String(), "\n"), offsets
+}
+
+// bodyIndent is the columns a block's body is indented by, under its header row.
+const bodyIndent = "   "
+
+// bodyLines renders a block's body to display lines at the available width.
+//
+// A markdown body goes through the renderer at the width LEFT AFTER the indent, which is what keeps
+// every emitted line inside the pane — there is no horizontal scroll here, and the pane truncates, so
+// an over-wide line is content lost with no error. Tool output and errors stay raw (see textBlock).
+func (b textBlock) bodyLines(width int) []string {
+	if b.markdown {
+		if lines := md.Render(b.body, width); len(lines) > 0 {
+			return lines
+		}
+	}
+	return strings.Split(strings.TrimRight(b.body, "\n"), "\n")
+}
+
+// mdFirstLine is the first VISIBLE line of a markdown body, for a collapsed block's summary.
+func mdFirstLine(text string, width int) string {
+	for _, l := range md.Render(text, width) {
+		if s := strings.TrimSpace(ansi.Strip(l)); s != "" {
+			return s
+		}
+	}
+	return firstLine(text)
 }
 
 // --- the inline composer ------------------------------------------------------------------------

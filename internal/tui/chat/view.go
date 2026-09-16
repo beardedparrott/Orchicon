@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -29,7 +30,7 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 		case KindText:
 			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false, ""))
 		case KindReasoning:
-			b.WriteString(renderBubble("thinking", it.Text, theme.HintText, maxWidth))
+			b.WriteString(renderMarkdownBubble("thinking", it.Text, theme.HintText, maxWidth))
 		case KindError:
 			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 		case KindTool:
@@ -87,7 +88,23 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	if inner < 8 {
 		inner = pane
 	}
-	body := strings.Split(strings.TrimRight(wrapText(text, inner), "\n"), "\n")
+	// THE BODY IS MARKDOWN — the same text the GUI renders through react-markdown in
+	// AssistantBubble and in the operator's own bubble. The operator saw the raw source instead:
+	// "The thing that concerned me was those greater than signs. What are those representing? It
+	// seemed kind of ugly." Those were BLOCKQUOTE markers doing real work (marking quoted wording),
+	// and printed literally they read as punctuation soup.
+	//
+	// This is safe INSIDE a band because the renderer emits attributes only, each closed with a
+	// TARGETED off-code (`\x1b[22m`) rather than a full reset (`\x1b[0m`) — so the band's own
+	// foreground and background survive every styled span. A markdown renderer that coloured its
+	// text would punch a hole in this fill at the first bold word.
+	//
+	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
+	// horizontal scroll in the band to fall back on.
+	body := md.Render(text, inner)
+	if len(body) == 0 {
+		body = []string{text}
+	}
 
 	var out strings.Builder
 	for i, l := range body {
@@ -122,6 +139,37 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// renderMarkdownBubble is renderBubble for content the GUI renders as MARKDOWN (its ReasoningBubble
+// defaults to the rendered view, with a Raw toggle beside it). The label keeps its own styling; the
+// body goes through the markdown renderer at the width left after the label.
+//
+// The markdown output carries ONLY targeted attribute codes, so it nests inside the theme style
+// without clearing it — which is what makes this safe over a labelled, styled row.
+func renderMarkdownBubble(label, text string, style lipgloss.Style, maxWidth int) string {
+	if text == "" {
+		return ""
+	}
+	avail := maxWidth
+	if avail > 0 {
+		avail -= lipgloss.Width(label) + 3
+	}
+	lines := md.Render(text, avail)
+	if len(lines) == 0 {
+		lines = []string{text}
+	}
+	var b strings.Builder
+	b.WriteString(theme.ListMeta.Render(label) + " ")
+	for i, l := range lines {
+		if i > 0 {
+			// Continuation rows are indented under the body, past the label.
+			l = strings.Repeat(" ", lipgloss.Width(label)+1) + l
+		}
+		b.WriteString(style.Render(l))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // renderBubble renders `label · text` with wrap, skipping empty bodies.
