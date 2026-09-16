@@ -103,7 +103,31 @@ func stepNumber(seqIndex map[string]int, groupSize, depth int, id string) string
 	return strconv.Itoa(n+1) + ". "
 }
 
+// treeRows builds the tree rows from the fetched set.
+//
+// IT IS DUPLICATE-PROOF, which is a property of the data rather than tidiness: the server's list paged
+// with a cursor that disagreed with its own page-1 ordering, so the SAME work item could arrive twice
+// in one response and this function (which appends per byParent slot) rendered it as two rows. The
+// operator reported exactly that — "There are two of them showing up in the TUI but only one in the
+// GUI" — even though the database holds ONE row (verified: project 01KYQXQ95C2BFGDT1AFXFX5875, id
+// 01M0NAYG0PKJ7EB7ZKNAQSMF9T, a single cancelled task).
+//
+// The fetch no longer walks that cursor, so this should never see a repeat. It is guarded anyway,
+// because the failure mode is silent and a duplicated row is indistinguishable from a duplicated
+// work item — the operator had no way to tell whether the DATA was wrong or the view was.
 func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
+	// Dedupe by id, first occurrence wins, keeping the server's order for the survivors.
+	deduped := make([]*apiv1.WorkItem, 0, len(items))
+	seenID := map[string]bool{}
+	for _, w := range items {
+		if w.GetId() == "" || seenID[w.GetId()] {
+			continue
+		}
+		seenID[w.GetId()] = true
+		deduped = append(deduped, w)
+	}
+	items = deduped
+
 	byParent := map[string][]*apiv1.WorkItem{}
 	known := map[string]bool{}
 	for _, w := range items {

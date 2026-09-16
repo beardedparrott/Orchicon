@@ -333,36 +333,38 @@ func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 // server orders NULL sort_order LAST, so a fresh item is only on a later page).
 const maxParentPages = 25
 
-// loadParentOptions fetches every work item that can be a parent, following
-// pagination, and returns the picker options plus the id→kind and id→project
-// maps the form needs to derive and validate the child kind.
+// loadParentOptions fetches every work item that can be a parent and returns the picker options plus
+// the id→kind and id→project maps the form needs to derive and validate the child kind.
+//
+// ONE request, for the same reason the list is one request (see workItemPageSize in screen.go): the
+// server orders page 1 by the sequence chain and every later page by ID alone, so a cursor walk both
+// DUPLICATES and MISSES rows — and a duplicated id here would append a second "[task] Fix …" option
+// to a dropdown, which is the same visible defect the operator reported for the tree. A real tenant
+// fits in the RPC's maximum page.
 func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, map[string]apiv1.WorkItemKind, map[string]string) {
 	opts := []kit2.Option{{Value: "", Label: "— none (top level · epic) —"}}
 	kinds := map[string]apiv1.WorkItemKind{}
 	projects := map[string]string{}
-	token := ""
-	for page := 0; page < maxParentPages; page++ {
-		resp, err := cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-			PageSize:        200,
-			PageToken:       token,
-			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
-			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
-		}))
-		if err != nil {
-			break // a partial list still beats no dropdown
+	resp, err := cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		PageSize:        workItemPageSize,
+		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+	}))
+	if err != nil {
+		return opts, kinds, projects // a partial list still beats no dropdown
+	}
+	for _, w := range resp.Msg.GetWorkItems() {
+		// A repeated id is skipped: the option list is keyed by id, and two options with the same
+		// value would make the picker ambiguous (the operator would see one parent listed twice).
+		if _, seen := kinds[w.GetId()]; seen {
+			continue
 		}
-		for _, w := range resp.Msg.GetWorkItems() {
-			opts = append(opts, kit2.Option{
-				Value: w.GetId(),
-				Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
-			})
-			kinds[w.GetId()] = w.GetKind()
-			projects[w.GetId()] = w.GetProjectId()
-		}
-		token = resp.Msg.GetNextPageToken()
-		if token == "" {
-			break
-		}
+		opts = append(opts, kit2.Option{
+			Value: w.GetId(),
+			Label: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(),
+		})
+		kinds[w.GetId()] = w.GetKind()
+		projects[w.GetId()] = w.GetProjectId()
 	}
 	return opts, kinds, projects
 }

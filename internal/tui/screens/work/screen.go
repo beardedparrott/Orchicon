@@ -335,38 +335,52 @@ func (m *Model) fetchProjects(ctx context.Context, pageToken string) ([]kit2.Ite
 	return items, resp.Msg.NextPageToken, nil
 }
 
-// maxItemPages bounds the work-items pagination. The list follows the RPC's
-// pages rather than taking only the first one: the server orders items
-// `sort_order NULLS LAST, created_at` and a freshly created TUI item has NO
-// sort_order, so it sorts to the very END — beyond page 1 on any tenant with a
-// few hundred items, which is exactly why created items were visible in the GUI
-// (project-scoped, a shorter page) and invisible here even after a restart.
-const maxItemPages = 25
+// workItemPageSize is how many work items the screen asks for in ONE request.
+//
+// IT IS DELIBERATELY LARGE, AND DELIBERATELY NOT PAGED. The server's list RPC pages with a bare
+// `id > token` cursor but orders the FIRST page (`sort_order NULLS LAST, created_at, id`) — the
+// sequence chain — and every page AFTER it by ID alone. Those are different orders, so a cursor taken
+// from row 200 of one order is at an arbitrary position in the other, and the two pages OVERLAP. Live
+// measurement, project 01KYQXQ95C2BFGDT1AFXFX5875 (327 matching items, 200/page):
+//
+//	page 1: 200 rows   page 2: 14 rows   distinct union: 205   DUPLICATED: 9   MISSED: 122
+//
+// The duplicates are what the operator sees ("There are two of them showing up in the TUI but only
+// one in the GUI"); the 122 MISSING rows are the more serious half of the same defect, and they are
+// invisible by construction. The GUI never hits either because it asks for 1000 in a single request
+// and never follows a token — which is exactly why the operator sees ONE of the duplicate rows in
+// the GUI and two here.
+//
+// So this follows the GUI: one request large enough for a real tenant, no cursor. 1000 is the RPC's
+// own PageSize maximum (`if f.PageSize <= 0 || f.PageSize > 1000 { f.PageSize = 100 }`), and it is
+// the number the GUI sends, so both clients see the same set by construction.
+//
+// The screen still READS next_page_token and reports it up (below), so the count is honest if a
+// tenant ever exceeds the cap — the fix is that we no longer WALK the broken cursor, not that we
+// pretend more pages do not exist.
+const workItemPageSize = 1000
 
 // fetchWorkItems renders the work-items set through the selected display
-// grouping (tree / archive), following pagination so the set is COMPLETE.
+// grouping (tree / archive).
+//
+// ONE request, like the GUI (see workItemPageSize for why paging this RPC is broken and why that is
+// the SERVER's ordering being page-dependent rather than anything this screen does). The display
+// order is this screen's own: treeRows re-sorts every sibling set with its own sortSequence/sortTitle
+// /sortStatus/sortPriority, and stepNumber derives the step from the stored chain, so the ORDER the
+// server returns rows in has never mattered to what is drawn — only the cursor's reliability did.
 func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	view := m.ViewMode()
-	token := pageToken
-	all := make([]*apiv1.WorkItem, 0, 256)
-	for page := 0; page < maxItemPages; page++ {
-		resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-			PageSize:        200,
-			PageToken:       token,
-			IncludeArchived: view == viewArchive,
-			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
-			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
-		}))
-		if err != nil {
-			return nil, "", err
-		}
-		all = append(all, resp.Msg.GetWorkItems()...)
-		token = resp.Msg.GetNextPageToken()
-		if token == "" {
-			break
-		}
+	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		PageSize:        workItemPageSize,
+		PageToken:       pageToken,
+		IncludeArchived: view == viewArchive,
+		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+	}))
+	if err != nil {
+		return nil, "", err
 	}
-	return rowsFor(view, all, m.SortMode()), token, nil
+	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
