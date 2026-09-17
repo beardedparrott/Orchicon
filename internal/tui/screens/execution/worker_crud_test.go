@@ -71,6 +71,24 @@ func crudExec(t *testing.T, worker *apiv1.Worker, versions []*apiv1.WorkerVersio
 // modal into the details pane), or nil.
 func detailForm(m *Model) *kit2.Form { return m.Base.DetailForm() }
 
+// openWorkerForm drives a worker-form chord END TO END and returns the form it
+// opened.
+//
+// The chord alone is no longer enough to open a form: every worker form now LOADS
+// first (the plane-role picker needs the tenant's roles, and the edit forms need
+// the worker's version trail), so the form appears when the load's message lands.
+// A test that asserted on the form immediately after the chord would be asserting
+// on an intermediate state.
+func openWorkerForm(t *testing.T, m *Model, key string) *kit2.Form {
+	t.Helper()
+	cmd, handled := m.handleActionKey(key)
+	if !handled {
+		t.Fatalf("chord %q must be handled in the Workers pane", key)
+	}
+	run(t, m, cmd)
+	return detailForm(m)
+}
+
 func draftV(id string, n int32) *apiv1.WorkerVersion {
 	return &apiv1.WorkerVersion{Id: id, Version: n, Status: apiv1.WorkerVersionStatus_WORKER_VERSION_STATUS_DRAFT}
 }
@@ -102,7 +120,7 @@ func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 	}
 
 	// n needs no selection.
-	if _, handled := m.handleActionKey(keyNewWorker); !handled || detailForm(m) == nil {
+	if f := openWorkerForm(t, m, keyNewWorker); f == nil {
 		t.Fatal("n must open the create form")
 	}
 	if len(*calls) != 0 {
@@ -128,56 +146,72 @@ func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 	}
 }
 
-// Editing the prompt goes through the version path: with a DRAFT present it
-// UPDATES that draft; with none it CREATES one. Both are "edit the worker's
-// version" to the operator, so both must work from the same chord.
-func TestWorkerVersionEditUpdatesDraftOrCreatesOne(t *testing.T) {
-	w := &apiv1.Worker{Id: "w1", Name: "writer"}
+// EDITING AN EXISTING WORKER IS ONE OPERATION: the form carries the header AND the
+// version fields, and saving sends the version write with republish set — so the
+// server does revert → update → publish in ONE transaction and the worker is
+// published before and after with the version number unchanged.
+//
+// This replaces the old "edit version" chord, which UPDATED a draft when one
+// existed and otherwise CREATED one — leaving an unpublished draft behind on every
+// save, the state the operator asked us never to produce.
+func TestWorkerEditSavesTheVersionInPlaceWithRepublish(t *testing.T) {
+	w := &apiv1.Worker{Id: "w1", Name: "writer", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
+	m, _, _ := crudExec(t, w, []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})
 
-	// A draft exists → update it.
-	m, _, writes := crudExec(t, w, []*apiv1.WorkerVersion{draftV("v2", 2), pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})
-	f, err := m.editWorkerVersionForm(w, []*apiv1.WorkerVersion{draftV("v2", 2), pubV("v1", 1, "")})
-	if err != nil {
-		t.Fatalf("version editor: %v", err)
+	// Capture the version WRITE itself: the flag is the whole point, and a test
+	// that only counts writes cannot tell a republish from a draft edit.
+	var saved *apiv1.UpdateWorkerVersionRequest
+	m.rpcUpdateWorkerVersion = func(_ context.Context, req *apiv1.UpdateWorkerVersionRequest) error {
+		saved = req
+		return nil
 	}
-	if !strings.Contains(f.Title, "Edit version:") {
-		t.Fatalf("title = %q, want the update path", f.Title)
+
+	if !m.Base.SelectSource(srcWorkers) {
+		t.Fatal("fixture: could not focus the Workers pane")
 	}
+	m.Base.LoadItems(srcWorkers, []kit2.Item{{ID: "w1", Title: "writer"}}, "")
+	m.Base.SelectItem(srcWorkers, "w1")
+
+	f := openWorkerForm(t, m, keyEditWorker)
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+	if saved != nil {
+		t.Fatalf("opening the form must not write anything, got %+v", saved)
+	}
+
+	// Change a version field, then save.
+	f.Set("role", "you are the writer")
 	cmd, err := f.OnSubmit(f.Values, nil)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	runWrite(t, cmd)
-	if len(*writes) != 1 || (*writes)[0] != "updateversion" {
-		t.Fatalf("writes = %v, want [updateversion] (a draft exists)", *writes)
+	if saved == nil {
+		t.Fatal("the save must write the version")
 	}
-
-	// No draft → create one, and the title says so.
-	m2, _, writes2 := crudExec(t, w, nil)
-	f2, err := m2.editWorkerVersionForm(w, []*apiv1.WorkerVersion{pubV("v1", 1, "")})
-	if err != nil {
-		t.Fatalf("version editor: %v", err)
+	if !saved.GetRepublish() {
+		t.Error("the version save must set republish — one save has to leave the worker PUBLISHED with the " +
+			"version number unchanged, without a client-side revert to draft")
 	}
-	if !strings.Contains(f2.Title, "new draft") {
-		t.Fatalf("title = %q, want it to name the create path", f2.Title)
+	if got := saved.GetVersionId(); got != "v1" {
+		t.Errorf("version_id = %q, want v1 (the version the form was seeded from)", got)
 	}
-	cmd2, err := f2.OnSubmit(f2.Values, nil)
-	if err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	runWrite(t, cmd2)
-	if len(*writes2) != 1 || (*writes2)[0] != "createversion" {
-		t.Fatalf("writes = %v, want [createversion] (no draft)", *writes2)
+	if got := saved.GetRole(); got != "you are the writer" {
+		t.Errorf("role = %q, want the edited value", got)
 	}
 }
 
-// A worker with NO versions at all cannot be edited — refused with the reason
-// rather than opening an empty form.
-func TestWorkerVersionEditWithoutVersionsIsRefused(t *testing.T) {
+// A versionless worker cannot be edited through the forms — refused with the reason
+// rather than opening a form whose save could not work.
+func TestWorkerEditWithoutAVersionIsRefused(t *testing.T) {
 	w := &apiv1.Worker{Id: "w1", Name: "writer"}
 	m, _, _ := crudExec(t, w, nil)
-	if _, err := m.editWorkerVersionForm(w, nil); err == nil {
-		t.Fatal("a versionless worker must refuse the version editor")
+	if _, err := m.editWorkerForm(w, nil, nil); err == nil {
+		t.Fatal("a versionless worker must refuse the edit form")
+	}
+	if _, err := m.newWorkerVersionForm(w, nil, nil); err == nil {
+		t.Fatal("a versionless worker must refuse the new-version form too")
 	}
 }
 
@@ -285,8 +319,8 @@ func TestWorkerFormsOpenInlineInTheDetailsPaneNotAModal(t *testing.T) {
 	if !m.Base.SelectSource(srcWorkers) {
 		t.Fatal("fixture: could not focus the Workers pane")
 	}
-	if _, handled := m.handleActionKey(keyNewWorker); !handled {
-		t.Fatal("n must be handled")
+	if f := openWorkerForm(t, m, keyNewWorker); f == nil {
+		t.Fatal("n must open the create form")
 	}
 	if m.form != nil {
 		t.Fatal("the worker form must NOT be a modal (Item 3)")
@@ -311,30 +345,33 @@ func TestWorkerFormsOpenInlineInTheDetailsPaneNotAModal(t *testing.T) {
 func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, []*apiv1.WorkerVersion{draftV("v1", 1)})
 
-	if f := m.createWorkerForm(); f == nil || !hasModelField(f) || f.OnOpenModelPicker == nil {
+	if f := m.createWorkerForm(nil); f == nil || !hasModelField(f) || f.OnOpenModelPicker == nil {
 		t.Fatal("the create form must offer a model field wired to the picker")
 	}
 	w := &apiv1.Worker{Id: "w1", Name: "writer"}
-	vf, err := m.editWorkerVersionForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)})
+	vf, err := m.newWorkerVersionForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)}, nil)
 	if err != nil {
-		t.Fatalf("version editor: %v", err)
+		t.Fatalf("new-version form: %v", err)
 	}
 	if !hasModelField(vf) || vf.OnOpenModelPicker == nil {
-		t.Fatal("the version editor must offer a model field wired to the picker")
+		t.Fatal("the new-version form must offer a model field wired to the picker")
 	}
-	// The header editor HOLDS the model field too. It persists through
-	// BulkUpdateWorkerModel rather than UpdateWorker (which carries no model) — the
-	// documented edit-then-republish primitive, so one call serves a draft AND a
-	// published worker. The operator: "the edit page of a worker should also have
-	// the model selector ... It works on new versions, it should work on editing
+	// The EDIT form carries the model too: model_ref is a VERSION field (ADR-0003),
+	// and the edit form is where the version is edited now that the header/version
+	// split is gone. The operator: "the edit page of a worker should also have the
+	// model selector ... It works on new versions, it should work on editing
 	// current versions as well."
-	if hf := m.editWorkerForm(w); !hasModelField(hf) || hf.OnOpenModelPicker == nil {
-		t.Fatal("the header editor must offer a model field wired to the picker")
+	hf, err := m.editWorkerForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)}, nil)
+	if err != nil {
+		t.Fatalf("edit form: %v", err)
+	}
+	if !hasModelField(hf) || hf.OnOpenModelPicker == nil {
+		t.Fatal("the edit form must offer a model field wired to the picker")
 	}
 
 	// Choosing a model writes it into the field (not through a competing write).
 	// Seeding a full ref puts the picker on the MODEL tier, so one enter commits.
-	m.Base.BeginDetailEdit("New worker", m.createWorkerForm())
+	m.Base.BeginDetailEdit("New worker", m.createWorkerForm(nil))
 	m.openFormModelPicker("model_ref", "orchicon/anthropic/seed")
 	m.modelPicker.SetAdapters([]string{"orchicon"}, nil)
 	m.modelPicker.SetProviders("orchicon", []kit2.PickerOption{{Value: "anthropic"}})
@@ -375,10 +412,7 @@ func TestInlineWorkerFormOwnsArrowsAndEsc(t *testing.T) {
 	if !m.Base.SelectSource(srcWorkers) {
 		t.Fatal("fixture: could not focus the Workers pane")
 	}
-	if _, handled := m.handleActionKey(keyNewWorker); !handled {
-		t.Fatal("n must open the create form")
-	}
-	f := detailForm(m)
+	f := openWorkerForm(t, m, keyNewWorker)
 	if f == nil {
 		t.Fatal("the create form must be open in the details pane")
 	}
@@ -419,10 +453,7 @@ func TestTabMovesFormFieldsWhileEditing(t *testing.T) {
 	if !m.Base.SelectSource(srcWorkers) {
 		t.Fatal("fixture: could not focus the Workers pane")
 	}
-	if _, handled := m.handleActionKey(keyNewWorker); !handled {
-		t.Fatal("n must open the create form")
-	}
-	f := detailForm(m)
+	f := openWorkerForm(t, m, keyNewWorker)
 	if f == nil {
 		t.Fatal("the create form must be open inline")
 	}

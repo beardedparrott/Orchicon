@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -900,6 +901,32 @@ func (f *Form) VisibleFieldNames() []string {
 // real path calls it from HandleKey and View; a test that sets a value directly has to ask
 // for it explicitly, because it is bypassing the key handling that would have done it.
 func (f *Form) NormalizeCursorForTest() { f.normalizeCursor() }
+
+// FormCursorMark is the glyph View() prints at the start of the FOCUSED field's
+// first row.
+const FormCursorMark = "▸"
+
+// FocusedRow returns the 0-based row of the focused field's FIRST line within a
+// render produced by View() — the offset a host needs to scroll the form so the
+// field being edited is on screen.
+//
+// It reads the rendered string rather than re-deriving the layout, so the row it
+// reports is measured from EXACTLY the text the host is about to draw. Hand
+// counting the rows above the cursor would be wrong the moment any of them
+// changed height: a multi-line value wraps, ctrl+e expands a field, a Visible
+// predicate hides one, and the focused field itself grows from 1 row to many.
+// Deriving it from the render cannot drift from the render.
+func (f *Form) FocusedRow(rendered string) int {
+	for i, line := range strings.Split(rendered, "\n") {
+		// The marker is the FIRST content on the row: the cursor prefix is written
+		// before the label. Trimmed and stripped of styling so a themed row (the
+		// focused row is rendered with ListItemSelected) still matches.
+		if strings.HasPrefix(strings.TrimLeft(ansi.Strip(line), " "), FormCursorMark) {
+			return i
+		}
+	}
+	return 0
+}
 
 // DisplayForTest renders a single field the way View would, so a test can assert that a
 // stored id shows as its human label rather than as a bare id.

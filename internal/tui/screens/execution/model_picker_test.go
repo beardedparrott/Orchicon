@@ -254,13 +254,24 @@ func TestWorkerModelKeyIsGoneAndExplainsItself(t *testing.T) {
 func TestWorkerModelIsSetThroughTheFormField(t *testing.T) {
 	m, _, writes := newPickerExec(t)
 	m.SelectSource(srcWorkers)
-	m.workerMu.Lock()
-	m.workerModel["w-7"] = "orchicon/anthropic/seed"
-	m.workerMu.Unlock()
 
-	m.Base.BeginDetailEdit("Edit worker", m.editWorkerForm(&apiv1.Worker{Id: "w-7", Name: "sweeper"}))
+	// The model field is seeded from the VERSION's own model_ref — not from the
+	// workers-list cache. model_ref is VERSIONED state (ADR-0003) and the form edits
+	// a specific version, so it has to show that version's stored ref; a cache that
+	// holds the list's active ref would seed the form from a different version's
+	// value (or with nothing at all, for a version the cache does not carry).
+	w := &apiv1.Worker{Id: "w-7", Name: "sweeper"}
+	versions := []*apiv1.WorkerVersion{{
+		Id: "v1", Version: 1, ModelRef: "orchicon/anthropic/seed",
+		Status: apiv1.WorkerVersionStatus_WORKER_VERSION_STATUS_PUBLISHED,
+	}}
+	f, err := m.editWorkerForm(w, versions, nil)
+	if err != nil {
+		t.Fatalf("edit form: %v", err)
+	}
+	m.Base.BeginDetailEdit("Edit worker", f)
 	if got := m.Base.DetailForm().Values["model_ref"]; got != "orchicon/anthropic/seed" {
-		t.Fatalf("model field seeded with %q, want the worker's active ref", got)
+		t.Fatalf("model field seeded with %q, want the version's stored ref", got)
 	}
 	if len(*writes) != 0 {
 		t.Fatal("opening the form must not write anything")

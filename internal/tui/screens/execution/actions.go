@@ -339,8 +339,8 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do: func(context.Context) error { return errNeedForm("new worker") }},
 			{Label: "edit", Key: keyEditWorker, Source: srcWorkers,
 				Do: func(context.Context) error { return errNeedForm("edit worker") }},
-			{Label: "edit version", Key: keyEditVersion, Source: srcWorkers,
-				Do: func(context.Context) error { return errNeedForm("edit version") }},
+			{Label: "new version", Key: keyEditVersion, Source: srcWorkers,
+				Do: func(context.Context) error { return errNeedForm("new version") }},
 		}
 		if status != "retired" {
 			// publish names the version it will ship (handleActionKey loads the
@@ -715,9 +715,12 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			// Item 3: worker editing happens IN THE DETAILS PANE, like work items —
 			// not in a modal. A modal covers the list and the detail it is editing;
 			// the pane keeps both visible and is the established pattern on Work.
-			m.Base.BeginDetailEdit("New worker", m.createWorkerForm())
-			m.notice = ""
-			return nil, true
+			//
+			// The form needs the tenant's ROLES (the plane-role picker is one of its
+			// fields), so creating is a LOAD-then-open like every other worker form
+			// rather than a synchronous open: the empty worker id is the create
+			// signal. Nothing is written until the operator saves.
+			return m.beginWorkerOp("", opCreateWorker), true
 		case keyEditWorker, keyEditVersion, keyPublish, keySetActive:
 			it, ok := m.ActiveItem()
 			if !ok {
@@ -731,7 +734,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			}
 			op := map[string]workerOp{
 				keyEditWorker:  opEditHeader,
-				keyEditVersion: opEditVersion,
+				keyEditVersion: opNewVersion,
 				keyPublish:     opPublish,
 				keySetActive:   opSetActive,
 			}[kstr]

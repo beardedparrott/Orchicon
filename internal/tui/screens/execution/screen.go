@@ -79,6 +79,11 @@ type Model struct {
 	// seed a form or decide whether they apply.
 	rpcGetWorker          func(ctx context.Context, id string) (*apiv1.Worker, error)
 	rpcListWorkerVersions func(ctx context.Context, id string) ([]*apiv1.WorkerVersion, error)
+	// rpcListRoles backs the Plane-role picker on every worker form (create, edit,
+	// new version). Roles are tenant data the screen does not otherwise read, so a
+	// failure is tolerated: the field then offers only "none" rather than blocking
+	// an edit that has nothing to do with the role binding.
+	rpcListRoles func(ctx context.Context) ([]*apiv1.Role, error)
 	// Workflow lifecycle loads (workflow_forms.go), same shape.
 	rpcGetWorkflow          func(ctx context.Context, id string) (*apiv1.Workflow, error)
 	rpcListWorkflowVersions func(ctx context.Context, id string) ([]*apiv1.WorkflowVersion, error)
@@ -186,6 +191,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcSetWorkerModel = m.defaultSetWorkerModelRefs
 	m.rpcGetWorker = m.defaultGetWorker
 	m.rpcListWorkerVersions = m.defaultListWorkerVersions
+	m.rpcListRoles = m.defaultListRoles
 	m.rpcGetWorkflow = m.defaultGetWorkflow
 	m.rpcListWorkflowVersions = m.defaultListWorkflowVersions
 	m.rpcUpdateWorkflowVersion = m.defaultUpdateWorkflowVersion

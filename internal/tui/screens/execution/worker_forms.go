@@ -10,9 +10,21 @@
 //   - no RPC runs from Update; every load and every write is a tea.Cmd, and the
 //     write goes through the ONE mutation executor (dock feedback + reconcile);
 //   - a form is seeded from the SERVER's current values (never from a guess), so
-//     a submit only sends what the operator changed where the proto allows it;
+//     a submit only sends what the operator changed;
 //   - an operation that cannot apply is REFUSED with the reason, never a silent
-//     no-op.
+//     no-op;
+//   - OPENING a form writes NOTHING. Every load is read-only, so esc is free:
+//     "edit then cancel" cannot leave a draft behind, which is the state the
+//     three-gesture client flow (revert → save → publish) produced — 20 workers
+//     on the dev tenant still carry that debris.
+//
+// THE SAVE IS ONE OPERATION. Editing an existing worker sends its version fields
+// with UpdateWorkerVersion{republish:true}, which the server performs in a single
+// transaction (revert if published → update → republish). The worker is published
+// before and after and the version number does NOT advance. Creating a version
+// sends CreateWorkerVersion{publish:true}, which creates and publishes atomically.
+// Neither path can strand a worker in draft, so this client never needs the
+// client-side compensate that the GUI's per-gesture flow requires.
 package execution
 
 import (
@@ -37,42 +49,79 @@ import (
 type workerOp string
 
 const (
-	opEditHeader  workerOp = "edit"
-	opEditVersion workerOp = "edit-version"
-	opPublish     workerOp = "publish"
-	opSetActive   workerOp = "set-active"
+	// opCreateWorker creates a worker AND its first version in ONE call:
+	// CreateWorker takes the first-version snapshot fields, so a new worker is
+	// immediately usable rather than an empty shell the operator must edit before
+	// it can do anything.
+	opCreateWorker workerOp = "create"
+	// opEditHeader edits an EXISTING worker: its version fields are saved with
+	// republish, so the save ends published with the version number unchanged.
+	// (The name is shared with the workflow lifecycle, where it means the same
+	// thing: "open the editable form for this entity".)
+	opEditHeader workerOp = "edit"
+	// opNewVersion creates the worker's NEXT version and publishes it, advancing
+	// the number. Nothing is created until the operator saves.
+	opNewVersion workerOp = "new-version"
+	opPublish    workerOp = "publish"
+	opSetActive  workerOp = "set-active"
 )
 
-// workerDetailMsg carries a worker plus its version trail — one pair of reads
-// serves every operation that needs to know what state the worker is in.
+// workerDetailMsg carries a worker plus its version trail AND the tenant's roles
+// — one pair of reads serves every operation that needs to know what state the
+// worker is in, and the roles ride along because the plane-role picker is a field
+// on all three worker forms.
 type workerDetailMsg struct {
 	op       workerOp
 	workerID string
 	worker   *apiv1.Worker
 	versions []*apiv1.WorkerVersion
+	roles    []*apiv1.Role
 	err      error
 }
 
 // pendingWorkerOp remembers which operation to open once the load lands, so a
 // late result for a worker the operator has since left is dropped.
+//
+// An EMPTY workerID is the create path: there is no worker to load, but the form
+// still needs the role list, so it goes through the same load-and-open shape
+// rather than opening synchronously with an empty picker.
 func (m *Model) beginWorkerOp(workerID string, op workerOp) tea.Cmd {
+	roles := m.rpcListRoles
+	needsWorker := workerID != ""
 	get, list := m.rpcGetWorker, m.rpcListWorkerVersions
-	if get == nil || list == nil {
+	if needsWorker && (get == nil || list == nil) {
 		return m.refuse("no worker client")
 	}
-	m.notice = "loading " + workerID + "…"
 	m.workerOp = op
 	m.workerOpID = workerID
+	if needsWorker {
+		m.notice = "loading " + workerID + "…"
+	} else {
+		m.notice = "loading roles…"
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		out := workerDetailMsg{op: op, workerID: workerID}
+		// Roles are BEST-EFFORT: a tenant whose roles are unreadable still gets a
+		// working form (the picker then offers only "none"), and a roles failure
+		// must not block an edit that has nothing to do with the role binding.
+		if roles != nil {
+			if rs, err := roles(ctx); err == nil {
+				out.roles = rs
+			}
+		}
+		if !needsWorker {
+			return out
+		}
 		w, err := get(ctx, workerID)
 		if err != nil {
-			return workerDetailMsg{op: op, workerID: workerID, err: err}
+			out.err = err
+			return out
 		}
-		out := workerDetailMsg{op: op, workerID: workerID, worker: w}
-		// The version trail is best-effort: the header ops do not need it, and a
-		// failure there must not block them.
+		out.worker = w
+		// The version trail is best-effort too; every form that needs it refuses
+		// by name when it is missing.
 		if vs, verr := list(ctx, workerID); verr == nil {
 			out.versions = vs
 		}
@@ -92,21 +141,28 @@ func (m *Model) openWorkerOpForm(msg workerDetailMsg) tea.Cmd {
 		return m.refuse("worker load failed: " + msg.err.Error())
 	}
 	switch op {
-	case opEditHeader:
-		m.Base.BeginDetailEdit("Edit worker", m.editWorkerForm(msg.worker))
+	case opCreateWorker:
+		m.Base.BeginDetailEdit("New worker", m.createWorkerForm(msg.roles))
 		m.notice = ""
-	case opEditVersion:
-		f, err := m.editWorkerVersionForm(msg.worker, msg.versions)
+	case opEditHeader:
+		f, err := m.editWorkerForm(msg.worker, msg.versions, msg.roles)
 		if err != nil {
 			return m.refuse(err.Error())
 		}
-		m.Base.BeginDetailEdit("Edit version", f)
+		m.Base.BeginDetailEdit("Edit worker: "+msg.worker.GetName(), f)
+		m.notice = ""
+	case opNewVersion:
+		f, err := m.newWorkerVersionForm(msg.worker, msg.versions, msg.roles)
+		if err != nil {
+			return m.refuse(err.Error())
+		}
+		m.Base.BeginDetailEdit("New version: "+msg.worker.GetName(), f)
 		m.notice = ""
 	case opPublish:
 		draft := draftVersion(msg.versions)
 		if draft == nil {
 			return m.refuse("publish applies to a worker with a DRAFT version — " + msg.workerID +
-				" has none; edit its version (V) to create one")
+				" has none; edit the worker (e) and save, which publishes in place")
 		}
 		m.Base.BeginDetailEdit("Publish", m.publishWorkerForm(msg.workerID, draft))
 		m.notice = ""
@@ -123,47 +179,46 @@ func (m *Model) openWorkerOpForm(msg workerDetailMsg) tea.Cmd {
 
 // --- forms -----------------------------------------------------------------
 
-// createWorkerForm collects the worker's header and its first version's prompt
-// fields. CreateWorker takes the first-version snapshot fields in the SAME call,
-// so a new worker is immediately usable instead of an empty shell the operator
-// has to edit before it can do anything.
+// createWorkerForm collects the worker's header AND its first version's fields.
+// CreateWorker takes the first-version snapshot fields in the SAME call, so a new
+// worker is immediately usable instead of an empty shell.
 //
-// The MODEL is deliberately not here: a model_ref is a CHOICE made in the picker
-// (m), and defaulting one silently would pin a model the operator never agreed
-// to. Set it right after creating.
-func (m *Model) createWorkerForm() *kit2.Form {
-	f := kit2.NewForm("New worker",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true,
+// The field set mirrors the GUI's create page, minus the five fields the RPCs
+// accept but no UI writes (execution_policy_ref, recovery_workflow_ref, labels,
+// system_prompt, adapter): offering a field the GUI cannot show or edit is its
+// own parity break — the two clients would disagree about a worker's contents.
+func (m *Model) createWorkerForm(roles []*apiv1.Role) *kit2.Form {
+	specs := []kit2.FieldSpec{
+		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true,
 			Placeholder: "release-notes-writer"},
-		kit2.FieldSpec{Name: "purpose", Label: "Purpose", Kind: kit2.KText,
+		{Name: "slug", Label: "Slug (optional)", Kind: kit2.KText,
+			Placeholder: "derived from the name when empty"},
+		{Name: "purpose", Label: "Purpose", Kind: kit2.KText,
 			Placeholder: "one line: what this worker is for"},
-		kit2.FieldSpec{Name: "description", Label: "Description (markdown)", Kind: kit2.KTextArea},
-		kit2.FieldSpec{Name: "role", Label: "Role (prompt)", Kind: kit2.KTextArea,
-			Placeholder: "the worker's identity statement — structured prompt fields compose into system_prompt"},
-		kit2.FieldSpec{Name: "skills", Label: "Skills (prompt)", Kind: kit2.KTextArea},
-		kit2.FieldSpec{Name: "behavior", Label: "Behavior (prompt)", Kind: kit2.KTextArea},
-		// model_ref lives on the VERSION (the ref is versioned state, ADR-0003), so
-		// the model is chosen here and on the version editor — never on the header
-		// (UpdateWorker takes no model). A REFERENCE, not text: activating the
-		// field opens the screen's model picker.
-		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel,
-			Placeholder: "— none — (enter to choose a model)"},
-	)
+		{Name: "description", Label: "Description (markdown)", Kind: kit2.KTextArea},
+		{Name: "role_ref", Label: "Plane role", Kind: kit2.KSelect,
+			Options:     roleOptions(roles, ""),
+			Placeholder: "— none — (no plane access)",
+		},
+	}
+	specs = append(specs, m.versionFields(nil)...)
+	f := kit2.NewForm("New worker", specs...)
 	f.Focused = true
 	f.Width = 70
 	f.OnOpenModelPicker = m.openFormModelPicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		limit, err := submitInt(v["concurrency_limit"], "concurrency limit")
+		if err != nil {
+			return nil, err
+		}
 		req := &apiv1.CreateWorkerRequest{
 			Name:        strings.TrimSpace(v["name"]),
+			Slug:        strings.TrimSpace(v["slug"]),
 			Purpose:     strings.TrimSpace(v["purpose"]),
 			Description: v["description"],
-			Role:        v["role"],
-			Skills:      v["skills"],
-			Behavior:    v["behavior"],
-			// The chosen ref travels with the first version, so the new worker is
-			// dispatchable rather than model-less.
-			ModelRef: strings.TrimSpace(v["model_ref"]),
+			RoleRef:     v["role_ref"],
 		}
+		setVersionFieldsOnCreate(req, v, limit)
 		return m.Mutate(mutate.Request{
 			Name: "create worker " + req.Name, Source: srcWorkers,
 			Do: func(ctx context.Context) error { return m.rpcCreateWorker(ctx, req) },
@@ -172,61 +227,118 @@ func (m *Model) createWorkerForm() *kit2.Form {
 	return f
 }
 
-// editWorkerForm edits the worker HEADER — and its model.
+// editWorkerForm edits an EXISTING worker in place: the header fields and the
+// version fields on one form, saved as one operation.
 //
-// The model field is here because the operator asked for it directly: "the edit
-// page of a worker should also have the model selector. No need to have a
-// separate 'm' option to set models that way. It works on new versions, it should
-// work on editing current versions as well."
+// WHY ONE FORM. The GUI's editor is one page; the TUI used to split it into "e
+// edits the header (4 fields)" and "V edits the version", so pressing e showed 4
+// fields where the GUI shows 13 and the operator read it as missing fields. The
+// split was an artifact of the two RPCs, not of what the operator is doing.
 //
-// It persists through BulkUpdateWorkerModel, NOT through UpdateWorker — and that
-// is the correct primitive rather than a workaround. UpdateWorkerRequest carries
-// no model at all, and a PUBLISHED version is immutable, so a version edit could
-// not change a live worker's model either. BulkUpdateWorkerModel is documented as
-// exactly this operation:
+// HEADER TEXT IS DRAFT-ONLY, so it is offered only while the worker actually is a
+// draft. internal/db/worker.go:370 is the enforcement point —
 //
-//	sets model_ref on each requested Worker and publishes the affected version in
-//	a single round trip … The version number does NOT advance — existing draft →
-//	edited in place; latest published → reverted to draft → edited → republished.
+//	AND (status = 'draft' OR $n = true)   -- $n = "only the role binding is set"
 //
-// So one call serves every lifecycle state, which is why the field can sit on the
-// header editor and mean the same thing whatever the worker's status.
-func (m *Model) editWorkerForm(w *apiv1.Worker) *kit2.Form {
-	activeRef := m.workerModelRef(w.GetId())
-	f := kit2.NewForm("Edit worker: "+w.GetName(),
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Initial: w.GetName()},
-		kit2.FieldSpec{Name: "purpose", Label: "Purpose", Kind: kit2.KText, Initial: w.GetPurpose()},
-		kit2.FieldSpec{Name: "description", Label: "Description (markdown)", Kind: kit2.KTextArea, Initial: w.GetDescription()},
-		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: activeRef,
-			Placeholder: "— none — (enter to choose a model)"},
-	)
+// — which means a published worker refuses name/description/purpose but accepts
+// the role binding. Showing a text box the server will reject is worse than not
+// showing it, so a published (or deprecated, or retired) worker is offered the
+// role binding plus every version field, and the title says why.
+func (m *Model) editWorkerForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion, roles []*apiv1.Role) (*kit2.Form, error) {
+	src := newestVersion(versions)
+	if src == nil {
+		return nil, errors.New("this worker has no version to edit — it cannot be edited through this form")
+	}
+	headerEditable := w.GetStatus() == apiv1.WorkerStatus_WORKER_STATUS_DRAFT
+
+	var specs []kit2.FieldSpec
+	if headerEditable {
+		specs = append(specs,
+			kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Initial: w.GetName()},
+			kit2.FieldSpec{Name: "purpose", Label: "Purpose", Kind: kit2.KText, Initial: w.GetPurpose()},
+			kit2.FieldSpec{Name: "description", Label: "Description (markdown)", Kind: kit2.KTextArea, Initial: w.GetDescription()},
+		)
+	}
+	specs = append(specs, kit2.FieldSpec{
+		Name: "role_ref", Label: "Plane role", Kind: kit2.KSelect,
+		Initial: w.GetRoleRef(), Options: roleOptions(roles, w.GetRoleRef()),
+	})
+	specs = append(specs, m.versionFields(src)...)
+
+	title := "Edit worker: " + w.GetName()
+	if !headerEditable {
+		// State the omission rather than letting the operator hunt for the fields.
+		title = "Edit worker: " + w.GetName() + " (" + workerStatusLabel(w.GetStatus()) + " — name/description are draft-only)"
+	}
+	f := kit2.NewForm(title, specs...)
 	f.Focused = true
 	f.Width = 70
 	f.OnOpenModelPicker = m.openFormModelPicker
-	id, original := w.GetId(), activeRef
+
+	workerID, versionID := w.GetId(), src.GetId()
+	origName, origPurpose, origDesc := w.GetName(), w.GetPurpose(), w.GetDescription()
+	origRole := w.GetRoleRef()
+	orig := versionSnapshot(src)
+
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		ref := strings.TrimSpace(v["model_ref"])
-		name, purpose, desc := strings.TrimSpace(v["name"]), strings.TrimSpace(v["purpose"]), v["description"]
-		// Two writes when the model changed. They stay separate because they ARE
-		// separate operations with separate RPCs; sequencing them means the header
-		// save cannot be lost to a model failure, and vice versa.
-		reqs := make([]mutate.Request, 0, 2)
-		if name != w.GetName() || purpose != w.GetPurpose() || desc != w.GetDescription() {
+		limit, err := submitInt(v["concurrency_limit"], "concurrency limit")
+		if err != nil {
+			return nil, err
+		}
+		// Three writes at most, and they stay SEPARATE operations because they are
+		// separate server-side facts:
+		//
+		//  1. the header TEXT — its own call, and deliberately WITHOUT role_ref.
+		//     The server refuses header text in the same request as the role
+		//     binding on a published worker (service.go:329-332), so combining them
+		//     would fail the whole save for a worker whose role the operator also
+		//     just changed;
+		//  2. the ROLE BINDING — its own call, because it is the one header field a
+		//     published worker accepts (db/worker.go:370), so it must not be
+		//     blocked by the draft-only rule that governs (1);
+		//  3. the VERSION — one atomic republish (revert → update → publish in a
+		//     single server transaction), leaving the worker published with the
+		//     version number unchanged.
+		//
+		// (1) and (2) are not part of (3)'s transaction: the header and the version
+		// live behind different RPCs, so there is no combined call to use. Ordering
+		// them before (3) means the version save — the one that matters — is not
+		// lost to a header failure, and vice versa.
+		reqs := make([]mutate.Request, 0, 3)
+		// The header text is compared ONLY when the form OFFERED it. On a published
+		// worker those fields are not drawn, so their form values are the empty
+		// string — and comparing that against the worker's real name would report
+		// "changed" on every save and fire a header write the server must refuse
+		// (name/description/purpose are draft-only, db/worker.go:370), failing a save
+		// whose form never showed a name field.
+		if headerEditable {
+			name, purpose, desc := strings.TrimSpace(v["name"]), strings.TrimSpace(v["purpose"]), v["description"]
+			if name != origName || purpose != origPurpose || desc != origDesc {
+				reqs = append(reqs, mutate.Request{
+					Name: "update worker " + workerID, Source: srcWorkers,
+					Do: func(ctx context.Context) error {
+						return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{
+							Id: workerID, Name: name, Purpose: purpose, Description: desc,
+						})
+					},
+				})
+			}
+		}
+		if roleRef := v["role_ref"]; roleRef != origRole {
+			rr := roleRef
 			reqs = append(reqs, mutate.Request{
-				Name: "update worker " + id, Source: srcWorkers,
+				Name: "set plane role on " + workerID, Source: srcWorkers,
 				Do: func(ctx context.Context) error {
-					return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{
-						Id: id, Name: name, Purpose: purpose, Description: desc,
-					})
+					return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{Id: workerID, RoleRef: &rr})
 				},
 			})
 		}
-		if ref != original {
+		if !versionUnchanged(v, limit, orig) {
+			req := &apiv1.UpdateWorkerVersionRequest{WorkerId: workerID, VersionId: versionID, Republish: true}
+			setVersionFieldsU(req, v, limit)
 			reqs = append(reqs, mutate.Request{
-				Name: "set model on " + id, Source: srcWorkers,
-				Do: func(ctx context.Context) error {
-					return m.setWorkerModelRef(ctx, id, ref)
-				},
+				Name: "save v" + strconv.Itoa(int(src.GetVersion())) + " of " + workerID, Source: srcWorkers,
+				Do: func(ctx context.Context) error { return m.rpcUpdateWorkerVersion(ctx, req) },
 			})
 		}
 		if len(reqs) == 0 {
@@ -236,100 +348,154 @@ func (m *Model) editWorkerForm(w *apiv1.Worker) *kit2.Form {
 		for _, r := range reqs {
 			cmds = append(cmds, m.Mutate(r))
 		}
-		return tea.Batch(cmds...), nil
+		return batchWrites(cmds), nil
 	}
-	return f
+	return f, nil
 }
 
-// workerModelRef returns the worker's cached ACTIVE model_ref (the workers list
-// already carries it), or "" when the cache has no entry.
-func (m *Model) workerModelRef(id string) string {
-	m.workerMu.Lock()
-	defer m.workerMu.Unlock()
-	return m.workerModel[id]
-}
-
-// setWorkerModelRef is the model write as a plain error (the form path), sharing the bulk write's
-// semantics: one id is simply the smallest batch.
-func (m *Model) setWorkerModelRef(ctx context.Context, workerID, ref string) error {
-	if m.rpcSetWorkerModel == nil {
-		return errors.New("no worker client")
-	}
-	return m.rpcSetWorkerModel(ctx, []string{workerID}, ref)
-}
-
-// editWorkerVersionForm is the version editor: the prompt fields and the
-// per-version config the GUI exposes. It seeds from the current DRAFT when one
-// exists (that is the mutable version), else from the newest version so the
-// operator edits forward from what is live rather than from a blank form.
+// newWorkerVersionForm creates the worker's NEXT version and publishes it.
 //
-// Submitting UPDATES the draft when there is one, and otherwise CREATES a new
-// draft carrying these values — so "edit the worker's prompt" works whether or
-// not a draft already exists, without the operator having to know which.
-func (m *Model) editWorkerVersionForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion) (*kit2.Form, error) {
-	src := draftVersion(versions)
-	create := false
-	if src == nil {
-		src = newestVersion(versions)
-		create = true
+// NOTHING IS CREATED UNTIL ctrl+s. The version row is created and published in
+// the same server call, so esc leaves no trace at all — which is the whole point
+// of requirement "new version, then cancel: the latest is still in published
+// form". The GUI creates the draft on opening the editor, which is why an
+// abandoned "New version" leaves an unpublished draft behind: 20 of them are
+// sitting on the dev tenant right now.
+func (m *Model) newWorkerVersionForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion, roles []*apiv1.Role) (*kit2.Form, error) {
+	// The new version is seeded from the LATEST PUBLISHED version — that is what
+	// the server's CreateWorkerVersion copies from, so the form must show what the
+	// save will actually start from rather than a draft nobody published.
+	src := newestVersion(versions)
+	if published := publishedVersions(versions); len(published) > 0 {
+		src = published[0]
 	}
 	if src == nil {
-		return nil, errors.New("this worker has no version to edit — publish or create one first")
+		return nil, errors.New("this worker has no version to base a new one on")
 	}
+	next := src.GetVersion() + 1
 
-	title := "Edit version: " + w.GetName()
-	if create {
-		// No draft exists, so the submit CREATES one from these values. The title
-		// says which so the operator is never surprised by which write fired.
-		title = "Edit version (new draft): " + w.GetName()
+	specs := []kit2.FieldSpec{
+		kit2.FieldSpec{Name: "role_ref", Label: "Plane role", Kind: kit2.KSelect,
+			Initial: w.GetRoleRef(), Options: roleOptions(roles, w.GetRoleRef())},
 	}
-	f := kit2.NewForm(title,
-		kit2.FieldSpec{Name: "role", Label: "Role", Kind: kit2.KTextArea, Initial: src.GetRole()},
-		kit2.FieldSpec{Name: "skills", Label: "Skills", Kind: kit2.KTextArea, Initial: src.GetSkills()},
-		kit2.FieldSpec{Name: "behavior", Label: "Behavior", Kind: kit2.KTextArea, Initial: src.GetBehavior()},
-		kit2.FieldSpec{Name: "agents_md", Label: "AGENTS.md", Kind: kit2.KTextArea, Initial: src.GetAgentsMd()},
-		// The model is a VERSION field, so it is editable exactly where the rest of
-		// the version is (the GUI keeps it on workers_.$id.tsx too).
-		kit2.FieldSpec{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: src.GetModelRef(),
-			Placeholder: "— none — (enter to choose a model)"},
-		kit2.FieldSpec{Name: "version_note", Label: "Version note", Kind: kit2.KText, Initial: src.GetVersionNote()},
-		kit2.FieldSpec{Name: "context_sources", Label: "Context sources (JSON)", Kind: kit2.KJSON, Initial: src.GetContextSources()},
-		kit2.FieldSpec{Name: "permissions", Label: "Permissions (JSON)", Kind: kit2.KJSON, Initial: src.GetPermissions()},
-		kit2.FieldSpec{Name: "gated_tools", Label: "Gated tools (JSON)", Kind: kit2.KJSON, Initial: src.GetGatedTools()},
-		kit2.FieldSpec{Name: "budget_overrides", Label: "Budget overrides (JSON)", Kind: kit2.KJSON, Initial: src.GetBudgetOverrides()},
-		kit2.FieldSpec{Name: "concurrency_limit", Label: "Concurrency limit", Kind: kit2.KNumber,
-			Initial: strconv.Itoa(int(src.GetConcurrencyLimit()))},
-	)
+	specs = append(specs, m.versionFields(src)...)
+
+	f := kit2.NewForm("New version v"+strconv.Itoa(int(next))+" of "+w.GetName()+" (copied from v"+strconv.Itoa(int(src.GetVersion()))+", saved published)", specs...)
 	f.Focused = true
 	f.Width = 70
 	f.OnOpenModelPicker = m.openFormModelPicker
-	workerID, versionID := w.GetId(), src.GetId()
+
+	workerID := w.GetId()
+	origRole := w.GetRoleRef()
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		limit, err := submitInt(v["concurrency_limit"], "concurrency limit")
 		if err != nil {
 			return nil, err
 		}
-		if create {
-			req := &apiv1.CreateWorkerVersionRequest{WorkerId: workerID}
-			setVersionFields(req, v, limit)
-			return m.Mutate(mutate.Request{
-				Name: "create draft version for " + workerID, Source: srcWorkers,
-				Do: func(ctx context.Context) error { return m.rpcCreateWorkerVersionWrite(ctx, req) },
-			}), nil
+		reqs := make([]mutate.Request, 0, 2)
+		if roleRef := v["role_ref"]; roleRef != origRole {
+			rr := roleRef
+			reqs = append(reqs, mutate.Request{
+				Name: "set plane role on " + workerID, Source: srcWorkers,
+				Do: func(ctx context.Context) error {
+					return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{Id: workerID, RoleRef: &rr})
+				},
+			})
 		}
-		req := &apiv1.UpdateWorkerVersionRequest{WorkerId: workerID, VersionId: versionID}
-		setVersionFieldsU(req, v, limit)
-		return m.Mutate(mutate.Request{
-			Name: "save draft version " + versionID, Source: srcWorkers,
-			Do: func(ctx context.Context) error { return m.rpcUpdateWorkerVersion(ctx, req) },
-		}), nil
+		req := &apiv1.CreateWorkerVersionRequest{WorkerId: workerID, Publish: true}
+		setVersionFields(req, v, limit)
+		reqs = append(reqs, mutate.Request{
+			Name: "create v" + strconv.Itoa(int(next)) + " of " + workerID, Source: srcWorkers,
+			Do: func(ctx context.Context) error { return m.rpcCreateWorkerVersionWrite(ctx, req) },
+		})
+		cmds := make([]tea.Cmd, 0, len(reqs))
+		for _, r := range reqs {
+			cmds = append(cmds, m.Mutate(r))
+		}
+		return batchWrites(cmds), nil
 	}
 	return f, nil
+}
+
+// batchWrites collapses a save's write commands into the one tea.Cmd a submit
+// returns. A SINGLE write is returned directly rather than wrapped: tea.Batch
+// yields a BatchMsg that the runtime unpacks, and wrapping one command in an
+// envelope makes the command opaque to anything that inspects it — including the
+// screen's own tests, which read the write's result. There is nothing to batch, so
+// there is nothing to wrap.
+func batchWrites(cmds []tea.Cmd) tea.Cmd {
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
+}
+
+// versionFields is the per-version field set — ONE builder, so the create form,
+// the edit form and the new-version form can never offer a different set for the
+// same version. A divergence there is a field the operator can set in one mode
+// and not another, which reads as a field that silently lost its value.
+//
+// src is nil for the create form (there is no version yet).
+func (m *Model) versionFields(src *apiv1.WorkerVersion) []kit2.FieldSpec {
+	return []kit2.FieldSpec{
+		// The model is a VERSION field (ADR-0003: the ref is versioned state), so it
+		// is edited with the rest of the version — the GUI keeps it on
+		// workers_.$id.tsx for the same reason. A REFERENCE, not text: activating the
+		// field opens the screen's model picker, so a ref can never be mistyped.
+		{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: src.GetModelRef(),
+			Placeholder: "— none — (enter to choose a model)"},
+		// The structured prompt fields compose into system_prompt server-side; they
+		// are the source of truth, so they are what the operator edits.
+		{Name: "role", Label: "Role", Kind: kit2.KTextArea, Initial: src.GetRole()},
+		{Name: "skills", Label: "Skills", Kind: kit2.KTextArea, Initial: src.GetSkills()},
+		{Name: "behavior", Label: "Behavior", Kind: kit2.KTextArea, Initial: src.GetBehavior()},
+		{Name: "agents_md", Label: "AGENTS.md", Kind: kit2.KTextArea, Initial: src.GetAgentsMd()},
+		{Name: "version_note", Label: "Version note", Kind: kit2.KText, Initial: src.GetVersionNote()},
+		{Name: "context_sources", Label: "Context sources (JSON)", Kind: kit2.KJSON, Initial: src.GetContextSources()},
+		{Name: "permissions", Label: "Permissions (JSON)", Kind: kit2.KJSON, Initial: src.GetPermissions()},
+		{Name: "gated_tools", Label: "Gated tools (JSON)", Kind: kit2.KJSON, Initial: src.GetGatedTools()},
+		{Name: "budget_overrides", Label: "Budget overrides (JSON)", Kind: kit2.KJSON, Initial: src.GetBudgetOverrides()},
+		{Name: "concurrency_limit", Label: "Concurrency limit", Kind: kit2.KNumber,
+			Initial: strconv.Itoa(int(src.GetConcurrencyLimit()))},
+	}
+}
+
+// roleOptions builds the plane-role picker: an explicit "none" (the binding is
+// optional — empty means no plane access), then every role the tenant returns.
+//
+// The worker's CURRENT binding is re-offered when the list does not contain it (a
+// deleted or unreadable role). Without that, a select could not show the value it
+// holds, and the next save would silently CLEAR a binding the operator never
+// touched — a select can only submit a value it offers.
+func roleOptions(roles []*apiv1.Role, current string) []kit2.Option {
+	opts := []kit2.Option{{Value: "", Label: "— none — (no plane access)"}}
+	seen := false
+	for _, r := range roles {
+		label := r.GetName()
+		if s := r.GetScope(); s != "" {
+			label += " (" + s + ")"
+		}
+		if r.GetId() == current {
+			seen = true
+		}
+		opts = append(opts, kit2.Option{Value: r.GetId(), Label: label})
+	}
+	if current != "" && !seen {
+		opts = append(opts, kit2.Option{
+			Value: current,
+			Label: current + " (not in this tenant's role list)",
+		})
+	}
+	return opts
 }
 
 // publishWorkerForm collects the optional publish note. The DRAFT is published
 // (that is what PublishWorkerVersion does); the form names which one so the
 // operator is never guessing what a publish will ship.
+//
+// This is the path for a worker that ALREADY carries a draft — the state older
+// clients left behind. A normal edit no longer needs it: saving an edit publishes
+// in place.
 func (m *Model) publishWorkerForm(workerID string, draft *apiv1.WorkerVersion) *kit2.Form {
 	f := kit2.NewForm("Publish v"+strconv.Itoa(int(draft.GetVersion()))+" of "+workerID,
 		kit2.FieldSpec{Name: "note", Label: "Version note", Kind: kit2.KText,
@@ -402,7 +568,16 @@ func publishedVersions(vs []*apiv1.WorkerVersion) []*apiv1.WorkerVersion {
 	return out
 }
 
-// newestVersion returns the highest-numbered version regardless of status.
+// newestVersion returns the highest-numbered version regardless of status — the
+// version an edit writes to.
+//
+// The latest, not "the active published version", because that is what the
+// platform already treats as the worker's current content: a model change edits
+// the latest version (BulkUpdateWorkerModel → GetLatestWorkerVersion(…, false)
+// then revert → update → republish), and the GUI's page defaults its editor to
+// the draft when one exists. Targeting the latest is also SELF-HEALING: saving it
+// re-publishes THAT version, so an abandoned draft left by an older client stops
+// being an orphan the moment the operator edits the worker.
 func newestVersion(vs []*apiv1.WorkerVersion) *apiv1.WorkerVersion {
 	var best *apiv1.WorkerVersion
 	for _, v := range vs {
@@ -411,6 +586,62 @@ func newestVersion(vs []*apiv1.WorkerVersion) *apiv1.WorkerVersion {
 		}
 	}
 	return best
+}
+
+// versionEdit is the set of version values a form was seeded with, so a submit
+// can tell whether the VERSION changed. Without it every save would republish the
+// version — a write, an outbox event and an audit row — even when the operator
+// only renamed the worker.
+type versionEdit struct {
+	modelRef, role, skills, behavior, agents, note  string
+	contextSources, permissions, gatedTools, budget string
+	limit                                           int32
+}
+
+// versionSnapshot records the values a form started from.
+func versionSnapshot(v *apiv1.WorkerVersion) versionEdit {
+	return versionEdit{
+		modelRef:       strings.TrimSpace(v.GetModelRef()),
+		role:           v.GetRole(),
+		skills:         v.GetSkills(),
+		behavior:       v.GetBehavior(),
+		agents:         v.GetAgentsMd(),
+		note:           v.GetVersionNote(),
+		contextSources: v.GetContextSources(),
+		permissions:    v.GetPermissions(),
+		gatedTools:     v.GetGatedTools(),
+		budget:         v.GetBudgetOverrides(),
+		limit:          v.GetConcurrencyLimit(),
+	}
+}
+
+// versionUnchanged reports whether every version field still holds its seeded
+// value.
+func versionUnchanged(v map[string]string, limit int32, orig versionEdit) bool {
+	return strings.TrimSpace(v["model_ref"]) == orig.modelRef &&
+		v["role"] == orig.role &&
+		v["skills"] == orig.skills &&
+		v["behavior"] == orig.behavior &&
+		v["agents_md"] == orig.agents &&
+		v["version_note"] == orig.note &&
+		v["context_sources"] == orig.contextSources &&
+		v["permissions"] == orig.permissions &&
+		v["gated_tools"] == orig.gatedTools &&
+		v["budget_overrides"] == orig.budget &&
+		limit == orig.limit
+}
+
+// setVersionFieldsOnCreate copies the form's values onto a CreateWorkerRequest's
+// first-version snapshot fields. UpdateWorkerVersion has its own pair of setters
+// below; this one exists because CreateWorker takes the version fields at the
+// HEADER level (no version object), so the same form feeds a different message.
+func setVersionFieldsOnCreate(req *apiv1.CreateWorkerRequest, v map[string]string, limit int32) {
+	req.Role, req.Skills, req.Behavior = v["role"], v["skills"], v["behavior"]
+	req.AgentsMd, req.VersionNote = v["agents_md"], v["version_note"]
+	req.ContextSources, req.Permissions = v["context_sources"], v["permissions"]
+	req.GatedTools, req.BudgetOverrides = v["gated_tools"], v["budget_overrides"]
+	req.ModelRef = strings.TrimSpace(v["model_ref"])
+	req.ConcurrencyLimit = limit
 }
 
 // setVersionFields copies the form's values onto a CreateWorkerVersion request.
@@ -477,10 +708,6 @@ func workerStatusOf(meta string) string {
 	return strings.ToLower(meta)
 }
 
-// rpcCreateWorker / rpcUpdateWorker / rpcDeleteWorker and the version writes.
-// Each is a thin RPC thunk so tests can drive the whole flow without a plane
-// (the same discipline the rest of the screen's writes follow).
-
 // --- the load thunks' real implementations ---------------------------------
 
 func (m *Model) defaultGetWorker(ctx context.Context, id string) (*apiv1.Worker, error) {
@@ -503,6 +730,21 @@ func (m *Model) defaultListWorkerVersions(ctx context.Context, id string) ([]*ap
 		return nil, err
 	}
 	return resp.Msg.GetVersions(), nil
+}
+
+// defaultListRoles loads the tenant's roles for the plane-role picker. Paged to
+// the same generous bound the other pickers use: the picker is a selection over
+// what the tenant has, and a partial list would offer a subset as if it were all
+// of them.
+func (m *Model) defaultListRoles(ctx context.Context) ([]*apiv1.Role, error) {
+	if m.cl == nil || m.cl.Auth == nil {
+		return nil, errors.New("no auth client")
+	}
+	resp, err := m.cl.Auth.ListRoles(ctx, connect.NewRequest(&apiv1.ListRolesRequest{PageSize: 500}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRoles(), nil
 }
 
 func (m *Model) defaultCreateWorker(ctx context.Context, req *apiv1.CreateWorkerRequest) error {

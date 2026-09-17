@@ -104,6 +104,16 @@ type Base struct {
 	detail  screenkit.Detail
 	focusD  bool
 
+	// editPanel HOSTS the open inline form and lives as long as the editing
+	// session does. It has to outlive a single frame: Panel.SetContent CLAMPS a
+	// scroll that starts at 0, so a Panel built fresh on every frame (which is what
+	// the detail pane used to do) can never scroll — every row below the pane's
+	// inner height was unreachable. Measured before this: editWorkerVersionForm
+	// renders 15 rows and createWorkerForm 10 against an inner height of h-2, so on
+	// a laptop-sized terminal the operator was typing into fields that were not on
+	// screen. nil when not editing.
+	editPanel *Panel
+
 	// editForm, when non-nil, replaces the detail pane's body with a typed
 	// form: the screen's INLINE EDIT mode. Keys route to it while it is up.
 	editForm  *Form
@@ -569,6 +579,10 @@ func (b *Base) DetailForm() *Form { return b.editForm }
 // finishDetailEdit closes the inline editor and reports the outcome once.
 func (b *Base) finishDetailEdit(submitted bool) {
 	b.editForm = nil
+	// The hosting panel is dropped with the session, so the next form opens at the
+	// top with its own content and scroll rather than inheriting the previous
+	// one's position.
+	b.editPanel = nil
 	if b.OnEditDone != nil {
 		b.OnEditDone(submitted)
 	}
@@ -1500,7 +1514,25 @@ func (b *Base) detailPaneView(w, h int) string {
 		// One border cell each side plus a little slack; the form windows its
 		// values to this width so the caret is always on screen.
 		b.editForm.Width = w - 4
-		content = b.editForm.View() + "\n" + theme.HintText.Render("ctrl+s: save · esc: cancel")
+		form := b.editForm.View()
+		content = form + "\n" + theme.HintText.Render("ctrl+s: save · esc: cancel")
+		// The form is SCROLLED to follow its cursor, through a panel kept for the
+		// whole editing session. A form is routinely taller than the pane (the
+		// worker editor renders 15 rows before the field set grew), and without this
+		// the lower fields — and the save chord's own hint — sat off-pane with no
+		// way to reach them. The row comes from the very string being drawn, so it
+		// tracks wrapped values, ctrl+e expansion and hidden fields for free.
+		if b.editPanel == nil {
+			b.editPanel = NewPanel(title, w, h)
+		}
+		p := b.editPanel
+		p.Title, p.Width, p.Height = title, w, h
+		p.Focused = b.focusD
+		p.SetContent(content)
+		// Two rows of context above the field, matching the step editor's rule.
+		p.Scroll = b.editForm.FocusedRow(form) - 2
+		p.clampScroll()
+		return p.View()
 	}
 	p := NewPanel(title, w, h)
 	p.Focused = b.focusD
