@@ -171,7 +171,8 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 		}
 		var modelRef string
 		if s.WorkerVersion > 0 {
-			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, s.Ref, fmt.Sprintf("v%d", s.WorkerVersion)); err == nil {
+			// By NUMBER, not by id (see GetWorkerVersionByNumber).
+			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, s.Ref, s.WorkerVersion); err == nil {
 				modelRef = v.ModelRef
 			}
 		}
@@ -2209,7 +2210,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("worker step %q has no worker ref", step.Name))
 		}
-		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
+		// By NUMBER, not by id. This is the DISPATCH resolution: a step that
+		// pinned a version must run THAT version. The old "v%d" pseudo-id
+		// never matched a row, so every pin silently degraded to
+		// latest-published below (see GetWorkerVersionByNumber).
+		workerVer, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, step.Ref, step.WorkerVersion)
 		if err != nil {
 			if err == db.ErrNotFound {
 				// Fall back to latest published — supports workflows

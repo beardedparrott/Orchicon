@@ -664,6 +664,63 @@ func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, ve
 	return v, nil
 }
 
+// GetWorkerVersionByNumber resolves a worker version by its VERSION NUMBER —
+// the ordinal in the worker's version trail (1, 2, 3 …) — not by its row id.
+//
+// It exists because three dispatch paths carried a pinned version NUMBER and
+// asked for it BY ID:
+//
+//	db.GetWorkerVersionByID(ctx, tx, tenantID, workerID, fmt.Sprintf("v%d", n))
+//
+// worker_versions.id is a ULID (NewID) and worker_versions_pkey is on id, so
+// "v3" matches no row — ever. Each call site reads the miss as "this step is
+// not pinned" and falls back to GetLatestWorkerVersion(…, publishedOnly=true),
+// so a step that pinned v3 silently ran whatever was latest published instead.
+// Measured on the live plane before this function existed: 360 workflow_step_runs
+// carried a non-zero _worker_version and 218 of them had a matching published
+// row at that number — those 218 were resolving to the wrong version.
+//
+// worker_versions_worker_version_idx is UNIQUE (worker_id, version), so the
+// (tenant, worker, number) triple addresses at most one row.
+//
+// DISPATCHABLE-ONLY (status <> 'draft'), deliberately — the status vocabulary
+// is the schema's own documented dispatchability contract:
+//
+//   - a DRAFT is not dispatchable: publishing is what "mak[es] it
+//     dispatchable" (proto/orchicon/api/v1/worker_service.proto:20-22). A
+//     stray draft — an abandoned edit, which is exactly the state the TUI must
+//     never leave behind — must not become the version a run executes;
+//   - DEPRECATED stays IN: a deprecated version "is still dispatchable for
+//     in-flight Workflows; no new Workflows may bind"
+//     (worker_service.proto:25-27), so a run pinned to a since-deprecated
+//     version still resolves to it.
+//
+// Returns ErrNotFound for an unknown number, a version that exists only as a
+// draft, or another tenant's/worker's row — which is the callers' documented
+// signal to fall back to the latest published version.
+func GetWorkerVersionByNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID string, version int) (WorkerVersionRow, error) {
+	const q = `SELECT id, tenant_id, worker_id, version, version_note, status,
+		model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
+		recovery_workflow_ref, labels, published_at, created_at
+		FROM worker_versions
+		WHERE tenant_id = $1 AND worker_id = $2 AND version = $3 AND status <> 'draft'`
+	var v WorkerVersionRow
+	err := tx.QueryRow(ctx, q, tenantID, workerID, version).Scan(
+		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
+		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkerVersionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerVersionRow{}, fmt.Errorf("db: get worker version by number: %w", err)
+	}
+	return v, nil
+}
+
 // UpdateDraftVersion overwrites all mutable fields of a draft
 // WorkerVersion row. Only versions with status='draft' may be updated.
 // The caller is responsible for merging request fields into a full

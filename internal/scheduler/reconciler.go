@@ -936,7 +936,10 @@ func (r *TaskReconciler) workerVersionForStepRun(ctx context.Context, tx pgx.Tx,
 	_ = json.Unmarshal(sr.Result, &meta)
 	if meta.WorkerID != "" {
 		if meta.WorkerVer > 0 {
-			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, meta.WorkerID, fmt.Sprintf("v%d", meta.WorkerVer)); err == nil {
+			// By NUMBER, not by id: _worker_version carries the version
+			// ordinal and worker_versions.id is a ULID, so a "v%d"
+			// pseudo-id could never match (see GetWorkerVersionByNumber).
+			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, meta.WorkerID, meta.WorkerVer); err == nil {
 				return v, nil
 			}
 		}
