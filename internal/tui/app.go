@@ -1271,6 +1271,7 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	// right before their arrows did anything to what they just opened. Left still returns
 	// to the rail.
 	m.askPane = askPaneConversation
+	m.syncAskPaneFocus()
 	m.chat.SetActive(id)
 	// The right rail appears with a conversation, which SHRINKS contentWidth()
 	// — and every pane's width is assigned from it in refreshLayout, which is
@@ -2847,23 +2848,41 @@ const (
 // matching what left/right already mean on every other one ("left+right should move
 // between the two panes below the menus").
 //
-// It also focuses the content: selecting a pane IS choosing where the keyboard goes, so
-// the bar must stop claiming keys in the same press.
+// It also drives the panes' BORDERS through Base.SetPaneFocus, so the selection is VISIBLE. Without
+// that the operator had "no ... highlight [on] the pane letting you know you have focus".
+//
+// THE DIRECTIONS FOLLOW THE LAYOUT, NOT THE NAMES. The rail is joined to the RIGHT of the content
+// (View: JoinHorizontal(body, rail)), so RIGHT selects the rail and LEFT the conversation — the arrow
+// points at the pane. I had this inverted at first and the operator reported it immediately: "the
+// arrows are in reverse. You have to hit right from the rail to focus on the conversation even though
+// the conversation pane is on the left".
 func (m *App) askPaneKey(key string) (bool, tea.Cmd) {
 	if m.active != TabAsk || !m.railVisible() {
 		return false, nil
 	}
 	switch key {
-	case "left":
-		m.askPane = askPaneRail
 	case "right":
+		m.askPane = askPaneRail
+	case "left":
 		m.askPane = askPaneConversation
 	default:
 		return false, nil
 	}
 	m.setFocus(focusContent)
+	m.syncAskPaneFocus()
 	m.refreshStreamStatus()
 	return true, nil
+}
+
+// syncAskPaneFocus makes the pane borders agree with askPane. Called wherever askPane changes, so the
+// two panes can never disagree about which one holds the keyboard.
+func (m *App) syncAskPaneFocus() {
+	if m.active != TabAsk {
+		return
+	}
+	if b, ok := m.screens[TabAsk].(interface{ SetPaneFocus(bool) }); ok {
+		b.SetPaneFocus(m.askPane == askPaneConversation)
+	}
 }
 
 // sendFromComposer routes composer text: slash commands dispatch,

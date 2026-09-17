@@ -1089,6 +1089,24 @@ func (b *Base) activateSelected() (bool, tea.Cmd) {
 	return true, nil
 }
 
+// SetPaneFocus moves the keyboard between this screen's list and its detail pane, so the pane
+// BORDERS show where the keyboard is. A shell that has its own notion of which pane is selected (the
+// Ask tab's rail vs conversation) drives this too, so both panes indicate focus consistently rather
+// than one of them being permanently dim.
+func (b *Base) SetPaneFocus(detail bool) {
+	b.focusD = detail
+	if detail {
+		if b.Focus != nil {
+			b.Focus.Set("detail")
+		}
+		return
+	}
+	b.setFocusForPane()
+}
+
+// DetailFocused reports whether the detail pane holds the keyboard.
+func (b *Base) DetailFocused() bool { return b.focusD }
+
 func (b *Base) setFocusForPane() {
 	if b.Focus != nil && b.active >= 0 && b.active < len(b.sources) {
 		b.Focus.Set(b.sources[b.active].name)

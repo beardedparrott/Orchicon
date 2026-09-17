@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
@@ -490,7 +491,10 @@ func TestMarkedRowsShowInTheRail(t *testing.T) {
 func askPaneApp(t *testing.T, n int) *App {
 	t.Helper()
 	m := newTestApp()
-	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
+	// THE REAL Ask screen, not a stub: the pane-focus assertion is a TYPE assertion on the screen, and
+	// kit2.Base's SetPaneFocus is reached through EMBEDDING — so a stub silently makes that path
+	// untestable, which is exactly what it did on the first run of these tests.
+	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))
 	m.dispatch(tea.WindowSizeMsg{Width: 140, Height: 40})
 	m.SwitchTo(TabAsk)
 	m.askMode = askConversations
@@ -515,9 +519,14 @@ func askPaneApp(t *testing.T, n int) *App {
 // then up/down works accordingly between the rail and conversation". Left/right select; the vertical
 // keys follow the selection.
 //
-// Before this, the rail claimed the vertical keys whenever it was VISIBLE — which is whenever a
-// conversation is open — so with a conversation on screen there was no keyboard key left to scroll
-// the transcript with, and the operator had to ask what to press.
+// THE DIRECTIONS MATCH THE LAYOUT: the rail is drawn to the RIGHT of the conversation, so right selects
+// the rail and left the conversation. My first cut had them swapped and the operator reported it at
+// once — "the arrows are in reverse ... even though the conversation pane is on the left" — so the
+// directions are asserted explicitly rather than left to a comment.
+//
+// Before any of this, the rail claimed the vertical keys whenever it was VISIBLE — which is whenever a
+// conversation is open — so with a conversation on screen there was no keyboard key left to scroll the
+// transcript with, and the operator had to ask what to press.
 func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 	leftKey := tea.KeyMsg{Type: tea.KeyLeft}
 	rightKey := tea.KeyMsg{Type: tea.KeyRight}
@@ -541,15 +550,15 @@ func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 	}
 	str.ScrollToBottom()
 
-	// Right selects the CONVERSATION: the arrows must stop moving the rail's selection and scroll the
-	// transcript instead.
+	// LEFT selects the CONVERSATION, because the conversation is the LEFT pane. The arrows must stop
+	// moving the rail's selection and scroll the transcript instead.
 	//
 	// The scroll is asserted with UP from the BOTTOM, which is the realistic gesture ("read back
 	// through a long reply") and the only direction that can move an offset already at its maximum —
 	// pressing Down at the bottom clamps and would have made this assertion vacuous.
-	m = press(m, rightKey)
+	m = press(m, leftKey)
 	if m.askPane != askPaneConversation {
-		t.Fatalf("right did not select the conversation (askPane = %v)", m.askPane)
+		t.Fatalf("left did not select the conversation, which is the LEFT pane (askPane = %v)", m.askPane)
 	}
 	sel, off := m.convSel, str.Offset
 	m = press(m, upKey, upKey)
@@ -562,15 +571,49 @@ func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 			"operator's \"what am I supposed to hit to scroll a conversation\"; there was no key")
 	}
 
-	// Left goes back to the rail, and the arrows move the selection again.
-	m = press(m, leftKey)
+	// RIGHT goes back to the rail, which is the RIGHT pane, and the arrows move the selection again.
+	m = press(m, rightKey)
 	if m.askPane != askPaneRail {
-		t.Fatalf("left did not select the rail (askPane = %v)", m.askPane)
+		t.Fatalf("right did not select the rail, which is the RIGHT pane (askPane = %v)", m.askPane)
 	}
 	before := m.convSel
 	m = press(m, downKey)
 	if m.convSel == before {
 		t.Errorf("back on the rail, down did not move the selection (stuck at %d)", m.convSel)
+	}
+}
+
+// BOTH PANES SHOW WHERE THE KEYBOARD IS. The rail's border was hardcoded unfocused and the conversation
+// pane's was never told about the pane selection, so the operator had "no ... highlight [on] the pane
+// letting you know you have focus".
+//
+// This asserts the DECISION, not the pixels, and the reason is worth keeping: lipgloss strips styling
+// under the test colour profile, so a focused and an unfocused panel render to byte-identical output
+// (measured: both 1413 bytes, no escape sequences at all). A rendered-border assertion is impossible
+// for the rail — which is how `p.Focused = false` survived so long.
+func TestAskPaneSelectionShowsFocusOnBothPanes(t *testing.T) {
+	m := askPaneApp(t, 3)
+
+	// The rail selected: its border lights, the conversation's does not.
+	m.askPane = askPaneRail
+	m.syncAskPaneFocus()
+	if !m.railFocused() {
+		t.Error("the rail holds the keyboard but does not render focused")
+	}
+
+	// The conversation selected: the reverse. This is the half that was missing.
+	m.askPane = askPaneConversation
+	m.syncAskPaneFocus()
+	if m.railFocused() {
+		t.Error("the conversation holds the keyboard but the rail still renders focused")
+	}
+	if s, ok := m.screens[TabAsk].(interface{ DetailFocused() bool }); ok {
+		if !s.DetailFocused() {
+			t.Error("the conversation holds the keyboard but its pane does not render focused — the " +
+				"operator has no indication of where they are")
+		}
+	} else {
+		t.Error("the Ask screen does not expose pane focus, so syncAskPaneFocus cannot light its border")
 	}
 }
 
