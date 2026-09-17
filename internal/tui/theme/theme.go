@@ -157,10 +157,10 @@ var Light = Theme{
 	AccentCyan:   lipgloss.Color(hsl(188, 86, 32)),
 	AccentIndigo: lipgloss.Color(hsl(234, 89, 60)),
 	Select:       lipgloss.Color(hsl(188, 86, 31)),
-	OK:           lipgloss.Color("#059669"),
-	Warn:         lipgloss.Color("#d97706"),
-	Err:          lipgloss.Color("#e11d48"),
-	Busy:         lipgloss.Color("#0e7490"),
+	OK:           lipgloss.Color("#065f46"),
+	Warn:         lipgloss.Color("#92400e"),
+	Err:          lipgloss.Color("#be123c"),
+	Busy:         lipgloss.Color("#155e75"),
 }
 
 // GruvboxDark is a TUI-native palette (Morhetz's Gruvbox, dark). Terminal
@@ -202,8 +202,8 @@ var GruvboxLight = Theme{
 	AccentCyan:   lipgloss.Color("#427b58"),
 	AccentIndigo: lipgloss.Color("#8f3f71"),
 	Select:       lipgloss.Color("#427b58"),
-	OK:           lipgloss.Color("#79740e"),
-	Warn:         lipgloss.Color("#b57614"),
+	OK:           lipgloss.Color("#5f5b06"),
+	Warn:         lipgloss.Color("#7a5000"),
 	Err:          lipgloss.Color("#9d0006"),
 	Busy:         lipgloss.Color("#076678"),
 }

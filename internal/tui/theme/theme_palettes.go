@@ -136,12 +136,28 @@ func (s paletteSpec) theme() Theme {
 }
 
 // statusSet is the per-mode status palette. Status semantics must not shift
-// with the theme (the GUI keeps them constant across its themes too).
+// with the theme (the GUI keeps them constant across its themes too) — but
+// LEGIBILITY must, because the same hue that glows on a near-black background
+// disappears on a near-white one.
+//
+// MEASURED, and this is why the light set was re-picked. Against the light
+// themes' backgrounds the previous values were:
+//
+//	Warn #d97706  2.66:1   <- the operator's "green text ... VERY hard to read"
+//	OK   #059669  3.08:1
+//	Busy #0e7490  4.17:1
+//	Err  #e11d48  4.19:1
+//
+// All four are below the 4.5:1 WCAG AA floor for body text, and the gate did
+// not catch it because it demanded only 2.5:1 (see TestStructuralContrast).
+// These are the darker members of the same hue families, so a status reads the
+// same way it always did — just legibly on a light surface. The dark set is
+// untouched: it measures 6.4-13.9:1 already.
 type statusSet struct{ OK, Warn, Err, Busy string }
 
 var (
 	darkStatus  = statusSet{"#34d399", "#fbbf24", "#fb7185", "#22d3ee"}
-	lightStatus = statusSet{"#059669", "#d97706", "#e11d48", "#0e7490"}
+	lightStatus = statusSet{"#065f46", "#92400e", "#be123c", "#155e75"}
 )
 
 // --- the palette set -----------------------------------------------------

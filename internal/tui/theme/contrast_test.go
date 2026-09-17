@@ -29,10 +29,34 @@ func TestStructuralContrast(t *testing.T) {
 		if r := contrastRatio(string(th.Border), bg); r < 1.8 {
 			t.Errorf("%s: Border contrast %.2f vs background — pane borders and their titles will be invisible", name, r)
 		}
-		// Status colours must be distinguishable from the background.
-		for label, c := range map[string]lipgloss.Color{"OK": th.OK, "Warn": th.Warn, "Err": th.Err} {
-			if r := contrastRatio(string(c), bg); r < 2.5 {
-				t.Errorf("%s: %s contrast %.2f vs background, want >= 2.5", name, label, r)
+		// Status colours carry MEANING in text (a state on a row, a verdict, a
+		// "failed"), so they have to be readable as words, not merely
+		// distinguishable from the background.
+		//
+		// This gate used to demand 2.5:1, which is below even the WCAG floor for
+		// NON-text UI components (3:1) — and the light palettes sat in the gap it
+		// left: Warn measured 2.66:1 and OK 3.08:1 on a near-white background,
+		// which the operator reported as "green text ... in light themes it is
+		// VERY hard to read". A gate that passes unreadable text is worse than no
+		// gate, because it certifies the problem.
+		//
+		// The floor is therefore the 4.5:1 body-text requirement on a LIGHT
+		// background. Dark backgrounds keep the 3:1 UI floor: the dark set already
+		// measures 6.4-13.9:1 (the one exception is gruvbox-dark's 3.80:1 red,
+		// which is that palette's deliberate, readable-on-black signature colour —
+		// raising it would mean shipping a different palette under Gruvbox's name).
+		//
+		// "Light" is DERIVED from the background's luminance rather than read from
+		// a declared flag, so the requirement cannot disagree with the palette it
+		// is measuring.
+		minStatus := 3.0
+		if relLuminance(bg) > 0.5 {
+			minStatus = 4.5
+		}
+		for label, c := range map[string]lipgloss.Color{"OK": th.OK, "Warn": th.Warn, "Err": th.Err, "Busy": th.Busy} {
+			if r := contrastRatio(string(c), bg); r < minStatus {
+				t.Errorf("%s: %s contrast %.2f vs background %s, want >= %.1f (status text must be READABLE, not just distinguishable)",
+					name, label, r, bg, minStatus)
 			}
 		}
 	}
