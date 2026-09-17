@@ -2153,6 +2153,14 @@ func bgOpaque(l string) string {
 	if open == "" {
 		return l
 	}
+	// The foreground repair sequence, derived the same way so it always matches the active theme and
+	// colour profile. A style with no foreground (an unusual theme) yields "" and the repair is a
+	// no-op, which is the honest behaviour: there is then no theme colour to assert.
+	fgPaint := lipgloss.NewStyle().Foreground(theme.Text).Render("")
+	fgOpen := ""
+	if strings.HasSuffix(fgPaint, reset) {
+		fgOpen = strings.TrimSuffix(fgPaint, reset)
+	}
 	var b strings.Builder
 	for {
 		i := strings.Index(l, reset)
@@ -2162,21 +2170,32 @@ func bgOpaque(l string) string {
 		}
 		rest := l[i+len(reset):]
 		b.WriteString(l[:i+len(reset)])
-		// Re-assert the background UNLESS the next thing actually establishes one.
+		// Re-assert the FOREGROUND and the BACKGROUND unless the next SGR establishes them.
 		//
 		// This used to skip the repair whenever ANY SGR followed, on the reasoning that "its own
-		// sequence will establish state". That is only true for a sequence that sets a BACKGROUND —
-		// and the overwhelming majority set only a FOREGROUND, which is how every one of these got
-		// past it:
+		// sequence will establish state". That is only true of a sequence that sets the same
+		// ATTRIBUTE — and almost all of them set only a foreground:
 		//
 		//	...\x1b[0m\x1b[38;2;157;171;190mhttps://…\x1b[0m
-		//	    └ reset; the next SGR is fg-only, so bg stayed CLEARED for the whole URL
+		//	    └ reset; the next SGR is fg-only, so the BACKGROUND stayed cleared for the whole URL
 		//
-		// The result is a row whose text is themed but whose CELLS have no background, so the
-		// terminal's own colour shows through — the operator's "black background box" on the footer,
-		// "the black around the adapter and provider selection", and the black blocks at the end of a
-		// line in an execution. The theme could never fix those, because the app was not painting the
-		// cells at all.
+		// Two different symptoms came out of that one omission:
+		//
+		//   - a cell with no BACKGROUND shows the terminal's own — the "black background box" on the
+		//     footer, "the black around the adapter and provider selection", and the black blocks at
+		//     the end of a line in an execution (which is also why the clipboard copy returned spaces
+		//     and a bare │: those cells hold no glyphs);
+		//   - a cell with no FOREGROUND shows the terminal's default, which is the "terminal font
+		//     color coming through in various areas" — green on this operator's terminal, and
+		//     unreadable on a light theme. The markdown renderer is attribute-only BY DESIGN (it
+		//     composes with a host that supplies the colours) and the detail pane's viewport supplies
+		//     NONE, so every markdown body and every raw output block rendered in the terminal's
+		//     colour.
+		//
+		// Repairing both here is the general fix: no cell of the frame is left to the terminal.
+		if !sgrSetsForeground(rest) {
+			b.WriteString(fgOpen)
+		}
 		if !sgrSetsBackground(rest) {
 			b.WriteString(open)
 		}
@@ -2192,6 +2211,17 @@ func bgOpaque(l string) string {
 // A full reset (0) is NOT included: it clears the background too, and the loop's next iteration
 // catches it.
 func sgrSetsBackground(rest string) bool {
+	return sgrHasParam(rest, "48", "7")
+}
+
+// sgrSetsForeground is the same test for the foreground: 38;… sets a colour and 7 swaps the pair.
+// 39 (the default-foreground reset) does NOT count — it is the very thing being repaired.
+func sgrSetsForeground(rest string) bool {
+	return sgrHasParam(rest, "38", "7")
+}
+
+// sgrHasParam reports whether rest begins with an SGR sequence carrying any of the given parameters.
+func sgrHasParam(rest string, params ...string) bool {
 	if !strings.HasPrefix(rest, "\x1b[") {
 		return false
 	}
@@ -2200,8 +2230,10 @@ func sgrSetsBackground(rest string) bool {
 		return false
 	}
 	for _, p := range strings.Split(rest[2:end], ";") {
-		if p == "48" || p == "7" {
-			return true
+		for _, want := range params {
+			if p == want {
+				return true
+			}
 		}
 	}
 	return false
@@ -2209,9 +2241,9 @@ func sgrSetsBackground(rest string) bool {
 
 // padScreenLine renders one row at exactly w cells: overlong lines are
 // ANSI-aware truncated, short lines background-padded. Every cell —
-// including padding — carries the theme's solid background. Any inner
-// style's reset is followed by a background re-assert (bgOpaque), so the
-// padding can never render unpainted.
+// including padding — carries the theme's solid background AND its body foreground.
+// Any inner style's reset is followed by a re-assert of whichever of the two it
+// cleared (bgOpaque), so no cell can be left to the terminal.
 func padScreenLine(l string, w int) string {
 	cols := lipgloss.Width(l)
 	if cols > w {
@@ -2221,8 +2253,17 @@ func padScreenLine(l string, w int) string {
 	if cols < w {
 		l += strings.Repeat(" ", w-cols)
 	}
-	return bgOpaque(theme.ScreenBg.Render(l))
+	// BOTH attributes, because each is independently lost: an inner style ends with a reset and the
+	// next one frequently restores only the foreground, which is how the background went missing; and
+	// the row's own leading cells (padding, and text before any styled span) need a colour from the
+	// start, which a background-only wrap does not give them.
+	return bgOpaque(screenBase.Render(l))
 }
+
+// screenBase is the style every row of the frame is wrapped in: the theme's body text on the theme's
+// screen background. It is one value so the wrap and bgOpaque's repairs cannot disagree — the repair
+// derives its sequences from the same two tokens.
+var screenBase = lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Bg)
 
 // ReconnectRequested reports whether the shell exited for /connect
 // (main.go re-opens the connection screen instead of quitting).

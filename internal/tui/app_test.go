@@ -414,6 +414,16 @@ func TestEveryCellCarriesTheThemeBackground(t *testing.T) {
 			"must paint every cell of the frame (first offender: col %d of line %d)",
 			unpainted.total, unpainted.firstCol, unpainted.firstLine)
 	}
+	// AND THE SAME FOR THE FOREGROUND, which is the other half of the operator's report: "There is
+	// still 'terminal' font color coming through in various areas ... Can we just make sure ALL text
+	// is being affected by our theming engine and not relying on terminal bleed through?" A markdown
+	// renderer emits attributes only and relies on its host for colour, so a host that supplies none
+	// (the detail pane's viewport) left every body in the terminal's own foreground.
+	if unpainted.fg != 0 {
+		t.Errorf("%d cells have no foreground, so the terminal's own font colour shows through "+
+			"(first offender: col %d of line %d) — every cell must carry a theme colour",
+			unpainted.fg, unpainted.fgFirstCol, unpainted.fgFirstLine)
+	}
 }
 
 // unpaintedCells counts the cells of a rendered frame with no background in effect. It walks the
@@ -421,13 +431,16 @@ func TestEveryCellCarriesTheThemeBackground(t *testing.T) {
 // whole sequence history of the row: a reset clears it, a 48;… sets it, and a 38;… leaves it alone.
 type unpaintedReport struct {
 	total, firstCol, firstLine int
+	// fg is the same count for cells with no FOREGROUND, which is the operator's "terminal font
+	// color coming through in various areas": equally a cell the app did not paint.
+	fg, fgFirstLine, fgFirstCol int
 }
 
 func unpaintedCells(view string) unpaintedReport {
 	var rep unpaintedReport
-	rep.firstCol, rep.firstLine = -1, -1
+	rep.firstCol, rep.firstLine, rep.fgFirstCol, rep.fgFirstLine = -1, -1, -1, -1
 	for li, line := range strings.Split(view, "\n") {
-		bg := false
+		bg, fg := false, false
 		col := 0
 		rest := line
 		for {
@@ -436,11 +449,19 @@ func unpaintedCells(view string) unpaintedReport {
 			if i >= 0 {
 				text = rest[:i]
 			}
-			if n := lipgloss.Width(text); n > 0 && !bg {
-				if rep.firstLine < 0 {
-					rep.firstLine, rep.firstCol = li+1, col
+			if n := lipgloss.Width(text); n > 0 {
+				if !bg {
+					if rep.firstLine < 0 {
+						rep.firstLine, rep.firstCol = li+1, col
+					}
+					rep.total += n
 				}
-				rep.total += n
+				if !fg {
+					if rep.fgFirstLine < 0 {
+						rep.fgFirstLine, rep.fgFirstCol = li+1, col
+					}
+					rep.fg += n
+				}
 			}
 			col += lipgloss.Width(text)
 			if i < 0 {
@@ -452,13 +473,19 @@ func unpaintedCells(view string) unpaintedReport {
 			}
 			for _, p := range strings.Split(rest[i+2:i+end], ";") {
 				switch p {
-				case "", "0", "49":
-					bg = false
+				case "", "0":
+					bg, fg = false, false
 					if p == "" {
-						bg = true // an empty parameter list is 0, handled above
+						bg, fg = true, true // an empty parameter list means 0; handled above
 					}
-				case "48":
+				case "49":
+					bg = false
+				case "48", "7":
 					bg = true
+				case "39":
+					fg = false
+				case "38":
+					fg = true
 				}
 			}
 			rest = rest[i+end+1:]
