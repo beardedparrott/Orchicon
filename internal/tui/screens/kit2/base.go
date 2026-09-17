@@ -515,6 +515,20 @@ func (b *Base) SetOnDetail(fn func(src, id string) tea.Cmd) { b.onDetail = fn }
 // DetailID returns the id the detail pane currently shows.
 func (b *Base) DetailID() string { return b.detailID }
 
+// SetDetailID declares that the detail pane is showing the item with this id.
+//
+// The id is normally written by the detail-fetch handler, which is right for a screen whose detail
+// arrives from a fetch. The Ask tab's transcript does NOT: its body is pushed by the shell
+// (SetDetailContent) for whatever conversation is open, so nothing ever set the id — and every
+// consumer that asks "is the detail showing THIS item?" then answered no. The most costly one is the
+// shell's chat repaint, which is guarded on it: with the id empty, a live chunk or a just-sent message
+// produced NO repaint, so the operator's own text stayed invisible until something else happened to
+// paint the pane ("User messages don't appear until AFTER the model responds").
+//
+// A caller that owns the pane's content declares what it is showing. That is a truthful statement
+// rather than a workaround: on the Ask tab the pane IS showing that conversation.
+func (b *Base) SetDetailID(id string) { b.detailID = id }
+
 // DetailWidth returns the detail pane's render width.
 func (b *Base) DetailWidth() int {
 	if w := b.detail.Width; w > 10 {

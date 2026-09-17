@@ -1335,6 +1335,16 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	m.askPane = askPaneConversation
 	m.syncAskPaneFocus()
 	m.chat.SetActive(id)
+	// DECLARE THE PANE'S CONTENT. The transcript is pushed by the shell for this conversation, so
+	// nothing else would ever set the detail id — and the shell's chat repaint is guarded on it, so a
+	// keyboard-opened conversation (which does not go through RequestDetail, unlike a CLICK on the
+	// rail) rendered no transcript at all until something incidental painted it. The click path worked
+	// and the keyboard path did not, which is the same asymmetry that made Enter inert on this rail.
+	if s := m.screens[TabAsk]; s != nil {
+		if sid, ok := s.(interface{ SetDetailID(string) }); ok {
+			sid.SetDetailID(id)
+		}
+	}
 	// The right rail appears with a conversation, which SHRINKS contentWidth()
 	// — and every pane's width is assigned from it in refreshLayout, which is
 	// only otherwise run on a window resize. Without re-laying-out here the dock
@@ -2641,6 +2651,18 @@ func (m *App) onChatWake() tea.Cmd {
 		} else {
 			str.Notice = ""
 		}
+		// THE GUI's thinking indicator, matched verbatim. The GUI renders "Orchicon is thinking…" while a
+		// turn is streaming and has produced NO content yet (ask-orchicon.tsx: "Thinking indicator —
+		// visible until any streaming content arrives"), so the operator sees that their message was
+		// received before the first token lands. The TUI had no equivalent: after sending, the pane
+		// showed the operator's own message and then sat silent until the reply started, which reads as a
+		// hang on a slow model.
+		//
+		// It rides the transcript's NOTICE line — the same slot reconnecting uses — so it adds no row to
+		// the transcript and cannot be mistaken for a message.
+		if str.Notice == "" && m.chat.IsStreaming(m.chatConvID) && awaitingReply(items) {
+			str.Notice = "Orchicon is thinking…"
+		}
 		// Surface the scroll position when the transcript is taller than the pane.
 		//
 		// The transcript follows the TAIL, so a reply longer than the pane scrolls
@@ -2659,6 +2681,32 @@ func (m *App) onChatWake() tea.Cmd {
 		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil
+}
+
+// awaitingReply reports whether the conversation is waiting for the model's first content — i.e. a user
+// message has been sent and NO model text has arrived after it.
+//
+// The comparison is "after the LAST user item" rather than "any model text exists" so a follow-up in a
+// long conversation still shows the indicator, and so it clears the moment the reply starts (the GUI's
+// rule: visible until any streaming content arrives).
+func awaitingReply(items []chat.ChatItem) bool {
+	lastUser := -1
+	for i, it := range items {
+		if it.Kind == chat.KindUser {
+			lastUser = i
+		}
+	}
+	if lastUser < 0 {
+		return false // nothing was sent; there is no reply to wait for
+	}
+	for _, it := range items[lastUser+1:] {
+		// The model's own words. Tool rows and reasoning do not count: the question is answered when
+		// there is prose, and the GUI waits for the same thing.
+		if it.Kind == chat.KindText {
+			return false
+		}
+	}
+	return true
 }
 
 // transcriptStream returns (creating + sizing) the kit2 Stream backing a
