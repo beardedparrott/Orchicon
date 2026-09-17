@@ -302,9 +302,27 @@ func (d *Detail) ensureVP() {
 	if w < 1 {
 		w = 1
 	}
+	h := d.BodyHeightFor(len(d.Fields), d.Body != "")
+	if !d.initOnce {
+		d.vp = viewport.New(w, h)
+		d.initOnce = true
+		d.dirty = true
+	}
+	d.vp.Width, d.vp.Height = w, h
+}
+
+// BodyHeightFor is the rows the pane gives its SCROLLING BODY, for the given field count and whether a
+// body is present.
+//
+// Exported because a caller that renders an EXTERNAL widget INTO that body has to size the widget with
+// it. The Ask transcript is one: the shell sizes its kit2.Stream from the pane, and sizing it from the
+// content region instead makes the widget show more rows than the pane draws — and the rows it loses are
+// the NEWEST ones, which is the operator's "Once we hit the bottom pane, I no longer see my messages
+// popping up right away." One implementation, shared with ensureVP, so the two cannot drift.
+func (d *Detail) BodyHeightFor(fieldRows int, hasBody bool) int {
 	// Rows View() spends on everything that is not the scrolling body.
-	overhead := 1 + len(d.Fields) // title + fields
-	if d.Body != "" {
+	overhead := 1 + fieldRows // title + fields
+	if hasBody {
 		overhead += 2 // the blank separator + at least something in the viewport
 	}
 	overhead += d.footerRows()
@@ -312,12 +330,7 @@ func (d *Detail) ensureVP() {
 	if h < 1 {
 		h = 1
 	}
-	if !d.initOnce {
-		d.vp = viewport.New(w, h)
-		d.initOnce = true
-		d.dirty = true
-	}
-	d.vp.Width, d.vp.Height = w, h
+	return h
 }
 
 // Wheel scrolls the detail body. Positive delta = scroll down

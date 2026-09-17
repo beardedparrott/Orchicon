@@ -192,6 +192,14 @@ type StreamDoneMsg struct{ ConvID string }
 
 func (s StreamDoneMsg) isMsg() {}
 
+// AbortTurnMsg reports the outcome of a Stop (the composer's ctrl+y) so the shell can settle the
+// composer's affordance row and repaint the transcript. ConvID is echoed so a stale abort for a
+// conversation the operator has since left cannot retitle the pane.
+type AbortTurnMsg struct {
+	ConvID string
+	Err    string
+}
+
 // --- accessors -----------------------------------------------------------
 
 // Active returns the active conversation id ("" = none).
@@ -636,6 +644,52 @@ func (c *Controller) EndStream(convID string) {
 		st.pendingReplyID = ""
 	}
 	c.mu.Unlock()
+}
+
+// AbortTurn stops the in-flight turn on a conversation: the TUI's Stop control (the composer's ctrl+y),
+// the counterpart of the GUI's Ask-page Stop button, which calls this same RPC
+// (ask-orchicon.tsx: handleStopStreaming -> useAbortConversationTurn -> abortTurn).
+//
+// It does the two things the GUI's handler does, and both matter:
+//
+//  1. ABORT THE SERVER-SIDE TURN. AbortConversationTurn cancels the registered session; it is
+//     IDEMPOTENT on the server (a second call against an already-stopped turn succeeds — see the audit
+//     service's own test), so a double-press cannot raise a spurious error.
+//  2. CLEAR THE LOCAL TURN SLOT IMMEDIATELY. This is what makes Stop feel instant: the UI recovers at
+//     once instead of waiting for the socket to notice the cancellation. The live partial reply is not
+//     lost — the durable transcript is the completion authority, and the stream's own end drives the
+//     poll that reconciles it (onStreamDone), exactly as the GUI's conversations-list invalidate does.
+//
+// The optimistic user echo is deliberately NOT cleared (the GUI clears its copy because it drops the
+// whole local transcript). Here the echo is load-bearing: mergeHistory matches on it so the durable poll
+// cannot render the operator's own message twice — and the message WAS persisted, because the turn had
+// started.
+func (c *Controller) AbortTurn(convID string) tea.Cmd {
+	if convID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		_, err := c.cl.Ask.AbortConversationTurn(context.Background(),
+			connect.NewRequest(&apiv1.AbortConversationTurnRequest{ConversationId: convID}))
+		if err != nil {
+			return AbortTurnMsg{ConvID: convID, Err: err.Error()}
+		}
+		c.EndStream(convID)
+		c.clearReconnecting(convID)
+		return AbortTurnMsg{ConvID: convID}
+	}
+}
+
+// clearReconnecting drops the EVENT STORE's reconnect banner for a conversation. EndStream clears the
+// controller's own flag; the store's is a separate surface (the chat view's banner), and a stop that
+// left the banner up would report a connection loss that is no longer true.
+func (c *Controller) clearReconnecting(convID string) {
+	c.mu.Lock()
+	store := c.store
+	c.mu.Unlock()
+	if store != nil {
+		store.SetReconnecting(convID, false)
+	}
 }
 
 // --- stream event handling -----------------------------------------------

@@ -104,6 +104,41 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
+			// STOP THE IN-FLIGHT REPLY — the GUI's Stop button, on a key.
+			//
+			// The operator: "I realized there is no stop button like in the GUI. We need a stop
+			// button/control key + hint in composer that can interrupt the agent mid flight."
+			//
+			// WHY ctrl+y. Every other candidate is taken or is an EDITING key, and stealing an
+			// editing key would break typing to add a feature:
+			//   - the textarea's own keymap claims ctrl+k (delete after cursor), ctrl+w (delete word
+			//     backward), ctrl+u (delete before cursor), ctrl+b/ctrl+f (character movement),
+			//     ctrl+n/ctrl+p (line movement), ctrl+a/ctrl+e (line start/end), ctrl+v (paste) and
+			//     ctrl+t (transpose) — see bubbles textarea's DefaultKeyMap;
+			//   - ctrl+i IS tab and ctrl+j IS enter (control bytes 0x09 / 0x0a, measured — the composer
+			//     treats ctrl+j as Enter for exactly this reason), and ctrl+q is what ctrl+1 arrives as
+			//     on many emulators (the tab-chord note in app.go);
+			//   - ctrl+x (rail bulk-delete), ctrl+n (rename), ctrl+t (categorize), ctrl+s (form save),
+			//     ctrl+z (escalate), ctrl+d (diff), ctrl+r (rail), ctrl+g (focus) and ctrl+c (quit) are
+			//     already bound here.
+			// ctrl+y is free, is not an editing key in this textarea, and reads as "yield" — hand
+			// control back to the operator.
+			//
+			// IT IS A GLOBAL ROUTE so it works from the content pane as well as from the composer (the
+			// GUI's Stop button is on screen whatever the operator is doing), and it sits BELOW the
+			// screen-claims gate on purpose: a screen with an open form claims every key, so ctrl+y can
+			// never silently stop a reply while the operator is filling in a form.
+			//
+			// A KeyRoute.Handle cannot return a Cmd, so the abort is STAGED and re-emitted by
+			// drainStaged — the same pattern the diff-pane and rail routes use.
+			Name: "stop the in-flight reply (interrupt the agent)", Keys: "ctrl+y", Scope: "global",
+			Match: keyMatcher("ctrl+y"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				m.pendingStopCmd = m.stopReply()
+				return true
+			},
+		},
+		{
 			Name: "quit", Keys: "q / ctrl+c", Scope: "global",
 			Match: func(msg tea.Msg) bool {
 				k, ok := msg.(tea.KeyMsg)
@@ -204,6 +239,12 @@ var composerBypassKeys = map[string]bool{
 	// deliberately NOT here: in a text box they are cursor movement, which is what
 	// the operator expects from a composer.
 	"tab": true, "shift+tab": true,
+	// ctrl+y STOPS the in-flight reply. It is here for the same structural reason as the others, and it
+	// is the reason the stop chord works at all: the textarea CONSUMES every key it is handed (unknown
+	// chords are silent no-ops that still report consumed), and the composer branch RETURNS the moment a
+	// key is consumed — so a global route can never see a chord the composer was allowed to eat. This
+	// map is the documented way to keep such a chord reachable while the composer holds the focus.
+	"ctrl+y": true,
 }
 
 // The tab chords are ADDED from the SAME source the tab bar draws from.
@@ -1014,6 +1055,19 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chat.ErrMsg:
 		m.setChatError(msg.Where, msg.Err)
 		return m.waitChat()
+	case chat.AbortTurnMsg:
+		// The Stop outcome. The controller has ALREADY cleared the turn slot (that is what makes Stop
+		// instant), so this repaint is what makes the thinking indicator and the composer's stop
+		// affordance disappear TOGETHER — and the rail reload clears the conversation's "running"
+		// marker once the server finalizes the abort.
+		if msg.Err != "" {
+			m.dock.SetError("stop failed: " + msg.Err)
+		} else {
+			m.dock.SetNotice("reply stopped")
+		}
+		m.refreshComposerHint()
+		m.onChatWake()
+		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 	case chat.TurnResolvedMsg:
 		return m.waitChat()
 	case chat.StreamDoneMsg:
@@ -1046,6 +1100,9 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 			Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
 		})
 		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
+		// The turn is in flight as of the line above (chat.Send flips the slot synchronously), so the
+		// composer's stop affordance has to appear with it.
+		m.refreshComposerHint()
 		// Load the durable transcript and the session metrics EXPLICITLY.
 		//
 		// This cannot go through OpenAskConversation: that helper early-returns

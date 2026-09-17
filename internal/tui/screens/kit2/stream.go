@@ -64,9 +64,48 @@ func (s *Stream) innerH() int {
 	return h
 }
 
+// SetNotice sets the transient status line, KEEPING THE VIEW PINNED if it was pinned.
+//
+// A plain field assignment is not enough: the notice takes a row from the body, which moves maxOffset,
+// and an offset left where it was then hides the NEWEST line — the same class of bug the notice itself
+// just fixed. Measured: with 20 lines in a 5-row stream, assigning .Notice directly left the window at
+// [15,19), dropped line 19, and made AtBottom() false so the next chunk would not have been followed
+// either.
+func (s *Stream) SetNotice(n string) {
+	wasBottom := s.AtBottom()
+	s.Notice = n
+	if wasBottom {
+		s.ScrollToBottom()
+	}
+	s.clamp()
+}
+
+// bodyRows is the rows available to the TRANSCRIPT, which is innerH minus the notice row when a
+// notice is showing.
+//
+// THE NOTICE TAKES ITS ROW FROM THE BODY, and that is the fix for the operator's "I still don't see
+// the 'Orchicon is thinking...' being printed". The notice used to be appended AFTER innerH rows of
+// transcript, so the host's height budget clipped it away whenever the transcript filled the pane —
+// the notice was visible only while the transcript was SHORTER than the pane, which is exactly when
+// it does not matter. The same bug hid "reconnecting…".
+//
+// Every offset calculation goes through this, so the tail stays pinned WITH the notice taking a row:
+// AtBottom/ScrollToBottom/maxOffset would otherwise allow an offset that pushes the newest line out
+// of the window.
+func (s *Stream) bodyRows() int {
+	rows := s.innerH()
+	if s.Notice != "" {
+		rows--
+		if rows < 1 {
+			rows = 1
+		}
+	}
+	return rows
+}
+
 // maxOffset is the largest valid top-line index.
 func (s *Stream) maxOffset() int {
-	m := len(s.Lines) - s.innerH()
+	m := len(s.Lines) - s.bodyRows()
 	if m < 0 {
 		m = 0
 	}
@@ -93,7 +132,7 @@ func (s *Stream) clamp() {
 
 // Visible returns the currently visible lines.
 func (s *Stream) Visible() []string {
-	end := s.Offset + s.innerH()
+	end := s.Offset + s.bodyRows()
 	if end > len(s.Lines) {
 		end = len(s.Lines)
 	}
@@ -106,9 +145,13 @@ func (s *Stream) Visible() []string {
 // View renders the stream body (no border) — the caller wraps it in a
 // Panel or emits it directly.
 func (s *Stream) View() string {
+	// Clamp first, so a caller that assigned Notice directly (bypassing SetNotice) still cannot draw a
+	// window that starts past the last page.
+	s.clamp()
 	var b strings.Builder
+	rows := s.bodyRows()
 	vis := s.Visible()
-	for i := 0; i < s.innerH(); i++ {
+	for i := 0; i < rows; i++ {
 		line := ""
 		if i < len(vis) {
 			line = vis[i]
@@ -117,7 +160,8 @@ func (s *Stream) View() string {
 		b.WriteString("\n")
 	}
 	if s.Notice != "" {
-		b.WriteString(theme.HintText.Render(s.Notice))
+		// INSIDE the row budget, not appended past it — see bodyRows.
+		b.WriteString(Pad(theme.HintText.Render(s.Notice), s.Width))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
@@ -127,7 +171,7 @@ func (s *Stream) View() string {
 // decide whether to surface the scroll position: with no overflow there is
 // nothing hidden, and a scroll affordance would be noise.
 func (s *Stream) Overflowing() bool {
-	return len(s.Lines) > s.innerH()
+	return len(s.Lines) > s.bodyRows()
 }
 
 // ScrollLabel renders a "n-m/total" indicator (and a follow marker).

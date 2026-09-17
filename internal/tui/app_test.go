@@ -134,6 +134,8 @@ func keyFor(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlO}
 	case "ctrl+v":
 		return tea.KeyMsg{Type: tea.KeyCtrlV}
+	case "ctrl+y":
+		return tea.KeyMsg{Type: tea.KeyCtrlY}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

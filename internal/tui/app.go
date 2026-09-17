@@ -309,6 +309,10 @@ type App struct {
 	// pendingRailCmd carries the conversations-rail retry/reload cmd out of
 	// a route or a mouse handler that cannot return one directly.
 	pendingRailCmd tea.Cmd
+	// pendingStopCmd carries the Stop (ctrl+y) abort out of its global key route — a
+	// KeyRoute.Handle returns only a bool, so it cannot return a Cmd directly (same
+	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
+	pendingStopCmd tea.Cmd
 	// pendingScreenCmd carries a newly activated screen's first-load cmd
 	// out of SwitchTo (which cannot return one).
 	pendingScreenCmd tea.Cmd
@@ -581,6 +585,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingRailCmd != nil {
 		cmds = append(cmds, m.pendingRailCmd)
 		m.pendingRailCmd = nil
+	}
+	if m.pendingStopCmd != nil {
+		cmds = append(cmds, m.pendingStopCmd)
+		m.pendingStopCmd = nil
 	}
 	if m.pendingCatCmd != nil {
 		cmds = append(cmds, m.pendingCatCmd)
@@ -1107,6 +1115,11 @@ func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
 // with the ctrl+g focus chord. A screen with no HintLine just clears the
 // context.
 func (m *App) refreshComposerHint() {
+	// THE STOP AFFORDANCE IS DERIVED, NOT STORED, and it is derived HERE — before the row is measured
+	// below — so a hint that gains the stop segment also gains its row (the Lines() comparison at the
+	// end of this function is what re-applies the layout). Deriving it from the controller's live state
+	// means the advertised chord cannot outlive the reply it stops.
+	m.dock.SetReplyInFlight(m.chat != nil && m.chatConvID != "" && m.chat.IsStreaming(m.chatConvID))
 	ctx := ""
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
@@ -2640,28 +2653,39 @@ func (m *App) onChatWake() tea.Cmd {
 		live, haveLive := m.conversationByID(m.chatConvID)
 		title, fields := askS.RenderTranscript(items, live, haveLive)
 		w := s.(interface{ DetailWidth() int }).DetailWidth()
-		// The transcript renders through the kit2 Stream widget: an
-		// extension of the previous render APPENDS (the operator's scroll
-		// offset is preserved; the tail is followed only when already at the
-		// bottom), anything else (durable reload / turn resolution) resets.
-		str := m.transcriptStream(m.chatConvID, w, m.contentHeight())
-		m.syncTranscript(m.chatConvID, str, items, w)
-		if m.chatStore.isReconnecting(m.chatConvID) {
-			str.Notice = "reconnecting…"
-		} else {
-			str.Notice = ""
-		}
-		// THE GUI's thinking indicator, matched verbatim. The GUI renders "Orchicon is thinking…" while a
-		// turn is streaming and has produced NO content yet (ask-orchicon.tsx: "Thinking indicator —
-		// visible until any streaming content arrives"), so the operator sees that their message was
-		// received before the first token lands. The TUI had no equivalent: after sending, the pane
-		// showed the operator's own message and then sat silent until the reply started, which reads as a
-		// hang on a slow model.
+		// ONE SCROLL ROW ALWAYS, so the field count is STABLE and the pane's body height can be computed
+		// BEFORE the stream is sized (below). A conditional field would make the body height depend on
+		// the stream's own content — circular — and the label is informative even when nothing is hidden.
+		fields = append(fields, screenkit.Field{Key: "scroll", Value: ""})
+		// THE STREAM IS SIZED TO THE PANE'S BODY, NOT THE CONTENT REGION.
 		//
-		// It rides the transcript's NOTICE line — the same slot reconnecting uses — so it adds no row to
-		// the transcript and cannot be mistaken for a message.
-		if str.Notice == "" && m.chat.IsStreaming(m.chatConvID) && awaitingReply(items) {
-			str.Notice = "Orchicon is thinking…"
+		// It was sized to m.contentHeight() — the whole region the screen is given — while the pane
+		// spends rows on its title, its fields and its footer. The stream therefore believed it could
+		// show more rows than the pane draws, and the rows it lost were the NEWEST ones: the operator's
+		// "Once we hit the bottom pane, I no longer see my messages popping up right away". While the
+		// transcript was SHORTER than the pane everything fitted and it looked right, which is why it
+		// only failed once the pane filled up.
+		strH := m.contentHeight()
+		if bh, ok := s.(interface{ DetailBodyHeight(int, bool) int }); ok {
+			strH = bh.DetailBodyHeight(len(fields), true)
+		}
+		str := m.transcriptStream(m.chatConvID, w, strH)
+		m.syncTranscript(m.chatConvID, str, items, w)
+		// ONE notice slot, set through SetNotice so the view stays pinned: the notice takes a row from
+		// the body, so a direct assignment would move the window and hide the newest line.
+		switch {
+		case m.chatStore.isReconnecting(m.chatConvID):
+			str.SetNotice("reconnecting…")
+		case m.chat.IsStreaming(m.chatConvID) && awaitingReply(items):
+			// THE GUI's thinking indicator, matched verbatim. The GUI renders "Orchicon is thinking…"
+			// while a turn is streaming and has produced NO content yet (ask-orchicon.tsx: "Thinking
+			// indicator — visible until any streaming content arrives"), so the operator sees that
+			// their message was received before the first token lands. The TUI had no equivalent: after
+			// sending, the pane showed the operator's own message and then sat silent until the reply
+			// started, which reads as a hang on a slow model.
+			str.SetNotice("Orchicon is thinking…")
+		default:
+			str.SetNotice("")
 		}
 		// Surface the scroll position when the transcript is taller than the pane.
 		//
@@ -2675,9 +2699,7 @@ func (m *App) onChatWake() tea.Cmd {
 		// The label names the visible window and the total, so "4-23/35" says
 		// plainly that 22 lines sit above. Same field shape the Work screen's
 		// build log already uses.
-		if str.Overflowing() {
-			fields = append(fields, screenkit.Field{Key: "scroll", Value: str.ScrollLabel()})
-		}
+		fields[len(fields)-1].Value = str.ScrollLabel()
 		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil
@@ -2841,6 +2863,9 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// turn, showing a blank title and a zero count beside a transcript that
 	// plainly had content (the operator's screenshot: "messages 0" next to a
 	// populated transcript).
+	// The turn slot is gone as of EndStream above, so the stop affordance must go with it (the
+	// affordance is derived from that state, and re-derived here).
+	m.refreshComposerHint()
 	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations())
 }
 
@@ -3082,6 +3107,28 @@ func (m *App) syncAskPaneFocus() {
 	}
 }
 
+// stopReply interrupts the in-flight reply on the open conversation: the composer's ctrl+y, the TUI's
+// counterpart to the GUI's Stop button (ask-orchicon.tsx: handleStopStreaming -> abortTurn).
+//
+// WHY IT SAYS SO WHEN THERE IS NOTHING TO STOP. A chord that silently does nothing is
+// indistinguishable from a chord that is not bound — the failure mode this TUI keeps paying for (see
+// the composer's "sending …" ack, added for exactly this reason). So an idle ctrl+y names its own
+// reason instead of being inert.
+func (m *App) stopReply() tea.Cmd {
+	if m.chatConvID == "" {
+		m.dock.SetNotice("no conversation open — nothing to stop")
+		return nil
+	}
+	if m.chat == nil || !m.chat.IsStreaming(m.chatConvID) {
+		m.dock.SetNotice("no reply in flight — nothing to stop")
+		return nil
+	}
+	// The ack is written BEFORE the RPC, like the composer's "sending …", so the key press is visible
+	// at once; the outcome ("reply stopped" / a stop failure) replaces it when AbortTurnMsg lands.
+	m.dock.SetNotice("stopping the reply…")
+	return m.chat.AbortTurn(m.chatConvID)
+}
+
 // sendFromComposer routes composer text: slash commands dispatch,
 // running-execution context interjects, everything else sends to Ask
 // Orchicon (conversation lazily created on first send).
@@ -3105,5 +3152,9 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 		return m.createConversationAndSend(text, preamble)
 	}
 	m.chatStore.append(m.chatConvID, chat.ChatItem{Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(), Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true})
+	// The turn is in flight as soon as sendChat is evaluated (chat.Send flips the slot synchronously),
+	// so the composer's stop affordance appears with it — the operator can see HOW to stop before the
+	// first token lands.
+	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }

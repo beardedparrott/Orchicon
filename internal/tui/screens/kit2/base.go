@@ -537,6 +537,15 @@ func (b *Base) DetailWidth() int {
 	return 60
 }
 
+// DetailBodyHeight is the rows the detail pane will give its scrolling body for the given field count.
+//
+// A caller that sizes an EXTERNAL widget rendered INTO that body — the Ask transcript's Stream — must
+// use this rather than the content-region height, or the widget shows rows the pane never draws and the
+// NEWEST rows are the ones cut. See screenkit.Detail.BodyHeightFor.
+func (b *Base) DetailBodyHeight(fieldRows int, hasBody bool) int {
+	return b.detail.BodyHeightFor(fieldRows, hasBody)
+}
+
 // SetDetailFooter installs a FIXED band at the bottom of the detail pane, outside
 // the pane's scrolling region, so it is always on screen however tall the body
 // is — the shape an input needs (screenkit.Detail.SetFooter explains why).

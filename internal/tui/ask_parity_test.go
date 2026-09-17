@@ -43,6 +43,17 @@ type stubAskParity struct {
 	compactedID     string
 	compactedReason string
 	compactResp     *apiv1.CompactConversationResponse
+
+	// abortedID records the conversation a Stop was issued for (the GUI's Stop
+	// button calls the same RPC).
+	abortedID string
+}
+
+// AbortConversationTurn is the Stop path. The server treats it as idempotent, so
+// recording the id (rather than erroring on a repeat) matches real behaviour.
+func (s *stubAskParity) AbortConversationTurn(_ context.Context, req *connect.Request[apiv1.AbortConversationTurnRequest]) (*connect.Response[apiv1.AbortConversationTurnResponse], error) {
+	s.abortedID = req.Msg.GetConversationId()
+	return connect.NewResponse(&apiv1.AbortConversationTurnResponse{}), nil
 }
 
 func (s *stubAskParity) CompactConversation(_ context.Context, req *connect.Request[apiv1.CompactConversationRequest]) (*connect.Response[apiv1.CompactConversationResponse], error) {

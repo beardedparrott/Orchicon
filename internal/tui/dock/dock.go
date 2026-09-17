@@ -62,14 +62,19 @@ const (
 
 // Model is the chat dock composer.
 type Model struct {
-	ta       textarea.Model
-	Focused  bool
-	Chip     string // context chip (what outgoing messages inject)
-	Notice   string // status line (stream state, pointers)
-	Err      string // inline error strip (themed red)
-	Width    int
-	Height   int // allocated rows (set by the shell)
-	Newlines NewlineMode
+	ta      textarea.Model
+	Focused bool
+	Chip    string // context chip (what outgoing messages inject)
+	Notice  string // status line (stream state, pointers)
+	// replyInFlight drives the STOP affordance: while a turn is streaming, the affordance row offers
+	// ctrl+y — the operator's "we need a stop button/control key + hint in composer that can interrupt
+	// the agent mid flight". It is DERIVED from the chat controller's own streaming state by the shell
+	// (SetReplyInFlight), so the row cannot advertise a dead key after the reply ends.
+	replyInFlight bool
+	Err           string // inline error strip (themed red)
+	Width         int
+	Height        int // allocated rows (set by the shell)
+	Newlines      NewlineMode
 
 	// Context is the ACTIVE screen's shortcut list (the shell derives it from the
 	// screen's HintLine), rendered at the head of the affordance row so the
@@ -308,11 +313,22 @@ func (m *Model) HintRows() int { return len(m.hintLines()) }
 
 // NoticeRows is how many rows the notice/error strip occupies at the current
 // width (0 when there is none).
+//
+// THE ERROR AND THE NOTICE BOTH GET ROWS, because they are DIFFERENT information: the error strip is a
+// sticky global failure (a subscription that cannot connect), the notice is the outcome of what the
+// operator just did. The strip used to render `Err` INSTEAD OF `Notice`, so ANY unrelated failure made the
+// acknowledgement of the operator's own action invisible.
+//
+// Measured while building the stop control (ctrl+y): the byte arrived, the route fired, the notice was
+// set — and nothing was painted, because an unrelated stream error (from a test plane that does not
+// implement every RPC) had taken the row. A control whose feedback depends on nothing else being wrong
+// is a control that appears broken at exactly the moment the operator needs it.
 func (m *Model) NoticeRows() int {
-	msg := m.Err
-	if msg == "" {
-		msg = m.Notice
-	}
+	return m.wrapRows(m.Err) + m.wrapRows(m.Notice)
+}
+
+// wrapRows is how many rows one strip message occupies at the current width.
+func (m *Model) wrapRows(msg string) int {
 	if msg == "" {
 		return 0
 	}
@@ -433,6 +449,11 @@ func (m *Model) SetError(s string) { m.Err = s }
 
 // SetNotice sets the status strip ("" clears).
 func (m *Model) SetNotice(s string) { m.Notice = s }
+
+// SetReplyInFlight toggles the STOP affordance on the affordance row (see Hint). The shell sets it from
+// the chat controller's live streaming state, so the advertised chord and the running turn can never
+// disagree.
+func (m *Model) SetReplyInFlight(on bool) { m.replyInFlight = on }
 
 // resizeTa keeps the textarea width+height synced to the box.
 func (m *Model) resizeTa() {
@@ -618,7 +639,14 @@ func (m *Model) Hint() string {
 	// is 74 — the full wording with ctrl+d added measured 79 and wrapped, which pushed
 	// the affordance row out of the box entirely at 80x24. Measured: 75 with "text",
 	// which fits with headroom.
-	parts := []string{"ctrl+g text", "ctrl+d diff"}
+	// STOP LEADS, immediately after the focus chord: while a reply is streaming it is the action the
+	// operator is looking for, and the row is truncated from the RIGHT on a narrow terminal (which is
+	// why ctrl+g is first). Derived from the live turn, never assumed.
+	parts := []string{"ctrl+g text"}
+	if m.replyInFlight {
+		parts = append(parts, "ctrl+y stop")
+	}
+	parts = append(parts, "ctrl+d diff")
 	if s := strings.TrimSpace(m.Context); s != "" {
 		parts = append(parts, s)
 	}
@@ -656,7 +684,10 @@ func (m *Model) View() string {
 		for _, l := range kit2.WrapHint(m.Err, inner) {
 			rows = append(rows, theme.ErrorText.Render(l))
 		}
-	} else if m.Notice != "" {
+	}
+	// BOTH STRIPS ARE DRAWN — see NoticeRows. The notice used to be an `else if`, so it vanished whenever
+	// an unrelated error was on screen.
+	if m.Notice != "" {
 		for _, l := range kit2.WrapHint(m.Notice, inner) {
 			rows = append(rows, theme.HintText.Render(l))
 		}
