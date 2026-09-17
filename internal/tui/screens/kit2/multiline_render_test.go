@@ -76,9 +76,9 @@ func TestWrappedBodyPreservesIndentation(t *testing.T) {
 	f := NewForm("Edit step", FieldSpec{Name: "config", Label: "Config", Kind: KJSON})
 	f.Set("config", "{\n  \"a\": 1,\n  \"b\": 2\n}")
 
-	rows, hidden := f.wrappedBody("config", 60, 10)
-	if hidden != 0 {
-		t.Fatalf("hidden = %d, want 0 for a short value", hidden)
+	rows, above, below := f.wrappedBody("config", 60, 10)
+	if above != 0 || below != 0 {
+		t.Fatalf("hidden = %d/%d, want 0/0 for a short value", above, below)
 	}
 	if len(rows) != 4 {
 		t.Fatalf("rows = %d (%q), want the value's own 4 lines", len(rows), rows)
@@ -94,7 +94,7 @@ func TestWrappedBodySoftWrapsALongLine(t *testing.T) {
 	long := strings.Repeat("word ", 40) // 200 cells
 	f.Set("d", long)
 
-	rows, _ := f.wrappedBody("d", 40, 0)
+	rows, _, _ := f.wrappedBody("d", 40, 0)
 	if len(rows) < 4 {
 		t.Fatalf("a 200-cell line in a 40-cell row produced %d rows", len(rows))
 	}
@@ -111,7 +111,7 @@ func TestWrappedBodyHardSplitsAnUnbreakableToken(t *testing.T) {
 	f := NewForm("Edit", FieldSpec{Name: "d", Label: "D", Kind: KJSON})
 	f.Set("d", strings.Repeat("x", 120))
 
-	rows, _ := f.wrappedBody("d", 30, 0)
+	rows, _, _ := f.wrappedBody("d", 30, 0)
 	for i, r := range rows {
 		if w := lipgloss.Width(r); w > 30 {
 			t.Errorf("row %d is %d cells wide, over the 30-cell budget: %q", i, w, r)
@@ -121,16 +121,20 @@ func TestWrappedBodyHardSplitsAnUnbreakableToken(t *testing.T) {
 
 // Rows are BOUNDED and the withheld count is stated, so one long value cannot push the
 // rest of the form out of reach.
+// TestWrappedBodyBoundsRowsAndSaysSo: a value taller than the window is BOUNDED,
+// and the rows withheld are reported rather than dropped silently. The window is
+// now centered on the CARET, so the number withheld is split between the rows above
+// and below it.
 func TestWrappedBodyBoundsRowsAndSaysSo(t *testing.T) {
 	f := NewForm("Edit", FieldSpec{Name: "d", Label: "D", Kind: KTextArea})
 	f.Set("d", strings.Repeat("line\n", 40))
 
-	rows, hidden := f.wrappedBody("d", 60, maxWrappedRows)
+	rows, above, below := f.wrappedBody("d", 60, maxWrappedRows)
 	if len(rows) != maxWrappedRows {
 		t.Fatalf("rows = %d, want the %d-row bound", len(rows), maxWrappedRows)
 	}
-	if hidden <= 0 {
-		t.Fatal("hidden = 0 but rows were withheld — the operator would lose text silently")
+	if above+below <= 0 {
+		t.Fatal("nothing reported as out of view but rows were withheld — the operator would lose text silently")
 	}
 }
 
@@ -234,17 +238,27 @@ func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 		dockerfile.WriteString("RUN echo step\n")
 	}
 
-	// Value rows carry "FROM " or "RUN "; the label and hint rows do not.
-	countValueRows := func(f *Form) int {
+	// The field's VALUE BLOCK is the rows strictly between its label row and its
+	// hint row. Counting rows that carry text would undercount by one now that the
+	// window follows the caret: the caret's own row holds only the caret.
+	valueBlockRows := func(f *Form) int {
 		f.Focused = true
 		f.FocusName("dockerfile_override")
-		n := 0
-		for _, r := range renderForm(f, 176) {
-			if strings.Contains(r, "FROM ") || strings.Contains(r, "RUN ") {
-				n++
+		rows := renderForm(f, 176)
+		label, hint := -1, -1
+		for i, r := range rows {
+			s := strings.TrimSpace(ansi.Strip(r))
+			if label < 0 && strings.HasPrefix(s, "▸ Dockerfile override") {
+				label = i
+			}
+			if label >= 0 && hint < 0 && strings.HasPrefix(s, "Dockerfile override:") {
+				hint = i
 			}
 		}
-		return n
+		if label < 0 || hint < 0 {
+			t.Fatalf("could not locate the field's label/hint rows:\n%s", strings.Join(rows, "\n"))
+		}
+		return hint - label - 1
 	}
 
 	tall := NewForm("Edit runtime image",
@@ -253,7 +267,7 @@ func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 		FieldSpec{Name: "tag", Label: "Tag", Kind: KText, Initial: "t"},
 	)
 	tall.Height = 37 // a 40-row terminal: 2 border rows + 1 hint row are not ours
-	got := countValueRows(tall)
+	got := valueBlockRows(tall)
 	if got <= maxWrappedRows {
 		t.Fatalf("a focused 39-line field showed %d rows with a 37-row pane — it is still clamped to the "+
 			"fixed %d-row bound, so the operator cannot read what they are editing", got, maxWrappedRows)
@@ -267,7 +281,7 @@ func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 	modal := NewForm("Edit runtime image",
 		FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: KTextArea, Initial: dockerfile.String()},
 	)
-	if got := countValueRows(modal); got != maxWrappedRows {
+	if got := valueBlockRows(modal); got != maxWrappedRows {
 		t.Errorf("with no host height, value rows = %d, want the conservative %d", got, maxWrappedRows)
 	}
 }

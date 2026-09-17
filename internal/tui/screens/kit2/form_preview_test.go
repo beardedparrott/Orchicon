@@ -219,3 +219,42 @@ func TestPreviewIsNotOfferedOnStructuredFields(t *testing.T) {
 		t.Error("the field's value changed")
 	}
 }
+
+// ESC CLOSES THE PREVIEW, NOT THE WHOLE EDIT.
+//
+// It used to clear the preview and then FALL THROUGH to the form's esc, which the
+// host treats as "cancel the edit". So leaving a preview with Esc also threw away
+// every unrelated field the operator had changed — a lot of damage for a key whose
+// meaning inside a preview is "go back one step".
+func TestEscInPreviewClosesThePreviewNotTheEdit(t *testing.T) {
+	f := previewForm(previewMarkdown)
+	// An unrelated edit elsewhere in the form, which must survive.
+	f.Set("tag", "changed-by-the-operator")
+	f.HandleKey(ctrlP())
+	if f.preview == "" {
+		t.Fatal("fixture: preview did not open")
+	}
+
+	handled := false
+	if _, handled = f.HandleKey(tea.KeyMsg{Type: tea.KeyEsc}); !handled {
+		t.Fatal("Esc in preview must be consumed by the form to close the preview, not fall through " +
+			"to the host, which would cancel the whole edit")
+	}
+	if f.preview != "" {
+		t.Error("Esc did not close the preview")
+	}
+	if f.Submitted {
+		t.Error("Esc closed the preview AND submitted/abandoned the form")
+	}
+	if got := f.Values["tag"]; got != "changed-by-the-operator" {
+		t.Errorf("the unrelated edit was lost: tag = %q", got)
+	}
+	if got := f.Values["role"]; got != previewMarkdown {
+		t.Errorf("the previewed field's value changed: %q", got)
+	}
+
+	// A second Esc is then the form's own cancel: not handled, so the host closes it.
+	if _, handled := f.HandleKey(tea.KeyMsg{Type: tea.KeyEsc}); handled {
+		t.Error("the second Esc must fall through to the host")
+	}
+}

@@ -1193,6 +1193,25 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 	if msg.Action == tea.MouseActionMotion || msg.Action == tea.MouseActionRelease {
 		return nil
 	}
+	// AN OPEN INLINE EDITOR OWNS THE WHEEL. It used to fall through to b.detail, which
+	// in edit mode is not on screen — the form replaced it — so the wheel scrolled
+	// invisible content and the operator's "scroll vertically with the arrow and the
+	// mouse wheel" did nothing. The form consumes it only while a field is LOCKED for
+	// editing (ctrl+p/enter), because otherwise up/down mean "next field" and a wheel
+	// that moved the caret would contradict them; there it moves the caret, which is
+	// also what scrolls the field's window.
+	if b.editForm != nil {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if b.editForm.Wheel(-3) {
+				return nil
+			}
+		case tea.MouseButtonWheelDown:
+			if b.editForm.Wheel(3) {
+				return nil
+			}
+		}
+	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
 		if b.focusD {

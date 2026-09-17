@@ -154,6 +154,22 @@ type Form struct {
 	// chosen date back with Set. Same contract as OnOpenModelPicker.
 	OnOpenDatePicker func(name, current string) tea.Cmd
 
+	// editing is the field LOCKED for text editing, entered with Enter on a
+	// multi-line field and left with Esc. The operator's proposal: "we should not
+	// make 'enter' drop the next line since we already have the down/up doing that,
+	// but instead, we should make enter edit that field and then allow the scroll
+	// mechanism since the field would be locked until you hit Esc to break out of it."
+	//
+	// It exists because the two arrow axes mean different things at the two levels:
+	// OUTSIDE the lock, up/down move between FIELDS (form navigation, unchanged).
+	// INSIDE it, up/down move the CARET within the value — which is what makes a
+	// long prompt or Dockerfile navigable, since the arrow keys are the only
+	// vertical control the form has. The caret is also the scroll position (see
+	// wrappedBody), so moving the caret is what scrolls the view.
+	//
+	// "" means no field is locked.
+	editing string
+
 	// preview is the field currently shown as RENDERED MARKDOWN, toggled with
 	// ctrl+p. It is a VIEW and nothing more: f.Values still holds the raw text, the
 	// caret and every edit operate on the raw text, and the raw text is the only
@@ -371,6 +387,88 @@ func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
+// moveCaretLine moves the caret to the same COLUMN on the previous/next logical
+// line, which is how every text editor's up/down behaves. It is a no-op at the
+// first/last line, so holding the key does not walk out of the field.
+//
+// Logical lines, not wrapped rows: a long line that soft-wraps into three rows is
+// still ONE line to the operator, and stepping by wrapped row would make the
+// caret jump to an arbitrary column mid-sentence.
+func (f *Form) moveCaretLine(name string, delta int) {
+	val := []rune(f.Values[name])
+	pos := f.caret(name)
+	if pos > len(val) {
+		pos = len(val)
+	}
+	// The line the caret is on, and the column within it.
+	start := pos
+	for start > 0 && val[start-1] != '\n' {
+		start--
+	}
+	col := pos - start
+	// The target line's start.
+	var tStart int
+	if delta < 0 {
+		if start == 0 {
+			return // already on the first line
+		}
+		tStart = start - 1
+		for tStart > 0 && val[tStart-1] != '\n' {
+			tStart--
+		}
+	} else {
+		end := pos
+		for end < len(val) && val[end] != '\n' {
+			end++
+		}
+		if end >= len(val) {
+			return // already on the last line
+		}
+		tStart = end + 1
+	}
+	// The target line's end, so the caret clamps to the shorter line's length.
+	tEnd := tStart
+	for tEnd < len(val) && val[tEnd] != '\n' {
+		tEnd++
+	}
+	t := tStart + col
+	if t > tEnd {
+		t = tEnd
+	}
+	f.setCaret(name, t)
+}
+
+// EditingField returns the name of the field currently locked for editing, or "".
+func (f *Form) EditingField() string { return f.editing }
+
+// Wheel scrolls the locked field's view by delta lines, by moving the CARET — the
+// caret IS the scroll position (see wrappedBody), so there is no separate offset
+// that could leave the cursor off-screen. It reports whether it consumed the event,
+// so the host can fall back to its own scrolling when no field is locked.
+func (f *Form) Wheel(delta int) bool {
+	if f.editing == "" {
+		return false
+	}
+	d := 0
+	switch {
+	case delta < 0:
+		d = -1
+	case delta > 0:
+		d = 1
+	}
+	for i := 0; i < abs(delta); i++ {
+		f.moveCaretLine(f.editing, d)
+	}
+	return true
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
 // Set assigns a field value (used by tests and programmatic prefill). The caret
 // moves to the end, which is where an operator continues typing.
 func (f *Form) Set(name, value string) {
@@ -461,6 +559,11 @@ func (f *Form) FocusName(name string) bool {
 	for i, s := range f.Specs {
 		if s.Name == name {
 			f.Cursor = i
+			// A lock belongs to the field it was taken on; focusing elsewhere releases it
+			// for the same reason step() does (see there).
+			if f.editing != name {
+				f.editing = ""
+			}
 			return true
 		}
 	}
@@ -487,6 +590,12 @@ func (f *Form) step(delta int) {
 		idx := ((f.Cursor+delta*i)%n + n) % n
 		if f.visibleAt(idx) {
 			f.Cursor = idx
+			// MOVING FIELDS ALWAYS RELEASES THE EDIT LOCK. The lock is a claim on the
+			// arrow keys, so leaving it set while the cursor is elsewhere would keep
+			// hijacking them — and it did, for exactly one keystroke: the release was
+			// only re-checked at the TOP of HandleKey, so Tab moved the cursor and the
+			// lock was still on the field behind it.
+			f.editing = ""
 			return
 		}
 	}
@@ -521,6 +630,7 @@ func (f *Form) normalizeCursor() {
 		idx := (f.Cursor + i) % n
 		if f.visibleAt(idx) {
 			f.Cursor = idx
+			f.editing = ""
 			return
 		}
 	}
@@ -550,12 +660,49 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	// focused spec — otherwise every key below acts on an invisible row.
 	f.normalizeCursor()
 	s := f.current()
+	// THE FIELD EDIT LOCK. While a field is locked, up/down move the caret inside it
+	// instead of walking to another field, and Esc releases the lock without leaving
+	// the form. Every OTHER key falls through to the normal handling below, so
+	// typing, left/right, home/end, ctrl+e and ctrl+p all keep working while editing.
+	if f.editing != "" {
+		if s == nil || s.Name != f.editing {
+			f.editing = "" // the cursor moved off the field (tab/next) — release
+		} else {
+			switch k.String() {
+			case "esc":
+				// Leave the FIELD, not the form. Esc again then cancels the edit, which
+				// is the nested behaviour the operator expects from a locked surface.
+				f.editing = ""
+				return nil, true
+			case "up":
+				f.moveCaretLine(f.editing, -1)
+				return nil, true
+			case "down":
+				f.moveCaretLine(f.editing, 1)
+				return nil, true
+			case "enter", "alt+enter":
+				// A newline. This is the ONLY way to type one: Enter was the sole key
+				// that could and it is what locks the field, so without this a text area
+				// could only ever hold a single line unless the text arrived by paste.
+				f.insertRunes(f.editing, "\n")
+				return nil, true
+			}
+		}
+	}
 	// PREVIEW MODE (kPreview). Any key OTHER than the toggle LEAVES preview and is
 	// then handled normally below, so the keystroke that returns the operator to
 	// editing does its own job too — typing into a previewed field resumes editing
 	// on the first character rather than swallowing it.
 	if f.preview != "" {
 		if k.String() == kPreview {
+			f.preview = ""
+			return nil, true
+		}
+		// Esc CLOSES THE PREVIEW rather than cancelling the whole edit. Without this
+		// it fell through to the form's esc, so leaving the preview with Esc also threw
+		// away every unrelated edit in the form — a surprising amount of damage for a
+		// key whose meaning in a preview is "go back one step".
+		if k.String() == "esc" {
 			f.preview = ""
 			return nil, true
 		}
@@ -646,7 +793,17 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	case "enter":
 		// Enter NEVER submits: on a form full of pickers and selectors it is
 		// the CHOOSE gesture, and overloading it made selecting a value
-		// commit the whole form. It advances to the next field, and is a
+		// commit the whole form.
+		//
+		// On a MULTI-LINE field it LOCKS the field for editing instead of advancing:
+		// the operator has a caret to place and text taller than the window to move
+		// through, and there is no other key that can mean "go into this". On every
+		// other kind it advances, as before.
+		if s != nil && f.expandable(s.Kind) {
+			f.editing = s.Name
+			return nil, true
+		}
+		// Enter advances to the next field, and is a
 		// no-op on the last one (ctrl+s is the one save chord).
 		if f.Cursor < len(f.Specs)-1 {
 			f.Next()
@@ -1305,13 +1462,18 @@ func (f *Form) View() string {
 			// f.focusedWrapRows uses the pane height the host supplies; a host that
 			// supplies none keeps the old conservative bound.
 			valueIndent := strings.Repeat(" ", 2)
-			rows, hidden := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(valueIndent)), f.focusedWrapRows())
+			rows, hiddenAbove, hiddenBelow := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(valueIndent)), f.focusedWrapRows())
 			// The label row, so the field is still named while it is being edited —
 			// carrying the CURSOR MARKER (FormCursorMark), which FocusedRow scans for
 			// to scroll this pane to the field being edited. Dropping the marker here
 			// would silently stop the pane following the cursor for exactly the tall
-			// fields that need it most.
-			b.WriteString(theme.ListItemSelected.Render(Pad(cursor+label+":", width)) + "\n")
+			// fields that need it most. It also states when the field is LOCKED for
+			// editing, so the operator can see why the arrows now move the caret.
+			labelRow := cursor + label + ":"
+			if f.editing == s.Name {
+				labelRow = cursor + label + ": EDITING"
+			}
+			b.WriteString(theme.ListItemSelected.Render(Pad(labelRow, width)) + "\n")
 			for _, l := range rows {
 				b.WriteString(theme.ListItemSelected.Render(Pad(valueIndent+l, width)) + "\n")
 			}
@@ -1322,13 +1484,27 @@ func (f *Form) View() string {
 			// form's own footer already says — and it pushed "ctrl+p: preview" off
 			// the end at 70 columns, so the preview chord was invisible exactly where
 			// the operator needed to discover it.
-			hint := fmt.Sprintf("  (%d lines · ctrl+e: expand)", lineCount(f.Values[s.Name]))
-			if hidden > 0 {
-				hint = fmt.Sprintf("  (+%d hidden · ctrl+e: expand)", hidden)
+			//
+			// It reports what is out of view ABOVE and BELOW separately, because the
+			// window follows the caret and can be scrolled past in either direction.
+			var hint string
+			switch {
+			case hiddenAbove > 0 && hiddenBelow > 0:
+				hint = fmt.Sprintf("  (+%d above · +%d below)", hiddenAbove, hiddenBelow)
+			case hiddenAbove > 0:
+				hint = fmt.Sprintf("  (+%d above)", hiddenAbove)
+			case hiddenBelow > 0:
+				hint = fmt.Sprintf("  (+%d below)", hiddenBelow)
+			default:
+				hint = fmt.Sprintf("  (%d lines)", lineCount(f.Values[s.Name]))
 			}
-			// Advertise the rendered view only where it exists, so the chord is not
-			// offered on a Dockerfile (which markdown rendering would consume) or on a
-			// field with no markdown in it.
+			if f.editing == s.Name {
+				hint += " · ↑/↓: move · enter: newline · esc: leave field"
+			} else {
+				hint += " · enter: edit · ctrl+e: expand"
+			}
+			// A multi-line field's hint sits BELOW its value, so on a tall field it is
+			// pushed off the pane. The footer carries a short form of it too.
 			if f.canPreviewName(s) {
 				hint += " · ctrl+p: preview"
 			}
@@ -1419,7 +1595,27 @@ func (f *Form) View() string {
 	// together — the operator's "it is wrapping the tool title and shortcut on
 	// separate lines, it should keep those together". A plain word wrap broke
 	// "↑/↓ or tab: field" mid-phrase.
-	for _, l := range wrapHint(theme.HintText.Render("↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"), width) {
+	//
+	// THE FOOTER IS THE ALWAYS-VISIBLE PLACE FOR A CHORD, so ctrl+p is named here
+	// and not only under the field: the operator reported "there is no hint in the
+	// detail pane saying ctrl+p shows markdown preview". A field's own hint sits
+	// BELOW its value, so on a tall multi-line field it is pushed off the pane
+	// exactly when the value is long enough to want a preview. It is only named when
+	// the FOCUSED field can actually preview, so the footer never advertises a chord
+	// that would do nothing.
+	footer := "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"
+	if s := f.current(); f.editing != "" {
+		footer = "editing text · ↑/↓: move · enter: newline · esc: leave field · ctrl+s: save"
+	} else if f.preview != "" {
+		footer = "markdown preview · ctrl+p or esc: back to the raw text · ctrl+s: save"
+	} else {
+		if s != nil && f.canPreviewName(*s) {
+			footer = "↑/↓ or tab: field · ←/→: move · enter: edit · ctrl+p: preview markdown · ctrl+s: save · esc: cancel"
+		} else if s != nil && f.expandable(s.Kind) {
+			footer = "↑/↓ or tab: field · ←/→: move · enter: edit · ctrl+e: expand · ctrl+s: save · esc: cancel"
+		}
+	}
+	for _, l := range wrapHint(theme.HintText.Render(footer), width) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
@@ -1583,7 +1779,20 @@ func lineCount(s string) int {
 // questions: this one is what a focused multi-line field shows BY DEFAULT, so the operator
 // never has to know a chord to see their own text; expandedBody is the unbounded view for
 // a value too large to fit the pane.
-func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hidden int) {
+// wrappedBody renders a value as wrapped rows with the caret spliced in, and
+// returns the WINDOW of rows to draw around the caret.
+//
+// THE WINDOW FOLLOWS THE CARET, and that is the whole point. It used to take the
+// first maxRows rows, so the visible slice was anchored at the START of the value
+// and the caret fell off the end: measured, with the caret at the end of a 39-line
+// value and a 27-row budget the caret was not rendered AT ALL ("caret rune found
+// at rendered row -1"). That is the operator's "even though the text box is
+// larger, it is still cut off and you can't see your cursor to edit".
+//
+// The caret IS the scroll position: there is no separate offset to fall out of
+// step with it, so the cursor can never leave the window. hiddenAbove/hiddenBelow
+// say how much is out of view on each side, so the hint can report it honestly.
+func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hiddenAbove, hiddenBelow int) {
 	val := f.Values[name]
 	pos := f.caret(name)
 	runes := []rune(val)
@@ -1596,17 +1805,32 @@ func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hidd
 	withCaret = strings.ReplaceAll(withCaret, "\r\n", "\n")
 	withCaret = strings.ReplaceAll(withCaret, "\r", "\n")
 	withCaret = strings.ReplaceAll(withCaret, "\t", "    ")
+	caretRow := -1
 	for _, logical := range strings.Split(withCaret, "\n") {
-		rows = append(rows, wrapPreservingSpaces(logical, width)...)
+		for _, w := range wrapPreservingSpaces(logical, width) {
+			if caretRow < 0 && strings.Contains(w, caretRune) {
+				caretRow = len(rows)
+			}
+			rows = append(rows, w)
+		}
 	}
 	if len(rows) == 0 {
 		rows = []string{""}
+		caretRow = 0
 	}
-	if maxRows > 0 && len(rows) > maxRows {
-		hidden = len(rows) - maxRows
-		rows = rows[:maxRows]
+	if maxRows <= 0 || len(rows) <= maxRows {
+		return rows, 0, 0
 	}
-	return rows, hidden
+	// Put the caret in the middle when there is room, then clamp so the window
+	// never runs past either end of the value.
+	start := caretRow - maxRows/2
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows)-maxRows {
+		start = len(rows) - maxRows
+	}
+	return rows[start : start+maxRows], start, len(rows) - (start + maxRows)
 }
 
 // wrapPreservingSpaces soft-wraps ONE logical line to `width` cells, leaving the line
