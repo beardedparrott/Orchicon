@@ -101,9 +101,14 @@ func TestShiftEnterCSIU(t *testing.T) {
 
 func TestLinesGrowsAndCaps(t *testing.T) {
 	m := New()
-	// Composer 2.0: box border (2) + MinInputRows + the affordance row.
-	if want := 2 + MinInputRows + 1; m.Lines() != want {
-		t.Fatalf("lines = %d, want %d", m.Lines(), want)
+	// THE ASSERTION IS THE GROWTH, not an absolute row count. It used to spell out
+	// `2 + MinInputRows + 1` — the 1 being the affordance row — which made the test fail
+	// the moment that row wrapped to two lines, even though the input-row behaviour it
+	// exists to check was unchanged. A hint gains and loses segments over time; the box
+	// growing with the INPUT is what must not break.
+	base := m.Lines()
+	if want := 2 + MinInputRows + m.HintRows(); base != want {
+		t.Fatalf("lines = %d, want %d (border + min input rows + the affordance row(s))", base, want)
 	}
 	m.Focus()
 	var sb strings.Builder
@@ -111,8 +116,9 @@ func TestLinesGrowsAndCaps(t *testing.T) {
 		sb.WriteString("line\n")
 	}
 	m.Update(paste(sb.String()))
-	if want := 2 + MaxInputRows + 1; m.Lines() != want {
-		t.Fatalf("lines = %d, want %d", m.Lines(), want)
+	// The cap still holds, and the growth is exactly the input rows' share.
+	if want := 2 + MaxInputRows + m.HintRows(); m.Lines() != want {
+		t.Fatalf("lines = %d, want %d (the input rows cap at %d)", m.Lines(), want, MaxInputRows)
 	}
 }
 
@@ -456,5 +462,30 @@ func TestLFAltEnterInsertsANewline(t *testing.T) {
 	}
 	if !strings.Contains(m.Value(), "\n") {
 		t.Fatalf("LF alt+enter did not insert a newline: %q", m.Value())
+	}
+}
+
+// THE COMPOSER HINT NAMES ctrl+d.
+//
+// The operator: "the shortcut advice in the composer is missing for ctrl+d to open/close the diff box".
+// ctrl+d is the ONLY keyboard route to the diff sidebar, so an operator who cannot see it has no way to
+// discover the pane exists.
+//
+// The second half of this test is the constraint that makes the addition non-trivial: the affordance row
+// is ONE LINE by contract, so the hint must still fit an 80-column terminal, where boxInner is 74. The
+// full wording with ctrl+d added measured 79 and wrapped — pushing the affordance row out of the box at
+// 80x24 — so "text box" was shortened to "text".
+func TestComposerHintNamesTheDiffChord(t *testing.T) {
+	m := New()
+	if !strings.Contains(m.Hint(), "ctrl+d") {
+		t.Fatalf("the affordance row does not name ctrl+d, so the diff pane is undiscoverable: %q", m.Hint())
+	}
+	for _, w := range []int{80, 120, 190} {
+		m := New()
+		m.Width = w
+		if rows := m.HintRows(); rows != 1 {
+			t.Errorf("at width %d the affordance row wraps to %d rows (%q) — it is one line by "+
+				"contract, and a wrapped hint pushes the row out of the composer box", w, rows, m.Hint())
+		}
 	}
 }

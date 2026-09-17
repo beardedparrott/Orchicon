@@ -892,7 +892,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// the per-screen create/edit/delete keys never fired (operator report:
 	// "hitting v does nothing", "I can't move the cursor with the arrow key").
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
-		inDiffRail := m.diffOpen && mo.X < DiffPaneWidth
+		inDiffRail := m.diffOpen && mo.X < m.diffPaneWidth()
 		// The slide-out conversation strip owns its own rows: its header carries
 		// [minimize] and [continue in conversations], and clicking the body just
 		// keeps the composer focus (it is part of the compose area).

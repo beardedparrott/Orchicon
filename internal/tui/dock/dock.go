@@ -608,7 +608,17 @@ func (m *Model) Hint() string {
 	case NewlineBoth:
 		nl = "alt+enter or \\+enter"
 	}
-	parts := []string{"ctrl+g text box"}
+	// ctrl+d is named here because it is the ONLY way to open the diff sidebar from
+	// the keyboard, and it was invisible: the operator's "the shortcut advice in the
+	// composer is missing for ctrl+d to open/close the diff box".
+	//
+	// "text box" is shortened to "text" to make room, and that is not cosmetic: the
+	// affordance row is ONE LINE by contract (TestComposerBoxShowsHintAndChip asserts
+	// the box renders the whole hint unbroken), and at an 80-column terminal boxInner
+	// is 74 — the full wording with ctrl+d added measured 79 and wrapped, which pushed
+	// the affordance row out of the box entirely at 80x24. Measured: 75 with "text",
+	// which fits with headroom.
+	parts := []string{"ctrl+g text", "ctrl+d diff"}
 	if s := strings.TrimSpace(m.Context); s != "" {
 		parts = append(parts, s)
 	}

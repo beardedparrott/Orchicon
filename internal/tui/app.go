@@ -262,7 +262,7 @@ type App struct {
 	// open/tab/selected state so it persists across SwitchTo (the GUI
 	// persists it at the host). The pane is a left rail that slides out over
 	// the content; when open, the main screen + chat dock reflow by
-	// DiffPaneWidth.
+	// App.diffPaneWidth (proportional to the terminal).
 	diffOpen bool
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
@@ -319,9 +319,46 @@ type App struct {
 	loaded map[TabID]bool
 }
 
-// DiffPaneWidth is the left rail width (cells). Mirrors the GUI's ~480px
-// rail proportionally at a typical 96-col terminal.
-const DiffPaneWidth = 48
+// DiffRailMinWidth is the left rail's MINIMUM width (cells). The pane is sized
+// proportionally to the terminal — see diffPaneWidth — because a fixed 48 was the
+// operator's "the diff box is very tiny and cut off": 48 cells split across a
+// side-by-side diff leaves each column about 18 cells of code after the line
+// numbers, which is not enough to read a line of Go.
+const DiffRailMinWidth = 48
+
+// diffPaneWidth is the left diff rail's width for the CURRENT terminal.
+//
+// It is a METHOD rather than a constant because the mouse hit-tests, the pane's
+// SetSize and the View's join all have to agree on the width — a single constant
+// made that free, and making it dynamic without a shared accessor would let the
+// drawn pane and its clickable region drift apart (a click near the right edge
+// would land on the content pane while looking like it was inside the diff).
+//
+// The floor keeps the pane usable on a narrow terminal; the cap leaves the content
+// pane at least half the screen, since the diff is a sidebar and the work item or
+// execution beside it is the primary surface.
+func (m *App) diffPaneWidth() int {
+	w := m.width
+	if w < 1 {
+		w = DiffRailMinWidth * 2
+	}
+	// The conversation rail, when present, is not ours to spend.
+	avail := w
+	if m.railVisible() {
+		avail -= ConversationsRailWidth
+	}
+	width := avail * 45 / 100
+	if width < DiffRailMinWidth {
+		width = DiffRailMinWidth
+	}
+	if max := avail / 2; width > max {
+		width = max
+	}
+	if width < 20 {
+		width = 20
+	}
+	return width
+}
 
 // NewApp builds the shell over an established client set.
 func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
@@ -850,7 +887,7 @@ func (m *App) contentHeight() int {
 func (m *App) contentWidth() int {
 	w := m.width
 	if m.diffOpen {
-		w -= DiffPaneWidth
+		w -= m.diffPaneWidth()
 	}
 	if m.railVisible() {
 		w -= ConversationsRailWidth
@@ -914,7 +951,7 @@ func (m *App) openDiffPane() tea.Cmd {
 	}
 	m.diffOpen = true
 	m.restoreDiffPaneState()
-	m.diffPane.SetSize(DiffPaneWidth, m.contentHeight()+m.dock.Lines())
+	m.diffPane.SetSize(m.diffPaneWidth(), m.contentHeight()+m.dock.Lines())
 	m.refreshLayout()
 	// The pane keeps its previously selected path if it matches this owner's
 	// files; otherwise the SetOwner fetch defaults it (see diffs.Model).
@@ -988,7 +1025,7 @@ func (m *App) refreshLayout() {
 		s.SetSize(m.contentWidth(), m.screenRows())
 	}
 	if m.diffPane != nil {
-		m.diffPane.SetSize(DiffPaneWidth, m.screenRows()+m.dock.Lines()+m.panelRows())
+		m.diffPane.SetSize(m.diffPaneWidth(), m.screenRows()+m.dock.Lines()+m.panelRows())
 	}
 }
 
@@ -1660,9 +1697,9 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		return false, nil
 	case tea.MouseMsg:
 		// Forward clicks/wheel that land in the left pane rail (x <
-		// DiffPaneWidth). Motion/Release stay native (Shift+drag); the pane
+		// the pane width). Motion/Release stay native (Shift+drag); the pane
 		// ignores them anyway. Clicks right of the rail pass to the screen.
-		if msg.X < DiffPaneWidth {
+		if msg.X < m.diffPaneWidth() {
 			cmd := m.diffPane.Update(msg)
 			// A click may have hit the pane's ✕ close button (the mouse
 			// toggle area). If so, close the pane (restore the layout) and
@@ -1802,7 +1839,7 @@ func (m App) baseView(w, h int) string {
 	// Left diff rail / right conversations rail: extra COLUMNS joined over
 	// the screen+dock region (the gap row spans the full width alone).
 	if m.diffOpen && m.diffPane != nil {
-		pane := strings.Join(normalizeBlock(m.diffPane.View(), DiffPaneWidth, screenRows+dockRows), "\n")
+		pane := strings.Join(normalizeBlock(m.diffPane.View(), m.diffPaneWidth(), screenRows+dockRows), "\n")
 		body = lipgloss.JoinHorizontal(lipgloss.Top, pane, body)
 	}
 	if m.railVisible() {
