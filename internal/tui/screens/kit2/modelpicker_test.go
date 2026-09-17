@@ -8,8 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
-
-	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // forceColorForTest makes lipgloss emit real escape sequences. Under the test colour profile lipgloss
@@ -495,21 +493,49 @@ func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
 // request true: there IS a border, and there is NO fill.
 func TestPickerChipIsAnUnfilledOutline(t *testing.T) {
 	forceColorForTest(t)
-	out := theme.PickerChip.Render(" DeepSeekAPI ")
 
-	if !strings.Contains(out, "│") {
-		t.Errorf("the chosen chip has no border rules, so nothing marks it as chosen: %q", out)
+	// ASSERT ON WHAT THE PICKER DRAWS, not on the token in isolation. The first version of this test
+	// rendered theme.PickerChip directly — so it kept passing when chipStrip was mutated back to the
+	// filled style, because chipStrip's USE of the token was never exercised. A test of the token is
+	// not a test of the picker.
+	mp := NewModelPicker("Ask model")
+	mp.SetScreen(90, 30)
+	mp.SetAdapters([]string{"orchicon"}, nil)
+	mp.SetProviders("orchicon", []PickerOption{{Value: "DeepSeekAPI"}, {Value: "HalogenLocal"}})
+	mp.SetModels("orchicon", "DeepSeekAPI", []PickerOption{{Value: "m"}}, false)
+	mp.Open("orchicon", "DeepSeekAPI", "")
+
+	var row string
+	for _, l := range strings.Split(mp.View(), "\n") {
+		if strings.Contains(ansi.Strip(l), "PROVIDER") {
+			row = l
+		}
 	}
-	// A BACKGROUND sequence is what makes it a block. The selector must be matched at the START of an
-	// SGR (`\x1b[48;`): a bare "48;" also occurs INSIDE a colour value like "38;2;248;250;252", which
-	// is how the first version of this assertion reported a filled chip that was perfectly unfilled.
-	if strings.Contains(out, "\x1b[48;") {
+	if row == "" {
+		t.Fatal("no PROVIDER row rendered")
+	}
+
+	if !strings.Contains(row, "│") {
+		t.Errorf("the chosen chip has no border rules, so nothing marks it as chosen: %q", row)
+	}
+	// A BACKGROUND sequence is what makes it a block, and finding one is fiddlier than it looks.
+	// lipgloss COMBINES a style's foreground and background into ONE SGR:
+	//
+	//	 filled:   \x1b[38;2;255;255;255;48;2;7;182;213m DeepSeekAPI \x1b[0m
+	//	 unfilled: \x1b[38;2;248;250;252m DeepSeekAPI \x1b[0m
+	//
+	// so neither a bare "48;" (which also occurs INSIDE a colour value like "38;2;248;250;252") nor
+	// "\x1b[48;" (which never occurs when a foreground is also set) identifies it. ";"+selector+";"
+	// does: the background selector is always followed by its own terminator, and the digits of a
+	// colour value never are. Both of those mistakes were made here before this landed — the first
+	// reported a filled chip that was unfilled, the second MISSED a filled chip.
+	if strings.Contains(row, ";48;") {
 		t.Errorf("the chosen chip is FILLED (%q) — the operator asked for the rest not to be filled "+
-			"so the underlying text shows", out)
+			"so the underlying text shows", row)
 	}
-	// And it is actually styled, so the check above is not vacuous (lipgloss strips styling under the
-	// test colour profile unless it is forced, which is how a hardcoded focus flag once survived).
-	if !strings.Contains(out, "\x1b[") {
+	// And the row is actually styled, so the checks above are not vacuous: under the test colour
+	// profile lipgloss strips all styling and every assertion here would pass on plain text.
+	if !strings.Contains(row, "\x1b[") {
 		t.Fatal("no escape sequences at all — the colour profile was not forced, so every assertion " +
 			"here is vacuous")
 	}
