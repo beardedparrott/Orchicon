@@ -191,7 +191,11 @@ func (m *App) railOwnsVerticalKey(key string) bool {
 	if step == 0 {
 		return false
 	}
-	if !m.railVisible() || m.active != TabAsk {
+	// BOTH the rail being visible AND the rail being SELECTED. Visibility alone was the
+	// old test, and it is true whenever a conversation is open — so the rail claimed the
+	// vertical keys even with the transcript selected, which is the operator's "hitting
+	// enter on a conversation ... up/down" gap: there was no key left to scroll with.
+	if !m.railVisible() || m.active != TabAsk || m.askPane != askPaneRail {
 		return false
 	}
 	m.selectRailConversation(step)

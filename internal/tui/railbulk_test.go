@@ -480,3 +480,141 @@ func TestMarkedRowsShowInTheRail(t *testing.T) {
 		t.Fatalf("exactly one row is marked, so exactly one marker:\n%s", rail)
 	}
 }
+
+// ------------------------------------------------- 1b. WHICH PANE HAS THE KEYS
+
+// askPaneApp builds the Ask shell with a loaded rail AND a sized transcript, so both panes can be
+// exercised. The WindowSizeMsg is what gives the rail and the stream real dimensions — a fixture that
+// only sets width/height directly leaves contentHeight() at 0 and the rail renders through the
+// no-focus fallback path, which would make the border assertion below vacuous.
+func askPaneApp(t *testing.T, n int) *App {
+	t.Helper()
+	m := newTestApp()
+	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
+	m.dispatch(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m.SwitchTo(TabAsk)
+	m.askMode = askConversations
+	m.convRailOpen = true
+	m.rightRailOpen = true
+	m.convLoaded = true
+	m.convErr = ""
+	m.chatConvID = "conv-01"
+	for i := 1; i <= n; i++ {
+		m.conversations = append(m.conversations, chat.Conversation{
+			ID:    fmt.Sprintf("conv-%02d", i),
+			Title: fmt.Sprintf("conversation %02d", i), MessageN: 2,
+		})
+	}
+	m.convSel, m.convScroll = 0, 0
+	m.dock.SetValue("")
+	m.refreshComposerHint()
+	return m
+}
+
+// THE OPERATOR'S MODEL: "make left/right actually select the full conversation versus the pane and
+// then up/down works accordingly between the rail and conversation". Left/right select; the vertical
+// keys follow the selection.
+//
+// Before this, the rail claimed the vertical keys whenever it was VISIBLE — which is whenever a
+// conversation is open — so with a conversation on screen there was no keyboard key left to scroll
+// the transcript with, and the operator had to ask what to press.
+func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
+	leftKey := tea.KeyMsg{Type: tea.KeyLeft}
+	rightKey := tea.KeyMsg{Type: tea.KeyRight}
+
+	// On the rail (the default): up/down move the rail's selection.
+	m := askPaneApp(t, 12)
+	m.setFocus(focusContent)
+	if m.askPane != askPaneRail {
+		t.Fatalf("fixture: the rail should be selected by default, got %v", m.askPane)
+	}
+	m = press(m, downKey)
+	if m.convSel != 1 {
+		t.Fatalf("on the rail, down must move the selection, got %d", m.convSel)
+	}
+
+	// The transcript needs enough lines that the offset can MOVE — a stream that fits its pane clamps
+	// to 0 and would make the scroll assertion vacuous.
+	str := m.transcriptStream(m.chatConvID, m.contentWidth(), 6)
+	for i := 0; i < 40; i++ {
+		str.Append(fmt.Sprintf("line %02d", i))
+	}
+	str.ScrollToBottom()
+
+	// Right selects the CONVERSATION: the arrows must stop moving the rail's selection and scroll the
+	// transcript instead.
+	//
+	// The scroll is asserted with UP from the BOTTOM, which is the realistic gesture ("read back
+	// through a long reply") and the only direction that can move an offset already at its maximum —
+	// pressing Down at the bottom clamps and would have made this assertion vacuous.
+	m = press(m, rightKey)
+	if m.askPane != askPaneConversation {
+		t.Fatalf("right did not select the conversation (askPane = %v)", m.askPane)
+	}
+	sel, off := m.convSel, str.Offset
+	m = press(m, upKey, upKey)
+	if m.convSel != sel {
+		t.Errorf("with the conversation selected, up still moved the RAIL's selection (%d -> %d)",
+			sel, m.convSel)
+	}
+	if str.Offset == off {
+		t.Error("with the conversation selected, up did not scroll the transcript — this is the " +
+			"operator's \"what am I supposed to hit to scroll a conversation\"; there was no key")
+	}
+
+	// Left goes back to the rail, and the arrows move the selection again.
+	m = press(m, leftKey)
+	if m.askPane != askPaneRail {
+		t.Fatalf("left did not select the rail (askPane = %v)", m.askPane)
+	}
+	before := m.convSel
+	m = press(m, downKey)
+	if m.convSel == before {
+		t.Errorf("back on the rail, down did not move the selection (stuck at %d)", m.convSel)
+	}
+}
+
+// OPENING A CONVERSATION SELECTS IT, so the arrows do something to what was just opened rather than
+// requiring a Right first. Left is still how the operator gets back to the list.
+func TestOpeningAConversationSelectsTheConversationPane(t *testing.T) {
+	m := askPaneApp(t, 3)
+	m.askPane = askPaneRail
+	m.OpenAskConversation("conv-02")
+	if m.askPane != askPaneConversation {
+		t.Errorf("opening a conversation left the RAIL selected (askPane = %v) — the operator's first "+
+			"arrow would move the list instead of the conversation they just opened", m.askPane)
+	}
+}
+
+// The rail SHOWS that it holds the keyboard: the border was hardcoded unfocused, so the selection was
+// invisible and the operator had to remember it.
+//
+// This asserts the DECISION, not the pixels, and the reason is worth keeping: lipgloss strips styling
+// under the test colour profile, so a focused and an unfocused panel render to byte-identical output
+// (measured: both 1413 bytes, no escape sequences at all). A rendered-border assertion is therefore
+// impossible here — which is precisely how `p.Focused = false` survived this long.
+func TestRailFocusFollowsThePaneSelection(t *testing.T) {
+	m := askPaneApp(t, 3)
+
+	m.askPane = askPaneRail
+	if !m.railFocused() {
+		t.Error("with the rail selected, the rail must render focused — otherwise the pane selection " +
+			"is invisible on screen")
+	}
+	m.askPane = askPaneConversation
+	if m.railFocused() {
+		t.Error("with the conversation selected, the rail must NOT render focused")
+	}
+
+	// And the rail's focus is only meaningful while the rail is on screen: on another tab, or with
+	// the rail hidden, it is not focused whatever askPane says.
+	m.askPane = askPaneRail
+	m.active = TabWork
+	if m.railFocused() {
+		t.Error("the rail must not render focused on a tab that has no rail")
+	}
+	m.active = TabAsk
+	if !m.railFocused() {
+		t.Error("fixture: the rail should be focused again back on Ask")
+	}
+}

@@ -146,7 +146,13 @@ func (m *Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("enter: detail focus · r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
+	// The hint NAMES the pane gesture and what the vertical keys do here, because a chord
+	// nobody can see is a chord nobody has — the operator's "what am I supposed to hit to
+	// scroll a conversation" was exactly that gap. Two lines so it stays readable at the
+	// widths this pane gets.
+	b.WriteString(theme.HintText.Render("←/→: select the rail or the conversation · ↑/↓, PgUp/PgDn: move the rail's selection, or scroll the conversation — whichever is selected"))
+	b.WriteString("\n")
+	b.WriteString(theme.HintText.Render("r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
 	return m.Base.Frame(b.String())
 }
 

@@ -729,6 +729,12 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// the arrows for text navigation, and from content focus the composer does not have the keys at all.
 	// A draft is left untouched by this path.
 	if k, isKey := msg.(tea.KeyMsg); isKey && m.chatFocus == focusContent {
+		// PANE SELECTION FIRST: left/right choose the rail or the conversation, and the
+		// vertical keys then follow that choice (see askPaneKey). It is ahead of the rail's
+		// item chords because left/right are not among them.
+		if handled, cmd := m.askPaneKey(k.String()); handled {
+			return m, cmd
+		}
 		if handled, cmd := m.railItemKey(k.String()); handled {
 			return m, cmd
 		}
@@ -738,6 +744,17 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		if m.railOwnsVerticalKey(k.String()) {
 			return m, nil
+		}
+		// THE CONVERSATION OWNS THE VERTICAL KEYS WHEN IT IS SELECTED. Without this the
+		// transcript had no keyboard scroll at all: the rail claimed these keys whenever it
+		// was visible — which is whenever a conversation is open — so the operator's only way
+		// to read back through a long reply was the mouse wheel.
+		if m.active == TabAsk && m.askPane == askPaneConversation && m.chatConvID != "" {
+			if d := scrollKeyDelta(k.String()); d != 0 {
+				m.ScrollTranscript(d)
+				m.onChatWake() // keep the scroll indicator honest
+				return m, nil
+			}
 		}
 	}
 	// Defer to the active screen — but ONLY once the content actually holds focus.

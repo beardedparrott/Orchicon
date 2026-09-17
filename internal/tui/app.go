@@ -279,8 +279,20 @@ type App struct {
 	panelScroll   int
 	conversations []chat.Conversation
 	convRailOpen  bool
-	convSel       int
-	convScroll    int
+	// askPane records which Ask pane holds the keyboard. Left/right select between the
+	// conversations rail and the open conversation, and the vertical keys follow the
+	// selection: on the rail they move the rail's cursor, in the conversation they scroll
+	// the transcript. The operator: "When the conversation is selected up/down scrolls as
+	// well as the wheel. When the list pane is selected up/down and scroll scrolls the
+	// list of the conversation."
+	//
+	// It exists because focusContent is ONE stop covering both panes, so without it the rail
+	// claimed the vertical keys unconditionally whenever it was visible — which is whenever a
+	// conversation is open — leaving the transcript unscrollable by keyboard.
+	askPane askPaneID
+
+	convSel    int
+	convScroll int
 	// Rail load state (Phase 2c finding 9): the rail is never a silent
 	// empty box — a failed load holds an explicit error + retry state.
 	convErr     string // last rail load failure (auth/API); "" = healthy
@@ -1254,6 +1266,11 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	}
 	m.askMode = askConversations
 	m.chatConvID = id
+	// OPENING A CONVERSATION SELECTS IT FOR THE KEYBOARD. Opening one is a deliberate
+	// "I want to read this", and leaving the rail selected would make the operator press
+	// right before their arrows did anything to what they just opened. Left still returns
+	// to the rail.
+	m.askPane = askPaneConversation
 	m.chat.SetActive(id)
 	// The right rail appears with a conversation, which SHRINKS contentWidth()
 	// — and every pane's width is assigned from it in refreshLayout, which is
@@ -2808,6 +2825,45 @@ func (m *App) setFocus(f focusMode) {
 	// it. It is the only on-screen evidence of where the keyboard is, so a wrong value is worse than
 	// no value.
 	m.footer.ComposerFocus = f == focusComposer
+}
+
+// askPaneID is which PANE holds the keyboard on the Ask tab: the conversations rail, or
+// the open conversation itself.
+type askPaneID int
+
+const (
+	// askPaneRail is the conversations rail — the list of conversations.
+	askPaneRail askPaneID = iota
+	// askPaneConversation is the open conversation's transcript.
+	askPaneConversation
+)
+
+// askPaneKey handles left/right as PANE SELECTION on the Ask tab, reporting whether it
+// owned the key.
+//
+// The operator: "make left/right actually select the full conversation versus the pane and
+// then up/down works accordingly between the rail and conversation". Tab is deliberately
+// NOT used — it belongs to the tab bar — so left/right is the pane gesture on this tab,
+// matching what left/right already mean on every other one ("left+right should move
+// between the two panes below the menus").
+//
+// It also focuses the content: selecting a pane IS choosing where the keyboard goes, so
+// the bar must stop claiming keys in the same press.
+func (m *App) askPaneKey(key string) (bool, tea.Cmd) {
+	if m.active != TabAsk || !m.railVisible() {
+		return false, nil
+	}
+	switch key {
+	case "left":
+		m.askPane = askPaneRail
+	case "right":
+		m.askPane = askPaneConversation
+	default:
+		return false, nil
+	}
+	m.setFocus(focusContent)
+	m.refreshStreamStatus()
+	return true, nil
 }
 
 // sendFromComposer routes composer text: slash commands dispatch,

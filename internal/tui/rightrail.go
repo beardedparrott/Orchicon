@@ -150,7 +150,11 @@ func (m *App) rightRailView() string {
 	}
 
 	p := kit2.NewPanel(title, w, h)
-	p.Focused = false
+	// THE RAIL SHOWS FOCUS. It was hardcoded false, so the only pane on this tab gave no
+	// sign of whether the keyboard was in it — and with left/right now selecting between
+	// the rail and the conversation, that sign is the piece that makes the selection
+	// visible rather than something the operator has to remember.
+	p.Focused = m.railFocused()
 	p.SetContent(strings.Join(body, "\n"))
 	return p.View()
 }
@@ -376,6 +380,17 @@ func (m *App) openSelectedRailConversation() tea.Cmd {
 		return nil
 	}
 	return m.openRailConversation(m.convSel)
+}
+
+// railFocused reports whether the conversations rail holds the keyboard on the Ask tab.
+//
+// It is a named decision rather than an inline comparison because the panels style their border
+// from it, and a test cannot assert on the rendered border: lipgloss strips styling under the
+// test colour profile, so a focused and an unfocused panel render to identical bytes. That is
+// exactly why the hardcoded `p.Focused = false` survived — no test could see it. Asserting the
+// decision is the part that is actually checkable.
+func (m *App) railFocused() bool {
+	return m.active == TabAsk && m.railVisible() && m.askPane == askPaneRail
 }
 
 // railVisibleRows is the number of CONVERSATION rows the rail actually
