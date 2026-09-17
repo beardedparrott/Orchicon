@@ -432,10 +432,13 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	m.chatFocus = focusComposer
 	m.dock.Focus()
 	m.footer.ComposerFocus = true
-	if profile != nil && profile.Theme != "" && theme.Use(profile.Theme) {
-		// config-selected theme already applied (styles are package state).
+	// THE THEME IS APPLIED AND THE COMPOSER RE-PINNED, in that order and in one place. The dock was
+	// constructed above with the DEFAULT palette captured into its textarea, so a session whose theme
+	// came from config rendered its composer in the wrong colours — see applyThemeAndRefresh.
+	if profile != nil && profile.Theme != "" {
+		m.applyThemeAndRefresh(profile.Theme)
 	} else {
-		theme.Use(theme.DefaultName)
+		m.applyThemeAndRefresh(theme.DefaultName)
 	}
 	return m
 }
@@ -956,6 +959,28 @@ func (m *App) openDiffPane() tea.Cmd {
 	// The pane keeps its previously selected path if it matches this owner's
 	// files; otherwise the SetOwner fetch defaults it (see diffs.Model).
 	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
+}
+
+// applyThemeAndRefresh applies a theme AND re-pins every component that CAPTURES styles, rather than
+// reading them at render time.
+//
+// This exists because the app applied its theme in two places that did not agree. NewApp built the
+// composer FIRST (`m.dock = dock.New()` captures the textarea's styles at construction) and applied the
+// operator's theme AFTER, so a light-theme session ran with the DARK theme's composer — the operator's
+// "weird black box around the composer box". The /theme command did it correctly, with a comment
+// explaining that the textarea holds copies rather than package state; the STARTUP path simply lacked
+// that step, and its own comment asserted the opposite ("styles are package state").
+//
+// One function so the two paths cannot disagree again: any future captured-style component is
+// refreshed in one place.
+func (m *App) applyThemeAndRefresh(name string) bool {
+	if !theme.Use(name) {
+		return false
+	}
+	// The composer captures textarea/cursor styles at construction, so a switch must re-pin them
+	// (otherwise the box keeps the old palette). dock.Model is a value, so there is no nil case.
+	m.dock.ApplyTheme()
+	return true
 }
 
 // closeDiffPane closes the pane, tears down its live stream, and restores
@@ -2257,13 +2282,24 @@ func padScreenLine(l string, w int) string {
 	// next one frequently restores only the foreground, which is how the background went missing; and
 	// the row's own leading cells (padding, and text before any styled span) need a colour from the
 	// start, which a background-only wrap does not give them.
-	return bgOpaque(screenBase.Render(l))
+	return bgOpaque(screenBase().Render(l))
 }
 
 // screenBase is the style every row of the frame is wrapped in: the theme's body text on the theme's
-// screen background. It is one value so the wrap and bgOpaque's repairs cannot disagree — the repair
-// derives its sequences from the same two tokens.
-var screenBase = lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Bg)
+// screen background.
+//
+// IT IS A FUNCTION, NOT A VAR. As a package-level `var` it evaluated `theme.Text` and `theme.Bg` ONCE,
+// at package initialisation — when the active theme is the default (DARK) — so every row of every frame
+// was wrapped in the dark palette's colours for the life of the process. In a light session that put a
+// dark background behind the entire frame, which is the operator's "weird black box around the composer
+// box", the black behind "connected" in the footer, and the black blocks inside executions and work
+// items. All of those looked like separate bugs and were this one.
+//
+// It also survived the earlier per-cell audit, because those cells were PAINTED — just painted wrong.
+// Measuring "is there a background here" is not the same as measuring "is it the RIGHT background".
+func screenBase() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Bg)
+}
 
 // ReconnectRequested reports whether the shell exited for /connect
 // (main.go re-opens the connection screen instead of quitting).

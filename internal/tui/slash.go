@@ -524,12 +524,9 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 // (nothing changes). This is the ONE path for switching themes, shared by the
 // /theme command and the Control screen's Themes pane.
 func (m *App) SetTheme(name string) bool {
-	if !theme.Use(name) {
+	if !m.applyThemeAndRefresh(name) {
 		return false
 	}
-	// The composer captures textarea/cursor styles at construction, so a switch
-	// must re-pin them (otherwise the box keeps the old palette).
-	m.dock.ApplyTheme()
 	if m.profile != nil {
 		m.profile.Theme = name
 	}

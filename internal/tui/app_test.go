@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -492,4 +494,65 @@ func unpaintedCells(view string) unpaintedReport {
 		}
 	}
 	return rep
+}
+
+// A LIGHT SESSION MUST CONTAIN NO DARK-THEME COLOURS.
+//
+// The strongest statement of the operator's remaining reports: "The 'connected' text in the bottom left
+// corner still has a black text behind it", "a weird black box around the composer box", and "black
+// boxes bleeding through inside executions. Work items have it as well." All three looked like separate
+// bugs and were one — `screenBase` was a package-level `var`, so it evaluated theme.Text/theme.Bg once
+// at package INITIALISATION, when the active theme is the dark default, and wrapped every row of every
+// frame in the dark palette for the life of the process.
+//
+// IT SURVIVED THE EARLIER PER-CELL AUDIT because those cells were PAINTED — just painted wrong.
+// "Is there a background here" and "is it the RIGHT background" are different questions, which is why
+// this test asserts on the COLOURS rather than on paint coverage.
+//
+// The palette check is a plain containment test on the SGR fragments, so it needs no colour parsing: a
+// dark palette colour simply must not appear anywhere in the frame.
+func TestLightSessionUsesNoDarkPaletteColours(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { theme.Use(theme.DefaultName) })
+
+	light, dark := theme.Lookup("light"), theme.Lookup("dark")
+	if light == nil || dark == nil {
+		t.Fatal("fixture: the light and dark palettes must both exist")
+	}
+	m := NewApp(&client.Clients{},
+		&config.Profile{Name: "default", URL: "https://x.example.com", Theme: "light"}, "v9.9.9")
+	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := m.View()
+
+	for _, c := range []lipgloss.TerminalColor{dark.Bg, dark.Surface, dark.SurfaceAlt} {
+		if frag := sgrRGB(c); frag != "" && strings.Contains(view, frag) {
+			t.Errorf("the dark palette's colour %v appears in a LIGHT session (%d times) — a component "+
+				"or style captured the theme before it was applied", c, strings.Count(view, frag))
+		}
+	}
+	// And the frame is fully painted, so the colour assertions above are about the RIGHT colours
+	// rather than passing because nothing was painted at all.
+	if unp := unpaintedCells(view); unp.total != 0 || unp.fg != 0 {
+		t.Errorf("unpainted cells: bg=%d fg=%d — the frame must be painted before its colours mean "+
+			"anything", unp.total, unp.fg)
+	}
+}
+
+// sgrRGB renders a lipgloss colour as the "r;g;b" fragment an SGR carries, for containment tests.
+func sgrRGB(c lipgloss.TerminalColor) string {
+	hex, ok := c.(lipgloss.Color)
+	if !ok {
+		return ""
+	}
+	s := string(hex)
+	if len(s) != 7 || s[0] != '#' {
+		return ""
+	}
+	r, err1 := strconv.ParseUint(s[1:3], 16, 8)
+	g, err2 := strconv.ParseUint(s[3:5], 16, 8)
+	b, err3 := strconv.ParseUint(s[5:7], 16, 8)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d;%d;%d", r, g, b)
 }
