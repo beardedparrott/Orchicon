@@ -638,7 +638,13 @@ func (m *Model) treeBody() string {
 		if sel {
 			b.WriteString(theme.DiffFileSel.Render(line))
 		} else {
-			b.WriteString(line)
+			// THE ROW MUST CARRY THEME COLOURS. It used to be written RAW — no style at all — so an
+			// unselected file rendered in the TERMINAL's default foreground rather than the theme's
+			// text colour. On a terminal whose default foreground disagrees with the app's palette
+			// that is whatever the terminal happens to use, which is the operator's "green text in
+			// other areas [is] still impossible to read in light mode": nothing here chose green, and
+			// nothing could fix it by choosing a colour, because no colour was applied.
+			b.WriteString(theme.ListItem.Render(line))
 		}
 		if i < len(m.groups)-1 {
 			b.WriteString("\n")
@@ -654,7 +660,9 @@ func (m *Model) timelineBody() string {
 	var b strings.Builder
 	for i, g := range m.groups {
 		line := fmt.Sprintf(" %s %s (%s)", g.Path, g.Kind, g.LastTool)
-		b.WriteString(line)
+		// Styled for the same reason as treeBody: a raw row carries no theme colour and renders in
+		// whatever the terminal's default foreground happens to be.
+		b.WriteString(theme.ListItem.Render(line))
 		if i < len(m.groups)-1 {
 			b.WriteString("\n")
 		}
