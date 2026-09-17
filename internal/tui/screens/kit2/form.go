@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -83,6 +84,18 @@ type FieldSpec struct {
 	// validation, so a hidden `Required` field cannot block a save. Its VALUE is kept, so
 	// toggling a kind back and forth does not discard what was typed.
 	Visible func(values map[string]string) bool
+
+	// NoPreview declares that this field holds CODE, not prose, so the rendered-markdown
+	// view (ctrl+p) is never offered on it.
+	//
+	// It exists because the markdown test is a HEURISTIC. md.LooksLikeMarkdown treats a
+	// leading "#" as a heading, so a Dockerfile beginning `# syntax=docker/dockerfile:1`
+	// or a shell script opening with a `#` comment reads as markdown — and a preview
+	// would then show the code with its first line styled as a heading. The VALUE is
+	// never touched (the preview is read-only), but showing code as prose is a lie in
+	// the UI, and the honest signal is the field's own declaration rather than a guess
+	// about its contents.
+	NoPreview bool
 }
 
 // Form is a typed, validated input collection that submits through the
@@ -140,6 +153,17 @@ type Form struct {
 	// host opens its calendar seeded with the field's current value and writes the
 	// chosen date back with Set. Same contract as OnOpenModelPicker.
 	OnOpenDatePicker func(name, current string) tea.Cmd
+
+	// preview is the field currently shown as RENDERED MARKDOWN, toggled with
+	// ctrl+p. It is a VIEW and nothing more: f.Values still holds the raw text, the
+	// caret and every edit operate on the raw text, and the raw text is the only
+	// thing ever submitted. The operator: "in edit mode you could see the markdown.
+	// Like maybe a markdown switcher to view what it looks like but raw would be the
+	// only thing ever used."
+	//
+	// Mutually exclusive with expanded (ctrl+e), because both replace how one field
+	// is drawn and showing two renderings of the same field at once is meaningless.
+	preview string
 
 	// expanded is the field currently rendered WIDE, toggled with ctrl+e.
 	//
@@ -526,6 +550,17 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 	// focused spec — otherwise every key below acts on an invisible row.
 	f.normalizeCursor()
 	s := f.current()
+	// PREVIEW MODE (kPreview). Any key OTHER than the toggle LEAVES preview and is
+	// then handled normally below, so the keystroke that returns the operator to
+	// editing does its own job too — typing into a previewed field resumes editing
+	// on the first character rather than swallowing it.
+	if f.preview != "" {
+		if k.String() == kPreview {
+			f.preview = ""
+			return nil, true
+		}
+		f.preview = ""
+	}
 	// A model field is a REFERENCE, not text: enter/space opens the host's model
 	// picker instead of advancing or editing (there is nothing a human could
 	// usefully type into it).
@@ -567,7 +602,26 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 			f.expanded = ""
 		} else {
 			f.expanded = s.Name
+			f.preview = "" // one rendering of the field at a time
 		}
+		return nil, true
+	case kPreview:
+		// Show the focused field's value as RENDERED markdown. Same shape as ctrl+e
+		// above, including the silent no-op on a field that cannot preview: the
+		// inline editor owns every key, so an inert chord is the established
+		// behaviour rather than a leak to the shell.
+		//
+		// TOGGLE-OFF IS HANDLED EARLIER, in the preview block at the top of
+		// HandleKey: pressing kPreview while previewing clears the field there and
+		// returns, so this case only ever runs to turn preview ON. An earlier
+		// revision carried a redundant `if f.preview == s.Name` branch here for the
+		// off case — it was unreachable, which I only noticed because mutating it
+		// changed no behaviour in any test.
+		if s == nil || !f.canPreviewName(*s) {
+			return nil, true
+		}
+		f.preview = s.Name
+		f.expanded = ""
 		return nil, true
 	case "shift+tab":
 		f.Prev()
@@ -906,6 +960,30 @@ func (f *Form) NormalizeCursorForTest() { f.normalizeCursor() }
 // first row.
 const FormCursorMark = "▸"
 
+// kPreview is the chord that shows the focused field's value as RENDERED
+// markdown. ctrl+p is otherwise unbound in the TUI (the form uses ctrl+e/s/u).
+const kPreview = "ctrl+p"
+
+// canPreviewName reports whether a field has a rendered view worth showing: a
+// PROSE field whose value actually reads as markdown.
+//
+// It deliberately does NOT reuse expandable(), which also accepts KJSON and KYAML
+// because seeing all of a structured value is useful for ctrl+e. Rendering is a
+// different offer: it CONSUMES markers, so a JSON blob whose string values contain
+// a backtick or an asterisk would preview as mangled data. The kind gate is
+// positive (KTextArea only) so a future structured kind is excluded by default
+// rather than inheriting the preview.
+//
+// LooksLikeMarkdown is the same gate the detail pane uses, and it matters for the
+// same reason there: a log dump, a trace or a Dockerfile must not be run through
+// the markdown renderer. A value with no markdown in it has nothing to preview, so
+// the chord is inert on it rather than showing a rendering identical to the raw
+// text — and a field declared NoPreview (code held in a text area) is inert
+// whatever its contents look like.
+func (f *Form) canPreviewName(s FieldSpec) bool {
+	return !s.NoPreview && s.Kind == KTextArea && md.LooksLikeMarkdown(f.Values[s.Name])
+}
+
 // FocusedRow returns the 0-based row of the focused field's FIRST line within a
 // render produced by View() — the offset a host needs to scroll the form so the
 // field being edited is on screen.
@@ -1158,6 +1236,39 @@ func (f *Form) View() string {
 		prefix := cursor + label + ": "
 		var line string
 		switch {
+		case focused && f.preview == s.Name:
+			// THE FIELD AS RENDERED MARKDOWN — a READ-ONLY view of the value being
+			// edited. The operator: "in edit mode you could see the markdown. Like maybe
+			// a markdown switcher to view what it looks like but raw would be the only
+			// thing ever used." So: the rendered rows are drawn plainly (the markdown's
+			// own styling shows through), f.Values is untouched, and the caret and every
+			// edit still act on the raw text — which is all that is ever submitted.
+			//
+			// The label row carries the cursor marker, because Form.FocusedRow scans for
+			// it to keep this field on screen.
+			budget := f.focusedWrapRows() - 2 // the label row and the hint row are ours too
+			if budget < 3 {
+				budget = 3
+			}
+			lines := md.Render(f.Values[s.Name], max(8, width-2))
+			hidden := 0
+			if len(lines) > budget {
+				hidden = len(lines) - budget
+				lines = lines[:budget]
+			}
+			b.WriteString(theme.ListItemSelected.Render(Pad(cursor+label+":", width)) + "\n")
+			for _, l := range lines {
+				b.WriteString(Pad("  "+l, width) + "\n")
+			}
+			note := ""
+			if len(lines) == 0 {
+				note = " (the value is empty)"
+			} else if hidden > 0 {
+				note = fmt.Sprintf(" (+%d more rendered lines)", hidden)
+			}
+			b.WriteString(theme.HintText.Render(Pad(
+				"  "+label+": PREVIEW (rendered) — ctrl+p returns to the raw text"+note, width)) + "\n")
+			continue
 		case focused && f.expanded == s.Name && f.expandable(s.Kind):
 			// EXPANDED (ctrl+e): the value wraps across as many rows as it needs, so the
 			// operator reads the whole thing instead of one windowed slice. Unbounded on
@@ -1204,9 +1315,22 @@ func (f *Form) View() string {
 			for _, l := range rows {
 				b.WriteString(theme.ListItemSelected.Render(Pad(valueIndent+l, width)) + "\n")
 			}
-			hint := fmt.Sprintf("  (%d lines — ctrl+e for the whole field, arrows move between fields)", lineCount(f.Values[s.Name]))
+			// The hint NAMES THE CHORDS AVAILABLE ON THIS FIELD, and it is kept
+			// short on purpose: the host PADS (truncates) it to the pane width, so a
+			// long hint silently hides the affordance it exists to advertise. The
+			// previous wording ended with "arrows move between fields", which the
+			// form's own footer already says — and it pushed "ctrl+p: preview" off
+			// the end at 70 columns, so the preview chord was invisible exactly where
+			// the operator needed to discover it.
+			hint := fmt.Sprintf("  (%d lines · ctrl+e: expand)", lineCount(f.Values[s.Name]))
 			if hidden > 0 {
-				hint = fmt.Sprintf("  (+%d more lines hidden — ctrl+e for the whole field)", hidden)
+				hint = fmt.Sprintf("  (+%d hidden · ctrl+e: expand)", hidden)
+			}
+			// Advertise the rendered view only where it exists, so the chord is not
+			// offered on a Dockerfile (which markdown rendering would consume) or on a
+			// field with no markdown in it.
+			if f.canPreviewName(s) {
+				hint += " · ctrl+p: preview"
 			}
 			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+":"+hint, width)) + "\n")
 			continue
