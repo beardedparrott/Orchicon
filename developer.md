@@ -5,6 +5,11 @@ Read on demand by agents working directly with the human developer (and by human
 - **Repo**: https://github.com/beardedparrott/Orchicon.git
 - **Language**: Go (control plane) + TypeScript (frontend)
 - **Design docs**: `DOCUMENTATION.md` — the single comprehensive documentation file. Read its relevant sections before touching an unfamiliar subsystem, and keep it in sync when you change a feature or architectural component.
+- **Stale citations in source comments**: comments all over the codebase still cite the old numbered specs — `docs/07_API_Specification.md §3.3`, or the short form `docs/05 §4`. **Those files no longer exist.** Commit `83b38e0f` deleted all eleven (`docs/00`…`docs/10`) and replaced them with `DOCUMENTATION.md`. Around 860 such references remain in hand-written Go/TS and `.proto` (plus their mirrors in generated code). They are DEAD POINTERS: there is nothing to go read.
+  - **Do not "fix" one by repointing it at `DOCUMENTATION.md` unless the target content is actually there.** Most of it is not — `DOCUMENTATION.md` has no section on the API specification, the Adapter SDK, or the worker specification, and it is not `§`-numbered. A citation that resolves to the wrong place reads as authoritative, which is worse than one that plainly points nowhere.
+  - **The code is the authority** for what these citations describe (lifecycle rules, schema, API behaviour). Read the enforcement point and cite THAT in a comment, e.g. `internal/db/worker.go UpdateWorker is the gate` instead of `docs/05 §4`.
+  - A sweep to remove them is deliberately deferred: it touches ~860 sites, and the obvious scripted approach is unsafe — an early attempt broke `internal/guard/guard.go` by rewriting an embedded shell script and deleted `()` from `db.NewID()` by matching a function call, while the test suite stayed green. Treat it as its own reviewed work item, per area.
+
 - **Everything ships as one binary** (frontend dist, container configs, migrations embedded via `go:embed` in `assets.go`). No branch/commit/PR needed during active development — just build and test.
 
 ## Two contexts, two approval flows
