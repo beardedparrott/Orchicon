@@ -1475,6 +1475,34 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
    */
   adapter?: string;
 
+  /**
+   * republish SAVES the edit and leaves the worker PUBLISHED in ONE
+   * server-side transaction, collapsing the manual three-gesture flow
+   * (revert to draft → save → publish) into a single call:
+   *   - a version that is already a draft is updated in place, then
+   *     published;
+   *   - a PUBLISHED version is reverted to draft, updated, and republished.
+   * In BOTH branches the version NUMBER does not advance and the worker's
+   * current_version follows the version just published — the same semantics
+   * BulkUpdateWorkerModel already implements for model_ref, generalised here
+   * to every mutable field.
+   *
+   * The revert happens inside THIS call's transaction. The intermediate
+   * draft state is therefore never observable by another connection, and a
+   * save that fails anywhere below rolls back to the version's original
+   * published state — so a cancelled or failed edit can never strand a
+   * worker in draft, which is the failure mode the per-gesture client flow
+   * has.
+   *
+   * false (default) keeps UpdateWorkerVersion's original draft-only
+   * contract. A DEPRECATED version is rejected FailedPrecondition in both
+   * modes: it cannot be reverted to draft, and this API offers no
+   * unpublished edit of it.
+   *
+   * @generated from field: bool republish = 23;
+   */
+  republish = false;
+
   constructor(data?: PartialMessage<UpdateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1501,6 +1529,7 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
     { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 23, name: "republish", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionRequest {
@@ -1655,6 +1684,18 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
    */
   adapter?: string;
 
+  /**
+   * publish CREATES the new version and publishes it in the SAME
+   * transaction, so the version is live immediately. Without it the caller
+   * must follow with PublishWorkerVersion, and a failure between the two
+   * calls leaves an unpublished draft behind. The version number advances
+   * as usual and current_version follows the newly published version.
+   * false (default) creates a draft, exactly as before.
+   *
+   * @generated from field: bool publish = 23;
+   */
+  publish = false;
+
   constructor(data?: PartialMessage<CreateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1680,6 +1721,7 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
     { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 23, name: "publish", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionRequest {

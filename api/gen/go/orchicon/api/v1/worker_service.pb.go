@@ -1656,7 +1656,31 @@ type UpdateWorkerVersionRequest struct {
 	// when both are set. When the resulting ref's adapter CHANGES, the new
 	// adapter/provider pair must be valid (provider known for the new
 	// kind) or the update is rejected InvalidArgument.
-	Adapter       *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
+	Adapter *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
+	// republish SAVES the edit and leaves the worker PUBLISHED in ONE
+	// server-side transaction, collapsing the manual three-gesture flow
+	// (revert to draft → save → publish) into a single call:
+	//   - a version that is already a draft is updated in place, then
+	//     published;
+	//   - a PUBLISHED version is reverted to draft, updated, and republished.
+	//
+	// In BOTH branches the version NUMBER does not advance and the worker's
+	// current_version follows the version just published — the same semantics
+	// BulkUpdateWorkerModel already implements for model_ref, generalised here
+	// to every mutable field.
+	//
+	// The revert happens inside THIS call's transaction. The intermediate
+	// draft state is therefore never observable by another connection, and a
+	// save that fails anywhere below rolls back to the version's original
+	// published state — so a cancelled or failed edit can never strand a
+	// worker in draft, which is the failure mode the per-gesture client flow
+	// has.
+	//
+	// false (default) keeps UpdateWorkerVersion's original draft-only
+	// contract. A DEPRECATED version is rejected FailedPrecondition in both
+	// modes: it cannot be reverted to draft, and this API offers no
+	// unpublished edit of it.
+	Republish     bool `protobuf:"varint,23,opt,name=republish,proto3" json:"republish,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1817,6 +1841,13 @@ func (x *UpdateWorkerVersionRequest) GetAdapter() string {
 	return ""
 }
 
+func (x *UpdateWorkerVersionRequest) GetRepublish() bool {
+	if x != nil {
+		return x.Republish
+	}
+	return false
+}
+
 type UpdateWorkerVersionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       *WorkerVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -1885,7 +1916,14 @@ type CreateWorkerVersionRequest struct {
 	AgentsMd *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
 	// Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
 	// as UpdateWorkerVersion.
-	Adapter       *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
+	Adapter *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
+	// publish CREATES the new version and publishes it in the SAME
+	// transaction, so the version is live immediately. Without it the caller
+	// must follow with PublishWorkerVersion, and a failure between the two
+	// calls leaves an unpublished draft behind. The version number advances
+	// as usual and current_version follows the newly published version.
+	// false (default) creates a draft, exactly as before.
+	Publish       bool `protobuf:"varint,23,opt,name=publish,proto3" json:"publish,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2037,6 +2075,13 @@ func (x *CreateWorkerVersionRequest) GetAdapter() string {
 		return *x.Adapter
 	}
 	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetPublish() bool {
+	if x != nil {
+		return x.Publish
+	}
+	return false
 }
 
 type CreateWorkerVersionResponse struct {
@@ -2860,7 +2905,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x17GetWorkerVersionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"T\n" +
 	"\x18GetWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xdd\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xfb\a\n" +
 	"\x1aUpdateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -2883,7 +2928,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x06skills\x18\x13 \x01(\tH\fR\x06skills\x88\x01\x01\x12\x1f\n" +
 	"\bbehavior\x18\x14 \x01(\tH\rR\bbehavior\x88\x01\x01\x12 \n" +
 	"\tagents_md\x18\x15 \x01(\tH\x0eR\bagentsMd\x88\x01\x01\x12\x1d\n" +
-	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01B\f\n" +
+	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01\x12\x1c\n" +
+	"\trepublish\x18\x17 \x01(\bR\trepublishB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
 	"\x0e_system_promptB\x12\n" +
@@ -2904,7 +2950,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
 	"\b_adapterJ\x04\b\x06\x10\a\"W\n" +
 	"\x1bUpdateWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xbe\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xd8\a\n" +
 	"\x1aCreateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12 \n" +
 	"\tmodel_ref\x18\a \x01(\tH\x00R\bmodelRef\x88\x01\x01\x12(\n" +
@@ -2925,7 +2971,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x06skills\x18\x13 \x01(\tH\fR\x06skills\x88\x01\x01\x12\x1f\n" +
 	"\bbehavior\x18\x14 \x01(\tH\rR\bbehavior\x88\x01\x01\x12 \n" +
 	"\tagents_md\x18\x15 \x01(\tH\x0eR\bagentsMd\x88\x01\x01\x12\x1d\n" +
-	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01B\f\n" +
+	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01\x12\x18\n" +
+	"\apublish\x18\x17 \x01(\bR\apublishB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
 	"\x0e_system_promptB\x12\n" +
