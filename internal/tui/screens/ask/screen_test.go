@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"connectrpc.com/connect"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -163,5 +165,68 @@ func TestRenderTranscriptOverlaysTheLiveConversation(t *testing.T) {
 	// With no live row, the cached header is served untouched.
 	if _, f := m.RenderTranscript(nil, chat.Conversation{}, false); len(f) != 4 {
 		t.Errorf("fields = %v, want the 4 cached fields when there is no live row", f)
+	}
+}
+
+// fakeShell records the conversations the screen asks it to open.
+type fakeShell struct{ opened []string }
+
+func (f *fakeShell) OpenAskConversation(id string) tea.Cmd {
+	f.opened = append(f.opened, id)
+	return nil
+}
+
+// ENTER ON A CONVERSATION OPENS IT — end to end through the screen.
+//
+// The operator: "In Ask Orchicon, hitting enter on a conversation doesn't bring it
+// up. Only clicking on it does."
+//
+// kit2.Base's enter case now loads the selected row (4d0e73c5), and the two hops
+// after that are what actually OPEN a conversation: the load lands as a detailMsg,
+// which fires onDetail → shell.OpenAskConversation. This test drives that whole
+// chain — Enter at the screen, through the detail round trip, into the shell — because
+// the earlier fixes in this area were each correct at one level and never ran at the
+// next: form-level Esc that the host swallowed, and a form height the host never
+// supplied. A kit2-level test would have passed while the conversation still did not
+// open.
+func TestEnterOnAConversationOpensItThroughTheShell(t *testing.T) {
+	m := newAskModelWithPlane(t, &fakeAsk{})
+	shell := &fakeShell{}
+	m.SetShell(shell)
+	m.SetSize(120, 40)
+
+	if !m.SelectSource("conversations") {
+		t.Fatal("fixture: could not focus the conversations rail")
+	}
+	m.Base.LoadItems("conversations", []screenkit.Item{
+		{ID: "conv_1", Title: "one"},
+		{ID: "conv_2", Title: "two"},
+	}, "")
+	m.Base.ClearDetail()
+
+	if len(shell.opened) != 0 {
+		t.Fatal("fixture: nothing should be open yet")
+	}
+	if m.Base.DetailID() != "" {
+		t.Fatal("fixture: the detail should start empty")
+	}
+
+	// Enter: the screen must ask for the selected conversation's detail.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter produced no command at the screen — the conversation can never open")
+	}
+	// The detail load is async: run it and let the result land, which is when the
+	// onDetail hook fires.
+	if msg := cmd(); msg != nil {
+		m.Update(msg)
+	}
+
+	if len(shell.opened) == 0 {
+		t.Fatal("Enter loaded the detail but the shell was never asked to open the conversation " +
+			"— the detail landing is what opens it, so the rail is still inert")
+	}
+	if got := shell.opened[0]; got != "conv_1" {
+		t.Errorf("opened %q, want the SELECTED conversation conv_1", got)
 	}
 }
