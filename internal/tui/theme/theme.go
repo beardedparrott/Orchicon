@@ -455,7 +455,16 @@ func buildStyles(t Theme) {
 	DiffAdd = lipgloss.NewStyle().Foreground(t.OK).Background(t.SurfaceAlt)
 	DiffDel = lipgloss.NewStyle().Foreground(t.Err).Background(t.SurfaceAlt)
 	DiffCtx = lipgloss.NewStyle().Foreground(t.TextDim)
-	DiffEmphasis = lipgloss.NewStyle().Reverse(true)
+	// DiffEmphasis marks the CHANGED span inside an add/del line. It was Reverse(true) — reverse
+	// video, which is theme-blind by construction: it inverts whatever the terminal is already
+	// showing, so on a light terminal the marked span became a solid BLACK block and on a dark one a
+	// white one. The operator, on a diff in light mode: "The black and green are both hard to read in
+	// light mode ... some weird black text background you can't see anything." Those blocks were this
+	// span.
+	//
+	// It is now weight + underline, which marks the span in BOTH modes, keeps the row's own add/del
+	// colouring intact (the point of the emphasis is WHERE, not what colour), and cannot invert.
+	DiffEmphasis = lipgloss.NewStyle().Bold(true).Underline(true)
 	DiffHeader = lipgloss.NewStyle().Foreground(t.AccentIndigo).Bold(true)
 	DiffLineNoOld = lipgloss.NewStyle().Foreground(t.TextFaint)
 	DiffLineNoNew = lipgloss.NewStyle().Foreground(t.TextFaint)

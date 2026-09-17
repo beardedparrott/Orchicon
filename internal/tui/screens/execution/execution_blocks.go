@@ -377,7 +377,12 @@ const bodyIndent = "   "
 // an over-wide line is content lost with no error. Tool output and errors stay raw (see textBlock).
 func (b textBlock) bodyLines(width int) []string {
 	if b.markdown {
-		if lines := md.Render(b.body, width); len(lines) > 0 {
+		// RenderOn with the surface this body is drawn on, so inline code uses the themed CHIP rather
+		// than reverse video. Reverse video is theme-blind: on a light terminal it inverts to a dark
+		// block with white text, which is the operator's "black text background you can't see
+		// anything" across the execution transcript. The surface is the detail pane's, since that is
+		// what hosts these blocks.
+		if lines := md.RenderOn(b.body, width, md.SurfaceTokens(theme.Text, theme.Bg)); len(lines) > 0 {
 			return lines
 		}
 	}

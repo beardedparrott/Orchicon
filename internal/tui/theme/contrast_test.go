@@ -1,9 +1,11 @@
 package theme
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // Regression for the operator's "the light theme was abysmal — I couldn't see
@@ -230,3 +232,46 @@ func colorHex(c lipgloss.TerminalColor) string {
 // model darker) rather than by text colour, so the pairing is the bubble fills'
 // problem and is gated by TestBubbleContrast. There is deliberately no
 // text-colour gate here: tinting only the glyphs was rejected by the operator.
+
+// NOTHING THAT MARKS TEXT MAY USE REVERSE VIDEO.
+//
+// Reverse video (SGR 7) cannot respect a theme: it inverts whatever the terminal is ALREADY showing,
+// so the same style renders as a black block on a light terminal and a white one on a dark terminal.
+// It also ignores the app's palette entirely, which is worse when the terminal's own colours disagree
+// with the chosen theme — the common case, since the theme is an app setting.
+//
+// The operator, on a diff in light mode: "The black and green are both hard to read in light mode ...
+// some weird black text background you can't see anything." Those blocks were DiffEmphasis, which was
+// Reverse(true). This gate keeps the class of bug from coming back.
+//
+// The two deliberate exceptions, which are NOT text marking: a one-cell caret bar (a cursor is
+// conventionally a reversed cell) and md's inline-code FALLBACK, used only when a caller declares no
+// surface — every real call site passes one, so the chip is what renders.
+func TestNoTextMarkingUsesReverseVideo(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	Use(DefaultName)
+	defer Use(DefaultName)
+
+	for label, style := range map[string]lipgloss.Style{
+		"DiffEmphasis": DiffEmphasis,
+		"DiffAdd":      DiffAdd,
+		"DiffDel":      DiffDel,
+		"DiffCtx":      DiffCtx,
+		"ListItem":     ListItem,
+		"Text":         lipgloss.NewStyle().Foreground(Text),
+	} {
+		out := style.Render("marked text")
+		if strings.Contains(out, "\x1b[7m") {
+			t.Errorf("%s renders with reverse video, which inverts against the terminal instead of the "+
+				"theme — a black block on a light terminal: %q", label, out)
+		}
+	}
+
+	// And the emphasis still MARKS the span: if it stopped distinguishing anything, the diff would
+	// lose the intra-line change indicator entirely.
+	out := DiffEmphasis.Render("changed")
+	if out == "changed" {
+		t.Error("DiffEmphasis renders its text identically to plain text, so a diff no longer shows " +
+			"WHICH part of the line changed")
+	}
+}

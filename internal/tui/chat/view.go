@@ -155,7 +155,7 @@ func renderMarkdownBubble(label, text string, style lipgloss.Style, maxWidth int
 	if avail > 0 {
 		avail -= lipgloss.Width(label) + 3
 	}
-	lines := md.Render(text, avail)
+	lines := md.RenderOn(text, avail, md.SurfaceOf(style))
 	if len(lines) == 0 {
 		lines = []string{text}
 	}
