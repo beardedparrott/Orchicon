@@ -316,15 +316,23 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 		}
 		fields.Purpose = &purpose
 	}
-	// The role binding is the only header field editable on a published
-	// worker: it lives on the header (not the version) and is what gates
-	// plane access. name/description/purpose stay draft-only.
+	// Header text is writable on any status except RETIRED, and it may ride in
+	// the SAME request as the role binding. It was draft-only until now, which
+	// — because workers.status never returns to draft — made a worker's name,
+	// purpose and description permanent at first publish (104 workers on the dev
+	// tenant). See db.UpdateWorker for the full reasoning.
+	//
+	// This check exists so a retired worker gets a CLEAR error. Without it the
+	// request would reach the DB gate, match no row, and surface as
+	// "worker not found" — telling the operator the worker does not exist.
+	if current.Status == domain.WorkerRetired && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("a retired worker's name, purpose and description cannot be changed"))
+	}
+	// The role binding gates plane access; it is editable on every status, so it
+	// is validated on its own rather than being nested behind a status check.
 	if msg.RoleRef != nil {
 		roleRef := msg.GetRoleRef()
-		if current.Status != domain.WorkerDraft && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("only the role binding can be changed on a published worker"))
-		}
 		if roleRef != "" {
 			if _, err := db.GetRole(ctx, ttx.Tx, tenantID, roleRef); err != nil {
 				if errors.Is(err, db.ErrNotFound) {

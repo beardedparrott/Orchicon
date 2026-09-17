@@ -30,19 +30,45 @@ type WorkerRow struct {
 }
 
 // WorkerVersionRow is the data-access shape of a worker_versions table
-// row — the mutable snapshot of a Worker's fields at a specific version
-// (docs/05 §5, docs/09 §3.3). Once published, a version is immutable;
-// changes create a new version. JSON-typed columns (permissions,
-// budget_overrides, etc.) are stored as raw []byte and validated at the
-// API boundary (AGENTS.md security standards).
+// row - the mutable snapshot of a Worker at a specific version. "Mutable"
+// is literal: a PUBLISHED version has its fields edited in place by
+// UpdateWorkerVersion{republish} (revert, update and republish inside one
+// transaction, so the draft guard in UpdateDraftVersion is satisfied
+// without the draft ever escaping that transaction). The version NUMBER
+// advances only through CreateWorkerVersion.
+//
+// JSON-typed columns (permissions, budget_overrides, etc.) are stored as raw
+// []byte and validated at the API boundary (AGENTS.md security standards).
 type WorkerVersionRow struct {
-	ID                  string
-	TenantID            string
-	WorkerID            string
-	Version             int
-	VersionNote         string
-	Status              string
-	ModelRef            string
+	ID          string
+	TenantID    string
+	WorkerID    string
+	Version     int
+	VersionNote string
+	Status      string
+	ModelRef    string
+	// SystemPrompt is the LEGACY RAW PROMPT: one pre-composed prompt, used only
+	// when all four structured fields below are blank. That fallback is LIVE, not
+	// dead — internal/scheduler/reconciler.go's composeSystemPrompt returns this
+	// column in exactly that case, and its result becomes the "# Worker" section
+	// of the composite, which travels as ExecutionManifest.SystemPrompt to BOTH
+	// adapters (opencode reads it in opencode/adapter.go executionSystemPrompt;
+	// the native bridge in orchicon/session.go and orchicon/bridge.go) and to
+	// session follow-ups (opencode/follow_up.go).
+	//
+	// It is also NOT PERSISTED: neither CreateWorkerVersion's INSERT nor
+	// UpdateDraftVersion's UPDATE names this column, so the service's
+	// validate/merge/compose work for a raw-prompt-only worker is silently
+	// dropped before it reaches the row. A worker created with only
+	// system_prompt therefore dispatches with an EMPTY "# Worker" section, while
+	// create.go's comment claims "the DB column always matches what dispatch
+	// would send".
+	//
+	// Measured on the dev tenant: 0 of 388 rows non-empty — every live worker uses
+	// the structured fields, so the fallback never fires and the gap is invisible
+	// in practice. Adding the column to those two statements is the fix; it is
+	// left undone pending a decision on whether a raw-prompt-only worker is still
+	// a supported shape.
 	SystemPrompt        string
 	Role                string
 	Skills              string
@@ -326,9 +352,9 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 }
 
 // UpdateWorkerFields is a partial update for worker header fields.
-// Only non-nil fields are written (field-mask semantics). RoleRef is the
-// exception to the draft-only rule: the role binding lives on the header
-// and is editable on published workers too (see UpdateWorker).
+// Only non-nil fields are written (field-mask semantics). There is no
+// draft-only exception any more: every field here is writable on any status
+// except RETIRED (see UpdateWorker).
 type UpdateWorkerFields struct {
 	Name        *string
 	Description *string
@@ -338,10 +364,29 @@ type UpdateWorkerFields struct {
 
 // UpdateWorker applies a partial update to worker header fields with
 // optimistic concurrency. Returns ErrNotFound if no row matches the
-// id+tenant+version. name/description/purpose are draft-only; the role
-// binding (RoleRef) is additionally editable on published workers — a
-// published worker can only change its role, never its other header
-// fields (mixed updates on a published worker fail the status gate).
+// id+tenant+version.
+//
+// Header text (name/description/purpose) and the role binding are both
+// writable on any status except RETIRED, and may be sent together.
+//
+// WHY HEADER TEXT IS NO LONGER DRAFT-ONLY. workers.status NEVER returns to
+// draft — its only writers are create (draft), UpdateWorkerCurrentVersion
+// (published), and UpdateWorkerStatus (deprecated/retired, which is how the
+// service calls it) — so a draft-only header froze a worker's name, purpose
+// and description permanently at its first publish. Measured on the dev
+// tenant: 104 workers in that state, unfixable through any path.
+//
+// The rule itself belonged to version CONTENT, and the platform no longer
+// applies it there either: BulkUpdateWorkerModel and
+// UpdateWorkerVersion{republish} both edit a published version in place. A
+// name is a LABEL, not dispatch state — nothing resolves a worker by name
+// (workflow steps reference it by ID), and the slug, which is the
+// identity-like field, is immutable after create.
+//
+// RETIRED is the one carve-out, and the `onlyRole` flag preserves the
+// behaviour that pre-dates this change: a role-ONLY update is still accepted
+// on a retired worker, because the binding gates plane access and is not
+// header content.
 func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkerFields) (WorkerRow, error) {
 	q := `UPDATE workers SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -367,7 +412,7 @@ func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedV
 		setIdx++
 	}
 	onlyRole := f.Name == nil && f.Description == nil && f.Purpose == nil
-	q += fmt.Sprintf(` WHERE tenant_id = $1 AND id = $2 AND version = $3 AND (status = 'draft' OR $%d = true)`, setIdx)
+	q += fmt.Sprintf(` WHERE tenant_id = $1 AND id = $2 AND version = $3 AND (status <> 'retired' OR $%d = true)`, setIdx)
 	args = append(args, onlyRole)
 	q += ` RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
 		current_version, created_by, version, created_at, updated_at`

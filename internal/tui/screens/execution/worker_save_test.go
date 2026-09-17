@@ -132,16 +132,17 @@ func TestWorkerCreateFormCarriesTheGuiFieldSet(t *testing.T) {
 	}
 }
 
-// HEADER TEXT IS OFFERED ONLY WHILE THE WORKER IS A DRAFT.
+// HEADER TEXT IS OFFERED UNLESS THE WORKER IS RETIRED.
 //
-// internal/db/worker.go:370 makes name/description/purpose draft-only
-// (`status = 'draft' OR <only the role binding is set>`). A published worker
-// therefore cannot be renamed, so the form must not present a text box whose save
-// the server refuses — and, crucially, it must not fire that write anyway. The
-// first version of this code DID: the absent fields read as empty strings, which
-// compared "changed" against the real name, so every save on a published worker
-// carried a header write the server would reject.
-func TestWorkerEditFormOffersHeaderTextOnlyOnADraft(t *testing.T) {
+// internal/db/worker.go's UpdateWorker gate is `status <> 'retired' OR role-only`,
+// so a published worker DOES accept header text (and may carry the role binding
+// in the same request). It used to be offered only for a draft, which — because
+// workers.status never returns to draft — meant the name/purpose/description of
+// every published worker were uneditable in the TUI, and the fields were not even
+// drawn. Two bugs from that first version are pinned here: the absent fields read
+// as empty strings, which compared "changed" against the real name and fired a
+// header write the server refused.
+func TestWorkerEditFormOffersHeaderTextUnlessRetired(t *testing.T) {
 	versions := []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")}
 
 	t.Run("draft worker offers the header text", func(t *testing.T) {
@@ -154,12 +155,52 @@ func TestWorkerEditFormOffersHeaderTextOnlyOnADraft(t *testing.T) {
 		}
 		for _, name := range []string{"name", "purpose", "description"} {
 			if !formHasField(f, name) {
-				t.Errorf("a draft worker must offer %q — the server accepts it there", name)
+				t.Errorf("a draft worker must offer %q", name)
 			}
 		}
 	})
 
-	t.Run("published worker offers role and version, not header text", func(t *testing.T) {
+	t.Run("published worker offers the header text and its role rides along", func(t *testing.T) {
+		m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
+		var headerWrites []*apiv1.UpdateWorkerRequest
+		m.rpcUpdateWorker = func(_ context.Context, req *apiv1.UpdateWorkerRequest) error {
+			headerWrites = append(headerWrites, req)
+			return nil
+		}
+		w := &apiv1.Worker{Id: "w1", Name: "writer", Purpose: "p", Description: "d", RoleRef: "r_eng",
+			Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
+		f, err := m.editWorkerForm(w, versions, roleFixture())
+		if err != nil {
+			t.Fatalf("edit form: %v", err)
+		}
+		for _, name := range []string{"name", "purpose", "description"} {
+			if !formHasField(f, name) {
+				t.Errorf("a PUBLISHED worker must offer %q — the server accepts it there, and it was "+
+					"previously frozen forever", name)
+			}
+		}
+
+		// Rename AND rebind in the same save: ONE request, carrying both.
+		f.Set("name", "renamed")
+		f.Set("role_ref", "r_ops")
+		cmd, err := f.OnSubmit(f.Values, nil)
+		if err != nil {
+			t.Fatalf("submit: %v", err)
+		}
+		runWrite(t, cmd)
+		if len(headerWrites) != 1 {
+			t.Fatalf("header writes = %d, want exactly 1 (text + role in one request)", len(headerWrites))
+		}
+		got := headerWrites[0]
+		if got.GetName() != "renamed" {
+			t.Errorf("name = %q, want renamed", got.GetName())
+		}
+		if got.GetRoleRef() != "r_ops" {
+			t.Errorf("role_ref = %q, want r_ops", got.GetRoleRef())
+		}
+	})
+
+	t.Run("retired worker offers the role but not the header text", func(t *testing.T) {
 		m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 		var headerWrites []*apiv1.UpdateWorkerRequest
 		m.rpcUpdateWorker = func(_ context.Context, req *apiv1.UpdateWorkerRequest) error {
@@ -167,24 +208,23 @@ func TestWorkerEditFormOffersHeaderTextOnlyOnADraft(t *testing.T) {
 			return nil
 		}
 		w := &apiv1.Worker{Id: "w1", Name: "writer", Purpose: "p", Description: "d",
-			Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
+			Status: apiv1.WorkerStatus_WORKER_STATUS_RETIRED}
 		f, err := m.editWorkerForm(w, versions, roleFixture())
 		if err != nil {
 			t.Fatalf("edit form: %v", err)
 		}
 		for _, name := range []string{"name", "purpose", "description"} {
 			if formHasField(f, name) {
-				t.Errorf("a published worker must NOT offer %q — the server refuses header text there "+
-					"(db/worker.go:370), so the field could only ever fail the save", name)
+				t.Errorf("a retired worker must NOT offer %q — the server refuses it there", name)
 			}
 		}
-		for _, name := range []string{"role_ref", "model_ref", "role", "behavior", "agents_md"} {
-			if !formHasField(f, name) {
-				t.Errorf("a published worker must still offer %q", name)
-			}
+		if !formHasField(f, "role_ref") {
+			t.Error("a retired worker must still offer the role binding — it gates plane access and " +
+				"is not header content")
 		}
 
-		// Saving with only a VERSION change must not fire a header write at all.
+		// A version-only save on a retired worker must not fire a header write:
+		// the undrawn name field reads as "" and would otherwise look changed.
 		f.Set("behavior", "be brief")
 		cmd, err := f.OnSubmit(f.Values, nil)
 		if err != nil {
@@ -199,10 +239,14 @@ func TestWorkerEditFormOffersHeaderTextOnlyOnADraft(t *testing.T) {
 	})
 }
 
-// THE ROLE BINDING IS SAVED ON ITS OWN — it is the one header field a published
-// worker accepts, so it must not be bundled with the draft-only text (which would
-// make the server refuse the pair) and it must not be dropped.
-func TestWorkerEditSavesTheRoleBindingOnItsOwn(t *testing.T) {
+// THE ROLE BINDING SAVES IN THE SAME REQUEST AS THE HEADER TEXT.
+//
+// It is the one header field a PUBLISHED worker has always accepted, and the
+// server accepts it alongside name/description/purpose on any non-retired worker
+// (db.UpdateWorker). The pair used to need two calls because it was refused
+// together; now one call carries both, so a rename and a rebind cannot half-apply
+// (the role saving while the name failed, or the reverse).
+func TestWorkerEditSavesRoleAndTextInOneRequest(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	var headerWrites []*apiv1.UpdateWorkerRequest
 	m.rpcUpdateWorker = func(_ context.Context, req *apiv1.UpdateWorkerRequest) error {
@@ -217,6 +261,8 @@ func TestWorkerEditSavesTheRoleBindingOnItsOwn(t *testing.T) {
 		t.Fatalf("edit form: %v", err)
 	}
 
+	// The ROLE changes but the text does not: still exactly one request, and it
+	// must not carry header text the operator never touched.
 	f.Set("role_ref", "r_ops")
 	cmd, err := f.OnSubmit(f.Values, nil)
 	if err != nil {
@@ -224,14 +270,14 @@ func TestWorkerEditSavesTheRoleBindingOnItsOwn(t *testing.T) {
 	}
 	runWrite(t, cmd)
 	if len(headerWrites) != 1 {
-		t.Fatalf("header writes = %d, want exactly 1 (the role binding)", len(headerWrites))
+		t.Fatalf("header writes = %d, want exactly 1", len(headerWrites))
 	}
 	got := headerWrites[0]
 	if got.GetRoleRef() != "r_ops" {
 		t.Errorf("role_ref = %q, want r_ops", got.GetRoleRef())
 	}
 	if got.GetName() != "" || got.GetPurpose() != "" || got.GetDescription() != "" {
-		t.Errorf("the role write must carry NO header text — the pair is refused on a published worker: %+v", got)
+		t.Errorf("an untouched header field must not be sent: %+v", got)
 	}
 }
 

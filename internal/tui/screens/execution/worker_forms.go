@@ -249,7 +249,12 @@ func (m *Model) editWorkerForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion,
 	if src == nil {
 		return nil, errors.New("this worker has no version to edit — it cannot be edited through this form")
 	}
-	headerEditable := w.GetStatus() == apiv1.WorkerStatus_WORKER_STATUS_DRAFT
+	// Header TEXT is offered unless the worker is RETIRED — that is the only
+	// status the server still refuses (db.UpdateWorker). It used to be offered
+	// only for a DRAFT, which — because workers.status never returns to draft —
+	// made the name, purpose and description of every published worker both
+	// invisible and uneditable here, while the GUI's page showed them.
+	headerEditable := w.GetStatus() != apiv1.WorkerStatus_WORKER_STATUS_RETIRED
 
 	var specs []kit2.FieldSpec
 	if headerEditable {
@@ -268,7 +273,7 @@ func (m *Model) editWorkerForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion,
 	title := "Edit worker: " + w.GetName()
 	if !headerEditable {
 		// State the omission rather than letting the operator hunt for the fields.
-		title = "Edit worker: " + w.GetName() + " (" + workerStatusLabel(w.GetStatus()) + " — name/description are draft-only)"
+		title = "Edit worker: " + w.GetName() + " (" + workerStatusLabel(w.GetStatus()) + " — name/purpose/description are frozen)"
 	}
 	f := kit2.NewForm(title, specs...)
 	f.Focused = true
@@ -304,33 +309,37 @@ func (m *Model) editWorkerForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion,
 		// live behind different RPCs, so there is no combined call to use. Ordering
 		// them before (3) means the version save — the one that matters — is not
 		// lost to a header failure, and vice versa.
-		reqs := make([]mutate.Request, 0, 3)
-		// The header text is compared ONLY when the form OFFERED it. On a published
-		// worker those fields are not drawn, so their form values are the empty
-		// string — and comparing that against the worker's real name would report
-		// "changed" on every save and fire a header write the server must refuse
-		// (name/description/purpose are draft-only, db/worker.go:370), failing a save
-		// whose form never showed a name field.
+		reqs := make([]mutate.Request, 0, 2)
+		// The header TEXT and the ROLE BINDING go in ONE request: the server accepts
+		// the pair on any non-retired worker (db.UpdateWorker), and it used to need
+		// two calls only because the pair was refused on a published worker. That
+		// refusal is gone, so the split would now buy nothing but an extra round
+		// trip and a way for the role to save while the name fails.
+		//
+		// The text is compared ONLY when the form OFFERED it: on a retired worker
+		// those fields are not drawn, so their values are the empty string and
+		// comparing them against the worker's real name would report a change the
+		// operator never made (and fire a write the server refuses).
+		var name, purpose, desc string
+		textChanged := false
 		if headerEditable {
-			name, purpose, desc := strings.TrimSpace(v["name"]), strings.TrimSpace(v["purpose"]), v["description"]
-			if name != origName || purpose != origPurpose || desc != origDesc {
-				reqs = append(reqs, mutate.Request{
-					Name: "update worker " + workerID, Source: srcWorkers,
-					Do: func(ctx context.Context) error {
-						return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{
-							Id: workerID, Name: name, Purpose: purpose, Description: desc,
-						})
-					},
-				})
-			}
+			name, purpose, desc = strings.TrimSpace(v["name"]), strings.TrimSpace(v["purpose"]), v["description"]
+			textChanged = name != origName || purpose != origPurpose || desc != origDesc
 		}
-		if roleRef := v["role_ref"]; roleRef != origRole {
-			rr := roleRef
+		roleRef := v["role_ref"]
+		roleChanged := roleRef != origRole
+		if textChanged || roleChanged {
+			req := &apiv1.UpdateWorkerRequest{Id: workerID}
+			if textChanged {
+				req.Name, req.Purpose, req.Description = name, purpose, desc
+			}
+			if roleChanged {
+				rr := roleRef
+				req.RoleRef = &rr
+			}
 			reqs = append(reqs, mutate.Request{
-				Name: "set plane role on " + workerID, Source: srcWorkers,
-				Do: func(ctx context.Context) error {
-					return m.rpcUpdateWorker(ctx, &apiv1.UpdateWorkerRequest{Id: workerID, RoleRef: &rr})
-				},
+				Name: "update worker " + workerID, Source: srcWorkers,
+				Do: func(ctx context.Context) error { return m.rpcUpdateWorker(ctx, req) },
 			})
 		}
 		if !versionUnchanged(v, limit, orig) {
