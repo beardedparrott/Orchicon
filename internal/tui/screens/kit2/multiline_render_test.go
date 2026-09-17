@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // renderForm renders the form at a fixed width. View() reads f.Width (falling back to
@@ -212,5 +213,153 @@ func TestSingleLineFieldsStillWindowWithACaret(t *testing.T) {
 	}
 	if strings.Contains(joined, "ctrl+e") {
 		t.Errorf("a single-line field offered the multiline chord:\n%s", joined)
+	}
+}
+
+// A FOCUSED MULTI-LINE FIELD GROWS TO FIT THE PANE.
+//
+// The row budget used to be a flat 6 regardless of how much pane there was, so
+// the operator's Dockerfile override — 39 lines in a 40-row terminal — showed 6
+// of them and read as a box that had "scrunch[ed] down into a smaller text box".
+// A fixed bound is most wrong exactly where the value is long, which is when the
+// operator most needs to see it.
+//
+// The height comes from the HOST (kit2.Base sets Form.Height from the pane); a
+// host that supplies none keeps the conservative bound, which is what modal
+// forms rely on.
+func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
+	var dockerfile strings.Builder
+	dockerfile.WriteString("FROM golang:1.24\n")
+	for i := 0; i < 38; i++ {
+		dockerfile.WriteString("RUN echo step\n")
+	}
+
+	// Value rows carry "FROM " or "RUN "; the label and hint rows do not.
+	countValueRows := func(f *Form) int {
+		f.Focused = true
+		f.FocusName("dockerfile_override")
+		n := 0
+		for _, r := range renderForm(f, 176) {
+			if strings.Contains(r, "FROM ") || strings.Contains(r, "RUN ") {
+				n++
+			}
+		}
+		return n
+	}
+
+	tall := NewForm("Edit runtime image",
+		FieldSpec{Name: "name", Label: "Name", Kind: KText, Initial: "img"},
+		FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: KTextArea, Initial: dockerfile.String()},
+		FieldSpec{Name: "tag", Label: "Tag", Kind: KText, Initial: "t"},
+	)
+	tall.Height = 37 // a 40-row terminal: 2 border rows + 1 hint row are not ours
+	got := countValueRows(tall)
+	if got <= maxWrappedRows {
+		t.Fatalf("a focused 39-line field showed %d rows with a 37-row pane — it is still clamped to the "+
+			"fixed %d-row bound, so the operator cannot read what they are editing", got, maxWrappedRows)
+	}
+	// It really is using the room: the pane's height minus the reserve.
+	if want := tall.focusedWrapRows(); got != want {
+		t.Errorf("value rows shown = %d, want %d (the pane's budget)", got, want)
+	}
+
+	// A host that supplies no height keeps the old, conservative bound.
+	modal := NewForm("Edit runtime image",
+		FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: KTextArea, Initial: dockerfile.String()},
+	)
+	if got := countValueRows(modal); got != maxWrappedRows {
+		t.Errorf("with no host height, value rows = %d, want the conservative %d", got, maxWrappedRows)
+	}
+}
+
+// THE VALUE GETS THE PANE'S WIDTH, NOT THE LABEL'S.
+//
+// The value used to start on the label's row and indent every continuation to the
+// label's width — 23 cells for "dockerfile_override" — so a code block lost a
+// fifth of the pane to a label it already had above it. The label now has its own
+// row and the value is indented a fixed two cells.
+//
+// The value here is 85 cells: it fits in 100 with a 2-cell indent (1 row) and
+// does NOT fit with the old 23-cell indent (2 rows), so the row count is the
+// assertion that tells the two apart.
+func TestFocusedMultiLineValueUsesThePaneWidth(t *testing.T) {
+	long := strings.Repeat("x", 85)
+	f := NewForm("Edit",
+		FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: KTextArea, Initial: long},
+	)
+	f.Focused, f.Width, f.Height = true, 100, 30
+	f.FocusName("dockerfile_override")
+
+	rows := renderForm(f, 100)
+	carrying := 0
+	for _, r := range rows {
+		if strings.Contains(ansi.Strip(r), "xxxx") {
+			carrying++
+		}
+	}
+	if carrying != 1 {
+		t.Errorf("the 85-cell value occupied %d rows at width 100 — it wrapped, so it is still being "+
+			"indented by the label's width instead of a fixed two cells", carrying)
+	}
+	// And the value starts two cells in, under the label's own row.
+	for _, r := range rows {
+		s := ansi.Strip(r)
+		if strings.Contains(s, "xxxx") {
+			if !strings.HasPrefix(s, "  x") {
+				t.Errorf("value row = %q, want it indented two cells", s)
+			}
+			break
+		}
+	}
+}
+
+// THE HOST MUST TELL THE FORM HOW MUCH PANE IT HAS.
+//
+// This is the WIRING test, and it is the one that matters: the two above set
+// Form.Height directly, so they stay green even if the host stops supplying it —
+// which is exactly what happened when I removed the assignment in
+// Base.detailPaneView to check the tests bit. Nothing failed. The rendered pane
+// is what the operator actually sees, so the assertion is made on it.
+func TestDetailEditHostScrollsATallFocusedFieldIntoView(t *testing.T) {
+	var dockerfile strings.Builder
+	dockerfile.WriteString("FROM golang:1.24\n")
+	for i := 0; i < 38; i++ {
+		dockerfile.WriteString("RUN echo step\n")
+	}
+
+	b := &Base{}
+	b.HideSources = true
+	b.SetSize(180, 40) // the operator's terminal
+
+	f := NewForm("Edit runtime image",
+		FieldSpec{Name: "name", Label: "Name", Kind: KText, Initial: "img"},
+		FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: KTextArea, Initial: dockerfile.String()},
+		FieldSpec{Name: "tag", Label: "Tag", Kind: KText, Initial: "t"},
+	)
+	f.Focused = true
+	f.FocusName("dockerfile_override")
+	b.BeginDetailEdit("Edit runtime image", f)
+
+	// Render first: the host supplies the height while laying the pane out.
+	view := b.View()
+
+	if f.Height <= 0 {
+		t.Fatal("the host did not tell the form its height, so a focused field cannot know how much " +
+			"room it has and falls back to the fixed 6-row bound")
+	}
+
+	rows := 0
+	for _, r := range strings.Split(view, "\n") {
+		if strings.Contains(r, "FROM ") || strings.Contains(r, "RUN ") {
+			rows++
+		}
+	}
+	if rows <= maxWrappedRows {
+		t.Fatalf("the rendered pane shows %d value rows of a 39-line Dockerfile on a 40-row terminal — "+
+			"the form was not given the pane's height", rows)
+	}
+	// And the field's own line is on screen, so the operator can see where they are.
+	if !strings.Contains(view, "Dockerfile override") {
+		t.Error("the focused field's label is not on the rendered pane")
 	}
 }

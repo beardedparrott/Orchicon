@@ -1514,6 +1514,11 @@ func (b *Base) detailPaneView(w, h int) string {
 		// One border cell each side plus a little slack; the form windows its
 		// values to this width so the caret is always on screen.
 		b.editForm.Width = w - 4
+		// The form also gets the height it may draw in, so a focused multi-line
+		// field can grow to fit the pane instead of clamping to a fixed 6 rows.
+		// Two border rows plus the save/cancel hint row are not available to the
+		// form's own content.
+		b.editForm.Height = h - 3
 		form := b.editForm.View()
 		content = form + "\n" + theme.HintText.Render("ctrl+s: save · esc: cancel")
 		// The form is SCROLLED to follow its cursor, through a panel kept for the

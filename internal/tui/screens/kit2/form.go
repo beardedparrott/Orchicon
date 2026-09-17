@@ -1178,16 +1178,31 @@ func (f *Form) View() string {
 			// it would look in the GUI to see the whole text and formatted properly."
 			//
 			// The value's OWN line breaks are preserved and long lines soft-wrap, so
-			// indentation and paragraph structure survive on screen. Rows are bounded so
-			// one long value cannot push the rest of the form out of reach; the withheld
-			// count is stated and ctrl+e shows all of it.
-			rows, hidden := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(prefix)), maxWrappedRows)
-			for i, l := range rows {
-				line = prefix + l
-				b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
-				if i == 0 {
-					prefix = strings.Repeat(" ", lipgloss.Width(prefix))
-				}
+			// indentation and paragraph structure survive on screen.
+			//
+			// THE LABEL GETS ITS OWN ROW and the value is indented by a fixed two cells.
+			// It used to start on the label's row and indent every continuation to the
+			// label's width, which cost ~21 columns on a field named
+			// "dockerfile_override" — for a Dockerfile or a code block that is the
+			// difference between reading it and not. A fixed indent also stops the
+			// block's width depending on how long its label happens to be.
+			//
+			// THE ROW BUDGET COMES FROM THE HOST. This used to be a flat 6 rows
+			// regardless of the pane, so a 39-line Dockerfile override showed 6 of them
+			// on a 40-row terminal — measured, and reported by the operator as the box
+			// "scrunch[ing] down … and [not] display[ing] the full text box for editing".
+			// f.focusedWrapRows uses the pane height the host supplies; a host that
+			// supplies none keeps the old conservative bound.
+			valueIndent := strings.Repeat(" ", 2)
+			rows, hidden := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(valueIndent)), f.focusedWrapRows())
+			// The label row, so the field is still named while it is being edited —
+			// carrying the CURSOR MARKER (FormCursorMark), which FocusedRow scans for
+			// to scroll this pane to the field being edited. Dropping the marker here
+			// would silently stop the pane following the cursor for exactly the tall
+			// fields that need it most.
+			b.WriteString(theme.ListItemSelected.Render(Pad(cursor+label+":", width)) + "\n")
+			for _, l := range rows {
+				b.WriteString(theme.ListItemSelected.Render(Pad(valueIndent+l, width)) + "\n")
 			}
 			hint := fmt.Sprintf("  (%d lines — ctrl+e for the whole field, arrows move between fields)", lineCount(f.Values[s.Name]))
 			if hidden > 0 {
@@ -1371,6 +1386,33 @@ func (f *Form) Expanded() string { return f.expanded }
 // small JSON in full; beyond that the field says how much is hidden and ctrl+e shows
 // all of it.
 const maxWrappedRows = 6
+
+// focusedWrapRows is the row budget for the FOCUSED multi-line field.
+//
+// It is the form's available height minus a reserve, rather than a constant,
+// because a constant cannot know how much pane there is. The flat
+// maxWrappedRows bound meant a 39-line Dockerfile override showed 6 rows on a
+// 40-row terminal — the operator reported the field "scrunch[ing] down into a
+// smaller text box" and not showing the full text. Growth matters most exactly
+// where the value is long, which is when a fixed bound is most wrong.
+//
+// The reserve is the form TITLE row, the field's own hint row, and enough
+// neighbouring rows that the cursor can still move to another field and be seen.
+// The pane scrolls to follow the cursor (kit2.Base.detailPaneView), so a tall
+// focused field pushes the rest of the form down rather than out of reach.
+//
+// A host that supplies no height keeps the old conservative bound, so modal
+// hosts that never set Height are unchanged.
+func (f *Form) focusedWrapRows() int {
+	if f.Height <= 0 {
+		return maxWrappedRows
+	}
+	avail := f.Height - 10
+	if avail < maxWrappedRows {
+		return maxWrappedRows
+	}
+	return avail
+}
 
 // oneLine flattens a value for SINGLE-ROW display, marking the line breaks instead of
 // emitting them.
