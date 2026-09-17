@@ -671,7 +671,7 @@ open http://localhost:8080
 2. Configure: name, model reference, budget limits, permissions
 3. Set the structured prompt fields **Role, Skills, Behavior, AGENTS.md** (the editable source of truth; the server composes them into the `system_prompt` the model receives). Saving a draft round-trips these fields — they persist exactly as entered.
 4. Publish the worker (draft → published)
-5. Workers are versioned; published versions are immutable
+5. Workers are versioned. A published version's fields are still editable IN PLACE — saving an edit republishes that version without advancing the version number. Use **New version** when you want the next version number.
 
 **Canned workers** are pre-seeded in the dev tenant and available immediately:
 
