@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // forceColorForTest makes lipgloss emit real escape sequences. Under the test colour profile lipgloss
@@ -486,18 +488,38 @@ func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
 //
 // The operator, on the standard LIGHT theme: "a grey or black background just looks odd and hard to
 // look at as well ... Is it possible to maybe just have a box with a border color based in the theme
-// but the rest not filled in so you can see the underlying text?"
+
+// THE CHOSEN CHIP IS PLAIN THEME TEXT WITH AN UNDERLINE.
 //
-// It used to be theme.ListItemSelected — white on the Select fill, which on a light theme is a
-// near-black block with a word punched out of it. This asserts the two properties that make the
-// request true: there IS a border, and there is NO fill.
-func TestPickerChipIsAnUnfilledOutline(t *testing.T) {
+// The operator, after two earlier attempts: "I think we should just make those normal theme text with
+// an underline showing selection and avoid any kind of a background color or border at all."
+//
+// Attempt 1 was a FILLED chip (white on the Select fill — a near-black block on the light theme);
+// attempt 2 was an OUTLINE (two border rules in the accent colour). Both read as a box rather than as a
+// word, and both added cells the strip's width maths had to allow for. An underline is a text
+// attribute: it marks the selection, costs no width, and cannot be a fill.
+func TestPickerChipIsUnderlinedTextNotABox(t *testing.T) {
 	forceColorForTest(t)
 
-	// ASSERT ON WHAT THE PICKER DRAWS, not on the token in isolation. The first version of this test
-	// rendered theme.PickerChip directly — so it kept passing when chipStrip was mutated back to the
-	// filled style, because chipStrip's USE of the token was never exercised. A test of the token is
-	// not a test of the picker.
+	// The TOKEN's own properties, so a future restyle has to be deliberate about all three.
+	chip := theme.PickerChip.Render(" DeepSeekAPI ")
+	if !strings.Contains(chip, "\x1b[4m") && !strings.Contains(chip, "4m") {
+		t.Errorf("the chosen chip is not underlined: %q", chip)
+	}
+	if strings.Contains(chip, ";48;") {
+		t.Errorf("the chosen chip carries a FILL — the operator asked for no background colour: %q", chip)
+	}
+	if strings.ContainsAny(chip, "│┌┐└┘─") {
+		t.Errorf("the chosen chip is framed — the operator asked for no border at all: %q", chip)
+	}
+	if w := lipgloss.Width(chip); w != len(" DeepSeekAPI ") {
+		t.Errorf("the chip renders %d cells for a %d-cell label — an underline must add no width, or the "+
+			"strip's layout maths has to allow for a frame that is not there", w, len(" DeepSeekAPI "))
+	}
+
+	// AND THE PICKER USES IT. A token test alone is not a test of the picker: an earlier version of
+	// this file asserted only the token, and kept passing when chipStrip was mutated back to the filled
+	// style, because chipStrip's use of it was never exercised.
 	mp := NewModelPicker("Ask model")
 	mp.SetScreen(90, 30)
 	mp.SetAdapters([]string{"orchicon"}, nil)
@@ -514,64 +536,42 @@ func TestPickerChipIsAnUnfilledOutline(t *testing.T) {
 	if row == "" {
 		t.Fatal("no PROVIDER row rendered")
 	}
-
-	if !strings.Contains(row, "│") {
-		t.Errorf("the chosen chip has no border rules, so nothing marks it as chosen: %q", row)
+	if !strings.Contains(row, theme.PickerChip.Render(" DeepSeekAPI ")) {
+		t.Errorf("the picker does not render its chosen chip through theme.PickerChip:\n%q", row)
 	}
-	// A BACKGROUND sequence is what makes it a block, and finding one is fiddlier than it looks.
-	// lipgloss COMBINES a style's foreground and background into ONE SGR:
-	//
-	//	 filled:   \x1b[38;2;255;255;255;48;2;7;182;213m DeepSeekAPI \x1b[0m
-	//	 unfilled: \x1b[38;2;248;250;252m DeepSeekAPI \x1b[0m
-	//
-	// so neither a bare "48;" (which also occurs INSIDE a colour value like "38;2;248;250;252") nor
-	// "\x1b[48;" (which never occurs when a foreground is also set) identifies it. ";"+selector+";"
-	// does: the background selector is always followed by its own terminator, and the digits of a
-	// colour value never are. Both of those mistakes were made here before this landed — the first
-	// reported a filled chip that was unfilled, the second MISSED a filled chip.
-	if strings.Contains(row, ";48;") {
-		t.Errorf("the chosen chip is FILLED (%q) — the operator asked for the rest not to be filled "+
-			"so the underlying text shows", row)
-	}
-	// And the row is actually styled, so the checks above are not vacuous: under the test colour
-	// profile lipgloss strips all styling and every assertion here would pass on plain text.
-	if !strings.Contains(row, "\x1b[") {
-		t.Fatal("no escape sequences at all — the colour profile was not forced, so every assertion " +
-			"here is vacuous")
+	if strings.Contains(row, ";48;2;11;129;147") {
+		t.Error("the chosen chip is filled with the Select colour again")
 	}
 }
 
-// THE OUTLINE SURVIVES A NARROW BOX. The chip is two cells wider than its label, and the strip is
-// truncated to the box's inner width — so a long provider name used to lose the CLOSING RULE, leaving
-// an unclosed box that reads as a rendering fault:
+// THE CHIP COSTS NO WIDTH, so a label that fits is never shortened by its own styling.
 //
-//	│▸ PROVIDER │ DeepSeekAPIWithAVeryLongProvi│
-//
-// The label is truncated instead, so the outline is always complete and the operator can still see
-// which chip is chosen.
-func TestPickerChipOutlineSurvivesNarrowWidths(t *testing.T) {
-	long := PickerOption{Value: "DeepSeekAPIWithAVeryLongProviderName"}
-	for _, w := range []int{60, 48, 40} {
-		mp := NewModelPicker("Ask model")
-		mp.SetScreen(w, 30)
-		mp.SetAdapters([]string{"orchicon"}, nil)
-		mp.SetProviders("orchicon", []PickerOption{long, {Value: "HalogenLocal"}})
-		mp.SetModels("orchicon", "x", []PickerOption{{Value: "m"}}, false)
-		mp.Open("orchicon", long.Value, "")
+// The framed version needed two extra cells for its rules, and when the strip ran out of room it lost
+// its CLOSING rule — an unclosed box reading as a rendering fault. With an underline there is no frame
+// to lose.
+func TestPickerChipCostsNoWidth(t *testing.T) {
+	forceColorForTest(t)
+	mp := NewModelPicker("Ask model")
+	mp.SetScreen(90, 30)
+	mp.SetAdapters([]string{"orchicon"}, nil)
+	mp.SetProviders("orchicon", []PickerOption{{Value: "DeepSeekAPI"}, {Value: "HalogenLocal"}})
+	mp.SetModels("orchicon", "DeepSeekAPI", []PickerOption{{Value: "m"}}, false)
+	mp.Open("orchicon", "DeepSeekAPI", "")
 
-		var row string
-		for _, l := range strings.Split(mp.View(), "\n") {
-			if strings.Contains(ansi.Strip(l), "PROVIDER") {
-				row = ansi.Strip(l)
-			}
+	var row string
+	for _, l := range strings.Split(mp.View(), "\n") {
+		if strings.Contains(ansi.Strip(l), "PROVIDER") {
+			row = ansi.Strip(l)
 		}
-		if row == "" {
-			t.Fatalf("screen %d: no PROVIDER row rendered", w)
+	}
+	for _, label := range []string{"DeepSeekAPI", "HalogenLocal"} {
+		if !strings.Contains(row, label) {
+			t.Errorf("the label %q is missing from the PROVIDER row, which has room for it: %s", label, row)
 		}
-		after := row[strings.Index(row, "PROVIDER"):]
-		// Two chip rules + the box's own right border. Fewer means the outline was cut.
-		if n := strings.Count(after, "│"); n < 3 {
-			t.Errorf("screen %d: the chosen chip's outline was truncated (%d rules, want 3): %s", w, n, row)
-		}
+	}
+	// The row is exactly the box's inner width — a chip that cost cells would push it over.
+	boxW, _ := mp.boxSize()
+	if w := lipgloss.Width(row); w > boxW {
+		t.Errorf("the strip renders %d cells inside a %d-cell box", w, boxW)
 	}
 }

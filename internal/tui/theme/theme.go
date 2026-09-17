@@ -376,8 +376,8 @@ var (
 	DiffBadgeAdd    = lipgloss.NewStyle()
 	DiffBadgeDel    = lipgloss.NewStyle()
 
-	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip. An OUTLINE with
-	// NO FILL, deliberately — see buildStyles.
+	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip: plain theme
+	// text with an UNDERLINE. No fill, no border — see buildStyles.
 	PickerChip = lipgloss.NewStyle()
 )
 
@@ -425,7 +425,14 @@ func buildStyles(t Theme) {
 	MenuRow = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface)
 	MenuRowSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 
-	Footer = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
+	// Footer is STRAIGHT THEME TEXT — no background band. The operator: "The bottom connection
+	// information is better but you put a black background box on it. I think it would be better to
+	// just leave those as straight text. No background box at all."
+	//
+	// It had a Surface background, which is what made the row read as a filled strip; with the cells
+	// now genuinely painted (see bgOpaque) that strip became visible where it used to be an invisible
+	// near-match. The background is gone, so the footer is text on the screen's own background.
+	Footer = lipgloss.NewStyle().Foreground(t.TextDim).Padding(0, 1)
 	FooterVersionDrift = lipgloss.NewStyle().Foreground(t.Warn).Bold(true)
 
 	ListTitle = lipgloss.NewStyle().Foreground(t.Text).Bold(true)
@@ -481,22 +488,16 @@ func buildStyles(t Theme) {
 	DiffTabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	DiffFileSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 	DiffClose = lipgloss.NewStyle().Foreground(t.TextFaint).Bold(true)
-	// PickerChip is the model picker's chosen chip: a themed OUTLINE and no fill.
+	// PickerChip is the model picker's chosen chip: plain theme text, UNDERLINED.
 	//
-	// It used to be ListItemSelected — white on the Select fill, which is a near-black block. The
-	// operator, on the standard LIGHT theme: "a grey or black background just looks odd and hard to
-	// look at ... Is it possible to maybe just have a box with a border color based in the theme but
-	// the rest not filled in so you can see the underlying text?" That is exactly this: the chip is
-	// enclosed by the accent colour and the LABEL keeps the theme's body text on the surface's own
-	// background, so the operator reads a word rather than a block.
-	//
-	// Left/right edges only: the strip is ONE row, so a full box would need three and the layout has
-	// no room. Two vertical rules read as a box and cost two cells, which chipStrip's width maths
-	// accounts for.
-	PickerChip = lipgloss.NewStyle().
-		Foreground(t.Text).
-		Border(lipgloss.NormalBorder(), false, true, false, true).
-		BorderForeground(t.AccentCyan)
+	// The operator, having seen the outlined version: "I think we should just make those normal
+	// theme text with an underline showing selection and avoid any kind of a background color or
+	// border at all." Two earlier attempts got this wrong in opposite directions — a FILLED chip
+	// (white on the Select fill, a near-black block) and then an OUTLINE (two border rules in the
+	// accent colour) — and both read as a box rather than as a word. An underline marks the selection
+	// without adding a fill or a frame, so the label sits on the surface's own background and the
+	// strip can never be wider than its text.
+	PickerChip = lipgloss.NewStyle().Foreground(t.Text).Underline(true)
 	DiffBadgeAdd = lipgloss.NewStyle().Foreground(t.OK)
 	DiffBadgeDel = lipgloss.NewStyle().Foreground(t.Err)
 }
