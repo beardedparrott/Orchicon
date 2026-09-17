@@ -29,6 +29,14 @@ func TestStructuralContrast(t *testing.T) {
 		if r := contrastRatio(string(th.Border), bg); r < 1.8 {
 			t.Errorf("%s: Border contrast %.2f vs background — pane borders and their titles will be invisible", name, r)
 		}
+		// The inline-code chip draws the theme's body text on the raised fill (SurfaceAlt). It must be
+		// legible as WORDS, since a code span is text — and this is the pair that replaced reverse
+		// video, which could not be made legible at all because it is relative to whatever it lands
+		// in. Gated at the same floor as body text.
+		if r := contrastRatio(string(th.Text), string(th.SurfaceAlt)); r < 4.5 {
+			t.Errorf("%s: the inline-code chip (Text on SurfaceAlt) is %.2f:1, want >= 4.5 — code spans "+
+				"would be as hard to read as the reverse-video rendering they replaced", name, r)
+		}
 		// Status colours carry MEANING in text (a state on a row, a verdict, a
 		// "failed"), so they have to be readable as words, not merely
 		// distinguishable from the background.

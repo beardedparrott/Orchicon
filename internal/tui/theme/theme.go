@@ -22,6 +22,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/beardedparrott/orchicon/internal/tui/md"
 )
 
 // hsl converts the GUI's `H S% L%` token notation to a hex color.
@@ -251,6 +253,16 @@ func Use(name string) bool {
 	}
 	active = t
 	buildStyles(*t)
+	// The markdown renderer's inline-code chip follows the palette like every other token. It is
+	// pushed here rather than pulled by md, because md must not know about themes (it is a leaf that
+	// the screens and the chat renderer all share) — and because a chip that a caller forgets to
+	// configure would be invisible until it bit.
+	//
+	// SurfaceAlt is the raised fill, so the chip reads as a chip: a tinted block distinct from the
+	// surface it sits on, with the theme's own body text on it. Both are contrast-gated (see
+	// TestStructuralContrast), which is what makes the pair legible in light AND dark palettes — the
+	// whole point, since reverse video could not be made legible at all.
+	md.SetCodeChip(string(t.Text), string(t.SurfaceAlt))
 	return true
 }
 

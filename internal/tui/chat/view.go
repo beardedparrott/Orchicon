@@ -101,7 +101,7 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	//
 	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
 	// horizontal scroll in the band to fall back on.
-	body := md.Render(text, inner)
+	body := md.RenderOn(text, inner, md.SurfaceOf(style))
 	if len(body) == 0 {
 		body = []string{text}
 	}

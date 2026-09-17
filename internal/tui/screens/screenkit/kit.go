@@ -438,7 +438,7 @@ func (d *Detail) bodyContent() string {
 	if d.vp.Width < 1 || !md.LooksLikeMarkdown(d.Body) {
 		return d.Body
 	}
-	if out := md.RenderString(d.Body, d.vp.Width); out != "" {
+	if out := md.RenderOnString(d.Body, d.vp.Width, md.SurfaceTokens(theme.Text, theme.Bg)); out != "" {
 		return out
 	}
 	return d.Body

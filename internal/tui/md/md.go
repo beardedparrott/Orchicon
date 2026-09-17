@@ -46,6 +46,7 @@ package md
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yuin/goldmark"
@@ -54,6 +55,116 @@ import (
 	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 )
+
+// --- the inline-code chip ------------------------------------------------------------------------
+//
+// An inline code span used to render as REVERSE VIDEO (SGR 7), described in the attribute table as
+// "the theme-agnostic stand-in for an inline chip". That is the problem with it: reverse video is
+// relative, so it inverts whatever it lands in and cannot be made legible by choosing colours — the
+// operator, on the Work detail pane and the Ask transcript: the highlighted text "makes it kind of
+// hard to read as well ... we should enhance legibility of text in general".
+//
+// So a code span gets REAL colours: a chip foreground and background chosen by the theme.
+//
+// WHY THE SURFACE IS A PARAMETER AND NOT A GLOBAL. A colour span has to END by returning to
+// whatever it was drawn inside — the Ask transcript wraps every line in a full-width background band,
+// and closing with the terminal default (`\x1b[49m`) leaves the rest of that line on the WRONG
+// background. Measured:
+//
+//	band:            \x1b[48;2;255;0;0mplain\x1b[0m
+//	chip closing 49: \x1b[48;2;255;0;0maaa\x1b[48;5;240mcode\x1b[49mbbb\x1b[0m
+//	                  └─ band bg ────┘        └─ chip ─┘   └─ terminal default, NOT the band ─┘
+//
+// The surface differs per CALLER (a bubble band, a detail pane, a form preview), so it cannot be
+// package state — two concurrent renders would fight over it. It is passed per render, and renders
+// are serialized by renderMu so the chip state below is consistent for the duration of one.
+type Surface struct {
+	Fg string // the colour text returns to after the chip (e.g. the band's bubble text)
+	Bg string // the background the chip sits on, and returns to
+}
+
+var (
+	// renderMu guards the chip state for the duration of a Render. Renders are microseconds and
+	// already cheap; correctness under the "two transcripts on two goroutines" contract the parser
+	// comment describes is worth more than parallel rendering of a message.
+	renderMu sync.Mutex
+
+	chipFg, chipBg string // set by SetCodeChip (the theme)
+	chipSurface    Surface
+	chipOn         bool
+)
+
+// SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
+// follows the palette like any other token.
+//
+// An empty background (the zero value) leaves the chip OFF, and a code span then renders as reverse
+// video exactly as before — the safe default for a caller that has not declared a surface.
+func SetCodeChip(fg, bg string) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	chipFg, chipBg = fg, bg
+}
+
+// sgr builds an SGR sequence for a #rrggbb colour with the given selector (38 foreground, 48
+// background). It returns "" for anything it cannot parse, so a malformed token degrades to no
+// colour rather than emitting a broken sequence.
+func sgr(sel int, hex string) string {
+	if len(hex) != 7 || hex[0] != '#' {
+		return ""
+	}
+	r, err1 := strconv.ParseUint(hex[1:3], 16, 8)
+	g, err2 := strconv.ParseUint(hex[3:5], 16, 8)
+	b, err3 := strconv.ParseUint(hex[5:7], 16, 8)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return ""
+	}
+	return "\x1b[" + strconv.Itoa(sel) + ";2;" +
+		strconv.FormatUint(r, 10) + ";" + strconv.FormatUint(g, 10) + ";" + strconv.FormatUint(b, 10) + "m"
+}
+
+// chipOpen is the sequence that starts a chip: its colours, both set explicitly so the span cannot
+// inherit a stale one.
+func chipOpen() string { return sgr(38, chipFg) + sgr(48, chipBg) }
+
+// chipClose RESTORES the surface rather than resetting. `\x1b[39m`/`\x1b[49m` would drop the rest of
+// the line to the terminal's defaults — the band hole measured above — so the close re-asserts the
+// colours the chip was drawn inside. A surface with no background cannot be restored, which is why
+// chipActive requires one.
+func chipClose() string { return sgr(38, chipSurface.Fg) + sgr(48, chipSurface.Bg) }
+
+// chipActive reports whether a chip can be drawn: a surface background is known (so the close can
+// restore it) and the theme has supplied colours THAT PARSE.
+//
+// Both colours must be usable, not merely non-empty: a chip that drew its background but not its
+// foreground would put the theme's text on a fill chosen without checking the pair, which is exactly
+// the illegibility this exists to remove. Anything unusable falls back to reverse video, which is
+// always self-consistent.
+func chipActive() bool {
+	return chipOn && chipSurface.Bg != "" && sgr(38, chipFg) != "" && sgr(48, chipBg) != ""
+}
+
+// SurfaceOf reads the surface from the lipgloss style the output will be drawn INSIDE, so a caller
+// passes the style it is already using rather than restating its colours — which is how the two
+// would drift. A style with no background yields an empty Surface, and the chip stays off.
+func SurfaceOf(st lipgloss.Style) Surface {
+	return Surface{Fg: colorHex(st.GetForeground()), Bg: colorHex(st.GetBackground())}
+}
+
+// SurfaceTokens builds a Surface from two theme tokens directly. It exists because the theme's
+// package-level mirrors are lipgloss.TerminalColor (an interface), not the string a caller can hand
+// Surface, so `Surface{string(theme.Bg)}` does not compile.
+func SurfaceTokens(fg, bg lipgloss.TerminalColor) Surface {
+	return Surface{Fg: colorHex(fg), Bg: colorHex(bg)}
+}
+
+// colorHex renders a lipgloss colour as a #rrggbb string, or "" for anything else (a style may carry
+// an adaptive or no colour at all).
+func colorHex(c lipgloss.TerminalColor) string {
+	if cc, ok := c.(lipgloss.Color); ok {
+		return string(cc)
+	}
+	return ""
+}
 
 // parser is the GFM parser: the same dialect the GUI renders (remark-gfm), so tables, strikethrough,
 // autolinks and task lists agree between the clients. goldmark documents Parser.Parse as safe for
@@ -72,7 +183,7 @@ const (
 	aStrike
 	aFaint
 	aUnderline
-	aCode // reverse video: the theme-agnostic stand-in for an inline "chip"
+	aCode // an inline "chip": themed colours when a surface is declared, reverse video otherwise
 )
 
 // sgrCodes maps each attribute to its SGR code.
@@ -131,6 +242,13 @@ func (s span) render() string {
 	if s.a == 0 || s.text == "" {
 		return s.text
 	}
+	// A CODE SPAN GETS THE CHIP when one is configured, and reverse video otherwise. The chip is
+	// stripped out of the attribute set first: it is drawn with colours, not with SGR 7, so leaving
+	// the bit in would emit both.
+	if s.a&aCode != 0 && chipActive() {
+		rest := s.a &^ aCode
+		return chipOpen() + rest.open() + s.text + rest.off() + chipClose()
+	}
 	return s.a.open() + s.text + s.a.off()
 }
 
@@ -164,6 +282,13 @@ func spansRender(spans []span) string {
 // so an over-wide line is not a cosmetic problem — the detail viewport TRUNCATES, which silently
 // hides content (see the package comment on why the transcript needed this at all).
 func Render(src string, width int) []string {
+	return render(src, width)
+}
+
+// render is the shared body: `Render` and `RenderOn` differ only in whether the chip state is set,
+// which the span renderer reads. Keeping one body means a fix to layout cannot land in one path and
+// miss the other.
+func render(src string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
@@ -175,6 +300,25 @@ func Render(src string, width int) []string {
 	r := &renderer{width: width, src: srcBytes}
 	r.blocks(doc, indent{})
 	return clampWidth(r.out, width)
+}
+
+// RenderOn renders with a declared SURFACE: the colours the output is drawn inside. It enables the
+// inline-code chip, whose close RESTORES those colours rather than resetting to the terminal defaults
+// (see the chip section for the band hole a reset leaves).
+//
+// A caller that does not know its surface keeps Render, which draws code spans as reverse video — the
+// behaviour before the chip — so nothing degrades by omission.
+func RenderOn(src string, width int, sf Surface) []string {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	chipSurface, chipOn = sf, true
+	defer func() { chipOn, chipSurface = false, Surface{} }()
+	return render(src, width)
+}
+
+// RenderOnString is RenderOn joined with newlines.
+func RenderOnString(src string, width int, sf Surface) string {
+	return strings.Join(RenderOn(src, width, sf), "\n")
 }
 
 // RenderString is Render joined with newlines, for hosts that take a single string body.

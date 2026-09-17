@@ -1407,7 +1407,7 @@ func (f *Form) View() string {
 			if budget < 3 {
 				budget = 3
 			}
-			lines := md.Render(f.Values[s.Name], max(8, width-2))
+			lines := md.RenderOn(f.Values[s.Name], max(8, width-2), md.SurfaceTokens(theme.Text, theme.Bg))
 			hidden := 0
 			if len(lines) > budget {
 				hidden = len(lines) - budget
