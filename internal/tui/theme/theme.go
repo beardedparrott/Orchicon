@@ -375,6 +375,10 @@ var (
 	DiffClose       = lipgloss.NewStyle()
 	DiffBadgeAdd    = lipgloss.NewStyle()
 	DiffBadgeDel    = lipgloss.NewStyle()
+
+	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip. An OUTLINE with
+	// NO FILL, deliberately — see buildStyles.
+	PickerChip = lipgloss.NewStyle()
 )
 
 func buildStyles(t Theme) {
@@ -477,6 +481,22 @@ func buildStyles(t Theme) {
 	DiffTabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	DiffFileSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 	DiffClose = lipgloss.NewStyle().Foreground(t.TextFaint).Bold(true)
+	// PickerChip is the model picker's chosen chip: a themed OUTLINE and no fill.
+	//
+	// It used to be ListItemSelected — white on the Select fill, which is a near-black block. The
+	// operator, on the standard LIGHT theme: "a grey or black background just looks odd and hard to
+	// look at ... Is it possible to maybe just have a box with a border color based in the theme but
+	// the rest not filled in so you can see the underlying text?" That is exactly this: the chip is
+	// enclosed by the accent colour and the LABEL keeps the theme's body text on the surface's own
+	// background, so the operator reads a word rather than a block.
+	//
+	// Left/right edges only: the strip is ONE row, so a full box would need three and the layout has
+	// no room. Two vertical rules read as a box and cost two cells, which chipStrip's width maths
+	// accounts for.
+	PickerChip = lipgloss.NewStyle().
+		Foreground(t.Text).
+		Border(lipgloss.NormalBorder(), false, true, false, true).
+		BorderForeground(t.AccentCyan)
 	DiffBadgeAdd = lipgloss.NewStyle().Foreground(t.OK)
 	DiffBadgeDel = lipgloss.NewStyle().Foreground(t.Err)
 }

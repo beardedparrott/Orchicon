@@ -5,8 +5,24 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
+
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
+
+// forceColorForTest makes lipgloss emit real escape sequences. Under the test colour profile lipgloss
+// strips ALL styling, so a styled and an unstyled render are byte-identical — which makes every
+// assertion about colour or borders pass vacuously. That blindness is how the Ask rail's hardcoded
+// `p.Focused = false` survived, so tests that assert on styling must force the profile AND assert
+// that sequences came out at all.
+func forceColorForTest(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+}
 
 // mpLoads records the load keys a picker asked for, so a test can assert the
 // cascade order AND that nothing is fetched twice.
@@ -466,4 +482,70 @@ func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
 	}
 	// esc is covered by TestModelPickerEscCancels; this one pins the COMMIT
 	// outcome, which is what a host turns into a write.
+}
+
+// THE CHOSEN CHIP IS AN UNFILLED OUTLINE, NOT A FILLED BLOCK.
+//
+// The operator, on the standard LIGHT theme: "a grey or black background just looks odd and hard to
+// look at as well ... Is it possible to maybe just have a box with a border color based in the theme
+// but the rest not filled in so you can see the underlying text?"
+//
+// It used to be theme.ListItemSelected — white on the Select fill, which on a light theme is a
+// near-black block with a word punched out of it. This asserts the two properties that make the
+// request true: there IS a border, and there is NO fill.
+func TestPickerChipIsAnUnfilledOutline(t *testing.T) {
+	forceColorForTest(t)
+	out := theme.PickerChip.Render(" DeepSeekAPI ")
+
+	if !strings.Contains(out, "│") {
+		t.Errorf("the chosen chip has no border rules, so nothing marks it as chosen: %q", out)
+	}
+	// A BACKGROUND sequence is what makes it a block. The selector must be matched at the START of an
+	// SGR (`\x1b[48;`): a bare "48;" also occurs INSIDE a colour value like "38;2;248;250;252", which
+	// is how the first version of this assertion reported a filled chip that was perfectly unfilled.
+	if strings.Contains(out, "\x1b[48;") {
+		t.Errorf("the chosen chip is FILLED (%q) — the operator asked for the rest not to be filled "+
+			"so the underlying text shows", out)
+	}
+	// And it is actually styled, so the check above is not vacuous (lipgloss strips styling under the
+	// test colour profile unless it is forced, which is how a hardcoded focus flag once survived).
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatal("no escape sequences at all — the colour profile was not forced, so every assertion " +
+			"here is vacuous")
+	}
+}
+
+// THE OUTLINE SURVIVES A NARROW BOX. The chip is two cells wider than its label, and the strip is
+// truncated to the box's inner width — so a long provider name used to lose the CLOSING RULE, leaving
+// an unclosed box that reads as a rendering fault:
+//
+//	│▸ PROVIDER │ DeepSeekAPIWithAVeryLongProvi│
+//
+// The label is truncated instead, so the outline is always complete and the operator can still see
+// which chip is chosen.
+func TestPickerChipOutlineSurvivesNarrowWidths(t *testing.T) {
+	long := PickerOption{Value: "DeepSeekAPIWithAVeryLongProviderName"}
+	for _, w := range []int{60, 48, 40} {
+		mp := NewModelPicker("Ask model")
+		mp.SetScreen(w, 30)
+		mp.SetAdapters([]string{"orchicon"}, nil)
+		mp.SetProviders("orchicon", []PickerOption{long, {Value: "HalogenLocal"}})
+		mp.SetModels("orchicon", "x", []PickerOption{{Value: "m"}}, false)
+		mp.Open("orchicon", long.Value, "")
+
+		var row string
+		for _, l := range strings.Split(mp.View(), "\n") {
+			if strings.Contains(ansi.Strip(l), "PROVIDER") {
+				row = ansi.Strip(l)
+			}
+		}
+		if row == "" {
+			t.Fatalf("screen %d: no PROVIDER row rendered", w)
+		}
+		after := row[strings.Index(row, "PROVIDER"):]
+		// Two chip rules + the box's own right border. Fewer means the outline was cut.
+		if n := strings.Count(after, "│"); n < 3 {
+			t.Errorf("screen %d: the chosen chip's outline was truncated (%d rules, want 3): %s", w, n, row)
+		}
+	}
 }

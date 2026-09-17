@@ -816,16 +816,8 @@ func hintLine(innerW int) string {
 // never push the focused chip off the row (which would make the arrows look
 // broken).
 func chipStrip(label string, items []PickerOption, cursor int, focused bool, innerW int) (string, [][2]int) {
-	texts := make([]string, len(items))
-	widths := make([]int, len(items))
-	for i, it := range items {
-		lbl := it.Label
-		if lbl == "" {
-			lbl = it.Value
-		}
-		texts[i] = " " + lbl + " "
-		widths[i] = lipgloss.Width(texts[i]) + 1 // +1 gap
-	}
+	// The head and the space available to chips are computed FIRST, because a chip's label may have to
+	// be shortened to fit — see the fit check below.
 	head := "  " + label + " "
 	if focused {
 		head = "▸ " + label + " "
@@ -834,6 +826,34 @@ func chipStrip(label string, items []PickerOption, cursor int, focused bool, inn
 	avail := innerW - headW - 1
 	if avail < 4 {
 		avail = 4
+	}
+
+	texts := make([]string, len(items))
+	widths := make([]int, len(items))
+	for i, it := range items {
+		lbl := it.Label
+		if lbl == "" {
+			lbl = it.Value
+		}
+		// THE CHOSEN CHIP MUST FIT, OUTLINE INCLUDED. It is drawn two cells wider than its label (the
+		// two rules) and padded one space each side, so a name that alone exceeds the strip loses the
+		// closing rule to the box's Pad — leaving an UNCLOSED box that reads as a rendering fault.
+		// Truncating the LABEL keeps the outline complete, so the operator can still see which chip is
+		// chosen when the name has to be shortened.
+		//
+		// Measured before this: at screen widths 48 and 40 the closing rule was cut, so the row read
+		// "│▸ PROVIDER │ DeepSeekAPIWithAVeryLongProvi│".
+		if i == cursor && focused && lipgloss.Width(lbl)+4 > avail {
+			lbl = ansi.Truncate(lbl, max(1, avail-4), "…")
+		}
+		texts[i] = " " + lbl + " "
+		// THE LAYOUT COUNTS THE RENDERED WIDTH, not the label's — the outlined chip is two cells wider,
+		// and the window is decided here.
+		extra := 0
+		if i == cursor && focused {
+			extra = 2 // the two vertical rules
+		}
+		widths[i] = lipgloss.Width(texts[i]) + 1 + extra // +1 gap
 	}
 
 	lo, hi := 0, 0
@@ -876,15 +896,21 @@ func chipStrip(label string, items []PickerOption, cursor int, focused bool, inn
 		var rendered string
 		switch {
 		case chosen && focused:
-			rendered = theme.ListItemSelected.Render(texts[i])
+			// An OUTLINE, not a fill: the label keeps the surface's background so the operator reads a
+			// word. See theme.PickerChip for the operator's request and why it is unfilled.
+			rendered = theme.PickerChip.Render(texts[i])
 		case chosen:
+			// The chosen chip of an UNFOCUSED tier is already unfilled (bold body text).
 			rendered = theme.ListTitle.Render(texts[i])
 		default:
 			rendered = theme.ListItem.Render(texts[i])
 		}
-		ranges = append(ranges, [2]int{pos + 1, pos + lipgloss.Width(texts[i])})
+		// The hit range must match what was DRAWN, so it is measured from the rendered string — the
+		// outlined chip is two cells wider than its label, and a range computed from the label would
+		// put the clickable area one cell inside the box on each side.
+		ranges = append(ranges, [2]int{pos + 1, pos + lipgloss.Width(rendered) - 1})
 		b.WriteString(rendered)
-		pos += lipgloss.Width(texts[i])
+		pos += lipgloss.Width(rendered)
 		if i < hi-1 {
 			b.WriteString(" ")
 			pos++
