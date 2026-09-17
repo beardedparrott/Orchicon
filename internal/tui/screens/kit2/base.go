@@ -831,6 +831,22 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		f := b.editForm
 		switch msg.String() {
 		case "esc":
+			// THE FORM GETS FIRST REFUSAL ON ESC.
+			//
+			// The form may be using Esc for something CLOSER than "close the editor":
+			// releasing the edit lock (Enter on a multi-line field), or closing the
+			// markdown preview (ctrl+p). This intercept used to close the editor
+			// outright, before the form was consulted at all — so the form's own Esc
+			// handling was unreachable in the real app and pressing Esc while editing
+			// a field did both things at once: "Esc is not only escaping out of the
+			// field but also the edit form".
+			//
+			// Only when the form reports the key UNHANDLED does Esc mean "cancel the
+			// edit". That is the same first-refusal shape the rest of this block uses
+			// for every other key.
+			if _, handled := f.HandleKey(msg); handled {
+				return true, nil
+			}
 			b.finishDetailEdit(false)
 			return true, nil
 		case "ctrl+s":
