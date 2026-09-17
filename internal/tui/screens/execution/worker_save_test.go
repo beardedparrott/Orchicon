@@ -404,3 +404,55 @@ func TestWorkerFormScrollsToFollowTheCursor(t *testing.T) {
 			"against a %d-row pane)", strings.Count(f.View(), "\n")+1, 16)
 	}
 }
+
+// THE FULL OPERATOR PATH FOR Esc: screen → kit2.Base → the form.
+//
+// The operator: "Esc is not only escaping out of the field but also the edit form."
+// kit2.Base now gives the form first refusal on Esc (43101764), and the screen
+// defers to Base while an editor is open — but each link is a place the key could be
+// intercepted, and this test exists because I have twice now fixed a form-level
+// behaviour that the HOST never let run. Unit coverage at the form level cannot see
+// an interception above it.
+func TestScreenEscReleasesTheLockWithoutClosingTheWorkerForm(t *testing.T) {
+	w := &apiv1.Worker{Id: "w1", Name: "writer", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
+	m, _, _ := crudExec(t, w, []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})
+	if !m.Base.SelectSource(srcWorkers) {
+		t.Fatal("fixture: could not focus the Workers pane")
+	}
+	m.Base.LoadItems(srcWorkers, []kit2.Item{{ID: "w1", Title: "writer"}}, "")
+	m.Base.SelectItem(srcWorkers, "w1")
+
+	f := openWorkerForm(t, m, keyEditWorker)
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+	// A multi-line field, which is the kind that locks.
+	if !f.FocusName("behavior") {
+		t.Fatal("fixture: the edit form should have a behavior field")
+	}
+	m.Update(kmsg("enter"))
+	if f.EditingField() != "behavior" {
+		t.Fatalf("Enter did not lock the field through the screen (editing = %q)", f.EditingField())
+	}
+
+	// Esc once: the FIELD is released, the FORM stays open.
+	m.Update(kmsg("esc"))
+	if f.EditingField() != "" {
+		t.Error("Esc did not release the edit lock")
+	}
+	if !m.Base.EditingDetail() {
+		t.Fatal("Esc closed the WORKER EDIT FORM as well as the field — this is the operator's " +
+			"report, reproduced through the screen: \"Esc is not only escaping out of the field " +
+			"but also the edit form\"")
+	}
+	if !m.ClaimsKeys() {
+		t.Error("after releasing the field the screen must still claim keys, or the form is open " +
+			"but inert")
+	}
+
+	// Esc again: now it cancels the form, which is what Esc has always meant.
+	m.Update(kmsg("esc"))
+	if m.Base.EditingDetail() {
+		t.Error("the second Esc did not cancel the edit form")
+	}
+}
