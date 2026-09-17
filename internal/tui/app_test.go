@@ -5,10 +5,13 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/stream"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 func newTestApp() *App {
@@ -383,4 +386,83 @@ func tabChord(id TabID) string {
 		}
 	}
 	return ""
+}
+
+// EVERY CELL IS PAINTED WITH THE THEME'S BACKGROUND.
+//
+// bgOpaque re-asserts the background after an inner style's SGR reset, so that a row wrapped in
+// ScreenBg has no cell falling through to the TERMINAL's own colours. It used to skip the re-assert
+// whenever ANY SGR followed the reset, reasoning that "its own sequence will establish state" — but
+// almost every following sequence sets only a FOREGROUND, so the background stayed cleared:
+//
+//	...\x1b[0m\x1b[38;2;157;171;190mhttps://…\x1b[0m
+//	    └ reset; the next SGR is fg-only, so the background was clear for the whole URL
+//
+// That is the operator's "black background box" on the footer, "the black around the adapter and
+// provider selection", and the black blocks at the end of a line in an execution — a theme cannot fix
+// cells the app never painted.
+func TestEveryCellCarriesTheThemeBackground(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	m := newTestApp()
+	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
+	theme.Use("light")
+	t.Cleanup(func() { theme.Use("dark") })
+
+	unpainted := unpaintedCells(m.View())
+	if unpainted.total != 0 {
+		t.Errorf("%d cells have no background, so the terminal's own colour shows through — the app "+
+			"must paint every cell of the frame (first offender: col %d of line %d)",
+			unpainted.total, unpainted.firstCol, unpainted.firstLine)
+	}
+}
+
+// unpaintedCells counts the cells of a rendered frame with no background in effect. It walks the
+// escape sequences rather than pattern-matching, because "is there a background here" depends on the
+// whole sequence history of the row: a reset clears it, a 48;… sets it, and a 38;… leaves it alone.
+type unpaintedReport struct {
+	total, firstCol, firstLine int
+}
+
+func unpaintedCells(view string) unpaintedReport {
+	var rep unpaintedReport
+	rep.firstCol, rep.firstLine = -1, -1
+	for li, line := range strings.Split(view, "\n") {
+		bg := false
+		col := 0
+		rest := line
+		for {
+			i := strings.Index(rest, "\x1b[")
+			text := rest
+			if i >= 0 {
+				text = rest[:i]
+			}
+			if n := lipgloss.Width(text); n > 0 && !bg {
+				if rep.firstLine < 0 {
+					rep.firstLine, rep.firstCol = li+1, col
+				}
+				rep.total += n
+			}
+			col += lipgloss.Width(text)
+			if i < 0 {
+				break
+			}
+			end := strings.IndexByte(rest[i:], 'm')
+			if end < 0 {
+				break
+			}
+			for _, p := range strings.Split(rest[i+2:i+end], ";") {
+				switch p {
+				case "", "0", "49":
+					bg = false
+					if p == "" {
+						bg = true // an empty parameter list is 0, handled above
+					}
+				case "48":
+					bg = true
+				}
+			}
+			rest = rest[i+end+1:]
+		}
+	}
+	return rep
 }

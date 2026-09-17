@@ -2162,14 +2162,49 @@ func bgOpaque(l string) string {
 		}
 		rest := l[i+len(reset):]
 		b.WriteString(l[:i+len(reset)])
-		// Re-assert the background unless another SGR follows immediately
-		// (its own sequence will establish state, and its eventual reset
-		// gets repaired on the next loop iteration).
-		if !strings.HasPrefix(rest, "\x1b[") {
+		// Re-assert the background UNLESS the next thing actually establishes one.
+		//
+		// This used to skip the repair whenever ANY SGR followed, on the reasoning that "its own
+		// sequence will establish state". That is only true for a sequence that sets a BACKGROUND —
+		// and the overwhelming majority set only a FOREGROUND, which is how every one of these got
+		// past it:
+		//
+		//	...\x1b[0m\x1b[38;2;157;171;190mhttps://…\x1b[0m
+		//	    └ reset; the next SGR is fg-only, so bg stayed CLEARED for the whole URL
+		//
+		// The result is a row whose text is themed but whose CELLS have no background, so the
+		// terminal's own colour shows through — the operator's "black background box" on the footer,
+		// "the black around the adapter and provider selection", and the black blocks at the end of a
+		// line in an execution. The theme could never fix those, because the app was not painting the
+		// cells at all.
+		if !sgrSetsBackground(rest) {
 			b.WriteString(open)
 		}
 		l = rest
 	}
+}
+
+// sgrSetsBackground reports whether rest begins with an SGR sequence that establishes a
+// BACKGROUND. Those are the only sequences after which the background does not need re-asserting:
+//   - 48;…  an explicit background colour;
+//   - 7      reverse video, which swaps fg and bg and is how a bold/selected cell gets its fill.
+//
+// A full reset (0) is NOT included: it clears the background too, and the loop's next iteration
+// catches it.
+func sgrSetsBackground(rest string) bool {
+	if !strings.HasPrefix(rest, "\x1b[") {
+		return false
+	}
+	end := strings.IndexByte(rest, 'm')
+	if end < 0 {
+		return false
+	}
+	for _, p := range strings.Split(rest[2:end], ";") {
+		if p == "48" || p == "7" {
+			return true
+		}
+	}
+	return false
 }
 
 // padScreenLine renders one row at exactly w cells: overlong lines are
