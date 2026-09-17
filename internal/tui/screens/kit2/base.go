@@ -993,6 +993,27 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 				return true, cmd
 			}
 		}
+		// ACTIVATION LOADS THE SELECTED ROW when the detail is not already showing it.
+		//
+		// Every OTHER way of choosing a row loads it — up/down, space and a mouse click
+		// all end in b.loadDetail() — and this case did not, so on the Ask rail, where a
+		// conversation is OPENED by its detail landing (onDetail →
+		// shell.OpenAskConversation), Enter moved focus to the pane while the
+		// conversation itself never loaded. The operator: "In Ask Orchicon, hitting enter
+		// on a conversation doesn't bring it up. Only clicking on it does."
+		//
+		// A row ALREADY in the detail is not re-fetched: there Enter means "move me into
+		// what I am looking at", and re-running the detail hook on a live surface is a
+		// transcript reset rather than a refresh.
+		if t := b.curTable(); t != nil {
+			if id := t.SelectedID(); id != "" && id != b.detailID {
+				b.focusD = true
+				if b.Focus != nil {
+					b.Focus.Set("detail")
+				}
+				return true, b.loadDetail()
+			}
+		}
 		b.focusD = !b.focusD
 		if b.focusD {
 			b.Focus.Set("detail")
