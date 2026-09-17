@@ -44,6 +44,16 @@ type source struct {
 	// rowActions are the CLICKABLE controls rendered on that same top row (the
 	// tree's collapse/expand-all), right-aligned.
 	rowActions []RowAction
+	// markable says this source's rows support MULTI-SELECT marks. It defaults to
+	// true, and a screen turns it off for a list it has no bulk operations for.
+	//
+	// Space is the mark key on every list in Orch, which is right where marks
+	// mean something and WRONG where they cannot: the operator's "spacebar does
+	// multi-select even on theme lists. That doesn't make any sense as there isn't
+	// any bulk operations on themes." Marking a row you cannot act on only
+	// desynchronises the screen — the mark is invisible state that an operator has
+	// no way to use or even understand.
+	markable bool
 }
 
 // topRows is the number of rows this source draws above the table's own rows
@@ -188,8 +198,32 @@ func (b *Base) AddSource(name, title string, fetch Fetch) {
 	b.sources = append(b.sources, &source{
 		name: name, title: title, fetch: fetch,
 		table: NewTable(title, Column{Title: ""}),
+		// Markable by default: most lists here DO have bulk operations, and
+		// opting in would have left the feature off wherever a screen forgot
+		// to ask for it. A screen opts OUT for a list with no bulk ops.
+		markable: true,
 	})
 	b.rebuildFocus()
+}
+
+// SetMarkable says whether a source's rows support multi-select marks (default
+// true). A screen calls it with false for a list it has no bulk operations for,
+// so Space does not mark rows the operator cannot act on (see source.markable).
+func (b *Base) SetMarkable(sourceName string, on bool) {
+	for _, s := range b.sources {
+		if s.name == sourceName {
+			s.markable = on
+			return
+		}
+	}
+}
+
+// activeMarkable reports whether the ACTIVE source's rows can be marked.
+func (b *Base) activeMarkable() bool {
+	if b.active < 0 || b.active >= len(b.sources) {
+		return false
+	}
+	return b.sources[b.active].markable
 }
 
 func (b *Base) rebuildFocus() {
@@ -960,6 +994,15 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		// and left no key for selecting more than one row. Acting on the DETAIL (while the
 		// detail has focus) is left alone: marking is a list affordance.
 		if !b.focusD {
+			// WHERE THE LIST HAS NO BULK OPERATIONS, SPACE ACTIVATES INSTEAD OF MARKING. A
+			// mark is only meaningful because a bulk action consumes it; on a list with
+			// none (the Themes pane) it is invisible state the operator can neither use nor
+			// explain — "spacebar does multi-select even on theme lists. That doesn't make
+			// any sense as there isn't any bulk operations on themes." Space then does what
+			// Enter does there, which is the gesture it replaced anyway.
+			if !b.activeMarkable() {
+				return b.activateSelected()
+			}
 			if t := b.curTable(); t != nil {
 				if id := t.SelectedID(); id != "" {
 					t.ToggleMark(id)
@@ -988,39 +1031,7 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		// pressing Tab moved focus into the pane instead of cycling the tab bar.
 		// Tab now falls through to the global focus ring (router.go), which is
 		// the only thing that should own it.
-		if b.OnActivate != nil {
-			if handled, cmd := b.OnActivate(); handled {
-				return true, cmd
-			}
-		}
-		// ACTIVATION LOADS THE SELECTED ROW when the detail is not already showing it.
-		//
-		// Every OTHER way of choosing a row loads it — up/down, space and a mouse click
-		// all end in b.loadDetail() — and this case did not, so on the Ask rail, where a
-		// conversation is OPENED by its detail landing (onDetail →
-		// shell.OpenAskConversation), Enter moved focus to the pane while the
-		// conversation itself never loaded. The operator: "In Ask Orchicon, hitting enter
-		// on a conversation doesn't bring it up. Only clicking on it does."
-		//
-		// A row ALREADY in the detail is not re-fetched: there Enter means "move me into
-		// what I am looking at", and re-running the detail hook on a live surface is a
-		// transcript reset rather than a refresh.
-		if t := b.curTable(); t != nil {
-			if id := t.SelectedID(); id != "" && id != b.detailID {
-				b.focusD = true
-				if b.Focus != nil {
-					b.Focus.Set("detail")
-				}
-				return true, b.loadDetail()
-			}
-		}
-		b.focusD = !b.focusD
-		if b.focusD {
-			b.Focus.Set("detail")
-		} else {
-			b.setFocusForPane()
-		}
-		return true, nil
+		return b.activateSelected()
 	// Shift+Tab is deliberately NOT handled here. It used to cycle this screen's
 	// region ring in reverse, which CONSUMED the key on every kit2 screen — so
 	// walking the tab bar backwards was impossible from any pane, reported as
@@ -1033,6 +1044,49 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 	}
 	return false, nil
+}
+
+// activateSelected runs the ACTIVATE gesture on the selected row: a screen's
+// OnActivate first (the Themes pane applies the palette), then a row's detail load.
+//
+// It is a method because TWO keys now reach it: Enter, and Space on a list with no
+// bulk operations (see the space case). Sharing it is what keeps the two from
+// drifting — a second copy is how "activation opens the row's detail" came to be
+// documented and not implemented.
+func (b *Base) activateSelected() (bool, tea.Cmd) {
+	if b.OnActivate != nil {
+		if handled, cmd := b.OnActivate(); handled {
+			return true, cmd
+		}
+	}
+	// ACTIVATION LOADS THE SELECTED ROW when the detail is not already showing it.
+	//
+	// Every OTHER way of choosing a row loads it — up/down, space and a mouse click
+	// all end in b.loadDetail() — and this case did not, so on the Ask rail, where a
+	// conversation is OPENED by its detail landing (onDetail →
+	// shell.OpenAskConversation), Enter moved focus to the pane while the
+	// conversation itself never loaded. The operator: "In Ask Orchicon, hitting enter
+	// on a conversation doesn't bring it up. Only clicking on it does."
+	//
+	// A row ALREADY in the detail is not re-fetched: there Enter means "move me into
+	// what I am looking at", and re-running the detail hook on a live surface is a
+	// transcript reset rather than a refresh.
+	if t := b.curTable(); t != nil {
+		if id := t.SelectedID(); id != "" && id != b.detailID {
+			b.focusD = true
+			if b.Focus != nil {
+				b.Focus.Set("detail")
+			}
+			return true, b.loadDetail()
+		}
+	}
+	b.focusD = !b.focusD
+	if b.focusD {
+		b.Focus.Set("detail")
+	} else {
+		b.setFocusForPane()
+	}
+	return true, nil
 }
 
 func (b *Base) setFocusForPane() {

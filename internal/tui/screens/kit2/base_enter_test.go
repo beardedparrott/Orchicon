@@ -127,3 +127,59 @@ func fetchOrNil(t *testing.T, b *Base) tea.Msg {
 	}
 	return nil
 }
+
+// SPACE MARKS ONLY WHERE A BULK ACTION CAN CONSUME THE MARK.
+//
+// The operator: "spacebar does multi-select even on theme lists. That doesn't make
+// any sense as there isn't any bulk operations on themes." A mark is only meaningful
+// because something acts on it; on a list with nothing to act, it is invisible state
+// the operator can neither use nor explain. There, Space does what Enter does.
+func TestSpaceMarksOnlyOnAMarkableList(t *testing.T) {
+	build := func(markable bool) (*Base, *int) {
+		b := &Base{}
+		b.HideSources = true
+		b.SetSize(120, 40)
+		b.AddSource("things", "Things", func(ctx context.Context, pageToken string) ([]Item, string, error) {
+			return nil, "", nil
+		})
+		b.SetDetail(func(ctx context.Context, src, id string) (string, []Field, string, error) {
+			return "d", nil, "", nil
+		})
+		activations := 0
+		b.OnActivate = func() (bool, tea.Cmd) {
+			activations++
+			return true, nil
+		}
+		b.SetMarkable("things", markable)
+		b.SelectSource("things")
+		b.LoadItems("things", []Item{{ID: "t1", Title: "one"}, {ID: "t2", Title: "two"}}, "")
+		return b, &activations
+	}
+
+	t.Run("markable list: space marks", func(t *testing.T) {
+		b, activations := build(true)
+		b.Update(tea.KeyMsg{Type: tea.KeySpace})
+		// MarkCount, not BulkIDs: BulkIDs reports a BULK SELECTION (>1 marked) and is
+		// deliberately nil for a single mark, so asserting on it would test the
+		// threshold rather than whether space marked anything.
+		if got := b.curTable().MarkCount(); got != 1 {
+			t.Errorf("space marked %d rows, want 1", got)
+		}
+		if *activations != 0 {
+			t.Error("space ACTIVATED on a markable list instead of marking")
+		}
+	})
+
+	t.Run("unmarkable list: space activates and marks nothing", func(t *testing.T) {
+		b, activations := build(false)
+		b.Update(tea.KeyMsg{Type: tea.KeySpace})
+		if got := b.curTable().MarkCount(); got != 0 {
+			t.Errorf("space marked %d rows on a list with no bulk operations — the mark is "+
+				"unusable state", got)
+		}
+		if *activations != 1 {
+			t.Errorf("activations = %d, want 1 — on a list with no bulk ops space should do what "+
+				"Enter does", *activations)
+		}
+	})
+}

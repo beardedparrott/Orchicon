@@ -174,6 +174,11 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	// owns its palette set, and this is where the operator picks one. Selecting
 	// a row and pressing the action key applies + persists it.
 	m.AddSource("themes", "Themes", m.fetchThemes)
+	// The Themes list has NO bulk operations: the operator's "spacebar does
+	// multi-select even on theme lists. That doesn't make any sense as there isn't
+	// any bulk operations on themes." Space activates here instead of marking (see
+	// Base's space case), which is the gesture it replaced anyway.
+	m.Base.SetMarkable("themes", false)
 	m.AddSource("admin", "Admin", m.fetchAdmin)
 	m.SetDetail(m.detail)
 	m.Base.SetStatuses(nil)
