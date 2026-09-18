@@ -2836,11 +2836,7 @@ func (m *App) onChatWake() tea.Cmd {
 			}
 			strH = bh.DetailBodyHeight(fieldRows, true)
 		}
-		str := m.transcriptStream(m.chatConvID, w, strH)
-		// A TRANSCRIPT MAY NOT SILENTLY LOSE TEXT: when a line arrives wider than the pane, WRAP it rather
-		// than truncate it. See kit2.Stream.WrapOverflow — the row count is the price, readability is the
-		// point.
-		str.WrapOverflow()
+		str := m.newTranscriptStream(m.chatConvID, w, strH)
 		m.syncTranscript(m.chatConvID, str, items, w)
 		// ONE notice slot, set through SetNotice so the view stays pinned: the notice takes a row from
 		// the body, so a direct assignment would move the window and hide the newest line.
@@ -2932,6 +2928,29 @@ func awaitingReply(items []chat.ChatItem) bool {
 		}
 	}
 	return true
+}
+
+// newTranscriptStream builds the conversation's transcript stream, sized to the
+// pane body, with OVERFLOW WRAPPING ON.
+//
+// THE WRAPPING BELONGS WITH THE CONSTRUCTION, not at the call site — because it
+// is not a preference, it is the difference between showing a line in full and
+// silently losing its tail. A transcript that truncates an over-wide line drops
+// the end of it with no marker and no ellipsis for the operator to notice, which
+// is exactly the "sentences cut mid-word" report this fixes.
+//
+// Putting it inside the builder makes wrapping a property of every transcript
+// stream rather than one line a later edit can delete without any test
+// noticing — and no test WOULD have noticed, because kit2's own tests turn
+// wrapping on themselves and so prove nothing about whether the transcript asks
+// for it. TestTheTranscriptStreamWrapsRatherThanLosingText is that missing
+// guard; it fails if this call is removed.
+func (m *App) newTranscriptStream(convID string, w, h int) *kit2.Stream {
+	str := m.transcriptStream(convID, w, h)
+	// See kit2.Stream.WrapOverflow — the row count is the price, readability is
+	// the point.
+	str.WrapOverflow()
+	return str
 }
 
 // transcriptStream returns (creating + sizing) the kit2 Stream backing a
