@@ -51,8 +51,22 @@ func ParseNewlineMode(s string) NewlineMode {
 const (
 	// MinInputRows is the composer's default input height.
 	MinInputRows = 3
-	// MaxInputRows caps the box; beyond it the textarea scrolls internally.
+	// MaxInputRows is the ceiling used when the shell has NOT told the dock how tall
+	// the viewport is — a dock built in isolation (a unit test, an embedder). The real
+	// ceiling is DERIVED from the viewport (see maxInputRows), because a fixed one is
+	// wrong in both directions: eight rows is a lot on a short terminal and far too
+	// few for a long prompt or a pasted block on a tall one.
+	//
+	// The operator, on a long prompt: "Remove the cap." Removing it outright is not
+	// possible — the composer shares the screen with the transcript and the panes, and
+	// a buffer of a thousand lines cannot have a thousand rows of composer. So the
+	// fixed cap is replaced by the space the viewport can spare, which leaves the
+	// screen above it a usable minimum and grows without limit on a bigger terminal.
 	MaxInputRows = 8
+	// minContentRows is the room the composer must leave for the screen above it: it
+	// grows into the space that is going spare, never into the space the transcript or
+	// the panes are using.
+	minContentRows = 6
 	// boxChrome is the box's horizontal chrome: 2 border cells + 2 padding
 	// cells on each side.
 	boxChrome = 6
@@ -74,7 +88,12 @@ type Model struct {
 	Err           string // inline error strip (themed red)
 	Width         int
 	Height        int // allocated rows (set by the shell)
-	Newlines      NewlineMode
+	// viewportRows is the WHOLE terminal height, set by the shell each layout. The
+	// composer's growth ceiling is derived from it (maxInputRows) rather than being a
+	// constant, because how tall the composer may get depends on how much screen there
+	// is. 0 means "not told", and MaxInputRows is then the fallback.
+	viewportRows int
+	Newlines     NewlineMode
 
 	// Context is the ACTIVE screen's shortcut list (the shell derives it from the
 	// screen's HintLine), rendered at the head of the affordance row so the
@@ -319,18 +338,55 @@ func (m *Model) visualRows() int {
 	return total
 }
 
-// InputRows is the number of input rows the box shows: at least
-// MinInputRows, growing with the buffer up to MaxInputRows (the textarea
-// scrolls internally beyond that).
+// InputRows is the number of input rows the box shows: at least MinInputRows,
+// growing with the buffer up to however many rows the viewport can spare
+// (maxInputRows; the textarea scrolls internally beyond that).
 func (m *Model) InputRows() int {
 	n := m.visualRows()
 	if n < MinInputRows {
 		n = MinInputRows
 	}
-	if n > MaxInputRows {
-		n = MaxInputRows
+	if max := m.maxInputRows(); n > max {
+		n = max
 	}
 	return n
+}
+
+// maxInputRows is the tallest the input may grow: whatever the viewport can spare
+// once the shell's chrome, the box's own chrome and minContentRows are accounted for.
+//
+// THE ARITHMETIC MIRRORS app.contentHeight, which computes the content region as
+// `m.height - 4 - dock.Lines()`, where dock.Lines() is 2 border rows plus the input,
+// hint and notice rows (plus the chip when present). Solving that for a content region
+// of at least minContentRows gives the bound below, so the composer can grow freely and
+// still cannot starve the screen it sits under.
+func (m *Model) maxInputRows() int {
+	if m.viewportRows <= 0 {
+		return MaxInputRows
+	}
+	// 4 = the shell's fixed chrome (tab bar + rule, separator + footer);
+	// 2 = the box's own top and bottom border.
+	overhead := 4 + 2 + m.HintRows() + m.NoticeRows()
+	if m.Chip != "" {
+		overhead++
+	}
+	n := m.viewportRows - overhead - minContentRows
+	if n < MinInputRows {
+		n = MinInputRows
+	}
+	return n
+}
+
+// SetViewportRows tells the dock how tall the terminal is, which is what the growth
+// ceiling is derived from. Called by the shell on every layout.
+func (m *Model) SetViewportRows(n int) {
+	if m.viewportRows == n {
+		return
+	}
+	m.viewportRows = n
+	// Re-fit the textarea immediately: a resize that changes how tall the composer may
+	// grow must not wait for the next keystroke to take effect.
+	m.resizeTa()
 }
 
 // maxHintRows caps the wrapped affordance row. The hint is context-driven (it

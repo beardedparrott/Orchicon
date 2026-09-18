@@ -103,19 +103,37 @@ func TestComposerBoxedAtBothSizes(t *testing.T) {
 	}
 }
 
-// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to
-// dock.MaxInputRows (>= 8) and the frame still measures exactly h×w.
+// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to the space the
+// VIEWPORT can spare — no longer to the fixed MaxInputRows — and the frame still measures
+// exactly h×w.
+//
+// The operator asked for the cap to go: "Remove the cap." It cannot literally, because the
+// composer shares the screen with the transcript, so the fixed eight is replaced by a
+// viewport-derived ceiling. That makes growth PAST eight the whole point of this test:
+// asserting eight would now assert the thing that was removed.
 func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
 		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
-		m.dock.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven")
-		if got := m.dock.InputRows(); got != dock.MaxInputRows {
-			t.Fatalf("%dx%d: grown input rows = %d, want %d", w, h, got, dock.MaxInputRows)
+		// Far more lines than any ceiling, so the box is pinned at its maximum.
+		m.dock.SetValue(strings.Repeat("line\n", 60))
+
+		got := m.dock.InputRows()
+		if got <= dock.MaxInputRows {
+			t.Fatalf("%dx%d: grown input rows = %d, want MORE than the fixed cap %d — a long prompt must use the "+
+				"space the viewport can spare, which is what removing the cap means", w, h, got, dock.MaxInputRows)
 		}
-		if dock.MaxInputRows < 8 {
-			t.Fatalf("the box must grow to at least 8 input rows, max = %d", dock.MaxInputRows)
+		if got > h {
+			t.Fatalf("%dx%d: input rows = %d, more than the whole viewport", w, h, got)
+		}
+		// AND IT STILL LEAVES THE SCREEN SOMETHING TO SHOW. An unbounded composer would
+		// push the transcript off the top, which is the failure the cap was protecting
+		// against — the bound is now "the space going spare" rather than a number chosen
+		// for one terminal size.
+		if c := m.contentHeight(); c < 6 {
+			t.Fatalf("%dx%d: the composer left the content region %d rows (want >= 6) — growth must come out of "+
+				"the space going spare, not out of the transcript", w, h, c)
 		}
 		assertFrameExact(t, m, w, h)
 

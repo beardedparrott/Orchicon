@@ -1195,6 +1195,14 @@ func (m *App) refreshLayout() {
 	if m.width > 0 {
 		m.dock.Width = m.contentWidth()
 	}
+	// AND THE DOCK'S HEIGHT BUDGET: the composer's growth ceiling is derived from the
+	// viewport, so the dock has to know how tall the terminal is before anything asks it
+	// how many rows it needs (see dock.maxInputRows). Set here — the one layout applier
+	// for resize, rail toggles and pane toggles — so every path that can change the
+	// available height tells the dock about it.
+	if m.height > 0 {
+		m.dock.SetViewportRows(m.height)
+	}
 	if s := m.screens[m.active]; s != nil && m.width > 0 {
 		s.SetSize(m.contentWidth(), m.screenRows())
 	}
