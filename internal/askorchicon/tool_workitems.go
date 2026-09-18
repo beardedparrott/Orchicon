@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -1291,4 +1292,81 @@ func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, wo
 		}
 	}
 	return ttx.Commit(ctx)
+}
+
+// toolHardDeleteWorkItem permanently removes a work item, matching the
+// HardDeleteWorkItem RPC (internal/workitem/service.go:1412).
+//
+// THE OPERATOR'S REASON FOR IT: "We can create a flag. That is fine, but I think the work item should be hard
+// deleted once the work is complete. I don't want a ton of invisible records out there. I think currently
+// there is no MCP tool to do this only cancelling (soft delete) so we will need to add that."
+//
+// They were exactly right: the RPC, the cascade and the audit already existed, and the MCP surface offered
+// only `delete_work_item`, which is a SOFT delete (status → cancelled). An agent asked to clean up its own
+// ephemeral work therefore could not do it, and the rows piled up invisibly — the outcome the operator was
+// trying to avoid.
+//
+// TWO GUARDS, and the first is stricter than the RPC on purpose:
+//
+//	AN IDEA IS NEVER HARD-DELETED. It is dismissed instead, because destroying an idea takes its provenance
+//	with it and provenance is the entire record of where an idea came from. The RPC refuses this too.
+//
+//	AN ITEM WITH CHILDREN IS REFUSED. `work_items.parent_id` has NO foreign key (the hierarchy is enforced in
+//	the service layer), so deleting a parent does not fail — it ORPHANS its children, leaving rows that point
+//	at a parent which no longer exists. A silent corruption of the hierarchy is worse than a refused delete,
+//	so this refuses and says what to do. The RPC does not check, and the asymmetry is deliberate: the raw RPC
+//	is a capability, while this is an agent's interface to a destructive, irreversible act, and the agent has
+//	no way to see the children it would orphan.
+func toolHardDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	if workitem.IsIdeaStatus(current.Status) {
+		return nil, workitem.ErrWorkItemIsIdea()
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(children) > 0 {
+		return nil, fmt.Errorf("cannot permanently delete a work item that has %d child work item(s); "+
+			"delete the children first — parent_id has no foreign key, so removing this row would leave them "+
+			"pointing at a parent that no longer exists", len(children))
+	}
+	// THE AUDIT IS RECORDED FOR A DELETE, unlike the other MCP tools, which do not audit at all. A hard
+	// delete is irreversible and destroys the row that would otherwise be the evidence, so the audit entry
+	// is the only remaining record of what was removed. The snapshot carries the fields that identify it.
+	before := audit.Snapshot(map[string]any{
+		"id":         current.ID,
+		"title":      current.Title,
+		"kind":       current.Kind,
+		"status":     current.Status,
+		"project_id": current.ProjectID,
+	})
+	if err := db.HardDeleteWorkItem(ctx, ttx.Tx, tenantID, current.ID); err != nil {
+		return nil, err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.hard_deleted", "work_item", current.ID, before, nil); err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"id": current.ID, "hard_deleted": true})
 }

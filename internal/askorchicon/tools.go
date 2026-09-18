@@ -323,11 +323,26 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "delete_work_item",
-			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item.",
+			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item. For an IRREVERSIBLE removal of the row itself, use hard_delete_work_item.",
 			Mutating:    true,
 			Fn:          toolDeleteWorkItem,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
 			Required:    []string{"id"},
+		},
+		{
+			// THE HARD DELETE the operator asked for. It is a SEPARATE tool rather than a flag on
+			// delete_work_item, because the two differ in kind and not in degree: one is a reversible status
+			// change and the other destroys the row. An agent that has to name the destructive one has read
+			// the name, which is the only warning a function signature can give.
+			Name: "hard_delete_work_item",
+			Description: "PERMANENTLY remove a work item and its dependencies. IRREVERSIBLE — the row is gone, " +
+				"not cancelled, and cannot be restored. Refused for an item with children (delete them first) " +
+				"and for an idea (dismiss it instead). Use this to clean up work an agent created for one job; " +
+				"use delete_work_item to cancel something an operator may want back.",
+			Mutating:   true,
+			Fn:         toolHardDeleteWorkItem,
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
+			Required:   []string{"id"},
 		},
 		{
 			Name:        "archive_work_item",
