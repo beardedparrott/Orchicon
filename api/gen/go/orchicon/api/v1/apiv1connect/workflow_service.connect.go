@@ -101,6 +101,9 @@ const (
 	// WorkflowServiceRetryFailedWorkflowRunProcedure is the fully-qualified name of the
 	// WorkflowService's RetryFailedWorkflowRun RPC.
 	WorkflowServiceRetryFailedWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/RetryFailedWorkflowRun"
+	// WorkflowServiceDeleteWorkflowRunProcedure is the fully-qualified name of the WorkflowService's
+	// DeleteWorkflowRun RPC.
+	WorkflowServiceDeleteWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/DeleteWorkflowRun"
 	// WorkflowServiceStreamWorkflowEventsProcedure is the fully-qualified name of the WorkflowService's
 	// StreamWorkflowEvents RPC.
 	WorkflowServiceStreamWorkflowEventsProcedure = "/orchicon.api.v1.WorkflowService/StreamWorkflowEvents"
@@ -200,6 +203,20 @@ type WorkflowServiceClient interface {
 	// left off instead of restarting. The reconciler picks the run up on its
 	// next cycle and re-creates the runtime container.
 	RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error)
+	// DeleteWorkflowRun hard-deletes a single WorkflowRun and its step runs.
+	//
+	// WHY THIS EXISTS. Every other list in the client could be pruned and runs could
+	// not: DeleteWorkflow cascades to a workflow's ENTIRE run history, which is a
+	// different and far blunter act than removing one finished run. The operator,
+	// mid-live-test: "Executions and Workflow Runs do not have a delete operation
+	// (single and bulk)." Executions had DeleteExecution/BatchDeleteExecutions all
+	// along; runs had nothing at any layer.
+	//
+	// A RUNNING run is ABORTED first (status → aborted, ended_at set) and only then
+	// removed, so a delete can never leave a live run's reconciler writing into a
+	// deleted row — the same sequencing DeleteExecution uses. Terminal runs are
+	// removed directly. Irreversible.
+	DeleteWorkflowRun(context.Context, *connect.Request[v1.DeleteWorkflowRunRequest]) (*connect.Response[v1.DeleteWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -338,6 +355,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("RetryFailedWorkflowRun")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteWorkflowRun: connect.NewClient[v1.DeleteWorkflowRunRequest, v1.DeleteWorkflowRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceDeleteWorkflowRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflowRun")),
+			connect.WithClientOptions(opts...),
+		),
 		streamWorkflowEvents: connect.NewClient[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse](
 			httpClient,
 			baseURL+WorkflowServiceStreamWorkflowEventsProcedure,
@@ -391,6 +414,7 @@ type workflowServiceClient struct {
 	retryStepRun             *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
 	forceProgressWorkflowRun *connect.Client[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse]
 	retryFailedWorkflowRun   *connect.Client[v1.RetryFailedWorkflowRunRequest, v1.RetryFailedWorkflowRunResponse]
+	deleteWorkflowRun        *connect.Client[v1.DeleteWorkflowRunRequest, v1.DeleteWorkflowRunResponse]
 	streamWorkflowEvents     *connect.Client[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse]
 	acquireEditLock          *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
 	releaseEditLock          *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
@@ -486,6 +510,11 @@ func (c *workflowServiceClient) ForceProgressWorkflowRun(ctx context.Context, re
 // RetryFailedWorkflowRun calls orchicon.api.v1.WorkflowService.RetryFailedWorkflowRun.
 func (c *workflowServiceClient) RetryFailedWorkflowRun(ctx context.Context, req *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error) {
 	return c.retryFailedWorkflowRun.CallUnary(ctx, req)
+}
+
+// DeleteWorkflowRun calls orchicon.api.v1.WorkflowService.DeleteWorkflowRun.
+func (c *workflowServiceClient) DeleteWorkflowRun(ctx context.Context, req *connect.Request[v1.DeleteWorkflowRunRequest]) (*connect.Response[v1.DeleteWorkflowRunResponse], error) {
+	return c.deleteWorkflowRun.CallUnary(ctx, req)
 }
 
 // StreamWorkflowEvents calls orchicon.api.v1.WorkflowService.StreamWorkflowEvents.
@@ -595,6 +624,20 @@ type WorkflowServiceHandler interface {
 	// left off instead of restarting. The reconciler picks the run up on its
 	// next cycle and re-creates the runtime container.
 	RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error)
+	// DeleteWorkflowRun hard-deletes a single WorkflowRun and its step runs.
+	//
+	// WHY THIS EXISTS. Every other list in the client could be pruned and runs could
+	// not: DeleteWorkflow cascades to a workflow's ENTIRE run history, which is a
+	// different and far blunter act than removing one finished run. The operator,
+	// mid-live-test: "Executions and Workflow Runs do not have a delete operation
+	// (single and bulk)." Executions had DeleteExecution/BatchDeleteExecutions all
+	// along; runs had nothing at any layer.
+	//
+	// A RUNNING run is ABORTED first (status → aborted, ended_at set) and only then
+	// removed, so a delete can never leave a live run's reconciler writing into a
+	// deleted row — the same sequencing DeleteExecution uses. Terminal runs are
+	// removed directly. Irreversible.
+	DeleteWorkflowRun(context.Context, *connect.Request[v1.DeleteWorkflowRunRequest]) (*connect.Response[v1.DeleteWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -729,6 +772,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("RetryFailedWorkflowRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceDeleteWorkflowRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceDeleteWorkflowRunProcedure,
+		svc.DeleteWorkflowRun,
+		connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflowRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceStreamWorkflowEventsHandler := connect.NewServerStreamHandler(
 		WorkflowServiceStreamWorkflowEventsProcedure,
 		svc.StreamWorkflowEvents,
@@ -797,6 +846,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceForceProgressWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceRetryFailedWorkflowRunProcedure:
 			workflowServiceRetryFailedWorkflowRunHandler.ServeHTTP(w, r)
+		case WorkflowServiceDeleteWorkflowRunProcedure:
+			workflowServiceDeleteWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceStreamWorkflowEventsProcedure:
 			workflowServiceStreamWorkflowEventsHandler.ServeHTTP(w, r)
 		case WorkflowServiceAcquireEditLockProcedure:
@@ -886,6 +937,10 @@ func (UnimplementedWorkflowServiceHandler) ForceProgressWorkflowRun(context.Cont
 
 func (UnimplementedWorkflowServiceHandler) RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.RetryFailedWorkflowRun is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DeleteWorkflowRun(context.Context, *connect.Request[v1.DeleteWorkflowRunRequest]) (*connect.Response[v1.DeleteWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.DeleteWorkflowRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) StreamWorkflowEvents(context.Context, *connect.Request[v1.StreamWorkflowEventsRequest], *connect.ServerStream[v1.StreamWorkflowEventsResponse]) error {

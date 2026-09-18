@@ -147,6 +147,20 @@ type Model struct {
 	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
 	// write fired without a plane.
 	rpcCreateWorkflow func(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error)
+	// rpcDeleteExecution is the Executions pane's DELETE. A thunk like every other write here, so a
+	// test asserts WHICH execution was deleted without a plane.
+	//
+	// It is the SINGLE-row write; the bulk branch calls it once per id (see entityBulkActions), which
+	// is the same shape the Workers and Workflows panes use. The server ALSO offers
+	// BatchDeleteExecutions, and it was deliberately NOT taken: the bulk path here reports a partial
+	// success as "deleted 3 of 5 — 2 failed" by counting refusals, and a single batch call returns
+	// only a count, so a partial failure would be reported as a bare number with no idea which rows
+	// survived. One code path, one failure story, and it is the one the operator already knows from
+	// the other two panes.
+	rpcDeleteExecution func(ctx context.Context, id string) error
+	// rpcDeleteRun is the Runs pane's DELETE, same shape and same reason (one call per id, so a partial
+	// failure can be counted).
+	rpcDeleteRun func(ctx context.Context, id string) error
 	// rpcListWorkers backs the step editor's worker picker. A thunk for the same reason as
 	// the rest: a test asserts the picker's options without a plane.
 	rpcListWorkers       func(ctx context.Context) ([]*apiv1.Worker, error)
@@ -202,6 +216,8 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.rpcPublishWorkflow = m.defaultPublishWorkflow
 	m.rpcDeprecateWorkflow = m.defaultDeprecateWorkflow
 	m.rpcDeleteWorkflow = m.defaultDeleteWorkflow
+	m.rpcDeleteExecution = m.defaultDeleteExecution
+	m.rpcDeleteRun = m.defaultDeleteRun
 	m.rpcCreateWorker = m.defaultCreateWorker
 	m.rpcUpdateWorker = m.defaultUpdateWorker
 	m.rpcDeleteWorker = m.defaultDeleteWorker
@@ -378,10 +394,35 @@ func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.It
 		items = append(items, screenkit.Item{
 			ID:    r.GetId(),
 			Title: m.runsTitle(r),
-			Meta:  strings.ToLower(r.GetStatus().String()),
+			// The BARE status word, which is what the pane's chords compare against.
+			//
+			// It used to be the raw lowered enum ("workflow_run_status_failed"), and that silently
+			// disabled BOTH run actions: the retry action is gated on `meta == "failed"` and
+			// force-progress on `meta == "running"`, so on real data neither could ever match and NEITHER
+			// ACTION WAS EVER OFFERED — a bound-but-dead feature of the kind this pane keeps producing.
+			// Measured before the fix: the FAILED enum lowers to "workflow_run_status_failed", so
+			// `== "failed"` is false.
+			//
+			// It is also what the ROW PRINTS, so the operator sees "failed", not
+			// "workflow_run_status_failed" — the same courtesy executionListMeta does for executions.
+			Meta: workflowRunStatusWord(r.GetStatus()),
 		})
 	}
 	return items, resp.Msg.NextPageToken, nil
+}
+
+// workflowRunStatusWord is a run's status as a single lowercase word: the enum's own suffix with the
+// WORKFLOW_RUN_STATUS_ prefix removed.
+//
+// ONE definition, used by BOTH the row's meta and anything that compares against it, so the value the
+// chords test and the value the row shows cannot drift apart again.
+func workflowRunStatusWord(s apiv1.WorkflowRunStatus) string {
+	w := strings.ToLower(s.String())
+	w = strings.TrimPrefix(w, "workflow_run_status_")
+	if w == "unspecified" || w == "" {
+		return "unknown"
+	}
+	return w
 }
 
 func (m *Model) fetchWorkflows(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {

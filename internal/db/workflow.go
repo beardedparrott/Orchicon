@@ -304,6 +304,37 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	return out, rows.Err()
 }
 
+// DeleteWorkflowRun hard-deletes ONE workflow run and its step runs, within the tenant scope. This is
+// an irreversible operation.
+//
+// IT IS DELIBERATELY NOT DeleteWorkflow. That one cascades from the WORKFLOW to its ENTIRE run history
+// — every run the workflow has ever produced — which is a different and far blunter act than pruning
+// one finished run from the runs list. The operator, mid-live-test: "Executions and Workflow Runs do
+// not have a delete operation (single and bulk)." Executions had DeleteExecution all along; runs had
+// nothing at any layer, and the only existing path (deleting the parent workflow) would have taken the
+// whole history with it.
+//
+// STEP RUNS GO FIRST, in this order, exactly as DeleteWorkflow does: workflow_step_runs.workflow_run_id
+// references workflow_runs, so removing the run first would either fail on the constraint or silently
+// orphan the step rows depending on the constraint's action. Deleting the children explicitly makes
+// the outcome the same either way.
+//
+// The row count is checked: deleting a run that is not there is ErrNotFound rather than a silent
+// success, so a client cannot believe it pruned something it did not.
+func DeleteWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM workflow_step_runs WHERE tenant_id = $1 AND workflow_run_id = $2`, tenantID, runID); err != nil {
+		return fmt.Errorf("db: delete workflow run step runs: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM workflow_runs WHERE tenant_id = $1 AND id = $2`, tenantID, runID)
+	if err != nil {
+		return fmt.Errorf("db: delete workflow run: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteWorkflow hard-deletes a workflow and all its child rows (runs,
 // step runs, versions, edit locks) within the tenant scope. This is an
 // irreversible operation (docs/02 §2.4 — use Deprecate for soft hide).

@@ -234,6 +234,26 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			return m.entityBulkActions(srcWorkflows, keyDelete, "workflow", ids, m.rpcDeleteWorkflow)
 		}
 	}
+	// EXECUTIONS take the same rule. The operator: "Executions and Workflow Runs do not have a delete
+	// operation (single and bulk)."
+	//
+	// WHY THE MESSAGE DIFFERS FROM WORKERS/WORKFLOWS. Their bulk text promises "each one AND every
+	// version of it", which is true there and WRONG here — an execution has a transcript, not
+	// versions, and the rows may be mid-flight. So executions pass their own wording; a shared
+	// confirm that describes the wrong thing is worse than no confirm, because the operator agrees to
+	// something and gets another.
+	if m.ActiveSourceName() == srcExecutions {
+		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
+			return m.executionBulkDeleteActions(ids)
+		}
+	}
+	// RUNS take the same rule. Same reasoning as executions, plus the fact that a run's delete is the
+	// ONLY one on this screen that reaches the server at all today (see DeleteWorkflowRun).
+	if m.ActiveSourceName() == srcRuns {
+		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
+			return m.runBulkDeleteActions(ids)
+		}
+	}
 	item, ok := m.ActiveItem()
 	if !ok {
 		return nil
@@ -261,6 +281,22 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		acts = append(acts,
+			// THE DELETE. Offered for EVERY execution, live or finished — the server cancels a
+			// running one before removing it, so "delete" is one gesture with one meaning rather
+			// than a cancel-then-delete the operator has to sequence by hand.
+			//
+			// It sits AFTER `cancel` in the bar (and so is reachable by its own chord) because
+			// the two differ in what they destroy: `cancel` stops the run and KEEPS the record,
+			// this removes the record too.
+			kit2.Action{
+				Label: "delete", Key: keyDelete, Danger: true, Source: srcExecutions,
+				Confirm: "Delete execution " + id + "?\n" +
+					"This REMOVES the execution and its transcript, and cannot be undone." +
+					liveNote(item.Meta),
+				Apply:    func() { m.Base.RemoveRow(srcExecutions, id) },
+				Rollback: func() { m.Refresh(srcExecutions) },
+				Do:       func(ctx context.Context) error { return m.rpcDeleteExecution(ctx, id) },
+			},
 			// The box, advertised as the gesture that reaches it.
 			//
 			// No Key either: the box is a POSITION in the transcript (down past the last block), so
@@ -315,6 +351,20 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do: func(ctx context.Context) error { return m.rpcForceProgressRun(ctx, id) },
 			})
 		}
+		// THE DELETE. Offered for EVERY run, live or finished — the server aborts a running one through
+		// the same path AbortWorkflow uses before removing the row, so one gesture has one meaning
+		// rather than an abort-then-delete the operator has to sequence by hand.
+		//
+		// It is NOT the workflow's own delete: that cascades to the workflow's ENTIRE run history (see
+		// DeleteWorkflowRun's note in internal/workflow/service.go). This removes the ONE run.
+		acts = append(acts, kit2.Action{
+			Label: "delete", Key: keyDelete, Danger: true, Source: srcRuns,
+			Confirm: "Delete run " + id + "?\n" +
+				"This REMOVES the run and its step runs, and cannot be undone." + runLiveNote(meta),
+			Apply:    func() { m.Base.RemoveRow(srcRuns, id) },
+			Rollback: func() { m.Refresh(srcRuns) },
+			Do:       func(ctx context.Context) error { return m.rpcDeleteRun(ctx, id) },
+		})
 		return acts
 
 	case srcSchedules:
@@ -944,6 +994,21 @@ func (m *Model) rpcCancelExecution(ctx context.Context, id string) error {
 	return err
 }
 
+// defaultDeleteExecution is the plain wire form of the Executions pane's delete.
+//
+// DeleteExecution is offered for ANY execution, live or finished: the server cancels a still-running
+// one first (execution/service.go: it flips the status to TERMINATED, sets ended_at, and only then
+// removes the row), so the client does not have to sequence cancel-then-delete and cannot leave a
+// running execution orphaned by deleting it out from under its worker. A single implementation, so
+// the bulk path inherits the same semantics.
+func (m *Model) defaultDeleteExecution(ctx context.Context, id string) error {
+	if m.cl == nil || m.cl.Executions == nil {
+		return errors.New("no execution client")
+	}
+	_, err := m.cl.Executions.DeleteExecution(ctx, connect.NewRequest(&apiv1.DeleteExecutionRequest{Id: id}))
+	return err
+}
+
 func (m *Model) rpcRetryFailedRun(ctx context.Context, runID string) error {
 	_, err := m.cl.Workflows.RetryFailedWorkflowRun(ctx, connect.NewRequest(&apiv1.RetryFailedWorkflowRunRequest{RunId: runID}))
 	return err
@@ -951,6 +1016,18 @@ func (m *Model) rpcRetryFailedRun(ctx context.Context, runID string) error {
 
 func (m *Model) rpcForceProgressRun(ctx context.Context, runID string) error {
 	_, err := m.cl.Workflows.ForceProgressWorkflowRun(ctx, connect.NewRequest(&apiv1.ForceProgressWorkflowRunRequest{RunId: runID}))
+	return err
+}
+
+// defaultDeleteRun is the plain wire form of the Runs pane's delete.
+//
+// DeleteWorkflowRun aborts a still-running run before removing it (see the service handler), so this is
+// one call with one meaning for a run in any state.
+func (m *Model) defaultDeleteRun(ctx context.Context, runID string) error {
+	if m.cl == nil || m.cl.Workflows == nil {
+		return errors.New("no workflow client")
+	}
+	_, err := m.cl.Workflows.DeleteWorkflowRun(ctx, connect.NewRequest(&apiv1.DeleteWorkflowRunRequest{RunId: runID}))
 	return err
 }
 
@@ -964,14 +1041,37 @@ func (m *Model) rpcSendMessage(ctx context.Context, execID, message string) erro
 
 // --- helpers ---------------------------------------------------------------
 
-// isLiveExecution reports whether a status string is a live (cancellable /
-// interjectable) execution.
-func isLiveExecution(status string) bool {
-	switch strings.ToLower(status) {
+// isLiveExecution reports whether an execution list row is live (cancellable / interjectable).
+//
+// IT TAKES THE ROW'S `Meta`, WHICH IS "<status> · <worker>" — not a bare status. That is the bug this
+// comment exists for: the switch below compared the WHOLE string against a list of bare statuses, so
+// "running · Quick Software Engineer" matched nothing and the function returned false for every live
+// execution. Six call sites passed a row meta and ALL SIX were wrong in the same way:
+//
+//   - `c: cancel` was never offered on a running execution (the action was gated on this);
+//   - the transcript's composer always said "Ask a follow-up" instead of "Message the worker mid-run"
+//     and took the follow-up path for a run that was still executing.
+//
+// The status is the part BEFORE the separator (executionListMeta builds `meta` as the lowered status
+// plus " · " plus the worker name), so the status is read the same way workerStatusOf reads it — up to
+// the first space. A caller that hands a BARE status still works, which is deliberate: the two
+// conventions must not have to agree.
+func isLiveExecution(meta string) bool {
+	switch statusOfMeta(meta) {
 	case "running", "healthy", "stalled", "unhealthy", "dispatching", "queued", "starting", "terminating":
 		return true
 	}
 	return false
+}
+
+// statusOfMeta reads the status out of a row's meta string, which is "<status> · <worker>" when a worker
+// name is known and a bare status when it is not.
+func statusOfMeta(meta string) string {
+	m := strings.ToLower(strings.TrimSpace(meta))
+	if i := strings.IndexByte(m, ' '); i > 0 {
+		return m[:i]
+	}
+	return m
 }
 
 // errNeedForm is returned if an action's direct path is used without its form
@@ -984,9 +1084,27 @@ func errNeedForm(what string) error {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcExecutions:
-		return theme.HintText.Render("c: cancel (confirm) · i: interject · enter: live session · ←/→: pane · r: refresh")
+		// THE DELETE CHORD IS NAMED, and the mark state is stated when there is one — the same reason
+		// the Workers pane names it: a bulk delete that nothing advertises is invisible until it has
+		// already been selected. `space` is mentioned because marking is the bulk gesture.
+		if n := m.Base.MarkCount(); n > 0 {
+			return theme.HintText.Render(keyDelete + ": delete " + fmt.Sprint(n) + " selected " +
+				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
+				" space: mark · ←/→: pane · r: refresh")
+		}
+		return theme.HintText.Render("c: cancel (confirm) " + theme.DetailKey.Render("·") +
+			" " + keyDelete + ": delete (confirm) " + theme.DetailKey.Render("·") +
+			" i: interject · space: mark for bulk · enter: live session · ←/→: pane · r: refresh")
 	case srcRuns:
-		return theme.HintText.Render("t: retry failed run (confirm) · p: force-progress wedged run (confirm) · enter: step runs + diagnosis · r: refresh")
+		// The delete chord is named, and the mark state is stated when there is one.
+		if n := m.Base.MarkCount(); n > 0 {
+			return theme.HintText.Render(keyDelete + ": delete " + fmt.Sprint(n) + " selected " +
+				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
+				" space: mark · ←/→: pane · r: refresh")
+		}
+		return theme.HintText.Render("t: retry failed run (confirm) " + theme.DetailKey.Render("·") +
+			" p: force-progress wedged run (confirm) " + theme.DetailKey.Render("·") +
+			" " + keyDelete + ": delete (confirm) · space: mark for bulk · enter: step runs + diagnosis · r: refresh")
 	case srcSchedules:
 		return m.scheduleHint()
 

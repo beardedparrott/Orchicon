@@ -119,6 +119,21 @@ service WorkflowService {
   // next cycle and re-creates the runtime container.
   rpc RetryFailedWorkflowRun(RetryFailedWorkflowRunRequest) returns (RetryFailedWorkflowRunResponse);
 
+  // DeleteWorkflowRun hard-deletes a single WorkflowRun and its step runs.
+  //
+  // WHY THIS EXISTS. Every other list in the client could be pruned and runs could
+  // not: DeleteWorkflow cascades to a workflow's ENTIRE run history, which is a
+  // different and far blunter act than removing one finished run. The operator,
+  // mid-live-test: "Executions and Workflow Runs do not have a delete operation
+  // (single and bulk)." Executions had DeleteExecution/BatchDeleteExecutions all
+  // along; runs had nothing at any layer.
+  //
+  // A RUNNING run is ABORTED first (status → aborted, ended_at set) and only then
+  // removed, so a delete can never leave a live run's reconciler writing into a
+  // deleted row — the same sequencing DeleteExecution uses. Terminal runs are
+  // removed directly. Irreversible.
+  rpc DeleteWorkflowRun(DeleteWorkflowRunRequest) returns (DeleteWorkflowRunResponse);
+
   // StreamWorkflowEvents is the server-stream RPC that fans out workflow
   // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
   // The editor run view overlays live step transitions on the canvas
@@ -339,6 +354,12 @@ message RetryFailedWorkflowRunResponse {
   // The step run ids reset back to pending for re-dispatch.
   repeated string reset_step_run_ids = 2;
 }
+
+message DeleteWorkflowRunRequest {
+  string run_id = 1;
+}
+
+message DeleteWorkflowRunResponse {}
 
 message StreamWorkflowEventsRequest {
   string tenant_id = 1;
