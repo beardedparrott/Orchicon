@@ -291,7 +291,7 @@ func (m *App) openLaunchForm() {
 		return
 	}
 	name := launchProjectName(m.launch.Dir)
-	specs := append(work.ProjectCreateFields(), kit2.FieldSpec{
+	specs := append(work.ProjectFormFields(nil), kit2.FieldSpec{
 		Name:        "project_dir",
 		Label:       "Directory",
 		Kind:        kit2.KText,
@@ -318,16 +318,25 @@ func (m *App) openLaunchForm() {
 	m.launch.Form = f
 }
 
-// launchSubmit creates the project and then attaches the directory.
+// launchSubmit creates the project, attaches the directory, and ACTIVATES it.
 //
-// TWO CALLS, IN THIS ORDER, and the order is forced rather than chosen: the create
-// API carries no project_dir, so the project has to exist before its directory can
-// be set. If the second call fails the project is left created-but-unattached, and
-// the error says so plainly rather than reporting a bare failure that would send
-// the operator looking for a project that does exist.
+// THREE CALLS, IN THIS ORDER, and the order is forced rather than chosen: the create
+// API carries no project_dir, so the project has to exist before its directory can be
+// set; and activation is a separate transition (its UPDATE requires status='drafting').
+// That the launch path is three calls while the Work screen's create is two reflects a
+// deliberate difference downstream, not sloppiness here.
 //
-// The form's own validation runs BEFORE this (kit2.Form.Submit checks Required),
-// so an empty name never reaches the plane.
+// ACTIVATION IS THE OPERATOR'S DECISION for this path specifically: "Yes it should
+// activate it by default upon saving." It is the right default HERE because the
+// prompt's entire premise is "I want to work in this directory" — leaving a project
+// that cannot host a single work item would recreate the exact friction the prompt was
+// built to remove. The Work screen's create does NOT activate, matching the GUI, where a
+// project is configured before it is made active; see the note in projects.go.
+//
+// A FAILED ACTIVATION IS REPORTED AS SUCH, and says the project exists: the create and
+// the directory have already succeeded, so a bare failure would send the operator
+// hunting for a project that is really there — and the activate action is available on
+// the project row if they want to retry.
 func (m *App) launchSubmit(values map[string]string, _ map[string][]string) (tea.Cmd, error) {
 	cl := m.clients
 	name := strings.TrimSpace(values["name"])
@@ -359,6 +368,11 @@ func (m *App) launchSubmit(values map[string]string, _ map[string][]string) (tea
 				return launchFailedMsg{err: fmt.Errorf(
 					"the project %q was created, but its directory could not be set: %w", name, err)}
 			}
+		}
+		if _, err := cl.Projects.ActivateProject(ctx, connect.NewRequest(&apiv1.ActivateProjectRequest{Id: id})); err != nil {
+			return launchFailedMsg{err: fmt.Errorf(
+				"the project %q was created with its directory, but could not be activated: %w — activate it from "+
+					"the Work screen (select it, press a)", name, err)}
 		}
 		return launchCreatedMsg{projectID: id}
 	}, nil
