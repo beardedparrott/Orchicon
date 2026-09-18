@@ -109,7 +109,17 @@ type Model struct {
 	// with the next Update (see the defer there) rather than returned from
 	// Focus, so the focus path needs no command plumbing.
 	blinkStart tea.Cmd
+
+	// pastePathHook, when set, is offered every BRACKETED PASTE before it is inserted: it returns a command
+	// when the pasted text is a FILE PATH it wants to attach, and nil to let the paste insert as text.
+	//
+	// A hook rather than dock logic because the SHELL owns the attachment set and does the I/O — the dock is
+	// a textarea and knows nothing about files. See the k.Paste case for the gesture this serves.
+	pastePathHook func(text string) tea.Cmd
 }
+
+// SetPastePathHook installs the bracketed-paste file-path hook (see pastePathHook).
+func (m *Model) SetPastePathHook(fn func(string) tea.Cmd) { m.pastePathHook = fn }
 
 // New builds the dock.
 func New() Model {
@@ -488,6 +498,20 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// Bracketed paste: bubbletea collapses the byte sequence into
 			// one KeyMsg with embedded newlines — render verbatim, never
 			// send. textarea inserts it as-is.
+			//
+			// EXCEPT A PASTE THAT IS A FILE PATH. An operator who copies a file in their file manager
+			// and pastes it into this box produces exactly that text, and attaching the file is what they
+			// meant — inserting "/home/me/shot.png" as prose is not. The shell decides (it owns the
+			// attachment set and the I/O), so the paste is offered to it first and only inserted when it
+			// is not a path.
+			// A hook that is NOT INSTALLED must not be called: this is a nil func field, and docks are
+			// built in several places (including tests) that have no shell to install one — so the
+			// ungurded call panicked on the first bracketed paste of every such dock.
+			if m.pastePathHook != nil {
+				if cmd := m.pastePathHook(string(k.Runes)); cmd != nil {
+					return true, cmd
+				}
+			}
 			return true, m.pasteCmd(k)
 		case enterKey(k) && k.Alt:
 			if m.Newlines == NewlineAltEnter || m.Newlines == NewlineBoth {

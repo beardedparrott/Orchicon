@@ -609,6 +609,14 @@ func (b *Base) SetDetailBody(body string, fields []Field) {
 	b.detail.SetContent(b.detail.Title, fields, body)
 }
 
+// DetailFieldCount reports how many field ROWS the pane will draw, which determines its body height.
+//
+// It exists because a caller that sizes an EXTERNAL widget rendered into that body (the Ask transcript's
+// Stream) must know the pane's real field count — and the count it can build itself is not it. See
+// ask.Model.DetailFieldCount for the measured consequence of getting this wrong: a stream sized one row
+// too tall loses its BOTTOM row, which is where the notice is drawn.
+func (b *Base) DetailFieldCount() int { return len(b.detail.Fields) }
+
 // DetailForTest exposes the pane's current contents, so a screen can REPAINT around a change
 // without re-deriving what the fetch produced (and so tests can assert what is on screen).
 func (b *Base) DetailForTest() (string, []Field, string) {

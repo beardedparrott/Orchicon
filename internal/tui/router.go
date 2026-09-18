@@ -139,6 +139,35 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
+			Name: "attach a file by path", Keys: "ctrl+f", Scope: "global",
+			// Reads the file OFF THE DISK in a command (it can be megabytes), so the tea loop is never
+			// blocked by I/O — the same reason every fetch in this shell is a command.
+			//
+			// The PATH comes from the composer's own text, because a terminal cannot browse a filesystem:
+			// the operator pastes or types the path (which is how a path reaches a terminal anyway), and a
+			// successful attach CLEARS the box so the path is not also sent as prose.
+			Match: keyMatcher("ctrl+f"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				path := m.dock.Value()
+				m.pendingAttachCmd = attachFileFromPrompt(path)
+				if strings.TrimSpace(path) != "" {
+					m.pendingAttachClear = true
+				}
+				return true
+			},
+		},
+		{
+			Name: "paste an image from the clipboard", Keys: "ctrl+v", Scope: "global",
+			// Same shape, and it is the chord that does NOT go through bracketed paste: a screenshot is
+			// bytes in the SYSTEM clipboard with no path and no text form, so it has to be read out with a
+			// platform helper (see readClipboardImage for why OSC 52 cannot do it).
+			Match: keyMatcher("ctrl+v"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				m.pendingAttachCmd = attachImageFromClipboard()
+				return true
+			},
+		},
+		{
 			Name: "quit", Keys: "q / ctrl+c", Scope: "global",
 			Match: func(msg tea.Msg) bool {
 				k, ok := msg.(tea.KeyMsg)
@@ -245,6 +274,13 @@ var composerBypassKeys = map[string]bool{
 	// key is consumed — so a global route can never see a chord the composer was allowed to eat. This
 	// map is the documented way to keep such a chord reachable while the composer holds the focus.
 	"ctrl+y": true,
+	// THE ATTACHMENT CHORDS are here for exactly the same reason: they must work while the composer is
+	// focused, because that is where the operator is typing when they paste.
+	//
+	//	ctrl+v — paste an image from the SYSTEM CLIPBOARD (a screenshot has no path to type)
+	//	ctrl+f — attach a FILE BY PATH (the operator pastes the path into the prompt; a file may never
+	//	         have been on the clipboard, and a terminal cannot browse a filesystem)
+	"ctrl+v": true, "ctrl+f": true,
 }
 
 // The tab chords are ADDED from the SAME source the tab bar draws from.
@@ -1044,6 +1080,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case chatWakeMsg:
 		return tea.Batch(m.onChatWake(), m.waitChat())
+	case attachResultMsg:
+		// An attachment acquisition landed. It is an App-level message (the pending set is the shell's), and
+		// it reports its own outcome — success says WHAT was attached, failure says WHY not.
+		m.applyAttachResult(msg)
+		return nil
 	case chatCmdMsg:
 		return tea.Batch(msg.cmd, m.waitChat())
 	case tea.KeyMsg:
@@ -1112,8 +1153,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.chatStore.append(msg.convID, chat.ChatItem{
 			Kind: chat.KindUser, Text: msg.text, At: time.Now().UnixMilli(),
 			Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
+			// The first message of a NEW conversation carries its attachment markers too, so a screenshot
+			// sent as the opening turn is visible on the transcript rather than only in the server's copy.
+			Attachments: m.pendingAttachMarkers(),
 		})
-		cmds := []tea.Cmd{m.chat.Send(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
+		cmds := []tea.Cmd{m.sendChat(msg.convID, msg.text, msg.preamble), m.chat.LoadConversations()}
 		// The turn is in flight as of the line above (chat.Send flips the slot synchronously), so the
 		// composer's stop affordance has to appear with it.
 		m.refreshComposerHint()

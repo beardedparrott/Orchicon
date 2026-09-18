@@ -31,6 +31,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/overview"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
+	"github.com/beardedparrott/orchicon/internal/tui/stream"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -245,6 +246,14 @@ type App struct {
 	// something they want still hidden tomorrow, and the reasoning's own char count remains visible either
 	// way.
 	reasoningFolded map[string]bool
+
+	// pendingAttach holds the files acquired for the NEXT turn — pasted screenshots and attached paths that
+	// have not been sent yet, so the operator can see what is about to go and can remove a mistake.
+	//
+	// It is SHELL state, not composer state, for the same reason the transcript is: the composer is a
+	// textarea that owns its own buffer, and an attachment is not text. The send path reads it, clears it on
+	// success, and puts it back if the send fails (see restoreAttachments).
+	pendingAttach []attachment
 	// bulkConfirm hosts the confirm dialog for a destructive bulk rail operation (nil = closed), and
 	// bulkConfirmRun is what the affirmative choice dispatches.
 	bulkConfirm    *kit2.Dialog
@@ -327,6 +336,22 @@ type App struct {
 	// KeyRoute.Handle returns only a bool, so it cannot return a Cmd directly (same
 	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
 	pendingStopCmd tea.Cmd
+	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a clipboard
+	// image, ctrl+f reads a file by path). Both do real I/O — a screenshot can be megabytes — so they run as
+	// commands and never on the tea loop, and the route stages the command for drainStaged to re-emit.
+	pendingAttachCmd tea.Cmd
+	// pendingAttachClear says the composer's text was a PATH being attached, so a SUCCESSFUL attach should
+	// clear the box — otherwise the path would also be sent as prose, and the turn would carry both the file
+	// and a line naming it.
+	//
+	// It is only honoured on success: a failed attach leaves the path where it was so the operator can fix
+	// a typo rather than retype it.
+	pendingAttachClear bool
+	// lastSentAttachments holds the attachments of the turn currently in flight, so a FAILED send can put
+	// them back (see restoreAttachments). Cleared when the turn resolves — the bytes are the operator's, and
+	// holding them past the window they could still be needed would keep a screenshot in memory for the life
+	// of the session.
+	lastSentAttachments []*apiv1.AttachmentInput
 	// pendingScreenCmd carries a newly activated screen's first-load cmd
 	// out of SwitchTo (which cannot return one).
 	pendingScreenCmd tea.Cmd
@@ -406,6 +431,16 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	if profile != nil && profile.Newline != "" {
 		m.dock.Newlines = dock.ParseNewlineMode(profile.Newline)
 	}
+	// A PASTE THAT IS A FILE PATH ATTACHES THE FILE. The dock offers every bracketed paste here before
+	// inserting it, and this is the shell's answer: a path resolves to a real attachable file and becomes a
+	// pending attachment; anything else returns nil and inserts as ordinary text.
+	m.dock.SetPastePathHook(func(text string) tea.Cmd {
+		if !isProbablyPath(text) {
+			return nil
+		}
+		m.pendingAttachClear = false // the paste IS the path; do not also clear what is already in the box
+		return attachFileFromPrompt(text)
+	})
 	// The diff pane shares the shell's client set + registry so its live
 	// StreamFileEdits subscription follows the same reconnect/resume/dedup
 	// semantics and is closed by CloseAll on screen close.
@@ -609,6 +644,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingStopCmd != nil {
 		cmds = append(cmds, m.pendingStopCmd)
 		m.pendingStopCmd = nil
+	}
+	if m.pendingAttachCmd != nil {
+		cmds = append(cmds, m.pendingAttachCmd)
+		m.pendingAttachCmd = nil
 	}
 	if m.pendingCatCmd != nil {
 		cmds = append(cmds, m.pendingCatCmd)
@@ -1080,6 +1119,47 @@ func (m *App) refreshLayout() {
 	if m.diffPane != nil {
 		m.diffPane.SetSize(m.diffPaneWidth(), m.screenRows()+m.dock.Lines()+m.panelRows())
 	}
+	// THE ASK TRANSCRIPT IS RE-MEASURED HERE, for the same reason the dock's width is set first: its SIZE
+	// depends on the dock's height, and the dock's height depends on its own content.
+	//
+	// dock.Lines() counts the chip row, the input rows, the hint rows and the notice/error strip — so a
+	// reload that changes ANY of those (a new conversation arriving, a notice appearing) changes the rows
+	// the screens get. The transcript Stream is sized from DetailBodyHeight, which is derived from that, so
+	// a stream sized before such a change is one row too tall and the PANE'S VIEWPORT CLIPS ITS BOTTOM ROW
+	// — and the row drawn last is the NOTICE.
+	//
+	// MEASURED, on the thinking indicator: after a rolling tick the dock went 7 rows -> 8, the content
+	// region 29 -> 28, and the indicator was set on the widget yet absent from the frame; re-waking (which
+	// re-measures) brought it back. Re-measuring on every layout change removes the window entirely.
+	if m.active == TabAsk && m.chatConvID != "" {
+		m.remeasureTranscript()
+	}
+}
+
+// remeasureTranscript re-sizes the open conversation's transcript to the pane's CURRENT body height,
+// preserving the operator's scroll. Used by refreshLayout, because the pane's height depends on the dock's
+// content and the dock's content changes under the transcript.
+func (m *App) remeasureTranscript() {
+	str := m.chatStreams[m.chatConvID]
+	if str == nil {
+		return // nothing rendered yet; onChatWake will size it on its first paint
+	}
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	bh, ok := s.(interface{ DetailBodyHeight(int, bool) int })
+	if !ok {
+		return
+	}
+	fieldRows := 0
+	if fp, ok := s.(interface{ DetailFieldCount() int }); ok {
+		fieldRows = fp.DetailFieldCount()
+	}
+	str.SetSize(str.Width, bh.DetailBodyHeight(fieldRows, true))
+	// A resize CLAMPS the offset, so a stream taller than the pane keeps its newest row on screen. Without
+	// this the operator's scroll could sit past the last line after a shrink.
+	str.ScrollLabel()
 }
 
 // refreshDiffOwner re-points an already-open pane at the (possibly
@@ -1559,15 +1639,33 @@ func (m *App) surfaceStreamError() {
 // either way the screen's copy could freeze on an old value (the footer stuck on
 // "connecting…" for the rest of the session).
 func (m *App) streamStatus() streamStatusString {
+	// THE CONNECTION IS NOT A PROPERTY OF THE ACTIVE TAB.
+	//
+	// This used to aggregate ONLY over the statuses the active screen declares — and a screen that declares
+	// none reports nothing, so the worst-wins loop started and ended at "open". The Ask tab is exactly that
+	// screen: its conversation list is the shell's rail and it subscribes to no stream of its own, so an
+	// operator sitting on Ask while the plane died saw a green "connected" footer for the whole session.
+	// The operator: "if a connection dies, the GUI tells you, but the TUI conversation does not."
+	//
+	// Every subscription in the registry talks to the SAME plane over the SAME credentials, so the worst
+	// status among them is the honest answer wherever the operator is standing. The screen's own report is
+	// still consulted — it can hold a status for a stream the registry has not reported on yet — but it can
+	// no longer be the ONLY input, and it can never again silently mean "healthy".
+	worst := openStatus
+	if st, _ := m.reg.WorstStatus(); st != "" {
+		worst = streamStatusString(st)
+	}
 	s := m.screens[m.active]
 	if s == nil {
-		return openStatus
+		return worst
 	}
 	rp, ok := s.(screenkit.StatusReporter)
 	if !ok {
-		return openStatus
+		return worst
 	}
-	worst := openStatus
+	// The screen's own report can still RAISE the severity (a stream it holds that the registry has not
+	// seen), which is why it is folded in rather than dropped. It cannot LOWER it: a screen with no
+	// streams no longer votes "connected" on behalf of a dead plane.
 	for _, st := range rp.ReportStatus() {
 		live := st.Status
 		if v := m.reg.LatestStatus(st.Name); v != "" {
@@ -2642,11 +2740,24 @@ func (m *App) conversationByID(id string) (chat.Conversation, bool) {
 func (m *App) onChatWake() tea.Cmd {
 	// dock-level banner first (any screen): reconnecting state from the
 	// shared store, applied on the tea loop.
+	//
+	// IT NOW ALSO COVERS A DEAD PLANE, not only an interrupted TURN. The two are different failures and the
+	// operator named the second: "if a connection dies, the GUI tells you, but the TUI conversation does
+	// not." A turn going reconnecting means the reply we were streaming lost its socket; a dead plane means
+	// the credential or the host is gone, and EVERY subscription in the registry is failing. Before this,
+	// only the first had a banner — so losing the connection outright left the composer strip silent while
+	// the footer (on any tab that reported its streams) quietly said "disconnected, retrying".
 	if m.chatConvID != "" {
-		if m.chatStore.isReconnecting(m.chatConvID) {
+		switch {
+		case m.chatStore.isReconnecting(m.chatConvID):
 			m.dock.SetNotice("connection lost — re-attaching to the running turn…")
-		} else if m.dock.Notice == "connection lost — re-attaching to the running turn…" {
-			m.dock.SetNotice("")
+		case m.planeUnreachable():
+			m.dock.SetNotice("connection lost — retrying… (r reconnects now)")
+		default:
+			// Clear only OUR banners, never an unrelated notice the operator is being shown.
+			if isConnBanner(m.dock.Notice) {
+				m.dock.SetNotice("")
+			}
 		}
 	}
 	s := m.screens[TabAsk]
@@ -2686,8 +2797,33 @@ func (m *App) onChatWake() tea.Cmd {
 		// transcript was SHORTER than the pane everything fitted and it looked right, which is why it
 		// only failed once the pane filled up.
 		strH := m.contentHeight()
-		if bh, ok := s.(interface{ DetailBodyHeight(int, bool) int }); ok {
-			strH = bh.DetailBodyHeight(len(fields), true)
+		if _, ok := s.(interface{ DetailBodyHeight(int, bool) int }); ok {
+			// LAY OUT BEFORE MEASURING.
+			//
+			// The pane's body height is derived from ITS height, which the shell assigns in refreshLayout
+			// from the rows the DOCK leaves — and the dock's row count depends on its own content (the chip
+			// row, the hint's wrap, the notice strip). So a paint that measures before laying out sizes the
+			// stream against a pane height that is about to change:
+			//
+			//	MEASURED: dock 7 rows -> 8 after a reload -> the pane's body 22 -> 21
+			//
+			// and a stream sized 22 while the pane draws 21 has its BOTTOM row clipped by the pane's own
+			// viewport — which is the notice, drawn last. Re-laying-out here makes the measurement and the
+			// paint agree by construction, rather than depending on whoever changed the dock's content
+			// remembering to re-measure.
+			m.refreshLayout()
+			bh := s.(interface{ DetailBodyHeight(int, bool) int })
+			// THE FIELD COUNT MUST BE THE PANE'S REAL ONE, not the count implied by the fields the shell
+			// just built. RenderTranscript returns the HEADER the shell overlays (the rail's live row),
+			// which is shorter than the pane's own fetched field set. BodyHeightFor subtracts a row per
+			// field, so too low a count sizes the stream too tall.
+			fieldRows := len(fields)
+			if fp, ok := s.(interface{ DetailFieldCount() int }); ok {
+				if n := fp.DetailFieldCount(); n > fieldRows {
+					fieldRows = n
+				}
+			}
+			strH = bh.DetailBodyHeight(fieldRows, true)
 		}
 		str := m.transcriptStream(m.chatConvID, w, strH)
 		m.syncTranscript(m.chatConvID, str, items, w)
@@ -2696,6 +2832,12 @@ func (m *App) onChatWake() tea.Cmd {
 		switch {
 		case m.chatStore.isReconnecting(m.chatConvID):
 			str.SetNotice("reconnecting…")
+		case m.planeUnreachable():
+			// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
+			// dies, the GUI tells you, but the TUI conversation does not." The footer is easy to miss when
+			// reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
+			// Same slot and same row cost as "reconnecting…", so nothing moves.
+			str.SetNotice("⚠ disconnected — replies will resume when the plane returns (r retries now)")
 		case m.chat.IsStreaming(m.chatConvID) && awaitingReply(items):
 			// THE GUI's thinking indicator, matched verbatim. The GUI renders "Orchicon is thinking…"
 			// while a turn is streaming and has produced NO content yet (ask-orchicon.tsx: "Thinking
@@ -2723,6 +2865,32 @@ func (m *App) onChatWake() tea.Cmd {
 		st.SetDetailContent(title, fields, str.View())
 	}
 	return nil
+}
+
+// planeUnreachable reports whether the PLANE itself is not answering — as opposed to one turn having lost
+// its socket.
+//
+// It reads the registry's worst status, the same value the footer renders, so the footer and the transcript
+// cannot disagree about whether the connection is up. A single subscription still CONNECTING is not enough
+// to declare the plane down (a freshly-opened tab arms its streams as it is visited); what counts is a
+// subscription that has actually FAILED — closed, errored or reconnecting.
+//
+// Deliberately conservative on the healthy side: an absent status ("") is not failure, so a session whose
+// streams have not reported yet reads as connected rather than flashing a banner on startup.
+func (m *App) planeUnreachable() bool {
+	st, _ := m.reg.WorstStatus()
+	switch st {
+	case stream.StatusReconnecting, stream.StatusError, stream.StatusClosed:
+		return true
+	}
+	return false
+}
+
+// isConnBanner reports whether a dock notice is one of the CONNECTION banners this shell writes, so
+// clearing on recovery cannot wipe an unrelated message the operator is being shown (a send ack, a context
+// injection notice, a "reply stopped" confirmation).
+func isConnBanner(notice string) bool {
+	return strings.HasPrefix(notice, "connection lost —")
 }
 
 // awaitingReply reports whether the conversation is waiting for the model's first content — i.e. a user
@@ -2900,6 +3068,9 @@ func (m *App) setChatError(where string, err error) {
 	m.dock.SetNotice("")
 	// A failed send must not lose the operator's message: put the draft
 	// back in the composer (RestoreDraft never clobbers text typed since).
+	// AND THE ATTACHMENTS WITH IT. A screenshot the operator pasted is not recoverable by retyping — they
+	// would have to re-screenshot it — so a failed turn puts the whole set back rather than only the text.
+	m.restoreAttachments()
 	if chat.IsAuthExpired(err) {
 		m.setReauthBanner()
 		m.dock.RestoreDraft()
@@ -2907,6 +3078,30 @@ func (m *App) setChatError(where string, err error) {
 	}
 	m.dock.SetError(where + ": " + err.Error())
 	m.dock.RestoreDraft()
+}
+
+// restoreAttachments puts the last turn's attachments back into the pending set after a failed send.
+//
+// WHY IT IS NEEDED AT ALL: sendChat CLEARS the pending set when the turn leaves (the operator sees their
+// turn go), so a failure would otherwise drop a screenshot the operator cannot retype. The bytes are kept
+// on lastSentAttachments for exactly this window — one turn — and dropped once it resolves.
+//
+// It does not clobber anything the operator has attached SINCE the failed turn: if they have already queued
+// something new, the older set is not forced back on top of it.
+func (m *App) restoreAttachments() {
+	if len(m.lastSentAttachments) == 0 {
+		return
+	}
+	if len(m.pendingAttach) > 0 {
+		return // the operator has moved on; do not resurrect the old set over it
+	}
+	for _, f := range m.lastSentAttachments {
+		m.pendingAttach = append(m.pendingAttach, attachment{
+			Name: f.GetName(), MimeType: f.GetMimeType(), Data: f.GetData(),
+		})
+	}
+	m.lastSentAttachments = nil
+	m.refreshComposerHint()
 }
 
 func (m *App) setChatErrorPlain(errText string) {
@@ -2958,9 +3153,23 @@ func (m *App) authRetryInline() bool {
 	return false
 }
 
-// sendChat sends text to the conversation with the context preamble.
+// RepaintTranscript re-sizes and repaints the open conversation's transcript from what the shell already
+// holds. It is onChatWake's cheap half exposed to a SCREEN, which needs it after a detail landing: the
+// landing changes the pane's field count and therefore its body height, so a stream sized before it can end
+// up one row too tall — and the row the pane's viewport clips is the NOTICE, which is drawn last.
+func (m *App) RepaintTranscript() tea.Cmd { return m.onChatWake() }
+
+// sendChat sends text to the conversation with the context preamble AND the pending attachments.
+//
+// The attachments are read from the pending set here, at the single place every send passes through, so the
+// existing-conversation path and the create-conversation path cannot disagree about whether a screenshot
+// goes with the message. The set is CLEARED on the optimistic echo (the operator sees their turn leave) and
+// restored if the send fails, so a failed turn never loses the operator's screenshot.
 func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
-	return m.chat.Send(convID, text, preamble)
+	files := m.wireAttachments()
+	m.lastSentAttachments = files
+	m.clearPendingAttachments()
+	return m.chat.SendWithAttachments(convID, text, preamble, files)
 }
 
 // createConversationAndSend creates the first conversation lazily and
@@ -3171,7 +3380,14 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 	if m.chatConvID == "" {
 		return m.createConversationAndSend(text, preamble)
 	}
-	m.chatStore.append(m.chatConvID, chat.ChatItem{Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(), Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true})
+	m.chatStore.append(m.chatConvID, chat.ChatItem{
+		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
+		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
+		// The markers ride the echo, so the operator sees "[image]" on their own message the moment it
+		// appears — which is the only on-screen record that the turn carried a file, since the composer is
+		// cleared on send.
+		Attachments: m.pendingAttachMarkers(),
+	})
 	// The turn is in flight as soon as sendChat is evaluated (chat.Send flips the slot synchronously),
 	// so the composer's stop affordance appears with it — the operator can see HOW to stop before the
 	// first token lands.

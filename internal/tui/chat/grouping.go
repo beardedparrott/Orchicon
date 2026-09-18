@@ -49,6 +49,16 @@ type ChatItem struct {
 	Key       string
 	Live      bool
 	Phase     string
+
+	// Attachments are the markers for the files this message carried, in the operator's vocabulary
+	// ("[image]", "[file: notes.md]"). They are a DISPLAY field: the bytes belong to the request that sent
+	// them, and the transcript only needs to say the turn was not text alone.
+	//
+	// It is separate from Text rather than prefixed onto it because the two have different owners — Text is
+	// the operator's own words, which the durable transcript also carries and the dedupe matches on, while
+	// these markers exist only for this client's rendering. Folding them into Text would put a synthetic
+	// token into the message the server stores and the dedupe compares.
+	Attachments []string
 }
 
 // itemAt mirrors itemAt(): tool items timestamp through their tool.

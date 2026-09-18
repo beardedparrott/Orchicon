@@ -161,6 +161,16 @@ func (r *Registry) LatestError(name string) string {
 	return r.latestErr[name]
 }
 
+// ReportStatusForTest records a status for a name as if its subscription had reported it, so a test can
+// put the registry into a state only a live plane could otherwise produce (a dead connection, a
+// reconnecting stream). It goes through the same store `notify` writes, so the reading under test is the
+// real one.
+func (r *Registry) ReportStatusForTest(name, status string) {
+	r.mu.Lock()
+	r.latest[name] = status
+	r.mu.Unlock()
+}
+
 // notifyErr records a stream's last error (see Registry.latestErr).
 func (r *Registry) notifyErr(name string) func(error) {
 	return func(err error) {
@@ -181,6 +191,57 @@ func (r *Registry) LatestStatus(name string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.latest[name]
+}
+
+// WorstStatus returns the most SEVERE status any live subscription has reported, and the name of the one
+// that reported it. ("", "") when nothing has reported yet.
+//
+// WHY THE FOOTER NEEDS THIS RATHER THAN THE ACTIVE SCREEN'S OWN STREAMS. The shell used to aggregate only
+// over the statuses the ACTIVE screen declares, and a screen that declares none — the Ask tab, whose
+// conversation list is the shell's rail and which subscribes to no stream of its own — therefore reported
+// "open", i.e. CONNECTED, for the whole session. So an operator sitting on Ask while the plane died saw a
+// green footer: the operator's "if a connection dies, the GUI tells you, but the TUI conversation does
+// not."
+//
+// The connection is not a property of the tab the operator happens to be looking at. Every subscription in
+// the registry is talking to the SAME plane over the SAME credentials, so the worst status among them is
+// the honest answer to "am I connected?" — and it is answerable from any tab.
+func (r *Registry) WorstStatus() (stream.Status, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	worst := stream.Status("")
+	worstName := ""
+	for name, st := range r.latest {
+		s := stream.Status(st)
+		if statusSeverity(s) > statusSeverity(worst) {
+			worst, worstName = s, name
+		}
+	}
+	return worst, worstName
+}
+
+// statusSeverity ranks stream statuses by how much they should worry the operator. It mirrors the shell's
+// own ranking (statusRank in the tui package) and lives here because the registry is what now decides the
+// worst; keeping ONE ordering stops the two from disagreeing about "worse".
+//
+// An empty status ranks lowest, so a subscription that has never reported cannot masquerade as healthy.
+func statusSeverity(s stream.Status) int {
+	switch s {
+	case stream.StatusIdle:
+		return 0
+	case stream.StatusOpen:
+		return 1
+	case stream.StatusConnecting:
+		return 2
+	case stream.StatusClosed:
+		return 3
+	case stream.StatusError:
+		return 4
+	case stream.StatusReconnecting:
+		return 5
+	default:
+		return 0
+	}
 }
 
 // pokeEvent delivers one event-poke to the named channel (non-blocking,

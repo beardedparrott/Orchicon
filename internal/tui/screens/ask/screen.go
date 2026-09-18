@@ -172,6 +172,20 @@ func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, 
 // RequestDetail loads the detail view for (src, id) directly.
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
 
+// DetailFieldCount reports how many field rows the pane will actually draw, so the shell can size the
+// transcript Stream to the pane's REAL body height.
+//
+// WHY THE SHELL CANNOT GUESS THIS. It sizes the stream from the header RenderTranscript returns — the
+// shell's own overlay of the rail's live row — which is SHORTER than the fetched field set the pane holds
+// (id, title, model, messages, mode, created, updated). BodyHeightFor subtracts a row per field, so sizing
+// from the shell's count makes the stream one row too tall, and the pane's viewport clips the row it loses:
+// the NOTICE, which is emitted last. That is how the thinking indicator could be set on the widget and
+// never reach the frame.
+//
+// It reports the PANE's count, and the shell takes the larger of the two, so the stream can never be sized
+// taller than the pane draws.
+func (m *Model) DetailFieldCount() int { return m.Base.DetailFieldCount() }
+
 // RefreshView re-reads the rail's LIST and deliberately does NOT re-request the open detail.
 //
 // THE SHELL'S DEFAULT ERASES THIS PANE. kit2.Base.RefreshView reloads the active source AND re-requests
@@ -221,10 +235,30 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 		return nil
 	}
 	type opener interface{ OpenAskConversation(id string) tea.Cmd }
+	var cmds []tea.Cmd
 	if shell, ok := m.Shell().(opener); ok {
-		return shell.OpenAskConversation(id)
+		cmds = append(cmds, shell.OpenAskConversation(id))
 	}
-	return nil
+	// RE-SIZE AND REPAINT AFTER A LANDING. A detail landing REPLACES the pane's fields with the fetched
+	// set (see kit2.Base's detailMsg case) and the Ask screen keeps the body, so the pane's field count —
+	// and therefore its body height — CHANGES as the landing arrives:
+	//
+	//	DetailBodyHeight(1,true)=23    DetailBodyHeight(2,true)=22
+	//
+	// The shell sizes the transcript Stream from the fields it holds when IT repaints, which can be the
+	// smaller pre-landing set. A stream one row taller than the pane draws is clipped by the pane's own
+	// viewport at the BOTTOM — and the row it loses is the NOTICE, which is emitted last. That is why the
+	// thinking indicator could be set on the widget and never reach the frame.
+	//
+	// Repainting through the shell's own path here re-measures against the state that just landed, so the
+	// stream and the pane agree. It is a cache merge (no RPC), so it costs a render, not a round trip.
+	if shell, ok := m.Shell().(interface{ RepaintTranscript() tea.Cmd }); ok {
+		cmds = append(cmds, shell.RepaintTranscript())
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // RenderTranscript returns the detail title + fields for the shell's repaint.

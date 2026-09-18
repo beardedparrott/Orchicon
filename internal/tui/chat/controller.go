@@ -531,6 +531,17 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 // context line prepended to the message (the only context shape the
 // API accepts).
 func (c *Controller) Send(convID, text, contextPreamble string) tea.Cmd {
+	return c.SendWithAttachments(convID, text, contextPreamble, nil)
+}
+
+// SendWithAttachments is Send with file/image attachments for the turn.
+//
+// An attachment is BYTES on the wire (AttachmentInput.data), and it is converted to the request message
+// HERE — the same place every other field of the turn is built — so the two send paths (a fresh send and
+// an interject/supersede) cannot disagree about how a turn is shaped. The server does the rest: it
+// validates the caps, persists them with the message, describes them in the system prompt, and forwards
+// each as an OpenCode FilePartInput (a data: URL), which is how a screenshot becomes a vision part.
+func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, files []*apiv1.AttachmentInput) tea.Cmd {
 	full := text
 	if contextPreamble != "" {
 		full = contextPreamble + "\n" + text
@@ -557,13 +568,13 @@ func (c *Controller) Send(convID, text, contextPreamble string) tea.Cmd {
 	if interject {
 		call = "interject"
 	}
-	return c.startStream(convID, full, call)
+	return c.startStream(convID, full, call, files)
 }
 
 // startStream opens the ChatStream/InterjectConversationTurn and returns
 // a Cmd whose first message is a synthetic turnStarted placeholder (the
 // actual ack arrives via the forwarding goroutine).
-func (c *Controller) startStream(convID, full, call string) tea.Cmd {
+func (c *Controller) startStream(convID, full, call string, files []*apiv1.AttachmentInput) tea.Cmd {
 	ctx := context.Background()
 	return func() tea.Msg {
 		var (
@@ -574,11 +585,13 @@ func (c *Controller) startStream(convID, full, call string) tea.Cmd {
 			stream, err = c.cl.Ask.InterjectConversationTurn(ctx, connect.NewRequest(&apiv1.InterjectConversationTurnRequest{
 				ConversationId: convID,
 				Message:        full,
+				Attachments:    files,
 			}))
 		} else {
 			stream, err = c.cl.Ask.ChatStream(ctx, connect.NewRequest(&apiv1.ChatStreamRequest{
 				ConversationId: convID,
 				Message:        full,
+				Attachments:    files,
 			}))
 		}
 		if err != nil {

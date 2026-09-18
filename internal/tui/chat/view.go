@@ -32,7 +32,7 @@ func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bo
 	for _, it := range items {
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatMessage(it.Text, theme.BubbleUser, maxWidth, true, userBandLabel))
+			b.WriteString(renderChatMessage(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, userBandLabel))
 		case KindText:
 			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false, ""))
 		case KindReasoning:
@@ -98,6 +98,24 @@ const userBandLabel = "You"
 // The padding is rendered INSIDE the style, which is the whole point: filling
 // only the text and leaving the margin unstyled is what made an earlier
 // attempt read as "just different colored text" rather than a block.
+//
+// userTextWithMarkers appends the attachment markers to the operator's own text for DISPLAY.
+//
+// The operator said an attachment "shows up as [image] in the chat prompt", so the marker rides with the
+// message it belongs to and the operator can see, on scrolling back, that a turn carried a screenshot. It is
+// applied at RENDER time rather than stored into Text, so the durable copy of the message — which is what the
+// server keeps and what the optimistic-echo dedupe matches on — stays exactly the text that was sent.
+func userTextWithMarkers(it ChatItem) string {
+	if len(it.Attachments) == 0 {
+		return it.Text
+	}
+	markers := strings.Join(it.Attachments, " ")
+	if strings.TrimSpace(it.Text) == "" {
+		return markers
+	}
+	return it.Text + "\n" + markers
+}
+
 func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool, label string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""

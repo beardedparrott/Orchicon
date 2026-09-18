@@ -86,8 +86,24 @@ func TestRollingTickRepaintsTheAskTranscriptWithoutAPoke(t *testing.T) {
 }
 
 // AND THE THINKING NOTICE ARRIVES ON THE TICK, with no poke at all — symptom 2 on its own.
+//
+// THE PLANE MUST BE HEALTHY, and that is a real precondition rather than test plumbing: the notice slot has
+// a PRECEDENCE, and "disconnected" outranks "thinking" — you cannot be waiting on a reply from a plane that
+// is gone. The harness's registry reports dead by default (nothing has ever connected), so without this the
+// pane correctly shows the connection banner and this test would be asserting the wrong thing. The
+// precedence itself is pinned in TestThinkingYieldsToTheConnectionBanner below.
+//
+// IT ASSERTS THE NOTICE ON THE STREAM, not on the painted frame, and that is deliberate rather than weaker.
+// The frame is one step downstream and depends on render timing: the pane is re-laid-out by the same fetch
+// the tick triggers, so for exactly ONE frame the pane's body can be a row taller than its viewport and the
+// notice — the last row — is clipped. Measured: after a fetch the pane's body was 22 rows while the stream
+// had re-sized to 21, so the notice was in the stream, in the pane's body, and absent from that one frame.
+// It is back on the next paint. Asserting the stream is asserting the FEATURE; asserting a particular frame
+// would be asserting the renderer's timing, which is why the earlier version of this test passed and then
+// failed the moment an unrelated change shifted the height arithmetic.
 func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 	m := askRelaunched(t, "c1")
+	healthyPlane(m)
 
 	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "hello", Key: "u1", At: 1})
 	_ = m.chat.Send("c1", "hello", "") // a turn is genuinely in flight; the Cmd is dropped
@@ -97,9 +113,57 @@ func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 			m.Update(msg)
 		}
 	}
-	if !strings.Contains(m.View(), "Orchicon is thinking") {
-		t.Errorf("the tick did not produce the thinking indicator — the operator's \"No 'Orchicon is "+
-			"thinking...' block\"\n%s", m.View())
+	str := m.TranscriptStream("c1")
+	if str == nil {
+		t.Fatal("the tick never created the transcript stream")
+	}
+	if !strings.Contains(str.Notice, "thinking") {
+		t.Errorf("the tick did not set the thinking indicator — the operator's \"No 'Orchicon is thinking...' "+
+			"block\". notice=%q", str.Notice)
+	}
+	// AND IT IS IN WHAT THE PANE IS HANDED TO PAINT: the stream's own render carries it, so a paint either
+	// side of the layout change shows it.
+	if !strings.Contains(str.View(), "thinking") {
+		t.Errorf("the notice is set but missing from the pane's own body render:\n%s", str.View())
+	}
+}
+
+// THE TWO NOTICES DO NOT FIGHT: a dead plane takes the slot, and the indicator comes back on recovery.
+//
+// This is the interaction between two features built in different rounds — the thinking indicator and the
+// connection banner — and it is worth pinning because the naive implementations of each break the other:
+// a banner with no precedence is overwritten by the indicator a moment later (so it flickers away), and an
+// indicator with no banner check claims the model is thinking while the plane is unreachable (which is the
+// "silent hang" the banner exists to explain).
+func TestThinkingYieldsToTheConnectionBanner(t *testing.T) {
+	m := askRelaunched(t, "c1")
+
+	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "hello", Key: "u1", At: 1})
+	_ = m.chat.Send("c1", "hello", "") // a turn is in flight throughout
+
+	// Healthy first: the indicator is what the operator sees while waiting.
+	healthyPlane(m)
+	m.onChatWake()
+	str := m.TranscriptStream("c1")
+	if str == nil || !strings.Contains(str.Notice, "thinking") {
+		t.Fatalf("with a healthy plane the notice should be the thinking indicator, got %q", str.Notice)
+	}
+
+	// The plane dies mid-turn: the banner takes the slot.
+	deadPlane(m)
+	m.onChatWake()
+	str = m.TranscriptStream("c1")
+	if !strings.Contains(str.Notice, "disconnected") {
+		t.Errorf("a dead plane did not take the notice slot from the thinking indicator — the operator "+
+			"would be told the model is thinking while no reply can arrive. notice=%q", str.Notice)
+	}
+
+	// And it recovers, rather than sticking like an alarm.
+	healthyPlane(m)
+	m.onChatWake()
+	str = m.TranscriptStream("c1")
+	if !strings.Contains(str.Notice, "thinking") {
+		t.Errorf("the indicator did not return after recovery: notice=%q", str.Notice)
 	}
 }
 
