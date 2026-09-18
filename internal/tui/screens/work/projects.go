@@ -212,7 +212,7 @@ func (m *Model) projectActions() []kit2.Action {
 	}
 	id := it.ID
 	cl := m.cl
-	return []kit2.Action{{
+	acts := []kit2.Action{{
 		Label: "create project dir", Key: "d", Source: srcProjects,
 		Do: func(ctx context.Context) error {
 			// Resolve the project's configured directory and list it, which
@@ -228,6 +228,53 @@ func (m *Model) projectActions() []kit2.Action {
 			return err
 		},
 	}}
+	// ACTIVATE — the only way out of `drafting`, and its absence made a newly created
+	// project a DEAD END in the TUI.
+	//
+	// CreateProject always lands a project in `drafting` (deliberately: it is the gate
+	// that lets a project be configured before it accepts work), and db.RequireProjectActive
+	// refuses work items for anything not `active`. The GUI answers this with an Activate
+	// button on the project page; the TUI had no such action at all, so a project created
+	// here — including by the launch prompt — could never host a single work item and
+	// nothing said why. The operator hit exactly that: "it created the project in draft
+	// mode".
+	//
+	// OFFERED ONLY WHEN IT CAN SUCCEED: ActivateProject's UPDATE carries
+	// `AND status = 'drafting'`, so offering it on an active project would be an action
+	// that reports a failure for doing the right thing twice. The status is read from the
+	// row's Meta — see projectNeedsActivation for that coupling.
+	if projectNeedsActivation(it.Meta) {
+		acts = append(acts, kit2.Action{
+			Label: "activate", Key: "a", Source: srcProjects,
+			Do: func(ctx context.Context) error {
+				_, err := cl.Projects.ActivateProject(ctx, connect.NewRequest(&apiv1.ActivateProjectRequest{Id: id}))
+				return err
+			},
+		})
+	}
+	return acts
+}
+
+// projectNeedsActivation reports whether a projects row is in `drafting` — i.e.
+// whether ActivateProject can succeed on it.
+//
+// IT READS THE ROW'S Meta, and the coupling is stated rather than hidden:
+// fetchProjects (screen.go) builds a project's Meta as "<status> · <project_dir>", so
+// the status is the first token BY CONSTRUCTION. Reading a presentation string for
+// state is not ideal, and the honest alternative is carrying the status as its own
+// field on kit2.Item — not done here because that touches the shared item type for one
+// action. IF A SECOND CALLER EVER NEEDS PROJECT STATE, PROMOTE IT TO A FIELD rather
+// than re-parsing this.
+//
+// THE STATUS IS MATCHED AS A WHOLE TOKEN, not as a prefix. A bare HasPrefix("drafting")
+// also accepts "drafting-notes", and the second half of Meta is an OPERATOR-SUPPLIED
+// DIRECTORY PATH — arbitrary text that must never be read as state. That misreading was
+// in an earlier version of this function, whose comment confidently claimed it "cannot
+// false-positive on a directory"; the test beside it disproved the claim. The status is
+// therefore either the entire string or followed by the separator fetchProjects writes
+// (" · ").
+func projectNeedsActivation(meta string) bool {
+	return meta == "drafting" || strings.HasPrefix(meta, "drafting · ")
 }
 
 // goalsText renders a project's goals JSON as "key=value" pairs (the form's

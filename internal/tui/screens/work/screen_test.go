@@ -56,12 +56,14 @@ type fakePlane struct {
 	unassigned  []string
 	projCreated []*apiv1.CreateProjectRequest
 	projUpdated []*apiv1.UpdateProjectRequest
-	dirProbes   []string
-	imgCreated  []*apiv1.CreateRuntimeImageRequest
-	imgUpdated  []*apiv1.UpdateRuntimeImageRequest
-	imgDeleted  []string
-	builds      []*apiv1.BuildRuntimeImageRequest
-	buildChunks []*apiv1.BuildRuntimeImageResponse
+	// projActivated records the ids ActivateProject was called with, in order.
+	projActivated []string
+	dirProbes     []string
+	imgCreated    []*apiv1.CreateRuntimeImageRequest
+	imgUpdated    []*apiv1.UpdateRuntimeImageRequest
+	imgDeleted    []string
+	builds        []*apiv1.BuildRuntimeImageRequest
+	buildChunks   []*apiv1.BuildRuntimeImageResponse
 }
 
 func newPlane() *fakePlane {
@@ -313,6 +315,30 @@ func (p *fakePlane) ListProjects(_ context.Context, _ *connect.Request[apiv1.Lis
 		out = append(out, p.projects[id])
 	}
 	return connect.NewResponse(&apiv1.ListProjectsResponse{Projects: out}), nil
+}
+
+// ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
+// the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting
+// project fails there. A fake that always succeeded would let a test prove the action
+// is wired while hiding that it is offered in states where it cannot work.
+//
+// SEEDED PROJECTS ARE ACTIVE (seedProject), so a test that wants the drafting path
+// must set the status itself — which is the honest fixture, because the real server
+// creates projects drafting and this fake does not model CreateProject's status.
+func (p *fakePlane) ActivateProject(_ context.Context, req *connect.Request[apiv1.ActivateProjectRequest]) (*connect.Response[apiv1.ActivateProjectResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr, ok := p.projects[req.Msg.GetId()]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
+	}
+	if pr.GetStatus() != apiv1.ProjectStatus_PROJECT_STATUS_DRAFTING {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("project is %q, must be drafting", strings.ToLower(pr.GetStatus().String())))
+	}
+	pr.Status = apiv1.ProjectStatus_PROJECT_STATUS_ACTIVE
+	p.projActivated = append(p.projActivated, pr.GetId())
+	return connect.NewResponse(&apiv1.ActivateProjectResponse{Project: pr}), nil
 }
 
 func (p *fakePlane) UpdateProject(_ context.Context, req *connect.Request[apiv1.UpdateProjectRequest]) (*connect.Response[apiv1.UpdateProjectResponse], error) {
