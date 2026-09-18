@@ -154,6 +154,11 @@ func (m *App) toggleConvFolder(catID string) {
 		m.convSel = max(0, len(rows)-1)
 	}
 	m.railFollowSelection()
+	// PERSIST IT. The operator: "Conversation categories don't stay collapsed when you leave orch and come
+	// back in." The collapse was session state with a comment claiming it was deliberately local like the
+	// GUI's — but the GUI's per-page collapse lives in the BROWSER's localStorage, which survives a
+	// relaunch, so "local" there still means "remembered". Session state here meant a restart lost it.
+	m.persistCollapsedGroups()
 }
 
 // railRowsInFolder lists the conversations inside a folder, in list order — what "mark this folder"

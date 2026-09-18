@@ -26,9 +26,20 @@ import (
 )
 
 // ConversationsRailWidth is the right rail's width (cells). A real bordered
-// pane now (not a divider column), widened 26 -> 32 per the operator's
-// "keep it on the right side and make it a tad wider".
-const ConversationsRailWidth = 32
+// pane now (not a divider column).
+//
+// 26 -> 32 was the operator's earlier "keep it on the right side and make it a tad wider"; 32 -> 38 is
+// the same request again, and the reason it is needed is visible in the pane's own arithmetic: the rail
+// spends 4 cells on the panel border and its gutters, so 32 gave 28 cells of text — and a conversation
+// row puts a "N msgs"/"running" meta column on the right, which left ~20 cells for the TITLE. Titles here
+// are sentences ("Stop outboxing per-token execution.text + add outbox retention"), so nearly every row
+// was drawn as "Stop outboxing per-tok…" and the list was unreadable at a glance.
+//
+// 38 buys 34 cells of text, so a typical title fits without the ellipsis while the meta column stays
+// aligned. It is still a NARROW rail on any real terminal — under a third of a 120-column window, and the
+// center column reflows around it — so this widens the rail without crowding the transcript it sits
+// beside.
+const ConversationsRailWidth = 38
 
 // railDividerText is the rail's one-cell left border column.
 const railDividerText = "│"

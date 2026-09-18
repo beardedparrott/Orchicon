@@ -71,6 +71,20 @@ type Config struct {
 	// re-enter". A display preference is not a credential, so it no longer
 	// depends on one being saved.
 	Theme string
+	// CollapsedGroups is the set of COLLAPSED category folders across the TUI's
+	// grouped lists, keyed "<page>:<category-id>" (e.g. "conversations:cat-1").
+	//
+	// TOP LEVEL, for the same reason Theme is: it is a DISPLAY preference, not a
+	// credential, and it has to survive a session that was launched from
+	// ORCHICON_URL/TOKEN — where the profile is a synthetic "env" that is
+	// deliberately never written. The operator: "Conversation categories don't stay
+	// collapsed when you leave orch and come back in."
+	//
+	// IT STORES WHAT IS *CLOSED*, not what is open. That is the cheaper rule to keep
+	// correct: a grouping created later is absent from the set and therefore
+	// EXPANDED, which is what a new folder should be. Storing the open set would
+	// make every new grouping silently collapsed until the operator opened it.
+	CollapsedGroups []string
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -171,6 +185,14 @@ func render(cfg *Config) string {
 	if cfg.Theme != "" {
 		fmt.Fprintf(&b, "theme = %q\n", cfg.Theme)
 	}
+	// The collapsed folders, SORTED so a rewrite of unchanged state is byte-identical. Without that, the
+	// map's iteration order would churn the file on every toggle and the diff would look like a change
+	// even when nothing did.
+	if len(cfg.CollapsedGroups) > 0 {
+		keys := append([]string(nil), cfg.CollapsedGroups...)
+		sortStrings(keys)
+		fmt.Fprintf(&b, "collapsed_groups = [%s]\n", quoteList(keys))
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -258,6 +280,10 @@ func parse(data string) (*Config, error) {
 			} else {
 				cfg.Theme = unquote(value)
 			}
+		case "collapsed_groups":
+			if cur == nil {
+				cfg.CollapsedGroups = parseList(value)
+			}
 		case "newline":
 			if cur != nil {
 				cur.Newline = unquote(value)
@@ -286,4 +312,47 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// quoteList renders strings as a TOML array element list: "a", "b".
+func quoteList(ss []string) string {
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, strconv.Quote(s))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// parseList reads back a TOML array element list written by quoteList. It is deliberately tolerant:
+// a malformed entry is DROPPED rather than failing the whole config load, because a display preference
+// must never be able to stop the operator connecting.
+func parseList(v string) []string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+			if !inQuote {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		case inQuote:
+			// An escaped quote inside the string (\") stays part of it.
+			if c == '\\' && i+1 < len(v) {
+				i++
+				cur.WriteByte(v[i])
+				continue
+			}
+			cur.WriteByte(c)
+		}
+	}
+	return out
 }
