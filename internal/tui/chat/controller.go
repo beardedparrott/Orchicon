@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -54,7 +55,26 @@ type convState struct {
 	// returns it).
 	optimisticUser string
 	sentText       string
+	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
+	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see
+	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
+	// from a turn that is simply thinking.
+	lastActivity int64
 }
+
+// askStreamStallTimeout is how long a streaming turn may go with NO event at all before the
+// stream is declared dead and re-dialled.
+//
+// THE SERVER SENDS A HEARTBEAT EVERY 15 SECONDS (askHeartbeatInterval), so a live stream is never
+// quiet for anything close to this. Two intervals plus slack means one missed heartbeat does not
+// trip it, while a genuinely dead socket is caught in well under a minute. Without this the TUI
+// waited forever — see runLivenessWatch for the failure that produced it.
+const askStreamStallTimeout = 40 * time.Second
+
+// askLivenessCheckInterval is how often the watchdog looks. Small relative to the timeout so the
+// re-dial happens promptly once the turn is stale, and cheap enough to be irrelevant (it reads one
+// int64 under a mutex).
+const askLivenessCheckInterval = 5 * time.Second
 
 // Controller owns Ask Orchicon conversation state + streaming for the
 // TUI. It is a plain struct with tea.Cmd factories — the shell owns
@@ -658,6 +678,15 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 			return ErrMsg{Where: call, Err: err}
 		}
 		go c.consume(convID, stream)
+		// ARM THE LIVENESS WATCHDOG for this conversation. Stamped here rather than waiting for the
+		// first event, so the clock is running before any chunk could be missed; the stream is
+		// genuinely underway by this point (the response object exists, so the request was accepted).
+		c.mu.Lock()
+		if st := c.state[convID]; st != nil {
+			st.lastActivity = now()
+		}
+		c.mu.Unlock()
+		go c.runLivenessWatch(convID)
 		return nil
 	}
 }
@@ -692,6 +721,15 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 			return nil
 		}
 		go c.consume(convID, stream)
+		// ARM THE LIVENESS WATCHDOG for this conversation. Stamped here rather than waiting for the
+		// first event, so the clock is running before any chunk could be missed; the stream is
+		// genuinely underway by this point (the response object exists, so the request was accepted).
+		c.mu.Lock()
+		if st := c.state[convID]; st != nil {
+			st.lastActivity = now()
+		}
+		c.mu.Unlock()
+		go c.runLivenessWatch(convID)
 		return nil
 	}
 }
@@ -783,6 +821,14 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 	if ev == nil {
 		return
 	}
+	// EVERY EVENT STAMPS THE CLOCK, including the ones that carry no content. This is the input the
+	// liveness watchdog reads, and a heartbeat is exactly as much evidence of a live stream as a
+	// text chunk is — arguably more, since it is the only event a silently-thinking model emits.
+	c.mu.Lock()
+	if st := c.state[convID]; st != nil {
+		st.lastActivity = now()
+	}
+	c.mu.Unlock()
 	switch e := ev.Event.(type) {
 	case *apiv1.ChatStreamResponse_TurnStarted:
 		c.mu.Lock()
@@ -899,5 +945,104 @@ func (c *Controller) dropStream(convID string, err error) {
 		c.cmds <- c.Watch(convID, watch)
 	}
 }
+
+// runLivenessWatch is the CLIENT-SIDE stream watchdog, and its absence was the streaming report.
+//
+// THE OPERATOR'S EVIDENCE, side by side: the GUI showed the reply streaming, a reasoning block, and
+// the banner "Connection interrupted — still working… Output continues below." with "Last activity 1s
+// ago" beneath it. The TUI, in the same turn, showed nothing but "Orchicon is thinking…" — until the
+// conversation was re-entered, which runs a fresh ListMessages and paints the durable reply.
+//
+// WHAT WAS HAPPENING. A connection through the container network can die HALF-OPEN: no FIN reaches
+// the client, so `stream.Receive()` blocks indefinitely. There is no error and no EOF, so consume()
+// never returns, dropStream never runs, and the slot stays `streaming` forever. Nothing retries —
+// the re-dial path exists (dropStream -> Watch) but only a RETURNING stream could reach it. The turn
+// itself completes server-side, so the durable reply is there for the next load, which is exactly
+// why re-entering the pane "fixed" it.
+//
+// THE SIGNAL WAS ALREADY ARRIVING AND SIMPLY UNUSED: the server sends a Heartbeat every 15 seconds,
+// and the TUI RECEIVED them — handleEvent's Heartbeat case only cleared a flag. A heartbeat IS the
+// server saying "this stream is alive", so its absence is the death signal. This watchdog turns that
+// into the re-dial the GUI's own footer performs.
+//
+// It runs as a goroutine rather than a tea.Cmd chain on purpose: it must be checking even while the
+// shell is idle waiting on the stream, which is precisely the state being detected — a timer that
+// had to be re-armed by messages would be re-armed by the very messages that are not arriving.
+//
+// SILENCE IS ONLY A FAULT WHILE STREAMING, and the check stops as soon as the slot is not. That is
+// also why it cannot re-dial a COMPLETED turn: completion clears `streaming` (EndStream, on the poll
+// resolution) before the timeout could fire.
+func (c *Controller) runLivenessWatch(convID string) {
+	ticker := time.NewTicker(askLivenessCheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		stop, stale := c.livenessCheck(convID)
+		if stop {
+			return
+		}
+		if stale {
+			c.dropStream(convID, errStreamStalled)
+			return
+		}
+	}
+}
+
+// livenessCheck reports (stop, stale) for one tick: stop when there is nothing left to watch,
+// stale when the stream has gone quiet past the timeout.
+//
+// SEPARATE FROM THE LOOP so the DECISION is testable without waiting on real timers — 40 seconds
+// per case is not a test, and the decision is the whole behaviour.
+func (c *Controller) livenessCheck(convID string) (stop, stale bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || !st.streaming {
+		return true, false // the turn is over, stopped, or the slot is gone
+	}
+	// lastActivity == 0 means the stream has not delivered its first event yet — that is "not
+	// started", not "silent", so it is not given the watchdog's verdict. A turn torn down during
+	// its own handshake would be the watchdog causing the very failure it exists to fix.
+	if st.lastActivity == 0 {
+		return false, false
+	}
+	return false, now()-st.lastActivity > askStreamStallTimeout.Milliseconds()
+}
+
+// streamIsStale answers the watchdog's question in one call, for tests that want only the verdict.
+func (c *Controller) streamIsStale(convID string) bool {
+	_, stale := c.livenessCheck(convID)
+	return stale
+}
+
+// SilenceSince reports how long the conversation's stream has been quiet — the gap since the most
+// recent event from the server (a text chunk, a reasoning chunk, a tool event or a HEARTBEAT).
+//
+// It returns 0 when there is nothing to report: no slot, not streaming, or no event yet. Zero means
+// "no information", never "silent forever", so a caller cannot mistake an unstarted stream for a
+// stalled one — the same distinction livenessCheck makes.
+//
+// THIS IS THE READ SIDE OF THE WATCHDOG. The watchdog acts on silence; this reports it, so the pane
+// can say that a turn is still alive and how fresh its last event was. Without it the operator has
+// two indistinguishable states — working and wedged — which is the whole difficulty of a streaming
+// failure from the outside.
+func (c *Controller) SilenceSince(convID string) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || !st.streaming || st.lastActivity == 0 {
+		return 0
+	}
+	d := now() - st.lastActivity
+	if d < 0 {
+		return 0 // a clock that stepped backwards is not a silence
+	}
+	return time.Duration(d) * time.Millisecond
+}
+
+// errStreamStalled reports a stream that stopped sending anything. It is not a failure the operator
+// sees as one: dropStream treats an acked turn as RECONNECTING (the server-side collector is still
+// running), so the pane shows the connection banner and re-attaches — the same outcome as a socket
+// that broke loudly.
+var errStreamStalled = errors.New("stream stalled: no event within the liveness timeout")
 
 func now() int64 { return time.Now().UnixMilli() }
