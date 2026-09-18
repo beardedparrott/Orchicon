@@ -34,9 +34,9 @@ service AskOrchiconService {
   rpc UpdateConversationTitle(UpdateConversationTitleRequest) returns (UpdateConversationTitleResponse);
 
   // SetConversationMode switches the active persona for a conversation
-  // (brainstorm <-> orchicon). The change applies from the NEXT message on:
-  // the same opencode session persists and the per-turn system prompt swaps
-  // with no session change or serve restart.
+  // (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+  // applies from the NEXT message on: the same opencode session persists and
+  // the per-turn system prompt swaps with no session change or serve restart.
   rpc SetConversationMode(SetConversationModeRequest) returns (SetConversationModeResponse);
 
   // SetConversationModel retargets a conversation's model_ref. The change

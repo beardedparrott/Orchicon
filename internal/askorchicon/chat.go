@@ -1017,7 +1017,8 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
 // Orchicon agent. It carries the mode's identity block (BuildSystemPrompt),
 // the enabled-projects context, the tools list, and this message's
-// attachments. mode selects the persona (brainstorm only — orchicon removed); it is the
+// attachments. mode selects the persona (see BuildSystemPrompt for the three modes and what each one is
+// for); it is the
 // conversation's persisted mode read at turn-dispatch time.
 //
 // When includeHistory is true the DB conversation history is ALSO injected

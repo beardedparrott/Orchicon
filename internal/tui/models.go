@@ -130,8 +130,14 @@ func (m *App) currentAskModel() string {
 	return m.askDefaultModel
 }
 
-// currentModeLabel is the persona the composer reports (the GUI renders this
-// as its mode dropdown; the TUI's equivalent is the pill on the stat row).
+// currentModeLabel is the mode's display name for the composer's pill and the
+// `/mode` report.
+//
+// It NAMES every mode explicitly rather than lowering the enum, because the enum's
+// spelling is not the label: `ConversationMode.String()` lowercased yields
+// "conversation_mode_quick_work", which is a wire value, not something to show an
+// operator. An unknown value still falls back to its lowered spelling, so a mode
+// added later degrades to something readable rather than to an empty pill.
 func (m *App) currentModeLabel() string {
 	if m.chat == nil {
 		return ""
@@ -147,10 +153,32 @@ func (m *App) currentModeLabel() string {
 	switch mode {
 	case apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
 		return "brainstorm"
+	case apiv1.ConversationMode_CONVERSATION_MODE_ITERATION:
+		return "iteration"
+	case apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK:
+		return "quick work"
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED:
 		return "brainstorm" // the server default
 	default:
 		return strings.ToLower(mode.String())
+	}
+}
+
+// modeSwitchLabel names a mode for the `/mode` confirmation, from the ENUM rather
+// than from the operator's argument.
+//
+// Echoing the argument back would confirm a mode the operator might have misspelled
+// — "mode → quik work" is a false confirmation — and it would echo a raw enum
+// spelling for a wire value. This is the same mapping the pill uses, so the two
+// surfaces cannot disagree about what a mode is called.
+func (m *App) modeSwitchLabel(mode apiv1.ConversationMode) string {
+	switch mode {
+	case apiv1.ConversationMode_CONVERSATION_MODE_ITERATION:
+		return "iteration"
+	case apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK:
+		return "quick work"
+	default:
+		return "brainstorm"
 	}
 }
 

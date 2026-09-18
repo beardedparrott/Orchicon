@@ -630,7 +630,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}), nil
 }
 
-// SetConversationMode switches a conversation's persona (brainstorm <-> orchicon).
+// SetConversationMode switches a conversation's persona (see BuildSystemPrompt for the three modes).
 // The new mode is persisted on the conversation and takes effect
 // on the NEXT message: the turn reads it at dispatch time and applies it as
 // the opencode per-turn system prompt — no session change or serve restart
@@ -962,9 +962,19 @@ func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID strin
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'
-// default). Orchicon mode removed 2026-08-26 — only brainstorm remains.
+// default). Every mode is stored as a plain text value — the column has no
+// CHECK constraint, so adding one needs no migration, which is why the three
+// modes below could land as a pure code change.
+//
+// The Orchicon mode was REMOVED 2026-08-26 (its governed persona was folded
+// into the identity every mode shares). What replaced it is a set of modes
+// that differ in DISPOSITION TOWARD ACTION rather than in knowledge: they
+// share one identity, one project awareness and one tool surface, and differ
+// in what they DO with a request.
 const (
 	modeBrainstorm = "brainstorm"
+	modeIteration  = "iteration"
+	modeQuickWork  = "quick_work"
 )
 
 // conversationModeFromProto validates + normalizes a proto ConversationMode
@@ -976,6 +986,10 @@ func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
 		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
 		return modeBrainstorm, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_ITERATION:
+		return modeIteration, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK:
+		return modeQuickWork, nil
 	default:
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unknown conversation mode value %d", int32(m)))
@@ -989,6 +1003,10 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 	switch mode {
 	case modeBrainstorm:
 		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
+	case modeIteration:
+		return apiv1.ConversationMode_CONVERSATION_MODE_ITERATION
+	case modeQuickWork:
+		return apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK
 	default:
 		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
 	}

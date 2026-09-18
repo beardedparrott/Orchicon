@@ -42,6 +42,22 @@ const (
 	// the user create. General design, coding, and brainstorming are in scope;
 	// the Orchicon MCP tool surface is shared with ORCHICON mode.
 	ConversationMode_CONVERSATION_MODE_BRAINSTORM ConversationMode = 1
+	// ITERATION is the standard agent: it works on the project directly with
+	// the operator, cutting a local branch and iterating. It deliberately NEVER
+	// suggests creating work items and NEVER suggests firing workflows or
+	// schedules — those are the other two modes' jobs. It commits early and
+	// often and runs the project's full available test suite.
+	ConversationMode_CONVERSATION_MODE_ITERATION ConversationMode = 2
+	// QUICK_WORK reaches the same outcome as Iteration by a different route: it
+	// does not do the work itself, it dispatches it. It creates an EPHEMERAL
+	// worker, workflow and work item (none of which appear in the console),
+	// fires them, and monitors the run — so a workflow does the work while the
+	// conversation stays the place the operator talks.
+	//
+	// Ephemeral means: created for one job, hard-deleted when it finishes, and
+	// hidden from every list while it runs. A failed run is reported in the
+	// conversation, which offers to diagnose and re-run.
+	ConversationMode_CONVERSATION_MODE_QUICK_WORK ConversationMode = 3
 )
 
 // Enum value maps for ConversationMode.
@@ -49,10 +65,14 @@ var (
 	ConversationMode_name = map[int32]string{
 		0: "CONVERSATION_MODE_UNSPECIFIED",
 		1: "CONVERSATION_MODE_BRAINSTORM",
+		2: "CONVERSATION_MODE_ITERATION",
+		3: "CONVERSATION_MODE_QUICK_WORK",
 	}
 	ConversationMode_value = map[string]int32{
 		"CONVERSATION_MODE_UNSPECIFIED": 0,
 		"CONVERSATION_MODE_BRAINSTORM":  1,
+		"CONVERSATION_MODE_ITERATION":   2,
+		"CONVERSATION_MODE_QUICK_WORK":  3,
 	}
 )
 
@@ -1357,10 +1377,12 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x0fAttachmentInput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data*W\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data*\x9a\x01\n" +
 	"\x10ConversationMode\x12!\n" +
 	"\x1dCONVERSATION_MODE_UNSPECIFIED\x10\x00\x12 \n" +
-	"\x1cCONVERSATION_MODE_BRAINSTORM\x10\x01B\xca\x01\n" +
+	"\x1cCONVERSATION_MODE_BRAINSTORM\x10\x01\x12\x1f\n" +
+	"\x1bCONVERSATION_MODE_ITERATION\x10\x02\x12 \n" +
+	"\x1cCONVERSATION_MODE_QUICK_WORK\x10\x03B\xca\x01\n" +
 	"\x13com.orchicon.api.v1B\x10AskOrchiconProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (

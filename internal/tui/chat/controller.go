@@ -283,11 +283,33 @@ func (c *Controller) PendingMode() apiv1.ConversationMode {
 	return c.pendingMode
 }
 
+// ModeNames lists the persona spellings the operator can type, in the order the
+// help text shows them. ONE list, so the `/mode` help, the error message and the
+// parser cannot drift apart — the failure mode this codebase keeps producing.
+//
+// The order is the escalation of agency: think it through, do it with me, or
+// dispatch it.
+func ModeNames() []string { return []string{"brainstorm", "iteration", "quick_work"} }
+
 // ParseMode maps a user-typed persona to the proto enum (case-insensitive).
+//
+// "quick work" and "quick_work" both parse: the enum's own name is QUICK_WORK, the
+// label is "Quick Work", and an operator typing it into a chat box will use
+// whichever of those feels natural. Rejecting one of them for a spelling the UI
+// itself uses would be a spelling test, which is exactly what the mode command is
+// meant to avoid.
 func ParseMode(s string) (apiv1.ConversationMode, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	norm := strings.ToLower(strings.TrimSpace(s))
+	// Collapse the separators so "quick work", "quick_work", "quick-work" and
+	// "quickwork" all reach the same mode.
+	norm = strings.NewReplacer(" ", "_", "-", "_").Replace(norm)
+	switch norm {
 	case "brainstorm":
 		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM, true
+	case "iteration":
+		return apiv1.ConversationMode_CONVERSATION_MODE_ITERATION, true
+	case "quick_work", "quickwork":
+		return apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK, true
 	}
 	return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED, false
 }

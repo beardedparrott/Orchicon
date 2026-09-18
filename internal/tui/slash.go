@@ -331,28 +331,37 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
-		Name: "/mode", Usage: "/mode [brainstorm]",
-		Desc:    "set the conversation mode/persona (SetConversationMode); no argument reports the current one",
+		Name: "/mode", Usage: "/mode [" + strings.Join(chat.ModeNames(), "|") + "]",
+		Desc:    "set the conversation mode/persona (SetConversationMode); no argument reports the current one and lists what is available",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
 			if len(args) == 0 {
-				// The composer's stat row carries the mode pill (the TUI's
-				// counterpart to the GUI's dropdown), so a bare /mode REPORTS
-				// rather than acting blind.
-				m.dock.SetNotice("mode: " + m.currentModeLabel() + "  (known: brainstorm — /mode brainstorm to set)")
+				// BARE /mode REPORTS AND LISTS. The composer's stat row carries the
+				// mode pill (the TUI's counterpart to the GUI's dropdown), and the
+				// list is what makes the command self-teaching: an operator who does
+				// not already know the mode names cannot guess them.
+				m.dock.SetNotice("mode: " + m.currentModeLabel() + "  (available: " +
+					strings.Join(chat.ModeNames(), ", ") + " — /mode <name> to switch)")
 				return nil
 			}
-			mode, ok := chat.ParseMode(args[0])
+			// THE MODE NAME MAY CONTAIN A SPACE, so the arguments are JOINED rather
+			// than taken one at a time: the slash layer splits on whitespace, which
+			// would hand "quick work" to the parser as "quick" and reject it — a mode
+			// the UI itself lists as untypeable. Joining is a no-op for a single-word
+			// mode, so /mode brainstorm and /mode quick_work keep working unchanged.
+			mode, ok := chat.ParseMode(strings.Join(args, " "))
 			if !ok {
-				m.dock.SetError("unknown mode " + args[0] + " — known: brainstorm")
+				m.dock.SetError("unknown mode " + args[0] + " — available: " + strings.Join(chat.ModeNames(), ", "))
 				return nil
 			}
 			m.chat.SetPendingMode(mode)
 			if m.chatConvID == "" {
-				m.dock.SetNotice("mode " + strings.ToLower(args[0]) + " applies to the next new conversation")
+				m.dock.SetNotice("mode " + m.currentModeLabel() + " applies to the next new conversation")
 				return nil
 			}
-			m.dock.SetNotice("mode → " + strings.ToLower(args[0]))
+			// The name the operator TYPED, not the raw arg: "quick work" should be
+			// confirmed as a mode, not echoed back as a guess.
+			m.dock.SetNotice("mode → " + m.modeSwitchLabel(mode))
 			return m.chat.SetConversationMode(m.chatConvID, mode)
 		},
 	})

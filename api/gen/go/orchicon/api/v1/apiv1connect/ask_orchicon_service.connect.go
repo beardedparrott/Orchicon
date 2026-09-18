@@ -109,9 +109,9 @@ type AskOrchiconServiceClient interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
 	// SetConversationModel retargets a conversation's model_ref. The change
 	// applies from the NEXT message on; when it changes the ADAPTER segment the
@@ -437,9 +437,9 @@ type AskOrchiconServiceHandler interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
 	// SetConversationModel retargets a conversation's model_ref. The change
 	// applies from the NEXT message on; when it changes the ADAPTER segment the

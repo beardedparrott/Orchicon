@@ -21,6 +21,36 @@ enum ConversationMode {
   // the user create. General design, coding, and brainstorming are in scope;
   // the Orchicon MCP tool surface is shared with ORCHICON mode.
   CONVERSATION_MODE_BRAINSTORM = 1;
+
+  // Everything below shares ONE identity (the agent's name is Orchicon in
+  // every mode), ONE knowledge of the project, and ONE tool surface. What
+  // differs is the DISPOSITION TOWARD ACTION — what the mode does with a
+  // request once it understands it — and each persona is told which mode it
+  // is in, what the others are for, and when to suggest switching.
+  //
+  // That framing is the operator's: "All modes including Brainstorm should be
+  // aware of these modes and which mode they are currently tied to in the
+  // system" and "All modes should be aware of who they are and if they need to
+  // suggest the user to switch to a different mode for what they want to
+  // create."
+
+  // ITERATION is the standard agent: it works on the project directly with
+  // the operator, cutting a local branch and iterating. It deliberately NEVER
+  // suggests creating work items and NEVER suggests firing workflows or
+  // schedules — those are the other two modes' jobs. It commits early and
+  // often and runs the project's full available test suite.
+  CONVERSATION_MODE_ITERATION = 2;
+
+  // QUICK_WORK reaches the same outcome as Iteration by a different route: it
+  // does not do the work itself, it dispatches it. It creates an EPHEMERAL
+  // worker, workflow and work item (none of which appear in the console),
+  // fires them, and monitors the run — so a workflow does the work while the
+  // conversation stays the place the operator talks.
+  //
+  // Ephemeral means: created for one job, hard-deleted when it finishes, and
+  // hidden from every list while it runs. A failed run is reported in the
+  // conversation, which offers to diagnose and re-run.
+  CONVERSATION_MODE_QUICK_WORK = 3;
 }
 
 // Conversation is a top-level chat session with the Ask Orchicon agent.

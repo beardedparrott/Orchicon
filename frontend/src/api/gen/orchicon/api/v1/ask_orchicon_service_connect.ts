@@ -81,9 +81,9 @@ export const AskOrchiconService = {
     },
     /**
      * SetConversationMode switches the active persona for a conversation
-     * (brainstorm <-> orchicon). The change applies from the NEXT message on:
-     * the same opencode session persists and the per-turn system prompt swaps
-     * with no session change or serve restart.
+     * (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+     * applies from the NEXT message on: the same opencode session persists and
+     * the per-turn system prompt swaps with no session change or serve restart.
      *
      * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationMode
      */
