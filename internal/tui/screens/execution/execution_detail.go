@@ -280,7 +280,7 @@ func (m *Model) repaintExecutionDetail() tea.Cmd {
 	if len(fields) == 0 {
 		return nil // the record has not landed; there is nothing to draw yet
 	}
-	m.Base.SetDetailContent("Execution "+id, fields, body)
+	m.Base.SetDetailContentLaidOut("Execution "+id, fields, body)
 	return nil
 }
 

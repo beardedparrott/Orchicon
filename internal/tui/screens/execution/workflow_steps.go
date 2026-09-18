@@ -1049,7 +1049,7 @@ func (m *Model) paintFlow() tea.Cmd {
 	if body == "" {
 		body = theme.HintText.Render("  no steps yet — press " + keyFlowAddStep + " to add the first one")
 	}
-	m.Base.SetDetailContent(title, fields, body)
+	m.Base.SetDetailContentLaidOut(title, fields, body)
 
 	// Follow the cursor: put its step a few lines below the top so the step's own
 	// meta and branch lines are visible with it.

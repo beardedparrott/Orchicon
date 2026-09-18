@@ -359,6 +359,10 @@ var (
 	ErrorText   = lipgloss.NewStyle()
 	HintText    = lipgloss.NewStyle()
 
+	// ComposerCursor paints the composer's caret. It is WRITTEN PRE-REVERSED and must stay that way — see
+	// its assignment in buildStyles, which explains why.
+	ComposerCursor = lipgloss.NewStyle()
+
 	// ReasoningBlock paints a reasoning ("thinking") block's BODY, and ReasoningLabel its header. They
 	// exist because the GUI gives reasoning a look of its own — violet, collapsible, labelled "reasoning ·
 	// thinking…" or "·· 60,909 chars" — and the TUI was rendering the same content as a dim paragraph
@@ -474,6 +478,25 @@ func buildStyles(t Theme) {
 		Padding(1, 2)
 	ErrorText = lipgloss.NewStyle().Foreground(t.Err)
 	HintText = lipgloss.NewStyle().Foreground(t.TextDim)
+
+	// THE COMPOSER'S CARET IS WRITTEN PRE-REVERSED, and that is not a mistake to tidy up.
+	//
+	// bubbles renders the visible cursor as `m.Style.Inline(true).Reverse(true).Render(char)`
+	// (cursor/cursor.go), so the terminal SWAPS whatever this style sets before anything reaches the screen.
+	// The effective BLOCK colour is therefore this style's FOREGROUND, and the effective CHARACTER colour is
+	// its BACKGROUND — the opposite of how it reads.
+	//
+	// It was `Background(AccentCyan).Foreground(Bg)`, which reverses to a BLOCK of Bg: #0c0f18, the near-black
+	// surface token, on every dark palette. So the caret was a black block — the operator's "The cursor in
+	// the composer should be white and not black on ALL dark themes on every page". Measured SGR before the
+	// fix: `\x1b[7;38;2;12;15;24;48;2;7;182;213m` — reverse, then fg=#0c0f18 (which the terminal promotes to
+	// the background).
+	//
+	// Setting foreground=Text and background=Bg gives the block the theme's own TEXT colour and the character
+	// its own SURFACE colour — so on every dark palette the caret is the light colour and on every light one
+	// it is the dark colour, which is what a caret is on both. It also stays legible by construction: the two
+	// tokens are contrast-gated against each other (see TestStructuralContrast).
+	ComposerCursor = lipgloss.NewStyle().Foreground(t.Text).Background(t.Bg)
 	ReasoningLabel = lipgloss.NewStyle().Foreground(t.AccentIndigo).Bold(true)
 	ReasoningBody = lipgloss.NewStyle().Foreground(t.TextDim)
 	SpinnerStyle = lipgloss.NewStyle().Foreground(t.AccentCyan)

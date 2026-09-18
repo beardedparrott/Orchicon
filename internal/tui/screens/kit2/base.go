@@ -597,8 +597,18 @@ func (b *Base) SetDetailScrollTop(offset int) {
 }
 
 // SetDetailContent pushes live content into the open detail pane.
+//
+// The body is treated as MARKDOWN SOURCE (see screenkit.Detail.bodyLaidOut). A caller that has already laid
+// its body out — a transcript, a log, a flow view — must use SetDetailContentLaidOut instead, or the pane's
+// markdown pass will join its lines into paragraphs and flatten it.
 func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 	b.detail.SetContent(title, fields, body)
+}
+
+// SetDetailContentLaidOut is SetDetailContent for a body the caller has ALREADY laid out. The pane returns
+// it verbatim. See screenkit.Detail.bodyLaidOut.
+func (b *Base) SetDetailContentLaidOut(title string, fields []Field, body string) {
+	b.detail.SetContentLaidOut(title, fields, body)
 }
 
 // SetDetailBody replaces the detail pane's FIELDS and BODY while keeping its title — the
@@ -607,6 +617,12 @@ func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 // title, and every caller re-supplying it is a caller that can get it wrong.
 func (b *Base) SetDetailBody(body string, fields []Field) {
 	b.detail.SetContent(b.detail.Title, fields, body)
+}
+
+// SetDetailBodyLaidOut is SetDetailBody for a body the caller has already laid out (the runs step flow
+// moving its marker). See screenkit.Detail.bodyLaidOut.
+func (b *Base) SetDetailBodyLaidOut(body string, fields []Field) {
+	b.detail.SetContentLaidOut(b.detail.Title, fields, body)
 }
 
 // DetailFieldCount reports how many field ROWS the pane will draw, which determines its body height.

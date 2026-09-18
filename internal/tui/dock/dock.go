@@ -116,10 +116,43 @@ type Model struct {
 	// A hook rather than dock logic because the SHELL owns the attachment set and does the I/O — the dock is
 	// a textarea and knows nothing about files. See the k.Paste case for the gesture this serves.
 	pastePathHook func(text string) tea.Cmd
+
+	// selectAll marks the WHOLE composer as selected, so the operator can copy it all or throw it away in
+	// one gesture. bubbles' textarea has NO selection model (v1.0.0: no Select/SelectAll, no selection
+	// state at all), so this is the composer's own: the shell copies the buffer on the way in, and the next
+	// replacing key clears it on the way out. See selectAllKey.
+	selectAll bool
 }
 
 // SetPastePathHook installs the bracketed-paste file-path hook (see pastePathHook).
 func (m *Model) SetPastePathHook(fn func(string) tea.Cmd) { m.pastePathHook = fn }
+
+// InsertText adds text at the cursor — the clipboard-paste path (ctrl+v, when the clipboard holds text
+// rather than an image). It goes through the textarea so the caret and the box's height follow.
+func (m *Model) InsertText(s string) {
+	if s == "" {
+		return
+	}
+	m.ta.InsertString(s)
+	m.resizeTa()
+}
+
+// SelectAll marks the whole composer selected. The SHELL owns the clipboard, so it copies the buffer on the
+// way in; this only puts the composer into the state where the next key replaces what is there.
+func (m *Model) SelectAll() {
+	if m.ta.Value() == "" {
+		return // nothing to select, and an empty "selection" would just swallow the next key
+	}
+	m.selectAll = true
+	m.Notice = fmt.Sprintf("all %d characters selected — type or backspace replaces, esc keeps",
+		len([]rune(m.ta.Value())))
+}
+
+// SelectAllActive reports whether the whole composer is currently selected (tests and the shell).
+func (m *Model) SelectAllActive() bool { return m.selectAll }
+
+// ClearSelectAll drops the selection without touching the text (esc, or any key that is not a replace).
+func (m *Model) ClearSelectAll() { m.selectAll = false }
 
 // New builds the dock.
 func New() Model {
@@ -183,9 +216,15 @@ func (m *Model) styledTa() textarea.Model {
 	ta.FocusedStyle.LineNumber = dim
 	ta.BlurredStyle.LineNumber = dim
 
-	// A standard solid block caret with dark text: unmistakable, and its cell
-	// carries a background so it can never be a hole.
-	ta.Cursor.Style = lipgloss.NewStyle().Background(theme.AccentCyan).Foreground(theme.Bg)
+	// THE CARET. theme.ComposerCursor is written PRE-REVERSED because bubbles reverses it again before
+	// painting (`m.Style.Inline(true).Reverse(true).Render(char)`), so the style's FOREGROUND becomes the
+	// block and its BACKGROUND becomes the character. Read that assignment before changing this line: the
+	// obvious-looking `Background(accent).Foreground(Bg)` is what made the cursor a black block on every dark
+	// theme, which is the operator's report.
+	//
+	// TextStyle is what bubbles uses while the caret is BLINKING — i.e. the frames where it is hidden — so it
+	// is the ordinary line style: the character must not vanish when the blink is off.
+	ta.Cursor.Style = theme.ComposerCursor
 	ta.Cursor.TextStyle = base
 
 	// Re-resolve the active style pointer against what we just assigned.
@@ -493,6 +532,17 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 
 	switch k := msg.(type) {
 	case tea.KeyMsg:
+		// THE ALL-SELECTED STATE GETS FIRST REFUSAL. While the whole composer is selected, the keys that
+		// would normally edit it REPLACE it — which is what "selected" means, and what makes the gesture
+		// useful (the operator asked to "easily copy or delete it all").
+		//
+		// Any OTHER key simply DROPS the selection and then behaves normally, so the state can never trap
+		// the operator: an arrow, a tab or a ctrl chord exits it and does what it always did.
+		if m.selectAll {
+			if handled, cmd := m.selectAllKey(k); handled {
+				return true, cmd
+			}
+		}
 		switch {
 		case k.Paste:
 			// Bracketed paste: bubbletea collapses the byte sequence into
@@ -569,6 +619,39 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 	m.ta = ta
 	m.resizeTa()
 	return true, cmd
+}
+
+// selectAllKey handles a key while the whole composer is selected. handled=false means the key is not a
+// replacing one: the selection is dropped and the caller handles the key normally.
+func (m *Model) selectAllKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
+	switch {
+	case k.String() == "esc":
+		m.ClearSelectAll()
+		m.Notice = "selection cancelled"
+		return true, nil
+	case k.String() == "backspace", k.String() == "delete", k.String() == "ctrl+u":
+		m.ta.Reset()
+		m.ClearSelectAll()
+		m.resizeTa()
+		m.Notice = "composer cleared"
+		return true, nil
+	case k.Paste:
+		// A paste replaces the selection, like typing does.
+		m.ta.Reset()
+		m.ClearSelectAll()
+		return true, m.pasteCmd(k)
+	case len(k.Runes) > 0 && !k.Alt:
+		// A printable key overwrites the selection.
+		m.ta.Reset()
+		m.ClearSelectAll()
+		m.ta.InsertString(string(k.Runes))
+		m.resizeTa()
+		m.Notice = ""
+		return true, nil
+	}
+	// Not a replacing key: drop the selection and let it through.
+	m.ClearSelectAll()
+	return false, nil
 }
 
 // pasteCmd inserts the pasted block verbatim (multi-line pastes render

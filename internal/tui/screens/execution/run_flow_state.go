@@ -281,7 +281,7 @@ func (m *Model) repaintRunFlow() tea.Cmd {
 			}
 		}
 	}
-	m.Base.SetDetailBody(body, fields)
+	m.Base.SetDetailBodyLaidOut(body, fields)
 	if line, ok := offsets[m.runFlow.sel()]; ok {
 		scroll := line - 2
 		if scroll < 0 {

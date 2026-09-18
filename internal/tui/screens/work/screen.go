@@ -995,7 +995,7 @@ func (m *Model) finishBuild() {
 // widget owns scroll preservation; the pane is where the operator sees it).
 func (m *Model) renderBuildDetail(tag string) {
 	title := "Build: " + tag
-	m.Base.SetDetailContent(title, []kit2.Field{
+	m.Base.SetDetailContentLaidOut(title, []kit2.Field{
 		{Key: "status", Value: m.buildStatus},
 		{Key: "scroll", Value: m.build.ScrollLabel()},
 	}, m.build.View())

@@ -11,6 +11,7 @@ package tui
 // outcome lands in the composer strip with the REASON: what was attached, or precisely why it was not.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,11 +50,58 @@ func attachFileFromPrompt(prompt string) tea.Cmd {
 	}
 }
 
-// attachImageFromClipboard reads an image out of the system clipboard.
-func attachImageFromClipboard() tea.Cmd {
+// clipboardTextMsg carries TEXT read off the system clipboard, for insertion into the composer.
+type clipboardTextMsg struct {
+	text string
+}
+
+// attachOrPasteFromClipboard is ctrl+v: an IMAGE on the clipboard ATTACHES, and TEXT is PASTED.
+//
+// The operator: "The new ctrl+v to paste screenshots broke the ability to simply ctrl+v paste normal text. It
+// should detect it and allow both."
+//
+// The attachment work bound ctrl+v to the image reader alone, so a clipboard holding a sentence produced
+// only "the clipboard holds no image" — the chord appeared broken for the case it used to serve, and the
+// operator had no OTHER way to paste text (bracketed paste needs a terminal that sends it, and the textarea's
+// own ctrl+v binding is unreachable because this chord is taken). So the two are detected in ONE gesture:
+// try the image first, because a screenshot is the case with no alternative, then fall back to text.
+//
+// THE SENTINEL IS WHAT MAKES THE FALLBACK SAFE. Only errNoClipboardImage falls through; a real refusal (too
+// large, unsupported format) is REPORTED rather than silently retried as text, which would tell the operator
+// "the clipboard holds no text" about a clipboard that plainly holds a picture they were trying to send.
+func attachOrPasteFromClipboard() tea.Cmd {
+	return clipboardPasteCmd(readClipboardImage, readClipboardText)
+}
+
+// clipboardPasteCmd is the DECISION behind ctrl+v, with the two readers injected.
+//
+// The readers shell out to a clipboard helper, so they cannot be driven from a test; the decision is what
+// matters (an image attaches, text pastes, and a REAL image failure is not retried as text) and it is plain
+// logic over their results. Injecting them is what makes the fallback testable — and the fallback is the half
+// of this feature that was broken, so a test that could not reach it would be worth little.
+func clipboardPasteCmd(
+	readImage func([]attachment) (attachment, error),
+	readText func() (string, error),
+) tea.Cmd {
 	return func() tea.Msg {
-		att, err := readClipboardImage(nil)
-		return attachResultMsg{att: att, err: err}
+		att, err := readImage(nil)
+		if err == nil {
+			return attachResultMsg{att: att}
+		}
+		if !errors.Is(err, errNoClipboardImage) {
+			return attachResultMsg{err: err}
+		}
+		// No image: it is text, or it is nothing.
+		text, terr := readText()
+		if terr != nil {
+			// Both reads failed: report the IMAGE error, because ctrl+v's headline job is the screenshot and
+			// an empty clipboard should not be explained as "no text".
+			return attachResultMsg{err: errNoClipboardImage}
+		}
+		if strings.TrimSpace(text) == "" {
+			return attachResultMsg{err: errNoClipboardImage}
+		}
+		return clipboardTextMsg{text: text}
 	}
 }
 

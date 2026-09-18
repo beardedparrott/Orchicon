@@ -782,7 +782,7 @@ func (m *Model) transcriptPrefixRows() int {
 // precisely when the operator wants to ask why.
 func (m *Model) paintExecution(id string, fields []screenkit.Field, body string) {
 	m.installComposerFooter(id)
-	m.Base.SetDetailContent("Execution "+id, fields, body)
+	m.Base.SetDetailContentLaidOut("Execution "+id, fields, body)
 }
 
 // installComposerFooter puts the message box in the pane's FIXED footer band.

@@ -220,6 +220,29 @@ type Detail struct {
 	// item — and a different item must start at the top.
 	vpTitle string
 	dirty   bool // Body changed since the viewport last loaded it
+	// bodyLaidOut declares that the CALLER has already laid this body out — wrapped it, styled it,
+	// punctuated it with its own newlines — so the pane must return it verbatim rather than treating it as
+	// markdown source.
+	//
+	// WHY THIS MUST BE DECLARED AND CANNOT BE INFERRED. The pane shares one body slot across every
+	// list+detail screen, and the two kinds of body are indistinguishable by CONTENT:
+	//
+	//   - a work item's description is markdown SOURCE (a blockquote quoting the operator's own wording),
+	//     which must be rendered — that is what the markdown commit was for;
+	//   - an execution's transcript is ALREADY RENDERED (collapsible blocks, a todo list, flow views, a
+	//     build log), where every newline is meaningful.
+	//
+	// The heuristic gate (md.LooksLikeMarkdown) cannot separate them, and it fails LOUDLY when it guesses
+	// wrong: markdown JOINS consecutive non-blank lines into one paragraph, so an already-laid-out body comes
+	// out as a single scrunched line. Measured on a real execution body, the todo list:
+	//
+	//   todo (6/6 done) [x] Read run .orchicon files + verify repo/branch state (!) [x] Delete leftover ...
+	//
+	// — the operator's report exactly ("todo is scrunched and has no newlines"), caused by ONE `**success**`
+	// further down in the same body making the WHOLE thing look like markdown. The collapse markers went with
+	// it, which is why "tools and chats are no longer being collapsed": the blocks were still built, and then
+	// flattened by the renderer.
+	bodyLaidOut bool
 	// pendingOffset/pendingOffsetSet pin the viewport to a line offset on the NEXT
 	// render, overriding the usual "keep the reader's scroll" rule. An editor sets
 	// it so the pane follows its cursor; a reader never does.
@@ -246,7 +269,18 @@ type Detail struct {
 // and snapped the transcript back to the top — scrolling a live
 // conversation was effectively dead.
 func (d *Detail) SetContent(title string, fields []Field, body string) {
+	d.setContent(title, fields, body, false)
+}
+
+// SetContentLaidOut is SetContent for a body the CALLER has already laid out (a transcript, a log, a flow
+// view): the pane returns it verbatim instead of re-rendering it as markdown. See bodyLaidOut.
+func (d *Detail) SetContentLaidOut(title string, fields []Field, body string) {
+	d.setContent(title, fields, body, true)
+}
+
+func (d *Detail) setContent(title string, fields []Field, body string, laidOut bool) {
 	d.Title, d.Fields, d.Body = title, fields, body
+	d.bodyLaidOut = laidOut
 	d.Hero = false
 	// The IDENTITY changed too, not just the body: a different item must reload
 	// even when its body happens to be byte-identical (two workflows whose flows
@@ -457,6 +491,11 @@ func (d *Detail) View() string {
 // would CONSUME characters (emphasis and link markers vanish), and a log line is evidence. Bodies
 // that are not markdown are passed through untouched, exactly as delivered.
 func (d *Detail) bodyContent() string {
+	// A BODY THE CALLER ALREADY LAID OUT IS RETURNED VERBATIM. Rendering it would JOIN its lines into
+	// paragraphs and destroy the layout — see bodyLaidOut for the measured case.
+	if d.bodyLaidOut {
+		return d.Body
+	}
 	if d.vp.Width < 1 || !md.LooksLikeMarkdown(d.Body) {
 		return d.Body
 	}

@@ -157,13 +157,42 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
-			Name: "paste an image from the clipboard", Keys: "ctrl+v", Scope: "global",
-			// Same shape, and it is the chord that does NOT go through bracketed paste: a screenshot is
-			// bytes in the SYSTEM clipboard with no path and no text form, so it has to be read out with a
-			// platform helper (see readClipboardImage for why OSC 52 cannot do it).
+			Name: "paste from the clipboard", Keys: "ctrl+v", Scope: "global",
+			// The chord that does NOT go through bracketed paste: a screenshot is bytes in the SYSTEM clipboard
+			// with no path and no text form, so it has to be read out with a platform helper (see
+			// readClipboardImage for why OSC 52 cannot do it). TEXT on the clipboard is pasted into the
+			// composer instead — see attachOrPasteFromClipboard for why one gesture serves both.
 			Match: keyMatcher("ctrl+v"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				m.pendingAttachCmd = attachImageFromClipboard()
+				m.pendingAttachCmd = attachOrPasteFromClipboard()
+				return true
+			},
+		},
+		{
+			Name: "select all in the composer", Keys: "ctrl+a", Scope: "global",
+			// THE WHOLE COMPOSER, IN ONE GESTURE. The operator: "It would be nice to allow a ctrl+a to select
+			// all text in the composer so a user can easily copy or delete it all if possible."
+			//
+			// "if possible" is load-bearing: bubbles' textarea has NO selection model (v1.0.0 has no Select,
+			// SelectAll or selection state), so there is nothing to highlight and no ctrl+c to drive. What the
+			// operator actually wants is the two OUTCOMES — copy it, or delete it — so this copies the buffer
+			// to the clipboard on the way in and puts the composer into a state where the next replacing key
+			// throws it away (dock.SelectAll). The alternative was a chord that looked like a selection and
+			// did nothing.
+			//
+			// It takes over ctrl+a, which the textarea bound to "line start". Home still does that, and the
+			// trade is the standard one every text field makes.
+			Match: keyMatcher("ctrl+a"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				text := m.dock.Value()
+				if text == "" {
+					m.dock.SetNotice("composer is empty — nothing to select")
+					return true
+				}
+				m.dock.SelectAll()
+				if m.clip != nil {
+					m.pendingClipCmd = m.clip.copyCmd(text)
+				}
 				return true
 			},
 		},
@@ -281,6 +310,9 @@ var composerBypassKeys = map[string]bool{
 	//	ctrl+f — attach a FILE BY PATH (the operator pastes the path into the prompt; a file may never
 	//	         have been on the clipboard, and a terminal cannot browse a filesystem)
 	"ctrl+v": true, "ctrl+f": true,
+	// ctrl+a selects the whole composer (see its route). It has to bypass the textarea for the same reason:
+	// the textarea binds ctrl+a to "line start", so without this the route would never see the key.
+	"ctrl+a": true,
 }
 
 // The tab chords are ADDED from the SAME source the tab bar draws from.
@@ -1084,6 +1116,15 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// An attachment acquisition landed. It is an App-level message (the pending set is the shell's), and
 		// it reports its own outcome — success says WHAT was attached, failure says WHY not.
 		m.applyAttachResult(msg)
+		return nil
+	case clipboardTextMsg:
+		// ctrl+v found TEXT on the clipboard rather than an image: paste it into the composer, where the
+		// operator was going to paste it anyway. It says how much, so a chord that inserts an invisible
+		// number of characters — or none, from a whitespace clipboard — is not mistaken for a dead key.
+		m.dock.InsertText(msg.text)
+		m.dock.SetError("")
+		m.dock.SetNotice(fmt.Sprintf("pasted %d characters from the clipboard", len([]rune(msg.text))))
+		m.refreshComposerHint()
 		return nil
 	case chatCmdMsg:
 		return tea.Batch(msg.cmd, m.waitChat())

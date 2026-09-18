@@ -340,6 +340,10 @@ type App struct {
 	// image, ctrl+f reads a file by path). Both do real I/O — a screenshot can be megabytes — so they run as
 	// commands and never on the tea loop, and the route stages the command for drainStaged to re-emit.
 	pendingAttachCmd tea.Cmd
+	// pendingClipCmd carries the OSC 52 WRITE for ctrl+a's copy. The route cannot run it itself (routes
+	// return only a bool), and the clipboard belongs to the shell rather than to the dock — see the
+	// "select all in the composer" route.
+	pendingClipCmd tea.Cmd
 	// pendingAttachClear says the composer's text was a PATH being attached, so a SUCCESSFUL attach should
 	// clear the box — otherwise the path would also be sent as prose, and the turn would carry both the file
 	// and a line naming it.
@@ -648,6 +652,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingAttachCmd != nil {
 		cmds = append(cmds, m.pendingAttachCmd)
 		m.pendingAttachCmd = nil
+	}
+	if m.pendingClipCmd != nil {
+		cmds = append(cmds, m.pendingClipCmd)
+		m.pendingClipCmd = nil
 	}
 	if m.pendingCatCmd != nil {
 		cmds = append(cmds, m.pendingCatCmd)
@@ -2765,8 +2773,11 @@ func (m *App) onChatWake() tea.Cmd {
 		return nil
 	}
 	type detailIDer interface{ DetailID() string }
+	// The transcript body is ALREADY LAID OUT by the shell (padded bands, collapsible structure), so the
+	// pane is asked for the laid-out form: handing it to the markdown path would JOIN its lines into
+	// paragraphs and flatten the transcript — see screenkit.Detail.bodyLaidOut.
 	type setter interface {
-		SetDetailContent(title string, fields []screenkit.Field, body string)
+		SetDetailContentLaidOut(title string, fields []screenkit.Field, body string)
 	}
 	dr, ok1 := s.(detailIDer)
 	st, ok2 := s.(setter)
@@ -2862,7 +2873,7 @@ func (m *App) onChatWake() tea.Cmd {
 		// plainly that 22 lines sit above. Same field shape the Work screen's
 		// build log already uses.
 		fields[len(fields)-1].Value = str.ScrollLabel()
-		st.SetDetailContent(title, fields, str.View())
+		st.SetDetailContentLaidOut(title, fields, str.View())
 	}
 	return nil
 }

@@ -269,6 +269,13 @@ func hasBinary(name string) bool {
 	return err == nil
 }
 
+// errNoClipboardImage is the "the clipboard holds no IMAGE" case, as a sentinel.
+//
+// It is a sentinel rather than a plain message because the caller has to TELL IT APART from a real failure:
+// ctrl+v tries the image first and falls back to TEXT, and that fallback is only correct when there was
+// genuinely no image. A size or format refusal must NOT be reported as "the clipboard holds no text".
+var errNoClipboardImage = errors.New("the clipboard holds no image")
+
 // readClipboardImage pulls an image from the system clipboard, or returns an error whose text is worth
 // showing the operator.
 //
@@ -295,7 +302,7 @@ func readClipboardImage(current []attachment) (attachment, error) {
 		out, err := exec.Command(argv[0], argv[1:]...).Output()
 		_ = out
 		if err != nil {
-			return attachment{}, errors.New("the clipboard holds no image")
+			return attachment{}, errNoClipboardImage
 		}
 		return readFileAttachment(path, current)
 	}
@@ -305,15 +312,15 @@ func readClipboardImage(current []attachment) (attachment, error) {
 	cmd.Stderr = &stderr
 	data, err := cmd.Output()
 	if err != nil {
-		// An empty output with a failure is the ordinary "no image on the clipboard" case, which is worth
-		// saying plainly — the operator may have copied TEXT and expected a file.
+		// An empty output with a failure is the ordinary "no image on the clipboard" case — which the caller
+		// uses as the signal to try TEXT instead (see attachOrPasteFromClipboard).
 		if len(data) == 0 {
-			return attachment{}, errors.New("the clipboard holds no image")
+			return attachment{}, errNoClipboardImage
 		}
 		return attachment{}, fmt.Errorf("reading the clipboard failed: %v", err)
 	}
 	if len(data) == 0 {
-		return attachment{}, errors.New("the clipboard holds no image")
+		return attachment{}, errNoClipboardImage
 	}
 	if err := validateAttachment("pasted image", len(data), current); err != nil {
 		return attachment{}, err
@@ -323,6 +330,49 @@ func readClipboardImage(current []attachment) (attachment, error) {
 		return attachment{}, errors.New("the clipboard image is not a supported format")
 	}
 	return attachment{Name: pastedImageName(mime), MimeType: mime, Data: data}, nil
+}
+
+// clipboardTextCommand returns the argv that reads TEXT off the system clipboard, or nil when this machine
+// has no reader.
+//
+// IT IS THE SAME HELPERS AS THE IMAGE READER with the type argument dropped, because text is the default
+// representation for every one of them — and it is a SEPARATE command rather than a flag because the failure
+// semantics differ: an image read must produce NOTHING when the clipboard holds text (so the caller can fall
+// back), whereas a text read must produce the text.
+func clipboardTextCommand() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		if hasBinary("pbpaste") {
+			return []string{"pbpaste"}
+		}
+	case "linux":
+		if os.Getenv("WAYLAND_DISPLAY") != "" && hasBinary("wl-paste") {
+			// -n trims the trailing newline these tools append, so a pasted sentence does not arrive with a
+			// stray blank line in the composer.
+			return []string{"wl-paste", "-n"}
+		}
+		if hasBinary("xclip") {
+			return []string{"xclip", "-selection", "clipboard", "-o"}
+		}
+		if hasBinary("xsel") {
+			return []string{"xsel", "--clipboard", "--output"}
+		}
+	}
+	return nil
+}
+
+// readClipboardText reads the clipboard's text. No text and no reader are both errors, with their own words:
+// the operator is told which one it was.
+func readClipboardText() (string, error) {
+	argv := clipboardTextCommand()
+	if argv == nil {
+		return "", errors.New("no clipboard reader on this machine — install " + clipboardHelperHint())
+	}
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	if err != nil {
+		return "", errors.New("the clipboard holds no text")
+	}
+	return string(out), nil
 }
 
 // pastedImageName names a clipboard image after its format, so the transcript's [file: …] marker (and the
