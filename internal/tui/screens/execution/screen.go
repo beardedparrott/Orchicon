@@ -325,18 +325,36 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 // The ID is still the fallback, so a row that can resolve nothing identifies itself rather than going
 // blank.
 func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
-	wf := strings.TrimSpace(e.GetWorkflowName())
-	// Bounded: see the note above for why 15.
-	item := screenkit.TruncateRunes(strings.TrimSpace(names.itemTitle(e.GetTaskId())), executionItemTitleMax)
-	switch {
-	case wf != "" && item != "":
-		return wf + " · " + item
-	case wf != "":
-		return wf
-	case item != "":
-		return item
+	// THE ORDER IS THE OPERATOR'S: "Workflow Name - Worker Name - Work Item title (current truncated is
+	// perfect) - Status", with the status in the row's right-hand Meta so it stays unconditionally visible
+	// (see listRow).
+	//
+	// THE WORKER IS BACK ON THE ROW, deliberately. It was REMOVED to de-crowd this list ("too noisy and makes
+	// it hard on the eyes"), and the operator has now asked for it in the title BY NAME and position — between
+	// the workflow and the item. That is a different place from where it was before: it used to be appended to
+	// the STATUS in Meta, where it competed for the one field the operator scans for. In the title it is part
+	// of the row's identity, and the status keeps Meta to itself.
+	//
+	// THE ITEM STAYS BOUNDED at 15 runes, which the operator called "perfect". The worker is NOT bounded: it is
+	// a name the operator picks and reads, and a truncated name is a name you cannot look up. The consequence
+	// is stated rather than engineered away — on a narrow pane the row's own end-truncation takes the item's
+	// tail first, and the status is still safe.
+	parts := make([]string, 0, 3)
+	if wf := strings.TrimSpace(e.GetWorkflowName()); wf != "" {
+		parts = append(parts, wf)
 	}
-	return e.GetId()
+	if w := strings.TrimSpace(e.GetWorkerName()); w != "" {
+		parts = append(parts, w)
+	}
+	if item := screenkit.TruncateRunes(strings.TrimSpace(names.itemTitle(e.GetTaskId())), executionItemTitleMax); item != "" {
+		parts = append(parts, item)
+	}
+	if len(parts) == 0 {
+		// Nothing resolved: the ID is ALWAYS the fallback rather than a blank line, so a row can identify
+		// itself even when its names cannot be resolved.
+		return e.GetId()
+	}
+	return strings.Join(parts, " · ")
 }
 
 // executionItemTitleMax is how much of a work item's title an execution row keeps. See executionListTitle.

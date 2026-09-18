@@ -80,6 +80,51 @@ func TestExecutionListTitleBoundsTheWorkItemTitle(t *testing.T) {
 	}
 }
 
+// THE ROW READS workflow · worker · item, in that order, with the status in Meta.
+//
+// The operator: "I would like the Execution titles to include: Workflow Name - Worker Name - Work Item title
+// (current truncated is perfect) - Status."
+//
+// The WORKER'S PLACE is the point of this test. It used to be appended to the STATUS in Meta
+// ("succeeded · Quick Software Engineer"), which is where it competed for the one field the operator scans for
+// and was removed for crowding; it is now part of the TITLE's identity, between the workflow and the item, and
+// the status keeps Meta to itself.
+func TestExecutionListTitleReadsWorkflowWorkerItem(t *testing.T) {
+	var names runNames
+	names.mu.Lock()
+	names.items = map[string]string{"wi-1": "Fix the parser"}
+	names.mu.Unlock()
+
+	e := &apiv1.WorkerExecution{
+		Id: "exec-1", WorkflowName: "SDLC", WorkerName: "Quick Software Engineer", TaskId: "wi-1",
+	}
+	got := executionListTitle(e, &names)
+	if got != "SDLC · Quick Software Engineer · Fix the parser" {
+		t.Errorf("title = %q, want workflow · worker · item in that order", got)
+	}
+	// AND THE STATUS IS STILL META'S ALONE, which is what keeps it visible however long the title gets.
+	if meta := executionListMeta(e); meta != "succeeded" && meta != "" {
+		// executionListMeta of a zero status is "" — the assertion is that the WORKER is not in it.
+		if strings.Contains(meta, "Quick Software Engineer") {
+			t.Errorf("the worker is still in Meta (%q); it belongs in the title now", meta)
+		}
+	}
+}
+
+// A ROW WITH NO WORKER NAMED READS AS BEFORE — the worker is a field that may legitimately be absent, and its
+// absence must not leave a dangling separator.
+func TestExecutionListTitleSkipsAMissingWorker(t *testing.T) {
+	var names runNames
+	names.mu.Lock()
+	names.items = map[string]string{"wi-1": "Fix the parser"}
+	names.mu.Unlock()
+
+	e := &apiv1.WorkerExecution{Id: "exec-1", WorkflowName: "SDLC", TaskId: "wi-1"}
+	if got := executionListTitle(e, &names); got != "SDLC · Fix the parser" {
+		t.Errorf("title = %q, want the workflow and the item with no separator for the absent worker", got)
+	}
+}
+
 // A row degrades rather than going blank: whatever is known is shown, and the ID is the last resort.
 // (A blank line in a list is worse than an id: the operator cannot even tell which row it is.)
 func TestExecutionListTitleDegradesToWhatIsKnown(t *testing.T) {
