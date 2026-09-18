@@ -583,6 +583,12 @@ table "work_items" {
     null = true
     comment = "The terminal status the item had when archived; RestoreWorkItem returns the item to this status. NULL = never archived."
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient item (Ask Orchicon Quick Work): TRUE hides it from every human work-item view and it is hard-deleted when its job ends. Never a parent, never recurring. See ListWorkItemsFilter.EphemeralScope."
+  }
   column "sort_order" {
     type = double
     null = true

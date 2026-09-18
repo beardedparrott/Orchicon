@@ -180,10 +180,10 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Work Items ---
 		{
 			Name:        "list_work_items",
-			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
+			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest. Ephemeral (Quick Work) items are EXCLUDED by default: they are machine-managed and transient, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect items you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkItems,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}, "include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) items. Default false — they are hidden from every human view."}},
 		},
 		{
 			Name:        "get_work_item",
@@ -226,7 +226,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_work_item",
-			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files.",
+			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files, ephemeral. An EPHEMERAL item is machine-managed and transient (Quick Work mode): it is hidden from every human work-item view and must be HARD-DELETED with hard_delete_work_item when the job ends — cancelling it would leave exactly the invisible record it exists to avoid. Ephemeral items are top-level only (no parent_id).",
 			Mutating:    true,
 			Fn:          toolCreateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -244,6 +244,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save (opt-in, default false). Only applies when workflow_id is set and no scheduled_start_at is given; conflicts with a schedule."},
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
 				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
+				"ephemeral":           {Type: "boolean", Description: "Mark the item machine-managed and transient (Quick Work): hidden from every human view and meant to be hard-deleted when the job ends. Default false. Top-level only — rejected with a parent_id."},
 			},
 			Required: []string{"title", "project_id"},
 		},

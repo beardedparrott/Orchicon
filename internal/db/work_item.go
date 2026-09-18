@@ -91,6 +91,15 @@ type WorkItemRow struct {
 	// archived. RestoreWorkItem returns the item to this status (not
 	// pending). NULL = never archived.
 	ArchivedFromStatus *string
+	// Ephemeral marks a machine-managed transient item (Ask Orchicon
+	// Quick Work): created to carry one job, hidden from every human
+	// work-item view, and HARD-DELETED when the job ends. It is the second
+	// visibility axis and is deliberately NOT a peer of archived_at —
+	// archived_at partitions a HUMAN view into active/archived, while
+	// ephemeral removes the item from human view entirely, including the
+	// archive view. See ListWorkItemsFilter.EphemeralScope for the gate and
+	// ephemeralPredicate for why the default is exclude-everywhere.
+	Ephemeral bool
 	// SpawnedByWorkItemID is the recurring item id that produced this
 	// work item (empty = not an automation spawn). Server-stamped from
 	// the recurring fire's run_context; never client-supplied (feature 4.1).
@@ -150,8 +159,9 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids,
+		 ephemeral)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -162,6 +172,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
 		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
+		w.Ephemeral,
 	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
@@ -179,7 +190,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	priority, budgets, context_window, sort_order, results, prompt_context,
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
 	recurring_schedule, next_run_at, recurring_enabled,
-	archived_at, archived_from_status,
+	archived_at, archived_from_status, ephemeral,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
 	spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 	version, created_at, updated_at`
@@ -196,7 +207,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
-		&w.ArchivedAt, &w.ArchivedFromStatus,
+		&w.ArchivedAt, &w.ArchivedFromStatus, &w.Ephemeral,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
 		&w.SpawnedByWorkItemID, &w.SpawnedByRunID, &w.SecretIDs,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
@@ -280,6 +291,44 @@ type ListWorkItemsFilter struct {
 	// "exclude" = only non-recurring (recurring_schedule IS NULL),
 	// "only" = only recurring (recurring_schedule IS NOT NULL).
 	RecurringFilter string
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick
+	// Work): ""/"exclude" (the default) = ONLY non-ephemeral items —
+	// every human-facing view (board/tree/list/sequence/workflows/
+	// dependency graph/counts) rides on this query and must not show
+	// machine-managed transients; "only" = only ephemeral items;
+	// "include" = both, for the Quick Work agent managing the items it
+	// created.
+	//
+	// The zero value is the SAFE value on purpose — see ephemeralPredicate.
+	EphemeralScope string
+}
+
+// ephemeralPredicate returns the SQL predicate for an ephemeral scope.
+//
+//	""/"exclude" (default) → only non-ephemeral items — every human view.
+//	"only"                 → only ephemeral items.
+//	"include"              → both.
+//
+// This is a pure function, and the default is a SAFETY property rather than a
+// preference: any existing or future caller of ListWorkItems that has not
+// thought about ephemeral items MUST land on "exclude". A new human-facing
+// surface that forgets the gate is then a no-op instead of a leak of
+// machine-managed rows. Do not make "include" the default to "help" a
+// caller — have that caller ask for it.
+//
+// Note what the default protects and what it must NOT break: the dispatch
+// path does not come through this query at all (ListReadyTasks /
+// ListBlockedTasks in execution.go are separate statements), so an ephemeral
+// item still becomes ready, still dispatches and still runs.
+func ephemeralPredicate(scope string) string {
+	switch scope {
+	case "only":
+		return ` AND ephemeral`
+	case "include":
+		return ``
+	default:
+		return ` AND NOT ephemeral`
+	}
 }
 
 // ListWorkItems returns a page of work items for a project, ordered by
@@ -300,6 +349,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	} else {
 		q += ` AND archived_at IS NULL`
 	}
+	q += ephemeralPredicate(f.EphemeralScope)
 	switch f.RecurringFilter {
 	case "only":
 		q += ` AND recurring_schedule IS NOT NULL`
@@ -498,18 +548,26 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 // created_at — the ReorderWorkItems read (architecture-notes/
 // sequential-multi-workflow-runs.md §1).
 func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID, parentID string) ([]WorkItemRow, error) {
+	// Ephemeral items are excluded from BOTH branches, and the top-level
+	// branch is why: ReorderWorkItems requires child_ids to be an exact
+	// permutation of this result, so an invisible ephemeral sibling would
+	// make every top-level reorder fail with "not a permutation" and there
+	// would be nothing on screen to explain why. The filter that hides them
+	// from the board and the filter that builds the permutation must agree.
 	var q string
 	var args []any
 	if parentID == "" {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL AND archived_at IS NULL
+		  AND NOT ephemeral
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID}
 	} else {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3 AND archived_at IS NULL
+		  AND NOT ephemeral
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID, parentID}
 	}

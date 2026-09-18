@@ -29,6 +29,34 @@ var toolLogger *slog.Logger
 
 var numberRefRe = regexp.MustCompile(`(?i)(?:number|item|#)\s*(\d+)`)
 
+// validateEphemeralPlacement rejects the one ephemeral shape the "hidden from
+// every human view" guarantee cannot honour: a CHILD.
+//
+// The hierarchy has no foreign key on parent_id — it is enforced in the
+// service layer — so an ephemeral child would be RENDERED inside its real
+// parent's tree (ListDirectChildren does not filter ephemeral: the sequence
+// engine needs every child) while being absent from every list that does
+// filter it. It would then be hard-deleted out of a tree still displaying it.
+//
+// Pure (no pool, no transaction), so both directions are testable and the
+// check runs before the transaction is opened rather than inside it.
+func validateEphemeralPlacement(ephemeral bool, parentID string) error {
+	if ephemeral && strings.TrimSpace(parentID) != "" {
+		return fmt.Errorf("an ephemeral work item cannot have a parent: ephemeral items are hidden from every view, so a child would be invisible in the list but visible inside its parent's tree, and hard-deleting it would rip a row out of a live tree. Create it top-level")
+	}
+	return nil
+}
+
+// ephemeralScopeFor maps the include_ephemeral flag to the ListWorkItems
+// ephemeral scope. Shared so the opt-in spelling cannot drift between tools
+// that list work items.
+func ephemeralScopeFor(include bool) string {
+	if include {
+		return "include"
+	}
+	return "exclude"
+}
+
 func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -36,6 +64,11 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Kind      string `json:"kind"`
 		Search    string `json:"search"`
 		PageToken string `json:"page_token"`
+		// IncludeEphemeral opts the caller into machine-managed transient
+		// items (Quick Work). The default is FALSE: a list is a human-facing
+		// read even when an agent issues it — its rows land in the
+		// transcript the operator is reading.
+		IncludeEphemeral bool `json:"include_ephemeral"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -53,6 +86,8 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Kind:      params.Kind,
 		Search:    params.Search,
 		AfterID:   params.PageToken,
+		// Ephemeral transients stay hidden unless asked for by name.
+		EphemeralScope: ephemeralScopeFor(params.IncludeEphemeral),
 		// Fetch one extra row so truncation is detected without ever loading
 		// the whole backlog's fat columns (description, acceptance criteria,
 		// budgets, context files…) — the "list is HUGE" bloat.
@@ -136,6 +171,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// create issued from inside a recurring fire's run carries it so the
 		// created item is stamped with automation provenance.
 		RunContext string `json:"run_context"`
+		// Ephemeral marks this item as machine-managed and transient (Ask
+		// Orchicon Quick Work): hidden from every human work-item view, and
+		// meant to be HARD-DELETED via hard_delete_work_item when the job
+		// ends. Top-level only — see the guard below.
+		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -180,6 +220,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, err
 		}
 		kind = normalized
+	}
+	// Ephemeral (Quick Work) items are TOP-LEVEL ONLY. Checked here, before
+	// the transaction, because it is pure input validation.
+	if err := validateEphemeralPlacement(params.Ephemeral, params.ParentID); err != nil {
+		return nil, err
 	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
@@ -249,6 +294,7 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow:  autoStart,
 		RuntimeImage:       runtimeImage,
 		ContextFiles:       contextFiles,
+		Ephemeral:          params.Ephemeral,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
