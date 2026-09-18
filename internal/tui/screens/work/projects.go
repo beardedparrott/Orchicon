@@ -48,6 +48,65 @@ type projectFormMsg struct {
 	project *apiv1.Project
 	dirInfo string
 	err     error
+	// mcpServers are the tenant's available MCP entries, and mcpSelected is this
+	// project's current selection. Both are carried HERE rather than read from a cache
+	// when the form is built, because the MCP select must show the project's CURRENT
+	// choice — a multi-select that opened empty would silently clear the selection on
+	// save (kit2.Form seeds Multi from Initial for exactly this reason).
+	mcpServers  []*apiv1.MCPServer
+	mcpSelected []string
+	// mcpLoaded records whether the MCP data arrived, which is what decides whether the
+	// submit path may WRITE the selection. It must not write on a failed load: an empty
+	// field would then clear a selection nobody touched.
+	mcpLoaded bool
+}
+
+// prepProjectForm fetches what the form needs and opens it.
+//
+// IT LOADS THE MCP DATA TOO, because a project's MCP selection is NOT carried on the
+// Project message: the form cannot be prefilled from GetProject alone, so the selection
+// needs its own round trip (GetProjectMCPServers). Doing it in one command keeps a
+// single async step rather than a second state machine for one field.
+//
+// id is empty for a CREATE, which needs the server list but has no existing selection.
+//
+// A FAILED MCP LOAD DOES NOT BLOCK THE FORM. The MCP selection is one field among eight;
+// failing the whole edit because the MCP service is unhappy would make the project's
+// name, directory and goals uneditable for no reason. On failure the field is absent and
+// nothing is written for it.
+func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
+	m.formLoading = true
+	cl := m.cl
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		msg := projectFormMsg{mode: mode}
+		if id != "" {
+			resp, err := cl.Projects.GetProject(ctx, connect.NewRequest(&apiv1.GetProjectRequest{Id: id}))
+			if err != nil {
+				return projectFormMsg{mode: mode, err: err}
+			}
+			msg.project = resp.Msg.GetProject()
+		}
+		if cl.MCP != nil {
+			list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
+			if err == nil {
+				msg.mcpServers = list.Msg.GetServers()
+				msg.mcpLoaded = true
+				if id != "" {
+					if sel, serr := cl.MCP.GetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersGetRequest{ProjectId: id})); serr == nil {
+						msg.mcpSelected = sel.Msg.GetMcpServerIds()
+					} else {
+						// The list loaded but THIS project's selection did not, so we do not
+						// know what it is. Treating that as "nothing selected" would let a save
+						// clear a selection the operator never saw.
+						msg.mcpLoaded = false
+					}
+				}
+			}
+		}
+		return msg
+	}
 }
 
 // prepEditProject fetches the selected project so the edit form is
@@ -57,18 +116,7 @@ func (m *Model) prepEditProject(mode string) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	m.formLoading = true
-	id := it.ID
-	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		resp, err := cl.Projects.GetProject(ctx, connect.NewRequest(&apiv1.GetProjectRequest{Id: id}))
-		if err != nil {
-			return projectFormMsg{mode: mode, err: err}
-		}
-		return projectFormMsg{mode: mode, project: resp.Msg.GetProject()}
-	}
+	return m.prepProjectForm(mode, it.ID)
 }
 
 // ProjectFormFields is the project form's field list — ONE definition, shared by
@@ -115,9 +163,77 @@ func ProjectFormFields(p *apiv1.Project) []kit2.FieldSpec {
 	}
 }
 
+// ProjectMCPField is the MCP server selection as a form field, or nil when there is
+// nothing to choose from.
+//
+// A SEPARATE ADAPTER rather than a member of ProjectFormFields, because its options are
+// ASYNC — the field list is built synchronously by three hosts, while this needs the
+// tenant's server list to have been fetched first. Same shape as project_dir, which is
+// appended by the hosts that can supply it.
+//
+// NIL WHEN THERE ARE NO SERVERS: an empty multi-select would be a control that cannot do
+// anything, and the project's MCP behaviour in that state (fall through to the tenant
+// default) is not something the operator can change from here anyway.
+//
+// Initial is the COMMA-JOINED selection, which is how kit2.Form seeds a multi-select
+// (and why it can never open empty for a project that has servers selected).
+func ProjectMCPField(servers []*apiv1.MCPServer, selected []string) *kit2.FieldSpec {
+	if len(servers) == 0 {
+		return nil
+	}
+	opts := make([]kit2.Option, 0, len(servers))
+	for _, s := range servers {
+		label := s.GetName()
+		if !s.GetEnabled() {
+			// Disabled servers are still selectable — a project may reference one that is
+			// currently off — but the row says so, so the operator is not surprised when
+			// nothing happens at run time.
+			label += " (disabled)"
+		}
+		opts = append(opts, kit2.Option{Value: s.GetId(), Label: label})
+	}
+	return &kit2.FieldSpec{
+		Name: "mcp_servers", Label: "MCP servers (space toggles)", Kind: kit2.KMultiSelect,
+		Options: opts, Initial: strings.Join(selected, ","),
+	}
+}
+
+// withMCP appends the MCP field when it exists.
+func withMCP(specs []kit2.FieldSpec, servers []*apiv1.MCPServer, selected []string) []kit2.FieldSpec {
+	if f := ProjectMCPField(servers, selected); f != nil {
+		specs = append(specs, *f)
+	}
+	return specs
+}
+
+// setProjectMCPServers writes a project's MCP selection. It is a no-op when mcpLoaded is
+// false, which is the important case: the field was not shown, so an empty list here
+// means "we do not know", not "clear it". Writing on a failed load would wipe a
+// selection the operator never saw.
+//
+// AN EMPTY LIST IS OTHERWISE SENT DELIBERATELY, and the server reads it as "no project
+// selection" — the project then falls through to the tenant default. That is what makes
+// the selection removable from the TUI; sending only non-empty lists would leave a
+// selection that could never be undone.
+func (m *Model) setProjectMCPServers(ctx context.Context, projectID string, ids []string, loaded bool) error {
+	if !loaded || m.cl == nil || m.cl.MCP == nil || projectID == "" {
+		return nil
+	}
+	_, err := m.cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
+		ProjectId:    projectID,
+		McpServerIds: ids,
+	}))
+	return err
+}
+
 // newProjectCreateForm builds the create form from the shared field list.
 func (m *Model) newProjectCreateForm() *kit2.Form {
-	f := kit2.NewForm("New project", ProjectFormFields(nil)...)
+	return m.newProjectCreateFormWith(nil, nil)
+}
+
+// newProjectCreateFormWith adds the MCP selection when it was loaded.
+func (m *Model) newProjectCreateFormWith(servers []*apiv1.MCPServer, selected []string) *kit2.Form {
+	f := kit2.NewForm("New project", withMCP(ProjectFormFields(nil), servers, selected)...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
 }
@@ -125,10 +241,16 @@ func (m *Model) newProjectCreateForm() *kit2.Form {
 // newProjectEditForm builds the edit form: the shared fields PREFILLED, plus the
 // directory (which CreateProject cannot carry and this path therefore owns).
 func (m *Model) newProjectEditForm(p *apiv1.Project) *kit2.Form {
+	return m.newProjectEditFormWith(p, nil, nil)
+}
+
+// newProjectEditFormWith adds the MCP selection when it was loaded.
+func (m *Model) newProjectEditFormWith(p *apiv1.Project, servers []*apiv1.MCPServer, selected []string) *kit2.Form {
 	specs := append(ProjectFormFields(p), kit2.FieldSpec{
 		Name: "project_dir", Label: "Project dir", Kind: kit2.KText,
 		Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon",
 	})
+	specs = withMCP(specs, servers, selected)
 	f := kit2.NewForm("Edit project", specs...)
 	m.wireProjectForm(f, formEditProject, p.GetId())
 	return f
@@ -347,11 +469,16 @@ func applyProjectPostCreate(ctx context.Context, cl projectUpdater, id string, m
 func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 70
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
 		name := strings.TrimSpace(v["name"])
 		goals := ParseGoals(v["goals"])
 		contextFiles := ParseContextFiles(v["context_files"])
 		maxRuns := parseMaxConcurrentRuns(v["max_concurrent_runs"])
+		// A MULTI-SELECT THAT WAS NOT SHOWN has no entry in `multi`, so mcpChosen is nil
+		// and mcpLoaded is false — and mcpLoaded is what decides whether the selection is
+		// written at all. An absent field must never clear a project's servers.
+		mcpChosen, present := multi["mcp_servers"]
+		mcpLoaded := present && m.formMCPLoaded
 		switch mode {
 		case formCreateProject:
 			req := &apiv1.CreateProjectRequest{
@@ -375,7 +502,10 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 					// accepts no max_concurrent_runs and no context_files, so a create form
 					// offering them has to apply them afterwards. Same two-call shape the GUI
 					// uses for maxConcurrentRuns.
-					return applyProjectPostCreate(ctx, cl.Projects, created.Msg.GetProject().GetId(), maxRuns, contextFiles)
+					if err := applyProjectPostCreate(ctx, cl.Projects, created.Msg.GetProject().GetId(), maxRuns, contextFiles); err != nil {
+						return err
+					}
+					return m.setProjectMCPServers(ctx, created.Msg.GetProject().GetId(), mcpChosen, mcpLoaded)
 				},
 			}), nil
 
@@ -400,8 +530,10 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 				Name: "save project " + name, Source: srcProjects,
 				Rollback: func() { m.Refresh(srcProjects) },
 				Do: func(ctx context.Context) error {
-					_, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req))
-					return err
+					if _, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req)); err != nil {
+						return err
+					}
+					return m.setProjectMCPServers(ctx, id, mcpChosen, mcpLoaded)
 				},
 			}), nil
 
@@ -500,7 +632,76 @@ func (m *Model) projectActions() []kit2.Action {
 			},
 		})
 	}
+	// DELETE — the operator's report: "There is no ctrl+x delete for single or bulk on
+	// projects." The RPC existed and the TUI never offered it.
+	//
+	// DeleteProject permanently removes the row, so this is Danger and CONFIRMED, and the
+	// confirmation says so. Its cascade is the SERVER'S business (db.DeleteProject) and is
+	// not re-described here: a dialog that enumerates a cascade can drift from the
+	// implementation, which turns a confirm into a lie.
+	//
+	// The row is removed locally only after the write lands (no optimistic Apply), the same
+	// discipline the bulk actions use — there is no rollback that can restore server state,
+	// and a row that vanishes before the server agreed implies an undo that does not exist.
+	acts = append(acts, kit2.Action{
+		Label: "delete", Key: "x", Danger: true, Source: srcProjects,
+		Confirm: "Delete " + it.Title + "?\n\nThis permanently removes the project. It cannot be undone.",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Projects.DeleteProject(ctx, connect.NewRequest(&apiv1.DeleteProjectRequest{Id: id}))
+			return err
+		},
+	})
 	return acts
+}
+
+// bulkProjectActions are the operations that make sense on a whole projects selection.
+//
+// IT EXISTS BECAUSE THE BULK PATH WAS SOURCE-BLIND: actionsForSelection handed a projects
+// selection to bulkItemActions, which calls ArchiveWorkItem / DeleteWorkItem — with
+// PROJECT ids. The ids do not collide (both are ULIDs), so nothing was destroyed; every
+// call simply failed with not-found and the operator got "deleted 0 of 2 — 2 failed" for
+// an operation aimed at the wrong resource entirely.
+//
+// The shape follows bulkItemActions: one action, one confirm, the confirm NAMES THE
+// COUNT, the removals are sequential, and the count of failures is reported — a partial
+// bulk operation must say what it did rather than claim a clean sweep.
+func (m *Model) bulkProjectActions(ids []string) []kit2.Action {
+	n := len(ids)
+	count := fmt.Sprintf("%d", n)
+	label := func(verb string) string { return verb + " " + count + " selected" }
+	if m.cl == nil || m.cl.Projects == nil {
+		return []kit2.Action{{
+			Label: "no project client", Source: srcProjects,
+			Do: func(context.Context) error { return fmt.Errorf("no project client") },
+		}}
+	}
+	cl := m.cl.Projects
+	return []kit2.Action{
+		{
+			Label: label("delete"), Key: "x", Danger: true, Source: srcProjects,
+			Confirm: "Delete " + count + " projects?\n\nThis permanently removes each one. It cannot be undone.",
+			Do: func(ctx context.Context) error {
+				failed := 0
+				for _, id := range ids {
+					if _, err := cl.DeleteProject(ctx, connect.NewRequest(&apiv1.DeleteProjectRequest{Id: id})); err != nil {
+						failed++
+					}
+				}
+				if failed > 0 {
+					return fmt.Errorf("deleted %d of %d — %d failed", n-failed, n, failed)
+				}
+				return nil
+			},
+		},
+		{
+			Label: "clear selection", Key: "esc", Source: srcProjects,
+			Do: func(context.Context) error { return nil },
+			Apply: func() {
+				m.Base.ClearMarks()
+				m.notice = "selection cleared"
+			},
+		},
+	}
 }
 
 // projectNeedsActivation reports whether a projects row is in `drafting` — i.e.

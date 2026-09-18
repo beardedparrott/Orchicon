@@ -101,6 +101,12 @@ type Model struct {
 	// BEHIND the modal and scrolled it.
 	formLoading bool
 
+	// formMCPLoaded records whether the OPEN project form's MCP data arrived. It is
+	// consulted at submit time to decide whether the MCP selection may be WRITTEN: the
+	// field is absent when the load failed, and an absent field must not be read as "the
+	// operator cleared it". See projects.go setProjectMCPServers.
+	formMCPLoaded bool
+
 	// pending is the action the open confirmation dialog will run.
 	pending *kit2.Action
 	bar     *kit2.ActionBar
@@ -569,7 +575,16 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	// needed the same rule — two copies of a threshold is how "consistent bulk operations" stops
 	// being consistent.)
 	if ids := m.Base.BulkIDs(); len(ids) > 0 {
-		return m.bulkItemActions(ids)
+		// ROUTED BY SOURCE, which it was not: every source went to bulkItemActions, so a
+		// projects selection was offered "delete" that called the WORK ITEM RPC with
+		// project ids — failing on every call for a reason the operator could not see. A
+		// row is a row to the table, but a project is not a work item.
+		switch m.ActiveSourceName() {
+		case srcProjects:
+			return m.bulkProjectActions(ids)
+		default:
+			return m.bulkItemActions(ids)
+		}
 	}
 	switch m.ActiveSourceName() {
 	case srcProjects:
@@ -838,12 +853,13 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
+		m.formMCPLoaded = msg.mcpLoaded
 		switch msg.mode {
 		case formCreateProject:
 			// Same as create-item: the pane, not a modal.
-			m.Base.BeginDetailEdit("New project", m.newProjectCreateForm())
+			m.Base.BeginDetailEdit("New project", m.newProjectCreateFormWith(msg.mcpServers, msg.mcpSelected))
 		case formEditProject:
-			m.Base.BeginDetailEdit("Edit project", m.newProjectEditForm(msg.project))
+			m.Base.BeginDetailEdit("Edit project", m.newProjectEditFormWith(msg.project, msg.mcpServers, msg.mcpSelected))
 		case formProjectDir:
 			m.Base.BeginDetailEdit("Project directory", m.newProjectDirForm(msg.project))
 		}
@@ -1009,7 +1025,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case "n":
 		switch src {
 		case srcProjects:
-			return m.openForm(m.newProjectCreateForm(), formCreateProject, ""), true
+			// THROUGH THE PREP, not straight to the form: the create form now offers the
+			// MCP selection, whose options are a round trip. Building it synchronously
+			// would open a form that silently lacked the field.
+			return m.prepProjectForm(formCreateProject, ""), true
 		case srcImages:
 			return m.openForm(m.newImageCreateForm(), formCreateImage, ""), true
 		default:

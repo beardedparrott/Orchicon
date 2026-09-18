@@ -68,6 +68,9 @@ type launchPrompt struct {
 	// project root, or may simply not care yet. It only changes what the question
 	// SAYS.
 	Visible bool
+	// MCPServers is the tenant's MCP entry list, carried so the create form can offer
+	// the selection. Empty means the list did not load, and the field is then absent.
+	MCPServers []*apiv1.MCPServer
 }
 
 // launchPromptMsg is the launch check's result.
@@ -88,6 +91,9 @@ type launchPromptMsg struct {
 	// check, so nothing else would ever say so. The prompt is the one place the
 	// operator is deciding, which makes it the right place to be told.
 	visible bool
+	// mcpServers are the tenant's MCP entries, loaded so the launch form can offer the
+	// same selection the Work screen's create does.
+	mcpServers []*apiv1.MCPServer
 }
 
 // launchCreatedMsg reports a successful create-and-attach.
@@ -131,7 +137,17 @@ func (m *App) checkLaunchProject() tea.Cmd {
 		})); err != nil {
 			visible = false
 		}
-		return launchPromptMsg{dir: dir, need: true, visible: visible}
+		// The MCP selection rides along on this same round trip rather than a second one:
+		// the launch form offers the same fields as the Work screen's create, and its
+		// options need the server list. A failure here just means no MCP field — it must
+		// not block a prompt whose purpose is to let the operator work.
+		var servers []*apiv1.MCPServer
+		if cl.MCP != nil {
+			if list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{})); err == nil {
+				servers = list.Msg.GetServers()
+			}
+		}
+		return launchPromptMsg{dir: dir, need: true, visible: visible, mcpServers: servers}
 	}
 }
 
@@ -192,8 +208,8 @@ func launchProjectSlug(name string) string {
 }
 
 // beginLaunchPrompt raises the prompt: the blank screen carrying the question.
-func (m *App) beginLaunchPrompt(dir string, visible bool) {
-	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible}
+func (m *App) beginLaunchPrompt(dir string, visible bool, mcpServers []*apiv1.MCPServer) {
+	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, MCPServers: mcpServers}
 }
 
 // dismissLaunchPrompt closes the prompt and continues into the app normally — the
@@ -298,6 +314,12 @@ func (m *App) openLaunchForm() {
 		Initial:     m.launch.Dir,
 		Placeholder: "/home/me/projects/orchicon",
 	})
+	// The MCP selection is appended the same way, and is absent when the server list did
+	// not load — the launch form offers what the Work screen offers, but never a control
+	// it cannot populate.
+	if spec := work.ProjectMCPField(m.launch.MCPServers, nil); spec != nil {
+		specs = append(specs, *spec)
+	}
 	f := kit2.NewForm("New project for this directory", specs...)
 	f.Set("name", name)
 	f.Set("slug", launchProjectSlug(name))
@@ -337,13 +359,16 @@ func (m *App) openLaunchForm() {
 // the directory have already succeeded, so a bare failure would send the operator
 // hunting for a project that is really there — and the activate action is available on
 // the project row if they want to retry.
-func (m *App) launchSubmit(values map[string]string, _ map[string][]string) (tea.Cmd, error) {
+func (m *App) launchSubmit(values map[string]string, multi map[string][]string) (tea.Cmd, error) {
 	cl := m.clients
 	name := strings.TrimSpace(values["name"])
 	slug := strings.TrimSpace(values["slug"])
 	image := strings.TrimSpace(values["default_runtime_image"])
 	dir := strings.TrimSpace(values["project_dir"])
 	goals := work.ParseGoals(values["goals"])
+	// Only written when the operator actually had the field to choose from.
+	mcpChosen := multi["mcp_servers"]
+	mcpLoaded := m.launch != nil && len(m.launch.MCPServers) > 0
 	return func() tea.Msg {
 		if cl == nil || cl.Projects == nil {
 			return launchFailedMsg{err: errors.New("not connected to a plane")}
@@ -373,6 +398,15 @@ func (m *App) launchSubmit(values map[string]string, _ map[string][]string) (tea
 			return launchFailedMsg{err: fmt.Errorf(
 				"the project %q was created with its directory, but could not be activated: %w — activate it from "+
 					"the Work screen (select it, press a)", name, err)}
+		}
+		if mcpLoaded && cl.MCP != nil && len(mcpChosen) > 0 {
+			if _, err := cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
+				ProjectId:    id,
+				McpServerIds: mcpChosen,
+			})); err != nil {
+				return launchFailedMsg{err: fmt.Errorf(
+					"the project %q was created and activated, but its MCP servers could not be saved: %w", name, err)}
+			}
 		}
 		return launchCreatedMsg{projectID: id}
 	}, nil

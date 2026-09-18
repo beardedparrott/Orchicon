@@ -34,6 +34,10 @@ import (
 type fakePlane struct {
 	apiv1connect.UnimplementedWorkItemServiceHandler
 	apiv1connect.UnimplementedProjectServiceHandler
+	// The MCP service is embedded so the fake satisfies the handler interface while
+	// implementing only the three calls the project forms make (list, get-selection,
+	// set-selection).
+	apiv1connect.UnimplementedMCPServiceHandler
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 	apiv1connect.UnimplementedWorkflowServiceHandler
 
@@ -42,9 +46,11 @@ type fakePlane struct {
 	order     []string
 	projects  map[string]*apiv1.Project
 	projOrder []string
-	images    map[string]*apiv1.RuntimeImage
-	imgOrder  []string
-	nextID    int
+	// projectMCP is each project's MCP selection, as GetProjectMCPServers would report it.
+	projectMCP map[string][]string
+	images     map[string]*apiv1.RuntimeImage
+	imgOrder   []string
+	nextID     int
 
 	created     []*apiv1.CreateWorkItemRequest
 	updated     []*apiv1.UpdateWorkItemRequest
@@ -58,19 +64,26 @@ type fakePlane struct {
 	projUpdated []*apiv1.UpdateProjectRequest
 	// projActivated records the ids ActivateProject was called with, in order.
 	projActivated []string
-	dirProbes     []string
-	imgCreated    []*apiv1.CreateRuntimeImageRequest
-	imgUpdated    []*apiv1.UpdateRuntimeImageRequest
-	imgDeleted    []string
-	builds        []*apiv1.BuildRuntimeImageRequest
-	buildChunks   []*apiv1.BuildRuntimeImageResponse
+	projDeleted   []string
+	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
+	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
+	// which is how a test exercises the "the MCP data did not load" path.
+	mcpServers  []*apiv1.MCPServer
+	mcpError    error
+	dirProbes   []string
+	imgCreated  []*apiv1.CreateRuntimeImageRequest
+	imgUpdated  []*apiv1.UpdateRuntimeImageRequest
+	imgDeleted  []string
+	builds      []*apiv1.BuildRuntimeImageRequest
+	buildChunks []*apiv1.BuildRuntimeImageResponse
 }
 
 func newPlane() *fakePlane {
 	return &fakePlane{
-		items:    map[string]*apiv1.WorkItem{},
-		projects: map[string]*apiv1.Project{},
-		images:   map[string]*apiv1.RuntimeImage{},
+		items:      map[string]*apiv1.WorkItem{},
+		projects:   map[string]*apiv1.Project{},
+		projectMCP: map[string][]string{},
+		images:     map[string]*apiv1.RuntimeImage{},
 	}
 }
 
@@ -317,6 +330,57 @@ func (p *fakePlane) ListProjects(_ context.Context, _ *connect.Request[apiv1.Lis
 	return connect.NewResponse(&apiv1.ListProjectsResponse{Projects: out}), nil
 }
 
+// DeleteProject mirrors the server's not-found for an unknown id, so a test cannot pass
+// by deleting a project that does not exist.
+func (p *fakePlane) DeleteProject(_ context.Context, req *connect.Request[apiv1.DeleteProjectRequest]) (*connect.Response[apiv1.DeleteProjectResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.projects[req.Msg.GetId()]; !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
+	}
+	delete(p.projects, req.Msg.GetId())
+	for i, id := range p.projOrder {
+		if id == req.Msg.GetId() {
+			p.projOrder = append(p.projOrder[:i], p.projOrder[i+1:]...)
+			break
+		}
+	}
+	p.projDeleted = append(p.projDeleted, req.Msg.GetId())
+	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
+}
+
+// ListMCPServers returns the seeded entries, or the seeded error. The ERROR path is the
+// point: it is how a test proves that a failed MCP load leaves the form without the field
+// rather than with an empty one.
+func (p *fakePlane) ListMCPServers(_ context.Context, _ *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mcpError != nil {
+		return nil, p.mcpError
+	}
+	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: p.mcpServers}), nil
+}
+
+func (p *fakePlane) GetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersGetRequest]) (*connect.Response[apiv1.ProjectMCPServersGetResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return connect.NewResponse(&apiv1.ProjectMCPServersGetResponse{McpServerIds: p.projectMCP[req.Msg.GetProjectId()]}), nil
+}
+
+// SetProjectMCPServers records the write AND updates the stored selection, so a read-back
+// sees what a save produced. It does not validate the ids: the server treats them as
+// references, and this fake's job is to record what the TUI sent.
+func (p *fakePlane) SetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersSetRequest]) (*connect.Response[apiv1.ProjectMCPServersSetResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.projMCPSet = append(p.projMCPSet, req.Msg)
+	if p.projectMCP == nil {
+		p.projectMCP = map[string][]string{}
+	}
+	p.projectMCP[req.Msg.GetProjectId()] = req.Msg.GetMcpServerIds()
+	return connect.NewResponse(&apiv1.ProjectMCPServersSetResponse{McpServerIds: req.Msg.GetMcpServerIds()}), nil
+}
+
 // ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
 // the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting
 // project fails there. A fake that always succeeded would let a test prove the action
@@ -516,6 +580,7 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(p))
 	mux.Handle(apiv1connect.NewProjectServiceHandler(p))
+	mux.Handle(apiv1connect.NewMCPServiceHandler(p))
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(p))
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(p))
 	srv := httptest.NewServer(mux)
@@ -1121,7 +1186,10 @@ func TestProjectCreateEditAndDirectory(t *testing.T) {
 	m.SelectSource(srcProjects)
 
 	// create
-	press(t, m, "n")
+	// The create form is opened through the PREP now (the MCP options are a round trip),
+	// so the returned command must be driven before the form exists — same as every other
+	// async form in this suite.
+	run(t, m, press(t, m, "n"))
 	f := m.ActiveForm()
 	if f == nil {
 		t.Fatal("n on Projects must open the create form")
