@@ -2837,6 +2837,10 @@ func (m *App) onChatWake() tea.Cmd {
 			strH = bh.DetailBodyHeight(fieldRows, true)
 		}
 		str := m.transcriptStream(m.chatConvID, w, strH)
+		// A TRANSCRIPT MAY NOT SILENTLY LOSE TEXT: when a line arrives wider than the pane, WRAP it rather
+		// than truncate it. See kit2.Stream.WrapOverflow — the row count is the price, readability is the
+		// point.
+		str.WrapOverflow()
 		m.syncTranscript(m.chatConvID, str, items, w)
 		// ONE notice slot, set through SetNotice so the view stays pinned: the notice takes a row from
 		// the body, so a direct assignment would move the window and hide the newest line.

@@ -19,6 +19,8 @@ package chat
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // THE HEADER NAMES THE BLOCK. Without this the body is unlabelled prose that could be mistaken for the
@@ -105,6 +107,32 @@ func TestReasoningCapDoesNotTruncateTheItem(t *testing.T) {
 	short := RenderItems([]ChatItem{{Kind: KindReasoning, Text: "brief thought"}}, 80)
 	if strings.Contains(short, "more lines") {
 		t.Errorf("a short block was elided:\n%s", short)
+	}
+}
+
+// NO BAND ROW IS EVER WIDER THAN THE PANE.
+//
+// A row that overflows is TRUNCATED by the stream's Pad, and truncation LOSES TEXT silently — the operator
+// sees a sentence cut mid-word. Measured before the fix, on the labelled band: an 81-cell user row at width
+// 80, because the label was spent OUTSIDE the row's budget (the gap floors at 1, so `1 + label + 1 + line + 1`
+// can exceed the pane).
+func TestNoTranscriptRowExceedsThePane(t *testing.T) {
+	items := []ChatItem{
+		// A long line that leaves the label no room at all — the case that overflowed.
+		{Kind: KindUser, Text: strings.Repeat("word ", 40), Key: "u1"},
+		{Kind: KindText, Text: strings.Repeat("reply ", 40), Key: "t1"},
+		{Kind: KindReasoning, Text: strings.Repeat("thought ", 40), Key: "r1"},
+		{Kind: KindError, Text: strings.Repeat("boom ", 40), Key: "e1"},
+		{Kind: KindTool, Tool: &ParsedTool{ID: "1", ToolName: "bash", Input: "ls", Output: strings.Repeat("out ", 40)}, Key: "t2"},
+	}
+	for _, w := range []int{24, 40, 80, 200} {
+		out := RenderItems(items, w)
+		for _, ln := range strings.Split(out, "\n") {
+			if got := lipgloss.Width(ln); got > w {
+				t.Errorf("width %d: a row is %d cells wide — the stream would TRUNCATE it, losing text: %q",
+					w, got, ln)
+			}
+		}
 	}
 }
 

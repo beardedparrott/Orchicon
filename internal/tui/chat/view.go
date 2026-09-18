@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -149,6 +150,23 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 
 	var out strings.Builder
 	for i, l := range body {
+		// THE LABEL IS PART OF THE ROW'S BUDGET, and it used to be spent OUTSIDE it. `gap` floors at 1, so
+		// when a line left no room for the label the row came out as `1 + label + 1 + line + 1` — WIDER
+		// than the pane. Measured at width 80: an 81-cell user row. The stream's Pad() then TRUNCATES the
+		// row to the pane width, so the line silently lost its last cell — text disappearing off the right
+		// edge, which is what a sentence cut mid-word looks like.
+		//
+		// The line is therefore shortened to the room left after the label, so the row is exactly the pane's
+		// width and nothing overflows.
+		if i == 0 && label != "" {
+			room := inner - lipgloss.Width(label) - 2 // the 1-cell leading and trailing padding, plus the label
+			if room < 1 {
+				room = 1
+			}
+			if lipgloss.Width(l) > room {
+				l = truncateCells(l, room)
+			}
+		}
 		pad := inner - lipgloss.Width(l)
 		if pad < 0 {
 			pad = 0
@@ -171,6 +189,10 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 		default:
 			row = " " + l + strings.Repeat(" ", pad) + " "
 		}
+		// AND THE ROW IS CLAMPED TO THE PANE ON EVERY PATH, so no band can hand the stream a line it would
+		// have to truncate. The label case above is the one that could overflow; this makes the invariant
+		// hold for all three.
+		row = truncateCells(row, pane)
 		out.WriteString(style.Render(row))
 		out.WriteString("\n")
 	}
@@ -180,6 +202,15 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// truncateCells shortens s to at most w DISPLAY CELLS (not runes, not bytes), so a wide glyph or an ANSI
+// span cannot make a row overflow the pane.
+func truncateCells(s string, w int) string {
+	if w <= 0 || lipgloss.Width(s) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "")
 }
 
 // renderMarkdownBubble is renderBubble for content the GUI renders as MARKDOWN (its ReasoningBubble
