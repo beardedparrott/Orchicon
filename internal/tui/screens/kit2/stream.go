@@ -60,6 +60,29 @@ func (s *Stream) SetLines(lines []string) {
 	s.ScrollToBottom()
 }
 
+// ReplaceLines swaps the content WITHOUT moving the operator's view, unless they were already at the
+// bottom — in which case it follows the tail, as every other update here does.
+//
+// WHY IT EXISTS: SetLines re-pins unconditionally, which is right for a reload (there is no continuity
+// to preserve) and WRONG for content that GROWS IN PLACE. A streaming reply changes its last line on
+// every update instead of appending a new one, so the renderer cannot treat it as a prefix extension —
+// and with SetLines that made every update yank the view to the bottom. During a live turn the durable
+// poll updates once a second, so an operator who scrolled up to re-read something would be dragged back
+// down before they could finish the sentence.
+//
+// The offset is CLAMPED rather than preserved verbatim: content that grew SHORTER (a collapsed reasoning
+// block, a re-grouped phase) can leave the old offset past the end, and an out-of-range offset renders an
+// empty window — see Visible(), which returns nil for it.
+func (s *Stream) ReplaceLines(lines []string) {
+	wasBottom := s.AtBottom()
+	s.Lines = append([]string{}, lines...)
+	if wasBottom {
+		s.ScrollToBottom()
+		return
+	}
+	s.clamp()
+}
+
 // innerH is the visible line count.
 func (s *Stream) innerH() int {
 	h := s.Height

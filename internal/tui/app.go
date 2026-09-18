@@ -3131,7 +3131,12 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 			str.Append(lines[len(prev):]...)
 		}
 	} else {
-		str.SetLines(lines)
+		// ReplaceLines, NOT SetLines: the common case here is a reply growing IN PLACE — the durable
+		// poll rewrites the assistant message once a second and its last line changes rather than a new
+		// line appearing — so this branch runs repeatedly during a live turn. SetLines re-pins to the
+		// bottom, which would drag an operator who scrolled up back down every second. ReplaceLines
+		// keeps their place unless they were already following the tail.
+		str.ReplaceLines(lines)
 	}
 	m.transcriptLines[convID] = append([]string{}, lines...)
 }
