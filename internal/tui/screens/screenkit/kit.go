@@ -199,6 +199,21 @@ type Detail struct {
 	// width, so a pane resize invalidates the rendered lines even though the SOURCE has not changed —
 	// without this the pane would keep the old width's line breaks after a resize.
 	vpWidth int
+	// vpHeight is the HEIGHT the loaded body was laid out for, and it exists for the same reason vpWidth
+	// does — a pane whose height changes must re-load, not just re-viewport.
+	//
+	// WITHOUT IT THE TAIL OF THE BODY IS CLIPPED FOR A FRAME. The height is recomputed every ensureVP from
+	// the field count, and it changes whenever that count does (the Ask pane's header goes from a
+	// two-field fallback to the fetched set as a conversation's detail lands, which is a row). The
+	// staleness check below tracked the body, the width and the title but NOT the height, so with only the
+	// height changed the viewport kept content laid out for the old one and DROPPED ITS LAST ROWS — and the
+	// last row is where the Ask transcript puts its notice, so "Orchicon is thinking…" and "⚠ disconnected"
+	// flickered out for exactly one frame.
+	//
+	// Measured before the fix: after a fetch the pane's body went 22 -> 21 rows, the stream followed to 21,
+	// the notice was still set on the stream, and the painted frame did not contain it. One frame later it
+	// was back, which is why this reads as a flicker rather than as a missing feature.
+	vpHeight int
 	// vpTitle is the TITLE the loaded body belongs to. It is the detail's
 	// IDENTITY: a body that changes under the same title is the same item
 	// updating (a live transcript appending), while a new title is a DIFFERENT
@@ -376,7 +391,7 @@ func (d *Detail) View() string {
 	}
 	if d.Body != "" {
 		b.WriteString("\n")
-		if d.dirty || d.vpBody != d.Body || d.vpWidth != d.vp.Width {
+		if d.dirty || d.vpBody != d.Body || d.vpWidth != d.vp.Width || d.vpHeight != d.vp.Height {
 			// Reload the viewport, and decide whether to KEEP the operator's scroll.
 			//
 			// Same title = the same item updating (a live transcript appending), so
@@ -394,6 +409,7 @@ func (d *Detail) View() string {
 			d.vp.SetContent(d.bodyContent())
 			d.vpBody = d.Body
 			d.vpWidth = d.vp.Width
+			d.vpHeight = d.vp.Height
 			d.vpTitle = d.Title
 			d.dirty = false
 			switch {
