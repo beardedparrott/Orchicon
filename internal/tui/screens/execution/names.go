@@ -13,12 +13,14 @@ package execution
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
 const (
@@ -155,22 +157,33 @@ func (m *Model) runsWorkItemField(r *apiv1.WorkflowRun) string {
 	return id
 }
 
-// runsTitle renders a run's LIST title from its names, falling back to the ids it carries.
+// runsTitle renders a run's LIST title: the workflow's name and the work item's title.
 //
-// The arrow reads as the run's shape: a workflow acting on a work item. A run with no bound
-// item is a ONE-SHOT (the proto says work_item_id is empty for one-shot runs), which is
-// stated rather than left blank — a bare workflow name with nothing after it looks truncated.
+// The separator is a spaced slash rather than the arrow it used to be. The operator, on this list:
+// "Executions and workflow runs are still way too crowded. It's too noisy... We should clean them up
+// more." The arrow is a heavy glyph that reads as a diagram rather than as a separator, and it arrived
+// with the SAME double-space padding on both sides — three cells of a scannable row spent on
+// decoration. A slash is one cell and reads as "this, in that context".
+//
+// The work item's title is BOUNDED for the same reason it is on an execution row: a sentence per row
+// is what makes the list unscannable, and an unbounded title also eats the status, which is the field
+// the operator is actually scanning for. The workflow name is left whole — it is short by convention
+// and it is the leftmost column, so bounding it would make two different workflows look alike.
 func (m *Model) runsTitle(r *apiv1.WorkflowRun) string {
 	wfName := m.runNames.workflowName(r.GetWorkflowId())
 	if wfName == "" {
 		wfName = r.GetWorkflowId()
 	}
 	if r.GetWorkItemId() == "" {
-		return wfName + "  (one-shot)"
+		return wfName + " (one-shot)"
 	}
 	title := m.runNames.itemTitle(r.GetWorkItemId())
 	if title == "" {
 		title = r.GetWorkItemId()
 	}
-	return wfName + "  →  " + title
+	return wfName + " / " + screenkit.TruncateRunes(strings.TrimSpace(title), runItemTitleMax)
 }
+
+// runItemTitleMax is how much of a work item's title a run row keeps, so the row stays a scan list
+// rather than a paragraph. See runsTitle.
+const runItemTitleMax = 15

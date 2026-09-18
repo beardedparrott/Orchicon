@@ -39,6 +39,47 @@ func TestExecutionListTitleShowsWorkflowAndWorkItem(t *testing.T) {
 	}
 }
 
+// THE WORK ITEM TITLE IS BOUNDED TO 15 RUNES.
+//
+// The operator: "Executions and workflow runs are still way too crowded. It's too noisy and makes it hard
+// on the eyes. We should clean them up more. How about this instead: Worker Name - Work Item (15
+// character only) - Status."
+//
+// The bound is applied at the SOURCE rather than left to the row's own end-truncation, because the row
+// trims whatever does not fit — so an unbounded title would silently eat the status, which is the field
+// listRow was fixed to protect. Bounding here keeps the workflow name and the status in the budget
+// however long the title is.
+func TestExecutionListTitleBoundsTheWorkItemTitle(t *testing.T) {
+	var names runNames
+	names.mu.Lock()
+	names.items = map[string]string{"wi-1": "Stop outboxing per-token execution.text + retention"}
+	names.mu.Unlock()
+
+	e := &apiv1.WorkerExecution{Id: "exec-1", WorkflowName: "SDLC", TaskId: "wi-1"}
+	got := executionListTitle(e, &names)
+
+	if !strings.HasPrefix(got, "SDLC · ") {
+		t.Errorf("title = %q, want it to open with the workflow and the separator", got)
+	}
+	item := strings.TrimPrefix(got, "SDLC · ")
+	if n := len([]rune(item)); n > executionItemTitleMax {
+		t.Errorf("the work item part is %d runes (%q), want <= %d — a sentence per row is what makes the "+
+			"list unscannable", n, item, executionItemTitleMax)
+	}
+	// A shortened title is MARKED as shortened, so it is never mistaken for the whole one.
+	if !strings.HasSuffix(item, "…") {
+		t.Errorf("the shortened work item %q carries no ellipsis, so it reads as the complete title", item)
+	}
+	// A title that FITS is left exactly alone — the bound must not decorate short titles.
+	short := &apiv1.WorkerExecution{Id: "e", WorkflowName: "SDLC", TaskId: "wi-2"}
+	names.mu.Lock()
+	names.items["wi-2"] = "Fix parser"
+	names.mu.Unlock()
+	if got := executionListTitle(short, &names); got != "SDLC · Fix parser" {
+		t.Errorf("a short title was altered: %q, want %q", got, "SDLC · Fix parser")
+	}
+}
+
 // A row degrades rather than going blank: whatever is known is shown, and the ID is the last resort.
 // (A blank line in a list is worse than an id: the operator cannot even tell which row it is.)
 func TestExecutionListTitleDegradesToWhatIsKnown(t *testing.T) {
@@ -73,24 +114,30 @@ func TestExecutionListTitleDegradesToWhatIsKnown(t *testing.T) {
 	}
 }
 
-// The meta line carries the status AND the worker, so a row says what state it is in and which worker
-// ran it without opening it.
-func TestExecutionListMetaShowsStatusAndWorker(t *testing.T) {
+// The meta line carries the STATUS AND NOTHING ELSE.
+//
+// This used to assert the worker's name was present too, and that assertion is what the operator's report
+// invalidated: "too crowded... too noisy and makes it hard on the eyes". The worker name is long, nearly
+// identical across rows on this pane, and it pushed the row into the very overflow the status then lost
+// to — so the row now spends its width on the status, the one field that CHANGES, and the worker is one
+// keystroke away in the detail pane. Asserting its ABSENCE is the point: a worker name creeping back in
+// is what re-crowds the row.
+func TestExecutionListMetaIsTheStatusAlone(t *testing.T) {
 	e := &apiv1.WorkerExecution{
 		Id: "exec-1", Status: apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED, WorkerName: "Quick Software Engineer",
 	}
 	got := executionListMeta(e)
-	if !strings.Contains(got, "succeeded") {
-		t.Errorf("meta = %q, want the status", got)
+	if got != "succeeded" {
+		t.Errorf("meta = %q, want exactly \"succeeded\" — the status alone", got)
 	}
-	if !strings.Contains(got, "Quick Software Engineer") {
-		t.Errorf("meta = %q, want the worker's name", got)
+	if strings.Contains(got, "Quick Software Engineer") {
+		t.Errorf("meta = %q, want the worker's name OFF the row: it is what crowds it", got)
 	}
 	// No proto enum leakage, ever — the pane's vocabulary is words.
 	if strings.Contains(got, "EXECUTION_STATUS_") {
 		t.Errorf("meta leaks the proto enum: %q", got)
 	}
-	// With no worker known, the status stands alone rather than leaving a dangling separator.
+	// A run with no worker known reads the same, since the worker is not on the row either way.
 	bare := executionListMeta(&apiv1.WorkerExecution{Status: apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING})
 	if bare != "running" {
 		t.Errorf("meta = %q, want just the status", bare)

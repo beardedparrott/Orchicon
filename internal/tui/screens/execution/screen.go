@@ -303,14 +303,31 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 	return items, resp.Msg.NextPageToken, nil
 }
 
-// executionListTitle composes the row's primary line: the workflow name, the bound work item's
-// title, or the id — in that order of preference, joined when more than one is known.
+// executionListTitle composes the row's primary line: the workflow name and the bound work item's
+// title.
 //
-// The ID is ALWAYS the fallback rather than a suffix: a row that cannot resolve anything must still
-// identify itself, and an id is better than a blank line.
+// The operator, looking at this list: "Executions and workflow runs are still way too crowded. It's too
+// noisy and makes it hard on the eyes. We should clean them up more. How about this instead: Worker
+// Name - Work Item (15 character only) - Status."
+//
+// THE WORK ITEM TITLE IS HELD TO 15 CHARACTERS, and that bound is the whole point rather than an
+// arbitrary cut. A work-item title is a SENTENCE ("Stop outboxing per-token execution.text + add outbox
+// retention & observability"), and a pane full of sentences is what the operator is describing as noisy:
+// the eye cannot find the same column twice because every row ends somewhere different. Fifteen
+// characters is enough to tell rows apart — which is all a scan list needs — while keeping every row
+// the same shape.
+//
+// The bound is applied HERE, to the title alone, rather than left to the row's own end-truncation: the
+// row trims whatever does not fit, so an unbounded title would silently eat the status — the defect
+// listRow was fixed for. Bounding at the source keeps the workflow name and the status in the width
+// budget no matter how long the title is.
+//
+// The ID is still the fallback, so a row that can resolve nothing identifies itself rather than going
+// blank.
 func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
 	wf := strings.TrimSpace(e.GetWorkflowName())
-	item := strings.TrimSpace(names.itemTitle(e.GetTaskId()))
+	// Bounded: see the note above for why 15.
+	item := screenkit.TruncateRunes(strings.TrimSpace(names.itemTitle(e.GetTaskId())), executionItemTitleMax)
 	switch {
 	case wf != "" && item != "":
 		return wf + " · " + item
@@ -322,16 +339,21 @@ func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
 	return e.GetId()
 }
 
-// executionListMeta is the secondary line: the status (what the operator scans for) and the worker's
-// name when it is known — "succeeded · Quick Software Engineer" — so a run's identity and its state
-// are both legible without opening it.
+// executionItemTitleMax is how much of a work item's title an execution row keeps. See executionListTitle.
+const executionItemTitleMax = 15
+
+// executionListMeta is the row's right-hand field. It carries the STATUS AND NOTHING ELSE.
+//
+// It used to append the worker's name ("succeeded · Quick Software Engineer"), on the reasoning that
+// "which worker" is worth having on the row. The operator's report says otherwise: "too crowded... too
+// noisy and makes it hard on the eyes". The worker name is the least scannable thing a row can carry —
+// it is long, it is nearly identical across rows on this pane, and it pushed the row into the very
+// overflow that the status then lost to. The status is the only field here that CHANGES, so it is the
+// one the row spends its width on; the worker is one keystroke away in the detail pane.
 func executionListMeta(e *apiv1.WorkerExecution) string {
 	meta := strings.ToLower(strings.TrimPrefix(e.GetStatus().String(), "EXECUTION_STATUS_"))
 	if meta == "" {
 		meta = strings.ToLower(e.GetStatus().String())
-	}
-	if w := strings.TrimSpace(e.GetWorkerName()); w != "" {
-		meta += " · " + w
 	}
 	return meta
 }
