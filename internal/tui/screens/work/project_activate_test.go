@@ -41,8 +41,9 @@ func TestADraftingProjectOffersActivate(t *testing.T) {
 		t.Error("the activate action has no key, so it cannot be reached from the keyboard")
 	}
 	if act.Source != srcProjects {
-		t.Errorf("the activate action's source is %q, want %q — the toolbar filters by source, so it would not "+
-			"appear for a project row", act.Source, srcProjects)
+		t.Errorf("the activate action's source is %q, want %q. Source is NOT a display filter — it is the "+
+			"list RECONCILED after the write (mutate.Request.Source), so a wrong value refreshes the wrong "+
+			"list and leaves the project's row showing its old status", act.Source, srcProjects)
 	}
 	if err := act.Do(context.Background()); err != nil {
 		t.Fatalf("the activate action failed on a drafting project: %v", err)
@@ -123,7 +124,7 @@ func TestProjectNeedsActivationReadsTheStatusToken(t *testing.T) {
 func findProjectAction(m *Model, want string) (actionDoer, bool) {
 	for _, a := range m.projectActions() {
 		if strings.Contains(strings.ToLower(a.Label), want) {
-			return actionDoer{Key: a.Key, Label: a.Label, Source: a.Source, Do: a.Do}, true
+			return actionDoer{Key: a.Key, Label: a.Label, Source: a.Source, Confirm: a.Confirm, Do: a.Do}, true
 		}
 	}
 	return actionDoer{}, false
@@ -132,8 +133,9 @@ func findProjectAction(m *Model, want string) (actionDoer, bool) {
 // actionDoer is the slice of kit2.Action these tests need, so the assertions read
 // against a named shape rather than a positional struct literal.
 type actionDoer struct {
-	Key    string
-	Label  string
-	Source string
-	Do     func(context.Context) error
+	Key     string
+	Label   string
+	Source  string
+	Confirm string
+	Do      func(context.Context) error
 }
