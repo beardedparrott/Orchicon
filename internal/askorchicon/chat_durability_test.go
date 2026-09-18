@@ -49,7 +49,7 @@ func TestKillMidTurnLeavesHistoryIntact(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "investigate the outage", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "investigate the outage", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestLiveToolLedgerPersistsCallsAndResults(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "list the projects", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "list the projects", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}

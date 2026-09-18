@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -360,11 +362,11 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
 
-	assistantID, streamEventCh, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
+	assistantID, streamEventCh, st, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
 // InterjectConversationTurn is the chat equivalent of a worker-execution
@@ -392,11 +394,11 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
 
-	assistantID, streamEventCh, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
+	assistantID, streamEventCh, st, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
 // WatchTurnStream re-attaches a dropped socket to an ACKED turn's live
@@ -440,6 +442,50 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 	}
 }
 
+// dispatchBufferSize bounds the per-turn dispatch channel (and the hub's per-subscriber buffer,
+// which is sized to match).
+const dispatchBufferSize = 64
+
+// dispatchStreamState carries what a turn's dispatch channel needs so that a DROPPED live event is
+// OBSERVABLE.
+//
+// The channel feeds the HTTP response stream AND the conversation's broadcast hub, so an event that
+// does not fit is lost for the originating client and for every watcher. Dropping is a deliberate
+// trade — the alternative is parking the collector, and the reply still lands durably for the poll
+// to resolve — but it used to be SILENT: no log, no counter, nothing to distinguish "the turn
+// produced nothing" from "the turn produced plenty and every event was thrown away". A live pane
+// that sits on "thinking…" while the turn runs is exactly that ambiguity, so the drop now says so.
+type dispatchStreamState struct {
+	dropped     atomic.Int64
+	drainActive atomic.Bool
+}
+
+// sendOrDrop enqueues a live event, or counts and reports the drop.
+//
+// Logged on the FIRST occurrence and then every maxDropReports events, so a genuinely wedged client
+// produces a handful of lines rather than one per token.
+func sendOrDrop(ch chan<- *apiv1.ChatStreamResponse, resp *apiv1.ChatStreamResponse, st *dispatchStreamState, log *slog.Logger, convID string) {
+	select {
+	case ch <- resp:
+		return
+	default:
+	}
+	n := st.dropped.Add(1)
+	const maxDropReports = 200
+	if n != 1 && n%maxDropReports != 0 {
+		return
+	}
+	// drain_active tells the two causes apart, and they need different fixes: TRUE means the client
+	// is reading too slowly for the turn's output rate (the buffer is a queue); FALSE means nothing
+	// is reading at all — the dispatch stream has ended (a dropped socket, a cancelled request)
+	// while the turn runs on, so every remaining event is thrown away.
+	log.Warn("ask orchicon DROPPED live events — dispatch buffer full",
+		"conversation", convID,
+		"dropped_total", n,
+		"drain_active", st.drainActive.Load(),
+		"cause", "dispatch-channel-full")
+}
+
 // drainTurnStream acks a freshly-started turn with TurnStarted and then
 // drains streaming events to the client until the channel closes (turn
 // complete or error), which lets the RPC return and close the HTTP stream.
@@ -451,7 +497,11 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 // treats them as socket-liveness proof. Every drained response (chunks AND
 // heartbeats) is also published to the conversation's broadcast hub so a
 // dropped socket can re-dial via WatchTurnStream.
-func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], convID, assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse) error {
+func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], convID, assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse, st *dispatchStreamState) error {
+	// Nothing is draining this turn's dispatch channel once this returns, so mark it: a drop after
+	// this point is not "the client is slow", it is "the events have nowhere to go". That is what
+	// sendOrDrop reports as drain_active.
+	defer st.drainActive.Store(false)
 	if err := stream.Send(&apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_TurnStarted{
 			TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID},
@@ -529,7 +579,7 @@ type turnDispatchOpts struct {
 // which the reply (or error) will be persisted. Errors are *connect.Error
 // values with the right code (NotFound for a missing conversation,
 // FailedPrecondition when a turn is already pending — one turn at a time).
-func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, error) {
+func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, *dispatchStreamState, error) {
 	return s.startConversationTurnOpts(ctx, tenantID, convID, msg, attachments, turnDispatchOpts{})
 }
 
@@ -541,20 +591,20 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 // the conversation's opencode session aborted so the model stops generating
 // NOW — the interjection is answered at the next turn boundary rather than
 // queued behind a stuck turn.
-func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, opts turnDispatchOpts) (string, chan *apiv1.ChatStreamResponse, error) {
+func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, opts turnDispatchOpts) (string, chan *apiv1.ChatStreamResponse, *dispatchStreamState, error) {
 	// --- 0. Load the conversation. Needed up front: the persisted session
 	// id for the supersede serve-abort, plus existence for NotFound. ---
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, convID)
 	ttx.Rollback(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			return "", nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+			return "", nil, nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
 		}
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// sessionIDOverride is the session the new turn dispatches on. Normally
@@ -593,17 +643,17 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 
 	// --- 0.8 Validate attachments (size/count caps — server is authoritative) ---
 	if len(attachments) > 5 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
+		return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
 	}
 	var totalBytes int
 	for _, a := range attachments {
 		if len(a.Data) > 10*1024*1024 {
-			return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
+			return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
 		}
 		totalBytes += len(a.Data)
 	}
 	if totalBytes > 20*1024*1024 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
+		return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
 	}
 
 	// --- 1. Register the turn. ---
@@ -620,7 +670,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// Checked BEFORE the detached collector context is created so a rejected
 	// dispatch never allocates an un-cancelled context (lostcancel).
 	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
-		return "", nil, connect.NewError(connect.CodeResourceExhausted,
+		return "", nil, nil, connect.NewError(connect.CodeResourceExhausted,
 			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
 	}
 	// The turn is registered before the user message is persisted so a
@@ -633,7 +683,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	turnCtx, cancelTurn := context.WithCancelCause(detached)
 	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
-		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
 	}
 	releaseTurn := func() {
@@ -664,17 +714,17 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if _, err := db.CreateMessage(ctx, ttx.Tx, userMsg); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
+		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
 	}
 	if err := db.UpdateConversationTimestamp(ctx, ttx.Tx, tenantID, convID); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if conv.Title == "" {
 		title := msg
@@ -697,11 +747,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		})); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
+		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// --- 3. Resolve model and build prompts (DB-only, no serve
@@ -721,7 +771,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
 	// The DB window is what a fresh session replays (the seed prompt) and what
@@ -760,13 +810,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// socket re-dials the SAME turn via WatchTurnStream. Supersede replaces
 	// the hub so stale watchers drain and fall back to the poll. ---
 	s.hubs.create(convID)
-	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
+	streamEventCh := make(chan *apiv1.ChatStreamResponse, dispatchBufferSize)
+	st := &dispatchStreamState{}
+	st.drainActive.Store(true)
 	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
-		select {
-		case streamEventCh <- resp:
-		default:
-			// Channel full — drop event (client may be slow or gone).
-		}
+		sendOrDrop(streamEventCh, resp, st, s.log, convID)
 	}
 
 	// The conversation's adapter is resolved through the shared Dispatcher
@@ -781,7 +829,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		// (the TTL sweeper would otherwise hold it for up to 31 minutes).
 		releaseTurn()
 		s.hubs.remove(convID)
-		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("Ask Orchicon could not resolve an adapter for this conversation: %w", cerr))
 	} else if client != nil {
 		// Adapter-scoped session identity (AC: cross-adapter switch). The
@@ -958,7 +1006,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		close(streamEventCh)
 	}
 
-	return assistantID, streamEventCh, nil
+	return assistantID, streamEventCh, st, nil
 }
 
 // AbortConversationTurn implements the Stop button: it cancels the detached
