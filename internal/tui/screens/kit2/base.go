@@ -182,6 +182,22 @@ type Base struct {
 	// tab has exactly ONE conversation list.
 	HideSources bool
 
+	// detailBodyHostOwned declares that the detail pane's BODY is painted by the HOST, not by this screen's
+	// detail function — so a detail PAYLOAD must not overwrite it.
+	//
+	// It exists because the two halves of a detail arrive differently, and one of them is empty here. Every
+	// other screen's detail() returns the body, so a detail landing legitimately replaces it. The Ask
+	// screen's returns body="" BY DESIGN: its transcript is a merge of the durable conversation and the
+	// live chunk cache, which only the shell can see, and it is painted by onChatWake. Assigning that
+	// empty body — which the base did, unconditionally — ERASES the transcript:
+	//
+	//	"the conversation pane is completely blank on every chat."
+	//
+	// It was reachable on every list reload, because Base.Update's fetchedMsg handler ends with
+	// loadDetail() — so the rolling refresh's list reload re-requested the detail and wiped the pane a few
+	// seconds after every repaint. See the detailMsg case, and ask.New for the declaration.
+	detailBodyHostOwned bool
+
 	// OnDialog runs when the open Dialog resolves ("" = dismissed).
 	OnDialog func(choice string) tea.Cmd
 
@@ -502,6 +518,10 @@ func (b *Base) ClearDetail() {
 // ScrollDetail scrolls the detail pane by delta lines (mouse wheel + the
 // empty-composer vertical keys) — the transcript scroll preservation path.
 func (b *Base) ScrollDetail(delta int) { b.detail.Wheel(delta) }
+
+// SetDetailBodyHostOwned declares that the detail pane's BODY is painted by the host, so a detail payload
+// must not overwrite it (only its title and fields are taken). See detailBodyHostOwned.
+func (b *Base) SetDetailBodyHostOwned(v bool) { b.detailBodyHostOwned = v }
 
 // SetShell installs the app shell reference.
 func (b *Base) SetShell(sh any) { b.shell = sh }
@@ -842,7 +862,14 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			return true, nil // consumed and dropped: not ours
 		}
 		b.detailID = msg.id
-		b.detail.SetContent(msg.title, msg.fields, msg.body)
+		// THE BODY BELONGS TO THE HOST when a screen says so. See detailBodyHostOwned: the Ask transcript is
+		// painted by the shell from the live chunk cache, so its detail payload carries no body and
+		// assigning that would erase the transcript the shell had just painted.
+		body := msg.body
+		if b.detailBodyHostOwned {
+			body = b.detail.Body
+		}
+		b.detail.SetContent(msg.title, msg.fields, body)
 		if b.onDetail != nil {
 			return true, b.onDetail(msg.src, msg.id)
 		}

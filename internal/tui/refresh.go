@@ -100,6 +100,44 @@ func (m *App) refreshActiveView() tea.Cmd {
 	if m.refreshBlocked() {
 		return nil
 	}
+	// THE ASK TRANSCRIPT IS A REFRESH TARGET TOO, and it was the ONE surface this window never touched.
+	//
+	// Every other screen re-reads itself through the Refresher hook below, which reloads a LIST and the
+	// open DETAIL from the server. Ask cannot: its transcript is not a server read on a timer — it is a
+	// MERGE of the durable conversation and the live chunks the shell has already accumulated, painted by
+	// onChatWake. So there was no hook to implement, and the surface was skipped.
+	//
+	// WHAT THAT COST. Liveness on this pane rested ENTIRELY on the wake chain: a stream chunk calls
+	// AppendLiveItem, which pokes a CAP-1 channel with a NON-BLOCKING send, and the waiter that drains it
+	// is re-armed only from appMsg's own branches. One missed poke (a full channel, a waiter that was
+	// never re-armed on some path) therefore does not degrade — it stops, silently and permanently, and
+	// the only thing left that repaints is a full reload: opening the conversation again or clicking away
+	// and back. That is the operator's report exactly:
+	//
+	//	"The conversations in the TUI are NOT truly live. I have to click away and back again to see
+	//	 updates. No 'Orchicon is thinking...' block. No reasoning block. No live thinking text block or
+	//	 live update when responses happen."
+	//
+	// This tick is the same safety net the rest of the TUI already has, applied to the one surface that
+	// was missing it. It is cheap (a cache merge, no RPC), it cannot multiply (one chain), and it makes
+	// "the poke was lost" a five-second delay instead of a dead pane — which is the difference between a
+	// feature that feels live and one that feels broken.
+	//
+	// IT IS ADDITIVE, NOT A REPLACEMENT. The Ask TAB also carries a real screen — the one whose rail
+	// lists the conversations — so its own Refresher still has work to do (re-reading that list). Both run,
+	// as a batch.
+	//
+	// AND THAT SCREEN'S Refresher IS NOT kit2.Base's, deliberately: the Ask screen overrides RefreshView to
+	// reload the LIST ONLY, because Base's default also re-requests the open detail — and for a
+	// conversation that landing carries an EMPTY body (ask.detail returns "" by design; the shell paints
+	// the transcript), which SETS the pane's body and erases the transcript onChatWake just painted. The
+	// operator: "the conversation pane is completely blank on every chat." See ask.Model.RefreshView.
+	if m.active == TabAsk {
+		if r, ok := s.(Refresher); ok {
+			return tea.Batch(m.onChatWake(), r.RefreshView())
+		}
+		return m.onChatWake()
+	}
 	if r, ok := s.(Refresher); ok {
 		return r.RefreshView()
 	}

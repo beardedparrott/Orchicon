@@ -51,6 +51,12 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m := &Model{cl: cl, reg: reg}
 	m.NameStr = "ask"
 	m.Base.HideSources = true
+	// THE TRANSCRIPT IS THE SHELL'S TO PAINT. A conversation's detail payload carries title + fields and
+	// NO BODY — by design, because the body is a merge of the durable conversation and the live chunk cache
+	// that only the shell can see (see detail()). Without this declaration a detail landing ASSIGNS that
+	// empty body and erases the transcript: "the conversation pane is completely blank on every chat". It
+	// was reachable on every list reload, because Base's fetchedMsg handler ends by loading the detail.
+	m.Base.SetDetailBodyHostOwned(true)
 	m.AddSource("conversations", "Conversations", m.fetchConversations)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
@@ -152,7 +158,7 @@ func (m *Model) View() string {
 	// widths this pane gets.
 	b.WriteString(theme.HintText.Render("←/→: select the rail or the conversation · ↑/↓, PgUp/PgDn: move the rail's selection, or scroll the conversation — whichever is selected"))
 	b.WriteString("\n")
-	b.WriteString(theme.HintText.Render("r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation"))
+	b.WriteString(theme.HintText.Render("r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation · ctrl+o: fold the newest reasoning block"))
 	return m.Base.Frame(b.String())
 }
 
@@ -165,6 +171,31 @@ func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, 
 
 // RequestDetail loads the detail view for (src, id) directly.
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
+
+// RefreshView re-reads the rail's LIST and deliberately does NOT re-request the open detail.
+//
+// THE SHELL'S DEFAULT ERASES THIS PANE. kit2.Base.RefreshView reloads the active source AND re-requests
+// the open detail's payload — right for every other screen, and fatal here. ask.detail returns body=""
+// BY DESIGN (see its own note: the shell paints the transcript from the live chunk cache, and this pane's
+// body is not the server's to send), so a re-request lands a detailMsg whose body is EMPTY, and Base's
+// handler SETS it:
+//
+//	b.detail.SetContent(msg.title, msg.fields, msg.body)
+//
+// which wipes whatever onChatWake had just painted. The operator saw it at once: "the conversation pane is
+// completely blank on every chat." Reproduced before the fix: after onChatWake the pane held the
+// transcript, and after one detail landing it held title + fields with a body of length 0.
+//
+// WHY THE TICK TRIGGERED IT. The rolling refresh window calls this hook every few seconds, so the wipe was
+// not a rare race — it was the steady state, and the older code path that only refreshed on an explicit
+// `r` made it intermittent enough to look like something else.
+//
+// Nothing is lost by leaving the body out: onChatWake repaints it on every wake AND on every tick, from
+// the cache, with no RPC and no server round trip.
+func (m *Model) RefreshView() tea.Cmd {
+	// The LIST only. The body belongs to onChatWake.
+	return m.Base.Refresh(m.Base.ActiveSourceName())
+}
 
 // ActiveSourceName / ActiveItem expose the Base focus state to the
 // shell's context engine.
