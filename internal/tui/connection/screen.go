@@ -543,6 +543,19 @@ func (m Model) View() string {
 
 // SaveProfile persists the profile to the config file. Passwords are never
 // written — only the minted access token.
+//
+// IT CARRIES FORWARD THE STORED PREFERENCES the connection form cannot know about, and this is a fix
+// rather than tidiness. `res.Profile` is built BY the connection form, which collects a URL and a
+// credential and nothing else — so its Theme is empty. Writing it verbatim BLANKED the profile's saved
+// theme on every launch that passed through the connection screen (first run, and every reauth), which
+// is every launcher-driven launch whose wrapper has an unset ORCHICON_TOKEN. The operator suspected
+// exactly this: "I have a feeling when I do a rebuild, it is modifying my config file." The rebuild was
+// not the cause — but this save was.
+//
+// The TOP-LEVEL theme survives a blanked PROFILE theme (applyStoredTheme falls back to it), which is why
+// the loss was invisible for a launcher-driven session — and why it would bite the moment somebody
+// relied on the per-profile value, or after the top-level fallback changed. Carrying it forward costs
+// nothing and removes the class.
 func SaveProfile(path string, res *Result) error {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -554,6 +567,16 @@ func SaveProfile(path string, res *Result) error {
 	p := res.Profile
 	if p.Name == "" {
 		p.Name = "default"
+	}
+	// Only when the incoming profile leaves them empty, so a caller that deliberately sets one wins.
+	// These are the fields the connection form does not collect: it asks for a URL and a credential.
+	if prev := cfg.Profiles[p.Name]; prev != nil {
+		if p.Theme == "" {
+			p.Theme = prev.Theme
+		}
+		if p.Newline == "" {
+			p.Newline = prev.Newline
+		}
 	}
 	cfg.Profiles[p.Name] = p
 	cfg.Active = p.Name

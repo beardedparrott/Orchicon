@@ -934,6 +934,20 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 			case KSelect:
 				f.cycleSelect(s, d)
 				return nil, true
+			case KPicker:
+				// A PICKER MUST CONSUME LEFT/RIGHT, and cycling its options is the useful way to do it.
+				//
+				// Not consuming them was a real escape: the case fell through to `return nil, false`,
+				// which means "the caller closes the form" — and the launch prompt reads exactly that as
+				// "declined", so the operator pressed right on the runtime-image field and was thrown out
+				// of project creation onto the New page. The form's own contract turned an unhandled arrow
+				// into a cancellation.
+				//
+				// Cycling matches KSelect, the control the operator already knows for "move through the
+				// options of a reference field" — which is why this is cycleSelect rather than a bare
+				// consume: a key that exists to escape a form should also do something when it stays.
+				f.cycleSelect(s, d)
+				return nil, true
 			case KMultiSelect:
 				// LEFT/RIGHT walk the options INSIDE the field (up/down keep walking
 				// fields, matching KSelect). Without a per-option cursor the only
@@ -943,6 +957,17 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 				return nil, true
 			case KCheckbox:
 				f.Values[s.Name] = toggleBool(f.Values[s.Name])
+				return nil, true
+			case KModel, KDate, KDateTime:
+				// A REFERENCE field is CHOSEN, not moved through: enter opens the control that sets it
+				// (the model picker, the calendar), so there is nothing for an arrow to do here. It
+				// must still CONSUME the key.
+				//
+				// This is the same escape KPicker had, and the test that found that one found all four:
+				// `handled=false` means "the caller closes the form", which the launch prompt reads as
+				// DECLINED — so pressing right on a model field (worker forms) or a date field (the
+				// Automation schedule form) threw the operator out of the form mid-edit, exactly as it
+				// did on the runtime-image picker.
 				return nil, true
 			}
 			// An editable TEXT field uses left/right to move the CARET — the

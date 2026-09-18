@@ -3167,9 +3167,12 @@ func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStream
 // event — so it shows the plain indicator rather than an absurd "0s ago".
 func thinkingNotice(silent time.Duration) string {
 	const (
-		// Below this the age is noise: one chunk arrives faster than a redraw, and printing "3s ago"
-		// only makes the line twitch.
-		showAgeAfter = 5 * time.Second
+		// ONE SECOND, not five. The operator asked for the line to be visible immediately — "we should
+		// print the watchdog line right away so users know it's there" — because a line that only
+		// appears after five seconds of silence is invisible during a busy turn, which is exactly when
+		// they went looking for it. One second is the shortest age that is not an absurd "0s ago", and
+		// the age only redraws on the 5s tick anyway, so this cannot twitch.
+		showAgeAfter = time.Second
 		// Past the server's heartbeat interval (15s) plus slack, silence is worth stating: a LIVE
 		// stream can never reach it, because the heartbeat keeps arriving.
 		warnAfter = 25 * time.Second

@@ -35,9 +35,9 @@ func TestThinkingNoticeEscalatesWithSilence(t *testing.T) {
 	}{
 		{0, "Orchicon is thinking…", "no activity recorded yet — the moment after sending"},
 		{-time.Second, "Orchicon is thinking…", "a clock that stepped backwards is not a silence"},
-		{2 * time.Second, "Orchicon is thinking…", "below the band: one chunk arrives faster than a redraw"},
-		{4 * time.Second, "Orchicon is thinking…", "still below the band"},
-		{5 * time.Second, "Orchicon is thinking… · last activity 5s ago", "the first band that names the age"},
+		{2 * time.Second, "Orchicon is thinking… · last activity 2s ago", "the age is shown from one second: the operator asked for the line to be visible right away, not after a pause"},
+		{4 * time.Second, "Orchicon is thinking… · last activity 4s ago", "an ordinary quiet stretch"},
+		{time.Second, "Orchicon is thinking… · last activity 1s ago", "the first second: the line is visible immediately, which is what the operator asked for"},
 		{12 * time.Second, "Orchicon is thinking… · last activity 12s ago", "an ordinary quiet stretch"},
 		{24 * time.Second, "Orchicon is thinking… · last activity 24s ago", "still under the heartbeat margin"},
 		{25 * time.Second, "Orchicon is thinking… · no output for 25s", "past the 15s heartbeat: worth stating"},

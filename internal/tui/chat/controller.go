@@ -76,6 +76,26 @@ const askStreamStallTimeout = 40 * time.Second
 // int64 under a mutex).
 const askLivenessCheckInterval = 5 * time.Second
 
+// askTurnPollInterval is how often a STREAMING turn re-reads its durable transcript.
+//
+// THIS IS THE ROBUST HALF OF LIVE STREAMING, and it exists because the live half cannot be trusted
+// on its own. The server mirrors the running turn's collected text, reasoning and tool ledger into
+// the ACKED assistant message every 250ms (askorchicon.upsertPartialMessage — the mechanism built so
+// "a client that lost the live stream (refresh, another tab/device) polls ListMessages and watches
+// the reply grow"). A poll DURING the turn therefore renders the same progress the socket would
+// deliver, over a plain unary RPC that cannot be half-open, cannot be buffered mid-body by a proxy,
+// and cannot go quiet without an error.
+//
+// The operator, on a stream that delivered heartbeats but no reply: "I don't even care if you have to
+// find a brand new method." This is that method — and it is not a fallback bolted on beside the
+// stream: both feed the SAME merge (mergeHistory), so whichever arrives first paints, and a turn
+// where either path is broken still streams through the other.
+//
+// One second: the mirror flushes at 250ms, so this is four mirror generations per poll — the reply
+// reads as live rather than as a slideshow. The cost is one bounded ListMessages a second while a
+// turn is in flight, for one conversation.
+const askTurnPollInterval = time.Second
+
 // Controller owns Ask Orchicon conversation state + streaming for the
 // TUI. It is a plain struct with tea.Cmd factories — the shell owns
 // dispatching its messages back in.
@@ -687,6 +707,10 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 		}
 		c.mu.Unlock()
 		go c.runLivenessWatch(convID)
+		// AND THE DURABLE POLL, beside it: the watchdog covers a stream that DIED, this covers a
+		// stream that is alive but delivering only keepalives. Both are armed here because both
+		// must start with the turn, and both stop when it does.
+		go c.runTurnPoll(convID)
 		return nil
 	}
 }
@@ -730,6 +754,10 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 		}
 		c.mu.Unlock()
 		go c.runLivenessWatch(convID)
+		// AND THE DURABLE POLL, beside it: the watchdog covers a stream that DIED, this covers a
+		// stream that is alive but delivering only keepalives. Both are armed here because both
+		// must start with the turn, and both stop when it does.
+		go c.runTurnPoll(convID)
 		return nil
 	}
 }
@@ -943,6 +971,41 @@ func (c *Controller) dropStream(convID string, err error) {
 	c.mu.Unlock()
 	if watch != "" && c.cmds != nil {
 		c.cmds <- c.Watch(convID, watch)
+	}
+}
+
+// runTurnPoll keeps a streaming turn's transcript fresh from the DURABLE store, on a timer, until
+// the turn ends.
+//
+// WHY THIS EXISTS RATHER THAN TRUSTING THE STREAM: the operator's evidence was a pane that showed
+// heartbeats — the watchdog's age kept resetting — but never the reply, because the socket was
+// delivering only the keepalives. Nothing about that is diagnosable from the client side, and it does
+// not need to be: the server mirrors the partial reply into the assistant message every 250ms, so a
+// unary poll renders the same content. Independence from the stream IS the fix.
+//
+// IT PUSHES A COMMAND rather than emitting a message directly, because the shell owns the tea loop:
+// pollTranscript returns a tea.Cmd and the shell runs it exactly as it runs the completion poll. The
+// non-blocking send matches the wake channel's contract — a full channel means the shell is busy, and
+// the next tick tries again.
+//
+// It stops as soon as the slot is no longer streaming, so a finished turn costs nothing and the
+// goroutine cannot outlive the turn it serves. Dropping a POLL is harmless in a way dropping a chunk
+// is not: the next one returns a superset of this one.
+func (c *Controller) runTurnPoll(convID string) {
+	ticker := time.NewTicker(askTurnPollInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.mu.Lock()
+		st := c.state[convID]
+		streaming := st != nil && st.streaming
+		c.mu.Unlock()
+		if !streaming || c.cmds == nil {
+			return
+		}
+		select {
+		case c.cmds <- c.pollTranscript(convID):
+		default:
+		}
 	}
 }
 
