@@ -32,6 +32,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/ephemeral"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/logging"
@@ -888,6 +889,55 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// EPHEMERAL ABANDONMENT SWEEP (Ask Orchicon Quick Work). Quick Work
+	// creates a worker, a workflow and a work item per job, hides them from
+	// every human view, and hard-deletes them when the job ends. The deletion
+	// is done by the AGENT, so it is the one step that cannot be guaranteed:
+	// a killed process or a crashed plane leaves the records behind —
+	// invisible, and still there. That is the exact state the hard-delete
+	// rule exists to prevent, so the sweep is the backstop for that one
+	// failure mode. Tenants are enumerated, and each tenant's deletes run in
+	// its own RLS transaction.
+	//
+	// First pass after a minute (a plane that just restarted may have
+	// inherited a crashed run's transients), then every 10 minutes. A plane
+	// with no transients pays an index probe on an empty partial index.
+	go func() {
+		sweeper := ephemeral.NewSweeper(s.pool, s.log)
+		runSweep := func() {
+			if _, err := sweeper.Sweep(ctx); err != nil {
+				s.log.Warn("ephemeral sweep failed", "error", err)
+			}
+		}
+		// ONE warm-up pass, then the ticker — as two sequential phases, NOT as
+		// a `time.After` case sitting beside the ticker's case.
+		//
+		// WHY THE SHAPE MATTERS: `case <-time.After(d)` inside a `for/select`
+		// constructs a FRESH timer on every iteration, so a short branch next
+		// to a long one always wins and the long one never fires at all. With
+		// a 1-minute branch beside a 10-minute ticker, the ticker case is
+		// unreachable and the sweep runs every minute — measured, not deduced.
+		// The warm-up exists because a plane that has just restarted may have
+		// inherited a crashed run's transients, which should go quickly rather
+		// than wait out a full interval.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Minute):
+			runSweep()
+		}
+		sweep := time.NewTicker(ephemeral.SweepInterval)
+		defer sweep.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sweep.C:
+				runSweep()
+			}
+		}
+	}()
 
 	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses
 	// spawned for sessions carry ORCHICON_MCP_STDIO=1. PDEATHSIG reaps

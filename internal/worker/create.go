@@ -31,6 +31,13 @@ type CreateWorkerInput struct {
 	AgentsMD     string
 	SystemPrompt string // raw prompt; used only when no structured field is set
 
+	// Ephemeral marks this worker as machine-managed and transient (Ask
+	// Orchicon Quick Work's throwaway worker). It is set only by the Ask tool
+	// layer: no UI or Connect handler passes it, because a transient worker
+	// is something an AGENT creates for one job, not something a human files.
+	// Threaded through the row so the create path stays one insert.
+	Ephemeral bool
+
 	// JSON-encoded fields (validated; empty becomes the canonical default).
 	ContextSources  string // JSON array
 	Permissions     string // JSON object
@@ -166,6 +173,7 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Status:         domain.WorkerDraft,
 		CurrentVersion: 0,
 		CreatedBy:      "", // populated when auth lands (Phase 9)
+		Ephemeral:      in.Ephemeral,
 	}
 	created, err := db.CreateWorker(ctx, tx, workerRow)
 	if err != nil {

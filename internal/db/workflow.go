@@ -27,6 +27,16 @@ type WorkflowRow struct {
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Ephemeral marks a machine-managed transient workflow (Ask Orchicon
+	// Quick Work): built for one job, hidden from the Workflows view, and
+	// HARD-DELETED when the job ends. Always false for a human-created
+	// workflow.
+	//
+	// Ungated by id: GetWorkflow and the run path read this row directly and
+	// deliberately ignore the flag — a run must be able to execute the very
+	// workflow the list gate hides. Only the LIST gate applies. See
+	// ephemeralPredicateOn.
+	Ephemeral bool
 }
 
 // WorkflowVersionRow is the data-access shape of a workflow_versions
@@ -182,16 +192,18 @@ type WorkflowStepRunRow struct {
 // starts at 1; current_version starts at 0 (no published versions yet).
 func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow, error) {
 	const q = `INSERT INTO workflows
-		(id, tenant_id, project_id, name, current_version, status, type, git_strategy)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		(id, tenant_id, project_id, name, current_version, status, type, git_strategy, ephemeral)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
+			version, created_at, updated_at, ephemeral`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type, w.GitStrategy,
+		w.Ephemeral,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.Name, &row.CurrentVersion,
 		&row.Status, &row.Type, &row.GitStrategy, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.Ephemeral,
 	)
 	if err != nil {
 		return WorkflowRow{}, fmt.Errorf("db: create workflow: %w", err)
@@ -202,12 +214,13 @@ func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow,
 // GetWorkflow fetches a single workflow by id within the tenant scope.
 func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRow, error) {
 	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-		version, created_at, updated_at
+		version, created_at, updated_at, ephemeral
 		FROM workflows WHERE id = $1 AND tenant_id = $2`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -231,6 +244,15 @@ type ListWorkflowsFilter struct {
 	Search        string
 	SortBy        string // "name", "status", "created_at" (default "id")
 	SortOrder     string // "asc" or "desc" (default "asc")
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work):
+	// ""/"exclude" (the default) = ONLY ordinary workflows — the Workflows
+	// view; "only" = only ephemeral workflows; "include" = both, for the
+	// Quick Work agent managing the workflows it created.
+	//
+	// The zero value is the SAFE value on purpose: a caller that has never
+	// heard of ephemeral workflows hides them by default. See
+	// ephemeralPredicateOn.
+	EphemeralScope string
 }
 
 // ListWorkflows returns a page of workflows for the tenant with
@@ -242,6 +264,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	}
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`
+	where += ephemeralPredicateOn("", f.EphemeralScope)
 	idx := 2
 	if f.AfterID != "" {
 		where += fmt.Sprintf(` AND id > $%d`, idx)
@@ -280,7 +303,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		sortOrder = "DESC"
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-		version, created_at, updated_at
+		version, created_at, updated_at, ephemeral
 		FROM workflows
 		WHERE %s
 		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
@@ -296,6 +319,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 			&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.Ephemeral,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow: %w", err)
 		}
@@ -368,11 +392,12 @@ func UpdateWorkflowStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, e
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
+			version, created_at, updated_at, ephemeral`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -389,11 +414,12 @@ func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 		SET name = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
+			version, created_at, updated_at, ephemeral`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, name).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -411,11 +437,12 @@ func UpdateWorkflowGitStrategy(ctx context.Context, tx pgx.Tx, tenantID, id stri
 		SET git_strategy = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
+			version, created_at, updated_at, ephemeral`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, gitStrategy).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -431,11 +458,12 @@ func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id s
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, name, current_version, status, type, git_strategy,
-			version, created_at, updated_at`
+			version, created_at, updated_at, ephemeral`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
 		&w.Status, &w.Type, &w.GitStrategy, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound

@@ -27,6 +27,16 @@ type WorkerRow struct {
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Ephemeral marks a machine-managed transient worker (Ask Orchicon
+	// Quick Work): created for one job, pinned to the Quick Work agent's own
+	// model_ref, hidden from the Workers view, and HARD-DELETED when the job
+	// ends. Always false for a human-created worker.
+	//
+	// Ungated by id: GetWorker and dispatch-time resolution read this row
+	// directly and deliberately ignore the flag, because a run must be able
+	// to execute the very worker the list gate hides. Only the LIST gate
+	// applies. See ephemeralPredicateOn.
+	Ephemeral bool
 }
 
 // WorkerVersionRow is the data-access shape of a worker_versions table
@@ -103,18 +113,18 @@ func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bo
 // current_version starts at 0 (no published versions yet).
 func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error) {
 	const q = `INSERT INTO workers
-		(id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		(id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by, ephemeral)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
-			current_version, created_by, version, created_at, updated_at`
+			current_version, created_by, version, created_at, updated_at, ephemeral`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.Name, w.Slug, w.Description, w.Purpose,
-		w.RoleRef, w.Status, w.CurrentVersion, w.CreatedBy,
+		w.RoleRef, w.Status, w.CurrentVersion, w.CreatedBy, w.Ephemeral,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Description,
 		&row.Purpose, &row.RoleRef, &row.Status, &row.CurrentVersion, &row.CreatedBy,
-		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.Version, &row.CreatedAt, &row.UpdatedAt, &row.Ephemeral,
 	)
 	if err != nil {
 		return WorkerRow{}, fmt.Errorf("db: create worker: %w", err)
@@ -125,13 +135,13 @@ func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error
 // GetWorker fetches a single worker by id within the tenant scope.
 func GetWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkerRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
-		current_version, created_by, version, created_at, updated_at
+		current_version, created_by, version, created_at, updated_at, ephemeral
 		FROM workers WHERE id = $1 AND tenant_id = $2`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
-		&w.CreatedAt, &w.UpdatedAt,
+		&w.CreatedAt, &w.UpdatedAt, &w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkerRow{}, ErrNotFound
@@ -152,6 +162,15 @@ type ListWorkersFilter struct {
 	SortOrder string
 	PageSize  int
 	AfterID   string
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work):
+	// ""/"exclude" (the default) = ONLY ordinary workers — the Workers
+	// view; "only" = only ephemeral workers; "include" = both, for the
+	// Quick Work agent managing the workers it created.
+	//
+	// The zero value is the SAFE value on purpose: a caller that has never
+	// heard of ephemeral workers hides them by default. See
+	// ephemeralPredicateOn.
+	EphemeralScope string
 }
 
 // Page-size bounds, EXPORTED so a caller can tell whether a page came back FULL.
@@ -186,6 +205,9 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 	}
 	args := []any{f.TenantID}
 	where := `w.tenant_id = $1`
+	// Qualified: this query joins worker_versions, and `ephemeral` is now a
+	// column on more than one table, so the bare form would be ambiguous.
+	where += ephemeralPredicateOn("w", f.EphemeralScope)
 	idx := 2
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (w.name ILIKE $%d OR w.slug ILIKE $%d OR w.purpose ILIKE $%d)`, idx, idx, idx)
@@ -232,6 +254,7 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 	}
 	q := fmt.Sprintf(`SELECT w.id, w.tenant_id, w.name, w.slug, w.description, w.purpose, w.role_ref, w.status,
 		w.current_version, w.created_by, w.version, w.created_at, w.updated_at,
+		w.ephemeral,
 		COALESCE(v.model_ref, ''), COALESCE(v.status, '')
 		FROM workers w
 		LEFT JOIN LATERAL (
@@ -253,7 +276,7 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 		var r WorkerListRow
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description,
 			&r.Purpose, &r.RoleRef, &r.Status, &r.CurrentVersion, &r.CreatedBy, &r.Version,
-			&r.CreatedAt, &r.UpdatedAt, &r.ActiveModelRef, &r.ActiveVersionStatus); err != nil {
+			&r.CreatedAt, &r.UpdatedAt, &r.Ephemeral, &r.ActiveModelRef, &r.ActiveVersionStatus); err != nil {
 			return nil, fmt.Errorf("db: scan worker list row: %w", err)
 		}
 		out = append(out, r)
@@ -269,6 +292,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	}
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`
+	where += ephemeralPredicateOn("", f.EphemeralScope)
 	idx := 2
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d OR purpose ILIKE $%d)`, idx, idx, idx)
@@ -304,7 +328,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 		idx++
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, description, purpose, role_ref, status,
-		current_version, created_by, version, created_at, updated_at
+		current_version, created_by, version, created_at, updated_at, ephemeral
 		FROM workers
 		WHERE %s
 		ORDER BY %s %s, id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
@@ -319,7 +343,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 		var w WorkerRow
 		if err := rows.Scan(&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description,
 			&w.Purpose, &w.RoleRef, &w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
-			&w.CreatedAt, &w.UpdatedAt); err != nil {
+			&w.CreatedAt, &w.UpdatedAt, &w.Ephemeral); err != nil {
 			return nil, fmt.Errorf("db: scan worker: %w", err)
 		}
 		out = append(out, w)
@@ -335,12 +359,12 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
-			current_version, created_by, version, created_at, updated_at`
+			current_version, created_by, version, created_at, updated_at, ephemeral`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
 		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
-		&w.CreatedAt, &w.UpdatedAt,
+		&w.CreatedAt, &w.UpdatedAt, &w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkerRow{}, ErrNotFound
@@ -415,12 +439,12 @@ func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedV
 	q += fmt.Sprintf(` WHERE tenant_id = $1 AND id = $2 AND version = $3 AND (status <> 'retired' OR $%d = true)`, setIdx)
 	args = append(args, onlyRole)
 	q += ` RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
-		current_version, created_by, version, created_at, updated_at`
+		current_version, created_by, version, created_at, updated_at, ephemeral`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
-		&w.CreatedAt, &w.UpdatedAt,
+		&w.CreatedAt, &w.UpdatedAt, &w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkerRow{}, ErrNotFound
@@ -438,12 +462,12 @@ func UpdateWorkerCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id str
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, description, purpose, role_ref, status,
-			current_version, created_by, version, created_at, updated_at`
+			current_version, created_by, version, created_at, updated_at, ephemeral`
 	var w WorkerRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
 		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose, &w.RoleRef,
 		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
-		&w.CreatedAt, &w.UpdatedAt,
+		&w.CreatedAt, &w.UpdatedAt, &w.Ephemeral,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkerRow{}, ErrNotFound

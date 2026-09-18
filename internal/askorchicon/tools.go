@@ -365,9 +365,12 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Workers ---
 		{
 			Name:        "list_workers",
-			Description: "List all workers for the current tenant.",
+			Description: "List all workers for the current tenant. Ephemeral (Quick Work) workers are EXCLUDED by default: they are machine-managed transients, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect workers you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkers,
+			Properties: map[string]PropertySchema{
+				"include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) workers. Default false — they are hidden from every human view."},
+			},
 		},
 		{
 			Name:        "get_worker",
@@ -379,7 +382,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_worker",
-			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id.",
+			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id. An EPHEMERAL worker is machine-managed and transient (Quick Work mode): hidden from every human view and meant to be removed with delete_worker when the job ends. Pin it to the same model_ref as the agent creating it.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
 			Properties: map[string]PropertySchema{
@@ -393,6 +396,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"behavior":      {Type: "string", Description: "Optional behavior section for the composed system prompt"},
 				"agents_md":     {Type: "string", Description: "Optional AGENTS.md section for the composed system prompt"},
 				"system_prompt": {Type: "string", Description: "Raw system prompt (used only when no role/skills/behavior/agents_md is provided)"},
+				"ephemeral":     {Type: "boolean", Description: "Mark the worker machine-managed and transient (Quick Work): hidden from every human view and meant to be removed with delete_worker when the job ends. Default false."},
 			},
 			Required: []string{"name"},
 		},
@@ -453,9 +457,12 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Workflows ---
 		{
 			Name:        "list_workflows",
-			Description: "List all workflows for the current tenant.",
+			Description: "List all workflows for the current tenant. Ephemeral (Quick Work) workflows are EXCLUDED by default: they are machine-managed transients, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect workflows you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkflows,
+			Properties: map[string]PropertySchema{
+				"include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) workflows. Default false — they are hidden from every human view."},
+			},
 		},
 		{
 			Name:        "get_workflow",
@@ -478,7 +485,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_workflow",
-			Description: "Create a new workflow AND its first draft version (v1) in one transaction, seeding steps when provided — the workflow is immediately editable and publishable from the UI. Type defaults to template (no project_id) or one_shot (with project_id). description seeds the version-1 note when version_note is empty. Returns the workflow row plus version and version_id.",
+			Description: "Create a new workflow AND its first draft version (v1) in one transaction, seeding steps when provided — the workflow is immediately editable and publishable from the UI. Type defaults to template (no project_id) or one_shot (with project_id). description seeds the version-1 note when version_note is empty. Returns the workflow row plus version and version_id. An EPHEMERAL workflow is machine-managed and transient (Quick Work mode): hidden from every human view and meant to be removed with delete_workflow when the job ends.",
 			Mutating:    true,
 			Fn:          toolCreateWorkflow,
 			Properties: map[string]PropertySchema{
@@ -491,8 +498,20 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"inputs":       {Type: "object", Description: "Optional JSON object of run inputs"},
 				"outputs":      {Type: "object", Description: "Optional JSON object of run outputs"},
 				"project_id":   {Type: "string", Description: "Optional project ID for a project-scoped one_shot workflow (project must be active)"},
+				"ephemeral":    {Type: "boolean", Description: "Mark the workflow machine-managed and transient (Quick Work): hidden from every human view and meant to be removed with delete_workflow when the job ends. Default false."},
 			},
 			Required: []string{"name"},
+		},
+		{
+			Name:        "delete_workflow",
+			Description: "PERMANENTLY delete a workflow by ID, together with ALL of its run history: its runs, its step runs, its versions and its edit locks. This is IRREVERSIBLE and the deleted rows CANNOT BE RESTORED. Use it to clean up an ephemeral (Quick Work) workflow when its job ends — cancelling is not available for workflows, so this is the only removal. Guarded: a NON-ephemeral workflow that has RUNS is refused unless confirm_delete_runs=true, because the agent cannot see how much history it is about to destroy.",
+			Mutating:    true,
+			Fn:          toolDeleteWorkflow,
+			Properties: map[string]PropertySchema{
+				"id":                  {Type: "string", Description: "Workflow ID"},
+				"confirm_delete_runs": {Type: "boolean", Description: "Required to delete a non-ephemeral workflow that has run history. Ignored for ephemeral (Quick Work) workflows."},
+			},
+			Required: []string{"id"},
 		},
 
 		// --- Workflow Runs ---

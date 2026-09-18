@@ -303,34 +303,6 @@ type ListWorkItemsFilter struct {
 	EphemeralScope string
 }
 
-// ephemeralPredicate returns the SQL predicate for an ephemeral scope.
-//
-//	""/"exclude" (default) → only non-ephemeral items — every human view.
-//	"only"                 → only ephemeral items.
-//	"include"              → both.
-//
-// This is a pure function, and the default is a SAFETY property rather than a
-// preference: any existing or future caller of ListWorkItems that has not
-// thought about ephemeral items MUST land on "exclude". A new human-facing
-// surface that forgets the gate is then a no-op instead of a leak of
-// machine-managed rows. Do not make "include" the default to "help" a
-// caller — have that caller ask for it.
-//
-// Note what the default protects and what it must NOT break: the dispatch
-// path does not come through this query at all (ListReadyTasks /
-// ListBlockedTasks in execution.go are separate statements), so an ephemeral
-// item still becomes ready, still dispatches and still runs.
-func ephemeralPredicate(scope string) string {
-	switch scope {
-	case "only":
-		return ` AND ephemeral`
-	case "include":
-		return ``
-	default:
-		return ` AND NOT ephemeral`
-	}
-}
-
 // ListWorkItems returns a page of work items for a project, ordered by
 // ULID id for stable cursor pagination (docs/07 §5.2).
 func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]WorkItemRow, error) {

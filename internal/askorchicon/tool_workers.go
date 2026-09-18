@@ -41,6 +41,16 @@ func rowWithExtra(row any, extra map[string]any) (json.RawMessage, error) {
 }
 
 func toolListWorkers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		// IncludeEphemeral opts the caller into machine-managed transient
+		// workers (Quick Work). Default FALSE: the Workers screen and an
+		// agent's list both render rows a human reads, and a throwaway
+		// worker showing up there is exactly the leak this prevents.
+		IncludeEphemeral bool `json:"include_ephemeral"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		json.Unmarshal(args, &params)
+	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -48,7 +58,8 @@ func toolListWorkers(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	}
 	defer ttx.Rollback(ctx)
 	workers, err := db.ListWorkers(ctx, ttx.Tx, db.ListWorkersFilter{
-		TenantID: tenantID,
+		TenantID:       tenantID,
+		EphemeralScope: ephemeralScopeFor(params.IncludeEphemeral),
 	})
 	if err != nil {
 		return nil, err
@@ -97,6 +108,11 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 		Behavior     string `json:"behavior"`
 		AgentsMD     string `json:"agents_md"`
 		SystemPrompt string `json:"system_prompt"`
+		// Ephemeral marks the worker machine-managed and transient (Quick
+		// Work): hidden from the Workers view, and meant to be removed with
+		// delete_worker when the job ends. Top-level only in the sense that
+		// nothing else references it by FK — assigned_worker_ref is JSONB.
+		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -117,6 +133,7 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 		Behavior:     params.Behavior,
 		AgentsMD:     params.AgentsMD,
 		SystemPrompt: params.SystemPrompt,
+		Ephemeral:    params.Ephemeral,
 	}
 	if err := worker.ValidateCreateWorkerInput(&in); err != nil {
 		return nil, err
