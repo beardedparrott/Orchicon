@@ -606,7 +606,15 @@ func listRow(it Item, width int) string {
 // truncate shortens s to at most w RUNES, marking the cut with an ellipsis so a shortened value is
 // never mistaken for the whole one. A wide glyph counts as one rune, which is why the row budget is
 // counted in runes throughout (see listRow).
-func truncate(s string, w int) string {
+//
+// TruncateRunes is the same function, EXPORTED, because a screen that composes a field INTO a row — an
+// execution's work-item title, bounded so the row stays scannable — needs the same rule the row itself
+// obeys. The alternative is a screen growing its own byte-slicing shortcut, which cuts UTF-8 in half.
+func truncate(s string, w int) string { return TruncateRunes(s, w) }
+
+// TruncateRunes shortens s to at most w runes, ending with an ellipsis when it had to cut. w <= 0
+// returns s unchanged ("no budget stated" rather than "show nothing").
+func TruncateRunes(s string, w int) string {
 	if w <= 0 {
 		return s
 	}

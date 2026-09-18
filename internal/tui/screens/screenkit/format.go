@@ -82,8 +82,20 @@ func FmtLocal(t time.Time) string { return t.In(time.Local).Format(timeLayout) }
 // start, confirming a time. The extra characters buy away the last ambiguity, and an abbreviation
 // alone cannot do that — "EST" and "EDT" name two different offsets, and a bare offset cannot be read
 // back into a zone.
-func FmtLocalFull(t time.Time) string {
-	l := t.In(time.Local)
+func FmtLocalFull(t time.Time) string { return FmtZoneFull(t, time.Local) }
+
+// FmtZoneFull renders an instant in a GIVEN zone, naming the zone and its offset.
+//
+// It exists because "local" is not always the right zone to show. A recurring schedule stores its own
+// zone, and its wall clock belongs to THAT zone: rendering a legacy UTC schedule's 09:00 through
+// FmtLocalFull would print the operator's local conversion of it — a different wall clock from the one
+// stored, which the form would then read back and save. A host showing a schedule's times passes the
+// schedule's zone here.
+func FmtZoneFull(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	l := t.In(loc)
 	return l.Format(timeLayout) + offsetSuffix(l)
 }
 

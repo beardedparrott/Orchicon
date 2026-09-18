@@ -79,6 +79,19 @@ type Model struct {
 	// above the form that opened it. dateField is the field it writes back into.
 	datePicker *kit2.DatePicker
 
+	// dtPicker is the open combined CALENDAR + CLOCK modal (a KDateTime field activated), layered above
+	// the form that opened it; dtStartField/dtEndField are the two fields it writes back into.
+	//
+	// ONE MODAL EDITS BOTH FIELDS, because a recurrence's start is a DATE AND A TIME and the schedule
+	// stores them as two strings (start_date "YYYY-MM-DD", start_time "HH:MM"). The operator asked for
+	// the combined control on this form ("I wonder if we should combine start date and time in the same
+	// type of calendar picker you made for work item schedules. That would be nice."), so the modal
+	// commits an instant and the host SPLITS it back into the pair the wire wants — rather than making
+	// the operator visit two controls that describe one moment.
+	dtPicker     *kit2.DateTimePicker
+	dtStartField string
+	dtEndField   string
+
 	// formZone is the IANA zone the open recurring form's wall-clock fields are expressed in, captured
 	// when the form is BUILT so the submit handler writes back the same zone the labels showed.
 	//
@@ -138,6 +151,9 @@ func (m *Model) SetSize(w, h int) {
 	if m.datePicker != nil {
 		m.datePicker.SetScreen(w, h)
 	}
+	if m.dtPicker != nil {
+		m.dtPicker.SetScreen(w, h)
+	}
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -149,7 +165,7 @@ func (m *Model) Init() tea.Cmd {
 // so a typed character is never stolen ('q' would quit, space would open
 // the tab menu, '/' the palette).
 func (m *Model) ClaimsKeys() bool {
-	return m.form != nil || m.Open != nil || m.datePicker != nil || m.Base.EditingDetail()
+	return m.form != nil || m.Open != nil || m.datePicker != nil || m.dtPicker != nil || m.Base.EditingDetail()
 }
 
 // ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
@@ -161,7 +177,7 @@ func (m *Model) ClaimsKeys() bool {
 // details-pane editor counts — the earlier rule only yielded to a centred window,
 // which let Tab escape this host.
 func (m *Model) FormOpen() bool {
-	return m.form != nil || m.datePicker != nil || m.Base.EditingDetail()
+	return m.form != nil || m.datePicker != nil || m.dtPicker != nil || m.Base.EditingDetail()
 }
 
 // ActiveForm returns the open form (nil when closed) — tests and the shell
@@ -492,9 +508,13 @@ func (m *Model) newCreateForm() *kit2.Form {
 	// asked (see screenkit.SystemZoneName); the label says so rather than quietly implying it is local,
 	// because a silent UTC default is the bug this field exists to fix.
 	m.formZone = screenkit.SystemZoneName()
+	// THE LABEL NAMES THE ZONE WITHOUT REPEATING THE LEGACY SPEECH, because the combined field's own
+	// value line below already prints it (displayScheduleStart). Saying "no zone set (legacy schedule)"
+	// twice in one form is noise, and the operator's report on this exact screen was that it is too
+	// crowded to read.
 	zoneLabel := m.formZone
 	if zoneLabel == "" {
-		zoneLabel = "UTC — system timezone could not be determined"
+		zoneLabel = "UTC"
 	}
 	f := kit2.NewForm("New recurring item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "nightly triage sweep"},
@@ -506,10 +526,17 @@ func (m *Model) newCreateForm() *kit2.Form {
 		// Weekdays are TOGGLED, not typed: "Mon,Wed,Fri" is a spelling test, and the
 		// multi-select shows the whole week with the chosen days marked.
 		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions()},
-		// A DATE is chosen from the calendar, not typed: "YYYY-MM-DD" is a format to
-		// remember and a text box cannot show that the 14th is a Saturday.
-		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: now.Format("2006-01-02")},
-		kit2.FieldSpec{Name: "start_time", Label: "Start time (" + zoneLabel + ")", Kind: kit2.KText, Required: true, Initial: "09:00", Validate: validateClock},
+		// A DATE AND A TIME, chosen from ONE modal calendar + clock — the operator's "combine start date
+		// and time in the same type of calendar picker".
+		//
+		// The field holds the INSTANT the schedule's wall clock denotes in the schedule's zone, which the
+		// label names; the modal commits a moment, and the host splits it back into the
+		// start_date/start_time pair the wire wants. scheduleFromValues ALSO derives the pair from this
+		// value, so a create whose modal was never opened is still complete rather than submitting an
+		// empty start_time.
+		kit2.FieldSpec{Name: "start_date", Label: "Start date & time (" + zoneLabel + ")", Kind: kit2.KDateTime, Required: true,
+			Initial: scheduleSeedInitial(m.formZone, now, "09:00"),
+			Display: func(v string) string { return displayScheduleStart(v, m.formZone) }},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: "standard"},
 		// The WINDOW confines fires to a daily interval [start, end). Both empty =
 		// 24/7 (the legacy behaviour); both set = a half-open window, which the
@@ -536,9 +563,10 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 	// existing schedules to be left alone. The label states the legacy case so the wall clocks on screen
 	// are not mistaken for local ones.
 	m.formZone = strings.TrimSpace(s.GetTimezone())
+	// The legacy case (no zone) is stated by the field's own value line — see the create form's note.
 	zoneLabel := m.formZone
 	if zoneLabel == "" {
-		zoneLabel = "UTC — no zone set (legacy schedule)"
+		zoneLabel = "UTC"
 	}
 	enabled := "true"
 	if !w.GetRecurringEnabled() {
@@ -550,8 +578,9 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 		kit2.FieldSpec{Name: "frequency", Label: "Frequency", Kind: kit2.KSelect, Options: freqs, Initial: inOptions(s.GetFrequency(), []string{"daily", "hourly", "weekly", "monthly", "minute"}, "daily")},
 		kit2.FieldSpec{Name: "interval", Label: "Interval", Kind: kit2.KNumber, Required: true, Initial: strconv.Itoa(int(maxInt32(s.GetInterval(), 1))), Validate: validateInterval},
 		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions(), Initial: strings.Join(s.GetDays(), ",")},
-		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: s.GetStartDate()},
-		kit2.FieldSpec{Name: "start_time", Label: "Start time (" + zoneLabel + ")", Kind: kit2.KText, Required: true, Initial: s.GetStartTime(), Validate: validateClock},
+		kit2.FieldSpec{Name: "start_date", Label: "Start date & time (" + zoneLabel + ")", Kind: kit2.KDateTime, Required: true,
+			Initial: scheduleSeedInitial(m.formZone, seedTime(s.GetStartDate(), s.GetStartTime(), scheduleZoneLocation(m.formZone)), s.GetStartTime()),
+			Display: func(v string) string { return displayScheduleStart(v, m.formZone) }},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: inOptions(s.GetOutputsMode(), []string{"standard", "idea", "none"}, "standard")},
 		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Initial: s.GetWindowStart(), Placeholder: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Initial: s.GetWindowEnd(), Placeholder: "17:00", Validate: validateClock},
@@ -568,6 +597,11 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 	f.Width = 66
 	// A KDate field opens the host's calendar instead of accepting text.
 	f.OnOpenDatePicker = m.openDatePicker
+	// The recurring form's START is a combined date+time field, so it opens the merged calendar + clock
+	// rather than that calendar plus a bare time box. Wired HERE because every recurring form — create
+	// and edit — comes through this function, and a hook installed at one call site is a field that
+	// silently stops opening on the other.
+	f.OnOpenDateTimePicker = m.openScheduleStart
 	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
 		// One gate for BOTH modes: the window rules are the server's
 		// (internal/workitem/validate.go), and catching them here reports them at
@@ -812,6 +846,11 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			_, cmd := m.datePicker.HandleKey(msg)
 			return m, tea.Batch(cmd, m.finishDatePicker())
 		}
+		// The combined calendar + clock is the same kind of modal and takes the keys the same way.
+		if m.dtPicker != nil {
+			_, cmd := m.dtPicker.HandleKey(msg)
+			return m, tea.Batch(cmd, m.finishDateTimePicker())
+		}
 		// The INLINE details-pane editor owns every key while it is up — it is the
 		// focused surface, so this comes FIRST.
 		//
@@ -900,6 +939,8 @@ func (m *Model) View() string {
 		// opened from, so it is checked first.
 		if m.datePicker != nil {
 			body = kit2.Center(body, m.datePicker.View(), m.w, m.h)
+		} else if m.dtPicker != nil {
+			body = kit2.Center(body, m.dtPicker.View(), m.w, m.h)
 		} else if m.form != nil {
 			body = kit2.Center(body, formBox(m.form, m.w), m.w, m.h)
 		} else if m.Open != nil {
@@ -1088,6 +1129,54 @@ func recurringZoneLabel(zone string) string {
 	return zone
 }
 
+// scheduleSeedInitial is the combined start field's Initial seed: the RFC3339 instant the pair (a
+// calendar day plus a wall clock) denotes in the schedule's zone.
+//
+// IT TAKES THE PAIR RATHER THAN BEING GIVEN AN INSTANT for the create path, where the seed is "today at
+// 09:00" — a WALL CLOCK, not a moment, and one that has to be read in the schedule's zone or a legacy
+// UTC form would open the modal on the operator's local reading of a UTC clock.
+func scheduleSeedInitial(zone string, at time.Time, clock string) string {
+	loc := scheduleZoneLocation(zone)
+	date := at.In(loc).Format("2006-01-02")
+	seed := seedTime(date, clock, loc)
+	if seed.IsZero() {
+		seed = at.In(loc)
+	}
+	return seed.Format(time.RFC3339)
+}
+
+// displayScheduleStart renders the field's stored INSTANT as the wall clock it means in the SCHEDULE's
+// zone — the local time WITH the zone named, which is the operator's ask for every time in the TUI.
+//
+// The zone is a parameter because the field's value is an instant while its meaning is the schedule's:
+// a legacy schedule's 09:00 is 09:00 UTC, and rendering it with screenkit.FmtLocalFull would print the
+// OPERATOR's local conversion of it — a different wall clock from the one the schedule stores, which
+// would then be read back and saved. It has to be shown in the zone it is kept in.
+func displayScheduleStart(v, zone string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "not set"
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		// A value that will not parse is shown RAW rather than prettified: it is what would be sent,
+		// and replacing it with a friendly string would hide the one thing worth looking at.
+		return v
+	}
+	loc := scheduleZoneLocation(zone)
+	return t.In(loc).Format("2006-01-02 15:04 MST") + "  (" + scheduleZoneLabel(zone) + ")"
+}
+
+// scheduleZoneLabel names the zone the form's wall clocks are expressed in, speaking the legacy case out
+// loud. An empty zone is read as UTC by the server (deliberately, so an existing fire time never moves),
+// and an operator looking at times on screen has to be able to tell that they are not local.
+func scheduleZoneLabel(zone string) string {
+	if strings.TrimSpace(zone) == "" {
+		return "UTC — no zone set (legacy schedule)"
+	}
+	return zone
+}
+
 func scheduleFromValues(v map[string]string, multi map[string][]string, zone string) *apiv1.RecurringSchedule {
 	interval, _ := strconv.Atoi(strings.TrimSpace(v["interval"]))
 	if interval < 1 {
@@ -1100,12 +1189,30 @@ func scheduleFromValues(v map[string]string, multi map[string][]string, zone str
 	if len(days) == 0 {
 		days = splitDays(v["days"])
 	}
+	// THE WIRE'S PAIR, DERIVED FROM THE ONE FIELD. The form's start is a single date+time field holding
+	// an INSTANT; the schedule stores the wall clock it means as start_date + start_time. Splitting is
+	// done here rather than relying on the modal having written the pair, because the field's value is
+	// what the operator sees and confirms — a form submitted WITHOUT opening the modal (the common case)
+	// never fires the modal's split, and reading a stale pair would send whatever was there before the
+	// field was changed, or nothing at all on a create.
+	loc := scheduleZoneLocation(zone)
+	startDate := ""
+	startTime := ""
+	if at, err := time.Parse(time.RFC3339, strings.TrimSpace(v["start_date"])); err == nil {
+		local := at.In(loc)
+		startDate = local.Format("2006-01-02")
+		startTime = local.Format("15:04")
+	} else {
+		// The legacy typed shape: the two fields still standing on their own.
+		startDate = strings.TrimSpace(v["start_date"])
+		startTime = strings.TrimSpace(v["start_time"])
+	}
 	return &apiv1.RecurringSchedule{
 		Frequency:   strings.TrimSpace(v["frequency"]),
 		Interval:    int32(interval),
 		Days:        days,
-		StartDate:   strings.TrimSpace(v["start_date"]),
-		StartTime:   strings.TrimSpace(v["start_time"]),
+		StartDate:   startDate,
+		StartTime:   startTime,
 		OutputsMode: strings.TrimSpace(v["outputs"]),
 		WindowStart: strings.TrimSpace(v["window_start"]),
 		WindowEnd:   strings.TrimSpace(v["window_end"]),
@@ -1186,6 +1293,25 @@ func validateClock(v string) error {
 	return nil
 }
 
+// scheduleStartClock reads the WALL CLOCK a submit's start denotes: minutes past midnight.
+//
+// IT NEEDS NO ZONE, and that is not a shortcut. The stored value is RFC3339 written in the SCHEDULE's own
+// zone (both the picker's Value and scheduleSeedInitial format it that way), so its offset IS the
+// schedule's zone — and a parsed time's own Hour()/Minute() are therefore the operator's wall clock
+// already. Converting it into another location here would BE the bug rather than the fix.
+//
+// The bare start_time branch keeps the legacy typed shape working.
+func scheduleStartClock(v map[string]string) (int, bool) {
+	if at, err := time.Parse(time.RFC3339, strings.TrimSpace(v["start_date"])); err == nil {
+		return at.Hour()*60 + at.Minute(), true
+	}
+	st, err := time.Parse("15:04", strings.TrimSpace(v["start_time"]))
+	if err != nil {
+		return 0, false
+	}
+	return st.Hour()*60 + st.Minute(), true
+}
+
 // validateScheduleWindow mirrors the SERVER's rules (internal/workitem/validate.go:
 // 555-587) so a window the plane would reject is caught at the field instead of
 // coming back as a failed mutation. The rules are: both-or-neither, both HH:MM, end
@@ -1215,17 +1341,17 @@ func validateScheduleWindow(v map[string]string) error {
 	}
 	switch strings.ToLower(strings.TrimSpace(v["frequency"])) {
 	case "daily", "weekly", "monthly":
-		st, err := time.Parse("15:04", strings.TrimSpace(v["start_time"]))
-		if err != nil {
-			return nil // start_time has its own validator
+		mins, ok := scheduleStartClock(v)
+		if !ok {
+			return nil // the start field has its own validation
 		}
-		m := st.Hour()*60 + st.Minute()
-		if m < sm || m >= em {
+		if mins < sm || mins >= em {
 			return errors.New("start time must lie INSIDE the window for a daily/weekly/monthly schedule")
 		}
 	}
 	return nil
 }
+
 func validateDays(v string) error {
 	for _, d := range splitDays(v) {
 		if !weekdays[d] {
@@ -1251,13 +1377,29 @@ func cadence(s *apiv1.RecurringSchedule) string {
 	if d := s.GetDays(); len(d) > 0 {
 		out += " on " + strings.Join(d, ",")
 	}
+	// THE TIME CARRIES ITS ZONE. It used to read "at 09:00" with nothing saying where, which is the
+	// same unlabelled-time ambiguity this whole piece of work removed from the rest of the TUI — and it
+	// matters most HERE, because a legacy schedule's 09:00 is 09:00 UTC and the operator is in Central,
+	// so a bare "09:00" on this row is a wall clock they would have to convert in their head.
 	if t := s.GetStartTime(); t != "" {
-		out += " at " + t
+		out += " at " + t + " " + shortZoneLabel(s.GetTimezone())
 	}
 	if m := s.GetOutputsMode(); m != "" && m != "standard" {
 		out += " (" + m + " outputs)"
 	}
 	return out
+}
+
+// shortZoneLabel renders a schedule's zone for a dense context: the zone name, or "UTC" when the
+// schedule carries none (the legacy reading).
+//
+// It does NOT spell out "no zone set (legacy schedule)" — that sentence belongs on the detail pane's own
+// timezone field, where there is room for it, not inside a one-line cadence that sits in a list row.
+func shortZoneLabel(zone string) string {
+	if strings.TrimSpace(zone) == "" {
+		return "UTC"
+	}
+	return zone
 }
 
 func inOptions(v string, opts []string, fallback string) string {

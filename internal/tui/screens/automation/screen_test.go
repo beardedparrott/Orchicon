@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
@@ -56,10 +58,13 @@ func (p *fakePlane) add(w *apiv1.WorkItem) *apiv1.WorkItem {
 
 func (p *fakePlane) seedRecurring(id, title string, enabled bool) *apiv1.WorkItem {
 	return p.add(&apiv1.WorkItem{
-		Id:                id,
-		Title:             title,
-		Status:            apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
-		ProjectId:         "proj-1",
+		Id:        id,
+		Title:     title,
+		Status:    apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
+		ProjectId: "proj-1",
+		// A LEGACY schedule: written before the timezone field existed, so it carries NONE — which the
+		// server reads as UTC so the fire time is unchanged. That is the case the form has to label rather
+		// than silently re-zone, so it is the case worth seeding by default.
 		RecurringEnabled:  enabled,
 		RecurringSchedule: &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-01", StartTime: "09:00", OutputsMode: "standard"},
 		NextRunAt:         timestamppb.Now(),
@@ -495,8 +500,11 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	f.Set("frequency", "weekly")
 	f.Set("interval", "2")
 	f.Set("days", "Mon,Wed")
-	f.Set("start_date", "2026-09-01")
-	f.Set("start_time", "07:30")
+	// The start is now ONE combined date+time field holding an instant. Seeded the way the FORM seeds it
+	// — a wall clock read in the form's zone — so the assertion does not depend on which zone the test
+	// machine is in. A fixed offset here would be a lie on any machine but one, and the derived pair
+	// would legitimately come back different.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC), "07:30"))
 	f.Set("outputs", "idea")
 
 	run(t, m, submit(t, m, "outputs"))
@@ -544,7 +552,9 @@ func TestRecurringItemsEdit(t *testing.T) {
 	f.Set("title", "Weekly sweep")
 	f.Set("frequency", "weekly")
 	f.Set("interval", "3")
-	f.Set("start_time", "06:00")
+	// One combined field, as above, seeded in the form's own zone so the derived pair is the wall clock
+	// this test means regardless of the machine.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC), "06:00"))
 	run(t, m, submit(t, m, "enabled"))
 
 	req := p.lastUpdated(t)
@@ -884,7 +894,10 @@ func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 	}
 	f := m.ActiveForm()
 	if f == nil {
-		t.Fatal("n must open the create form")
+		return
+	}
+	if s := f.Spec("start_date"); s == nil || s.Kind != kit2.KDateTime {
+		t.Fatalf("fixture: start_date is not the combined date+time field")
 	}
 	if !f.FocusName("start_date") {
 		t.Fatal("fixture: no start_date field")
@@ -895,8 +908,8 @@ func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 	if cmd := press(t, m, "enter"); cmd != nil {
 		run(t, m, cmd)
 	}
-	if m.datePicker == nil {
-		t.Fatal("enter on start_date must open the calendar")
+	if m.dtPicker == nil {
+		t.Fatal("enter on start_date must open the combined calendar + clock")
 	}
 	if !m.ClaimsKeys() {
 		t.Fatal("an open calendar must claim the keys")
@@ -905,23 +918,30 @@ func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 		t.Fatal("an open calendar must count as a form being open, so Tab reaches it")
 	}
 
-	// Step a day and choose it: the field takes the date.
-	dp := m.datePicker
+	// Step a day and choose it: the field takes the chosen instant, split back into the date+time pair.
+	dp := m.dtPicker
 	want := dp.Value()
 	press(t, m, "right")
 	if dp.Value() == want {
 		t.Fatal("right must move the calendar cursor")
 	}
-	chosen := dp.Value()
 	press(t, m, "enter")
-	if m.datePicker != nil {
-		t.Fatal("enter must close the calendar")
+	if m.dtPicker != nil {
+		t.Fatal("enter must close the modal")
 	}
-	if got := m.ActiveForm().Values["start_date"]; got != chosen {
-		t.Fatalf("start_date = %q, want the chosen date %q", got, chosen)
-	}
+	// The field holds the instant; the WIRE pair is derived from it, so what matters is that the chosen
+	// day reached both.
+	chosen := dp.Time()
 	if got := m.ActiveForm().Values["start_date"]; got == before {
 		t.Fatal("the field did not change — the choice was not written back")
+	}
+	sched := scheduleFromValues(m.ActiveForm().Values, nil, m.formZone)
+	if sched.GetStartDate() != chosen.Format("2006-01-02") {
+		t.Errorf("start_date on the wire = %q, want the chosen day %q",
+			sched.GetStartDate(), chosen.Format("2006-01-02"))
+	}
+	if sched.GetStartTime() == "" {
+		t.Error("the wire carries no start_time: the pair was not derived from the combined field")
 	}
 }
 
@@ -935,21 +955,122 @@ func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
 		run(t, m, cmd)
 	}
 	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+	if s := f.Spec("start_date"); s == nil || s.Kind != kit2.KDateTime {
+		t.Fatalf("fixture: start_date is not the combined date+time field")
+	}
 	f.FocusName("start_date")
 	before := f.Values["start_date"]
 	if cmd := press(t, m, "enter"); cmd != nil {
 		run(t, m, cmd)
 	}
-	if m.datePicker == nil {
+	if m.dtPicker == nil {
 		t.Fatal("fixture: the calendar did not open")
 	}
 	press(t, m, "right") // move, then abandon
 	press(t, m, "esc")
-	if m.datePicker != nil {
+	if m.dtPicker != nil {
 		t.Fatal("esc must close the calendar")
 	}
 	if got := m.ActiveForm().Values["start_date"]; got != before {
 		t.Fatalf("start_date = %q, want it untouched (%q)", got, before)
+	}
+}
+
+// THE START IS ONE FIELD, CHOSEN FROM ONE MODAL.
+//
+// The operator: "I wonder if we should combine start date and time in the same type of calendar picker
+// you made for work item schedules. That would be nice."
+//
+// Previously the form made the operator visit a calendar for the date and a bare text box for the time —
+// two controls describing one moment, and the text box was the one that demanded HH:MM exactly. The
+// assertions below pin BOTH halves of the replacement, because either alone would look right and be
+// useless: a single field that no modal opens is a dead field, and a modal whose value never reaches the
+// wire leaves the schedule unscheduled.
+func TestRecurringStartIsOneCombinedField(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+
+	s := f.Spec("start_date")
+	if s == nil {
+		t.Fatal("the create form must carry a start field")
+	}
+	if s.Kind != kit2.KDateTime {
+		t.Errorf("start_date is kind %q, want the combined date+time kind — the date calendar plus a "+
+			"separate time box is exactly the two-controls-for-one-moment shape the operator asked to "+
+			"collapse", s.Kind)
+	}
+	// The separate time box is GONE. It is the half that forced HH:MM typing, and a field left behind
+	// would keep demanding it alongside the modal.
+	if gone := f.Spec("start_time"); gone != nil {
+		t.Errorf("the form still carries a standalone start_time field (%q): the combined control replaced "+
+			"it", gone.Kind)
+	}
+	// Its value is the instant the schedule's wall clock denotes, so it must parse — the modal's format
+	// and the wire's are the same RFC3339.
+	if _, err := time.Parse(time.RFC3339, f.Values["start_date"]); err != nil {
+		t.Errorf("the seeded start %q is not RFC3339: %v", f.Values["start_date"], err)
+	}
+	// And entering on it opens the modal rather than editing text.
+	if !f.FocusName("start_date") {
+		t.Fatal("fixture: the start field is not focusable")
+	}
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.dtPicker == nil {
+		t.Fatal("enter on the start field must open the combined calendar + clock")
+	}
+	// The modal edits in the SCHEDULE's zone, which is what keeps a legacy UTC schedule's wall clock
+	// meaning 09:00 UTC rather than being re-zoned by merely opening it.
+	if got := m.dtPicker.Zone().String(); got != scheduleZoneLocation(m.formZone).String() {
+		t.Errorf("the modal edits in %q, want the schedule's zone %q — otherwise opening and closing it "+
+			"would shift the stored time by the operator's offset", got, scheduleZoneLocation(m.formZone))
+	}
+}
+
+// THE MODAL'S CHOICE REACHES THE WIRE AS THE DATE+TIME PAIR THE SCHEDULE STORES.
+//
+// This is the half that fails silently: the schedule's wire shape is two strings (start_date "YYYY-MM-DD",
+// start_time "HH:MM") while the form holds one instant, so the split is what makes a combined control
+// usable at all. Deriving it in scheduleFromValues rather than only in the modal's write-back is
+// deliberate — the common path submits WITHOUT opening the modal, and that path never fires a write-back.
+func TestRecurringStartPairIsDerivedFromTheCombinedField(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+	// A wall clock seeded in the form's zone, so the expectation holds wherever the test runs.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.March, 9, 12, 0, 0, 0, time.UTC), "14:45"))
+
+	sched := scheduleFromValues(f.Values, nil, m.formZone)
+	if sched.GetStartDate() != "2026-03-09" {
+		t.Errorf("start_date = %q, want the chosen day", sched.GetStartDate())
+	}
+	if sched.GetStartTime() != "14:45" {
+		t.Errorf("start_time = %q, want the chosen wall clock 14:45 — the field holds an instant and the "+
+			"pair has to be derived from it", sched.GetStartTime())
+	}
+	if sched.GetTimezone() != m.formZone {
+		t.Errorf("timezone = %q, want the form's zone %q", sched.GetTimezone(), m.formZone)
 	}
 }
 

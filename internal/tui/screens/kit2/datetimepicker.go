@@ -96,6 +96,13 @@ type DateTimePicker struct {
 
 	screenW, screenH int
 
+	// zone is the location the wall clock is read AND written in. It is set by the constructor rather
+	// than read from the machine at commit time because a schedule stores its OWN zone: a legacy UTC
+	// schedule's 09:00 means 09:00 UTC whatever the operator's clock says, so the modal has to edit and
+	// commit in the SCHEDULE's zone — otherwise merely opening and closing it would shift the stored
+	// time by the operator's offset, with nobody asking for it.
+	zone *time.Location
+
 	// done/committed record the OUTCOME; the HOST closes the modal, for the reason ModelPicker.Done
 	// documents (a callback capturing the host model would mutate a copy bubbletea has already
 	// replaced).
@@ -103,12 +110,26 @@ type DateTimePicker struct {
 	committed bool
 }
 
-// NewDateTimePicker builds a picker seeded from an instant (zero = now) in the operator's zone.
+// NewDateTimePicker builds a picker seeded from an instant (zero = now) in the OPERATOR's zone.
 func NewDateTimePicker(title string, initial time.Time) *DateTimePicker {
+	return NewDateTimePickerIn(title, initial, time.Local)
+}
+
+// NewDateTimePickerIn builds a picker that edits and commits in a SPECIFIC zone.
+//
+// A picker with no zone of its own is right for a one-shot time (the operator chooses a moment and the
+// wire takes an instant). A RECURRENCE is different: its wall clock belongs to the schedule's zone, so a
+// host editing a recurring definition has to hand the modal that zone — otherwise a legacy UTC schedule
+// would be displayed and re-committed in local time, and merely opening and closing the modal would move
+// its fire time by the operator's offset without anyone asking for it.
+func NewDateTimePickerIn(title string, initial time.Time, zone *time.Location) *DateTimePicker {
+	if zone == nil {
+		zone = time.Local
+	}
 	if initial.IsZero() {
 		initial = time.Now()
 	}
-	p := &DateTimePicker{title: title}
+	p := &DateTimePicker{title: title, zone: zone}
 	p.setFrom(initial)
 	// MINUTES FIRST. dtUnit's zero value is dtHour, and for a schedule the FINE end is the one the
 	// arrows are reached for: an operator choosing a start time is almost always nudging by a minute or
@@ -119,12 +140,25 @@ func NewDateTimePicker(title string, initial time.Time) *DateTimePicker {
 }
 
 // setFrom adopts the LOCAL components of an instant — the one entry point for every mutation, so the
-// six fields can never be left disagreeing about which instant they describe.
+// six fields can never be left disagreeing about which instant they describe. "Local" here means the
+// picker's own ZONE (see zone), not the machine's.
 func (p *DateTimePicker) setFrom(t time.Time) {
-	l := t.In(time.Local)
+	l := t.In(p.loc())
 	p.year, p.month, p.day = l.Year(), l.Month(), l.Day()
 	p.hour, p.minute = l.Hour(), l.Minute()
 }
+
+// loc is the zone the picker edits and commits in, defaulting to the machine's when it was built the
+// simple way (NewDateTimePicker) rather than with an explicit one.
+func (p *DateTimePicker) loc() *time.Location {
+	if p.zone == nil {
+		return time.Local
+	}
+	return p.zone
+}
+
+// Zone names the zone the picker is editing in, so a host can say which one it is.
+func (p *DateTimePicker) Zone() *time.Location { return p.loc() }
 
 // Done reports that the modal finished and the host must close it.
 func (p *DateTimePicker) Done() bool { return p.done }
@@ -132,9 +166,10 @@ func (p *DateTimePicker) Done() bool { return p.done }
 // Committed reports whether Done was reached by CHOOSING (true) or by cancelling.
 func (p *DateTimePicker) Committed() bool { return p.committed }
 
-// Time is the chosen instant. time.Local is what makes the components on screen mean what they say.
+// Time is the chosen instant. The picker's own zone is what makes the components on screen mean what
+// they say.
 func (p *DateTimePicker) Time() time.Time {
-	return time.Date(p.year, p.month, p.day, p.hour, p.minute, 0, 0, time.Local)
+	return time.Date(p.year, p.month, p.day, p.hour, p.minute, 0, 0, p.loc())
 }
 
 // Value is the chosen instant as RFC3339 carrying the LOCAL OFFSET ("2026-09-18T14:30:00-04:00"), not
@@ -146,8 +181,8 @@ func (p *DateTimePicker) Time() time.Time {
 // something an operator does read back.
 func (p *DateTimePicker) Value() string { return p.Time().Format(time.RFC3339) }
 
-// Label is the chosen instant rendered for a human, with its zone name and UTC offset.
-func (p *DateTimePicker) Label() string { return screenkit.FmtLocalFull(p.Time()) }
+// Label is the chosen instant rendered for a human, in the picker's own zone.
+func (p *DateTimePicker) Label() string { return screenkit.FmtZoneFull(p.Time(), p.loc()) }
 
 func (p *DateTimePicker) SetScreen(w, h int) { p.screenW, p.screenH = w, h }
 
@@ -178,7 +213,7 @@ func (p *DateTimePicker) shiftDays(n int) { p.setFrom(p.Time().AddDate(0, 0, n))
 // silently landing on "the 31st of September" (which time.Date would roll into October) would commit a
 // date the operator never saw highlighted.
 func (p *DateTimePicker) shiftMonths(n int) {
-	t := time.Date(p.year, p.month, 1, p.hour, p.minute, 0, 0, time.Local).AddDate(0, n, 0)
+	t := time.Date(p.year, p.month, 1, p.hour, p.minute, 0, 0, p.loc()).AddDate(0, n, 0)
 	last := daysIn(t.Year(), t.Month())
 	d := p.day
 	if d > last {

@@ -582,6 +582,22 @@ func (f *Form) SetMulti(name, value string, on bool) {
 }
 
 // FocusName focuses a field by name.
+// Spec returns a field's spec by name, or nil when the form has no such field.
+//
+// Exported because the field KIND is part of a form's contract with its host: a test asserting that the
+// scheduled start is the combined date+time control (rather than the date control plus a text box it used
+// to be) has to read the spec, and reaching into Specs by hand at every call site is how a screen ends up
+// with its own copy of the lookup.
+func (f *Form) Spec(name string) *FieldSpec {
+	for i := range f.Specs {
+		if f.Specs[i].Name == name {
+			return &f.Specs[i]
+		}
+	}
+	return nil
+}
+
+// FocusName moves the cursor to the named field. Reports false when the form has no such field.
 func (f *Form) FocusName(name string) bool {
 	for i, s := range f.Specs {
 		if s.Name == name {
