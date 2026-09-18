@@ -836,58 +836,22 @@ func (s *Server) Run(ctx context.Context) error {
 	// process is gone (plane restart / lost runtime container) so
 	// recovery re-dispatches instead of leaving the workflow stuck.
 	if s.runtime != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			var once bool
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				if !once {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(1 * time.Second):
-					}
-					once = true
-				}
-				if err := s.runtime.Adopt(ctx); err != nil {
-					s.log.Warn("workflow runtime adopt failed", "error", err)
-				}
-				if s.reaper != nil {
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-sweep.C:
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.runtime.Adopt(ctx); err != nil {
+				s.log.Warn("workflow runtime adopt failed", "error", err)
+			}
+			if s.reaper != nil {
+				if err := s.reaper.Reap(ctx); err != nil {
+					s.log.Warn("execution liveness reap failed", "error", err)
 				}
 			}
-		}()
+		})
 	} else if s.reaper != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(1 * time.Second):
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				case <-sweep.C:
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.reaper.Reap(ctx); err != nil {
+				s.log.Warn("execution liveness reap failed", "error", err)
 			}
-		}()
+		})
 	}
 
 	// EPHEMERAL ABANDONMENT SWEEP (Ask Orchicon Quick Work). Quick Work
@@ -900,43 +864,21 @@ func (s *Server) Run(ctx context.Context) error {
 	// failure mode. Tenants are enumerated, and each tenant's deletes run in
 	// its own RLS transaction.
 	//
-	// First pass after a minute (a plane that just restarted may have
-	// inherited a crashed run's transients), then every 10 minutes. A plane
-	// with no transients pays an index probe on an empty partial index.
+	// First pass after a minute (a plane that just restarted may have inherited
+	// a crashed run's transients), then every 10 minutes. A plane with no
+	// transients pays an index probe on an empty partial index.
+	//
+	// The warm-up-then-ticker shape is runOnStartupThenEvery's, for the reason
+	// documented there: written inline as a `time.After` case beside the
+	// ticker's case, the ticker becomes unreachable and the sweep runs at the
+	// WARM-UP cadence instead of the interval.
 	go func() {
 		sweeper := ephemeral.NewSweeper(s.pool, s.log)
-		runSweep := func() {
+		runOnStartupThenEvery(ctx, 1*time.Minute, ephemeral.SweepInterval, func() {
 			if _, err := sweeper.Sweep(ctx); err != nil {
 				s.log.Warn("ephemeral sweep failed", "error", err)
 			}
-		}
-		// ONE warm-up pass, then the ticker — as two sequential phases, NOT as
-		// a `time.After` case sitting beside the ticker's case.
-		//
-		// WHY THE SHAPE MATTERS: `case <-time.After(d)` inside a `for/select`
-		// constructs a FRESH timer on every iteration, so a short branch next
-		// to a long one always wins and the long one never fires at all. With
-		// a 1-minute branch beside a 10-minute ticker, the ticker case is
-		// unreachable and the sweep runs every minute — measured, not deduced.
-		// The warm-up exists because a plane that has just restarted may have
-		// inherited a crashed run's transients, which should go quickly rather
-		// than wait out a full interval.
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(1 * time.Minute):
-			runSweep()
-		}
-		sweep := time.NewTicker(ephemeral.SweepInterval)
-		defer sweep.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-sweep.C:
-				runSweep()
-			}
-		}
+		})
 	}()
 
 	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses
@@ -945,20 +887,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// OOM) reparents live children to PID 1. Sweep at boot (1s) and every
 	// 30s: any marked child whose parent is PID 1 has no controlling
 	// execution and is killed (process group).
-	go func() {
-		sweep := time.NewTicker(30 * time.Second)
-		defer sweep.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(1 * time.Second):
-				mcpclient.SweepStaleChildren(ctx, s.log)
-			case <-sweep.C:
-				mcpclient.SweepStaleChildren(ctx, s.log)
-			}
-		}
-	}()
+	go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+		mcpclient.SweepStaleChildren(ctx, s.log)
+	})
 
 	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +
 	// dead-letter — docs/07 §3.11). Degrades gracefully when NATS is
