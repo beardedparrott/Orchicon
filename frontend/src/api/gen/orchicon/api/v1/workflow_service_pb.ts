@@ -1755,6 +1755,74 @@ export class RetryFailedWorkflowRunResponse extends Message<RetryFailedWorkflowR
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteWorkflowRunRequest
+ */
+export class DeleteWorkflowRunRequest extends Message<DeleteWorkflowRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<DeleteWorkflowRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowRunRequest {
+    return new DeleteWorkflowRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowRunRequest {
+    return new DeleteWorkflowRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowRunRequest {
+    return new DeleteWorkflowRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowRunRequest | PlainMessage<DeleteWorkflowRunRequest> | undefined, b: DeleteWorkflowRunRequest | PlainMessage<DeleteWorkflowRunRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteWorkflowRunResponse
+ */
+export class DeleteWorkflowRunResponse extends Message<DeleteWorkflowRunResponse> {
+  constructor(data?: PartialMessage<DeleteWorkflowRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowRunResponse {
+    return new DeleteWorkflowRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowRunResponse {
+    return new DeleteWorkflowRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowRunResponse {
+    return new DeleteWorkflowRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowRunResponse | PlainMessage<DeleteWorkflowRunResponse> | undefined, b: DeleteWorkflowRunResponse | PlainMessage<DeleteWorkflowRunResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowRunResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StreamWorkflowEventsRequest
  */
 export class StreamWorkflowEventsRequest extends Message<StreamWorkflowEventsRequest> {

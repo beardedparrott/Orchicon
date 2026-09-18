@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowRunRequest, DeleteWorkflowRunResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -266,6 +266,29 @@ export const WorkflowService = {
       name: "RetryFailedWorkflowRun",
       I: RetryFailedWorkflowRunRequest,
       O: RetryFailedWorkflowRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteWorkflowRun hard-deletes a single WorkflowRun and its step runs.
+     *
+     * WHY THIS EXISTS. Every other list in the client could be pruned and runs could
+     * not: DeleteWorkflow cascades to a workflow's ENTIRE run history, which is a
+     * different and far blunter act than removing one finished run. The operator,
+     * mid-live-test: "Executions and Workflow Runs do not have a delete operation
+     * (single and bulk)." Executions had DeleteExecution/BatchDeleteExecutions all
+     * along; runs had nothing at any layer.
+     *
+     * A RUNNING run is ABORTED first (status → aborted, ended_at set) and only then
+     * removed, so a delete can never leave a live run's reconciler writing into a
+     * deleted row — the same sequencing DeleteExecution uses. Terminal runs are
+     * removed directly. Irreversible.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.DeleteWorkflowRun
+     */
+    deleteWorkflowRun: {
+      name: "DeleteWorkflowRun",
+      I: DeleteWorkflowRunRequest,
+      O: DeleteWorkflowRunResponse,
       kind: MethodKind.Unary,
     },
     /**
