@@ -22,6 +22,7 @@ import (
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -212,7 +213,11 @@ func shortClock(ts interface {
 	if t.IsZero() {
 		return ""
 	}
-	return t.Format("15:04:05")
+	// LOCAL, WITH ITS ZONE. This used to be a bare Format("15:04:05") on AsTime() — and AsTime() yields
+	// a UTC instant, so every step's clock was silently the PLANE's wall clock with nothing saying so.
+	// The zone is not decoration: a flow row answers "when did this step run?", and an unlabelled clock
+	// that is secretly UTC answers it wrongly for everyone outside UTC.
+	return screenkit.FmtClock(t)
 }
 
 // stepKindBadge is the same short vocabulary the workflow flow uses, so a run and its definition

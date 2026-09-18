@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -83,6 +84,15 @@ type Model struct {
 	form     *kit2.Form
 	formMode string
 	formID   string
+
+	// dtPicker is the open combined calendar + clock modal (a KDateTime field activated), layered
+	// ABOVE the form it was opened from; dtField is the field it writes back into. Nil when closed.
+	//
+	// It is the screen's own modal, like the automation screen's calendar, for the reason
+	// kit2.ModelPicker.Done documents: a host callback closing a modal would mutate a copy of the model
+	// that bubbletea has already replaced, so the SCREEN owns both the open and the close.
+	dtPicker *kit2.DateTimePicker
+	dtField  string
 
 	// formLoading is true from the moment a modal is REQUESTED until its
 	// payload arrives. The create/edit forms need an option-list round trip
@@ -232,7 +242,9 @@ func (m *Model) ModalFormOpen() bool { return m.form != nil }
 // option lists asynchronously, and in that window a form is not yet open —
 // so without this the arrow keys reached the list behind the modal.
 func (m *Model) ClaimsKeys() bool {
-	return m.form != nil || m.Open != nil || m.formLoading ||
+	// dtPicker participates for the same reason a form does: while the calendar is up it owns every
+	// key, and a keystroke that reached the list behind it would act on the wrong thing.
+	return m.form != nil || m.dtPicker != nil || m.Open != nil || m.formLoading ||
 		m.Base.EditingDetail() || m.Base.Filtering()
 }
 
@@ -297,6 +309,50 @@ func (m *Model) ActiveForm() *kit2.Form {
 
 // DialogOpen reports whether a confirmation dialog is up.
 func (m *Model) DialogOpen() bool { return m.Open != nil }
+
+// openDateTimePicker opens the host's combined calendar + clock for a KDateTime field, seeded from the
+// field's current value so editing starts where the operator left it.
+//
+// The seed is parsed as RFC3339 and handed over as an INSTANT; the picker converts to local wall clock
+// itself, which is the whole point — the operator edits the day and the time they think in, and the
+// value that comes back is the moment they meant. An EMPTY or unparseable seed falls back to now, so
+// the common case (scheduling something soon) opens on the current day rather than on the zero date.
+func (m *Model) openDateTimePicker(field, current string) tea.Cmd {
+	var initial time.Time
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(current)); err == nil {
+		initial = t
+	}
+	m.dtField = field
+	p := kit2.NewDateTimePicker("Scheduled start", initial)
+	p.SetScreen(m.w, m.h)
+	m.dtPicker = p
+	return nil
+}
+
+// finishDateTimePicker closes the calendar when it reports Done and writes the chosen instant into the
+// field that opened it. The SCREEN owns the close (see kit2.ModelPicker.Done for why a host callback
+// cannot).
+//
+// A CANCELLED modal writes nothing: esc must leave the field exactly as it was, or dismissing the
+// calendar would silently reschedule the item to whatever the cursor happened to be sitting on.
+func (m *Model) finishDateTimePicker() tea.Cmd {
+	if m.dtPicker == nil || !m.dtPicker.Done() {
+		return nil
+	}
+	value, committed, field := m.dtPicker.Value(), m.dtPicker.Committed(), m.dtField
+	m.dtPicker, m.dtField = nil, ""
+	if !committed {
+		return nil
+	}
+	// ActiveForm, NOT m.form: the scheduled-start field lives on the INLINE detail-pane editor (the
+	// `e` gesture), where m.form is nil and the form is Base.DetailForm(). Writing to m.form alone
+	// would have dropped every picked value on the one path the operator actually uses — the calendar
+	// would commit, close, and change nothing.
+	if f := m.ActiveForm(); f != nil && field != "" {
+		f.Set(field, value)
+	}
+	return nil
+}
 
 // Notice returns the last action's status line ("" = none).
 func (m *Model) Notice() string { return m.notice }
@@ -829,6 +885,17 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.handleBuildChunk(msg)
 
 	case tea.KeyMsg:
+		// THE CALENDAR IS THE TOPMOST MODAL, so it owns every key FIRST — above the search box and,
+		// critically, above the inline detail editor, which is the surface it is usually opened FROM.
+		//
+		// THIS ORDERING IS NOT A DETAIL. The scheduled-start field lives on the INLINE detail editor
+		// (the `e` gesture), and that editor claims every key before anything else — so with the
+		// calendar checked after it, enter and esc went to the FORM: the modal could be neither
+		// committed nor dismissed. It opened, and then ignored the operator entirely.
+		if m.dtPicker != nil {
+			_, cmd := m.dtPicker.HandleKey(msg)
+			return m, tea.Batch(cmd, m.finishDateTimePicker())
+		}
 		// The search box (the operator typing into the filter row) owns every
 		// key first: it is a text input.
 		if m.Base.Filtering() {
@@ -1035,7 +1102,12 @@ func (m *Model) View() string {
 	body += "\n" + m.HintLine()
 	if m.w > 0 && m.h > 0 {
 		body = kit2.FitLines(body, m.w, m.h)
-		if m.form != nil {
+		if m.dtPicker != nil {
+			// Re-stated every frame: the picker caches the screen size to size its box, and a resize
+			// while it is open would otherwise leave it laid out for the terminal it was opened in.
+			m.dtPicker.SetScreen(m.w, m.h)
+			body = kit2.Center(body, m.dtPicker.View(), m.w, m.h)
+		} else if m.form != nil {
 			body = kit2.Center(body, formBox(m.form, m.w), m.w, m.h)
 		} else if m.Open != nil {
 			box := m.Open.Box(minInt(64, m.w-4), minInt(12, m.h-2))

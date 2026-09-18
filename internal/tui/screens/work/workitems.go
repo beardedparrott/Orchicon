@@ -464,8 +464,22 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
 			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image ")},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
-		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KPicker,
-			Options:  pickerOptsWithCurrent(schedulePresets(), rfc3339OrEmpty(w.GetScheduledStartAt()), ""),
+		// A DAY AND A TIME, chosen from ONE modal calendar + clock — never typed, never a preset.
+		//
+		// This replaces a KPicker fed by schedulePresets(): ten canned offsets ("in 15 minutes" …
+		// "in 1 week") whose labels printed a raw UTC timestamp. The operator's report — "Having to
+		// type the time in the EXACT format or pick very specific time jumps like 15 minutes is very
+		// limiting" — describes exactly the two things that control forced: accept a time you did not
+		// want, or type RFC3339 by hand. Neither is choosing, and both are gone.
+		//
+		// The STORED value stays RFC3339 (that is what the request carries); Display renders it in
+		// local time WITH the zone, so what the operator reads back is the moment they picked.
+		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KDateTime,
+			// SEEDED from the item's existing value, or editing a scheduled item would open on a BLANK
+			// field and saving would clear the schedule the operator never touched. RFC3339 is what the
+			// picker parses; an unscheduled item seeds empty and the picker opens on now.
+			Initial:  rfc3339OrEmpty(w.GetScheduledStartAt()),
+			Display:  displayScheduledStart,
 			Validate: validateOptionalRFC3339},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
 	)
@@ -484,57 +498,27 @@ func (m *Model) newItemStatusForm(w *apiv1.WorkItem) *kit2.Form {
 	return f
 }
 
-// schedulePresets are ready-made scheduled times. Each label carries BOTH the
-// plain-English name AND the exact timestamp, because the field's committed
-// display is its label — so choosing "in 1 hour" also PRINTS the full date and
-// time it resolves to (the operator's "once selected, it should print out the
-// full start date/time"). The list is deliberately fine-grained at the near end,
-// where scheduling usually happens.
-func schedulePresets() []kit2.Option {
-	now := time.Now().UTC()
-	labels := []struct {
-		at   time.Time
-		name string
-	}{
-		{now.Add(15 * time.Minute), "in 15 minutes"},
-		{now.Add(30 * time.Minute), "in 30 minutes"},
-		{now.Add(time.Hour), "in 1 hour"},
-		{now.Add(2 * time.Hour), "in 2 hours"},
-		{now.Add(4 * time.Hour), "in 4 hours"},
-		{todayAt(now, 18), "today 18:00"},
-		{tomorrowAt9(now), "tomorrow 09:00"},
-		{tomorrowAt(now, 18), "tomorrow 18:00"},
-		{nextMondayAt9(now), "next Monday 09:00"},
-		{now.AddDate(0, 0, 7), "in 1 week"},
+// displayScheduledStart renders the STORED RFC3339 instant for the operator: in local time, labelled
+// with the zone name AND its UTC offset.
+//
+// WHY THIS IS A DISPLAY HOOK RATHER THAN A REFORMAT OF THE VALUE. The stored string must stay RFC3339,
+// because it is exactly what the request carries and the submit handler reads it back verbatim. But
+// "2026-09-18T14:30:00-04:00" is the wrong thing to show a person, who wants
+// "2026-09-18 14:30 EDT (UTC-04:00)" — and getting that by rewriting the stored value would mean the
+// field no longer holds what it sends. kit2.FieldSpec.Display exists for precisely this split.
+func displayScheduledStart(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "— not scheduled —"
 	}
-	opts := make([]kit2.Option, 0, len(labels)+1)
-	opts = append(opts, kit2.Option{Value: "", Label: "— not scheduled —"})
-	for _, l := range labels {
-		at := l.at.Truncate(time.Minute).UTC()
-		// Only offer times still in the FUTURE: a preset computed late in the day
-		// for "today 18:00" would otherwise be a time in the past.
-		if !at.After(now) {
-			continue
-		}
-		rfc := at.Format(time.RFC3339)
-		opts = append(opts, kit2.Option{Value: rfc, Label: l.name + " — " + rfc})
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		// A value that cannot be parsed is shown RAW rather than prettified: it is what would be sent
+		// (or what the validator will reject), and replacing it with a friendly string would hide the
+		// one thing the operator needs to look at.
+		return v
 	}
-	return opts
-}
-
-func todayAt(now time.Time, hour int) time.Time {
-	y, m, d := now.Date()
-	return time.Date(y, m, d, hour, 0, 0, 0, time.UTC)
-}
-
-func tomorrowAt(now time.Time, hour int) time.Time {
-	y, m, d := now.AddDate(0, 0, 1).Date()
-	return time.Date(y, m, d, hour, 0, 0, 0, time.UTC)
-}
-
-func tomorrowAt9(now time.Time) time.Time {
-	y, m, d := now.AddDate(0, 0, 1).Date()
-	return time.Date(y, m, d, 9, 0, 0, 0, time.UTC)
+	return screenkit.FmtLocalFull(t)
 }
 
 // validateOptionalRFC3339 accepts an empty value (not scheduled) or a valid
@@ -546,21 +530,17 @@ func validateOptionalRFC3339(v string) error {
 	return validateRFC3339(v)
 }
 
-func nextMondayAt9(now time.Time) time.Time {
-	d := now.AddDate(0, 0, 1)
-	for d.Weekday() != time.Monday {
-		d = d.AddDate(0, 0, 1)
-	}
-	y, m, dd := d.Date()
-	return time.Date(y, m, dd, 9, 0, 0, 0, time.UTC)
-}
-
 // wireItemForm installs the submit handler: it builds the RPC request from
 // the collected values and hands it to the mutation executor. No screen
 // calls a write RPC from the update loop.
 func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 70
+	// The combined calendar + clock, for the scheduled-start field. Wired HERE so every form that
+	// carries a KDateTime field hosts it: the create form, the edit form and the status form all come
+	// through this function, and a hook installed at one call site is a field that silently stops
+	// opening on the others.
+	f.OnOpenDateTimePicker = m.openDateTimePicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(v["title"])
 		switch mode {
@@ -843,7 +823,12 @@ func rfc3339OrEmpty(ts *timestamppb.Timestamp) string {
 	if ts == nil {
 		return ""
 	}
-	return ts.AsTime().UTC().Format(time.RFC3339)
+	// LOCAL, with the offset — not a forced "...Z".
+	//
+	// Both spellings denote the same instant, so nothing on the wire changes; this is what the operator
+	// READS in a populated field, and an offset carries the one fact a bare Z throws away: the zone the
+	// value was chosen in.
+	return ts.AsTime().In(time.Local).Format(time.RFC3339)
 }
 
 // detailBody renders the item's description + acceptance criteria (the

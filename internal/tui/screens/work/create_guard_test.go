@@ -130,7 +130,13 @@ func TestSchedulePickerLivesInTheDetailsEditor(t *testing.T) {
 	if got := f.Values["auto_start"]; got == "true" {
 		t.Fatal("auto-start must not default to enabled")
 	}
-	// The scheduled-start field is a PICKER carrying ready-made times.
+	// The scheduled-start field is a DATE-AND-TIME control, set from the modal calendar + clock.
+	//
+	// It used to be a KPicker over "ready-made times", and this test used to assert that list existed —
+	// which is the assertion the operator's report invalidated: "What I would really like is a calendar
+	// and time picker as opposed to the canned times." So the canned list is now asserted ABSENT and the
+	// field kind is asserted PRESENT. (The modal's own behaviour is pinned in kit2/datetimepicker_test.go;
+	// what THIS test guards is that scheduling is still reachable from the details editor at all.)
 	var spec *kit2.FieldSpec
 	for i := range f.Specs {
 		if f.Specs[i].Name == "scheduled_start" {
@@ -140,22 +146,16 @@ func TestSchedulePickerLivesInTheDetailsEditor(t *testing.T) {
 	if spec == nil {
 		t.Fatal("the editor must carry a scheduled-start field")
 	}
-	if spec.Kind != kit2.KPicker {
-		t.Fatalf("scheduled start must be a picker, got %q", spec.Kind)
+	if spec.Kind != kit2.KDateTime {
+		t.Fatalf("scheduled start must be the date-and-time field kind, got %q", spec.Kind)
 	}
-	if len(spec.Options) < 3 {
-		t.Fatalf("expected ready-made times, got %d", len(spec.Options))
+	if len(spec.Options) != 0 {
+		t.Fatalf("the canned times are back: %d options on a field whose control is a calendar",
+			len(spec.Options))
 	}
-	// Choosing a preset sets the timestamp the request will carry.
-	var preset string
-	for _, o := range spec.Options {
-		if o.Value != "" {
-			preset = o.Value
-			break
-		}
-	}
-	f.Set("scheduled_start", preset)
-	if got := f.Values["scheduled_start"]; got != preset {
-		t.Fatalf("choosing a preset must set the timestamp: got %q, want %q", got, preset)
+	// Whatever sets the field, what it HOLDS is what the request carries.
+	f.Set("scheduled_start", "2026-09-01T09:00:00-04:00")
+	if got := f.Values["scheduled_start"]; got != "2026-09-01T09:00:00-04:00" {
+		t.Fatalf("the field must carry the chosen timestamp: got %q", got)
 	}
 }

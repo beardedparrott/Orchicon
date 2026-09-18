@@ -50,6 +50,18 @@ const (
 	// the format something to remember and hides which weekday a day is. The field
 	// is read-only and DISPLAYS the chosen date.
 	KDate Kind = "date"
+	// KDateTime is a DATE-AND-TIME field: an INSTANT chosen from the host's modal calendar + clock
+	// (kit2.DateTimePicker) rather than typed.
+	//
+	// It exists because a scheduled start is not a date. The form used to pair the calendar with a
+	// list of ten canned time presets, which is the control the operator rejected: "Having to type the
+	// time in the EXACT format or pick very specific time jumps like 15 minutes is very limiting."
+	// One control now chooses the day AND the clock, which is also the shape the GUI uses (a single
+	// `<input type="datetime-local">`).
+	//
+	// Like KDate and KModel it is a REFERENCE, so the field is read-only and DISPLAYS the chosen
+	// instant (see FieldSpec.Display for why the shown text differs from the stored value).
+	KDateTime Kind = "date-time"
 )
 
 // Option is one select choice.
@@ -96,6 +108,15 @@ type FieldSpec struct {
 	// the UI, and the honest signal is the field's own declaration rather than a guess
 	// about its contents.
 	NoPreview bool
+
+	// Display, when set, renders the value for the operator WITHOUT changing what is stored.
+	//
+	// It is the seam a value that is a WIRE FORMAT needs. A scheduled start must be stored as an
+	// RFC3339 instant, because that is exactly what the request carries — but "2026-09-18T14:30:00-04:00"
+	// is the wrong thing to show a person, who wants "2026-09-18 14:30 EDT (UTC-04:00)". Reformatting
+	// the stored value instead (the obvious alternative) would mean the field no longer holds what it
+	// sends, and it is the stored value the submit handler reads.
+	Display func(string) string
 }
 
 // Form is a typed, validated input collection that submits through the
@@ -153,6 +174,12 @@ type Form struct {
 	// host opens its calendar seeded with the field's current value and writes the
 	// chosen date back with Set. Same contract as OnOpenModelPicker.
 	OnOpenDatePicker func(name, current string) tea.Cmd
+
+	// OnOpenDateTimePicker is invoked when the operator ACTIVATES a KDateTime field. The host opens
+	// its combined calendar + clock seeded with the field's current value and writes the committed
+	// instant back with Set. Same contract as OnOpenDatePicker, and a separate hook rather than a
+	// widened one because the two need different MODALS, not different seeds.
+	OnOpenDateTimePicker func(name, current string) tea.Cmd
 
 	// editing is the field LOCKED for text editing, entered with Enter on a
 	// multi-line field and left with Esc. The operator's proposal: "we should not
@@ -730,6 +757,16 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	}
+	// A date-AND-TIME field is the same shape again, opening the host's combined calendar and clock.
+	if s != nil && s.Kind == KDateTime {
+		switch k.String() {
+		case "enter", " ", "space":
+			if f.OnOpenDateTimePicker != nil {
+				return f.OnOpenDateTimePicker(s.Name, f.Values[s.Name]), true
+			}
+			return nil, true
+		}
+	}
 	if s != nil && s.Kind == KPicker {
 		if cmd, handled := f.pickerKey(s, k); handled {
 			return cmd, true
@@ -1212,6 +1249,11 @@ func (f *Form) multiLine(s FieldSpec) string {
 
 func (f *Form) display(s FieldSpec) string {
 	v := f.Values[s.Name]
+	// A field may override how its value READS without changing what is STORED (see FieldSpec.Display).
+	// Checked first, so an override is total rather than a special case of one kind.
+	if s.Display != nil {
+		return s.Display(v)
+	}
 	switch s.Kind {
 	case KSecret:
 		if v == "" {
@@ -1563,6 +1605,14 @@ func (f *Form) View() string {
 				hint := "  enter: pick a date"
 				if f.Values[s.Name] != "" {
 					hint = "  enter: change date"
+				}
+				line += theme.HintText.Render(hint)
+			}
+			if s.Kind == KDateTime && focused {
+				// The combined control, named the same way.
+				hint := "  enter: pick a date & time"
+				if f.Values[s.Name] != "" {
+					hint = "  enter: change date & time"
 				}
 				line += theme.HintText.Render(hint)
 			}
