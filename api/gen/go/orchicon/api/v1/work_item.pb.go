@@ -766,8 +766,35 @@ type RecurringSchedule struct {
 	// calendar day; wrapping midnight is v1-out-of-scope and rejected. Fires use
 	// the anchor-grid-truncated-by-window semantic (A): the interval cadence is
 	// anchored at start_date+start_time and truncated to the window.
-	WindowStart   string `protobuf:"bytes,7,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"` // HH:MM, inclusive
-	WindowEnd     string `protobuf:"bytes,8,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`       // HH:MM, exclusive — must be > window_start
+	WindowStart string `protobuf:"bytes,7,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"` // HH:MM, inclusive
+	WindowEnd   string `protobuf:"bytes,8,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`       // HH:MM, exclusive — must be > window_start
+	// timezone is the IANA zone the wall-clock fields above are expressed in
+	// ("America/Chicago", "Europe/Berlin"). It is REQUIRED for a new schedule and
+	// is stamped by the creating client from its own system zone.
+	//
+	// WHY A RECURRENCE NEEDS A ZONE AND A TIMESTAMP DOES NOT. A one-shot
+	// scheduled_start_at is an INSTANT: it converts to UTC by construction and
+	// needs no zone. A recurrence is a WALL-CLOCK RULE — "09:00 every day" — and
+	// that phrase denotes a different instant in summer and winter (09:00 CDT and
+	// 09:00 CST are an hour apart), so it cannot be flattened into a single UTC
+	// instant without losing an hour for half the year. The zone travels with the
+	// rule; the wall clock stays a wall clock. This is the same division iCal
+	// makes with RRULE + TZID, and cron with CRON_TZ.
+	//
+	// EMPTY MEANS UTC, and that is the LEGACY semantic, preserved deliberately: a
+	// schedule written before this field existed must keep firing at exactly the
+	// instant it fires at today, so an empty timezone resolves to UTC. New
+	// schedules always carry a zone. Existing rows are NOT backfilled.
+	//
+	// "Local" IS REJECTED. time.LoadLocation("Local") SUCCEEDS and resolves to the
+	// reading machine's own zone, so it would pass a naive validity check while
+	// meaning something DIFFERENT on the server than on the client — a schedule
+	// stamped "Local" by a Central-time client would fire at the server's local
+	// time (UTC in a container). A zone that is only meaningful relative to
+	// whoever reads it is not a zone.
+	//
+	// Stored as a key inside the recurring_schedule JSONB (no new column).
+	Timezone      string `protobuf:"bytes,9,opt,name=timezone,proto3" json:"timezone,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -854,6 +881,13 @@ func (x *RecurringSchedule) GetWindowStart() string {
 func (x *RecurringSchedule) GetWindowEnd() string {
 	if x != nil {
 		return x.WindowEnd
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetTimezone() string {
+	if x != nil {
+		return x.Timezone
 	}
 	return ""
 }
@@ -1068,7 +1102,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status\"\x84\x02\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"\xa0\x02\n" +
 	"\x11RecurringSchedule\x12\x1c\n" +
 	"\tfrequency\x18\x01 \x01(\tR\tfrequency\x12\x1a\n" +
 	"\binterval\x18\x02 \x01(\x05R\binterval\x12\x12\n" +
@@ -1080,7 +1114,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\foutputs_mode\x18\x06 \x01(\tR\voutputsMode\x12!\n" +
 	"\fwindow_start\x18\a \x01(\tR\vwindowStart\x12\x1d\n" +
 	"\n" +
-	"window_end\x18\b \x01(\tR\twindowEnd\"\xfe\x01\n" +
+	"window_end\x18\b \x01(\tR\twindowEnd\x12\x1a\n" +
+	"\btimezone\x18\t \x01(\tR\btimezone\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +

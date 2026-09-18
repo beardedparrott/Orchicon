@@ -503,6 +503,14 @@ type recurringScheduleJSON struct {
 	OutputsMode string   `json:"outputs_mode"`
 	WindowStart string   `json:"window_start,omitempty"`
 	WindowEnd   string   `json:"window_end,omitempty"`
+	// Timezone is the IANA zone the wall-clock fields above are expressed in. The JSON key matches the
+	// proto field name, which is what makes the round trip work: the fire path unmarshals this same blob
+	// straight into apiv1.RecurringSchedule (workitem/recurring.go), so a key here with no proto field — or
+	// the reverse — would silently drop the zone.
+	//
+	// omitempty, so an existing (zone-less) schedule marshals byte-identically to before: nothing rewrites
+	// an empty timezone into the rows that predate the field.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
@@ -588,6 +596,16 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 			}
 		}
 	}
+	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is: a typo must
+	// fail the write rather than produce a schedule that silently never fires (or fires in the wrong
+	// zone). RecurringZone rejects the pseudo-zone Local as well as unknown names — see its own note for
+	// why a name that VALIDATES can still be wrong.
+	timezone := strings.TrimSpace(msg.Timezone)
+	if timezone != "" {
+		if _, err := RecurringZone(timezone); err != nil {
+			return nil, err
+		}
+	}
 	schedule := recurringScheduleJSON{
 		Frequency:   freq,
 		Interval:    int(msg.Interval),
@@ -597,6 +615,7 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 		OutputsMode: domain.NormalizeRecurringOutputsMode(msg.OutputsMode),
 		WindowStart: windowStart,
 		WindowEnd:   windowEnd,
+		Timezone:    timezone,
 	}
 	b, err := json.Marshal(schedule)
 	if err != nil {
@@ -675,15 +694,19 @@ func isInWindow(t time.Time, startMin, endMin int) bool {
 
 func nextWindowStart(t time.Time, startMin int) time.Time {
 	m := t.Hour()*60 + t.Minute()
+	// THE INSTANT'S OWN LOCATION, not time.UTC. These construct the moment the window next opens, and
+	// building it in UTC would move it by the zone offset — a Central schedule with a 09:00-17:00 window
+	// would resume from 03:00 local. t carries the schedule's zone (the anchor is built in it), so its
+	// location is the right one to construct the next window opening in.
 	if m < startMin {
 		// Later today at window start.
 		h, mm := startMin/60, startMin%60
-		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, time.UTC)
+		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, t.Location())
 	}
 	// Next day at window start.
 	h, mm := startMin/60, startMin%60
 	next := t.AddDate(0, 0, 1)
-	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, time.UTC)
+	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, t.Location())
 }
 
 // alignToGrid returns the smallest grid-aligned time >= target for the given
@@ -728,6 +751,37 @@ func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time 
 	}
 }
 
+// RecurringZone resolves a schedule's timezone to a location, and is the ONE definition of what a valid
+// zone is — shared by the write-side validation and the fire path so the two cannot disagree about a
+// schedule one accepted and the other rejects.
+//
+// EMPTY IS UTC, and that is the legacy semantic rather than a fallback: a schedule written before the
+// timezone field existed carries an empty value, and it must keep firing at exactly the instant it fires
+// at today. Nothing backfills it. New schedules always arrive with a zone stamped by the creating client.
+//
+// THE PSEUDO-ZONE Local IS REJECTED, and this is the subtle half. time.LoadLocation("Local") RETURNS NO
+// ERROR — it resolves to whatever machine is reading it, so asking whether a name is loadable says
+// nothing about whether it is a zone. A schedule stamped Local by a Central-time client would PASS
+// validation and then fire at the SERVER's local time, which in a container is UTC: the operator's 09:00
+// becomes 03:00, wearing a name that looked valid at every checkpoint. A zone that only means something
+// relative to its reader is not a zone, so it is refused by name.
+func RecurringZone(name string) (*time.Location, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return time.UTC, nil
+	}
+	if name == "Local" {
+		return nil, errors.New("recurring_schedule.timezone must be an IANA zone name (e.g. America/Chicago); " +
+			"the pseudo-zone Local resolves to whichever machine reads it, so it would mean a different zone " +
+			"on the server than on the client that set it")
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("recurring_schedule.timezone is not a known IANA zone; got %q", name)
+	}
+	return loc, nil
+}
+
 // ComputeNextRunAt computes the first occurrence of a recurring schedule
 // that is >= the given "now" time. The start_date + start_time define the
 // anchor; the frequency/interval/days define the cadence. When a daily
@@ -740,7 +794,19 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 	}
 	startDate := strings.TrimSpace(schedule.StartDate)
 	startTime := strings.TrimSpace(schedule.StartTime)
-	anchor, err := time.Parse("2006-01-02 15:04", startDate+" "+startTime)
+	// THE ANCHOR IS BUILT IN THE SCHEDULE'S OWN ZONE. ParseInLocation (not Parse) is the whole point:
+	// the digits of start_time plus a zone denote an instant, and Parse would have read those digits as
+	// UTC regardless of the zone stored beside them — which is the defect this field exists to fix.
+	//
+	// An unresolvable zone falls back to UTC rather than returning nil. That is deliberate: this function
+	// cannot report an error, and a schedule that has already been accepted must not silently STOP FIRING
+	// because a zone name became unavailable (a tzdata build without that region, say). Firing in the
+	// legacy zone is the safer failure; RecurringZone on the write path is what keeps bad names out.
+	loc, err := RecurringZone(schedule.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	anchor, err := time.ParseInLocation("2006-01-02 15:04", startDate+" "+startTime, loc)
 	if err != nil {
 		return nil
 	}
@@ -770,16 +836,24 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 			}
 		}
 		candidate := anchor
+		// daysSinceAnchor COUNTS CALENDAR-DAY STEPS, rather than dividing elapsed hours by 24.
+		//
+		// The hours/24 division is wrong the moment the anchor carries a ZONE: across a DST transition a
+		// local day is 23 or 25 hours, so after two days the elapsed total is 47 or 49 hours and the
+		// integer division lands on the WRONG day index — a weekly pattern would skip or repeat a
+		// weekday twice a year. Counting the AddDate steps directly is exact, and in UTC (the legacy,
+		// zone-less case, where every day really is 24 hours) it is arithmetic-identical to the old form.
+		daysSinceAnchor := 0
 		for i := 0; i < 1000; i++ {
 			if !candidate.Before(now) {
-				daysSinceAnchor := int(candidate.Sub(anchor).Hours() / 24)
-				if daysSinceAnchor >= 0 && validOffsets[daysSinceAnchor%cadenceDays] {
+				if validOffsets[daysSinceAnchor%cadenceDays] {
 					if !hasWindow || isInWindow(candidate, wsMin, weMin) {
 						return &candidate
 					}
 				}
 			}
 			candidate = candidate.AddDate(0, 0, 1)
+			daysSinceAnchor++
 		}
 		return &anchor
 	}

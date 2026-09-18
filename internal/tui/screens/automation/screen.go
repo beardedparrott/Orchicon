@@ -78,7 +78,17 @@ type Model struct {
 	// datePicker is the open calendar modal (a KDate field activated), layered
 	// above the form that opened it. dateField is the field it writes back into.
 	datePicker *kit2.DatePicker
-	dateField  string
+
+	// formZone is the IANA zone the open recurring form's wall-clock fields are expressed in, captured
+	// when the form is BUILT so the submit handler writes back the same zone the labels showed.
+	//
+	// It is a Model field rather than a closure capture because the two paths seed it differently and
+	// that difference is the whole point: a CREATE stamps the operator's system zone, while an EDIT
+	// PRESERVES whatever the schedule already carries — including empty, which means UTC. Stamping an
+	// edit with the system zone would silently MOVE an existing legacy schedule's fire time, and the
+	// operator asked for those to keep firing exactly as they do today.
+	formZone  string
+	dateField string
 	// rpcPromote/rpcDismiss are thunks so a bulk triage is testable without a
 	// plane, and so a partial failure can be reported per-idea.
 	rpcPromote func(ctx context.Context, id string) error
@@ -319,6 +329,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "status", Value: strings.ToLower(w.GetStatus().String())},
 			{Key: "recurring", Value: state},
 			{Key: "cadence", Value: cadence(w.GetRecurringSchedule())},
+			// The zone the cadence's wall clocks mean. Shown rather than assumed, because "09:00" is a
+			// different instant in CST and CDT and a legacy schedule with no zone is UTC.
+			{Key: "timezone", Value: recurringZoneLabel(w.GetRecurringSchedule().GetTimezone())},
 			{Key: "next fire", Value: screenkit.FmtTime(w.GetNextRunAt())},
 			{Key: "workflow", Value: w.GetWorkflowId()},
 			{Key: "project", Value: w.GetProjectId()},
@@ -466,7 +479,23 @@ func (m *Model) newCreateForm() *kit2.Form {
 	for _, w := range m.workflows {
 		wfOpts = append(wfOpts, kit2.Option{Value: w.Name, Label: w.Name})
 	}
-	now := time.Now().UTC()
+	// LOCAL, not UTC. The default start DATE is the one field here the operator reads and accepts
+	// without thinking, and it was derived from time.Now().UTC() — so a user behind UTC got the WRONG
+	// DAY pre-filled for part of every day: in Central (UTC-6) any time after 18:00 local is already
+	// tomorrow in UTC, so an evening "nightly sweep" defaulted to tomorrow's date. A default the
+	// operator has to notice and correct is worse than no default.
+	now := time.Now()
+	// The operator's zone, stamped onto the schedule and NAMED on the field below.
+	//
+	// A wall clock with no zone is not a time, and this form asks for exactly a wall clock — so the zone
+	// the operator is typing in has to be both stored and visible. Empty means the system could not be
+	// asked (see screenkit.SystemZoneName); the label says so rather than quietly implying it is local,
+	// because a silent UTC default is the bug this field exists to fix.
+	m.formZone = screenkit.SystemZoneName()
+	zoneLabel := m.formZone
+	if zoneLabel == "" {
+		zoneLabel = "UTC — system timezone could not be determined"
+	}
 	f := kit2.NewForm("New recurring item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "nightly triage sweep"},
 		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: projOpts[0].Value},
@@ -480,7 +509,7 @@ func (m *Model) newCreateForm() *kit2.Form {
 		// A DATE is chosen from the calendar, not typed: "YYYY-MM-DD" is a format to
 		// remember and a text box cannot show that the 14th is a Saturday.
 		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: now.Format("2006-01-02")},
-		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: "09:00", Validate: validateClock},
+		kit2.FieldSpec{Name: "start_time", Label: "Start time (" + zoneLabel + ")", Kind: kit2.KText, Required: true, Initial: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: "standard"},
 		// The WINDOW confines fires to a daily interval [start, end). Both empty =
 		// 24/7 (the legacy behaviour); both set = a half-open window, which the
@@ -501,6 +530,16 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 	if s == nil {
 		return nil
 	}
+	// THE ZONE IS PRESERVED, NEVER RE-STAMPED on an edit. A schedule written before the timezone field
+	// existed carries an empty one, which the server reads as UTC so that its fire time is unchanged;
+	// overwriting that with the system zone here would move it — and the operator explicitly asked for
+	// existing schedules to be left alone. The label states the legacy case so the wall clocks on screen
+	// are not mistaken for local ones.
+	m.formZone = strings.TrimSpace(s.GetTimezone())
+	zoneLabel := m.formZone
+	if zoneLabel == "" {
+		zoneLabel = "UTC — no zone set (legacy schedule)"
+	}
 	enabled := "true"
 	if !w.GetRecurringEnabled() {
 		enabled = "false"
@@ -512,7 +551,7 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 		kit2.FieldSpec{Name: "interval", Label: "Interval", Kind: kit2.KNumber, Required: true, Initial: strconv.Itoa(int(maxInt32(s.GetInterval(), 1))), Validate: validateInterval},
 		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions(), Initial: strings.Join(s.GetDays(), ",")},
 		kit2.FieldSpec{Name: "start_date", Label: "Start date", Kind: kit2.KDate, Required: true, Initial: s.GetStartDate()},
-		kit2.FieldSpec{Name: "start_time", Label: "Start time", Kind: kit2.KText, Required: true, Initial: s.GetStartTime(), Validate: validateClock},
+		kit2.FieldSpec{Name: "start_time", Label: "Start time (" + zoneLabel + ")", Kind: kit2.KText, Required: true, Initial: s.GetStartTime(), Validate: validateClock},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: inOptions(s.GetOutputsMode(), []string{"standard", "idea", "none"}, "standard")},
 		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Initial: s.GetWindowStart(), Placeholder: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Initial: s.GetWindowEnd(), Placeholder: "17:00", Validate: validateClock},
@@ -560,7 +599,7 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 				Kind:              kindFromForm(v["kind"]),
 				Title:             strings.TrimSpace(v["title"]),
 				WorkflowId:        wfID,
-				RecurringSchedule: scheduleFromValues(v, multi),
+				RecurringSchedule: scheduleFromValues(v, multi, m.formZone),
 			}
 			name := "create recurring item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
@@ -571,7 +610,7 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 				},
 			}), nil
 		case formEdit:
-			sched := scheduleFromValues(v, multi)
+			sched := scheduleFromValues(v, multi, m.formZone)
 			enabled := v["enabled"] == "true"
 			req := &apiv1.UpdateWorkItemRequest{
 				Id:                id,
@@ -1038,7 +1077,18 @@ func (m *Model) visibleItems(src string) []screenkit.Item {
 
 // ---------------- helpers ----------------
 
-func scheduleFromValues(v map[string]string, multi map[string][]string) *apiv1.RecurringSchedule {
+// recurringZoneLabel renders the zone a stored schedule's wall clocks are expressed in, for the detail
+// pane. It SPEAKS THE LEGACY CASE OUT LOUD: an empty zone is read as UTC by the server (deliberately, so
+// an existing fire time never moves), and an operator looking at times on screen has to be able to tell
+// that they are not local.
+func recurringZoneLabel(zone string) string {
+	if strings.TrimSpace(zone) == "" {
+		return "UTC — no zone set (legacy schedule)"
+	}
+	return zone
+}
+
+func scheduleFromValues(v map[string]string, multi map[string][]string, zone string) *apiv1.RecurringSchedule {
 	interval, _ := strconv.Atoi(strings.TrimSpace(v["interval"]))
 	if interval < 1 {
 		interval = 1
@@ -1059,6 +1109,9 @@ func scheduleFromValues(v map[string]string, multi map[string][]string) *apiv1.R
 		OutputsMode: strings.TrimSpace(v["outputs"]),
 		WindowStart: strings.TrimSpace(v["window_start"]),
 		WindowEnd:   strings.TrimSpace(v["window_end"]),
+		// The zone the three wall clocks above are expressed in. It travels WITH them: the server cannot
+		// infer it (a background reconciler has no client to ask), and without it "09:00" is read as UTC.
+		Timezone: zone,
 	}
 }
 
