@@ -7,9 +7,16 @@ package work
 // RPC (its 10 RPCs are Create/Get/List/Update/Archive/Delete/Pause/
 // Activate/StreamProjectEvents/ListProjectFiles). The TUI therefore sets
 // project_dir through UpdateProject and then PROBES the directory with
-// ListProjectFiles — the server materializes the directory when the files
-// endpoint resolves it, and a bad path surfaces immediately as an error
-// instead of failing later at worker dispatch.
+// ListProjectFiles — a bad path surfaces immediately as an error instead of
+// failing later at worker dispatch.
+//
+// CORRECTION (this comment used to claim the probe MATERIALIZED the directory —
+// "the server materializes the directory when the files endpoint resolves it" —
+// and it does not): the read path is os.Stat + os.ReadDir only
+// (internal/project/listDirectory), so the probe is a genuine existence check and
+// creates nothing. That matters beyond pedantry, because the same call is what
+// launch.go uses to ask whether the PLANE can see a directory: a probe that
+// created what it was probing for would answer its own question with a yes.
 
 import (
 	"context"

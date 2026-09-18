@@ -372,7 +372,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// would fall through to the screens and be lost.
 	if lm, ok := msg.(launchPromptMsg); ok {
 		if lm.need {
-			m.beginLaunchPrompt(lm.dir)
+			m.beginLaunchPrompt(lm.dir, lm.visible)
 		}
 		return m, nil
 	}

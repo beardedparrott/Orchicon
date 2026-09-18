@@ -63,6 +63,11 @@ type launchPrompt struct {
 	// Form is the create form, built when the operator says yes — built once, so
 	// their typing survives every repaint.
 	Form *kit2.Form
+	// Visible is whether the CONTROL PLANE could see the directory when the check
+	// ran. False is not a refusal: the operator may be about to add the path to a
+	// project root, or may simply not care yet. It only changes what the question
+	// SAYS.
+	Visible bool
 }
 
 // launchPromptMsg is the launch check's result.
@@ -75,6 +80,14 @@ type launchPrompt struct {
 type launchPromptMsg struct {
 	dir  string
 	need bool
+	// visible is whether the CONTROL PLANE can see the directory — a different
+	// question from whether the operator's shell can. A project_dir outside the
+	// container's mounts is recorded happily and then silently useless: the plane
+	// cannot "git -C" it for worktrees (internal/scheduler/worktree_reconciler.go),
+	// and in container mode validateProjectDir deliberately SKIPS the existence
+	// check, so nothing else would ever say so. The prompt is the one place the
+	// operator is deciding, which makes it the right place to be told.
+	visible bool
 }
 
 // launchCreatedMsg reports a successful create-and-attach.
@@ -106,7 +119,19 @@ func (m *App) checkLaunchProject() tea.Cmd {
 		if dirTiedToProject(resp.Msg.GetProjects(), dir) {
 			return launchPromptMsg{}
 		}
-		return launchPromptMsg{dir: dir, need: true}
+		// ASK THE PLANE WHAT IT CAN SEE, before offering to create anything for this
+		// directory. ListProjectFiles with dir_path browses a raw path on the PLANE's
+		// filesystem (the frontend uses the same call to browse before a project
+		// exists), so an error here means the plane cannot reach this path — and that
+		// is worth saying at the moment of the decision rather than discovering it
+		// when a worker cannot find the files.
+		visible := true
+		if _, err := cl.Projects.ListProjectFiles(ctx, connect.NewRequest(&apiv1.ListProjectFilesRequest{
+			DirPath: dir,
+		})); err != nil {
+			visible = false
+		}
+		return launchPromptMsg{dir: dir, need: true, visible: visible}
 	}
 }
 
@@ -167,8 +192,8 @@ func launchProjectSlug(name string) string {
 }
 
 // beginLaunchPrompt raises the prompt: the blank screen carrying the question.
-func (m *App) beginLaunchPrompt(dir string) {
-	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking}
+func (m *App) beginLaunchPrompt(dir string, visible bool) {
+	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible}
 }
 
 // dismissLaunchPrompt closes the prompt and continues into the app normally — the
@@ -183,22 +208,46 @@ func (m *App) dismissLaunchPrompt() {
 
 // launchQuestion is the first screen: the question, alone, with the directory it
 // is about and the two answers.
+//
+// WHEN THE PLANE CANNOT SEE THE DIRECTORY, THE QUESTION SAYS SO — here, where the
+// operator is deciding, rather than after a worker has failed to find their files.
+// It is a WARNING and not a refusal: the path may be about to become visible (add
+// it to a project root and re-create the container), or the operator may be
+// creating the project now and mounting it later. Saying nothing would make the
+// create look like it worked, because it does — the project is real, its directory
+// is recorded, and nothing else in the system can tell that the plane cannot reach
+// it.
 func (m *App) launchQuestion() string {
 	dir := ""
+	visible := true
 	if m.launch != nil {
 		dir = m.launch.Dir
+		visible = m.launch.Visible
 	}
-	return strings.Join([]string{
+	lines := []string{
 		theme.MenuTitle.Render("This directory isn't linked to an Orchicon project"),
 		"",
 		theme.DetailValue.Render(dir),
 		"",
 		theme.HintText.Render("A project is what gives workers a place to operate. This directory is"),
 		theme.HintText.Render("not tied to one, so a worker asked to work here would not find your files."),
+	}
+	if !visible {
+		lines = append(lines,
+			"",
+			theme.HintText.Render("⚠ The control plane cannot see this directory."),
+			theme.HintText.Render("A project for it would be created and then unusable: workers run elsewhere"),
+			theme.HintText.Render("and the plane cannot run git in a path it has not been given."),
+			theme.HintText.Render("Grant reach with a project root, then re-create the container:"),
+			theme.DetailValue.Render("ORCHICON_PROJECT_ROOTS=\"$HOME\" scripts/container.sh up dev"),
+		)
+	}
+	lines = append(lines,
 		"",
 		theme.HintText.Render("enter / y   create a project for this directory"),
 		theme.HintText.Render("n / esc     continue into orch without one"),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 // launchView paints the prompt.

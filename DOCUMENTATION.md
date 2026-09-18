@@ -1268,11 +1268,27 @@ scripts/container.sh down dev         # stop + remove the dev instance
 - **Data preservation**: the dev/prod instances reuse the compose-era Postgres volumes (`orchicon_postgres-data` / `orchicon-prod_postgres-data`) from the old Docker Compose workflow, so your existing data survives the switch to the single container. The container's postgres runs as the data dir's owner (uid 70 for the alpine-era volumes). The script refuses to start while the matching compose-era postgres is running (two postgres processes on one data dir corrupt it); start with an empty DB via `ORCHICON_PG_VOLUME=fresh`.
 - Control plane: `http://localhost:8080` (API + UI + `/grafana`)
 - Grafana: `http://localhost:3002` (embedded in the Telemetry page)
-- **Worker executions**: the container ships the `opencode` runtime. **Mounts are scoped** — not the whole `$HOME`:
+- **Worker executions**: the container ships the `opencode` runtime. **Mounts are scoped**:
+  - **project roots** (`ORCHICON_PROJECT_ROOTS`, default `$HOME`): each root is bind-mounted at its **identical host path**, so **every `project_dir` under a root works the moment it is created** — no restart, no extra command. This is what makes "create a project for the directory I'm standing in" immediate: declare a root once, then create projects freely beneath it. Narrow it when you want a smaller blast radius: `ORCHICON_PROJECT_ROOTS="/home/me/projects:/srv/work"`, or `none` to mount no roots. Roots are mounted **before** the read-only scoped mounts below, and that order is load-bearing: where mounts nest, the more specific destination wins, so opencode's config stays `:ro` inside a writable `$HOME`.
   - `~/.config/opencode` (read-only) + `~/.local/share/opencode` (rw) so workers use your real model providers.
-  - **project dirs/files from a manifest**: the control plane writes `/var/lib/orchicon/project-mounts` (every `project_dir` + `context_files` from the projects table **and every work item's `context_files`**, refreshed every 30s). `container.sh up`/`rebuild` mounts each listed path at its host location. **After you save a project dir or context files in the UI, run `scripts/container.sh sync-mounts [dev|prod]`** to apply — Docker can't add bind mounts to a running container, so `sync-mounts` compares the manifest to the live container's mounts and recreates it when any are missing.
+  - **project dirs/files from a manifest**: the control plane writes `/var/lib/orchicon/project-mounts` (every `project_dir` + `context_files` from the projects table **and every work item's `context_files`**, refreshed every 30s). `container.sh up`/`rebuild` mounts each listed path at its host location. **Only needed for paths OUTSIDE every root** — a path under a root is already visible. For one that is not, run `scripts/container.sh sync-mounts [dev|prod]` to apply; Docker can't add bind mounts to a running container, so `sync-mounts` compares the manifest to the live container's mounts and recreates it when any are missing (a path already covered by a root counts as present, so roots do not trigger needless re-creates).
   - Extra paths: `ORCHICON_PROJECT_MOUNTS` (space-separated host paths).
   - **Ownership**: the control plane and its worker subprocesses run as **your host user** (`id -u`/`id -g` passed via `ORCHICON_HOST_UID/GID/HOME`), so files workers create in mounted project dirs are owned by you, not root. Infra processes keep their own users (postgres uid 70, telemetry root).
+
+#### Who can see what: the trust model
+
+Orchicon separates **where it may look** (project roots — declared once) from **what a piece of work is about** (`project_dir` — per project). Permission is granted by creating a project, and bounded by the roots you declare. The two execution paths have **deliberately different reach**:
+
+| | Ask Orchicon (Brainstorm / Iteration / Quick Work) | Workflow executions |
+|---|---|---|
+| **Where it runs** | **In the control-plane container** — the in-process `opencode serve` that hosts a session per conversation (`internal/opencode/servehost.go`) | **A per-run runtime container**, created by the host-side runtime daemon |
+| **What it can see** | **Everything in the declared roots.** With the default root that is your whole `$HOME`, and its file/shell tools run there | **Only the project's `project_dir` plus declared `context_files`** (`internal/runtime/lifecycle.go`). No `$HOME`, no `~/.ssh`, no git credentials |
+| **Sandbox** | The OS-level execution guard applied to the session's PATH, plus opencode's per-session directory scoping | A container with its own filesystem view, and a deny-by-default `orchicon-plane` credential unless the worker carries a `role_ref` |
+| **Trust it when** | You are talking to it directly: it is your agent doing what you asked, so it is given your reach | Unattended work against a repo you may not have read. A prompt-injected worker cannot reach your SSH keys — they were never mounted into its container |
+
+**Be aware of the difference before pointing either path at a repository you do not trust.** The practical consequence: with `$HOME` as a root, the Ask agent can read anything under your home, `~/.ssh` included, while a *workflow* execution of the same project cannot reach it. To shrink the surface, narrow `ORCHICON_PROJECT_ROOTS` — that narrows **both** paths, since roots gate what the plane can see at all. Workflow containers are still confined to the project dir regardless, so narrowing roots only ever reduces the Ask agent's reach.
+
+When a `project_dir` sits outside every root the control plane cannot see it, and orch's launch prompt says so **at the moment you create the project**, with the command to fix it — rather than letting a worker fail later to find your files.
 - Published image: `ghcr.io/beardedparrott/orchicon` (built + pushed by the release workflow on every version tag, tagged `vX.Y.Z` + `latest`).
 
 **Environment variables** (all optional):
