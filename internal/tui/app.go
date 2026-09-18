@@ -2728,20 +2728,52 @@ func (s *chatStore) setReconnecting(convID string, on bool) {
 // text. Comparing them exactly never matched, so the dedupe silently did
 // nothing and the duplicate came back (the operator's "it sent my message twice
 // and put it below the model's response").
+//
+// IT MUST ALSO BE IDEMPOTENT, BECAUSE IT IS CALLED REPEATEDLY ON THE SAME BUFFER, and that is
+// what this function got wrong. The merge writes its result back into the live store, so after
+// ONE pass the buffer already contains the durable rows. A second pass then appended the
+// transcript to a buffer that already had it:
+//
+//	merge 1 -> 1 item    (history only; the echo was dropped)
+//	merge 2 -> 2 items   (the same durable row twice)
+//	merge 3 -> 3 items   (the operator's screenshot)
+//
+// It compounds because the merge runs on EVERY mid-turn transcript load, and a load happens on
+// each re-entry into the conversation — which is the exact shape of the report: "when I click out
+// of an ongoing session and back into it, it duplicated the user message in the stream". Once per
+// click, and every durable row was affected, not just the user's (the reasoning parts, now that
+// they are durable rows, duplicated with it).
+//
+// The fix is to dedupe by IDENTITY rather than only by text: anything the incoming transcript
+// already carries — matched on its key, which the server derives from the message id
+// ("m-<id>", "m-<id>-r<part>") — is not live, whatever else it looks like.
 func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	s.mu.Lock()
 	live := s.items[convID]
-	// Durable user texts, for matching an optimistic echo.
+	// The durable transcript's identity: the keys already present, plus the user texts an
+	// optimistic echo has to be matched against.
+	already := make(map[string]bool, len(history))
 	var durableUser []string
 	for _, it := range history {
+		if it.Key != "" {
+			already[it.Key] = true
+		}
 		if it.Kind == chat.KindUser {
 			durableUser = append(durableUser, it.Text)
 		}
 	}
 	kept := make([]chat.ChatItem, 0, len(live))
 	for _, it := range live {
+		// ALREADY MERGED: this row came from a previous pass, so adding it again IS the
+		// duplication. Keyed rather than kind-matched, because it applies to every durable
+		// item — the user message, the reply, and each reasoning part.
+		if it.Key != "" && already[it.Key] {
+			continue
+		}
+		// THE OPTIMISTIC ECHO: not yet durable, and superseded by the incoming copy of the same
+		// words. Its key is generated locally, so it is never in `already`.
 		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && matchesAny(durableUser, it.Text) {
-			continue // the durable copy supersedes the optimistic echo
+			continue
 		}
 		kept = append(kept, it)
 	}

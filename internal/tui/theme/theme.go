@@ -279,8 +279,17 @@ func Lookup(name string) *Theme {
 	return nil
 }
 
-// DefaultName is the launch default (config omits theme → dark).
-const DefaultName = "dark"
+// DefaultName is the launch default: the palette used when the config and the environment name no
+// theme. An explicit preference (the config's `theme`, or ORCHICON_THEME) always wins — this is only
+// the fallback, so changing it changes how orch looks out of the box and nothing at all for an
+// operator who has already chosen a palette.
+//
+// EMBER, at the operator's request: "I want the default theme for orch to be the Ember dark theme."
+// It is the `ember` palette from theme_palettes.go — the warm orange-red family — and NOT
+// "ember-light" beside it, which is the same family in light mode. Lookup matches the name exactly,
+// so a typo here would fall back to the base dark palette without an error; theme_test.go asserts
+// this name resolves, and that it is a DARK palette.
+const DefaultName = "ember"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.
