@@ -220,7 +220,7 @@ func (m *Model) imageActions() []kit2.Action {
 	}
 	id, title := it.ID, it.Title
 	return []kit2.Action{{
-		Label: "delete", Key: "x", Danger: true, Source: srcImages,
+		Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcImages,
 		Confirm:  "Delete " + title + "?\nThe spec row AND the local docker image are removed (best-effort, refused while a run references the tag).",
 		Apply:    func() { m.RemoveRow(srcImages, id) },
 		Rollback: func() { m.Refresh(srcImages) },

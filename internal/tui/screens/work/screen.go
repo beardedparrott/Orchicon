@@ -645,7 +645,7 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 		},
 	}
 	del := kit2.Action{
-		Label: label("delete"), Key: "x", Danger: true, Source: srcWorkItems,
+		Label: label("delete"), Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
 		Confirm: "Delete " + count + " items?\n" +
 			"This soft-deletes each (status → cancelled) and they leave every active view.",
 		Do: func(ctx context.Context) error {
@@ -1093,8 +1093,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.reorderChildren(1), true
 		}
-	case "y", "a", "R", "x":
+	case "y", "a", "R":
 		if a, ok := m.actionByKey(msg.String()); ok {
+			return m.openAction(a), true
+		}
+	case kit2.DeleteChord, kit2.DeleteChordAlias:
+		// ONE delete gesture, TWO keys. `ctrl+x` is the client's canonical delete chord
+		// (kit2.DeleteChord — the operator asked for it "across the board", and the
+		// Execution panes have answered it ever since) and a bare `x` is what these panes
+		// have always used. Accepting both is the point of this fix: the operator pressed
+		// the chord they had asked for and NOTHING HAPPENED, because this screen only knew
+		// its own.
+		//
+		// The action's Key is the canonical one, so the bar advertises `ctrl+x:delete` and
+		// every pane in the client names the same binding.
+		if a, ok := m.actionByKey(kit2.DeleteChord); ok {
 			return m.openAction(a), true
 		}
 	}

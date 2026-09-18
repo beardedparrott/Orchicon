@@ -676,7 +676,7 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		},
 		{
-			Label: "delete", Key: "x", Danger: true, Source: srcWorkItems,
+			Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
 			Confirm:  "Delete " + title + "?\nThis soft-deletes the item (status → cancelled) and it leaves every active view.",
 			Apply:    func() { m.setRowMeta(srcWorkItems, id, "cancelled") },
 			Rollback: func() { m.Refresh(srcWorkItems) },

@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
@@ -604,6 +605,15 @@ func kmsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "space":
 		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
+	case "ctrl+x":
+		// A REAL control key, not the literal runes "ctrl+x". The terminal sends one
+		// control byte (CAN, 0x18) and bubbletea reports KeyCtrlX; KeyMsg.String() then
+		// returns "ctrl+x", which is what the router matches on. The literal-runes form
+		// would ALSO match — String() just returns the runes — so this is about fidelity
+		// rather than necessity: the test should drive the key the terminal actually
+		// sends, since a helper that quietly accepts a shape the real input never takes
+		// can pass while the binding is broken.
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -1066,7 +1076,9 @@ func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	press(t, m, "x")
+	// THE SHARED DELETE CHORD, read from the constant rather than spelled out: `ctrl+x` is
+	// what the client's other panes answer and what the operator asked for across the board.
+	press(t, m, kit2.DeleteChord)
 	if !m.DialogOpen() {
 		t.Fatal("delete must open a Confirm dialog")
 	}
@@ -1314,7 +1326,7 @@ func TestRuntimeImageCreateEditDelete(t *testing.T) {
 	}
 
 	// delete (Confirm-gated)
-	press(t, m, "x")
+	press(t, m, kit2.DeleteChord)
 	if !m.DialogOpen() {
 		t.Fatal("image delete must be confirmed")
 	}

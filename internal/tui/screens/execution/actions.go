@@ -80,11 +80,14 @@ const (
 	// across the board please with 'ctrl+x' for single and bulk on both"*, after finding Workers on `x`,
 	// Workflows on `shift+x`, and the bulk variants on whatever their pane happened to use.
 	//
-	// TWO SEPARATE CONSTANTS SET TO THE SAME LITERAL WOULD DRIFT AGAIN — that is how this happened the
-	// first time — so the Workflows pane reads this one too. `ctrl+x` is also free of the STEP EDITOR's
-	// `x` (remove step), which the old `X`/`x` pair had to be arranged around; that collision is simply
-	// gone now.
-	keyDelete = "ctrl+x"
+	// IT NOW DEFERS TO kit2.DeleteChord rather than repeating the literal. Two constants set to the same
+	// value is exactly how this drifted the first time — and it drifted AGAIN in the other direction: this
+	// screen was brought to ctrl+x and the WORK panes were left on a bare `x`, so the operator's own chord
+	// did nothing where they were deleting projects. One literal, in the package every screen imports.
+	//
+	// `ctrl+x` is also free of the STEP EDITOR's `x` (remove step), which the old `X`/`x` pair had to be
+	// arranged around; that collision is simply gone now.
+	keyDelete = kit2.DeleteChord
 	// keyCategorize ASSIGNS the selected item to a grouping (worker / workflow / conversation
 	// categories). A CAPITAL, following this screen's own convention that a capital is the OTHER act on
 	// the same pane (`E` renames a workflow header, `V` edits a version, `M` sets the model on a

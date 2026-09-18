@@ -7,6 +7,27 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
+// DeleteChord is THE delete key, for a single row and a bulk selection alike, shared by
+// every list in this client.
+//
+// IT IS ONE CONSTANT WITH ONE VALUE ON PURPOSE, and the operator asked for exactly that:
+// "let's make those consistent across the board please with 'ctrl+x' for single and bulk on
+// both", after finding Workers on `x`, Workflows on `shift+x`, and the bulk variants on
+// whatever their pane happened to use. A SECOND CONSTANT SET TO THE SAME LITERAL DRIFTS —
+// that is how the inconsistency arose in the first place — so this lives in the package the
+// screens already import rather than beside any one of them.
+//
+// THE WORK PANES WERE LEFT BEHIND: the Execution screen was brought to this chord, and the
+// Work screen (work items, projects, runtime images) kept its own bare `x`, so the gesture
+// the operator had asked for did nothing on the panes where they were deleting projects.
+const DeleteChord = "ctrl+x"
+
+// DeleteChordAlias is the shortcut the Work panes have used for delete since they were
+// written. Accepted IN ADDITION to DeleteChord rather than replaced by it: both gestures
+// work, because breaking an established binding to gain consistency trades one surprise for
+// another.
+const DeleteChordAlias = "x"
+
 // Action is an RPC bound to the selected entity. It carries:
 //
 //   - a label + keybinding for the action bar / popover,

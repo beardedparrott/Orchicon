@@ -644,7 +644,7 @@ func (m *Model) projectActions() []kit2.Action {
 	// discipline the bulk actions use — there is no rollback that can restore server state,
 	// and a row that vanishes before the server agreed implies an undo that does not exist.
 	acts = append(acts, kit2.Action{
-		Label: "delete", Key: "x", Danger: true, Source: srcProjects,
+		Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcProjects,
 		Confirm: "Delete " + it.Title + "?\n\nThis permanently removes the project. It cannot be undone.",
 		Do: func(ctx context.Context) error {
 			_, err := cl.Projects.DeleteProject(ctx, connect.NewRequest(&apiv1.DeleteProjectRequest{Id: id}))
@@ -678,7 +678,7 @@ func (m *Model) bulkProjectActions(ids []string) []kit2.Action {
 	cl := m.cl.Projects
 	return []kit2.Action{
 		{
-			Label: label("delete"), Key: "x", Danger: true, Source: srcProjects,
+			Label: label("delete"), Key: kit2.DeleteChord, Danger: true, Source: srcProjects,
 			Confirm: "Delete " + count + " projects?\n\nThis permanently removes each one. It cannot be undone.",
 			Do: func(ctx context.Context) error {
 				failed := 0

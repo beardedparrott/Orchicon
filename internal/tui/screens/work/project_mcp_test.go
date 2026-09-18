@@ -131,8 +131,9 @@ func TestAProjectOffersDelete(t *testing.T) {
 		t.Fatal("a project offers no delete action — the operator's report: \"There is no ctrl+x delete for " +
 			"single or bulk on projects\"")
 	}
-	if act.Key != "x" {
-		t.Errorf("delete's key is %q, want x — the operator asked for ctrl+x", act.Key)
+	if act.Key != kit2.DeleteChord {
+		t.Errorf("delete's key is %q, want %q — the operator asked for ctrl+x across the board, and every "+
+			"other pane answers it", act.Key, kit2.DeleteChord)
 	}
 	if act.Confirm == "" {
 		t.Error("delete has no confirmation, and DeleteProject is permanent")
@@ -214,7 +215,7 @@ func TestBulkDeleteOnWorkItemsStillCallsTheWorkItemRPC(t *testing.T) {
 	}
 
 	for _, a := range m.actionsForSelection() {
-		if strings.Contains(strings.ToLower(a.Label), "delete") && a.Key == "x" {
+		if strings.Contains(strings.ToLower(a.Label), "delete") && a.Key == kit2.DeleteChord {
 			if err := a.Do(context.Background()); err != nil {
 				t.Fatalf("work-item bulk delete failed: %v", err)
 			}
