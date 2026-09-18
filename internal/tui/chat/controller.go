@@ -667,6 +667,33 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	if interject {
 		call = "interject"
 	}
+	// ARM THE WATCHDOG AND THE DURABLE POLL HERE — NOT INSIDE THE STREAM'S COMMAND.
+	//
+	// THIS IS THE FIX, and it explains why the poll did not help when it was first added. Both
+	// goroutines used to be armed inside startStream's command, AFTER `ChatStream` returned — so they
+	// started only if the streaming call actually OPENED. And that call is precisely what fails: it
+	// blocks until the server's response headers arrive, and if a proxy buffers the streaming response
+	// those headers never come, so it blocks forever. The result was the operator's exact report:
+	// `streaming` is set true above and stays true, so the pane shows the thinking notice and its
+	// watchdog age and NOTHING ELSE, while `consume` never runs and NO mechanism that could save it —
+	// the poll included — was ever started. Every safety net was gated behind the failure it existed to
+	// cover.
+	//
+	// Armed here, at the moment the operator SENT, both run regardless of the transport. The poll then
+	// drives rendering from the durable store — the reply still grows on screen even if the stream
+	// never opens a socket at all — and the watchdog's clock is stamped BY THE SEND, so a handshake
+	// that never completes is caught as silence rather than waiting forever on a stream that will never
+	// start.
+	//
+	// (Watch re-arms both, for the same reason: a re-dial is a NEW attempt whose liveness must be
+	// watched from the re-dial, not from the original send.)
+	c.mu.Lock()
+	if st := c.state[convID]; st != nil {
+		st.lastActivity = now()
+	}
+	c.mu.Unlock()
+	go c.runLivenessWatch(convID)
+	go c.runTurnPoll(convID)
 	return c.startStream(convID, full, call, files)
 }
 
@@ -698,18 +725,16 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 			return ErrMsg{Where: call, Err: err}
 		}
 		go c.consume(convID, stream)
-		// ARM THE LIVENESS WATCHDOG for this conversation. Stamped here rather than waiting for the
-		// first event, so the clock is running before any chunk could be missed; the stream is
-		// genuinely underway by this point (the response object exists, so the request was accepted).
+		// RE-ARM BOTH, and HERE it is correct to arm after the call returns: this is a RE-DIAL of a turn
+		// that was already acknowledged, so a failed re-dial is already covered by the poll running since
+		// the original send (see SendWithAttachments). Arming on success keeps each liveness watch tied
+		// to an attempt that actually started.
 		c.mu.Lock()
 		if st := c.state[convID]; st != nil {
 			st.lastActivity = now()
 		}
 		c.mu.Unlock()
 		go c.runLivenessWatch(convID)
-		// AND THE DURABLE POLL, beside it: the watchdog covers a stream that DIED, this covers a
-		// stream that is alive but delivering only keepalives. Both are armed here because both
-		// must start with the turn, and both stop when it does.
 		go c.runTurnPoll(convID)
 		return nil
 	}
@@ -745,19 +770,8 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 			return nil
 		}
 		go c.consume(convID, stream)
-		// ARM THE LIVENESS WATCHDOG for this conversation. Stamped here rather than waiting for the
-		// first event, so the clock is running before any chunk could be missed; the stream is
-		// genuinely underway by this point (the response object exists, so the request was accepted).
-		c.mu.Lock()
-		if st := c.state[convID]; st != nil {
-			st.lastActivity = now()
-		}
-		c.mu.Unlock()
-		go c.runLivenessWatch(convID)
-		// AND THE DURABLE POLL, beside it: the watchdog covers a stream that DIED, this covers a
-		// stream that is alive but delivering only keepalives. Both are armed here because both
-		// must start with the turn, and both stop when it does.
-		go c.runTurnPoll(convID)
+		// The watchdog and the durable poll are NOT armed here — see SendWithAttachments. Arming them at
+		// this point would gate them behind this call returning, which is the failure they exist to cover.
 		return nil
 	}
 }
