@@ -525,6 +525,29 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 // whole seconds by GetSeconds(), which tied messages written in the same second
 // together and left a stable sort unable to separate them — so reversal here is
 // load-bearing, not merely cosmetic.
+//
+// REASONING IS CARRIED HERE TOO, and its absence was the operator's "No reasoning
+// block" report — which I initially and wrongly told them was not happening.
+// ChatMessage.reasoning is a `repeated string` the proto documents as "rendered by
+// the frontend as thinking bubbles", and the GUI reads it; this function read only
+// GetContent(), so EVERY durable reasoning part was dropped the moment the
+// transcript loaded from history. The live stream chunks were the only path that
+// ever produced a reasoning item, and the completion poll then REPLACES the live
+// buffer with this durable list (chatStore.replace) — so the reasoning the operator
+// had watched arrive disappeared the instant the turn finished. That is exactly "All
+// I am seeing is 'Orchicon is thinking...'": the thinking NOTICE is live and
+// survives, while the reasoning body does not.
+//
+// ONE ITEM PER PART, the shape the proto preserves ("one entry per reasoning part
+// received that turn, boundaries preserved") and the shape the live path already
+// produces, so GroupByPhase coalesces them into one bubble per phase exactly as it
+// does for a streamed turn. They are emitted BEFORE the message's text because
+// thinking precedes the words it produced, and they share the message's timestamp:
+// SortChronologically is a STABLE sort, so same-instant order is preserved.
+//
+// Keys come from the message id and the part index, NOT from a counter: a fold's
+// state is held per item key (chatStore foldedReasoning), so a key that changed on
+// every load would spring a collapsed reasoning block open on every refresh.
 func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 	items := make([]ChatItem, 0, len(msgs))
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -536,10 +559,24 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		case "error":
 			kind = KindError
 		}
+		at := m.GetCreatedAt().AsTime().UnixMilli()
+		for j, part := range m.GetReasoning() {
+			// A blank part is not a reasoning block, and rendering it would put an empty
+			// bubble in the transcript for a turn that had nothing to say there.
+			if strings.TrimSpace(part) == "" {
+				continue
+			}
+			items = append(items, ChatItem{
+				Kind: KindReasoning,
+				Text: part,
+				At:   at,
+				Key:  "m-" + m.GetId() + "-r" + itoa(int64(j)),
+			})
+		}
 		items = append(items, ChatItem{
 			Kind: kind,
 			Text: m.GetContent(),
-			At:   m.GetCreatedAt().AsTime().UnixMilli(),
+			At:   at,
 			Key:  "m-" + m.GetId(),
 		})
 	}
